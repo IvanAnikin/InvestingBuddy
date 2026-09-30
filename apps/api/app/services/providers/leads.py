@@ -1352,6 +1352,19 @@ async def verify_lead(
     # 3. Fetch authority. A policy refusal is decided before the network is touched.
     domains = tuple(allowed_domains)
     if allow_public_web:
+        # W0 / D13: a model-chosen host is an open-web fetch; refuse it on a runtime
+        # whose `ipaddress` classification is not trusted.
+        from app.services.sources.safe_web_fetcher import open_web_fetch_refusal
+
+        runtime_refusal = open_web_fetch_refusal()
+        if runtime_refusal is not None:
+            return LeadVerificationOutcome(
+                lead=lead,
+                status=LEAD_REJECTED,
+                rejection_reason=REJECTED_SOURCE_NOT_PERMITTED,
+                detail=f"Public-web verification refused: {runtime_refusal}.",
+                consumption=consumption,
+            )
         host = host_of(url)
         if host:
             # The allowlist becomes exactly the host the lead cited, so a redirect off

@@ -115,6 +115,14 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         log_python_runtime_check()
     except Exception:  # noqa: BLE001 - never block startup on a diagnostic
         pass
+    # Parse the bundled Public Suffix List once, in a worker thread, so the first
+    # traversal or feed fetch never does it on the event loop.
+    try:
+        from app.services.sources.public_suffix import warm_public_suffix_list
+
+        await asyncio.to_thread(warm_public_suffix_list)
+    except Exception:  # noqa: BLE001 - never block startup on a warm-up
+        pass
 
     worker = await _start_durable_worker()
     try:

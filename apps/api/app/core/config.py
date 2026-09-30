@@ -471,9 +471,14 @@ class Settings(BaseSettings):
     # connect, every redirect hop and the whole body — in seconds. The httpx timeouts
     # above are per-operation, so without this a server dripping one byte just inside
     # the read timeout could hold a worker indefinitely. Read by
-    # ``safe_web_fetcher.fetch_total_deadline_seconds`` for page AND document fetches;
-    # sized for a 35 MB annual report on a slow link.
+    # ``safe_web_fetcher.fetch_total_deadline_seconds`` for pages, JSON listings and
+    # feeds; documents have their own, longer budget below.
     source_fetch_total_deadline_seconds: float = 90.0
+    # The same TOTAL budget for one guarded DOCUMENT fetch (annual reports up to
+    # ``source_document_extraction_max_bytes``), which legitimately takes longer than
+    # a landing page on a slow issuer host. Read by
+    # ``safe_web_fetcher.fetch_total_deadline_seconds(kind="document")``.
+    source_document_total_deadline_seconds: float = 180.0
 
     # ── Macro reference layer (Phase 29C.1) ────────────────────────────────
     # Gate for the reference-only macro source layer (FRED, IMF, Eurostat, World

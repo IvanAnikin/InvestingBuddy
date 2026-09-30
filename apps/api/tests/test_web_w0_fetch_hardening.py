@@ -131,6 +131,7 @@ def _cfg(**overrides: Any) -> Settings:
         "source_connector_max_bytes": 1_000_000,
         "source_document_extraction_max_bytes": 35_000_000,
         "source_fetch_total_deadline_seconds": 30.0,
+        "source_document_total_deadline_seconds": 30.0,
     }
     values.update(overrides)
     return Settings(**values)
@@ -373,7 +374,15 @@ class TestRedirects:
     async def test_ssrf_15_redirect_to_a_denied_platform_host(
         self, net: MockNet, monkeypatch: pytest.MonkeyPatch, target: str
     ) -> None:
+        from app.core.config import settings as live_settings
+
         monkeypatch.setenv("WEBSITE_HOSTNAME", "own-app.example.com")
+        # Only THIS platform's artifact-store account is refused, not every blob host.
+        monkeypatch.setattr(
+            live_settings,
+            "v3_artifact_store_account_url",
+            "https://ibstgdocs.blob.core.windows.net",
+        )
         net.routes["www.example.com"] = _redirect(f"https://{target}/secrets")
         # Even resolving to a PUBLIC address, the host itself is refused.
         dns = FakeDNS({"www.example.com": [PUBLIC_A], target: [PUBLIC_B]})
@@ -739,7 +748,10 @@ class TestBudgets:
             200, headers={"content-type": "text/html"}, content=drip()
         )
         dns = FakeDNS({"slow.example.com": [PUBLIC_A]})
-        cfg = _cfg(source_fetch_total_deadline_seconds=0.4)
+        cfg = _cfg(
+            source_fetch_total_deadline_seconds=0.4,
+            source_document_total_deadline_seconds=0.4,
+        )
         started = time.monotonic()
         result = await fetch("https://slow.example.com/", dns, cfg)
         assert time.monotonic() - started < 5
@@ -1023,3 +1035,332 @@ class TestTruthfulSearchLabels:
     def test_the_search_timeout_setting_is_defined(self) -> None:
         assert Settings(v3_external_search_timeout_seconds=42).v3_external_search_timeout_seconds == 42
         assert Settings.model_fields["v3_external_search_timeout_seconds"].default == 180
+
+
+# =========================================================================== #
+# W0 review round 1
+# =========================================================================== #
+
+
+class TestReviewRound1:
+    # -- B1: whitespace in links and Location headers is encoded, not refused --
+
+    def test_b1_a_spaced_href_becomes_an_encoded_link(self) -> None:
+        html = '<a href="/investors/Annual Report 2024.pdf">Annual report 2024</a>'
+        [link] = extract_links(
+            html,
+            base_url="https://www.example.com/ir",
+            allowed_domains=("example.com",),
+            keywords=("annual report",),
+            max_links=5,
+        )
+        assert link.url == "https://www.example.com/investors/Annual%20Report%202024.pdf"
+        assert check_url_shape(link.fetch_target)[0] is None
+
+    async def test_b1_a_spaced_href_is_fetched(self, net: MockNet) -> None:
+        net.routes["www.example.com"] = lambda r: (
+            httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                content=b'<a href="/docs/Annual Report 2024.pdf">Annual report</a>',
+            )
+            if r.url.path == "/ir"
+            else httpx.Response(200, headers={"content-type": "application/pdf"},
+                                content=b"%PDF-1.4 x")
+        )
+        dns = FakeDNS({"www.example.com": [PUBLIC_A]})
+        page = await _page("https://www.example.com/ir", dns, allowed=("example.com",))
+        [link] = page.links
+        doc = await _doc(link.fetch_target, dns)
+        assert doc.ok
+        assert net.requests[-1].url.raw_path == b"/docs/Annual%20Report%202024.pdf"
+
+    @pytest.mark.parametrize("fetch", [_page, _doc])
+    async def test_b1_a_spaced_location_is_followed(self, net: MockNet, fetch: Any) -> None:
+        net.routes["www.example.com"] = lambda r: (
+            # As a real server sends it: UTF-8 bytes on the wire (space + NBSP).
+            httpx.Response(
+                302, headers=[(b"location", "/files/Half Year\u00a0Report.pdf".encode())]
+            )
+            if r.url.path == "/start"
+            else httpx.Response(200, headers={"content-type": "text/html"}, content=b"ok")
+        )
+        dns = FakeDNS({"www.example.com": [PUBLIC_A]})
+        result = await fetch("https://www.example.com/start", dns)
+        assert result.error is None and not result.blocked
+        assert net.requests[-1].url.raw_path == b"/files/Half%20Year%C2%A0Report.pdf"
+
+    @pytest.mark.parametrize(
+        "location", ["https://exa mple.com/x", "https://example.com\\@127.0.0.1/", "https://a\x00b.example.com/"]
+    )
+    async def test_b1_whitespace_or_controls_in_the_authority_stay_refused(
+        self, net: MockNet, location: str
+    ) -> None:
+        net.routes["www.example.com"] = _redirect(location)
+        dns = FakeDNS({"www.example.com": [PUBLIC_A]})
+        result = await _page("https://www.example.com/", dns)
+        # Refused by our guard, or (a NUL in a header) by httpx itself — either way
+        # nothing past the first hop is ever requested.
+        assert result.error and not result.body_html
+        assert len(net.requests) <= 1
+
+    # -- M1: Content-Encoding is a list --
+
+    @pytest.mark.parametrize(
+        "header, expected",
+        [
+            ("", []),
+            ("identity", []),
+            ("none", []),
+            ("identity, gzip", ["gzip"]),
+            ("GZIP , foo", ["gzip"]),
+            ("aws-chunked", []),
+            ("gzip, gzip", ["gzip", "gzip"]),
+            ("br", ["br"]),
+        ],
+    )
+    def test_m1_content_encoding_tokens(self, header: str, expected: list[str]) -> None:
+        from app.services.sources.safe_web_fetcher import content_encodings
+
+        assert content_encodings(header) == expected
+
+    @pytest.mark.parametrize(
+        "header, ok",
+        [("identity", True), ("aws-chunked", True), ("identity, gzip", True),
+         ("gzip, gzip", False), ("zstd", False)],
+    )
+    async def test_m1_bodies_by_encoding(self, net: MockNet, header: str, ok: bool) -> None:
+        body = b"<html>" + b"x" * 1000 + b"</html>"
+        wire = gzip.compress(body) if "gzip" in header and ok else body
+        net.routes["www.example.com"] = _streamed(
+            {"content-type": "text/html", "content-encoding": header}, wire
+        )
+        dns = FakeDNS({"www.example.com": [PUBLIC_A]})
+        result = await _doc("https://www.example.com/a.html", dns)
+        assert result.ok is ok
+        if ok:
+            assert result.content == body
+
+    async def test_multi_member_gzip_is_decoded_completely(self, net: MockNet) -> None:
+        wire = gzip.compress(b"<html>first ") + gzip.compress(b"second</html>")
+        net.routes["www.example.com"] = _streamed(
+            {"content-type": "text/html", "content-encoding": "gzip"}, wire, chunk=7
+        )
+        dns = FakeDNS({"www.example.com": [PUBLIC_A]})
+        result = await _doc("https://www.example.com/a.html", dns)
+        assert result.ok and result.content == b"<html>first second</html>"
+
+    # -- M2: separate budgets; the first DNS lookup is inside the budget --
+
+    def test_m2_documents_have_their_own_longer_deadline(self) -> None:
+        from app.services.sources.safe_web_fetcher import fetch_total_deadline_seconds
+
+        cfg = Settings()
+        assert fetch_total_deadline_seconds(cfg) == 90.0
+        assert fetch_total_deadline_seconds(cfg, kind="document") == 180.0
+
+    @pytest.mark.parametrize("fetch", [_page, _doc])
+    async def test_m2_a_hanging_first_lookup_is_bounded(
+        self, net: MockNet, fetch: Any
+    ) -> None:
+        async def _hang(host: str, port: Any = None, *a: Any, **kw: Any) -> list[Any]:
+            await asyncio.sleep(30)
+            return [_info(PUBLIC_A)]
+
+        cfg = _cfg(
+            source_fetch_total_deadline_seconds=0.3,
+            source_document_total_deadline_seconds=0.3,
+        )
+        started = time.monotonic()
+        result = await fetch("https://www.example.com/", _hang, cfg)
+        assert time.monotonic() - started < 5
+        assert "deadline" in (result.error or "") and net.requests == []
+        if hasattr(result, "failure_code"):
+            assert result.failure_code == FAILURE_FETCH_TIMEOUT
+
+    # -- M4: feeds on a sibling sub-domain; declared charset --
+
+    async def test_m4_feed_may_redirect_within_its_registrable_domain(
+        self, net: MockNet
+    ) -> None:
+        from app.integrations.providers.company_press_release_provider import (
+            CompanyPressReleaseProvider,
+        )
+
+        net.routes["www.issuer.co.uk"] = _redirect("https://news.issuer.co.uk/rss")
+        latin1 = (
+            '<?xml version="1.0" encoding="ISO-8859-1"?><rss><channel><item>'
+            "<title>Résultats</title></item></channel></rss>"
+        ).encode("latin-1")
+        net.routes["news.issuer.co.uk"] = httpx.Response(
+            200, headers={"content-type": "application/rss+xml"}, content=latin1
+        )
+        dns = FakeDNS({"www.issuer.co.uk": [PUBLIC_A], "news.issuer.co.uk": [PUBLIC_B]})
+        provider = CompanyPressReleaseProvider(
+            resolver=dns, cfg=_cfg(source_connector_allowlist_only=True)
+        )
+        text = await provider._fetch("https://www.issuer.co.uk/rss")
+        assert text is not None and "Résultats" in text
+        assert net.hosts() == ["www.issuer.co.uk", "news.issuer.co.uk"]
+
+    async def test_m4_feed_may_not_leave_its_registrable_domain(self, net: MockNet) -> None:
+        from app.integrations.providers.company_press_release_provider import (
+            CompanyPressReleaseProvider,
+        )
+
+        net.routes["www.issuer.co.uk"] = _redirect("https://other.co.uk/rss")
+        dns = FakeDNS({"www.issuer.co.uk": [PUBLIC_A], "other.co.uk": [PUBLIC_B]})
+        provider = CompanyPressReleaseProvider(
+            resolver=dns, cfg=_cfg(source_connector_allowlist_only=True)
+        )
+        assert await provider._fetch("https://www.issuer.co.uk/rss") is None
+        assert net.hosts() == ["www.issuer.co.uk"]
+
+    # -- S-M1: IPv4-compatible and SIIT forms --
+
+    @pytest.mark.parametrize("ip", ["::a9fe:a9fe", "::127.0.0.1", "::ffff:0:7f00:1", "::8.8.8.8"])
+    def test_s_m1_ipv4_compatible_and_siit_are_not_public(self, ip: str) -> None:
+        assert _ip_is_public(ip) is False
+
+    # -- S-M2: discovery candidates keep their raw URL for the fetch --
+
+    def test_s_m2_discovered_documents_fetch_the_url_as_published(self) -> None:
+        import dataclasses
+
+        from app.services.sources.document_discovery import discover_documents
+
+        html = (
+            '<script type="application/ld+json">{"url": '
+            '"https://www.example.com/docs/Annual Report 2025.pdf?sig=abc&countrycode=GB",'
+            ' "name": "Annual report 2025"}</script>'
+        )
+        [doc] = discover_documents(
+            html, base_url="https://www.example.com/ir", allowed_domains=("example.com",)
+        )
+        assert doc.url == "https://www.example.com/docs/Annual%20Report%202025.pdf?countrycode=GB"
+        assert doc.fetch_target == (
+            "https://www.example.com/docs/Annual%20Report%202025.pdf?sig=abc&countrycode=GB"
+        )
+        assert "sig=abc" not in repr(doc)
+        assert "sig=abc" not in json.dumps(dataclasses.asdict(doc))
+
+    # -- S-M3: the stored form strips aggressively; the fetched form never --
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "authkey", "accesskey", "secretkey", "privatekey", "subscriptionkey",
+            "sessionkey", "authorization", "authcode", "accesscode", "apisig",
+            "awsaccesskeyid", "AWSAccessKeyId", "X-Goog-Credential",
+        ],
+    )
+    def test_s_m3_compound_credential_names_are_stripped(self, name: str) -> None:
+        url = f"https://www.example.com/r?keep=1&{name}=S"
+        assert strip_url_secrets(url) == "https://www.example.com/r?keep=1"
+
+    # -- LOW: stored link form is canonical; the raw URL never serialises --
+
+    def test_stored_link_drops_userinfo_and_fragment(self) -> None:
+        html = '<a href="https://www.example.com/ar.pdf#page=3">Annual report</a>'
+        [link] = extract_links(
+            html,
+            base_url="https://www.example.com/ir",
+            allowed_domains=("example.com",),
+            keywords=("annual report",),
+            max_links=5,
+        )
+        assert link.url == "https://www.example.com/ar.pdf"
+
+    def test_safelink_raw_url_is_not_a_field(self) -> None:
+        import dataclasses
+        import pickle
+
+        from app.services.sources.safe_web_fetcher import SafeLink
+
+        link = SafeLink(url="https://a.example.com/x", text="t",
+                        fetch_url="https://a.example.com/x?sig=S")
+        assert "sig=S" not in json.dumps(dataclasses.asdict(link))
+        assert "sig=S" not in repr(link) and "sig=S" not in str(dataclasses.astuple(link))
+        assert link == SafeLink(url="https://a.example.com/x", text="t")
+        # In-process copies keep the fetch target (pickle is never persisted).
+        assert pickle.loads(pickle.dumps(link)).fetch_target.endswith("sig=S")
+
+    async def test_bare_web_search_calls_are_not_evidence_of_search(self) -> None:
+        from types import SimpleNamespace
+
+        from app.services.agent_tools.external import _discovery_mode_of
+
+        result = SimpleNamespace(
+            raw_provider_metadata={}, consumption=SimpleNamespace(web_search_calls=3)
+        )
+        assert _discovery_mode_of(result) == ("model_recall", 0)
+        failed = SimpleNamespace(
+            raw_provider_metadata={"trace": {"query_call_count": 2,
+                                             "failed_query_call_count": 2}},
+            consumption=None,
+        )
+        assert _discovery_mode_of(failed) == ("model_recall", 0)
+
+    # -- LOW: D13 applies to every open-web entry point --
+
+    async def test_open_web_mode_refuses_on_an_unsafe_runtime(
+        self, net: MockNet, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.sources import safe_web_fetcher
+
+        monkeypatch.setattr(
+            safe_web_fetcher, "python_runtime_is_safe", lambda version_info=None: False
+        )
+        dns = FakeDNS({"www.example.com": [PUBLIC_A]})
+        result = await _doc("https://www.example.com/a.pdf", dns)  # allowlist off
+        _refused_before_network(result, net)
+        assert "3.12.4" in (result.error or "")
+        # An allowlisted fetch still runs on the explicit denylist.
+        ok = await _doc(
+            "https://www.example.com/a.html", dns,
+            _cfg(source_connector_allowlist_only=True), allowed=("example.com",),
+        )
+        assert ok.ok
+
+    async def test_verify_lead_public_web_refuses_on_an_unsafe_runtime(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.providers.contracts import LEAD_REJECTED, ResearchLead
+        from app.services.providers.leads import verify_lead
+        from app.services.sources import safe_web_fetcher
+
+        monkeypatch.setattr(
+            safe_web_fetcher, "python_runtime_is_safe", lambda version_info=None: False
+        )
+
+        async def _never(*a: Any, **kw: Any) -> Any:
+            raise AssertionError("no fetch on an unsafe runtime")
+
+        lead = ResearchLead(
+            claim_text="Revenue was 5", provider="x",
+            claimed_source_url="https://www.example.com/x",
+        )
+        outcome = await verify_lead(
+            lead, cfg=_cfg(), fetcher=_never, allow_public_web=True
+        )
+        assert outcome.status == LEAD_REJECTED
+        assert "3.12.4" in (outcome.detail or "")
+
+    async def test_the_psl_lookup_runs_off_the_event_loop(self) -> None:
+        import threading
+
+        from app.services.sources import public_suffix
+
+        seen: list[str] = []
+        original = public_suffix.registrable_domain
+
+        def _spy(host: str | None) -> str | None:
+            seen.append(threading.current_thread().name)
+            return original(host)
+
+        public_suffix.registrable_domain = _spy  # type: ignore[assignment]
+        try:
+            assert await public_suffix.aregistrable_domain("www.issuer.co.uk") == "issuer.co.uk"
+        finally:
+            public_suffix.registrable_domain = original  # type: ignore[assignment]
+        assert seen and seen[0] != threading.main_thread().name

@@ -145,17 +145,32 @@ are fixed in code and covered by `apps/api/tests/test_web_w0_fetch_hardening.py`
 (SSRF-01…SSRF-25). Implementation notes that differ from the "Fix" column:
 
 - D7: `Accept-Encoding: identity` is sent **and** a server that compresses anyway is decoded
-  incrementally from the raw stream (gzip/deflate only; any other encoding is refused) with
-  an exact decoded-bytes cap and a 100:1 ratio cap past 1 MB.
-- D8: new setting `SOURCE_FETCH_TOTAL_DEADLINE_SECONDS` (default 90), read by
-  `safe_web_fetcher.fetch_total_deadline_seconds` for page, document and JSON fetches.
-  `primary_document_total_timeout_seconds` keeps its separate meaning (fetch + extract).
+  incrementally from the raw stream with an exact decoded-bytes cap and a 100:1 ratio cap
+  past 1 MB. `Content-Encoding` is parsed as a list: identity/none/unknown tokens are
+  ignored, one gzip/deflate layer (multi-member gzip included) is decoded, and br/zstd/
+  compress or stacked compressions are refused.
+- D8: one absolute deadline per fetch, covering the first DNS lookup, every hop and the
+  body: `SOURCE_FETCH_TOTAL_DEADLINE_SECONDS` (default 90) for pages, JSON listings and feeds,
+  `SOURCE_DOCUMENT_TOTAL_DEADLINE_SECONDS` (default 180) for documents; press-release feeds
+  narrow it to 15 s. Recorded as `fetch_timeout`. `primary_document_total_timeout_seconds`
+  keeps its separate meaning (fetch + extract).
+- Links and `Location` values are normalised before the guard as a browser would: tab/CR/LF
+  removed, other whitespace in path/query/fragment percent-encoded. Whitespace, control
+  characters and backslashes in the scheme or authority are still refused.
+- IPv4-compatible `::/96` and SIIT `::ffff:0:0:0/96` are denied. Blob storage is refused
+  only for this platform's own artifact-store account (`V3_ARTIFACT_STORE_ACCOUNT_URL`).
 - D11: `publicsuffixlist` (bundled snapshot, no runtime network), full list including the
   private section, in `services/sources/public_suffix.py`.
-- D12: `SafeLink.url` stays the stored, secret-stripped form; `SafeLink.fetch_target` is the
-  link as published and is what `company_ir` and the issuer traversal request.
-- D13: open-web fetch (`fetch_public_source`) is refused on Python < 3.12.4, and startup logs
-  the check; allowlisted fetches keep running on the explicit denylist.
+- D12: `SafeLink.url` and `DiscoveredDocument.url` are the stored, canonical form (no
+  userinfo/fragment; credential-like parameters stripped aggressively, with a short
+  exemption list such as `countrycode`, `sortkey`, `design`, `author`). `fetch_target` is
+  the link as published and is what `company_ir` and the issuer traversal request; it is an
+  init-only value, so it never appears in `repr`, equality or `asdict`.
+- D13: on Python < 3.12.4 every open-web entry point refuses — `verify_lead` with
+  `allow_public_web` (the `fetch_public_source` tool and issuer screening), the press-release
+  feed fetch, and any fetch while `SOURCE_CONNECTOR_ALLOWLIST_ONLY` is off. Startup logs the
+  check. Allowlisted fetches of code-defined hosts keep running on the explicit denylist,
+  which does not depend on the stdlib classification the CVE affected.
 - `resolve_ip` is forced on whenever `SOURCE_CONNECTOR_ALLOWLIST_ONLY` is off, and the one live
   fetch that ran without it (`live_document_extractor`) now resolves and pins.
 

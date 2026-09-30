@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
-from app.services.sources.public_suffix import registrable_domain
+from app.services.sources.public_suffix import aregistrable_domain, registrable_domain
 from app.services.sources.safe_web_fetcher import (
     USER_AGENT_PRODUCT_TOKEN,
     SafeLink,
@@ -270,7 +270,13 @@ async def traverse_issuer_site(
         )
         return result
 
-    domain = registrable_domain_of(start_url)
+    # The Public Suffix List is parsed on first use: resolve it off the event loop.
+    start_host = host_of(start_url)
+    domain = (
+        await aregistrable_domain(start_host)
+        if start_host and is_safe_public_host(start_host)
+        else None
+    )
     if domain is None:
         result.stopped_by = STOPPED_EXHAUSTED
         result.skip(SKIP_UNSAFE_HOST)

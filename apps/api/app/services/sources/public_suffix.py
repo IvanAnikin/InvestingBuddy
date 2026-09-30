@@ -71,10 +71,35 @@ def registrable_domain(host: str | None) -> str | None:
     return str(domain) if domain else None
 
 
+async def aregistrable_domain(host: str | None) -> str | None:
+    """:func:`registrable_domain` without blocking the event loop.
+
+    The first call builds the list (parses the bundled data file); that happens in a
+    worker thread, never on the loop (W0 review). Later calls are cached lookups.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(registrable_domain, host)
+
+
+def warm_public_suffix_list() -> None:
+    """Build the list once (called off-loop at app startup). Never raises."""
+    try:
+        _psl()
+    except Exception:  # noqa: BLE001 - a missing data file degrades to None lookups
+        return
+
+
 def is_public_suffix(host: str | None) -> bool:
     """True when ``host`` is itself a public suffix (``com``, ``co.uk``, ``github.io``)."""
     h = _clean(host)
     return h is not None and public_suffix(h) == h
 
 
-__all__ = ["is_public_suffix", "public_suffix", "registrable_domain"]
+__all__ = [
+    "aregistrable_domain",
+    "is_public_suffix",
+    "public_suffix",
+    "registrable_domain",
+    "warm_public_suffix_list",
+]

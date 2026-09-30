@@ -54,14 +54,14 @@ import sys
 import unicodedata
 import zlib
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
-from app.services.sources.redaction import strip_url_secrets
+from app.services.sources.redaction import canonicalize_source_url
 from app.services.sources.verified_issuer_sources import (
     host_of,
     registrable_host_allowed,
@@ -90,9 +90,11 @@ _INTERNAL_HOST_SUFFIXES = (
     ".scm.azurewebsites.net",
     ".vault.azure.net",
     ".database.azure.com",
-    ".blob.core.windows.net",
     ".internal.cloudapp.net",
 )
+# Blob storage is NOT refused wholesale: issuers publish reports on their own
+# ``*.blob.core.windows.net`` accounts. Only THIS platform's artifact-store account
+# (``v3_artifact_store_account_url``) is refused — see ``_is_own_app_host``.
 _INTERNAL_HOST_EXACT = frozenset(
     {"localhost", "localhost.localdomain", "metadata", "metadata.google.internal"}
 )
@@ -148,6 +150,11 @@ _DENY_V6_NETWORKS: tuple[ipaddress.IPv6Network, ...] = tuple(
         # Local-use NAT64 (RFC 8215): the embedded IPv4 position depends on the
         # operator's prefix length, so it cannot be unwrapped reliably. Refused.
         "64:ff9b:1::/48",
+        # IPv4-compatible (deprecated, RFC 4291) and SIIT/IPv4-translated (RFC 2765)
+        # forms: both carry an IPv4 address in the low 32 bits (``::a9fe:a9fe`` is
+        # 169.254.169.254; ``::ffff:0:7f00:1`` is 127.0.0.1). Never a real target.
+        "::/96",
+        "::ffff:0:0:0/96",
     )
 )
 #: Well-known NAT64 prefix (RFC 6052): the low 32 bits are the IPv4 destination.
@@ -266,17 +273,22 @@ class SafeLink:
     url: str
     text: str
     is_document: bool = False
-    #: The URL exactly as the page linked it, set ONLY when it differs from ``url``
-    #: (W0 / D12). ``url`` is the stored/logged form, with credential-bearing query
-    #: parameters stripped; stripping must never change what is actually fetched, so a
-    #: caller that requests the link uses :attr:`fetch_target`. Excluded from equality
-    #: and from ``repr`` so it can never leak into a log line or a comparison.
-    fetch_url: str = field(default="", compare=False, repr=False)
+    #: The URL as the page linked it (whitespace percent-encoded), passed ONLY when it
+    #: differs from ``url`` (W0 / D12). ``url`` is the stored/logged form, canonical and
+    #: with credential-bearing query parameters stripped; stripping must never change
+    #: what is actually fetched, so a caller that requests the link uses
+    #: :attr:`fetch_target`. An init-only value kept on a private attribute, so it is
+    #: not a dataclass FIELD: it never appears in ``repr``, equality, ``asdict`` or
+    #: ``astuple`` — nothing that serialises a link can carry the raw URL out.
+    fetch_url: InitVar[str] = ""
+
+    def __post_init__(self, fetch_url: str) -> None:
+        object.__setattr__(self, "_fetch_url", fetch_url or "")
 
     @property
     def fetch_target(self) -> str:
         """The URL to request: the unmodified link when stripping changed it."""
-        return self.fetch_url or self.url
+        return getattr(self, "_fetch_url", "") or self.url
 
 
 @dataclass
@@ -358,6 +370,43 @@ def _has_forbidden_char(text: str) -> bool:
     )
 
 
+#: WHATWG URL parsing removes ASCII tab and newline anywhere and trims C0 controls
+#: and spaces at both ends; a browser following the same link does exactly this.
+_URL_TRIM = "".join(chr(i) for i in range(0x21))
+
+
+def normalize_link_url(url: str | None) -> str | None:
+    """A link or ``Location`` value as a browser would request it (W0 review B1).
+
+    Real issuer links contain raw spaces (``/investors/Annual Report 2024.pdf``) and
+    real servers send them in ``Location`` headers. The guard refuses whitespace in a
+    URL, so a link is normalised BEFORE it is checked: leading/trailing C0 controls and
+    spaces are trimmed, tab/CR/LF are removed, and any other whitespace in the PATH,
+    QUERY or FRAGMENT (space, NBSP, other Unicode spaces) is percent-encoded as UTF-8.
+
+    Whitespace or control characters in the scheme or AUTHORITY are left exactly as
+    they are, so :func:`check_url_shape` still refuses them; so are backslashes and
+    every other control character anywhere. Never raises.
+    """
+    if not url:
+        return url
+    text = url.strip(_URL_TRIM).replace("\t", "").replace("\n", "").replace("\r", "")
+    try:
+        parts = urlsplit(text)
+    except (ValueError, TypeError):
+        return text
+    rest = parts.path + parts.query + parts.fragment
+    if not any(ch.isspace() for ch in rest):
+        return text
+
+    def _enc(value: str) -> str:
+        return "".join(quote(ch, safe="") if ch.isspace() else ch for ch in value)
+
+    return urlunsplit(
+        (parts.scheme, parts.netloc, _enc(parts.path), _enc(parts.query), _enc(parts.fragment))
+    )
+
+
 def normalize_host(host: str | None) -> str | None:
     """The host as lower-case A-labels (IDNA / UTS-46), or None when it cannot be.
 
@@ -426,11 +475,27 @@ def mixed_script_host(host: str | None) -> bool:
     return False
 
 
+def _own_platform_hosts() -> set[str]:
+    """This deployment's own hosts: the App Service host and the artifact-store account."""
+    hosts: set[str] = set()
+    own = (os.environ.get("WEBSITE_HOSTNAME") or "").strip().lower().rstrip(".")
+    if own:
+        hosts.add(own)
+    account_url = str(getattr(default_settings, "v3_artifact_store_account_url", "") or "")
+    if account_url:
+        try:
+            account_host = (urlsplit(account_url).hostname or "").lower().rstrip(".")
+        except ValueError:
+            account_host = ""
+        if account_host:
+            hosts.add(account_host)
+    return hosts
+
+
 def _is_own_app_host(host: str) -> bool:
     if host.endswith(_OWN_APP_HOST_SUFFIX) and host.startswith(_OWN_APP_HOST_PREFIX):
         return True
-    own = (os.environ.get("WEBSITE_HOSTNAME") or "").strip().lower().rstrip(".")
-    return bool(own) and host == own
+    return host in _own_platform_hosts()
 
 
 def is_safe_public_host(host: str | None) -> bool:
@@ -628,6 +693,11 @@ def _static_fetch_reason(
         host, allowed_domains
     ):
         return f"host not in allowlist: {host}", None
+    if not cfg.source_connector_allowlist_only:
+        # D13: with no allowlist bounding it, every fetch is an open-web fetch.
+        runtime_refusal = open_web_fetch_refusal()
+        if runtime_refusal is not None:
+            return runtime_refusal, None
     return None, host
 
 
@@ -760,9 +830,37 @@ def guarded_client_kwargs(
     return kwargs
 
 
-def fetch_total_deadline_seconds(cfg: Settings) -> float:
-    """The whole-fetch wall-clock budget (D8): connect + every hop + the body."""
-    return max(0.05, float(cfg.source_fetch_total_deadline_seconds))
+def fetch_total_deadline_seconds(cfg: Settings, *, kind: str = "page") -> float:
+    """The whole-fetch wall-clock budget (D8): DNS + connect + every hop + the body.
+
+    ``kind="page"`` (pages, JSON listings, feeds) reads
+    ``source_fetch_total_deadline_seconds``; ``kind="document"`` reads the longer
+    ``source_document_total_deadline_seconds``, because a 35 MB annual report on a slow
+    issuer host legitimately takes longer than an IR landing page (W0 review M2).
+    """
+    if kind == "document":
+        value = cfg.source_document_total_deadline_seconds
+    else:
+        value = cfg.source_fetch_total_deadline_seconds
+    return max(0.05, float(value))
+
+
+#: Compression codings a response may declare. Only gzip/deflate are decoded here;
+#: the rest are refused (their decoders cannot be bounded the same way).
+_COMPRESSION_TOKENS = frozenset(
+    {"gzip", "x-gzip", "deflate", "br", "zstd", "compress", "x-compress"}
+)
+_DECODABLE_ENCODINGS = frozenset({"gzip", "x-gzip", "deflate"})
+
+
+def content_encodings(header: Any) -> list[str]:
+    """The COMPRESSION layers a ``Content-Encoding`` header declares, in order.
+
+    ``identity``, ``none``, empty tokens and unknown non-compression tokens are
+    dropped — they change nothing about the bytes (W0 review M1).
+    """
+    tokens = [t.strip().lower() for t in str(header or "").split(",")]
+    return [t for t in tokens if t in _COMPRESSION_TOKENS]
 
 
 @dataclass
@@ -790,20 +888,23 @@ async def read_bounded_body(
       per step, so one small compressed chunk cannot inflate past the cap in memory;
       past ``_RATIO_FLOOR_BYTES`` the decoded:received ratio is capped at
       ``max_ratio`` and a body over it is refused as a decompression bomb.
-    * Any other content-encoding is refused rather than handed to a decoder we
-      cannot bound.
+    * ``Content-Encoding`` is a comma-separated list (W0 review M1): ``identity``,
+      ``none``, empty and unknown non-compression tokens are ignored. Exactly one
+      gzip/deflate layer is decoded; ``br``, ``zstd``, ``compress`` or more than one
+      compression layer is refused rather than handed to a decoder we cannot bound.
+    * A multi-member gzip body (concatenated members) is decoded member by member.
     * ``deadline`` (a ``loop.time()`` value) is checked on every chunk (D8).
     """
     loop = asyncio.get_running_loop()
     headers = getattr(resp, "headers", None) or {}
-    encoding = str(headers.get("content-encoding") or "").strip().lower()
+    compressions = content_encodings(headers.get("content-encoding"))
     chunks: list[bytes] = []
     total = 0
 
     def _late() -> bool:
         return deadline is not None and loop.time() > deadline
 
-    if encoding in ("", "identity"):
+    if not compressions:
         async for chunk in resp.aiter_bytes():
             if _late():
                 return BoundedBody(b"".join(chunks), error=BODY_DEADLINE_EXCEEDED)
@@ -815,12 +916,18 @@ async def read_bounded_body(
             total += len(chunk)
         return BoundedBody(b"".join(chunks))
 
-    if encoding not in ("gzip", "x-gzip", "deflate") or not hasattr(resp, "aiter_raw"):
+    encoding = compressions[0]
+    if (
+        len(compressions) > 1
+        or encoding not in _DECODABLE_ENCODINGS
+        or not hasattr(resp, "aiter_raw")
+    ):
         return BoundedBody(error=BODY_UNSUPPORTED_ENCODING)
 
     wbits = 16 + zlib.MAX_WBITS if encoding != "deflate" else zlib.MAX_WBITS
     decoder = zlib.decompressobj(wbits)
     tried_raw_deflate = False
+    members_done = 0
     received = 0
     async for raw in resp.aiter_raw():
         if _late():
@@ -828,6 +935,10 @@ async def read_bounded_body(
         received += len(raw)
         buf = raw
         while buf:
+            if decoder.eof:
+                if encoding == "deflate":
+                    break  # trailing bytes after a complete deflate stream
+                decoder = zlib.decompressobj(wbits)  # the next gzip member starts here
             ratio_ceiling = max(_RATIO_FLOOR_BYTES, received * max_ratio)
             limit = min(max_bytes, ratio_ceiling)
             allowed = limit - total
@@ -843,8 +954,10 @@ async def read_bounded_body(
                     decoder = zlib.decompressobj(-zlib.MAX_WBITS)
                     tried_raw_deflate = True
                     continue
+                if members_done:
+                    # Padding after a complete member: the body itself is complete.
+                    return BoundedBody(b"".join(chunks))
                 return BoundedBody(b"".join(chunks), error=BODY_UNDECODABLE)
-            buf = decoder.unconsumed_tail
             if len(out) > allowed:
                 if ratio_ceiling < max_bytes:
                     return BoundedBody(error=BODY_DECOMPRESSION_RATIO)
@@ -853,7 +966,10 @@ async def read_bounded_body(
             chunks.append(out)
             total += len(out)
             if decoder.eof:
-                break
+                members_done += 1
+                buf = decoder.unused_data
+            else:
+                buf = decoder.unconsumed_tail
     return BoundedBody(b"".join(chunks))
 
 
@@ -991,10 +1107,11 @@ def _collect_links(
         if not _link_matches(text, href, keywords):
             continue
         # W0 / D12: secrets are stripped from the STORED form only. The URL that
-        # is later requested is the link exactly as published — a stripped URL is a
-        # different resource (a signed CDN link without its signature, say).
-        raw = urljoin(base_url, href)
-        absolute = strip_url_secrets(raw) or ""
+        # is later requested is the link as published (whitespace percent-encoded,
+        # B1) — a stripped URL is a different resource (a signed CDN link without its
+        # signature, say). The stored form is canonical: no userinfo, no fragment.
+        raw = normalize_link_url(urljoin(base_url, href)) or ""
+        absolute = canonicalize_source_url(raw) or ""
         if not absolute.startswith("https://"):
             continue
         host = host_of(absolute)
@@ -1047,10 +1164,18 @@ async def safe_fetch_page(
     """
     cfg = cfg or default_settings
     result = SafeFetchResult(requested_url=url)
+    budget = fetch_total_deadline_seconds(cfg, kind="page")
+    # ONE absolute deadline for the whole fetch, the first DNS lookup included.
+    deadline = asyncio.get_running_loop().time() + budget
 
-    reason, pinned_ip = await async_check_fetch_url(
-        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
-    )
+    try:
+        async with asyncio.timeout_at(deadline):
+            reason, pinned_ip = await async_check_fetch_url(
+                url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+            )
+    except TimeoutError:
+        result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
+        return result
     if reason:
         result.blocked = True
         result.error = reason
@@ -1064,8 +1189,6 @@ async def safe_fetch_page(
 
     max_bytes = max(1, cfg.source_connector_max_bytes)
     timeout = max(1, cfg.source_connector_timeout_seconds)
-    budget = fetch_total_deadline_seconds(cfg)
-    deadline = asyncio.get_running_loop().time() + budget
     current = url
     # When an address was validated, connect ONLY to it: the name is never
     # resolved a second time, so it cannot rebind between check and connect.
@@ -1076,7 +1199,7 @@ async def safe_fetch_page(
         transport=transport,
     )
     try:
-        async with asyncio.timeout(budget):
+        async with asyncio.timeout_at(deadline):
             async with httpx.AsyncClient(**client_kwargs) as client:
                 for _hop in range(4):  # bounded redirect chain
                     async with client.stream("GET", current) as resp:
@@ -1084,7 +1207,8 @@ async def safe_fetch_page(
                         result.final_url = current
                         if resp.is_redirect:
                             location = resp.headers.get("location", "")
-                            nxt = urljoin(current, location)
+                            # B1: a raw space in Location is encoded, not refused.
+                            nxt = normalize_link_url(urljoin(current, location)) or ""
                             block, next_ip = await async_check_fetch_url(
                                 nxt,
                                 allowed_domains,
@@ -1147,12 +1271,14 @@ __all__ = [
     "MIN_SAFE_PYTHON",
     "USER_AGENT_PRODUCT_TOKEN",
     "check_url_shape",
+    "content_encodings",
     "fetch_total_deadline_seconds",
     "guarded_client_kwargs",
     "is_safe_public_host",
     "log_python_runtime_check",
     "mixed_script_host",
     "normalize_host",
+    "normalize_link_url",
     "open_web_fetch_refusal",
     "python_runtime_is_safe",
     "read_bounded_body",

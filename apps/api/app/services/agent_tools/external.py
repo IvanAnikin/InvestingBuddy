@@ -139,12 +139,13 @@ def _validate_search_web(arguments: dict[str, Any]) -> dict[str, Any]:
 def _discovery_mode_of(result: Any) -> tuple[str, int]:
     """``(discovery_mode, executed_search_queries)`` for one provider result.
 
-    Spec §22.3 / W0: provenance is a NETWORK FACT. ``search`` requires a recorded,
-    executed search query — the provider's own label when it gives one, else the
-    trace's executed-query count, else the consumption's ``web_search_calls``. With
-    none of those, the claims are the model's recall and are labelled so. Nothing
-    here can turn recall into search: a provider label of ``search`` with zero
-    executed queries is still recall.
+    Spec §22.3 / W0: provenance is a NETWORK FACT. ``search`` requires at least one
+    SUCCESSFUL search query on record: the trace's query count minus its failed
+    queries, else the provider's ``executed_search_queries``. Anything else —
+    including a bare ``web_search_calls`` count, which cannot say whether any call
+    succeeded — is the model's recall and is labelled so. Nothing here can turn
+    recall into search: a provider label of ``search`` with zero successful queries
+    is still recall.
     """
     metadata = getattr(result, "raw_provider_metadata", None) or {}
     trace = metadata.get("trace") or {}
@@ -152,9 +153,12 @@ def _discovery_mode_of(result: Any) -> tuple[str, int]:
         executed = int(trace.get("query_call_count") or 0) - int(
             trace.get("failed_query_call_count") or 0
         )
+    elif "executed_search_queries" in metadata:
+        executed = int(metadata.get("executed_search_queries") or 0)
     else:
-        spent = getattr(result, "consumption", None)
-        executed = int(getattr(spent, "web_search_calls", 0) or 0)
+        # No record of SUCCESSFUL queries: a bare `web_search_calls` count cannot say
+        # whether any of them succeeded, so it is not evidence of a search (review).
+        executed = 0
     executed = max(0, executed)
     mode = "search" if executed > 0 else "model_recall"
     if metadata.get("discovery_mode") == "model_recall":

@@ -30,7 +30,7 @@ Safety properties (why this is not an SSRF surface):
   * **No environment proxy, bounded decoding, total deadline** (W0 / D6-D8):
     ``trust_env=False``; ``Accept-Encoding: identity`` with a decoded-bytes and
     ratio cap for a server that compresses anyway; and one wall-clock budget
-    (``source_fetch_total_deadline_seconds``) across every hop and the body.
+    (``source_document_total_deadline_seconds``) across DNS, every hop and the body.
   * **Never raises.** Every failure degrades to a ``DocumentFetchResult`` with
     ``error`` / ``blocked`` set and an honest ``SourceGap``.
   * **Secret-free.** No prompts, bodies, or credentials are ever logged.
@@ -69,6 +69,7 @@ from app.services.sources.safe_web_fetcher import (
     fetch_total_deadline_seconds,
     guarded_client_kwargs,
     host_of,
+    normalize_link_url,
     pinned_transport_for,
     read_bounded_body,
 )
@@ -153,6 +154,17 @@ class DocumentFetchResult:
         )
 
 
+def _deadline_exceeded(result: DocumentFetchResult) -> DocumentFetchResult:
+    """The total-deadline outcome (D8): coded ``fetch_timeout``, never ``unknown``."""
+    result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
+    result.failure_code = FAILURE_FETCH_TIMEOUT
+    result._gap(
+        "Annual-report document exceeded the total fetch deadline; document text is "
+        "not extracted."
+    )
+    return result
+
+
 async def safe_fetch_document(
     url: str,
     *,
@@ -162,6 +174,7 @@ async def safe_fetch_document(
     resolver: Resolver = socket.getaddrinfo,
     extra_text_content_types: tuple[str, ...] = (),
     max_bytes: int | None = None,
+    total_deadline_seconds: float | None = None,
 ) -> DocumentFetchResult:
     """Fetch one allowlisted HTTPS document (bounded, guarded, never raising).
 
@@ -172,6 +185,8 @@ async def safe_fetch_document(
 
     ``max_bytes`` narrows the byte cap for this one call (a press-release feed needs
     far less than an annual report); it can never widen past the configured cap.
+    ``total_deadline_seconds`` likewise only NARROWS the document deadline
+    (``source_document_total_deadline_seconds``) for this call.
 
     Returns a ``DocumentFetchResult``. On any failure (blocked host, off-domain
     redirect, disallowed content type, timeout, http error) it degrades to a
@@ -185,10 +200,19 @@ async def safe_fetch_document(
     """
     cfg = cfg or default_settings
     result = DocumentFetchResult(requested_url=strip_url_secrets(url) or url)
+    budget = fetch_total_deadline_seconds(cfg, kind="document")
+    if total_deadline_seconds is not None:
+        budget = max(0.05, min(budget, float(total_deadline_seconds)))
+    # ONE absolute deadline for the whole fetch, the first DNS lookup included.
+    deadline = asyncio.get_running_loop().time() + budget
 
-    reason, pinned_ip = await async_check_fetch_url(
-        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
-    )
+    try:
+        async with asyncio.timeout_at(deadline):
+            reason, pinned_ip = await async_check_fetch_url(
+                url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+            )
+    except TimeoutError:
+        return _deadline_exceeded(result)
     if reason:
         result.blocked = True
         result.error = reason
@@ -212,8 +236,6 @@ async def safe_fetch_document(
     if max_bytes is not None:
         cap = max(1, min(cap, int(max_bytes)))
     timeout = max(1, cfg.source_document_extraction_timeout_seconds)
-    budget = fetch_total_deadline_seconds(cfg)
-    deadline = asyncio.get_running_loop().time() + budget
     current = url
     # When an address was validated, connect ONLY to it (Slice 5B.1 pinning).
     transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
@@ -228,14 +250,17 @@ async def safe_fetch_document(
     )
     try:
         # No cookies, no auth, no Referer — a plain, credential-free document GET.
-        async with asyncio.timeout(budget), httpx.AsyncClient(**client_kwargs) as client:
+        async with asyncio.timeout_at(deadline), httpx.AsyncClient(
+            **client_kwargs
+        ) as client:
             for _hop in range(4):  # bounded redirect chain
                 async with client.stream("GET", current) as resp:
                     result.status_code = resp.status_code
                     result.final_url = strip_url_secrets(current)
                     if resp.is_redirect:
                         location = resp.headers.get("location", "")
-                        nxt = urljoin(current, location)
+                        # B1: a raw space in Location is encoded, not refused.
+                        nxt = normalize_link_url(urljoin(current, location)) or ""
                         block, next_ip = await async_check_fetch_url(
                             nxt,
                             allowed_domains,
@@ -322,13 +347,7 @@ async def safe_fetch_document(
             result._gap("Annual-report document exceeded the redirect limit; not fetched.")
             return result
     except TimeoutError:
-        result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
-        result.failure_code = FAILURE_FETCH_TIMEOUT
-        result._gap(
-            "Annual-report document exceeded the total fetch deadline; document "
-            "text is not extracted."
-        )
-        return result
+        return _deadline_exceeded(result)
     except Exception as exc:  # noqa: BLE001 - fetch must never crash a run
         result.error = f"fetch failed: {type(exc).__name__}"
         result.failure_code = failure_code_for_exception(exc)
@@ -372,9 +391,18 @@ async def safe_post_json(
 
     cfg = cfg or default_settings
     result = DocumentFetchResult(requested_url=strip_url_secrets(url) or url)
-    reason, pinned_ip = await async_check_fetch_url(
-        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
-    )
+    # A listing, not a document: the page budget, one absolute deadline, DNS included.
+    deadline = asyncio.get_running_loop().time() + fetch_total_deadline_seconds(cfg)
+    try:
+        async with asyncio.timeout_at(deadline):
+            reason, pinned_ip = await async_check_fetch_url(
+                url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+            )
+    except TimeoutError:
+        result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
+        result.failure_code = FAILURE_FETCH_TIMEOUT
+        result._gap("Search API exceeded the total fetch deadline.")
+        return result
     if reason:
         result.blocked = True
         result.error = reason
@@ -389,8 +417,6 @@ async def safe_post_json(
         return result
 
     timeout = max(1, cfg.source_document_extraction_timeout_seconds)
-    budget = fetch_total_deadline_seconds(cfg)
-    deadline = asyncio.get_running_loop().time() + budget
     transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
     result.pinned = transport is not None
     # No environment proxy (a proxy would bypass the pinned, validated address), no
@@ -406,7 +432,9 @@ async def safe_post_json(
         transport=transport,
     )
     try:
-        async with asyncio.timeout(budget), httpx.AsyncClient(**client_kwargs) as client:
+        async with asyncio.timeout_at(deadline), httpx.AsyncClient(
+            **client_kwargs
+        ) as client:
             async with client.stream(
                 "POST", url, content=_json.dumps(payload).encode("utf-8")
             ) as resp:

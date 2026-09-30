@@ -1394,7 +1394,13 @@ class CompanyIrConnector(SourceConnector):
             known.add(doc.url)
             self._document_kinds[doc.url] = (doc.doc_kind, doc.strategy)
             links.append(
-                SafeLink(url=doc.url, text=doc.title, is_document=doc.is_document)
+                SafeLink(
+                    url=doc.url,
+                    text=doc.title,
+                    is_document=doc.is_document,
+                    # W0 review S-M2: fetch the candidate as published.
+                    fetch_url=doc.fetch_target if doc.fetch_target != doc.url else "",
+                )
             )
             added += 1
 
