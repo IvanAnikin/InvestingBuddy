@@ -2056,6 +2056,140 @@ function mockProfessionalLegacyReport(id) {
   return base;
 }
 
+// Report reconciliation (items 18, 19, 22). A V3 report whose V2 half was assembled
+// BEFORE the research ran: its own gap statements carry the backend's labels
+// (`v3_research.gap_reconciliation.v2`), and the page must not show a closed one as open.
+const RECONCILED_V2_REPORT_ID = "00000000-0000-0000-0000-0000000000fa";
+const RECONCILED_PRO_REPORT_ID = "00000000-0000-0000-0000-0000000000fb";
+const CAPEX_CONCERN = "Capital expenditure is not disclosed in the filings retrieved.";
+
+function withReconciliationLabels(base) {
+  const v3 = base.source_summary_json.v3_research;
+  // Nothing in the pipeline verifies a finding: the count that matters is how many cite
+  // the issuer's own documents.
+  v3.council.verified_finding_count = 0;
+  v3.council.primary_source_finding_count = 2;
+  v3.consumption.useful_findings = 3;
+  v3.consumption.estimated_cost_usd = 0.0369;
+  v3.consumption.cost_per_useful_finding = 0.0123;
+  v3.consumption.cost_per_verified_useful_finding = 0.0123;
+  v3.gap_reconciliation = {
+    version: 1,
+    counts: { closed: 1, partially_closed: 1, still_open: 1 },
+    gaps: [],
+    supersessions: [],
+    temporal_disagreements: [],
+    closing_findings: [],
+    v2: {
+      missing_information: [
+        {
+          field: "fundamentals.capital_expenditure",
+          source: "company_snapshot",
+          status: "closed",
+          fields: ["metric:capex"],
+          field_labels: ["capital expenditure"],
+          finding_ids: ["aaaaaaaa-0000-4000-8000-000000000001"],
+          reasons: [],
+        },
+        {
+          field: "fundamentals.cash_and_equivalents",
+          source: "company_snapshot",
+          status: "partially_closed",
+          fields: ["metric:cash"],
+          field_labels: ["cash and equivalents"],
+          finding_ids: ["aaaaaaaa-0000-4000-8000-000000000002"],
+          reasons: ["older_period"],
+        },
+      ],
+      council_concerns: [
+        {
+          text: CAPEX_CONCERN,
+          key: CAPEX_CONCERN.toLowerCase(),
+          agent: "valuation_guard",
+          status: "closed",
+          fields: ["metric:capex"],
+          field_labels: ["capital expenditure"],
+          finding_ids: ["aaaaaaaa-0000-4000-8000-000000000001"],
+          reasons: [],
+        },
+      ],
+    },
+  };
+  return base;
+}
+
+function withReconciledV2Content(base) {
+  const content = sampleReportContent({ withCouncil: true });
+  content.missing_information.missing_items.value.push(
+    { field: "fundamentals.capital_expenditure", source: "company_snapshot" },
+    { field: "fundamentals.cash_and_equivalents", source: "company_snapshot" },
+  );
+  content.missing_information.total_missing_items += 2;
+  base.content_markdown = finalReportMarkdown(content);
+  const guard = base.source_summary_json.llm_council.agents.find(
+    (a) => a.agent_name === "valuation_guard",
+  );
+  guard.risks_or_gaps.push({ item: CAPEX_CONCERN, citation_ids: ["E2"], severity: "low" });
+  return base;
+}
+
+function mockReconciledV2Report(id) {
+  return withReconciliationLabels(withReconciledV2Content(mockV3Report(id)));
+}
+
+function mockReconciledProfessionalReport(id) {
+  const base = withReconciliationLabels(withReconciledV2Content(mockProfessionalReport(id)));
+  const pro = base.source_summary_json.v3_research.professional_research;
+  const growth = pro.sections.find((s) => s.key === "growth_and_catalysts");
+  const finding = (label, findingId, statement, extra) => ({
+    label,
+    finding_id: findingId,
+    statement,
+    question_key: "growth_projects",
+    domain: "growth_pipeline",
+    domain_label: "Growth pipeline",
+    evidence_ids: [`ev:${findingId}`],
+    calculation_ids: [],
+    source_kinds: ["issuer_filing"],
+    confidence: 0.8,
+    direction: "neutral",
+    period_key: null,
+    references: [],
+    source_published_at: null,
+    superseded_by_finding_id: null,
+    ...extra,
+  });
+  growth.findings = [
+    finding("F7", "h", "First production at the Tia Maria Project is expected in 2028.", {
+      source_published_at: "2025-11-03",
+      superseded_by_finding_id: "i",
+      guidance_status: "prior",
+      superseded_by_label: "F8",
+      superseded_on: "2026-08-12",
+    }),
+    finding("F8", "i", "First production at the Tia Maria Project is expected in 2027.", {
+      source_published_at: "2026-08-12",
+      guidance_status: "current",
+      supersedes: [{ label: "F7", source_published_at: "2025-11-03" }],
+    }),
+    finding("F9", "j", "Capex of US$1,400m for the Tia Maria Project.", {
+      source_published_at: "2026-08-12",
+    }),
+  ];
+  Object.assign(pro.finding_labels, { h: "F7", i: "F8", j: "F9" });
+  const evidence = pro.sections.find((s) => s.key === "evidence_quality_and_gaps");
+  evidence.platform_evidence_gaps.push({
+    description: "Group capital expenditure was not acquired.",
+    question_key: "capex_and_capacity",
+    knowledge_state: "not_acquired_by_platform",
+    reconciliation_status: "partially_closed",
+    partially_addressed_by: ["F9"],
+    reconciliation_reasons: ["scope_differs"],
+  });
+  evidence.platform_evidence_gaps_reconciled = 2;
+  return base;
+}
+
 function mockScopeReport(id) {
   const base = mockReport(id);
   base.title =
@@ -3271,6 +3405,12 @@ const server = createServer((req, res) => {
     }
     if (rid === PROFESSIONAL_LEGACY_REPORT_ID) {
       return send(res, 200, mockProfessionalLegacyReport(rid));
+    }
+    if (rid === RECONCILED_V2_REPORT_ID) {
+      return send(res, 200, mockReconciledV2Report(rid));
+    }
+    if (rid === RECONCILED_PRO_REPORT_ID) {
+      return send(res, 200, mockReconciledProfessionalReport(rid));
     }
     if (rid === LEGACY_TECH_REPORT_ID) {
       return send(res, 200, mockLegacyTechnicalReport(rid));

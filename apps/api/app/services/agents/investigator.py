@@ -41,6 +41,7 @@ import secrets
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from app.services.agent_tools.contracts import (
@@ -151,6 +152,9 @@ class _Evidence:
     #: V3.18.2 — what KIND of source stands behind it, derived from the tool and the
     #: tier the tool reported. The question's evidence contract is judged over these.
     ref: EvidenceRef | None = None
+    #: When the SOURCE published it (the corpus chunk's ``published_at``, a filing's
+    #: ``filing_date``). What orders two statements of the same guidance in time.
+    published_at: date | None = None
 
 
 def _corpus_arguments(
@@ -510,7 +514,45 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
         period_key=_period_key_of(item),
         scope_key=_clean(item.get("scope_key")) or _clean(item.get("scope")),
         ref=evidence_ref_for(tool, citation, item),
+        published_at=_published_at_of(item),
     )
+
+
+#: Where a tool states when its source was published, in order of preference.
+_PUBLISHED_KEYS: tuple[str, ...] = (
+    "published_at",
+    "filing_date",
+    "publication_date",
+    "doc_date",
+    "document_date",
+)
+
+
+def _published_at_of(item: dict[str, Any]) -> date | None:
+    """The publication date a tool's own typed record carries. Never read from prose."""
+    from app.services.research_fields import parse_date
+
+    for key in _PUBLISHED_KEYS:
+        found = parse_date(item.get(key))
+        if found is not None:
+            return found
+    return None
+
+
+def _inherited_published_at(
+    cited: "list[str]", evidence: "Sequence[_Evidence]"
+) -> date | None:
+    """The date a finding speaks as of: the NEWEST cited publication date — and only
+    when EVERY cited item is dated. One undated citation makes the finding undated,
+    because ordering it in time would then rest on a guess."""
+    by_id = {item.citation_id: item for item in evidence}
+    dates: list[date] = []
+    for citation in cited:
+        item = by_id.get(citation)
+        if item is None or item.published_at is None:
+            return None
+        dates.append(item.published_at)
+    return max(dates) if dates else None
 
 
 def _harvest(tool: str, payload: dict[str, Any] | None, untrusted: bool) -> list[_Evidence]:
@@ -1786,6 +1828,7 @@ class LLMInvestigator:
                     # reach.
                     period_key=period_key,
                     scope_key=scope_key,
+                    source_published_at=_inherited_published_at(real, evidence),
                     source_kinds=tuple(
                         sorted(
                             {

@@ -36,6 +36,11 @@ import {
 import { readServerVerification } from "@/components/research/numericConsistency";
 import { readV3Research } from "@/components/research/v3Research";
 import {
+  reconcileConcernTexts,
+  reconcileMissingItems,
+  reconcileOpenQuestions,
+} from "@/components/research/gapReconciliation";
+import {
   buildResearchLinkState,
   NO_RESEARCH_LINK,
   type ResearchLinkState,
@@ -158,11 +163,35 @@ export default async function ResearchReportPage({
   // Passed as it IS — a markdown string — not cast to an object it never was. The cast
   // compiled and silently returned "no conflicts" for every report.
   const serverNumeric = readServerVerification(report.content_markdown);
-  const investor = reconcileCouncilNumbers(
+  const reconciledInvestor = reconcileCouncilNumbers(
     buildInvestorReportView(report.content_markdown, council),
     view.snapshot,
     view.trends.series,
     serverNumeric,
+  );
+  // The V2 report was assembled before the V3 research ran. Its own gap statements —
+  // council concerns and missing-information items — that a V3 finding answers are not
+  // shown as open; one a finding only partly answers says which finding. The backend
+  // decides; the page only applies its labels.
+  const findingLabels = v3?.professionalResearch?.findingLabels ?? {};
+  const investor = {
+    ...reconciledInvestor,
+    openQuestions: reconcileOpenQuestions(
+      reconciledInvestor.openQuestions,
+      v3?.gapReconciliation ?? null,
+      findingLabels,
+    ),
+    routedLimitations: reconcileConcernTexts(
+      reconciledInvestor.routedLimitations,
+      v3?.gapReconciliation ?? null,
+      findingLabels,
+    ),
+  };
+  const missing = reconcileMissingItems(
+    view.missing.items,
+    view.missing.total,
+    v3?.gapReconciliation ?? null,
+    findingLabels,
   );
   // The two cases, argued by the COUNCIL rather than lifted verbatim from the
   // deterministic layer. Built from the RECONCILED reading, so a numeric claim
@@ -177,7 +206,7 @@ export default async function ResearchReportPage({
   );
   const confidence = buildResearchConfidence(
     investor.risks,
-    view.missing.total,
+    missing.total,
     investor.agents,
     // Record-completeness entries lifted out of the bear case and the chair's
     // open-question list. They are reported here, where they describe what
@@ -427,7 +456,7 @@ export default async function ResearchReportPage({
           <ResearchConfidence
             dimensions={view.evidence.dimensions}
             confidence={confidence}
-            missingItems={view.missing.items}
+            missingItems={missing.items}
             numericConflicts={investor.numericConflicts}
             reportId={report.id}
           />

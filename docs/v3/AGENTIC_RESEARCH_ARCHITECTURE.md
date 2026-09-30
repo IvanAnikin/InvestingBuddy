@@ -273,6 +273,37 @@ into machine-record noise on live data. Open questions are sourced from the
 **council agents and the ledger's `ResearchGap` records**, not invented by the
 chair.
 
+### 8a. Report reconciliation (`CURRENT`, migration 043)
+
+`services/pipeline/gap_reconciliation.py` runs once, **after the Red Team and before
+the Chair and the professional report are assembled** (`v3_pipeline._run`, step 7b):
+
+1. **Temporal supersession.** Findings stating the same field (closed vocabulary in
+   `services/research_fields.py`: `metric:capex`, `metric:production_capacity`,
+   `milestone:first_production`, `milestone:commissioning`, `commercial:offtake`,
+   `metric:cash`, `metric:cash_runway`, `metric:npv`, …) of the same project in the same
+   scope and period, with different values, are ordered by `source_published_at` (carried
+   from the corpus chunk's `published_at` / a filing's `filing_date`). The newest is
+   current; older ones get `superseded_by_finding_id` and are shown as *prior guidance,
+   superseded (date)*. Never across scope or project; never between two real reporting
+   periods; unknown or equal dates → a `value` disagreement for the Chair, never a pick.
+2. **Gap reconciliation.** Each gap → `closed` (a non-withdrawn finding affirmatively
+   states every field the gap's own text names, compatible scope/project/period, issuer
+   or official source — persisted through `ledger.close_gap`), `partially_closed` (older
+   period, segment scope, unnamed project, third-party only, or field inferred from the
+   question), `superseded` (the document it could not fetch is now held, or a validated
+   group fact states the field) or `still_open` (including every gap whose field is
+   unknown — fail closed; negated clauses never close).
+3. Closed and superseded gaps never reach the Chair's GAPS block or the report's
+   `platform_evidence_gaps`; a partial one names the finding. `attach_to_report` labels
+   the V2 report's own `missing_information` items and gap-shaped council concerns
+   against the same findings (`v3_research.gap_reconciliation.v2`), and the web drops or
+   relabels them. Business-risk concerns ("capex overruns could…") are never relabelled.
+
+The council payload's `primary_source_finding_count` (findings citing issuer filings/IR)
+replaces the always-zero "verified" hint; nothing verifies findings yet, and the Chair's
+deterministic verdict logic is unchanged.
+
 ---
 
 ## 9. Server-side verification
