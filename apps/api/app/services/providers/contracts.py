@@ -525,7 +525,10 @@ class QueryFamily(str, Enum):
 FILTER_BY_PROVIDER: Final = "provider"
 FILTER_BY_CLIENT: Final = "client"
 FILTER_UNSUPPORTED: Final = "unsupported"
-FilterEnforcement = Literal["provider", "client", "unsupported"]
+#: The vendor takes the value as a ranking preference, not a filter (Tavily's
+#: ``country`` boosts results from that country; it does not exclude others).
+FILTER_PROVIDER_BOOST: Final = "provider_boost"
+FilterEnforcement = Literal["provider", "client", "unsupported", "provider_boost"]
 
 #: What the provider's terms let the platform keep from a response (provider
 #: evaluation §4). ``full``: URL, title and snippet. ``url_only``: no title/snippet.
@@ -554,6 +557,14 @@ SEARCH_ERROR_GOVERNANCE = "governance_refused"
 SEARCH_ERROR_CREDENTIAL = "credential_in_payload"
 SEARCH_ERROR_UNKNOWN_PROVIDER = "unknown_provider"
 SEARCH_ERROR_ADAPTER = "adapter_error"
+#: The vendor's plan or pay-as-you-go limit (Tavily 432/433) — not a transient 4xx.
+SEARCH_ERROR_QUOTA = "quota"
+#: The run was cancelled while the call was pending or in flight.
+SEARCH_ERROR_CANCELLED = "cancelled"
+#: A second identical request in one batch whose first copy did not execute.
+SEARCH_ERROR_DUPLICATE = "duplicate_in_batch"
+#: ``fake`` selected outside development/test.
+SEARCH_ERROR_FAKE_NOT_ALLOWED = "fake_not_allowed_in_env"
 
 
 @dataclass(frozen=True)
@@ -659,13 +670,23 @@ class SearchExecution:
     network_call_count: int = 0
     #: Results the client-side filters removed after the vendor returned them.
     client_filtered_count: int = 0
-    #: Set only by the search cache: the id of the ``web_search_queries`` row whose
-    #: network call this execution re-serves. A cache serve made no call of its own.
+    #: Set only by the search cache: the id (a UUID) of the ``web_search_queries`` row
+    #: whose network call this execution re-serves. A cache serve made no call of its own.
     cached_from: str | None = None
+    #: Results kept although a date window was requested, because they carried no
+    #: published date to check. Non-zero means the window was not client-enforced.
+    date_unchecked_count: int = 0
 
     def __post_init__(self) -> None:
+        if self.cached_from is not None:
+            try:
+                uuid.UUID(str(self.cached_from))
+            except ValueError:
+                raise ValueError("cached_from must be the UUID of a query row") from None
+            if self.network_call_count != 0:
+                raise ValueError("a cache serve makes no network call of its own")
         if self.executed:
-            if self.network_call_count < 1 and not self.cached_from:
+            if self.network_call_count < 1 and self.cached_from is None:
                 raise ValueError(
                     "executed=True requires a real network call (or, for a cache "
                     "serve, the row of the call it re-serves)"
@@ -794,6 +815,7 @@ __all__ = [
     "STATUS_TIMEOUT",
     "FILTER_BY_CLIENT",
     "FILTER_BY_PROVIDER",
+    "FILTER_PROVIDER_BOOST",
     "FILTER_UNSUPPORTED",
     "RESULT_STORAGE_FULL",
     "RESULT_STORAGE_MODES",

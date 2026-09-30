@@ -3278,11 +3278,14 @@ proxy (prefix `/api/v1/admin/web-research`).
 `WebResearchAuditRead` = `{scope, scope_id, queries[], fetch_attempts[], totals, notice}`.
 Each query carries its network fact (`provider`, `executed`, `provider_request_id`,
 `http_status`, `network_call_count`, `latency_ms`, `result_count`, `from_cache`,
-`cost_units`, `error_code`), its filters (`requested`, `enforced_by`) and its `results[]`
+`served_from_query_id`, `cost_units`, `error_code`), its filters (`requested`, `enforced_by`) and its `results[]`
 with rank, URL, domain, untrusted title/snippet and `disposition`. `totals` counts queries,
 executed, from-cache, not-executed, network calls, results, fetch attempts,
 `errors_by_code`, and sums `cost_units` over executed network calls (never priced here; an
-absent unit is unreported, not zero).
+absent unit is unreported, not zero). `queries_truncated` / `fetch_attempts_truncated` are
+true when the page stopped at its row limit (500 queries / 1000 fetch attempts), in which
+case the totals count only what is shown. `enforced_by` values: `client`, `provider`,
+`provider_boost` (Tavily `country`: a ranking preference, not a filter), `unsupported`.
 
 - `404` — the job or discovery run does not exist.
 - `503` — migration 042 has not been applied in this environment (a missing table is not

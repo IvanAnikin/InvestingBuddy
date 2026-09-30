@@ -294,6 +294,13 @@ _CREDENTIAL_MARKERS: tuple[str, ...] = (
     "access_token",
     "refresh_token",
     "aws_secret",
+    # Open-web W1 review (S2): EODHD's query parameter, bare token/signature params,
+    # the API-key header name, and Tavily's key prefix.
+    "api_token",
+    "token=",
+    "x-api-key",
+    "sig=",
+    "tvly-",
 )
 
 

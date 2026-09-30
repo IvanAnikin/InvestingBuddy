@@ -6,7 +6,8 @@ Three new tables and nothing else:
 
 * ``web_search_queries`` — one row per query issued to (or refused before) a web search
   provider, carrying the network fact: ``executed``, ``provider_request_id``, HTTP
-  status, ``network_call_count``, latency, result count, cost units and an error code.
+  status, ``network_call_count``, latency, result count, cost units and an error code;
+  a cache serve carries ``served_from_query_id`` (self-FK, SET NULL) instead of a call.
 * ``web_search_results`` — one row per normalised result: rank, URL, canonical URL,
   domain, title/snippet (nullable, subject to the provider's ``result_storage``),
   published and language hints, provider score and a disposition.
@@ -111,11 +112,14 @@ def upgrade() -> None:
         sa.Column("result_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("cost_units_json", JSONB(), nullable=True),
         sa.Column("error_code", sa.String(60), nullable=True),
+        # A cache serve points at the row whose network call it re-serves (review C5).
+        _uuid("served_from_query_id"),
         _created_at(),
         _set_null_fk("web_search_queries", "research_job_id", "research_jobs"),
         _set_null_fk("web_search_queries", "discovery_run_id", "discovery_runs"),
         _set_null_fk("web_search_queries", "agent_run_id", "agent_runs"),
         _set_null_fk("web_search_queries", "company_id", "companies"),
+        _set_null_fk("web_search_queries", "served_from_query_id", "web_search_queries"),
     )
     op.create_table(
         "web_search_results",

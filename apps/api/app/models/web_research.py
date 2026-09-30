@@ -94,6 +94,14 @@ class WebSearchQuery(Base):
     )
     cost_units_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_code: Mapped[str | None] = mapped_column(sa.String(60), nullable=True)
+    #: Set only on a cache serve (or an in-batch duplicate): the row whose network call
+    #: this row re-serves. Such a row has ``network_call_count = 0`` and no
+    #: ``provider_request_id`` of its own — the request id lives on the original.
+    served_from_query_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        _lineage_fk("served_from_query_id", "web_search_queries", "web_search_queries"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),
         nullable=False,

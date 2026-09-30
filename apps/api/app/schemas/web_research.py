@@ -50,6 +50,8 @@ class WebSearchQueryRead(BaseModel):
     latency_ms: int | None = None
     result_count: int
     from_cache: bool = False
+    #: The row whose network call this one re-serves (cache or in-batch duplicate).
+    served_from_query_id: uuid.UUID | None = None
     cost_units: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
     results: list[WebSearchResultRead] = Field(default_factory=list)
@@ -97,6 +99,10 @@ class WebResearchAuditRead(BaseModel):
     queries: list[WebSearchQueryRead] = Field(default_factory=list)
     fetch_attempts: list[WebFetchAttemptRead] = Field(default_factory=list)
     totals: WebResearchTotals = Field(default_factory=WebResearchTotals)
+    #: True when the page stopped at its row limit: there are more rows than shown, and
+    #: the totals above count only what is shown.
+    queries_truncated: bool = False
+    fetch_attempts_truncated: bool = False
     notice: str = (
         "INTERNAL ADMIN ONLY. Titles and snippets are untrusted third-party text: never "
         "cited, never evidence. Not investment advice."

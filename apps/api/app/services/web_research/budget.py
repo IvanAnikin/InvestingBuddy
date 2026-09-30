@@ -107,8 +107,10 @@ class WebResearchBudget:
     def elapsed_seconds(self) -> float:
         return self.clock() - self.started_at
 
-    def _wall_exhausted(self) -> bool:
+    def wall_exhausted(self) -> bool:
         return self.elapsed_seconds >= self.limits.max_wall_seconds
+
+    _wall_exhausted = wall_exhausted
 
     def query_refusal(self) -> str | None:
         """Which limit would stop the next provider call, or ``None``."""

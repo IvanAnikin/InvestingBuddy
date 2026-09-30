@@ -205,6 +205,12 @@ class ConsumptionUnits:
     #: comparison is meaningful.
     instrumented: frozenset[str] = frozenset()
 
+    #: Units that WERE incurred but whose amount the provider did not report (open-web
+    #: W1 review C3: a Tavily 2xx with no ``usage`` block, or a timeout after the request
+    #: left). The recorded number for such a unit is a floor, not a count, so any unit
+    #: here makes :func:`derive_cost` answer ``None``.
+    unreported: frozenset[str] = frozenset()
+
     #: The model tokens above, split by the vendor that billed them. V3.17.9.2.
     #: Empty means "not broken down", which is a DIFFERENT statement from "one vendor" —
     #: see :func:`derive_cost`, which refuses to price a breakdown it does not have.
@@ -222,6 +228,7 @@ class ConsumptionUnits:
             merged[name] = getattr(self, name) + getattr(other, name)
         merged["tokens_estimated"] = self.tokens_estimated or other.tokens_estimated
         merged["instrumented"] = self.instrumented | other.instrumented
+        merged["unreported"] = self.unreported | other.unreported
         merged["by_vendor"] = merge_vendor_usage(self.by_vendor, other.by_vendor)
         return ConsumptionUnits(**merged)
 
@@ -236,6 +243,7 @@ class ConsumptionUnits:
         # Named explicitly rather than left for a reader to subtract, because
         # the whole point is that these zeros mean nothing.
         out["not_instrumented"] = sorted(set(UNIT_NAMES) - self.instrumented)
+        out["unreported"] = sorted(self.unreported)
         out["by_vendor"] = [v.to_dict() for v in self.by_vendor]
         return out
 
@@ -244,7 +252,7 @@ class ConsumptionUnits:
         raw = raw or {}
         kwargs: dict[str, Any] = {}
         for f in fields(cls):
-            if f.name in ("instrumented", "by_vendor"):
+            if f.name in ("instrumented", "by_vendor", "unreported"):
                 continue
             if f.name in raw:
                 kwargs[f.name] = raw[f.name]
@@ -253,6 +261,7 @@ class ConsumptionUnits:
         return cls(
             **kwargs,
             instrumented=frozenset(str(x) for x in instrumented),
+            unreported=frozenset(str(x) for x in (raw.get("unreported") or [])),
             by_vendor=tuple(v for v in vendors if v is not None),
         )
 
@@ -471,6 +480,11 @@ def derive_cost(units: ConsumptionUnits, prices: PriceBook) -> DerivedCost:
             prices.usd_per_million_output_tokens,
             1_000_000,
         )
+
+    # A unit the provider incurred but did not report cannot be priced: the recorded
+    # figure is a floor. Listed, so the whole estimate is None (review C3).
+    for unit in sorted(units.unreported):
+        unpriced.append(f"{unit}[unreported]")
 
     # Tavily bills in CREDITS, not calls (spec §22.4). A record that measured credits
     # is priced by them, and its calls are not billed a second time at the flat

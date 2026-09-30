@@ -25,6 +25,7 @@ from app.services.corpus.policy import ACCESS_PUBLIC_WEB
 from app.services.providers.contracts import (
     FILTER_BY_CLIENT,
     FILTER_BY_PROVIDER,
+    FILTER_PROVIDER_BOOST,
     FILTER_UNSUPPORTED,
     RESULT_STORAGE_TRANSIENT,
     SEARCH_ERROR_CREDENTIAL,
@@ -144,9 +145,11 @@ def enforcement_plan(
 ) -> dict[str, FilterEnforcement]:
     """Who will enforce each filter this request actually sets.
 
-    Checkable filters are always ``client`` — InvestingBuddy verifies them on every
-    result whether or not the vendor was also asked. The rest are ``provider`` if the
-    vendor accepts them, otherwise ``unsupported``.
+    Domain filters are always ``client`` — InvestingBuddy verifies them on every result
+    whether or not the vendor was also asked. The date window starts as ``client`` and
+    is downgraded by :func:`finalize_enforcement` when undated results had to be kept.
+    ``country`` is a ranking boost at the vendor (``provider_boost``), never a filter.
+    The rest are ``provider`` if the vendor accepts them, otherwise ``unsupported``.
     """
     requested: list[str] = []
     if request.include_domains:
@@ -165,6 +168,8 @@ def enforcement_plan(
     for name in requested:
         if name in CLIENT_CHECKABLE:
             plan[name] = FILTER_BY_CLIENT
+        elif name == "country" and name in capabilities.provider_filters:
+            plan[name] = FILTER_PROVIDER_BOOST
         elif name in capabilities.provider_filters:
             plan[name] = FILTER_BY_PROVIDER
         else:
@@ -172,15 +177,36 @@ def enforcement_plan(
     return plan
 
 
+def finalize_enforcement(
+    plan: dict[str, FilterEnforcement],
+    capabilities: SearchCapabilities,
+    date_unchecked: int,
+) -> dict[str, FilterEnforcement]:
+    """Correct the date label once the results are known (review C4).
+
+    ``client`` is only true when every kept result carried a date the client checked.
+    Otherwise the window rests on the vendor (``provider``) if it accepts one, and is
+    ``unsupported`` if it does not.
+    """
+    if "date_range" in plan and date_unchecked > 0:
+        plan["date_range"] = (
+            FILTER_BY_PROVIDER
+            if "date_range" in capabilities.provider_filters
+            else FILTER_UNSUPPORTED
+        )
+    return plan
+
+
 def apply_client_filters(
     request: SearchRequest, items: list[SearchResultItem]
-) -> tuple[list[SearchResultItem], int]:
+) -> tuple[list[SearchResultItem], int, int]:
     """Drop results that violate a checkable filter; re-rank the survivors from 1.
 
     The date window is checked against ``published_hint`` only when the vendor gave one.
     An undated result is kept: the hint is never authoritative, and dropping every
-    undated page would silently remove most of the general web.
-    Returns ``(kept, removed_count)``.
+    undated page would silently remove most of the general web. How many were kept
+    unchecked is returned so the label can say so.
+    Returns ``(kept, removed_count, date_unchecked_count)``.
     """
     lo = _to_datetime(request.date_from, end=False) if request.date_from else None
     hi = _to_datetime(request.date_to, end=True) if request.date_to else None
@@ -205,6 +231,10 @@ def apply_client_filters(
         kept.append(item)
     limit = max(0, int(request.max_results))
     kept = kept[:limit]
+    date_requested = request.date_from is not None or request.date_to is not None
+    unchecked = (
+        sum(1 for it in kept if it.published_hint is None) if date_requested else 0
+    )
     reranked = [
         SearchResultItem(
             rank=i,
@@ -220,7 +250,7 @@ def apply_client_filters(
         )
         for i, it in enumerate(kept, start=1)
     ]
-    return reranked, removed
+    return reranked, removed, unchecked
 
 
 def govern_payload(
@@ -268,6 +298,7 @@ class UnavailableSearchProvider:
 
 __all__ = [
     "CLIENT_CHECKABLE",
+    "finalize_enforcement",
     "UnavailableSearchProvider",
     "apply_client_filters",
     "enforcement_plan",

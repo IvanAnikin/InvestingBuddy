@@ -22,6 +22,7 @@ from typing import Any
 from app.integrations.search.base import (
     apply_client_filters,
     enforcement_plan,
+    finalize_enforcement,
     govern_payload,
 )
 from app.integrations.search.tavily import parse_response
@@ -165,7 +166,8 @@ class FakeWebSearchProvider:
         # The fixture's ``usage`` block is Tavily's, not the fake's: the fake bills
         # nothing, and reports no cost unit rather than a zero (absent is not zero).
         request_id, items, _cost, _malformed = parsed
-        kept, removed = apply_client_filters(request, items)
+        kept, removed, unchecked = apply_client_filters(request, items)
+        finalize_enforcement(plan, self.capabilities, unchecked)
         return (
             SearchExecution(
                 provider=self.name,
@@ -179,6 +181,7 @@ class FakeWebSearchProvider:
                 filters_enforced_by=plan,
                 network_call_count=1,
                 client_filtered_count=removed,
+                date_unchecked_count=unchecked,
             ),
             kept,
         )

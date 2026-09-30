@@ -54,6 +54,7 @@ from app.core.structured_logging import log_event
 from app.integrations.search.base import (
     apply_client_filters,
     enforcement_plan,
+    finalize_enforcement,
     govern_payload,
     normalise_result,
 )
@@ -68,6 +69,7 @@ from app.services.providers.contracts import (
     SEARCH_ERROR_HTTP_429,
     SEARCH_ERROR_NO_KEY,
     SEARCH_ERROR_PARSE,
+    SEARCH_ERROR_QUOTA,
     SEARCH_ERROR_TIMEOUT,
     SEARCH_ERROR_TOO_LARGE,
     SEARCH_ERROR_TRANSPORT,
@@ -78,6 +80,7 @@ from app.services.providers.contracts import (
     SearchResultItem,
 )
 from app.services.providers.governance import ProviderGovernance
+from app.services.web_research.queries import validate_filters
 
 logger = logging.getLogger(__name__)
 
@@ -191,9 +194,15 @@ def build_body(
     return body, overrides
 
 
+#: Tavily's plan limit (432) and pay-as-you-go spend limit (433).
+QUOTA_STATUSES: frozenset[int] = frozenset({432, 433})
+
+
 def _error_for_status(status: int) -> str:
     if status in (401, 403):
         return SEARCH_ERROR_AUTH
+    if status in QUOTA_STATUSES:
+        return SEARCH_ERROR_QUOTA
     if status == 429:
         return SEARCH_ERROR_HTTP_429
     if status >= 500:
@@ -318,6 +327,14 @@ class TavilySearchProvider:
             return failed(SEARCH_ERROR_NO_KEY)
         if not base_url_allowed(self.base_url):
             return failed(SEARCH_ERROR_HOST_NOT_ALLOWED)
+        filter_refusal = validate_filters(
+            include_domains=request.include_domains,
+            exclude_domains=request.exclude_domains,
+            country=request.country,
+            language=request.language,
+        )
+        if filter_refusal is not None:
+            return failed(filter_refusal)
 
         body, overrides = build_body(request, search_depth=self.search_depth)
         plan.update(overrides)
@@ -326,7 +343,10 @@ class TavilySearchProvider:
         if refusal is not None:
             return failed(refusal)
 
-        url = self.base_url.rstrip("/") + SEARCH_PATH
+        # Built from the VALIDATED host, never from the raw setting string (review S8):
+        # whatever passed the allowlist check is exactly what is called.
+        host = (urlsplit(self.base_url.strip()).hostname or "").lower()
+        url = f"https://{host}{SEARCH_PATH}"
         headers = {
             "Authorization": "Bearer " + self.api_key.strip(),
             "Content-Type": "application/json",
@@ -373,7 +393,8 @@ class TavilySearchProvider:
         if parsed is None:
             return failed(SEARCH_ERROR_PARSE, status=status, latency=latency, calls=1)
         request_id, items, cost, _malformed = parsed
-        kept, removed = apply_client_filters(request, items)
+        kept, removed, unchecked = apply_client_filters(request, items)
+        finalize_enforcement(plan, self.capabilities, unchecked)
         return (
             SearchExecution(
                 provider=self.name,
@@ -387,6 +408,7 @@ class TavilySearchProvider:
                 filters_enforced_by=plan,
                 network_call_count=1,
                 client_filtered_count=removed,
+                date_unchecked_count=unchecked,
             ),
             kept,
         )

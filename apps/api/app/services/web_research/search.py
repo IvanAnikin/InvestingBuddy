@@ -3,24 +3,36 @@
 ``run_searches(session, requests, context)`` is the one entry point that sends queries
 to a web search provider. For every request, in order:
 
-1. **Gate** — :func:`~app.services.web_research.queries.validate_outgoing_query`
-   (operators, URLs, length, rule G1 private tokens, blocklist). Refused → a row with
-   the refusal code and **no query text** when the refusal was a private token.
-2. **Governance** (rule G4, spec §8.3) — ``ProviderGovernance.assert_permitted(provider,
-   "public_web")`` and ``assert_no_credentials`` on the query and its filters. This is
-   the first runtime call site the governance matrix has; the adapter repeats both
-   checks on the exact wire payload.
-3. **Cache** (spec §18) — when the provider's ``result_storage`` is ``full``, an
-   executed call for the same ``(provider, request_hash)`` in today's UTC date bucket
-   (≤24h) is re-served from its rows with zero network calls.
-4. **Budget** (spec §19) — the run's query cap, wall time and the platform daily cap.
-   Reserved before the call; a failed call keeps its reservation.
-5. **Call** — at most ``concurrency`` (4) provider calls in flight. The adapter never
+1. **Secrets first** — before anything else, and for EVERY request whatever else is
+   wrong with it: ``assert_no_credentials`` over the query and its filters, and the rule
+   G1 private-token check over the query and its filters. A hit is refused and the row
+   keeps neither the text nor a hash of it (``[withheld: <code>]``).
+2. **Gate** — :func:`~app.services.web_research.queries.validate_outgoing_query`
+   (operators, URLs, length, invisible characters, blocklist) and
+   :func:`~app.services.web_research.queries.validate_filters`. A refused query is
+   stored with URL secrets stripped and truncated to ``MAX_QUERY_CHARS``.
+3. **Governance** (rule G4, spec §8.3) — ``ProviderGovernance.assert_permitted(provider,
+   "public_web")``. The adapter repeats this and the credential check on its exact wire
+   payload.
+4. **Duplicates** — a second identical request in one batch is not sent again; it is
+   served from the first (review C8).
+5. **Cache** (spec §18) — when the provider's ``result_storage`` is ``full``, an
+   executed network call for the same ``(provider, request_hash)`` in today's UTC date
+   bucket is re-served from its rows. The new row carries ``served_from_query_id`` and
+   ``network_call_count = 0``.
+6. **Budget** (spec §19) — the run's query cap, wall time and the platform daily cap.
+   Reserved before the call; a failed call keeps its reservation. Wall time is checked
+   again as each call starts (review C9).
+7. **Call** — at most ``concurrency`` (4) provider calls in flight. The adapter never
    raises by contract; if it does anyway, the error is recorded, not propagated.
 
-Every outcome — executed, failed, refused, cached — is persisted as a
+Every outcome — executed, failed, refused, cached, cancelled — is persisted as a
 ``web_search_queries`` row with its results, so a run can be reconstructed from rows
-(spec §22.2). Rows are flushed, not committed: the caller owns the transaction.
+(spec §22.2). **Rows are written even if the run is cancelled mid-batch** (a call in
+flight is recorded as ``cancelled`` with one network call, so the daily cap never
+undercounts). Pass ``persist_session_factory`` to write provenance in its own short
+committed transaction, independent of the caller's (review C2); without it the rows are
+added to ``session`` and flushed, and the caller must commit even when its stage fails.
 
 STATES (spec §23.1)
 ===================
@@ -30,8 +42,9 @@ STATES (spec §23.1)
 * ``web_search_degraded`` — some executed, some did not (failure, budget, refusal).
 * ``ok`` — every query executed or was served from cache.
 
-Logs carry counts, codes and a 12-character request-hash prefix. Never query text, never
-result text, never the key.
+Logs carry counts, codes and a 12-character request-hash prefix — or ``withheld`` for a
+query refused for a secret or a private token. Never query text, never result text, never
+the key.
 """
 
 from __future__ import annotations
@@ -40,13 +53,14 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import sqlalchemy as sa
 
+from app.core.log_redaction import redact_text
 from app.core.structured_logging import log_event
 from app.integrations.search import web_search_provider_from_settings
 from app.models.web_research import WebSearchQuery, WebSearchResult
@@ -57,7 +71,9 @@ from app.services.providers.contracts import (
     RESULT_STORAGE_TRANSIENT,
     RESULT_STORAGE_URL_ONLY,
     SEARCH_ERROR_ADAPTER,
+    SEARCH_ERROR_CANCELLED,
     SEARCH_ERROR_CREDENTIAL,
+    SEARCH_ERROR_DUPLICATE,
     SEARCH_ERROR_GOVERNANCE,
     SearchExecution,
     SearchProvider,
@@ -71,13 +87,20 @@ from app.services.providers.governance import (
     assert_no_credentials,
     default_governance,
 )
+from app.services.sources.redaction import canonicalize_source_url, strip_url_secrets
 from app.services.web_research.budget import (
+    BUDGET_REFUSAL_PREFIX,
+    LIMIT_WALL,
     WebResearchBudget,
     budget_for_run,
     utc_day_start,
 )
 from app.services.web_research.queries import (
+    _URL_RE,
+    MAX_QUERY_CHARS,
     REFUSAL_PRIVATE_TOKEN,
+    find_private_token,
+    validate_filters,
     validate_outgoing_query,
 )
 
@@ -96,8 +119,8 @@ CACHE_TTL = timedelta(hours=24)
 DISPOSITION_CANDIDATE = "candidate"
 DISPOSITION_SKIPPED = "skipped"
 
-#: Refusals whose query text must never be stored: it carried private data or a secret.
-_WITHHOLD_TEXT: frozenset[str] = frozenset({REFUSAL_PRIVATE_TOKEN, SEARCH_ERROR_CREDENTIAL})
+#: Refusals whose query text must never be stored or hashed: private data or a secret.
+WITHHELD_CODES: frozenset[str] = frozenset({REFUSAL_PRIVATE_TOKEN, SEARCH_ERROR_CREDENTIAL})
 
 _UNSET: Any = object()
 
@@ -124,11 +147,20 @@ class QueryOutcome:
     execution: SearchExecution
     #: Results admitted under the run's result budget, in rank order.
     results: list[SearchResultItem] = field(default_factory=list)
-    query_id: uuid.UUID | None = None
+    #: Assigned up front so an in-batch duplicate can point at it before persistence.
+    query_id: uuid.UUID = field(default_factory=uuid.uuid4)
+    #: The first identical request in this batch, when this one is a duplicate.
+    duplicate_of: "QueryOutcome | None" = None
+    call_started: bool = False
+    call_finished: bool = False
 
     @property
     def from_cache(self) -> bool:
         return self.execution.cached_from is not None
+
+    @property
+    def withheld(self) -> bool:
+        return (self.execution.error_code or "") in WITHHELD_CODES
 
 
 @dataclass
@@ -179,26 +211,64 @@ def _state_for(outcomes: Sequence[QueryOutcome]) -> str:
     return STATE_OK
 
 
-def _governance_refusal(
-    governance: ProviderGovernance, provider: str, request: SearchRequest
-) -> str | None:
+def _clip(value: str | None, limit: int) -> str | None:
+    return None if value is None else str(value)[:limit]
+
+
+def _filter_text(request: SearchRequest) -> str:
+    return json.dumps(request.filters(), sort_keys=True, ensure_ascii=False)
+
+
+def _secret_refusal(request: SearchRequest, private_tokens: frozenset[str]) -> str | None:
+    """Credential or private token anywhere in what would leave the process (S1, S5)."""
+    try:
+        assert_no_credentials(request.query + " " + _filter_text(request))
+    except CredentialInPayloadError:
+        return SEARCH_ERROR_CREDENTIAL
+    if find_private_token(request.query, private_tokens):
+        return REFUSAL_PRIVATE_TOKEN
+    filter_values = " ".join(
+        [*request.include_domains, *request.exclude_domains]
+        + [request.country or "", request.language or ""]
+    )
+    if find_private_token(filter_values, private_tokens):
+        return REFUSAL_PRIVATE_TOKEN
+    return None
+
+
+def _gate_refusal(request: SearchRequest, private_tokens: frozenset[str]) -> str | None:
+    return validate_outgoing_query(request.query, private_tokens) or validate_filters(
+        include_domains=request.include_domains,
+        exclude_domains=request.exclude_domains,
+        country=request.country,
+        language=request.language,
+        private_tokens=private_tokens,
+    )
+
+
+def _storable_query(text: str) -> str:
+    """A refused-but-not-secret query as it may be stored: URL secrets stripped, bounded."""
+    stripped = _URL_RE.sub(lambda m: strip_url_secrets(m.group(0)) or "", text or "")
+    return redact_text(stripped)[:MAX_QUERY_CHARS]
+
+
+def _governance_refusal(governance: ProviderGovernance, provider: str) -> str | None:
     try:
         governance.assert_permitted(provider, ACCESS_PUBLIC_WEB)
     except ProviderNotPermittedError:
         return SEARCH_ERROR_GOVERNANCE
-    try:
-        assert_no_credentials(
-            request.query + " " + json.dumps(request.filters(), sort_keys=True)
-        )
-    except CredentialInPayloadError:
-        return SEARCH_ERROR_CREDENTIAL
     return None
 
 
 async def _cached(
     session: Any, provider: SearchProvider, request: SearchRequest, now: datetime
 ) -> tuple[SearchExecution, list[SearchResultItem]] | None:
-    """An executed network call for the same question today, re-served from its rows."""
+    """An executed network call for the same question in today's UTC bucket, re-served.
+
+    Only ORIGINAL executed calls qualify (``executed`` and ``network_call_count > 0``):
+    a failed call is never a cache entry, and a cache serve is never the source of
+    another one.
+    """
     if provider.capabilities.result_storage != RESULT_STORAGE_FULL:
         return None
     since = max(utc_day_start(now), now - CACHE_TTL)
@@ -211,6 +281,7 @@ async def _cached(
                 WebSearchQuery.executed.is_(True),
                 WebSearchQuery.network_call_count > 0,
                 WebSearchQuery.created_at >= since,
+                WebSearchQuery.created_at <= now,
             )
             .order_by(WebSearchQuery.created_at.desc())
             .limit(1)
@@ -254,16 +325,53 @@ async def _cached(
         network_call_count=0,
         client_filtered_count=int(filters.get("client_filtered_count") or 0),
         cached_from=str(row.id),
+        date_unchecked_count=int(filters.get("date_unchecked_count") or 0),
     )
     return execution, items
 
 
+def _served_from(first: QueryOutcome) -> SearchExecution:
+    """What an in-batch duplicate records: a serve of the first copy, or a refusal."""
+    src = first.execution
+    if not src.executed:
+        return SearchExecution.not_executed(
+            src.provider, SEARCH_ERROR_DUPLICATE, filters_enforced_by=src.filters_enforced_by
+        )
+    return SearchExecution(
+        provider=src.provider,
+        executed=True,
+        provider_request_id=src.provider_request_id,
+        http_status=src.http_status,
+        latency_ms=0,
+        result_count=src.result_count,
+        cost_units={},
+        error_code=None,
+        filters_enforced_by=dict(src.filters_enforced_by),
+        network_call_count=0,
+        client_filtered_count=src.client_filtered_count,
+        cached_from=str(first.query_id),
+        date_unchecked_count=src.date_unchecked_count,
+    )
+
+
 async def _call(
-    provider: SearchProvider, request: SearchRequest, semaphore: asyncio.Semaphore
-) -> tuple[SearchExecution, list[SearchResultItem]]:
+    provider: SearchProvider,
+    outcome: QueryOutcome,
+    semaphore: asyncio.Semaphore,
+    budget: WebResearchBudget,
+) -> None:
     async with semaphore:
+        if budget.wall_exhausted():
+            outcome.execution = SearchExecution.not_executed(
+                provider.name, BUDGET_REFUSAL_PREFIX + LIMIT_WALL
+            )
+            outcome.call_finished = True
+            return
+        outcome.call_started = True
         try:
-            return await provider.search(request)
+            execution, items = await provider.search(outcome.request)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 - an adapter must not take the run down
             log_event(
                 logger,
@@ -272,105 +380,155 @@ async def _call(
                 provider=provider.name,
                 error_type=type(exc).__name__,
             )
-            return SearchExecution.not_executed(provider.name, SEARCH_ERROR_ADAPTER), []
+            execution, items = SearchExecution.not_executed(provider.name, SEARCH_ERROR_ADAPTER), []
+        outcome.execution = execution
+        outcome.results = list(items) if execution.executed else []
+        outcome.call_finished = True
 
 
-def _persist(
-    session: Any,
+def _rows(
     outcome: QueryOutcome,
     context: SearchContext,
     budget: WebResearchBudget,
     storage: str,
-) -> None:
+) -> list[Any]:
     request, execution = outcome.request, outcome.execution
     code = execution.error_code
-    withhold = code in _WITHHOLD_TEXT
+    withhold = outcome.withheld
+    served_from = uuid.UUID(execution.cached_from) if execution.cached_from else None
     filters: dict[str, Any] = {
         "requested": request.filters(),
         "enforced_by": dict(execution.filters_enforced_by),
         "client_filtered_count": execution.client_filtered_count,
+        "date_unchecked_count": execution.date_unchecked_count,
     }
-    if execution.cached_from:
-        filters["served_from_query_id"] = execution.cached_from
     row = WebSearchQuery(
-        id=uuid.uuid4(),
+        id=outcome.query_id,
         research_job_id=context.research_job_id,
         discovery_run_id=context.discovery_run_id,
         agent_run_id=context.agent_run_id,
         company_id=context.company_id,
-        stage=context.stage,
+        stage=_clip(context.stage, 40),
         family=request.family.value,
-        origin=request.origin,
-        template_version=request.template_version,
-        query_text=f"[withheld: {code}]" if withhold else request.query,
+        origin=_clip(request.origin, 30) or "template",
+        template_version=_clip(request.template_version, 40),
+        query_text=f"[withheld: {code}]" if withhold else _storable_query(request.query),
         # A hash of withheld text is still derived from it: a dictionary of candidate
         # tickers would recover the private token. Withheld means withheld.
         request_hash=f"withheld:{code}"[:64] if withhold else request.request_hash(),
         filters_json=None if withhold else filters,
-        provider=execution.provider,
+        provider=_clip(execution.provider, 40) or "unknown",
         executed=execution.executed,
-        provider_request_id=execution.provider_request_id,
+        # A cache serve has no request id of its own; it lives on the original row.
+        provider_request_id=None if served_from else _clip(execution.provider_request_id, 120),
         http_status=execution.http_status,
         network_call_count=execution.network_call_count,
         latency_ms=execution.latency_ms,
         result_count=execution.result_count,
         cost_units_json=dict(execution.cost_units),
-        error_code=code,
+        error_code=_clip(code, 60),
+        served_from_query_id=served_from,
         created_at=datetime.now(timezone.utc),
     )
-    session.add(row)
-    outcome.query_id = row.id
+    rows: list[Any] = [row]
 
     returned = outcome.results
     admitted = budget.record_results(len(returned))
     outcome.results = returned[:admitted]
     if storage == RESULT_STORAGE_TRANSIENT:
-        return
+        return rows
     keep_text = storage == RESULT_STORAGE_FULL
     for index, item in enumerate(returned):
         over_budget = index >= admitted
-        session.add(
+        rows.append(
             WebSearchResult(
                 id=uuid.uuid4(),
                 query_id=row.id,
                 rank=item.rank,
-                url=item.url,
-                canonical_url=item.canonical_url,
-                domain=item.domain or None,
+                # The stored form never carries a credential-bearing parameter (S9).
+                url=strip_url_secrets(item.url) or item.url,
+                canonical_url=canonicalize_source_url(item.canonical_url),
+                domain=_clip(item.domain, 255) or None,
                 title=item.title if keep_text else None,
                 snippet=item.snippet if keep_text else None,
                 published_hint=item.published_hint,
-                language_hint=item.language_hint,
+                language_hint=_clip(item.language_hint, 16),
                 provider_score=item.provider_score,
                 disposition=DISPOSITION_SKIPPED if over_budget else DISPOSITION_CANDIDATE,
                 disposition_reason="budget:max_results" if over_budget else None,
                 created_at=datetime.now(timezone.utc),
             )
         )
+    return rows
+
+
+async def _persist_all(
+    session: Any,
+    outcomes: Sequence[QueryOutcome],
+    context: SearchContext,
+    budget: WebResearchBudget,
+    storage: str,
+    persist_session_factory: Callable[[], Any] | None,
+) -> None:
+    rows: list[Any] = []
+    for outcome in outcomes:
+        rows.extend(_rows(outcome, context, budget, storage))
+        ex = outcome.execution
+        log_event(
+            logger,
+            "web_search_query",
+            provider=ex.provider,
+            family=outcome.request.family.value,
+            origin=outcome.request.origin,
+            executed=ex.executed,
+            from_cache=outcome.from_cache,
+            error_code=ex.error_code,
+            http_status=ex.http_status,
+            latency_ms=ex.latency_ms,
+            result_count=ex.result_count,
+            network_call_count=ex.network_call_count,
+            request_hash="withheld" if outcome.withheld else outcome.request.request_hash()[:12],
+        )
+    if persist_session_factory is None:
+        session.add_all(rows)
+        await session.flush()
+        return
+    async with persist_session_factory() as own:
+        own.add_all(rows)
+        await own.commit()
 
 
 def _consumption(provider: SearchProvider, outcomes: Sequence[QueryOutcome]) -> ConsumptionUnits:
-    """Units for the run record. Credits are instrumented only when every executed
-    network call reported them — one unreported call makes the credit total unknown."""
+    """Units for the run record (review C3).
+
+    For Tavily the credit unit is ALWAYS instrumented, so the flat per-search price can
+    never stand in for it. A call that reached the vendor and did not come back with a
+    credit figure — an executed call with no ``usage``, a 2xx that did not parse, a
+    timeout or a cancellation — marks the credits ``unreported``, which makes the cost
+    unknown. Only a clear non-2xx HTTP refusal is taken as unbilled.
+    """
     calls = sum(o.execution.network_call_count for o in outcomes)
-    credits = 0.0
-    all_reported = True
-    for o in outcomes:
-        ex = o.execution
-        if not ex.executed or ex.network_call_count == 0:
-            continue
-        value = ex.cost_units.get("tavily_credits")
-        if value is None:
-            all_reported = False
-        else:
-            credits += float(value)
     instrumented = {"web_search_calls"}
-    if provider.name == "tavily" and all_reported:
+    unreported: set[str] = set()
+    credits = 0.0
+    if provider.name == "tavily":
         instrumented.add("tavily_credits")
+        for o in outcomes:
+            ex = o.execution
+            if ex.network_call_count == 0:
+                continue
+            value = ex.cost_units.get("tavily_credits")
+            if value is not None:
+                credits += float(value)
+                continue
+            refused_by_http = ex.http_status is not None and not 200 <= ex.http_status < 300
+            if not refused_by_http:
+                unreported.add("tavily_credits")
     return ConsumptionUnits(
         web_search_calls=calls,
-        tavily_credits=credits if "tavily_credits" in instrumented else 0.0,
+        tavily_credits=credits,
         instrumented=frozenset(instrumented),
+        unreported=frozenset(unreported),
     )
 
 
@@ -384,6 +542,7 @@ async def run_searches(
     governance: ProviderGovernance | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
     now: datetime | None = None,
+    persist_session_factory: Callable[[], Any] | None = None,
 ) -> SearchRunResult:
     """Run a batch of searches with full provenance. See the module docstring."""
     if cfg is None:
@@ -399,67 +558,88 @@ async def run_searches(
     budget = context.budget or await budget_for_run(
         session, context.budget_profile, cfg=cfg, now=moment
     )
-
-    # An unconfigured provider (no key, unknown name) answers without a network call, so
-    # asking it spends no budget: the refusal it returns is the record.
+    tokens = frozenset(context.private_tokens)
+    # An unconfigured provider (no key, unknown name, fake outside dev) answers without a
+    # network call and without budget: the refusal it returns is the record.
     configured = bool(getattr(chosen, "is_configured", True))
+
+    def refused(request: SearchRequest, code: str) -> QueryOutcome:
+        return QueryOutcome(request, SearchExecution.not_executed(chosen.name, code))
+
     outcomes: list[QueryOutcome] = []
     pending: list[QueryOutcome] = []
+    first_by_hash: dict[str, QueryOutcome] = {}
     for request in requests:
-        refusal = validate_outgoing_query(request.query, context.private_tokens)
-        if refusal is None:
-            refusal = _governance_refusal(gov, chosen.name, request)
-        if refusal is not None:
+        code = _secret_refusal(request, tokens) or _gate_refusal(request, tokens)
+        if code is not None:
+            outcomes.append(refused(request, code))
+            continue
+        if not configured:
+            execution, _ = await chosen.search(request)
+            outcomes.append(QueryOutcome(request, execution))
+            continue
+        code = _governance_refusal(gov, chosen.name)
+        if code is not None:
+            outcomes.append(refused(request, code))
+            continue
+        key = request.request_hash()
+        if key in first_by_hash:
             outcomes.append(
-                QueryOutcome(request, SearchExecution.not_executed(chosen.name, refusal))
+                QueryOutcome(
+                    request,
+                    SearchExecution.not_executed(chosen.name, SEARCH_ERROR_DUPLICATE),
+                    duplicate_of=first_by_hash[key],
+                )
             )
             continue
         cached = await _cached(session, chosen, request, moment)
         if cached is not None:
-            outcomes.append(QueryOutcome(request, cached[0], list(cached[1])))
+            outcome = QueryOutcome(request, cached[0], list(cached[1]))
+            first_by_hash[key] = outcome
+            outcomes.append(outcome)
             continue
-        refusal = budget.reserve_query() if configured else None
-        if refusal is not None:
-            outcomes.append(
-                QueryOutcome(request, SearchExecution.not_executed(chosen.name, refusal))
-            )
+        code = budget.reserve_query()
+        if code is not None:
+            outcomes.append(refused(request, code))
             continue
-        # Placeholder execution, replaced below once the call returns.
+        # Until the call reports, the outcome is "cancelled": that is what it is if the
+        # run stops before this call returns.
         outcome = QueryOutcome(
-            request, SearchExecution.not_executed(chosen.name, SEARCH_ERROR_ADAPTER)
+            request, SearchExecution.not_executed(chosen.name, SEARCH_ERROR_CANCELLED)
         )
+        first_by_hash[key] = outcome
         outcomes.append(outcome)
         pending.append(outcome)
-
-    if pending:
-        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
-        answers = await asyncio.gather(*(_call(chosen, o.request, semaphore) for o in pending))
-        for outcome, (execution, items) in zip(pending, answers, strict=True):
-            outcome.execution = execution
-            outcome.results = list(items) if execution.executed else []
 
     storage = chosen.capabilities.result_storage
     if storage not in (RESULT_STORAGE_FULL, RESULT_STORAGE_URL_ONLY, RESULT_STORAGE_TRANSIENT):
         storage = RESULT_STORAGE_TRANSIENT
-    for outcome in outcomes:
-        _persist(session, outcome, context, budget, storage)
-        ex = outcome.execution
-        log_event(
-            logger,
-            "web_search_query",
-            provider=ex.provider,
-            family=outcome.request.family.value,
-            origin=outcome.request.origin,
-            executed=ex.executed,
-            from_cache=outcome.from_cache,
-            error_code=ex.error_code,
-            http_status=ex.http_status,
-            latency_ms=ex.latency_ms,
-            result_count=ex.result_count,
-            network_call_count=ex.network_call_count,
-            request_hash=outcome.request.request_hash()[:12],
+
+    try:
+        if pending:
+            semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+            await asyncio.gather(*(_call(chosen, o, semaphore, budget) for o in pending))
+    finally:
+        # Also on cancellation: every reserved call leaves a row (review C2). A call that
+        # started and never reported is counted as one network call, so the daily cap
+        # cannot undercount; one that never started made none.
+        for outcome in pending:
+            if not outcome.call_finished:
+                outcome.execution = SearchExecution.not_executed(
+                    chosen.name,
+                    SEARCH_ERROR_CANCELLED,
+                    network_call_count=1 if outcome.call_started else 0,
+                )
+                outcome.results = []
+        for outcome in outcomes:
+            if outcome.duplicate_of is not None:
+                outcome.execution = _served_from(outcome.duplicate_of)
+                outcome.results = (
+                    list(outcome.duplicate_of.results) if outcome.execution.executed else []
+                )
+        await _persist_all(
+            session, outcomes, context, budget, storage, persist_session_factory
         )
-    await session.flush()
 
     result = SearchRunResult(
         state=_state_for(outcomes),
@@ -489,6 +669,7 @@ __all__ = [
     "STATE_DISABLED",
     "STATE_OK",
     "STATE_UNAVAILABLE",
+    "WITHHELD_CODES",
     "QueryOutcome",
     "SearchContext",
     "SearchRunResult",

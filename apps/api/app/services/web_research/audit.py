@@ -47,7 +47,8 @@ def _query_read(row: WebSearchQuery, results: list[WebSearchResult]) -> WebSearc
         network_call_count=int(row.network_call_count or 0),
         latency_ms=row.latency_ms,
         result_count=int(row.result_count or 0),
-        from_cache=bool(filters and filters.get("served_from_query_id")),
+        from_cache=row.served_from_query_id is not None,
+        served_from_query_id=row.served_from_query_id,
         cost_units=dict(row.cost_units_json or {}),
         error_code=row.error_code,
         results=[
@@ -117,9 +118,11 @@ async def web_research_audit(
             sa.select(WebSearchQuery)
             .where(q_filter)
             .order_by(WebSearchQuery.created_at, WebSearchQuery.id)
-            .limit(MAX_QUERIES)
+            .limit(MAX_QUERIES + 1)
         )
     ).scalars().all()
+    queries_truncated = len(query_rows) > MAX_QUERIES
+    query_rows = query_rows[:MAX_QUERIES]
     by_query: dict[uuid.UUID, list[WebSearchResult]] = {row.id: [] for row in query_rows}
     if by_query:
         result_rows = (
@@ -136,9 +139,11 @@ async def web_research_audit(
             sa.select(WebFetchAttempt)
             .where(f_filter)
             .order_by(WebFetchAttempt.created_at, WebFetchAttempt.id)
-            .limit(MAX_FETCH_ATTEMPTS)
+            .limit(MAX_FETCH_ATTEMPTS + 1)
         )
     ).scalars().all()
+    fetches_truncated = len(fetch_rows) > MAX_FETCH_ATTEMPTS
+    fetch_rows = fetch_rows[:MAX_FETCH_ATTEMPTS]
 
     queries = [_query_read(row, by_query.get(row.id, [])) for row in query_rows]
     fetches = [
@@ -171,6 +176,8 @@ async def web_research_audit(
         queries=queries,
         fetch_attempts=fetches,
         totals=_totals(queries, len(fetches)),
+        queries_truncated=queries_truncated,
+        fetch_attempts_truncated=fetches_truncated,
     )
 
 

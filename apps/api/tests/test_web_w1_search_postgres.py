@@ -129,6 +129,7 @@ class TestOnRealPostgres:
                 "discovery_runs": "SET NULL",
                 "agent_runs": "SET NULL",
                 "companies": "SET NULL",
+                "web_search_queries": "SET NULL",  # served_from_query_id (review C5)
             }
         finally:
             engine.dispose()
@@ -143,6 +144,7 @@ class TestOnRealPostgres:
         from app.services.web_research.search import STATE_OK, SearchContext, run_searches
 
         cfg = SimpleNamespace(
+            app_env="test",
             v3_web_search_enabled=True,
             v3_web_search_provider="fake",
             v3_web_search_max_queries_per_day=10_000,
@@ -215,5 +217,47 @@ class TestOnRealPostgres:
                     sa.delete(WebSearchQuery).where(WebSearchQuery.query_text.contains(marker))
                 )
                 await s.execute(sa.delete(ResearchJob).where(ResearchJob.id == job_id))
+                await s.commit()
+            await engine.dispose()
+
+    async def test_provenance_survives_the_callers_rollback(self) -> None:
+        """Review C2: with its own session factory, a stage that fails and rolls back
+        does not take the record of the calls it already made with it."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.integrations.search.fake import FakeWebSearchProvider
+        from app.models.web_research import WebSearchQuery
+        from app.services.providers.contracts import QueryFamily, SearchRequest
+        from app.services.web_research.search import SearchContext, run_searches
+
+        cfg = SimpleNamespace(
+            app_env="test",
+            v3_web_search_enabled=True,
+            v3_web_search_provider="fake",
+            v3_web_search_max_queries_per_day=10_000,
+            v3_run_max_web_searches=0,
+        )
+        engine = create_async_engine(POSTGRES_URL, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        marker = uuid.uuid4().hex[:8]
+        try:
+            async with maker() as caller:
+                result = await run_searches(
+                    caller,
+                    [SearchRequest(query=f"grid transformer {marker}", family=QueryFamily.ENTITY)],
+                    SearchContext(stage="c2"),
+                    provider=FakeWebSearchProvider.from_fixture_dir(FIXTURES),
+                    cfg=cfg,
+                    persist_session_factory=maker,
+                )
+                await caller.rollback()
+            async with maker() as s:
+                row = await s.get(WebSearchQuery, result.outcomes[0].query_id)
+                assert row is not None and row.executed and row.network_call_count == 1
+        finally:
+            async with maker() as s:
+                await s.execute(
+                    sa.delete(WebSearchQuery).where(WebSearchQuery.query_text.contains(marker))
+                )
                 await s.commit()
             await engine.dispose()

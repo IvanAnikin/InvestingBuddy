@@ -21,6 +21,13 @@ WHAT IT DOES
   the private part removed is a different query the user never asked for.
 * **QI-05 — length.** More than :data:`MAX_QUERY_CHARS` characters is refused.
 * **QI-06 — blocklist.** A small list of illegal-content phrases refuses the query.
+* **Evasion (review S4).** Invisible and private-use characters (Unicode categories
+  Cf/Co/Cs, e.g. a zero-width space or a soft hyphen inside a name) refuse the query.
+  Private-token matching runs on an NFKC + case-folded + confusable-skeleton form of
+  both sides, so full-width ``ＡＡＰＬ`` and a Cyrillic ``Аcme`` still match, and ``_`` is
+  a word boundary so ``AAPL_Q3`` still contains ``AAPL``.
+* **Filters (review S5).** Domain filters must be plain hostnames, country and language
+  must be ISO codes, and every filter value is checked against the private tokens too.
 
 QI-04 (instructions aimed at private systems) is structural rather than textual: a
 query only ever goes to the configured provider, whose host is fixed by the adapter's
@@ -30,6 +37,7 @@ allowlist. It is tested there.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
@@ -43,6 +51,8 @@ REFUSAL_BLOCKLIST = "blocklisted_term"
 REFUSAL_URL_IN_QUERY = "url_in_query"
 REFUSAL_OPERATOR = "operator_not_allowed"
 REFUSAL_BAD_SITE = "site_domain_invalid"
+REFUSAL_INVISIBLE_CHAR = "invisible_char"
+REFUSAL_FILTER_INVALID = "filter_invalid"
 
 REFUSAL_CODES: frozenset[str] = frozenset(
     {
@@ -53,6 +63,8 @@ REFUSAL_CODES: frozenset[str] = frozenset(
         REFUSAL_URL_IN_QUERY,
         REFUSAL_OPERATOR,
         REFUSAL_BAD_SITE,
+        REFUSAL_INVISIBLE_CHAR,
+        REFUSAL_FILTER_INVALID,
     }
 )
 
@@ -90,6 +102,40 @@ _DOMAIN_RE = re.compile(
 _ALLOWED_OUTGOING_OPERATOR_RE = re.compile(r"(?i)^(site:[a-z0-9.-]+|filetype:pdf)$")
 
 
+#: Format (zero-width, soft hyphen, bidi controls), private-use and surrogate code
+#: points: they render as nothing and exist in a query only to defeat matching.
+_INVISIBLE_CATEGORIES: frozenset[str] = frozenset({"Cf", "Co", "Cs"})
+
+#: The common Cyrillic/Greek letters that render like Latin ones. Applied to BOTH sides
+#: of the private-token comparison only — the outgoing query is never rewritten.
+_CONFUSABLES = str.maketrans(
+    {
+        "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h", "о": "o",
+        "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "і": "i", "ј": "j",
+        "ѕ": "s", "ԁ": "d", "ɡ": "g", "ӏ": "l",
+        "α": "a", "β": "b", "ε": "e", "ι": "i", "κ": "k", "μ": "m", "ν": "v",
+        "ο": "o", "ρ": "p", "τ": "t", "υ": "u", "χ": "x", "ζ": "z", "η": "n",
+    }
+)
+_ISO_COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
+_ISO_LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}$")
+
+
+def has_invisible_chars(text: str) -> bool:
+    """True when ``text`` holds a Cf/Co/Cs code point (zero-width, soft hyphen, …)."""
+    return any(unicodedata.category(ch) in _INVISIBLE_CATEGORIES for ch in text or "")
+
+
+def fold(text: str) -> str:
+    """The comparison form: NFKC, case-folded, confusable skeleton, whitespace collapsed."""
+    visible = "".join(
+        ch for ch in (text or "") if unicodedata.category(ch) not in _INVISIBLE_CATEGORIES
+    )
+    folded = unicodedata.normalize("NFKC", visible).casefold()
+    folded = unicodedata.normalize("NFKC", folded).translate(_CONFUSABLES)
+    return " ".join(folded.split())
+
+
 @dataclass(frozen=True)
 class SanitisedQuery:
     """The outcome of cleaning one query. ``text`` is what may be sent, if not refused."""
@@ -105,29 +151,30 @@ class SanitisedQuery:
 
 
 def normalise_private_tokens(tokens: Iterable[str] | None) -> frozenset[str]:
-    """Case-folded, whitespace-collapsed private tokens; anything under 2 chars dropped."""
+    """Private tokens in :func:`fold` form; anything under 2 chars dropped."""
     out: set[str] = set()
     for token in tokens or ():
-        norm = " ".join(str(token).split()).casefold()
+        norm = fold(str(token))
         if len(norm) >= 2:
             out.add(norm)
     return frozenset(out)
 
 
 def _contains_phrase(haystack: str, phrase: str) -> bool:
-    """Word-boundary phrase match on case-folded text."""
-    return re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", haystack) is not None
+    """Phrase match on folded text. Letters and digits bound a word; ``_`` does not."""
+    pattern = r"(?<![^\W_])" + re.escape(phrase) + r"(?![^\W_])"
+    return re.search(pattern, haystack) is not None
 
 
 def find_private_token(text: str, private_tokens: Collection[str]) -> bool:
     """True when ``text`` contains any private token. Never says which (no echo)."""
-    haystack = " ".join(text.split()).casefold()
+    haystack = fold(text)
     return any(_contains_phrase(haystack, t) for t in normalise_private_tokens(private_tokens))
 
 
 def find_blocklisted(text: str) -> bool:
-    haystack = " ".join(text.split()).casefold()
-    return any(_contains_phrase(haystack, phrase) for phrase in BLOCKLIST)
+    haystack = fold(text)
+    return any(_contains_phrase(haystack, fold(phrase)) for phrase in BLOCKLIST)
 
 
 def _clean_free_text(raw: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
@@ -157,6 +204,8 @@ def sanitise_query(
     ``site_domains`` and ``filetype_pdf`` are the planner's own operators (QI-01): they
     are appended after cleaning, and a ``site:`` domain must be a plain hostname.
     """
+    if has_invisible_chars(raw or ""):
+        return SanitisedQuery("", (), (), REFUSAL_INVISIBLE_CHAR)
     text, urls, operators = _clean_free_text(raw)
     planner_ops: list[str] = []
     for domain in site_domains:
@@ -194,6 +243,8 @@ def validate_outgoing_query(text: str, private_tokens: Collection[str] = ()) -> 
     """
     if _CONTROL_RE.search(text or ""):
         return REFUSAL_OPERATOR
+    if has_invisible_chars(text or ""):
+        return REFUSAL_INVISIBLE_CHAR
     if _URL_RE.search(text or ""):
         return REFUSAL_URL_IN_QUERY
     for match in _OPERATOR_RE.finditer(text or ""):
@@ -204,6 +255,40 @@ def validate_outgoing_query(text: str, private_tokens: Collection[str] = ()) -> 
     return _judge(text or "", private_tokens)
 
 
+def valid_domain(domain: str) -> bool:
+    """A plain lower-case-able hostname: no scheme, path, port, IP literal or wildcard."""
+    return _valid_site_domain(domain)
+
+
+def validate_filters(
+    *,
+    include_domains: Iterable[str] = (),
+    exclude_domains: Iterable[str] = (),
+    country: str | None = None,
+    language: str | None = None,
+    private_tokens: Collection[str] = (),
+) -> str | None:
+    """``None`` if the request's filters may leave the process, else a refusal code.
+
+    Filters leave the process too (``include_domains`` is sent to the vendor), so they
+    get the same rule G1 check as the query text.
+    """
+    include = [str(d) for d in include_domains]
+    exclude = [str(d) for d in exclude_domains]
+    values = [*include, *exclude, country or "", language or ""]
+    if any(has_invisible_chars(v) or _CONTROL_RE.search(v) for v in values):
+        return REFUSAL_INVISIBLE_CHAR
+    if find_private_token(" ".join(values), private_tokens):
+        return REFUSAL_PRIVATE_TOKEN
+    if not all(_valid_site_domain(d.strip().lower()) for d in (*include, *exclude)):
+        return REFUSAL_FILTER_INVALID
+    if country is not None and not _ISO_COUNTRY_RE.match(country):
+        return REFUSAL_FILTER_INVALID
+    if language is not None and not _ISO_LANGUAGE_RE.match(language):
+        return REFUSAL_FILTER_INVALID
+    return None
+
+
 __all__ = [
     "BLOCKLIST",
     "MAX_QUERY_CHARS",
@@ -211,6 +296,8 @@ __all__ = [
     "REFUSAL_BLOCKLIST",
     "REFUSAL_CODES",
     "REFUSAL_EMPTY",
+    "REFUSAL_FILTER_INVALID",
+    "REFUSAL_INVISIBLE_CHAR",
     "REFUSAL_OPERATOR",
     "REFUSAL_PRIVATE_TOKEN",
     "REFUSAL_TOO_LONG",
@@ -218,7 +305,11 @@ __all__ = [
     "SanitisedQuery",
     "find_blocklisted",
     "find_private_token",
+    "fold",
+    "has_invisible_chars",
     "normalise_private_tokens",
     "sanitise_query",
+    "valid_domain",
+    "validate_filters",
     "validate_outgoing_query",
 ]

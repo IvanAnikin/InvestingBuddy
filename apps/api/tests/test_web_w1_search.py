@@ -115,6 +115,7 @@ async def session():  # noqa: ANN201
 
 def _cfg(**over: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
+        "app_env": "test",
         "v3_web_search_enabled": True,
         "v3_web_search_provider": "fake",
         "v3_web_search_max_queries_per_day": 300,
@@ -345,12 +346,15 @@ class TestFilters:
             )
         )
         assert execution.executed
+        # Undated results were kept, so the window rests on the vendor (review C4), and
+        # Tavily's country is a ranking boost, not a filter (review C6).
         assert execution.filters_enforced_by == {
             "exclude_domains": "client",
-            "date_range": "client",
-            "country": "provider",
+            "date_range": "provider",
+            "country": "provider_boost",
             "language": "unsupported",
         }
+        assert execution.date_unchecked_count == 2
         domains = [i.domain for i in items]
         assert "aggregator.example" not in domains
         assert execution.client_filtered_count == 1
@@ -369,9 +373,10 @@ class TestFilters:
     def test_undated_results_survive_a_date_window(self) -> None:
         parsed = parse_response(_fixture("tavily_transformer_manufacturers.json"))
         assert parsed is not None
-        kept, removed = apply_client_filters(_req(date_from=date(2025, 1, 1)), parsed[1])
+        kept, removed, unchecked = apply_client_filters(_req(date_from=date(2025, 1, 1)), parsed[1])
         assert removed == 1, "only the dated 2019 page falls outside"
         assert len(kept) == 3
+        assert unchecked == 2
 
     async def test_an_unmapped_country_is_unsupported_not_guessed(self) -> None:
         t = _Tavily()
@@ -413,7 +418,7 @@ class TestFailClosed:
     @pytest.mark.parametrize(
         ("status", "code"),
         [(401, "auth"), (403, "auth"), (429, "http_429"), (500, "http_5xx"), (503, "http_5xx"),
-         (400, "http_4xx"), (432, "http_4xx"), (302, "http_3xx")],
+         (400, "http_4xx"), (432, "quota"), (433, "quota"), (302, "http_3xx")],
     )
     async def test_http_errors_are_not_executed(self, status: int, code: str) -> None:
         t = _Tavily(lambda r: httpx.Response(status, json={"detail": "x"}, headers={"location": "https://elsewhere.example"}))
@@ -796,7 +801,9 @@ class TestProvenanceAndCache:
         assert [i.url for i in hit.results] == [i.url for i in first.outcomes[0].results]
         assert second.network_call_count == 0 and second.state == STATE_OK
         row = await session.get(WebSearchQuery, hit.query_id)
-        assert row.filters_json["served_from_query_id"] == hit.execution.cached_from
+        assert str(row.served_from_query_id) == hit.execution.cached_from
+        assert row.provider_request_id is None, "the request id lives on the original row"
+        assert row.network_call_count == 0 and row.executed is True
 
     async def test_a_different_filter_is_a_different_question(self, session) -> None:  # noqa: ANN001
         fake = _fake()
@@ -827,12 +834,18 @@ class TestProvenanceAndCache:
         assert result.consumption.web_search_calls == 2
         assert result.consumption.tavily_credits == pytest.approx(2.0)
         assert "tavily_credits" in result.consumption.instrumented
+        assert result.consumption.unreported == frozenset()
 
     async def test_one_unreported_credit_makes_the_credit_total_unknown(self, session) -> None:  # noqa: ANN001
         bodies = iter([_fixture("tavily_transformer_manufacturers.json"), _fixture("tavily_no_usage.json")])
         t = _Tavily(lambda r: httpx.Response(200, json=next(bodies)))
         result = await run_searches(session, [_req(), _req(Q_NO_USAGE)], SearchContext(), provider=t.provider, cfg=_cfg(), concurrency=1)
-        assert "tavily_credits" not in result.consumption.instrumented
+        # Instrumented (so the flat per-search price cannot stand in) AND unreported
+        # (so the cost is unknown) — review C3.
+        assert "tavily_credits" in result.consumption.instrumented
+        assert result.consumption.unreported == frozenset({"tavily_credits"})
+        book = _book('{"tavily": {"usd_per_credit": 0.008}}')
+        assert derive_cost(result.consumption, book).estimated_usd is None
 
 
 # --------------------------------------------------------------------------- #
@@ -976,3 +989,328 @@ class TestAdminEndpoint:
         await engine.dispose()
         assert r.status_code == 503
         assert "042" in r.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# 11. Review round 1 — security S1–S9, code C1–C11, and the surviving mutants
+# --------------------------------------------------------------------------- #
+
+
+class _Clock:
+    """Returns the scripted values in order, then repeats the last one."""
+
+    def __init__(self, *values: float) -> None:
+        self.values = list(values)
+
+    def __call__(self) -> float:
+        return self.values.pop(0) if len(self.values) > 1 else self.values[0]
+
+
+class TestReviewSecurity:
+    async def test_s1_secret_check_runs_even_when_the_gate_refuses(self, session) -> None:  # noqa: ANN001
+        # Refused as url_in_query too — but the credential check comes first.
+        await run_searches(
+            session,
+            [_req("see https://api.example/x?api_token=abc123secretvalue")],
+            SearchContext(), provider=_fake(), cfg=_cfg(),
+        )
+        row = (await session.execute(select(WebSearchQuery))).scalar_one()
+        assert row.error_code == "credential_in_payload"
+        leaked = "abc123secretvalue" in (row.query_text + row.request_hash)
+        assert leaked is False
+
+    async def test_s1_private_token_is_withheld_even_when_the_gate_refuses(self, session) -> None:  # noqa: ANN001
+        ctx = SearchContext(private_tokens=frozenset({"Pensana"}))
+        await run_searches(
+            session, [_req("pensana inurl:admin " + "x " * 250)], ctx, provider=_fake(), cfg=_cfg()
+        )
+        row = (await session.execute(select(WebSearchQuery))).scalar_one()
+        assert row.error_code == "G1_private_token"
+        assert row.query_text == "[withheld: G1_private_token]"
+
+    async def test_s1_a_refused_query_is_stored_bounded_and_url_stripped(self, session) -> None:  # noqa: ANN001
+        long_query = "transformers " * 60
+        await run_searches(
+            session,
+            [_req(long_query), _req("look at https://files.example/a?signature=abc123secretvalue")],
+            SearchContext(), provider=_fake(), cfg=_cfg(),
+        )
+        rows = (await session.execute(select(WebSearchQuery))).scalars().all()
+        by_code = {r.error_code: r for r in rows}
+        assert len(by_code["query_too_long"].query_text) <= q.MAX_QUERY_CHARS
+        stored = by_code["url_in_query"].query_text
+        leaked = "abc123secretvalue" in stored
+        assert leaked is False
+        assert "files.example" in stored
+
+    @pytest.mark.parametrize(
+        "payload",
+        ["?api_token=x", "session token=abc", "X-API-Key: y", "&sig=zzz", "tvly-abcdef"],
+    )
+    def test_s2_more_credential_markers(self, payload: str) -> None:
+        from app.services.providers.governance import (
+            CredentialInPayloadError,
+            assert_no_credentials,
+        )
+
+        with pytest.raises(CredentialInPayloadError):
+            assert_no_credentials(payload)
+
+    async def test_s3_c1_a_withheld_refusal_never_logs_its_hash(self, session, caplog) -> None:  # noqa: ANN001
+        caplog.set_level(logging.INFO)
+        request = _req("my secret holding competitors")
+        await run_searches(
+            session, [request], SearchContext(private_tokens=frozenset({"my secret holding"})),
+            provider=_fake(), cfg=_cfg(),
+        )
+        assert "request_hash=withheld" in caplog.text
+        leaked = request.request_hash()[:12] in caplog.text
+        assert leaked is False
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "ＡＡＰＬ outlook",  # full-width
+            "AAPL_Q3 results",  # underscore is not a word character here
+            "Аcme corp",  # Cyrillic А
+            "Pen​sana results",  # zero-width space
+            "Pen­sana results",  # soft hyphen
+        ],
+    )
+    def test_s4_g1_cannot_be_evaded(self, text: str) -> None:
+        tokens = {"AAPL", "Acme", "Pensana"}
+        assert q.sanitise_query(text, private_tokens=tokens).refusal in (
+            q.REFUSAL_PRIVATE_TOKEN,
+            q.REFUSAL_INVISIBLE_CHAR,
+        )
+        assert q.validate_outgoing_query(text, tokens) in (
+            q.REFUSAL_PRIVATE_TOKEN,
+            q.REFUSAL_INVISIBLE_CHAR,
+        )
+        assert q.find_private_token(text, tokens) is True
+
+    def test_s4_legitimate_text_still_passes(self) -> None:
+        tokens = {"AAPL", "Acme"}
+        assert q.sanitise_query("acmeville ports and aaplus", private_tokens=tokens).ok
+        assert q.validate_outgoing_query("Transformatorenhersteller börsennotiert", tokens) is None
+
+    async def test_s5_a_private_token_in_a_filter_is_withheld(self, session) -> None:  # noqa: ANN001
+        fake = _fake()
+        result = await run_searches(
+            session, [_req(include_domains=("pensana.co.uk",))],
+            SearchContext(private_tokens=frozenset({"Pensana"})), provider=fake, cfg=_cfg(),
+        )
+        assert result.outcomes[0].execution.error_code == "G1_private_token"
+        assert fake.requests == []
+        row = (await session.execute(select(WebSearchQuery))).scalar_one()
+        assert row.filters_json is None
+
+    @pytest.mark.parametrize(
+        "over",
+        [
+            {"include_domains": ("https://evil.example/path",)},
+            {"exclude_domains": ("10.0.0.5",)},
+            {"include_domains": ("*.example.com",)},
+            {"country": "Germany"},
+            {"language": "english"},
+        ],
+    )
+    async def test_s5_filters_must_be_well_formed(self, session, over: dict) -> None:  # noqa: ANN001
+        fake = _fake()
+        result = await run_searches(session, [_req(**over)], SearchContext(), provider=fake, cfg=_cfg())
+        assert result.outcomes[0].execution.error_code == "filter_invalid"
+        assert fake.requests == []
+        t = _Tavily()
+        execution, _ = await t.provider.search(_req(**over))
+        assert execution.error_code == "filter_invalid" and t.calls == []
+
+    @pytest.mark.parametrize("env", ["staging", "production", ""])
+    async def test_s6_the_fake_is_refused_outside_dev_and_test(self, session, env: str) -> None:  # noqa: ANN001
+        cfg = _cfg(app_env=env)
+        provider = web_search_provider_from_settings(cfg)
+        assert isinstance(provider, UnavailableSearchProvider)
+        assert provider.error_code == "fake_not_allowed_in_env"
+        result = await run_searches(session, [_req()], SearchContext(), cfg=cfg)
+        assert result.state == STATE_UNAVAILABLE
+        assert result.outcomes[0].execution.error_code == "fake_not_allowed_in_env"
+        assert result.network_call_count == 0
+
+    @pytest.mark.parametrize("env", ["development", "test"])
+    def test_s6_the_fake_is_allowed_in_dev_and_test(self, env: str) -> None:
+        assert isinstance(web_search_provider_from_settings(_cfg(app_env=env)), FakeWebSearchProvider)
+
+    def test_s7_c5_cached_from_must_be_a_uuid_and_callless(self) -> None:
+        common: dict[str, Any] = dict(
+            provider="x", executed=True, provider_request_id="r",
+            http_status=200, latency_ms=0, result_count=0,
+        )
+        with pytest.raises(ValueError, match="UUID"):
+            SearchExecution(**common, network_call_count=0, cached_from="anything")
+        with pytest.raises(ValueError, match="no network call"):
+            SearchExecution(**common, network_call_count=1, cached_from=str(uuid.uuid4()))
+        SearchExecution(**common, network_call_count=0, cached_from=str(uuid.uuid4()))
+
+    async def test_s8_the_url_is_built_from_the_validated_host(self) -> None:
+        t = _Tavily(base_url="https://API.TAVILY.COM/")
+        await t.provider.search(_req())
+        assert str(t.calls[0].url) == "https://api.tavily.com/search"
+
+    async def test_s9_result_urls_are_stored_without_secrets(self, session) -> None:  # noqa: ANN001
+        body = {
+            "request_id": "synthetic-s9",
+            "results": [{"url": "https://docs.example/report.pdf?token=abc123secretvalue&page=2",
+                         "title": "t", "content": "c"}],
+            "usage": {"credits": 1},
+        }
+        t = _Tavily(lambda r: httpx.Response(200, json=body))
+        await run_searches(session, [_req()], SearchContext(), provider=t.provider, cfg=_cfg())
+        row = (await session.execute(select(WebSearchResult))).scalar_one()
+        leaked = "abc123secretvalue" in (row.url + (row.canonical_url or ""))
+        assert leaked is False
+        assert "page=2" in row.url
+
+
+class TestReviewCode:
+    async def test_c2_a_cancelled_run_still_records_its_calls(self, session) -> None:  # noqa: ANN001
+        import asyncio
+
+        started = asyncio.Event()
+
+        class Hanging:
+            name = "fake_web_search"
+            capabilities = SearchCapabilities(result_storage="full")
+            is_configured = True
+
+            async def search(self, request):  # noqa: ANN001, ANN201
+                started.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(
+            run_searches(session, [_req()], SearchContext(), provider=Hanging(), cfg=_cfg())
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        row = (await session.execute(select(WebSearchQuery))).scalar_one()
+        assert (row.error_code, row.network_call_count, row.executed) == ("cancelled", 1, False)
+        assert await network_calls_today(session) == 1, "the daily cap sees the call"
+
+    @pytest.mark.parametrize(
+        ("handler", "unreported"),
+        [
+            (lambda r: httpx.Response(200, content=b"not json"), True),  # 2xx, probably billed
+            (lambda r: httpx.Response(429, json={}), False),  # refused, not billed
+        ],
+    )
+    async def test_c3_unreported_credits_are_unknown_never_flat_priced(
+        self, session, handler: Any, unreported: bool  # noqa: ANN001
+    ) -> None:
+        t = _Tavily(handler)
+        result = await run_searches(session, [_req()], SearchContext(), provider=t.provider, cfg=_cfg())
+        units = result.consumption
+        assert "tavily_credits" in units.instrumented
+        assert ("tavily_credits" in units.unreported) is unreported
+        book = price_book_from_settings(SimpleNamespace(
+            v3_price_vendor_rates='{"tavily": {"usd_per_credit": 0.008}}',
+            v3_price_per_thousand_web_searches=5.0,
+        ))
+        cost = derive_cost(units, book).estimated_usd
+        if unreported:
+            assert cost is None, "never the flat per-search price for a billed call"
+
+    async def test_c4_the_date_window_is_client_only_when_every_result_was_dated(self) -> None:
+        t = _Tavily(lambda r: httpx.Response(200, json=_fixture("tavily_news_catalyst.json")))
+        execution, items = await t.provider.search(_req(Q_NEWS, date_from=date(2026, 9, 1)))
+        assert items and all(i.published_hint for i in items)
+        assert execution.filters_enforced_by["date_range"] == "client"
+        assert execution.date_unchecked_count == 0
+
+    async def test_c4_the_fake_cannot_claim_a_window_it_did_not_check(self) -> None:
+        execution, _ = await _fake().search(_req(date_from=date(2025, 1, 1)))
+        assert execution.filters_enforced_by["date_range"] == "unsupported"
+        assert execution.date_unchecked_count == 2
+
+    async def test_c8_an_identical_request_in_one_batch_is_sent_once(self, session) -> None:  # noqa: ANN001
+        fake = _fake()
+        result = await run_searches(session, [_req(), _req("  " + Q_TRANSFORMERS.upper())], SearchContext(), provider=fake, cfg=_cfg())
+        assert len(fake.requests) == 1
+        first, dup = result.outcomes
+        assert dup.from_cache and dup.execution.cached_from == str(first.query_id)
+        assert dup.execution.network_call_count == 0
+        assert result.state == STATE_OK
+        row = await session.get(WebSearchQuery, dup.query_id)
+        assert row.served_from_query_id == first.query_id
+
+    async def test_c8_a_duplicate_of_a_failed_call_is_not_executed(self, session) -> None:  # noqa: ANN001
+        fake = _fake(mode=MODE_OUTAGE)
+        result = await run_searches(session, [_req(), _req()], SearchContext(), provider=fake, cfg=_cfg())
+        assert len(fake.requests) == 1
+        assert [o.execution.error_code for o in result.outcomes] == ["http_5xx", "duplicate_in_batch"]
+
+    async def test_c9_wall_time_is_checked_as_each_call_starts(self, session) -> None:  # noqa: ANN001
+        budget = _budget(wall=10, clock=_Clock(0.0, 0.0, 1000.0))
+        fake = _fake()
+        result = await run_searches(session, [_req()], SearchContext(budget=budget), provider=fake, cfg=_cfg())
+        assert result.outcomes[0].execution.error_code == "budget:max_wall_seconds"
+        assert fake.requests == []
+
+    async def test_c10_long_provenance_strings_are_clipped(self, session) -> None:  # noqa: ANN001
+        await run_searches(
+            session, [_req(template_version="t" * 100, origin="o" * 100)],
+            SearchContext(stage="s" * 100), provider=_fake(), cfg=_cfg(),
+        )
+        row = (await session.execute(select(WebSearchQuery))).scalar_one()
+        assert (len(row.template_version), len(row.origin), len(row.stage)) == (40, 30, 40)
+
+    async def test_c11_a_truncated_audit_says_so(self, session, monkeypatch) -> None:  # noqa: ANN001
+        from app.services.web_research import audit
+
+        job_id = uuid.uuid4()
+        await run_searches(
+            session, [_req(), _req(Q_NEWS)], SearchContext(research_job_id=job_id),
+            provider=_fake(), cfg=_cfg(),
+        )
+        monkeypatch.setattr(audit, "MAX_QUERIES", 1)
+        read = await audit.web_research_audit(session, research_job_id=job_id)
+        assert read.queries_truncated is True and len(read.queries) == 1
+        assert read.fetch_attempts_truncated is False
+
+
+class TestSurvivingMutants:
+    async def test_a_cache_serve_is_never_itself_a_cache_source(self, session) -> None:  # noqa: ANN001
+        # Kills: dropping `network_call_count > 0` from the cache query.
+        fake = _fake()
+        first = await run_searches(session, [_req()], SearchContext(), provider=fake, cfg=_cfg())
+        await run_searches(session, [_req()], SearchContext(), provider=fake, cfg=_cfg())
+        third = await run_searches(session, [_req()], SearchContext(), provider=fake, cfg=_cfg())
+        assert third.outcomes[0].execution.cached_from == str(first.outcomes[0].query_id)
+        assert len(fake.requests) == 1
+
+    async def test_a_failed_call_is_retried_later_the_same_day(self, session) -> None:  # noqa: ANN001
+        # Kills: dropping `executed.is_(True)` from the cache query.
+        fake = _fake(mode=MODE_HTTP_429)
+        await run_searches(session, [_req()], SearchContext(), provider=fake, cfg=_cfg())
+        fake.mode = "ok"
+        again = await run_searches(session, [_req()], SearchContext(), provider=fake, cfg=_cfg())
+        assert len(fake.requests) == 2
+        assert again.outcomes[0].execution.executed and not again.outcomes[0].from_cache
+
+    async def test_a_vendor_ignoring_exclude_domains_cannot_leak(self) -> None:
+        # Kills: disabling the client-side exclude_domains check (no date filter to hide it).
+        t = _Tavily()
+        execution, items = await t.provider.search(_req(exclude_domains=("aggregator.example",)))
+        assert "aggregator.example" not in [i.domain for i in items]
+        assert execution.client_filtered_count == 1
+        assert len(items) == 3
+
+    async def test_the_cache_bucket_is_the_utc_day_not_a_rolling_24h(self, session) -> None:  # noqa: ANN001
+        # Kills: replacing the UTC-day bucket with a rolling 24h window.
+        fake = _fake()
+        await run_searches(session, [_req()], SearchContext(), provider=fake, cfg=_cfg())
+        for row in (await session.execute(select(WebSearchQuery))).scalars():
+            row.created_at = datetime(2026, 9, 29, 23, 50, tzinfo=timezone.utc)
+        await session.flush()
+        after_midnight = datetime(2026, 9, 30, 0, 30, tzinfo=timezone.utc)
+        await run_searches(session, [_req()], SearchContext(), provider=fake, cfg=_cfg(), now=after_midnight)
+        assert len(fake.requests) == 2, "40 minutes old, but yesterday's bucket"

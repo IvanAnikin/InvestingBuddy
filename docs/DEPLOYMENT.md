@@ -2040,11 +2040,11 @@ provider is selected; `tavily` additionally needs a key (decision U1).
 | Setting | Default | What it does |
 |---|---|---|
 | `V3_WEB_SEARCH_ENABLED` | `false` | Master switch for any web search call (`services/web_research/search.py`). Off → state `web_search_disabled`, no rows, no socket. |
-| `V3_WEB_SEARCH_PROVIDER` | `none` | `none` / `fake` (tests, local) / `tavily`. Anything else — including `deepseek` — is reported unavailable (`unknown_provider`), never mapped to another vendor. |
+| `V3_WEB_SEARCH_PROVIDER` | `none` | `none` / `fake` (only when `APP_ENV` is `development` or `test`; elsewhere `fake_not_allowed_in_env`) / `tavily`. Anything else — including `deepseek` — is reported unavailable (`unknown_provider`), never mapped to another vendor. |
 | `V3_WEB_SEARCH_MAX_QUERIES_PER_DAY` | `300` | Platform cap on search calls per UTC day, counted from `web_search_queries.network_call_count` (failed calls count). `0` means none, not unbounded. |
 | `TAVILY_API_KEY` | *(empty)* | **Credential.** Key Vault reference; never commit, never log. Empty with `provider=tavily` → `web_search_unavailable` (`no_key`), zero network calls. |
 | `TAVILY_BASE_URL` | `https://api.tavily.com` | The adapter refuses any other host (`host_not_allowed`). |
-| `V3_PRICE_VENDOR_RATES` | *(existing)* | Add `"tavily": {"usd_per_credit": <USD>}` together with the key. Without it Tavily credits are unpriced and run cost is **unknown** (never zero), which engages escalation's unknown-cost block. |
+| `V3_PRICE_VENDOR_RATES` | *(existing)* | Add `"tavily": {"usd_per_credit": <USD>}` together with the key. Without it Tavily credits are unpriced and run cost is **unknown** (never zero), which engages escalation's unknown-cost block. A Tavily call that returned no credit figure (no `usage`, unparseable 2xx, timeout) also makes the cost unknown; the flat `V3_PRICE_PER_THOUSAND_WEB_SEARCHES` is never used for Tavily. |
 
 **Migration 042 must be applied before `V3_WEB_SEARCH_ENABLED=true`** (decision U9). With the
 flag off the W1 code never touches the new tables; the admin audit endpoint
