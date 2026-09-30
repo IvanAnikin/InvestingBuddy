@@ -1,33 +1,15 @@
 "use client";
 
-import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Surface from "@/components/product/Surface";
-import CandidateCard from "@/components/research/discovery/CandidateCard";
-import CandidateComparison from "@/components/research/discovery/CandidateComparison";
-import DiscoveryCouncilPanel from "@/components/research/discovery/DiscoveryCouncilPanel";
 import DiscoveryIntentPanel from "@/components/research/discovery/DiscoveryIntentPanel";
-import ExcludedCandidates from "@/components/research/discovery/ExcludedCandidates";
-import RunLimitations from "@/components/research/discovery/RunLimitations";
-import { splitWarningSubjects } from "@/components/research/discovery/candidateView";
-import { useDiscoveryCouncil } from "@/components/research/discovery/useDiscoveryCouncil";
-import {
-  buildResearchLinkState,
-  NO_RESEARCH_LINK,
-  type ResearchLinkState,
-} from "@/components/research/reportResolution";
 import {
   createThesisDiscoveryRun,
-  fetchReport,
-  fetchReports,
-  getCandidateAnalysisJob,
-  getDiscoveryRun,
-  listDiscoveryCandidates,
   listDiscoveryRuns,
   listSupportedFilters,
   listSupportedThemes,
   parseThesis,
-  runCandidateAnalysis,
 } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import {
@@ -35,31 +17,13 @@ import {
   buildThesisDiscoveryRequest,
 } from "@/lib/workflows";
 import type {
-  DiscoveryCandidate,
   DiscoveryRun,
   ParseThesisResponse,
-  Report,
-  ReportList,
-  RunCandidateAnalysisResponse,
   SupportedFiltersResponse,
   SupportedThemesResponse,
 } from "@/types/api";
-
-const POLL_INTERVAL_MS = 3000;
-
-const TERMINAL_RUN_STATUSES = new Set([
-  "completed",
-  "completed_with_warnings",
-  "failed",
-  "cancelled",
-]);
-
-const TERMINAL_JOB_STATUSES = new Set([
-  "completed",
-  "completed_with_warnings",
-  "failed",
-  "interrupted",
-]);
+import DiscoveryRunView from "./DiscoveryRunView";
+import { discoveryRunPath } from "./runRoute";
 
 const inputCls =
   "w-full rounded-lg border border-[color:var(--ib-line)] bg-[color:var(--ib-surface)] px-3.5 py-2.5 text-sm text-[color:var(--ib-ink)] placeholder:text-[color:var(--ib-ink-3)] focus:border-[color:var(--ib-line-strong)] focus:outline-none";
@@ -73,44 +37,26 @@ const FALLBACK_EXAMPLES = [
   "European companies benefiting from grid modernisation",
 ];
 
-function runStateLabel(run: DiscoveryRun): string {
-  switch (run.status) {
-    case "pending":
-      return "Queued";
-    case "running":
-    case "processing":
-      return "Scanning the universe";
-    case "completed":
-      return "Complete";
-    case "completed_with_warnings":
-      return "Complete, with warnings";
-    case "failed":
-      return "Failed";
-    default:
-      return run.status;
-  }
+function createdAtMs(run: DiscoveryRun): number {
+  const ms = Date.parse(run.created_at);
+  return Number.isNaN(ms) ? 0 : ms;
 }
 
-function jobStateLabel(status: string | undefined | null): string {
-  switch (status) {
-    case "pending":
-      return "Queued";
-    case "running":
-      return "Researching";
-    case "completed":
-      return "Research complete";
-    case "completed_with_warnings":
-      return "Complete, with warnings";
-    case "failed":
-      return "Failed";
-    case "interrupted":
-      return "Interrupted";
-    default:
-      return status ?? "";
-  }
+/**
+ * `base` plus every run in `extra` it does not already hold, newest first.
+ * Returns `base` itself when nothing is added, so a poll that re-reports a
+ * known run causes no re-render.
+ */
+function mergeRuns(base: DiscoveryRun[], extra: DiscoveryRun[]): DiscoveryRun[] {
+  const known = new Set(base.map((r) => r.id));
+  const added = extra.filter((r) => !known.has(r.id));
+  if (added.length === 0) return base;
+  return [...base, ...added].sort((a, b) => createdAtMs(b) - createdAtMs(a));
 }
 
-export default function DiscoveryWorkbench() {
+export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
+  const router = useRouter();
+
   // --- form -----------------------------------------------------------------
   const [thesis, setThesis] = useState("");
   const [detected, setDetected] = useState<ParseThesisResponse | null>(null);
@@ -142,33 +88,16 @@ export default function DiscoveryWorkbench() {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   // --- runs -----------------------------------------------------------------
+  // Which run is open is the URL's business (`runId`); this is only the list
+  // the selector offers.
   const [runs, setRuns] = useState<DiscoveryRun[]>([]);
-  const [runId, setRunId] = useState<string | null>(null);
-  const [run, setRun] = useState<DiscoveryRun | null>(null);
-  const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
-  const [candidatesError, setCandidatesError] = useState<string | null>(null);
-
-  // --- per-candidate research jobs -----------------------------------------
-  const [jobs, setJobs] = useState<
-    Record<string, RunCandidateAnalysisResponse | undefined>
-  >({});
-  const [jobErrors, setJobErrors] = useState<Record<string, string | undefined>>(
-    {},
-  );
-
-  // --- which report is each candidate's CURRENT research? -------------------
-  //
-  // `candidate.analysis_report_id` is NOT that answer. The screening pass links
-  // the deterministic draft it produced for every ticker it touched, so a
-  // freshly screened candidate already points at a report that says
-  // "pre-council historical draft". Resolving the real answer needs the
-  // report's company and then that company's reports — both plain reads.
-  const [links, setLinks] = useState<Record<string, ResearchLinkState>>({});
-  const [linksResolved, setLinksResolved] = useState(false);
-
-  // --- the run-level research council ---------------------------------------
-  // Read-only on mount; started only when the reader asks.
-  const council = useDiscoveryCouncil(runId);
+  const [runsLoaded, setRunsLoaded] = useState(false);
+  // The run just created here, handed to its run view so it shows at once.
+  const [createdRun, setCreatedRun] = useState<DiscoveryRun | null>(null);
+  // True from the moment a run is being created until its address is the
+  // page, so the bare page's "open the newest run" step cannot race it — not
+  // even when the run list arrives while the create request is in flight.
+  const navigatingToRun = useRef(false);
 
   // Supported themes + selector options. Both are conveniences: a failure
   // leaves the form fully usable, it just offers no examples or options.
@@ -204,21 +133,28 @@ export default function DiscoveryWorkbench() {
   // nothing, whether because the text is too short, the parser found no scope,
   // or the request failed, the inferred fields are CLEARED. A filter inferred
   // from the previous thesis must never survive into the next one.
-  useEffect(() => {
-    const text = thesis.trim();
+  //
+  // Text too short to parse is handled where the text changes
+  // (`updateThesis`), not here: clearing state synchronously inside an effect
+  // costs a second render for nothing.
+  function clearInferred() {
+    if (!regionEdited.current) setRegion("");
+    if (!countryEdited.current) setCountry("");
+    if (!sectorEdited.current) setSector("");
+  }
 
-    function clearInferred() {
-      if (!regionEdited.current) setRegion("");
-      if (!countryEdited.current) setCountry("");
-      if (!sectorEdited.current) setSector("");
-    }
-
-    if (text.length < 3) {
+  function updateThesis(value: string) {
+    setThesis(value);
+    if (value.trim().length < 3) {
       setDetected(null);
       setParseFailed(false);
       clearInferred();
-      return;
     }
+  }
+
+  useEffect(() => {
+    const text = thesis.trim();
+    if (text.length < 3) return;
 
     let cancelled = false;
     const handle = window.setTimeout(async () => {
@@ -234,7 +170,9 @@ export default function DiscoveryWorkbench() {
         if (cancelled) return;
         setDetected(null);
         setParseFailed(true);
-        clearInferred();
+        if (!regionEdited.current) setRegion("");
+        if (!countryEdited.current) setCountry("");
+        if (!sectorEdited.current) setSector("");
       }
     }, 400);
     return () => {
@@ -265,17 +203,21 @@ export default function DiscoveryWorkbench() {
         country !== (detected.country ?? "") ||
         sector !== (detected.sector ?? "")));
 
-  // Recent runs, so returning to the page resumes where you left off.
+  // The reader's recent runs, for the run selector — and, on the bare
+  // `/research/discover`, to open the newest one.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const data = await listDiscoveryRuns();
         if (cancelled) return;
-        setRuns(data.runs);
-        setRunId((current) => current ?? data.runs[0]?.id ?? null);
+        // The list is the newest 50. A run opened by its URL that is older than
+        // that has already been merged in; keep it.
+        setRuns((prev) => mergeRuns(data.runs, prev));
       } catch {
-        /* non-fatal */
+        /* non-fatal — the selector just has less to offer */
+      } finally {
+        if (!cancelled) setRunsLoaded(true);
       }
     })();
     return () => {
@@ -283,143 +225,46 @@ export default function DiscoveryWorkbench() {
     };
   }, []);
 
-  const loadCandidates = useCallback(async (id: string) => {
-    try {
-      // V3.19 — the run's own ranking (eligibility first on a verified run).
-      const data = await listDiscoveryCandidates(id, { sort: "rank" });
-      setCandidates(data.candidates);
-      setCandidatesError(null);
-    } catch (e) {
-      setCandidatesError(
-        e instanceof Error ? e.message : "Could not load candidates.",
-      );
-    }
-  }, []);
-
-  // Poll the selected run until it reaches a terminal state, refreshing the
-  // candidate list as the queue fills.
-  useEffect(() => {
-    if (!runId) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    async function poll(id: string) {
-      let status: string | undefined;
-      try {
-        const detail = await getDiscoveryRun(id);
-        if (cancelled) return;
-        status = detail.status;
-        setRun(detail);
-        await loadCandidates(id);
-      } catch {
-        /* transient — keep the last known state */
-      }
-      if (cancelled) return;
-      if (!status || !TERMINAL_RUN_STATUSES.has(status)) {
-        timer = setTimeout(() => void poll(id), POLL_INTERVAL_MS);
-      }
-    }
-
-    setCandidates([]);
-    void poll(runId);
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [runId, loadCandidates]);
-
-  // Resolve, for every candidate that points at a report, which report is that
-  // company's CURRENT research — and whether the one it points at IS that.
+  // A run opened by its URL is added to the selector even when it is not
+  // among the newest 50 the list returns.
   //
-  // Two reads per candidate: the linked report (which carries the company FK)
-  // and that company's own report list. Both are plain reads of endpoints that
-  // already exist, keyed off the candidate set so a poll tick that returns the
-  // same candidates does not re-run them. A candidate with no linked report
-  // needs neither read — it is screening-only, which is already the answer.
-  const linkedReportKey = candidates
-    .map((c) => c.analysis_report_id ?? "")
-    .join("|");
+  // The create-time snapshot has done its job once the run's own poll answers;
+  // dropping it means a later Back/Forward remount shows the polled run, not
+  // the stale "pending" envelope from creation.
+  const handleRunLoaded = useCallback((run: DiscoveryRun) => {
+    setRuns((prev) => mergeRuns(prev, [run]));
+    setCreatedRun((prev) => (prev?.id === run.id ? null : prev));
+  }, []);
 
+  // Once a run's own address is showing, a later visit to the bare page may
+  // move to the newest run again.
   useEffect(() => {
-    const linked = candidates.filter((c) => c.analysis_report_id);
-    if (linked.length === 0) {
-      setLinks({});
-      setLinksResolved(true);
-      return;
-    }
-    let cancelled = false;
-    setLinksResolved(false);
+    if (runId !== undefined) navigatingToRun.current = false;
+  }, [runId]);
 
-    void (async () => {
-      const cohorts = new Map<string, ReportList>();
-      const next: Record<string, ResearchLinkState> = {};
-
-      await Promise.all(
-        linked.map(async (c) => {
-          try {
-            const report = await fetchReport(c.analysis_report_id as string);
-            const companyId = report.company_id;
-            let cohort: Report[] = [];
-            if (companyId) {
-              let list = cohorts.get(companyId);
-              if (!list) {
-                list = await fetchReports(50, 0, { companyId });
-                cohorts.set(companyId, list);
-              }
-              cohort = list.items;
-            }
-            next[c.id] = buildResearchLinkState(report, cohort);
-          } catch {
-            // A report that cannot be read is not evidence that research
-            // exists. The candidate stays in its screening-only state.
-            next[c.id] = NO_RESEARCH_LINK;
-          }
-        }),
-      );
-
-      if (cancelled) return;
-      setLinks(next);
-      setLinksResolved(true);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-    // `linkedReportKey` is the candidate set's report linkage, which is what
-    // actually needs re-resolving — not every poll-refreshed candidate object.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [linkedReportKey]);
-
-  // Poll every in-flight per-candidate research job.
+  // The bare `/research/discover` opens the newest run by REPLACING the
+  // address, so Back does not bounce the reader through this page again. With
+  // no runs at all it stays on the empty form.
   useEffect(() => {
-    const pending = Object.entries(jobs).filter(
-      ([, job]) => job && !TERMINAL_JOB_STATUSES.has(job.status),
-    );
-    if (pending.length === 0) return;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      for (const [candidateId] of pending) {
-        try {
-          const next = await getCandidateAnalysisJob(candidateId);
-          if (cancelled) return;
-          setJobs((prev) => ({ ...prev, [candidateId]: next }));
-        } catch {
-          /* transient — the job continues server-side */
-        }
-      }
-      if (!cancelled && runId) void loadCandidates(runId);
-    }, POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [jobs, runId, loadCandidates]);
+    if (runId !== undefined || !runsLoaded || navigatingToRun.current) return;
+    const latest = runs[0];
+    if (latest) router.replace(discoveryRunPath(latest.id));
+  }, [runId, runsLoaded, runs, router]);
+
+  function openRun(id: string) {
+    if (id === runId) return;
+    router.push(discoveryRunPath(id));
+  }
+
+  const otherRuns = runs.some((r) => r.id !== runId);
+  const selectedInList = Boolean(runId && runs.some((r) => r.id === runId));
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!thesis.trim()) return;
     setSubmitting(true);
     setSubmitError(null);
+    navigatingToRun.current = true;
     try {
       // Built by the SAME helper the admin console uses, so an identical
       // description produces an identical run on either surface — including
@@ -439,11 +284,18 @@ export default function DiscoveryWorkbench() {
           maxCandidates: parseInt(maxCandidates, 10) || undefined,
         }),
       );
-      setRuns((prev) => [created, ...prev]);
-      setRun(created);
-      setRunId(created.id);
-      setJobs({});
+      // The new run's own address becomes the page. The run is handed to the
+      // run view directly so it shows before its first poll returns.
+      setCreatedRun(created);
+      const path = discoveryRunPath(created.id);
+      // From the bare page, REPLACE: pushing would leave `/research/discover`
+      // in history, and Back would land there only to be sent straight on to
+      // the newest run — Back would appear to do nothing. From another run's
+      // address, push, so Back returns to that run.
+      if (runId === undefined) router.replace(path);
+      else router.push(path);
     } catch (e) {
+      navigatingToRun.current = false;
       setSubmitError(
         e instanceof Error ? e.message : "Could not start the discovery run.",
       );
@@ -452,44 +304,7 @@ export default function DiscoveryWorkbench() {
     }
   }
 
-  async function startCandidateResearch(candidate: DiscoveryCandidate) {
-    setJobErrors((prev) => ({ ...prev, [candidate.id]: undefined }));
-    try {
-      const job = await runCandidateAnalysis(candidate.id);
-      setJobs((prev) => ({ ...prev, [candidate.id]: job }));
-    } catch (e) {
-      setJobErrors((prev) => ({
-        ...prev,
-        [candidate.id]:
-          e instanceof Error ? e.message : "Could not start research.",
-      }));
-    }
-  }
-
   const examples = themes?.examples?.length ? themes.examples : FALLBACK_EXAMPLES;
-
-  // The backend already deduplicates warnings into canonical groups and names
-  // the candidates each one affects. A group naming exactly ONE candidate is
-  // that candidate's limitation and belongs on its card; everything else is a
-  // limitation of the run and is stated once, not six times.
-  const allWarningGroups = (run?.warning_groups ?? []).filter(
-    (g) => g.severity === "blocking" || g.severity === "warning",
-  );
-  const cohortWarningGroups = allWarningGroups.filter(
-    (g) => splitWarningSubjects(g.subjects).cohortWide,
-  );
-  const warningsByTicker = useMemo(() => {
-    const out: Record<string, string[]> = {};
-    for (const g of allWarningGroups) {
-      const { cohortWide, ticker } = splitWarningSubjects(g.subjects);
-      if (cohortWide || !ticker) continue;
-      (out[ticker] ??= []).push(g.message);
-    }
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [run?.warning_groups]);
-
-  const runIsTerminal = Boolean(run && TERMINAL_RUN_STATUSES.has(run.status));
 
   return (
     <div className="space-y-8">
@@ -512,7 +327,7 @@ export default function DiscoveryWorkbench() {
               className={inputCls}
               placeholder="Describe the theme, market or idea in your own words."
               value={thesis}
-              onChange={(e) => setThesis(e.target.value)}
+              onChange={(e) => updateThesis(e.target.value)}
             />
             <p className="mt-2 text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
               Discovery searches a bounded, auditable company registry and
@@ -525,7 +340,7 @@ export default function DiscoveryWorkbench() {
               <button
                 key={example}
                 type="button"
-                onClick={() => setThesis(example)}
+                onClick={() => updateThesis(example)}
                 className="rounded-lg border border-[color:var(--ib-line)] px-3 py-1.5 text-left font-mono text-xs text-[color:var(--ib-ink-3)] transition-colors hover:border-[color:var(--ib-line-strong)] hover:text-[color:var(--ib-ink-2)]"
               >
                 {example}
@@ -725,14 +540,22 @@ export default function DiscoveryWorkbench() {
             >
               {submitting ? "Starting…" : "Run discovery"}
             </button>
-            {runs.length > 1 && (
-              <label className="text-xs text-[color:var(--ib-ink-3)]">
-                Previous runs{" "}
+            {otherRuns && (
+              <label className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 text-xs text-[color:var(--ib-ink-3)]">
+                Runs
                 <select
-                  className="ml-1 rounded-lg border border-[color:var(--ib-line)] bg-[color:var(--ib-surface)] px-2 py-1.5 text-xs text-[color:var(--ib-ink-2)]"
-                  value={runId ?? ""}
-                  onChange={(e) => setRunId(e.target.value || null)}
+                  data-testid="discovery-run-select"
+                  className="min-w-0 max-w-full rounded-lg border border-[color:var(--ib-line)] bg-[color:var(--ib-surface)] px-2 py-1.5 text-xs text-[color:var(--ib-ink-2)]"
+                  value={selectedInList ? (runId ?? "") : ""}
+                  onChange={(e) => {
+                    if (e.target.value) openRun(e.target.value);
+                  }}
                 >
+                  {!selectedInList && (
+                    <option value="" disabled className="bg-[#0a0f1c]">
+                      Choose a run
+                    </option>
+                  )}
                   {runs.map((r) => (
                     <option key={r.id} value={r.id} className="bg-[#0a0f1c]">
                       {(r.thesis_text ?? r.universe_source ?? "run").slice(0, 48)}{" "}
@@ -756,155 +579,14 @@ export default function DiscoveryWorkbench() {
         </form>
       </Surface>
 
-      {/* ---------------------------------------------------------------- */}
-      {/* Run state                                                          */}
-      {/* ---------------------------------------------------------------- */}
-      {run && (
-        <Surface className="p-6" testId="discovery-run-state">
-          <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-[color:var(--ib-ink)]">
-                {run.thesis_text ?? "Discovery run"}
-              </p>
-              <p className="mt-1 text-xs text-[color:var(--ib-ink-3)]">
-                {runStateLabel(run)} · {run.processed_count} of{" "}
-                {run.universe_count} screened · {run.candidate_count} candidate
-                {run.candidate_count === 1 ? "" : "s"}
-                {run.error_count > 0 ? ` · ${run.error_count} error(s)` : ""}
-              </p>
-            </div>
-            <Link
-              href="/admin/discovery"
-              className="shrink-0 text-xs text-[color:var(--ib-ink-3)] underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"
-            >
-              Run diagnostics
-            </Link>
-          </div>
-
-          {!TERMINAL_RUN_STATUSES.has(run.status) && (
-            <div
-              className="mt-4 h-1 w-full overflow-hidden rounded-full bg-[color:var(--ib-line)]"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(run.progress_pct ?? 0)}
-              aria-label="Discovery progress"
-            >
-              <div
-                className="h-full bg-[color:var(--ib-accent)] transition-[width] duration-500"
-                style={{ width: `${Math.max(3, Math.round(run.progress_pct ?? 0))}%` }}
-              />
-            </div>
-          )}
-
-          {/* V3.19 — what this run understood, and the verification funnel. */}
-          <div className="mt-4 space-y-3">
-            <DiscoveryIntentPanel
-              intent={run.parsed_thesis_json?.discovery_intent}
-              testId="run-intent"
-            />
-            <ExcludedCandidates stage={run.universe_json?.dynamic} />
-          </div>
-        </Surface>
-      )}
-
-      {/* ---------------------------------------------------------------- */}
-      {/* Research Council review                                            */}
-      {/* ---------------------------------------------------------------- */}
       {runId && (
-        <DiscoveryCouncilPanel
-          council={council}
-          runIsTerminal={runIsTerminal}
-          candidateCount={candidates.length}
+        <DiscoveryRunView
+          key={runId}
+          runId={runId}
+          initialRun={createdRun?.id === runId ? createdRun : null}
+          onRunLoaded={handleRunLoaded}
         />
       )}
-
-      {/* ---------------------------------------------------------------- */}
-      {/* Candidates                                                         */}
-      {/* ---------------------------------------------------------------- */}
-      {candidatesError && (
-        <Surface className="p-5">
-          <p className="text-sm text-amber-300">{candidatesError}</p>
-        </Surface>
-      )}
-
-      {candidates.length > 0 && (
-        <CandidateComparison candidates={candidates} council={council.view} />
-      )}
-
-      {cohortWarningGroups.length > 0 && (
-        <RunLimitations
-          groups={cohortWarningGroups}
-          rawCount={run?.warning_raw_count ?? run?.warnings?.length ?? 0}
-        />
-      )}
-
-      {candidates.length > 0 && (
-        <section aria-label="Discovery candidates" className="space-y-3">
-          <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
-              Candidates
-            </h2>
-            <p className="text-xs text-[color:var(--ib-ink-3)]">
-              {candidates.length} candidate
-              {candidates.length === 1 ? "" : "s"}
-            </p>
-          </div>
-
-          {/* One page-level explanation of the score, instead of the same
-              paragraph repeated under every card. */}
-          <p className="max-w-3xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
-            The screening score in the comparison is an internal, deterministic
-            score out of 100 (it includes share-price momentum). It is not the
-            council&apos;s research priority, not a rating, says nothing about
-            what a company is worth, and implies no investment action. Candidates
-            are ordered by how fully they were verified against your requirements.
-          </p>
-
-          <ul className="space-y-3 pt-1" data-testid="discovery-candidates">
-            {candidates.map((c) => {
-              const job = jobs[c.id];
-              const jobRunning = Boolean(
-                job && !TERMINAL_JOB_STATUSES.has(job.status),
-              );
-              return (
-                <li key={c.id}>
-                  <CandidateCard
-                    candidate={c}
-                    council={council.view}
-                    link={links[c.id] ?? NO_RESEARCH_LINK}
-                    linkResolved={linksResolved}
-                    jobLabel={job ? jobStateLabel(job.status) : null}
-                    jobRunning={jobRunning}
-                    jobError={jobErrors[c.id] ?? job?.error ?? null}
-                    jobReportId={
-                      job && TERMINAL_JOB_STATUSES.has(job.status)
-                        ? job.analysis_report_id
-                        : null
-                    }
-                    onResearch={() => void startCandidateResearch(c)}
-                    candidateWarnings={warningsByTicker[c.ticker] ?? []}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
-
-      {run &&
-        TERMINAL_RUN_STATUSES.has(run.status) &&
-        candidates.length === 0 &&
-        !candidatesError && (
-          <Surface className="p-8 text-center">
-            <p className="text-sm text-[color:var(--ib-ink-2)]">
-              No candidate cleared the screen for this description.
-            </p>
-            <p className="mt-1 text-sm text-[color:var(--ib-ink-3)]">
-              Try a broader region or sector, or describe the theme differently.
-            </p>
-          </Surface>
-        )}
     </div>
   );
 }

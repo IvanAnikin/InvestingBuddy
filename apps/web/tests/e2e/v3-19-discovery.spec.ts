@@ -13,12 +13,16 @@ import { adminTest as test } from "../support/auth";
  */
 
 const THESIS = "small cap growing european luxury companies";
+// The run the mock backend creates for THESIS (tests/support/v319-fixtures.mjs).
+const V319_RUN_ID = "77777777-0000-0000-0000-000000000319";
 
 async function run(page: import("@playwright/test").Page) {
   await page.goto("/research/discover");
   await page.getByTestId("discovery-thesis").fill(THESIS);
   await expect(page.getByTestId("thesis-detected")).toBeVisible();
   await page.getByTestId("run-discovery").click();
+  // The new run is opened at its own, bookmarkable address.
+  await expect(page).toHaveURL(new RegExp(`/research/discover/${V319_RUN_ID}$`));
   await expect(page.getByTestId("discovery-candidates")).toBeVisible();
 }
 

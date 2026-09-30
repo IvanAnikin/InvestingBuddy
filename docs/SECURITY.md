@@ -418,6 +418,13 @@ e2e/v2-live-corrective.spec.ts` pins the whole contract:
 | `/admin`, `/admin/**` | 307 → `/login` |
 | `/api/admin/proxy/**` | 401 (403 when authenticated but not allowlisted) |
 
+A discovery run's own address, `/research/discover/<run id>`, is covered by the
+same `/research/:path*` matcher: anonymous, it answers 307 →
+`/login?callbackUrl=/research/discover/<run id>` and the destination survives
+sign-in (pinned by `auth.spec.ts` test 24b). The discovery page's "Copy link"
+hands out exactly this signed-in route — there is no share token and no public
+view of a run.
+
 The async company-research endpoints are reached only through the same
 server-side admin proxy as every other backend call — the browser never holds a
 backend credential.

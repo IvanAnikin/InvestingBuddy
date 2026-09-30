@@ -164,7 +164,7 @@ test.describe("Discovery — research council review", () => {
     await expect(page.getByTestId("discovery-council")).toBeVisible();
 
     // Every council request names the run the page is showing — never another.
-    const runId = "77777777-0000-0000-0000-0000000001ux";
+    const runId = "77777777-0000-0000-0000-0000000001cc";
     expect(urls.length).toBeGreaterThan(0);
     for (const url of urls) {
       expect(url).toContain(`/market-discovery/runs/${runId}/council-review`);
