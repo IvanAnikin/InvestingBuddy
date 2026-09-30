@@ -17,6 +17,7 @@ import {
   type ResearchLinkState,
 } from "@/components/research/reportResolution";
 import {
+  ApiError,
   fetchReport,
   fetchReports,
   getCandidateAnalysisJob,
@@ -43,6 +44,24 @@ const TERMINAL_RUN_STATUSES = new Set([
   "failed",
   "cancelled",
 ]);
+
+/**
+ * Answers to the run GET that retrying cannot change. Polling stops on these
+ * and the page says why, instead of asking again every few seconds forever.
+ */
+function finalRunError(e: unknown): string | null {
+  if (!(e instanceof ApiError)) return null;
+  switch (e.status) {
+    case 401:
+      return "Your session has ended. Sign in again, then reload this page to see the run.";
+    case 403:
+      return "This account is not allowed to read discovery runs.";
+    case 422:
+      return "The backend did not accept this run id.";
+    default:
+      return null;
+  }
+}
 
 const TERMINAL_JOB_STATUSES = new Set([
   "completed",
@@ -112,6 +131,8 @@ export default function DiscoveryRunView({
   // True once the backend has said this run does not exist. Polling stops and
   // the page says so — it never quietly shows some other run instead.
   const [missing, setMissing] = useState(false);
+  // Set when the run GET failed in a way retrying cannot fix (401/403/422).
+  const [runError, setRunError] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
 
@@ -169,6 +190,11 @@ export default function DiscoveryRunView({
         if (cancelled) return;
         if (isNotFound(e)) {
           setMissing(true);
+          return;
+        }
+        const final = finalRunError(e);
+        if (final) {
+          setRunError(final);
           return;
         }
         /* transient — keep the last known state and try again */
@@ -332,6 +358,14 @@ export default function DiscoveryRunView({
 
   return (
     <>
+      {runError && (
+        <Surface className="p-5" testId="discovery-run-error">
+          <p role="alert" className="text-sm text-amber-300">
+            {runError}
+          </p>
+        </Surface>
+      )}
+
       {/* ---------------------------------------------------------------- */}
       {/* Run state                                                          */}
       {/* ---------------------------------------------------------------- */}

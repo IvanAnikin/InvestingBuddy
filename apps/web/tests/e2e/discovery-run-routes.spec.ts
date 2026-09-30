@@ -24,6 +24,7 @@ const DEFENSE_THESIS = "European defense suppliers benefiting from NATO spending
 const DEFENSE_RUN = "77777777-0000-0000-0000-000000000def";
 
 const LIST_ROUTE = "**/api/admin/proxy/api/v1/market-discovery/runs";
+const CREATE_ROUTE = "**/api/admin/proxy/api/v1/market-discovery/thesis-runs";
 
 function listedRun(id: string, thesis: string, createdAt: string) {
   return {
@@ -94,10 +95,14 @@ test.describe("Discovery — a run's own address", () => {
 
   test("the bare page with no runs stays on the empty form", async ({ page }) => {
     await listRuns(page, []);
+    const listed = page.waitForResponse(
+      (res) =>
+        res.url().endsWith("/api/v1/market-discovery/runs") &&
+        res.request().method() === "GET",
+    );
     await page.goto("/research/discover");
+    await listed;
     await expect(page.getByTestId("discovery-thesis")).toBeVisible();
-    // Give a redirect the chance to (wrongly) happen.
-    await page.waitForTimeout(500);
     await expect(page).toHaveURL(/\/research\/discover$/);
     await expect(page.getByTestId("discovery-run-state")).toHaveCount(0);
     await expect(page.getByTestId("discovery-run-select")).toHaveCount(0);
@@ -142,6 +147,76 @@ test.describe("Discovery — a run's own address", () => {
     await expect(select.locator("option")).toHaveCount(2);
   });
 
+  test("creating a run from the bare page replaces it, so Back leaves Discovery", async ({
+    page,
+  }) => {
+    await listRuns(page, []);
+    await page.goto("/research");
+    await page.goto("/research/discover");
+    await page.getByTestId("discovery-thesis").fill(DEFENSE_THESIS);
+    await expect(page.getByTestId("thesis-detected")).toBeVisible();
+    await page.getByTestId("run-discovery").click();
+    await expect(page).toHaveURL(runUrl(DEFENSE_RUN));
+    await expectShowing(page, DEFENSE_THESIS);
+
+    // The bare page is not left in history to bounce the reader forward again.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/research$/);
+  });
+
+  test("a run list arriving while a run is being created does not open an older run", async ({
+    page,
+  }) => {
+    // Hold the list until the create request is in flight, then hold the
+    // create until the list has been answered: the exact race.
+    let createStarted!: () => void;
+    const creating = new Promise<void>((resolve) => (createStarted = resolve));
+    let listAnswered!: () => void;
+    const answered = new Promise<void>((resolve) => (listAnswered = resolve));
+    const runs = [
+      listedRun(RUN_B, THESIS_B, "2026-09-02T10:00:00Z"),
+      listedRun(RUN_A, THESIS_A, "2026-09-01T10:00:00Z"),
+    ];
+    await page.route(LIST_ROUTE, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      await creating;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ runs, total: runs.length, disclaimer: "" }),
+      });
+      listAnswered();
+    });
+    await page.route(CREATE_ROUTE, async (route) => {
+      createStarted();
+      await answered;
+      // Let the page process the list before the create answers.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await route.fallback();
+    });
+
+    await page.goto("/research");
+    await page.goto("/research/discover");
+    await page.getByTestId("discovery-thesis").fill(DEFENSE_THESIS);
+    await expect(page.getByTestId("thesis-detected")).toBeVisible();
+    await page.getByTestId("run-discovery").click();
+
+    await expect(page).toHaveURL(runUrl(DEFENSE_RUN));
+    await expectShowing(page, DEFENSE_THESIS);
+    // Had the page jumped to B mid-create, Back would land on B.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/research$/);
+  });
+
+  test("an upper-case run id is rewritten to the canonical address", async ({
+    page,
+  }) => {
+    await listRuns(page);
+    await page.goto(runPath(RUN_A.toUpperCase()));
+    await expect(page).toHaveURL(runUrl(RUN_A));
+    await expectShowing(page, THESIS_A);
+  });
+
   test("creating a run moves to the new run's address", async ({ page }) => {
     await listRuns(page);
     await page.goto(runPath(RUN_A));
@@ -174,7 +249,10 @@ test.describe("Discovery — copying a run's link", () => {
     await expectShowing(page, THESIS_A);
 
     await page.getByTestId("copy-run-link").click();
-    await expect(page.getByTestId("copy-run-link-status")).toHaveText("Copied");
+    const status = page.getByTestId("copy-run-link-status");
+    await expect(status).toHaveText("Copied");
+    // It clears, so the next click is announced again.
+    await expect(status).toHaveText("", { timeout: 6_000 });
     const copied = await page.evaluate(() => navigator.clipboard.readText());
     const origin = new URL(page.url()).origin;
     expect(copied).toBe(`${origin}/research/discover/${RUN_A}`);
@@ -206,7 +284,10 @@ test.describe("Discovery — copying a run's link", () => {
     const origin = new URL(page.url()).origin;
     await expect(field).toHaveValue(`${origin}/research/discover/${RUN_A}`);
     await expect(field).toHaveAttribute("readonly", "");
-    await expect(page.getByTestId("copy-run-link-status")).toHaveText("");
+    await expect(field).toBeFocused();
+    await expect(page.getByTestId("copy-run-link-status")).toHaveText(
+      "Could not copy — link shown below",
+    );
   });
 });
 
@@ -241,6 +322,29 @@ test.describe("Discovery — a run that is not there", () => {
     await expect(page).toHaveURL(runUrl(MISSING));
     await expect(page.getByTestId("discovery-run-state")).toHaveCount(0);
     await expect(page.getByTestId("discovery-candidates")).toHaveCount(0);
+  });
+
+  test("a forbidden answer stops polling and says why", async ({ page }) => {
+    const detailGets: string[] = [];
+    await page.route(`**/api/admin/proxy/api/v1/market-discovery/runs/${RUN_A}`, async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      detailGets.push(route.request().url());
+      await route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Forbidden" }),
+      });
+    });
+    await listRuns(page);
+    await page.goto(runPath(RUN_A));
+    await expect(page.getByTestId("discovery-run-error")).toContainText(
+      "not allowed to read discovery runs",
+    );
+    const settled = detailGets.length;
+    expect(settled).toBeLessThanOrEqual(2);
+    await page.waitForTimeout(7_000);
+    expect(detailGets.length).toBe(settled);
+    await expect(page).toHaveURL(runUrl(RUN_A));
   });
 
   test("an address that is not a run id is a 404", async ({ page }) => {

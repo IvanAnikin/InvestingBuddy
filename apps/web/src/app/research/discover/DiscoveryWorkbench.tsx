@@ -94,8 +94,9 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
   const [runsLoaded, setRunsLoaded] = useState(false);
   // The run just created here, handed to its run view so it shows at once.
   const [createdRun, setCreatedRun] = useState<DiscoveryRun | null>(null);
-  // True between creating a run and its address becoming the page, so the
-  // bare page's "open the newest run" step cannot race the new run's URL.
+  // True from the moment a run is being created until its address is the
+  // page, so the bare page's "open the newest run" step cannot race it — not
+  // even when the run list arrives while the create request is in flight.
   const navigatingToRun = useRef(false);
 
   // Supported themes + selector options. Both are conveniences: a failure
@@ -226,8 +227,13 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
 
   // A run opened by its URL is added to the selector even when it is not
   // among the newest 50 the list returns.
+  //
+  // The create-time snapshot has done its job once the run's own poll answers;
+  // dropping it means a later Back/Forward remount shows the polled run, not
+  // the stale "pending" envelope from creation.
   const handleRunLoaded = useCallback((run: DiscoveryRun) => {
     setRuns((prev) => mergeRuns(prev, [run]));
+    setCreatedRun((prev) => (prev?.id === run.id ? null : prev));
   }, []);
 
   // Once a run's own address is showing, a later visit to the bare page may
@@ -258,6 +264,7 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
     if (!thesis.trim()) return;
     setSubmitting(true);
     setSubmitError(null);
+    navigatingToRun.current = true;
     try {
       // Built by the SAME helper the admin console uses, so an identical
       // description produces an identical run on either surface — including
@@ -280,9 +287,15 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
       // The new run's own address becomes the page. The run is handed to the
       // run view directly so it shows before its first poll returns.
       setCreatedRun(created);
-      navigatingToRun.current = true;
-      router.push(discoveryRunPath(created.id));
+      const path = discoveryRunPath(created.id);
+      // From the bare page, REPLACE: pushing would leave `/research/discover`
+      // in history, and Back would land there only to be sent straight on to
+      // the newest run — Back would appear to do nothing. From another run's
+      // address, push, so Back returns to that run.
+      if (runId === undefined) router.replace(path);
+      else router.push(path);
     } catch (e) {
+      navigatingToRun.current = false;
       setSubmitError(
         e instanceof Error ? e.message : "Could not start the discovery run.",
       );

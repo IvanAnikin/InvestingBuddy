@@ -5,33 +5,52 @@ import { discoveryRunPath } from "./runRoute";
 
 type CopyState = "idle" | "copied" | "manual";
 
+/** How long "Copied" stays before the status clears for the next click. */
+const COPIED_MS = 3000;
+
 /**
  * Copy this run's address.
  *
  * The link is the ordinary, signed-in route — there is no share token and no
  * public view of a run — so the helper text says plainly that whoever opens it
  * has to sign in. When the clipboard is unavailable (an insecure context, or a
- * browser that refuses), the address is shown selected in a read-only field so
- * it can still be copied by hand.
+ * browser that refuses), the address is shown focused and selected in a
+ * read-only field so it can still be copied by hand.
  */
 export default function CopyRunLink({ runId }: { runId: string }) {
   const [state, setState] = useState<CopyState>("idle");
   const [url, setUrl] = useState("");
   const fieldRef = useRef<HTMLInputElement>(null);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (state === "manual") fieldRef.current?.select();
+    if (state === "manual") {
+      fieldRef.current?.focus();
+      fieldRef.current?.select();
+    }
   }, [state]);
+
+  useEffect(
+    () => () => {
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+    },
+    [],
+  );
 
   async function copy() {
     // Built at click time from the page's own origin, never during render, so
     // the server and the browser always render the same markup.
     const href = window.location.origin + discoveryRunPath(runId);
     setUrl(href);
+    // Clear first, so a repeat click changes the live region and is announced
+    // again rather than silently re-setting the same text.
+    if (resetTimer.current) clearTimeout(resetTimer.current);
+    setState("idle");
     try {
       if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
       await navigator.clipboard.writeText(href);
       setState("copied");
+      resetTimer.current = setTimeout(() => setState("idle"), COPIED_MS);
     } catch {
       setState("manual");
     }
@@ -53,7 +72,11 @@ export default function CopyRunLink({ runId }: { runId: string }) {
           data-testid="copy-run-link-status"
           className="text-xs text-[color:var(--ib-ink-3)]"
         >
-          {state === "copied" ? "Copied" : ""}
+          {state === "copied"
+            ? "Copied"
+            : state === "manual"
+              ? "Could not copy — link shown below"
+              : ""}
         </span>
       </div>
       {state === "manual" && (
