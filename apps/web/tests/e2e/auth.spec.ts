@@ -233,6 +233,25 @@ test.describe("Post-sign-in destination", () => {
       .toBe("/research/discover");
   });
 
+  test("24b. a discovery run's own address requires sign-in and survives it", async ({
+    page,
+  }) => {
+    // A copied run link is the ordinary signed-in route — no share token, no
+    // public view. Anonymous, it lands on sign-in with the run preserved.
+    const runPath = "/research/discover/77777777-0000-0000-0000-0000000000a1";
+    await page.goto(runPath);
+    const loginUrl = new URL(page.url());
+    expect(loginUrl.pathname).toBe("/login");
+    expect(loginUrl.searchParams.get("callbackUrl")).toBe(runPath);
+
+    const res = await page.request.post("/api/auth/dev-login", {
+      form: { email: ADMIN_EMAIL, callbackUrl: runPath },
+      maxRedirects: 0,
+    });
+    expect(new URL(res.headers()["location"] ?? "", "http://localhost").pathname)
+      .toBe(runPath);
+  });
+
   test("25. a foreign callbackUrl is still refused (open-redirect guard)", async ({
     page,
   }) => {
