@@ -276,33 +276,45 @@ chair.
 ### 8a. Report reconciliation (`CURRENT`, migration 043)
 
 `services/pipeline/gap_reconciliation.py` runs once, **after the Red Team and before
-the Chair and the professional report are assembled** (`v3_pipeline._run`, step 7b):
+the Chair and the professional report are assembled** (`v3_pipeline.reconcile_step`,
+step 7b, in its own SAVEPOINT). The governing rule: **reconciliation never hides a
+genuinely open gap or a business risk, and never retires a historical fact as "prior
+guidance" — when unsure, `partially_closed` or `still_open`, with the finding named.**
 
-1. **Temporal supersession.** Findings stating the same field (closed vocabulary in
-   `services/research_fields.py`: `metric:capex`, `metric:production_capacity`,
-   `milestone:first_production`, `milestone:commissioning`, `commercial:offtake`,
-   `metric:cash`, `metric:cash_runway`, `metric:npv`, …) of the same project in the same
-   scope and period, with different values, are ordered by `source_published_at` (carried
-   from the corpus chunk's `published_at` / a filing's `filing_date`). The newest is
-   current; older ones get `superseded_by_finding_id` and are shown as *prior guidance,
-   superseded (date)*. Never across scope or project; never between two real reporting
-   periods; unknown or equal dates → a `value` disagreement for the Chair, never a pick.
-2. **Gap reconciliation.** Each gap → `closed` (a non-withdrawn finding affirmatively
-   states every field the gap's own text names, compatible scope/project/period, issuer
-   or official source — persisted through `ledger.close_gap`), `partially_closed` (older
-   period, segment scope, unnamed project, third-party only, or field inferred from the
-   question), `superseded` (the document it could not fetch is now held, or a validated
-   group fact states the field) or `still_open` (including every gap whose field is
-   unknown — fail closed; negated clauses never close).
+Field vocabulary (`services/research_fields.py`): families such as `metric:capex`,
+`metric:production_capacity`, `milestone:first_production`, `commercial:offtake`,
+`metric:cash`, `metric:npv`; capex carries a sub-type (`metric:capex_project`,
+`_sustaining`, `_period`). A finding states a field only in a non-negated,
+non-withdrawn, non-hedged clause carrying the field's VALUE (currency amount, capacity
+with a rate unit, tonnage and grade, "IRR of N%", a target date, a signed offtake with a
+counterparty or volume).
+
+1. **Supersession** — only guidance/estimate fields (project capex estimate, capacity,
+   milestones, NPV, IRR, resource). Same field, scope, period and EXACT project (stage
+   included); issuer/official sources only; the newest `source_published_at` is current
+   and older ones get `superseded_by_finding_id` (per-field detail in
+   `gap_reconciliation.supersessions`). Third-party sources, other currencies, unknown or
+   equal dates, or two values for one reporting period → a capped `value` disagreement.
+   Revenue, cash at a date and historical spend are never superseded. A finding is
+   dated only when all its citations are dated within 180 days of each other.
+2. **Gaps** — `closed` only for absence-type gaps (evidence/source/tool unavailable,
+   period missing, transcript unavailable) whose own words name fields that findings
+   state with the same capex sub-type, the same project, a compatible scope (a segment
+   gap never takes a group figure), the SAME period when one is named, and a newer
+   source when a current value is asked for (persisted via `ledger.close_gap`).
+   `partially_closed` names the finding and a reason. `superseded` only for a
+   source-unreachable / tool-unavailable gap recording a failed FETCH of a document the
+   run now holds, naming no unanswered field. Validated facts only ever partially close.
 3. Closed and superseded gaps never reach the Chair's GAPS block or the report's
-   `platform_evidence_gaps`; a partial one names the finding. `attach_to_report` labels
-   the V2 report's own `missing_information` items and gap-shaped council concerns
-   against the same findings (`v3_research.gap_reconciliation.v2`), and the web drops or
-   relabels them. Business-risk concerns ("capex overruns could…") are never relabelled.
+   `platform_evidence_gaps`; `summarise.gaps_open` counts the same population.
+   `attach_to_report` labels V2 `missing_information` field names and council concerns
+   whose gap cue and field share a clause and that carry no risk vocabulary; the web
+   drops a fully stated missing-information field name but only ANNOTATES a concern.
 
 The council payload's `primary_source_finding_count` (findings citing issuer filings/IR)
 replaces the always-zero "verified" hint; nothing verifies findings yet, and the Chair's
-deterministic verdict logic is unchanged.
+deterministic verdict logic is unchanged. Non-English gap text has no field and stays
+open (known limitation).
 
 ---
 

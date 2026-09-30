@@ -2104,8 +2104,9 @@ function withReconciliationLabels(base) {
       council_concerns: [
         {
           text: CAPEX_CONCERN,
-          key: CAPEX_CONCERN.toLowerCase(),
+          key: CAPEX_CONCERN.toLowerCase().replace(/[.]+$/, ""),
           agent: "valuation_guard",
+          index: 0,
           status: "closed",
           fields: ["metric:capex"],
           field_labels: ["capital expenditure"],
@@ -2129,7 +2130,7 @@ function withReconciledV2Content(base) {
   const guard = base.source_summary_json.llm_council.agents.find(
     (a) => a.agent_name === "valuation_guard",
   );
-  guard.risks_or_gaps.push({ item: CAPEX_CONCERN, citation_ids: ["E2"], severity: "low" });
+  guard.risks_or_gaps.unshift({ item: CAPEX_CONCERN, citation_ids: ["E2"], severity: "low" });
   return base;
 }
 
@@ -2164,6 +2165,7 @@ function mockReconciledProfessionalReport(id) {
       source_published_at: "2025-11-03",
       superseded_by_finding_id: "i",
       guidance_status: "prior",
+      superseded_fields: ["first production"],
       superseded_by_label: "F8",
       superseded_on: "2026-08-12",
     }),

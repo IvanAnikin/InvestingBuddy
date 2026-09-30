@@ -7,29 +7,57 @@
  * V2 item against the findings (`v3_research.gap_reconciliation.v2`); this module only
  * APPLIES the labels — it never judges a statement itself:
  *
- *  - `closed` / `superseded`: the item is not shown as open;
- *  - `partially_closed`: shown, and says which finding partly addresses it;
- *  - anything else, or no label at all: shown exactly as V2 wrote it.
+ *  - a council CONCERN is never removed. One a finding speaks to is annotated with that
+ *    finding; everything else is shown exactly as V2 wrote it. A concern that is really
+ *    a business risk carries no label at all (the backend refuses to label one).
+ *  - a missing-information FIELD NAME that a finding fully states is not listed as
+ *    missing; one a finding partly states says which finding.
  */
 
 import type { MissingItem } from "./reportView";
 import type { OpenQuestion } from "./reportSections";
 import type { V2ItemLabel, V3GapReconciliation } from "./v3Research";
 
-const HIDDEN = new Set(["closed", "superseded"]);
-
-/** The same normalisation the backend applies to a concern's text. */
+/** The same normalisation the backend applies (`normalise_item_text`). */
 export function normaliseItemText(text: string): string {
-  return text.replace(/\s+/g, " ").trim().toLowerCase();
+  return text
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s.;:!?]+$/, "");
 }
 
-function partialNote(label: V2ItemLabel, findingLabels: Record<string, string>): string {
-  const labels = label.findingIds
+function labelsFor(label: V2ItemLabel, findingLabels: Record<string, string>): string[] {
+  return label.findingIds
     .map((id) => findingLabels[id])
     .filter((l): l is string => Boolean(l));
+}
+
+function annotation(label: V2ItemLabel, findingLabels: Record<string, string>): string {
+  const labels = labelsFor(label, findingLabels);
   return labels.length > 0
-    ? `partially addressed by ${labels.join(", ")}`
-    : "partially addressed by a research finding";
+    ? `partly addressed by ${labels.join(", ")}`
+    : "partly addressed by a research finding";
+}
+
+const ANNOTATED = new Set(["closed", "partially_closed", "superseded"]);
+
+/** Annotate concern texts a finding speaks to. Never removes one. */
+export function reconcileConcernTexts(
+  texts: string[],
+  reconciliation: V3GapReconciliation | null,
+  findingLabels: Record<string, string> = {},
+): string[] {
+  if (!reconciliation || reconciliation.v2CouncilConcerns.length === 0) return texts;
+  const byKey = new Map(reconciliation.v2CouncilConcerns.map((l) => [l.key, l]));
+  return texts.map((text) => {
+    const label = byKey.get(normaliseItemText(text));
+    return label && ANNOTATED.has(label.status)
+      ? `${text} (${annotation(label, findingLabels)})`
+      : text;
+  });
 }
 
 export function reconcileOpenQuestions(
@@ -38,32 +66,12 @@ export function reconcileOpenQuestions(
   findingLabels: Record<string, string> = {},
 ): OpenQuestion[] {
   if (!reconciliation || reconciliation.v2CouncilConcerns.length === 0) return questions;
-  const byKey = new Map(reconciliation.v2CouncilConcerns.map((l) => [l.key, l]));
-  const out: OpenQuestion[] = [];
-  for (const q of questions) {
-    const label = byKey.get(normaliseItemText(q.question));
-    if (label && HIDDEN.has(label.status)) continue;
-    if (label && label.status === "partially_closed") {
-      out.push({ ...q, question: `${q.question} (${partialNote(label, findingLabels)})` });
-      continue;
-    }
-    out.push(q);
-  }
-  return out;
-}
-
-/** The same rule for a plain list of concern texts (research limitations routed out of
- *  the council's sections — where a "not disclosed" concern usually lands). */
-export function reconcileConcernTexts(
-  texts: string[],
-  reconciliation: V3GapReconciliation | null,
-  findingLabels: Record<string, string> = {},
-): string[] {
-  return reconcileOpenQuestions(
-    texts.map((question) => ({ question, source: "" })),
+  const texts = reconcileConcernTexts(
+    questions.map((q) => q.question),
     reconciliation,
     findingLabels,
-  ).map((q) => q.question);
+  );
+  return questions.map((q, i) => (texts[i] === q.question ? q : { ...q, question: texts[i] }));
 }
 
 export function reconcileMissingItems(
@@ -80,12 +88,12 @@ export function reconcileMissingItems(
   let removed = 0;
   for (const item of items) {
     const label = byField.get(item.field);
-    if (label && HIDDEN.has(label.status)) {
+    if (label && (label.status === "closed" || label.status === "superseded")) {
       removed += 1;
       continue;
     }
     if (label && label.status === "partially_closed") {
-      kept.push({ ...item, field: `${item.field} — ${partialNote(label, findingLabels)}` });
+      kept.push({ ...item, field: `${item.field} — ${annotation(label, findingLabels)}` });
       continue;
     }
     kept.push(item);

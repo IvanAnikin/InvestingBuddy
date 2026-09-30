@@ -31,19 +31,49 @@ const CAPEX_CONCERN = "Capital expenditure is not disclosed in the filings retri
 const LABELS: V3GapReconciliation = {
   counts: {},
   v2MissingInformation: [
-    { key: "fundamentals.capital_expenditure", status: "closed", findingIds: ["f1"] },
-    { key: "fundamentals.cash", status: "partially_closed", findingIds: ["f2"] },
-    { key: "profile.website", status: "still_open", findingIds: [] },
+    {
+      key: "fundamentals.capital_expenditure",
+      status: "closed",
+      findingIds: ["f1"],
+      agent: null,
+      index: null,
+    },
+    {
+      key: "fundamentals.cash",
+      status: "partially_closed",
+      findingIds: ["f2"],
+      agent: null,
+      index: null,
+    },
+    { key: "profile.website", status: "still_open", findingIds: [], agent: null, index: null },
   ],
   v2CouncilConcerns: [
-    { key: normaliseItemText(CAPEX_CONCERN), status: "closed", findingIds: ["f1"] },
-    { key: "offtake terms are not disclosed.", status: "superseded", findingIds: [] },
-    { key: "cash runway is unclear.", status: "partially_closed", findingIds: ["f2"] },
+    {
+      key: normaliseItemText(CAPEX_CONCERN),
+      status: "closed",
+      findingIds: ["f1"],
+      agent: "valuation_guard",
+      index: 1,
+    },
+    {
+      key: "offtake terms are not disclosed",
+      status: "superseded",
+      findingIds: [],
+      agent: null,
+      index: null,
+    },
+    {
+      key: "cash runway is unclear",
+      status: "partially_closed",
+      findingIds: ["f2"],
+      agent: null,
+      index: null,
+    },
   ],
 };
 
 test.describe("applying the backend's labels", () => {
-  test("closed and superseded V2 concerns are not shown as open; partial ones say why", () => {
+  test("a V2 concern is never removed — one a finding speaks to is annotated", () => {
     const out = reconcileOpenQuestions(
       [
         { question: `  ${CAPEX_CONCERN.toUpperCase()} `, source: "Red team" },
@@ -55,10 +85,15 @@ test.describe("applying the backend's labels", () => {
       { f2: "F4" },
     );
     expect(out.map((q) => q.question)).toEqual([
-      "Cash runway is unclear. (partially addressed by F4)",
+      `  ${CAPEX_CONCERN.toUpperCase()}  (partly addressed by a research finding)`,
+      "Offtake terms are not disclosed. (partly addressed by a research finding)",
+      "Cash runway is unclear. (partly addressed by F4)",
       "Is revenue growth sustainable?",
     ]);
-    expect(reconcileConcernTexts([CAPEX_CONCERN, "Other"], LABELS)).toEqual(["Other"]);
+    expect(reconcileConcernTexts([CAPEX_CONCERN, "Other"], LABELS, { f1: "F2" })).toEqual([
+      `${CAPEX_CONCERN} (partly addressed by F2)`,
+      "Other",
+    ]);
   });
 
   test("a closed missing item is dropped and the count follows", () => {
@@ -73,7 +108,7 @@ test.describe("applying the backend's labels", () => {
     );
     expect(out.total).toBe(2);
     expect(out.items.map((i) => i.field)).toEqual([
-      "fundamentals.cash — partially addressed by a research finding",
+      "fundamentals.cash — partly addressed by a research finding",
       "profile.website",
     ]);
   });
@@ -111,18 +146,19 @@ test.describe("applying the backend's labels", () => {
 });
 
 test.describe("the report page", () => {
-  test("a V2 gap statement a finding answers is not rendered as open", async ({ page }) => {
+  test("a V2 concern a finding speaks to is annotated, and a stated field is not missing", async ({
+    page,
+  }) => {
     await page.goto(V2_REPORT);
     await expect(page.getByTestId("v3-research")).toBeVisible();
-    await expect(page.getByTestId("open-questions")).not.toContainText(CAPEX_CONCERN);
-    const limitations = page.getByTestId("confidence-limitations");
-    if (await limitations.count()) {
-      await expect(limitations).not.toContainText(CAPEX_CONCERN);
-    }
+    // Never removed: the concern is still on the page. (It is routed to the research
+    // limitations list, whose first five entries are shown; the annotation itself is
+    // pinned by the unit tests above.)
+    await expect(page.locator("main")).toContainText(CAPEX_CONCERN);
     const technical = page.getByTestId("technical-gaps");
     await expect(technical).not.toContainText("fundamentals.capital_expenditure");
     await expect(technical).toContainText(
-      "fundamentals.cash_and_equivalents — partially addressed by a research finding",
+      "fundamentals.cash_and_equivalents — partly addressed by a research finding",
     );
     // Untouched items are still listed exactly as V2 wrote them.
     await expect(technical).toContainText("identity.isin");
@@ -149,7 +185,9 @@ test.describe("the report page", () => {
     await page.goto(PRO_REPORT);
     const prior = page.getByTestId("finding-prior-guidance");
     await expect(prior).toHaveCount(1);
-    await expect(prior).toContainText("Prior guidance, superseded (2026-08-12)");
+    await expect(prior).toContainText(
+      "Prior guidance for first production, superseded (2026-08-12)",
+    );
     await expect(prior).toContainText("F8");
     const current = page.getByTestId("finding-current-guidance");
     await expect(current).toContainText("Current guidance (2026-08-12)");

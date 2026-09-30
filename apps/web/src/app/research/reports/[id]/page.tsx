@@ -169,9 +169,9 @@ export default async function ResearchReportPage({
     view.trends.series,
     serverNumeric,
   );
-  // The V2 report was assembled before the V3 research ran. Its own gap statements —
-  // council concerns and missing-information items — that a V3 finding answers are not
-  // shown as open; one a finding only partly answers says which finding. The backend
+  // The V2 report was assembled before the V3 research ran. A council concern a V3
+  // finding speaks to is ANNOTATED with that finding — never removed; a missing-
+  // information field name a finding fully states is not listed as missing. The backend
   // decides; the page only applies its labels.
   const findingLabels = v3?.professionalResearch?.findingLabels ?? {};
   const investor = {
@@ -183,6 +183,11 @@ export default async function ResearchReportPage({
     ),
     routedLimitations: reconcileConcernTexts(
       reconciledInvestor.routedLimitations,
+      v3?.gapReconciliation ?? null,
+      findingLabels,
+    ),
+    recordGaps: reconcileConcernTexts(
+      reconciledInvestor.recordGaps,
       v3?.gapReconciliation ?? null,
       findingLabels,
     ),

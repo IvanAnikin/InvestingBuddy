@@ -123,6 +123,9 @@ class FindingView:
     #: that replaced it as current guidance.
     source_published_at: str | None = None
     superseded_by: str | None = None
+    #: Which of its fields were superseded (labels). A finding stating capex AND a
+    #: milestone may be prior guidance for one and current for the other.
+    superseded_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -206,6 +209,9 @@ def _finding_dict(finding: FindingView, label: str) -> dict[str, Any]:
         "references": list(finding.references),
         "source_published_at": finding.source_published_at,
         "superseded_by_finding_id": finding.superseded_by,
+        # Only on a superseded finding, so the pinned key set of an ordinary one holds.
+        **({"superseded_fields": list(finding.superseded_fields)}
+           if finding.superseded_fields else {}),
     }
 
 

@@ -106,7 +106,7 @@ class TestFieldClassifier:
             ("Production capacity of 40 Mt a year", "metric:production_capacity"),
             ("First production is expected in 2027", "milestone:first_production"),
             ("Commissioning is scheduled for H2 2026", "milestone:commissioning"),
-            ("A binding offtake agreement was signed with a major OEM", "commercial:offtake"),
+            ("A binding offtake agreement was signed with Acme Corp", "commercial:offtake"),
             ("Cash and cash equivalents of A$45.2m at 30 June", "metric:cash"),
             ("The company held US$45m in cash", "metric:cash"),
             ("Funded into 2027 with a runway of 18 months", "metric:cash_runway"),
@@ -155,8 +155,7 @@ class TestFieldClassifier:
 class TestGapReconciliation:
     def test_a_gap_under_one_question_is_closed_by_a_finding_under_another(self) -> None:
         gap = _gap("No capital expenditure figure was acquired", question_key="growth_projects")
-        finding = _finding("f-capex", "Capex of US$268m for Phase 1",
-                           question_key="capex_and_capacity")
+        finding = _finding("f-capex", "Capex of US$268m", question_key="capex_and_capacity")
         (verdict,) = gr.reconcile([gap], [finding])
         assert verdict.status == ledger.RECONCILED_CLOSED
         assert verdict.closed_by_finding_id == "f-capex"
@@ -188,11 +187,21 @@ class TestGapReconciliation:
         assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
         assert gr.REASON_OLDER_PERIOD in verdict.reasons
 
-    def test_the_requested_period_or_later_closes(self) -> None:
+    def test_only_the_requested_period_closes(self) -> None:
+        """Review round 1 (H5): the first version closed "FY2023 revenue" with an FY2025
+        figure. A gap naming a period is answered by THAT period; any other is partial."""
         gap = _gap("FY2025 capital expenditure was not acquired")
-        finding = _finding("f1", "Capex of US$30m", period_key="FY2025")
-        (verdict,) = gr.reconcile([gap], [finding])
+        (verdict,) = gr.reconcile([gap], [_finding("f1", "Capex of US$30m", period_key="FY2025")])
         assert verdict.status == ledger.RECONCILED_CLOSED
+        older = _gap("FY2023 revenue was not acquired")
+        (verdict,) = gr.reconcile([older], [_finding("f2", "Revenue of US$50m",
+                                                      period_key="FY2025")])
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_OTHER_PERIOD in verdict.reasons
+        quarter = _gap("2025-Q3 revenue was not acquired")
+        (verdict,) = gr.reconcile([quarter], [_finding("f3", "Revenue of US$50m",
+                                                        period_key="2025-H1")])
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
 
     def test_third_party_evidence_only_partially_closes(self) -> None:
         gap = _gap("No capex figure was acquired")
@@ -249,11 +258,12 @@ class TestGapReconciliation:
         (verdict,) = gr.reconcile([gap], [], documents=[doc])
         assert verdict.status == ledger.RECONCILED_STILL_OPEN
 
-    def test_a_validated_group_fact_supersedes_an_acquisition_gap(self) -> None:
+    def test_a_validated_group_fact_only_partially_closes(self) -> None:
+        """A fact is shown beside the gap, never instead of it (review round 1)."""
         gap = _gap("Cash and cash equivalents were not acquired")
         fact = gr.FactFacts("fact-1", "cash_and_equivalents", "metric:cash", "FY2025", "group")
         (verdict,) = gr.reconcile([gap], [], facts=[fact])
-        assert verdict.status == ledger.RECONCILED_SUPERSEDED
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
         assert verdict.fact["fact_id"] == "fact-1"
         segment = gr.FactFacts("fact-2", "cash_and_equivalents", "metric:cash", "FY2025",
                                "segment")
@@ -312,13 +322,13 @@ class TestSupersession:
         assert supersessions == [] and len(disagreements) == 1
 
     def test_real_financial_periods_are_never_superseded(self) -> None:
-        fy24 = _finding("a", "Capex of US$30m", period_key="FY2024",
+        fy24 = _finding("a", "Post-tax NPV of US$30m", period_key="FY2024",
                         published_at=date(2025, 3, 1))
-        fy25 = _finding("b", "Capex of US$45m", period_key="FY2025",
+        fy25 = _finding("b", "Post-tax NPV of US$45m", period_key="FY2025",
                         published_at=date(2026, 3, 1))
         assert gr.supersede([fy24, fy25]) == ([], [])
         # Two values for ONE reporting period: a conflict, never ordered by date.
-        restated = _finding("c", "Capex of US$47m", period_key="FY2025",
+        restated = _finding("c", "Post-tax NPV of US$47m", period_key="FY2025",
                             published_at=date(2026, 6, 1))
         supersessions, disagreements = gr.supersede([fy25, restated])
         assert supersessions == [] and len(disagreements) == 1
@@ -350,7 +360,13 @@ class TestPublicationDatesFlow:
         assert chunk.published_at == date(2026, 8, 12)
         assert filing.published_at == date(2025, 11, 3)
         assert undated.published_at is None
-        assert _inherited_published_at(["ev:1", "f:2"], [chunk, filing]) == date(2026, 8, 12)
+        near = _evidence_of(
+            "get_recent_filings", {"id": "f:4", "filing_date": "2026-06-30"}, False
+        )
+        assert _inherited_published_at(["ev:1", "f:4"], [chunk, near]) == date(2026, 8, 12)
+        # Review round 1 (H8): citations nine months apart do not date a finding — a
+        # restated old estimate citing a new report would otherwise look current.
+        assert _inherited_published_at(["ev:1", "f:2"], [chunk, filing]) is None
         # One undated citation makes the finding undated: no ordering on a guess.
         assert _inherited_published_at(["ev:1", "ev:3"], [chunk, undated]) is None
 
@@ -410,9 +426,9 @@ async def session():  # noqa: ANN201
 async def _seed(session):  # noqa: ANN001, ANN202
     run = await ledger.open_run(session, mode="standard")
     capex = await ledger.record_finding(
-        session, run, statement="Capex of US$268m for Phase 1", evidence_ids=["ev:1"],
+        session, run, statement="Capex of US$268m", evidence_ids=["ev:1"],
         question_key="capex_and_capacity", source_kinds=ISSUER,
-        claim_key=rf.claim_key_for("Capex of US$268m for Phase 1"),
+        claim_key=rf.claim_key_for("Capex of US$268m"),
     )
     old = await ledger.record_finding(
         session, run, statement="First production is expected in 2028",
@@ -599,14 +615,14 @@ class TestV2Labels:
         out = gr.label_v2_items(
             missing_items=[],
             concerns=[
-                {"text": "Capex is not disclosed for the expansion", "agent": "red_team"},
+                {"text": "Capex is not disclosed", "agent": "red_team"},
                 {"text": "Capex overruns could erode returns", "agent": "risk_governance"},
             ],
             closers=self.closers,
         )
         (concern,) = out["council_concerns"]
         assert concern["status"] == "closed"
-        assert concern["key"] == "capex is not disclosed for the expansion"
+        assert concern["key"] == "capex is not disclosed"
 
     def test_attach_to_report_labels_the_v2_report(self) -> None:
         from app.services.pipeline.v3_pipeline import V3ResearchOutcome, attach_to_report
@@ -724,6 +740,374 @@ class TestOnPostgres:
                 finding.superseded_by_finding_id = finding.id
                 with pytest.raises(IntegrityError, match="not_superseded_by_itself"):
                     await session.flush()
+                await session.rollback()
+        finally:
+            await engine.dispose()
+
+
+# ── Review round 1: every blocking / high / medium case, as a regression ──────── #
+
+
+D = date
+
+
+def _pf(fid: str, statement: str, pub: date | None = None, **kw) -> gr.FindingFacts:  # noqa: ANN003
+    fields, project = gr.finding_fields(statement, rf.claim_key_for(statement))
+    return gr.FindingFacts(
+        finding_id=fid, statement=statement, fields=fields, project=project,
+        source_kinds=kw.pop("source_kinds", ISSUER), published_at=pub,
+        stated_period=rf.statement_period(statement), **kw,
+    )
+
+
+def _status(description: str, findings=(), gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE, **kw):  # noqa: ANN001, ANN003, ANN202
+    (verdict,) = gr.reconcile([_gap(description, gap_type=gap_type)], list(findings), **kw)
+    return verdict
+
+
+class TestReviewBlocking:
+    # B1 — only an ABSENCE gap closes; a segment gap never takes a group figure.
+    def test_a_conflict_gap_is_not_closed_by_one_more_figure(self) -> None:
+        verdict = _status("Capex figures conflict between the DFS and the quarterly",
+                          [_pf("f", "The DFS estimates capex of US$1.2bn")],
+                          ledger.GAP_CONFLICTING_SOURCES)
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_GAP_TYPE_NOT_ABSENCE in verdict.reasons
+
+    def test_a_segment_gap_is_not_answered_by_a_group_figure(self) -> None:
+        verdict = _status("Mining segment revenue split unknown",
+                          [_pf("f", "Revenue of US$50m", scope_key="group")],
+                          ledger.GAP_SCOPE_UNKNOWN)
+        assert verdict.status == ledger.RECONCILED_STILL_OPEN
+        verdict = _status("Capex for the Rare Earths segment not acquired",
+                          [_pf("f", "The DFS estimates capex of US$302m")])
+        assert verdict.status == ledger.RECONCILED_STILL_OPEN
+
+    # B2 — a held document supersedes only a failed FETCH that names no open field.
+    @pytest.mark.parametrize(
+        ("description", "gap_type"),
+        [
+            ("The 2024 annual report does not disclose segment EBITDA",
+             ledger.GAP_EVIDENCE_UNAVAILABLE),
+            ("Annual report could not be retrieved, so capex could not be verified",
+             ledger.GAP_SOURCE_UNREACHABLE),
+            ("The annual report could not be fetched", ledger.GAP_EVIDENCE_UNAVAILABLE),
+            ("The annual report does not state a cash runway", ledger.GAP_SOURCE_UNREACHABLE),
+        ],
+    )
+    def test_a_held_document_does_not_hide_an_open_gap(self, description, gap_type) -> None:  # noqa: ANN001
+        docs = [gr.DocumentFacts(kind=rf.DOC_ANNUAL, ref="AR")]
+        verdict = _status(description, [], gap_type, documents=docs)
+        assert verdict.status != ledger.RECONCILED_SUPERSEDED
+
+    def test_a_question_field_does_not_open_the_document_path(self) -> None:
+        (verdict,) = gr.reconcile(
+            [gr.GapFacts("g", ledger.GAP_EVIDENCE_UNAVAILABLE,
+                         "The annual report does not disclose segment margins", "q1")],
+            [], documents=[gr.DocumentFacts(kind=rf.DOC_ANNUAL)],
+            question_fields={"q1": ("metric:capex",)},
+        )
+        assert verdict.status == ledger.RECONCILED_STILL_OPEN
+
+    # B3 — a business risk is never labelled; a concern is never dropped by the page.
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Capex overruns could strain funding given the lack of committed debt financing",
+            "Capital cost inflation remains a risk; final cost unknown until EPC contracts are let",
+            "Offtake terms are not disclosed, so pricing risk is unclear",
+        ],
+    )
+    def test_a_risk_concern_is_never_labelled(self, text: str) -> None:
+        closers = [gr.FindingFacts("f", "", ("metric:capex", "commercial:offtake"),
+                                   source_kinds=ISSUER)]
+        out = gr.label_v2_items(missing_items=[], concerns=[{"text": text}], closers=closers)
+        assert out["council_concerns"] == []
+
+    def test_the_gap_cue_and_field_must_share_a_clause(self) -> None:
+        closers = [gr.FindingFacts("f", "", ("metric:capex",), source_kinds=ISSUER)]
+        out = gr.label_v2_items(
+            missing_items=[],
+            concerns=[{"text": "Capex was US$10m; the customer list is not disclosed"}],
+            closers=closers,
+        )
+        assert out["council_concerns"] == []
+
+    # B4 — history is never "prior guidance".
+    @pytest.mark.parametrize(
+        ("older", "newer"),
+        [
+            ("Revenue of US$5.2m", "Revenue of US$1.1m for the quarter"),
+            ("Revenue for FY2024 was £3.1m", "Revenue for FY2025 was £4.0m"),
+            ("Cash and cash equivalents of £6.1m at 31 December 2025",
+             "Cash and cash equivalents of £4.2m at 30 June 2026"),
+            ("Initial capital of US$1.2bn", "Sustaining capital of US$50m a year"),
+            ("Capex for FY2024 was US$30m", "Capex for FY2025 was US$45m"),
+        ],
+    )
+    def test_period_bound_metrics_are_never_superseded(self, older: str, newer: str) -> None:
+        a = _pf("a", older, D(2025, 3, 1))
+        b = _pf("b", newer, D(2026, 7, 1))
+        supersessions, _ = gr.supersede([a, b])
+        assert supersessions == []
+
+
+class TestReviewHigh:
+    # H1 — offtake needs a signed commitment with a counterparty or a volume.
+    @pytest.mark.parametrize(
+        "text",
+        ["Securing offtake remains a key risk", "Offtake discussions continue; nothing signed",
+         "The company is negotiating offtake with several parties"],
+    )
+    def test_offtake_talk_is_not_an_offtake(self, text: str) -> None:
+        assert "commercial:offtake" not in rf.fields_stated(text)
+        assert _status("Offtake status unknown", [_pf("f", text)]).status == (
+            ledger.RECONCILED_STILL_OPEN)
+
+    # H2 — a figure must be the field's VALUE.
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Capex estimate updated on 12 March 2026",
+            "Capex is described in section 4",
+            "Capex for the 2 phase approach is being studied",
+            "Capex increased by 10%",
+            "The IRR is sensitive to a 10% change in basket price",
+            "The NPV10 is sensitive to the basket price",
+            "The company has a long runway of 3 growth options",
+            "Drilling in 2025 intersected 12m at 3% TREO outside the mineral resource",
+            "The pilot plant was commissioned in 2022",
+            "First production was delayed from 2025",
+        ],
+    )
+    def test_a_number_that_is_not_the_value_states_nothing(self, text: str) -> None:
+        assert rf.fields_stated(text) == ()
+
+    # H3 — capex sub-types.
+    def test_period_capex_does_not_answer_a_project_estimate(self) -> None:
+        verdict = _status("The initial capital estimate for the project was not acquired",
+                          [_pf("f", "Capex for FY2024 was US$30m")])
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_SUBTYPE_DIFFERS in verdict.reasons
+
+    def test_working_capital_is_not_capex(self) -> None:
+        assert rf.fields_mentioned("Working capital requirements not quantified") == ()
+        assert rf.fields_stated("Working capital of US$5m") == ()
+
+    # H4 — withdrawn / stale.
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "The company withdrew its capex estimate of US$302m pending a review",
+            "The capex estimate of US$302m is under review",
+            "First production deferred indefinitely from 2026",
+            "Commissioning is suspended; it had been expected in 2026",
+        ],
+    )
+    def test_withdrawn_or_deferred_guidance_states_nothing(self, text: str) -> None:
+        assert rf.fields_stated(text) == ()
+
+    def test_a_gap_asking_for_the_current_value_needs_a_newer_source(self) -> None:
+        old = _pf("f", "The 2023 DFS estimated capex of US$302m")
+        verdict = _status("No updated capex estimate since the 2023 DFS", [old])
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_RECENCY_UNCONFIRMED in verdict.reasons
+        new = _pf("n", "The DFS estimates capex of US$320m", D(2026, 5, 1))
+        assert _status("No updated capex estimate since the 2023 DFS", [new]).status == (
+            ledger.RECONCILED_CLOSED)
+
+    # H6 — one side naming a project; the gap's own project and stage.
+    def test_an_unnamed_gap_is_only_partly_answered_by_a_project_figure(self) -> None:
+        verdict = _status("Capex was not acquired",
+                          [_pf("f", "Capex of US$1.2bn for the Foo Project")])
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert gr.REASON_PROJECT_UNNAMED in verdict.reasons
+
+    def test_an_expansion_is_not_its_parent_mine(self) -> None:
+        verdict = _status("Capex for the Foo Mine expansion not acquired",
+                          [_pf("f", "Capex for the Foo Mine is US$20m")])
+        assert verdict.status != ledger.RECONCILED_CLOSED
+
+    def test_the_project_named_without_an_asset_noun_still_matches(self) -> None:
+        # M5: "The Foo DFS estimates …" names Foo without "Project".
+        verdict = _status("Capex for the Foo Project was not acquired",
+                          [_pf("f", "The Foo DFS estimates capex of US$302m")])
+        assert verdict.status == ledger.RECONCILED_CLOSED
+
+    # H7 — a fact never answers a project or another period.
+    def test_a_group_fact_never_answers_a_project_or_another_period(self) -> None:
+        fact = gr.FactFacts("x", "capital_expenditure", "metric:capex", "FY2025", "group")
+        assert _status("Capex for the Foo Project was not acquired", [],
+                       facts=[fact]).status == ledger.RECONCILED_STILL_OPEN
+        assert _status("FY2023 capital expenditure was not acquired", [],
+                       facts=[fact]).status == ledger.RECONCILED_STILL_OPEN
+
+    # H9 — a stage is its own project.
+    def test_stages_and_phases_are_never_superseded_by_each_other(self) -> None:
+        pairs = [
+            ("First production from the Foo Stage 1 Project is expected in 2026",
+             "First production from the Foo Stage 2 Project is expected in 2030"),
+            ("Phase 1 nameplate capacity of 5,000 tpa", "Phase 2 nameplate capacity of 12,500 tpa"),
+            ("The Foo Project has a nameplate capacity of 12,500 tpa",
+             "The Foo West Project has a nameplate capacity of 5,000 tpa"),
+        ]
+        for older, newer in pairs:
+            supersessions, _ = gr.supersede([_pf("a", older, D(2025, 11, 1)),
+                                             _pf("b", newer, D(2026, 8, 1))])
+            assert supersessions == [], (older, newer)
+
+    # H10 — only the TARGET year is the value.
+    def test_an_incidental_year_is_not_a_change_of_guidance(self) -> None:
+        a = _pf("a", "First production is targeted for 2028", D(2025, 11, 1))
+        for later in ("Following the 2026 DFS, first production is targeted for 2028",
+                      "After drilling in 2026, first production is targeted for 2028"):
+            assert gr.supersede([a, _pf("b", later, D(2026, 8, 1))]) == ([], []), later
+
+    # H11 — third parties never supersede the issuer.
+    def test_a_broker_never_supersedes_issuer_guidance(self) -> None:
+        issuer = _pf("i", "First production is expected in 2027", D(2026, 8, 1))
+        broker = _pf("b", "A broker note expects first production in 2029", D(2026, 9, 1),
+                     source_kinds=("quality_media",))
+        supersessions, disagreements = gr.supersede([issuer, broker])
+        assert supersessions == []
+        assert [d.reason for d in disagreements] == ["non_issuer_source"]
+
+    # H12 — scale and currency.
+    def test_a_rescaled_amount_is_the_same_and_a_currency_is_not_comparable(self) -> None:
+        a = _pf("a", "Capex estimate is US$302m", D(2025, 11, 1))
+        same = _pf("b", "Capex estimate is US$0.3bn", D(2026, 8, 1))
+        assert gr.supersede([a, same]) == ([], [])
+        other = _pf("c", "Capex estimate is A$450m", D(2026, 8, 1))
+        supersessions, disagreements = gr.supersede([a, other])
+        assert supersessions == []
+        assert [d.reason for d in disagreements] == ["values_not_comparable"]
+
+    def test_a_clause_quoting_an_older_study_never_supersedes(self) -> None:
+        # H8: the newest-dated finding restating the 2022 PFS is not current guidance.
+        quoted = _pf("q", "The 2022 PFS estimated capex of US$250m", D(2026, 8, 1))
+        dfs = _pf("d", "The DFS estimates capex of US$302m", D(2025, 11, 1))
+        assert gr.supersede([quoted, dfs])[0] == []
+
+    def test_a_genuine_change_of_guidance_still_supersedes(self) -> None:
+        old = _pf("o", "The DFS estimates capex of US$302m", D(2025, 11, 1))
+        new = _pf("n", "The updated capex estimate is US$350m", D(2026, 8, 1))
+        (s,), _ = gr.supersede([old, new])
+        assert (s.older_id, s.newer_id, s.field_key) == ("o", "n", "metric:capex_project")
+
+
+class TestReviewMedium:
+    def test_disagreements_are_capped(self) -> None:
+        # M2
+        many = [_pf(f"f{i}", f"First production is expected in {2027 + i}") for i in range(8)]
+        _, disagreements = gr.supersede(many)
+        assert len(disagreements) <= gr.MAX_DISAGREEMENTS_PER_GROUP
+
+    def test_no_change_is_not_a_negation(self) -> None:
+        # M5
+        assert "metric:capex" in rf.fields_stated("Capex of US$302m with no change from the PFS")
+
+    @pytest.mark.parametrize(
+        ("text", "field"),
+        [
+            ("The plant will produce 12,500 tpa of MREC", "metric:production_capacity"),
+            ("Design throughput of 1.2Mtpa", "metric:production_capacity"),
+            ("The company is funded into 2027", "metric:cash_runway"),
+            ("Mineral resource of 25.9Mt at 2.4% TREO", "metric:mineral_resource"),
+            ("Post-tax IRR of 24%", "metric:irr"),
+        ],
+    )
+    def test_common_phrasings_state_their_field(self, text: str, field: str) -> None:
+        assert field in rf.fields_stated(text)
+
+    def test_half_years_and_quarters_rank_correctly(self) -> None:
+        assert rf.period_rank("2025-H1") == (2025, 5)
+        assert rf.period_rank("2025-Q3") == (2025, 3)
+        assert rf.statement_period("revenue for H1 2026") == "2026-H1"
+
+
+class TestReviewCounts:
+    async def test_gaps_open_counts_what_is_shown(self, session) -> None:  # noqa: ANN001
+        # M3: a superseded gap is neither listed nor counted as open.
+        run = await ledger.open_run(session, mode="standard")
+        gap = await ledger.record_gap(session, run, gap_type=ledger.GAP_SOURCE_UNREACHABLE,
+                                      description="The annual report could not be fetched")
+        await ledger.record_gap(session, run, gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE,
+                                description="No offtake agreement was found")
+        await ledger.reconcile_gap(session, gap, status="superseded", detail={})
+        assert (await ledger.summarise(session, run)).gaps_open == 1
+
+
+class TestReviewLow:
+    async def test_counts_follow_a_downgraded_verdict(self, session, monkeypatch) -> None:  # noqa: ANN001
+        # L1: a closed verdict with no finding row is downgraded, and counted as such.
+        run = await ledger.open_run(session, mode="standard")
+        await ledger.record_gap(session, run, gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE,
+                                description="No capex figure was acquired")
+
+        def fake(gaps, findings, **_kw):  # noqa: ANN001, ANN202
+            return [gr.GapVerdict(g.gap_id, ledger.RECONCILED_CLOSED,
+                                  closed_by_finding_id=str(uuid.uuid4())) for g in gaps]
+
+        monkeypatch.setattr(gr, "reconcile", fake)
+        result = await gr.reconcile_run(session, run)
+        assert result["counts"] == {"still_open": 1}
+
+    def test_the_producer_keys_are_what_the_web_reads(self) -> None:
+        # L4: the V3-payload-never-read-by-the-web defect, guarded from the backend side.
+        web = Path(__file__).resolve().parents[2] / "web"
+        reader = (web / "src/components/research/v3Research.ts").read_text()
+        for key in ("partially_addressed_by", "reconciliation_status", "guidance_status",
+                    "superseded_by_label", "superseded_on", "supersedes",
+                    "superseded_fields", "source_published_at", "gap_reconciliation",
+                    "council_concerns", "missing_information", "finding_ids",
+                    "primary_source_finding_count", "useful_findings",
+                    "cost_per_useful_finding"):
+            assert key in reader, key
+        fixture = json.loads((web / "tests/fixtures/professional-research-payload.json")
+                             .read_text())
+        report = pr.assemble(pr.ReportInputs(
+            subject={"ticker": "X"},
+            questions=[pr.QuestionView(key="q", text="q", domain="business_model")],
+            findings=[pr.FindingView(finding_id="a", statement="s", domain="business_model",
+                                     question_key="q")],
+        ))
+        produced = next(s for s in report["sections"] if s["key"] == "business_model")
+        pinned = next(s for s in fixture["sections"] if s["key"] == "business_model")
+        assert set(produced["findings"][0]) == set(pinned["findings"][0])
+        produced_ev = next(s for s in report["sections"]
+                           if s["key"] == "evidence_quality_and_gaps")
+        pinned_ev = next(s for s in fixture["sections"]
+                         if s["key"] == "evidence_quality_and_gaps")
+        assert set(produced_ev) - {"lead"} <= set(pinned_ev)
+
+
+@requires_postgres
+class TestReconcileStepOnPostgres:
+    async def test_a_failed_reconciliation_leaves_the_transaction_usable(
+        self, monkeypatch
+    ) -> None:
+        # L3: an SQL error inside step 7b must cost the step only.
+        from sqlalchemy import text as sql
+
+        from app.services.pipeline import v3_pipeline
+
+        async def broken(session, *_a, **_kw):  # noqa: ANN001, ANN202
+            await session.execute(sql("SELECT * FROM no_such_table_reconciliation"))
+
+        monkeypatch.setattr(gr, "reconcile_run", broken)
+        engine = create_async_engine(POSTGRES_URL, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with maker() as session:
+                run = await ledger.open_run(session, mode="standard")
+                outcome = v3_pipeline.V3ResearchOutcome()
+                await v3_pipeline.reconcile_step(
+                    session, run, company=SimpleNamespace(id=None), outcome=outcome
+                )
+                assert any("not reconciled" in d for d in outcome.degraded)
+                assert (await session.execute(sql("SELECT 1"))).scalar_one() == 1
+                await ledger.record_gap(session, run, gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE,
+                                        description="still writable")
                 await session.rollback()
         finally:
             await engine.dispose()

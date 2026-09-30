@@ -542,9 +542,14 @@ def _published_at_of(item: dict[str, Any]) -> date | None:
 def _inherited_published_at(
     cited: "list[str]", evidence: "Sequence[_Evidence]"
 ) -> date | None:
-    """The date a finding speaks as of: the NEWEST cited publication date — and only
-    when EVERY cited item is dated. One undated citation makes the finding undated,
-    because ordering it in time would then rest on a guess."""
+    """The date a finding speaks as of — only when its citations AGREE on one.
+
+    Every cited item must be dated, and the dates must fall within
+    ``MAX_CITED_DATE_SPAN_DAYS`` of each other. A finding restating a 2021 study's
+    figure while also citing a 2025 quarterly would otherwise be dated 2025 and could
+    "supersede" a genuinely newer 2024 update. Undated is the honest answer then:
+    reconciliation records a disagreement rather than ordering on a guess.
+    """
     by_id = {item.citation_id: item for item in evidence}
     dates: list[date] = []
     for citation in cited:
@@ -552,7 +557,13 @@ def _inherited_published_at(
         if item is None or item.published_at is None:
             return None
         dates.append(item.published_at)
-    return max(dates) if dates else None
+    if not dates or (max(dates) - min(dates)).days > MAX_CITED_DATE_SPAN_DAYS:
+        return None
+    return max(dates)
+
+
+#: How far apart a finding's cited publication dates may be and still date it.
+MAX_CITED_DATE_SPAN_DAYS = 180
 
 
 def _harvest(tool: str, payload: dict[str, Any] | None, untrusted: bool) -> list[_Evidence]:

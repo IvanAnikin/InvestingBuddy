@@ -727,6 +727,12 @@ async def summarise(session: Any, run: ResearchRun) -> LedgerSummary:
             ResearchGap,
             ResearchGap.research_run_id == run.id,
             ResearchGap.status == GAP_OPEN,
+            # The same population a reader is shown: a superseded gap is not listed as
+            # open, so it is not counted as open either.
+            or_(
+                ResearchGap.reconciliation_status.is_(None),
+                ResearchGap.reconciliation_status != RECONCILED_SUPERSEDED,
+            ),
         ),
         gaps_blocking_council=await _count(
             ResearchGap,

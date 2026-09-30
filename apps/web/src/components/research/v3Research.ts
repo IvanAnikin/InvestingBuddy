@@ -228,6 +228,8 @@ export type ProfessionalFinding = {
   /** Prior guidance only: the label of the finding that superseded it, and when. */
   supersededByLabel: string | null;
   supersededOn: string | null;
+  /** Which of its fields were superseded (labels) — the rest may still be current. */
+  supersededFields: string[];
   /** Current guidance only: the prior statements it replaced. */
   supersedes: { label: string | null; sourcePublishedAt: string | null }[];
 };
@@ -437,6 +439,10 @@ export type V2ItemLabel = {
   /** "closed" | "partially_closed" | "superseded" | "still_open". */
   status: string;
   findingIds: string[];
+  /** Council concerns only: the agent that raised it and its position in that agent's
+      list — a handle besides the text. */
+  agent: string | null;
+  index: number | null;
 };
 
 export type V3GapReconciliation = {
@@ -738,6 +744,7 @@ function readProfessionalFinding(r: Record<string, unknown>): ProfessionalFindin
         : null,
     supersededByLabel: str(r.superseded_by_label),
     supersededOn: str(r.superseded_on),
+    supersededFields: strings(r.superseded_fields),
     supersedes: records(r.supersedes).map((x) => ({
       label: str(x.label),
       sourcePublishedAt: str(x.source_published_at),
@@ -1049,7 +1056,15 @@ function readV2Labels(v: unknown, keyField: "field" | "key"): V2ItemLabel[] {
     .map((r) => {
       const key = str(r[keyField]);
       const status = str(r.status);
-      return key && status ? { key, status, findingIds: strings(r.finding_ids) } : null;
+      return key && status
+        ? {
+            key,
+            status,
+            findingIds: strings(r.finding_ids),
+            agent: str(r.agent),
+            index: num(r.index),
+          }
+        : null;
     })
     .filter((x): x is V2ItemLabel => x !== null);
 }

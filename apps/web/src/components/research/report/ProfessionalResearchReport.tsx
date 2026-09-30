@@ -358,7 +358,11 @@ function FindingItem({
               className="mt-1 text-xs font-medium text-amber-200/90"
               data-testid="finding-prior-guidance"
             >
-              Prior guidance, superseded
+              Prior guidance
+              {finding.supersededFields.length > 0
+                ? ` for ${finding.supersededFields.join(", ")}`
+                : ""}
+              , superseded
               {finding.supersededOn ? ` (${finding.supersededOn})` : ""}
               {finding.supersededByLabel && (
                 <>

@@ -827,22 +827,7 @@ async def _run(
     #     calls a field missing that a finding states, nor shows superseded guidance as
     #     current. A failure costs the reconciliation only: the gaps then stand as
     #     recorded, which is the fail-closed direction.
-    from app.services.pipeline import gap_reconciliation
-
-    try:
-        async with session.begin_nested():
-            outcome.gap_reconciliation = await gap_reconciliation.reconcile_run(
-                session,
-                run,
-                company_id=getattr(company, "id", None),
-                core_filings=outcome.core_filings,
-                core_disclosures=outcome.core_disclosures,
-            )
-    except Exception as exc:  # noqa: BLE001 - reconciliation must not end the run
-        outcome.degraded.append(
-            f"gaps were not reconciled against the findings ({type(exc).__name__}); "
-            "they are shown as recorded"
-        )
+    await reconcile_step(session, run, company=company, outcome=outcome)
 
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
     #    and the Chair must not see one that was retired.
@@ -912,6 +897,7 @@ async def _run(
             table_payloads=investigator.table_payloads,
             council_convened=bool(council.convened),
             editor_client=model_routing.client_for(SLOT_CHAIR),
+            supersessions=(outcome.gap_reconciliation or {}).get("supersessions") or [],
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -924,6 +910,32 @@ async def _run(
         model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
     )
     await session.flush()
+
+
+async def reconcile_step(session: Any, run: Any, *, company: Any, outcome: Any) -> None:
+    """Step 7b: reconcile gaps and supersede guidance. Never raises.
+
+    In a SAVEPOINT: a database error inside it releases only its own writes, so the
+    Chair, the report and the V2 report after it still write on a clean transaction.
+    A failure costs the reconciliation only; the gaps then stand as recorded, which is
+    the fail-closed direction.
+    """
+    from app.services.pipeline import gap_reconciliation
+
+    try:
+        async with session.begin_nested():
+            outcome.gap_reconciliation = await gap_reconciliation.reconcile_run(
+                session,
+                run,
+                company_id=getattr(company, "id", None),
+                core_filings=outcome.core_filings,
+                core_disclosures=outcome.core_disclosures,
+            )
+    except Exception as exc:  # noqa: BLE001 - reconciliation must not end the run
+        outcome.degraded.append(
+            f"gaps were not reconciled against the findings ({type(exc).__name__}); "
+            "they are shown as recorded"
+        )
 
 
 #: Findings read into the report. The ledger may hold more; the report says how many.
@@ -945,6 +957,7 @@ async def _professional_report(
     table_payloads: dict[str, list[dict[str, Any]]],
     council_convened: bool,
     editor_client: Any,
+    supersessions: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1016,6 +1029,11 @@ async def _professional_report(
         )
         for row in question_rows
     ]
+    superseded_fields: dict[str, list[str]] = {}
+    for item in supersessions or []:
+        label = item.get("field_label") or item.get("field")
+        if item.get("finding_id") and label:
+            superseded_fields.setdefault(str(item["finding_id"]), []).append(str(label))
     findings = [
         pr.FindingView(
             finding_id=str(row.id),
@@ -1035,6 +1053,7 @@ async def _professional_report(
             superseded_by=(
                 str(row.superseded_by_finding_id) if row.superseded_by_finding_id else None
             ),
+            superseded_fields=tuple(superseded_fields.get(str(row.id), ())),
         )
         for row in finding_rows
     ]
@@ -1668,10 +1687,13 @@ def _label_v2(
     for agent in ((summary.get("llm_council") or {}).get("agents") or []):
         if not isinstance(agent, dict):
             continue
-        for gap in agent.get("risks_or_gaps") or []:
+        for index, gap in enumerate(agent.get("risks_or_gaps") or []):
             item = gap.get("item") if isinstance(gap, dict) else None
             if item:
-                concerns.append({"text": str(item), "agent": agent.get("agent_name")})
+                # agent + index: a stable handle the page can match besides the text.
+                concerns.append(
+                    {"text": str(item), "agent": agent.get("agent_name"), "index": index}
+                )
     return gap_reconciliation.label_v2_items(
         missing_items=[m for m in (missing_items or []) if isinstance(m, (dict, str))],
         concerns=concerns,
