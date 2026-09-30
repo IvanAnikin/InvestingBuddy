@@ -107,6 +107,15 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
             type(exc).__name__,
         )
 
+    # W0 / D13: say at startup whether this runtime may perform open-web fetches.
+    # Logged, never fatal — a too-old runtime refuses open-web fetches at the call.
+    try:
+        from app.services.sources.safe_web_fetcher import log_python_runtime_check
+
+        log_python_runtime_check()
+    except Exception:  # noqa: BLE001 - never block startup on a diagnostic
+        pass
+
     worker = await _start_durable_worker()
     try:
         yield

@@ -344,15 +344,18 @@ class ProviderNotPermittedError(PermissionError):
 
 
 def default_governance(cfg: "Settings | None" = None) -> ProviderGovernance:
-    """The governance matrix as it stands while the open decisions are open.
+    """The governance matrix, with the decision each row rests on.
 
-    Every external provider is **public-only**, on the authority of the open decisions
-    themselves. Azure OpenAI is the incumbent and is the one provider already carrying
-    the platform's own content under the existing deployment, so it is recorded as
+    Azure OpenAI is the incumbent and is the one provider already carrying the
+    platform's own content under the existing deployment, so it is recorded as
     non-external — which is a statement about where it runs, not a licence to widen it.
+    DeepSeek is external and is **evaluated for every class, private ones included**
+    (ADR-049): that grants nothing on its own, because a private document's own rights
+    are the second gate and default to closed. Every DEFERRED provider (OpenAI, Exa,
+    Perplexity, Gemini, Claude) is public-only.
 
-    Nothing here is a decision. Each entry cites the decision that constrains it, and a
-    test asserts no external provider has been granted a private class.
+    Nothing here is a decision. Each entry cites the decision that constrains it, and
+    tests pin both the DeepSeek row and that the deferred rows stay public-only.
     """
     governance = ProviderGovernance()
     governance.register(

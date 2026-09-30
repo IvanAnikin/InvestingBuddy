@@ -615,7 +615,7 @@ class LeadDocumentFetcher(Protocol):
         *,
         allowed_domains: tuple[str, ...],
         cfg: Any = None,
-        resolve_ip: bool = False,
+        resolve_ip: bool = True,
     ) -> DocumentFetchResult:
         ...  # pragma: no cover - protocol
 
@@ -625,7 +625,8 @@ async def _default_fetcher(
     *,
     allowed_domains: tuple[str, ...],
     cfg: Any = None,
-    resolve_ip: bool = False,
+    # W0: a lead's URL is model-chosen, so the default seam always resolves + pins.
+    resolve_ip: bool = True,
 ) -> DocumentFetchResult:
     return await safe_fetch_document(
         url, allowed_domains=allowed_domains, cfg=cfg, resolve_ip=resolve_ip

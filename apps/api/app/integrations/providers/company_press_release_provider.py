@@ -30,14 +30,22 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
+from typing import Any
 from urllib.parse import urljoin, urlparse
-
-import httpx
 
 from app.integrations.financial_data_provider import SourceTier
 from app.schemas.catalyst import NewsItem, PressReleaseStatus
 
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
+#: Feed media types admitted as TEXT for this fetch only (the guarded document
+#: fetcher's global allowlist is pdf/html/plain).
+_FEED_CONTENT_TYPES: tuple[str, ...] = (
+    "application/rss+xml",
+    "application/atom+xml",
+    "application/xml",
+    "text/xml",
+)
+#: A feed is a listing, not a document: 2 MB is far more than any real one.
+_MAX_FEED_BYTES = 2_000_000
 
 # Conservative set of common newsroom / IR feed paths.
 _FEED_PATHS: tuple[str, ...] = (
@@ -353,28 +361,56 @@ class CompanyPressReleaseProvider:
 
     provider_name = "company_press_release"
 
+    def __init__(self, *, resolver: Any = None, cfg: Any = None) -> None:
+        # Test seams only: a fake ``getaddrinfo``-shaped resolver and explicit
+        # Settings. Production uses real (off-loop) DNS and the global settings.
+        self._resolver = resolver
+        self._cfg = cfg
+
     async def _fetch(self, url: str) -> str | None:
-        try:
-            async with httpx.AsyncClient(
-                headers={"User-Agent": _USER_AGENT},
-                timeout=6.0,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(url)
-                if resp.status_code != 200:
-                    return None
-                ctype = resp.headers.get("content-type", "").lower()
-                feed_like_ctype = any(k in ctype for k in ("xml", "rss", "atom"))
-                head = resp.text[:200].lstrip()
-                feed_like_body = (
-                    head.startswith("<?xml") or "<rss" in head or "<feed" in head
-                )
-                if not feed_like_ctype and not feed_like_body:
-                    # Only accept feed-like responses; do not scrape HTML pages.
-                    return None
-                return resp.text
-        except Exception:
+        """Fetch one candidate feed through the guarded fetcher. Never raises.
+
+        W0 / D9: this was the only dynamic-URL fetcher outside the guard — raw httpx
+        with ``follow_redirects=True``, ``http`` allowed, no address check, the whole
+        body buffered. It now goes through ``safe_fetch_document``: HTTPS only (an
+        ``http://`` candidate is UPGRADED to https, never fetched in the clear), the
+        allowlist is the candidate's own host (so a redirect may stay on that site
+        and its sub-domains, never leave it), every hop is resolved, checked and
+        pinned, and the body is byte-capped.
+        """
+        from app.services.sources.document_fetcher import safe_fetch_document
+
+        target = (url or "").strip()
+        if target.lower().startswith("http://"):
+            target = "https://" + target[len("http://") :]
+        host = (urlparse(target).hostname or "").lower()
+        if not host:
             return None
+        kwargs: dict[str, Any] = {
+            "allowed_domains": (host,),
+            "resolve_ip": True,
+            "extra_text_content_types": _FEED_CONTENT_TYPES,
+            "max_bytes": _MAX_FEED_BYTES,
+        }
+        if self._resolver is not None:
+            kwargs["resolver"] = self._resolver
+        if self._cfg is not None:
+            kwargs["cfg"] = self._cfg
+        try:
+            result = await safe_fetch_document(target, **kwargs)
+        except Exception:  # noqa: BLE001 - the guarded fetcher never raises; belt+braces
+            return None
+        if not result.ok or result.content is None or result.status_code != 200:
+            return None
+        text = result.content.decode("utf-8", "replace")
+        ctype = (result.content_type or "").lower()
+        feed_like_ctype = any(k in ctype for k in ("xml", "rss", "atom"))
+        head = text[:200].lstrip()
+        feed_like_body = head.startswith("<?xml") or "<rss" in head or "<feed" in head
+        if not feed_like_ctype and not feed_like_body:
+            # Only accept feed-like responses; do not scrape HTML pages.
+            return None
+        return text
 
     async def get_press_releases(
         self,

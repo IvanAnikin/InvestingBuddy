@@ -823,7 +823,9 @@ class CompanyIrConnector(SourceConnector):
         for candidate in landing_candidates:
             try:
                 child = await self._page_fetcher(
-                    candidate.url,
+                    # W0 / D12: the link as published, never its secret-stripped
+                    # stored form.
+                    candidate.fetch_target,
                     # The page URL still comes from the registry and is re-checked
                     # before the request; the wider set is needed so document
                     # links on the issuer's curated content host survive link
@@ -1155,7 +1157,7 @@ class CompanyIrConnector(SourceConnector):
         target = next((ln for ln in links if ln.is_document), links[0])
 
         bundle = await self._document_extractor(
-            target.url,
+            target.fetch_target,  # W0 / D12: request the unstripped link
             allowed_domains=allowed,
             title_hint=target.text or None,
             original_language=self._original_language(),
@@ -1657,7 +1659,7 @@ class CompanyIrConnector(SourceConnector):
                     ocr_kwargs["ocr_provider"] = self._ocr_provider
                     ocr_kwargs["ocr_budget"] = self._ocr_budget
                 artifact = await self._primary_document_extractor(
-                    target.url,
+                    target.fetch_target,  # W0 / D12: request the unstripped link
                     allowed_domains=allowed,
                     title_hint=target.text or None,
                     original_language=self._original_language(),

@@ -21,9 +21,14 @@ Safety properties:
     falling back to an unvalidated lookup.
   * **Every resolved address is checked, not just the first.** A name that
     resolves to one public and one private address is rejected outright.
-  * **IPv4 and IPv6.** Loopback, private, link-local, reserved, multicast,
-    unspecified and cloud instance-metadata addresses are rejected in both
-    families; IPv6 scope ids are stripped before classification.
+  * **IPv4 and IPv6.** Every address must be ``is_global`` AND outside the explicit
+    denylist in ``safe_web_fetcher`` (CGNAT, all of link-local, Azure WireServer
+    ``168.63.129.16``, documentation/benchmark ranges …; W0 D1/D2/D13), and
+    IPv4-mapped / 6to4 / Teredo / NAT64 addresses are unwrapped and their embedded
+    IPv4 address re-checked. IPv6 scope ids are stripped before classification.
+  * **No environment configuration.** The inner transports are built with
+    ``trust_env=False`` (W0 / D6), so no environment variable changes how or where
+    a validated connection is made.
   * **TLS is never weakened.** ``verify`` is untouched and the pinned request
     carries ``sni_hostname`` so the handshake and the certificate hostname check
     still target the real hostname — pinning changes *where we connect*, never
@@ -224,6 +229,9 @@ class PinnedAsyncHTTPTransport:
         if transport_factory is not None:
             self._factory = transport_factory
         else:
+
+            # W0 / D6: the environment never configures a guarded connection.
+            transport_kwargs.setdefault("trust_env", False)
 
             def _default_factory() -> Any:
                 import httpx

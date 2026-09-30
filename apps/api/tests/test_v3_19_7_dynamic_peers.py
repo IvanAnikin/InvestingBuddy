@@ -61,6 +61,14 @@ class _Transport:
         ]}), finish_reason="stop")
 
 
+#: W0: ``v3_external_search_timeout_seconds`` is now a defined Setting read by direct
+#: attribute access (it was ``getattr(..., 180)`` on an undefined name), so a fake cfg
+#: must carry it like the real Settings does.
+_CFG = SimpleNamespace(
+    v3_dynamic_peer_discovery_enabled=True, v3_external_search_timeout_seconds=180
+)
+
+
 async def _fake_verify(lead, *, cfg=None, fetcher=None, max_fetches=2):
     verified = lead.ticker == "LYC"
     return identity_mod.IdentityOutcome(
@@ -88,7 +96,7 @@ async def test_verified_external_peer_is_added_with_its_basis(session, monkeypat
                                                     max_output_tokens=4000))
     monkeypatch.setattr(identity_mod, "verify_identity", _fake_verify)
     context = SimpleNamespace(session=session,
-                              cfg=SimpleNamespace(v3_dynamic_peer_discovery_enabled=True))
+                              cfg=_CFG)
     payload = await peers._get_peer_set(
         context, peers.validate_get_peer_set({"company_id": str(subject.id),
                                               "commodity": "rare_earths"}))
@@ -108,7 +116,7 @@ async def test_unverified_peer_rejected(session, monkeypatch):
                                                     max_output_tokens=4000))
     monkeypatch.setattr(identity_mod, "verify_identity", _fake_verify)
     context = SimpleNamespace(session=session,
-                              cfg=SimpleNamespace(v3_dynamic_peer_discovery_enabled=True))
+                              cfg=_CFG)
     payload = await peers._get_peer_set(
         context, peers.validate_get_peer_set({"company_id": str(subject.id)}))
     assert "PHM" not in {i["ticker"] for i in payload["items"]}
@@ -140,7 +148,7 @@ async def test_the_search_is_reported_and_memoised(session, monkeypatch):
     monkeypatch.setattr("app.services.discovery.leads._ask", _fake_ask)
     peers._PEER_MEMO.clear()
     context = SimpleNamespace(session=session,
-                              cfg=SimpleNamespace(v3_dynamic_peer_discovery_enabled=True))
+                              cfg=_CFG)
     args = peers.validate_get_peer_set({"company_id": str(subject.id), "commodity": "copper"})
     first = await peers._get_peer_set(context, args)
     second = await peers._get_peer_set(context, args)

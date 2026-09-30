@@ -467,6 +467,13 @@ class Settings(BaseSettings):
     # Hard cap on links extracted from a single fetched page (bounds annual-report
     # / press-release link discovery). Excess links are dropped, not followed.
     source_connector_max_links_per_page: int = 25
+    # W0 (open-web threat model D8): TOTAL wall-clock budget for one guarded fetch —
+    # connect, every redirect hop and the whole body — in seconds. The httpx timeouts
+    # above are per-operation, so without this a server dripping one byte just inside
+    # the read timeout could hold a worker indefinitely. Read by
+    # ``safe_web_fetcher.fetch_total_deadline_seconds`` for page AND document fetches;
+    # sized for a 35 MB annual report on a slow link.
+    source_fetch_total_deadline_seconds: float = 90.0
 
     # ── Macro reference layer (Phase 29C.1) ────────────────────────────────
     # Gate for the reference-only macro source layer (FRED, IMF, Eurostat, World
@@ -1211,9 +1218,11 @@ class Settings(BaseSettings):
     # come from managed identity (``DefaultAzureCredential``).
     v3_artifact_store_account_url: str = ""
     v3_artifact_store_container: str = "investingbuddy-documents"
-    # Hard ceiling on one stored artifact. The fetch layer already caps a document
-    # far below this (``primary_document_max_download_bytes`` is 8 MB); this exists
-    # so an upstream BUG cannot push an unbounded blob into storage.
+    # Hard ceiling on one stored artifact, so an upstream BUG cannot push an
+    # unbounded blob into storage. The fetch layer's streaming cap is
+    # ``source_document_extraction_max_bytes`` (35 MB), just below this.
+    # (``primary_document_max_download_bytes``, 8 MB, is NOT a fetch cap: it only sets
+    # the extractor's honest ``truncated`` flag after the bytes are already held.)
     v3_artifact_max_bytes: int = 32_000_000
 
     # Days after which a stored artifact's raw BYTES become eligible for deletion.
@@ -1383,6 +1392,12 @@ class Settings(BaseSettings):
     # default, because a verified capability is not the same as a decision to spend on
     # it. A credential is not consent; neither is a working endpoint.
     v3_deepseek_search_enabled: bool = False
+    # Seconds one external investigation (``search_web``, discovery leads, issuer
+    # screening) may take. Read directly by ``agent_tools/external.py``,
+    # ``discovery/leads.py`` and ``discovery/screening.py``; the provider clamps it to
+    # [10, 300]. It was read via ``getattr(..., 180)`` for months without ever being
+    # defined, so an operator setting it had no effect on a documented knob (W0).
+    v3_external_search_timeout_seconds: int = 180
 
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,

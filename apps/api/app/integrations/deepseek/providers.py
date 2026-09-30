@@ -215,6 +215,14 @@ def _json_object(text: str | None) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+#: Provenance labels for provider claims (spec §22.3). "search" requires a recorded,
+#: executed search query; anything else is recall.
+DISCOVERY_MODE_SEARCH = "search"
+DISCOVERY_MODE_RECALL = "model_recall"
+#: The coded statement a caller surfaces when a search path executed no search.
+WEB_SEARCH_UNAVAILABLE = "web_search_unavailable"
+
+
 @dataclass(frozen=True)
 class SearchTrace:
     """What DeepSeek *did*, as distinct from what it said.
@@ -885,6 +893,10 @@ class DeepSeekSearchProvider:
             truncated=truncated,
             raw_provider_metadata={
                 "trace": trace.to_dict(),
+                # Spec §22.3: "search" only when a search query was executed.
+                "discovery_mode": DISCOVERY_MODE_SEARCH
+                if trace.query_call_count - trace.failed_query_call_count > 0
+                else DISCOVERY_MODE_RECALL,
                 "served_model": response.served_model,
                 "requested_domains": _clean_domains(domains),
                 # Said plainly so no reader of this record infers a guarantee the
@@ -1094,6 +1106,25 @@ class DeepSeekResearchProvider:
                     "opening it. The count is a provider-quality signal, not a verdict"
                 )
 
+        # Spec §22.3 / W0 — search provenance is a NETWORK FACT. A lead is "found via
+        # search" only when the provider demonstrably executed a search query; with
+        # zero executed queries every claim below is the model's recall, whatever
+        # endpoint was asked for. (Since 2026-09-26 DeepSeek accepts the search tool
+        # and never calls it, so a "retrieval-backed" label was describing the
+        # request, not what happened.)
+        executed_queries = max(
+            0, trace.query_call_count - trace.failed_query_call_count
+        )
+        discovery_mode = (
+            DISCOVERY_MODE_SEARCH if executed_queries > 0 else DISCOVERY_MODE_RECALL
+        )
+        if self.search_enabled and executed_queries == 0:
+            warnings.append(
+                f"{WEB_SEARCH_UNAVAILABLE}: the provider executed no search query, so "
+                "every claim here is MODEL RECALL, not a search result. Each still "
+                "has to pass InvestingBuddy's own fetch before anything may cite it"
+            )
+
         truncated = (response.finish_reason or "").lower() in {
             "length",
             "max_tokens",
@@ -1149,7 +1180,14 @@ class DeepSeekResearchProvider:
                 "completion_tokens": response.completion_tokens,
                 "cached_tokens": response.cached_tokens,
                 "served_model": response.served_model,
-                "retrieval_backed": self.search_enabled,
+                # True only when the retrieval path was used AND the provider made
+                # at least one retrieval call. Requesting the tool is not retrieving.
+                "retrieval_backed": self.search_enabled
+                and trace.provider_call_count > 0,
+                # The truthful provenance label (spec §22.3): "search" requires an
+                # executed search query; everything else is "model_recall".
+                "discovery_mode": discovery_mode,
+                "executed_search_queries": executed_queries,
                 "trace": trace.to_dict(),
                 "leads_citing_unopened_pages": dropped_unopened,
                 "exhausted_budget_retrieving": exhausted_retrieving,
@@ -1191,6 +1229,9 @@ class UnavailableBrowserProvider:
 
 
 __all__ = [
+    "DISCOVERY_MODE_RECALL",
+    "DISCOVERY_MODE_SEARCH",
+    "WEB_SEARCH_UNAVAILABLE",
     "DeepSeekModelProvider",
     "DeepSeekResearchProvider",
     "DeepSeekSearchProvider",

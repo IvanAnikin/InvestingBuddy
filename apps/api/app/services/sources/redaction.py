@@ -15,7 +15,6 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.core.log_redaction import (
-    SENSITIVE_QUERY_SUBSTRINGS,
     redact_text,
     redact_url,
 )
@@ -29,13 +28,54 @@ __all__ = [
 ]
 
 
+#: Whole WORDS of a parameter name that mark it credential-bearing. W0 / D12: this was
+#: substring matching, so ``countrycode``, ``sortkey`` and ``design`` (which contain
+#: ``code``/``key``/``sig``) were stripped — and the stripped URL was the one fetched.
+_SECRET_PARAM_WORDS = frozenset(
+    {
+        "token",
+        "key",
+        "apikey",
+        "secret",
+        "password",
+        "passwd",
+        "sig",
+        "signature",
+        "code",
+        "auth",
+        "credential",
+        "credentials",
+    }
+)
+#: Compound names written as one lower-case word (``apitoken``, ``clientsecret``,
+#: ``xamzsignature``) end in one of these. Deliberately NOT ``key``/``code``/``sig``,
+#: whose suffix match is exactly the false positive D12 is about.
+_SECRET_PARAM_SUFFIXES = ("token", "secret", "password", "passwd", "signature", "apikey")
+
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _param_words(name: str) -> list[str]:
+    """``X-Amz-Signature`` → ``[x, amz, signature]``; ``apiKey`` → ``[api, key]``."""
+    spaced = _CAMEL_BOUNDARY_RE.sub("_", name or "").lower()
+    return [word for word in _WORD_SPLIT_RE.split(spaced) if word]
+
+
 def _is_secret_param(name: str) -> bool:
-    lowered = name.lower()
-    return any(token in lowered for token in SENSITIVE_QUERY_SUBSTRINGS)
+    """True when a query parameter NAME is credential-bearing (whole-word match)."""
+    words = _param_words(name)
+    if any(word in _SECRET_PARAM_WORDS for word in words):
+        return True
+    joined = "".join(words)
+    return bool(joined) and joined.endswith(_SECRET_PARAM_SUFFIXES)
 
 
 def strip_url_secrets(url: str | None) -> str | None:
     """Return ``url`` with every credential-bearing query parameter removed.
+
+    For the STORED / LOGGED form of a URL only. Never feed the result back into a
+    fetch: a URL without its signature is a different request (W0 / D12).
 
     Scheme, host and path are preserved. Unlike ``redact_url`` (which keeps the
     key and hides the value for log readability), this drops the whole parameter
