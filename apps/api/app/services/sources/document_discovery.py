@@ -76,6 +76,30 @@ DOC_KIND_INTERIM_REPORT = "interim_report"
 DOC_KIND_RESULTS_RELEASE = "results_release"
 DOC_KIND_PRESENTATION = "presentation"
 DOC_KIND_OTHER = "other"
+# Open-web W3 (spec §11.2): kinds a WEB document can have. Assigned by
+# ``web_research.classify`` from the page itself; the link classifier below keeps its
+# own five-kind vocabulary until crawl scoring (W5) extends it. ``document_type`` is
+# ``String(50)``, so these need no migration.
+DOC_KIND_WHITEPAPER = "whitepaper"
+DOC_KIND_GOVERNMENT_REPORT = "government_report"
+DOC_KIND_CONSULTATION = "consultation"
+DOC_KIND_INDUSTRY_REPORT = "industry_report"
+DOC_KIND_ACADEMIC_PAPER = "academic_paper"
+DOC_KIND_NEWS_ARTICLE = "news_article"
+DOC_KIND_PRESS_RELEASE = "press_release"
+DOC_KIND_WEB_PAGE = "web_page"
+DOC_KIND_FACTSHEET = "factsheet"
+WEB_DOCUMENT_KINDS: tuple[str, ...] = (
+    DOC_KIND_WHITEPAPER,
+    DOC_KIND_GOVERNMENT_REPORT,
+    DOC_KIND_CONSULTATION,
+    DOC_KIND_INDUSTRY_REPORT,
+    DOC_KIND_ACADEMIC_PAPER,
+    DOC_KIND_NEWS_ARTICLE,
+    DOC_KIND_PRESS_RELEASE,
+    DOC_KIND_WEB_PAGE,
+    DOC_KIND_FACTSHEET,
+)
 
 STRATEGY_ANCHORS = "anchors"
 STRATEGY_JSON_LD = "json_ld"

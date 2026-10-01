@@ -50,10 +50,25 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Float, bindparam, func, literal_column, select, text, update
+from sqlalchemy import (
+    Float,
+    bindparam,
+    false,
+    func,
+    literal_column,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.research_chunk import ResearchDocumentChunk
+from app.models.research_document import (
+    ResearchDocument,
+    ResearchDocumentSubject,
+    ResearchDocumentVersion,
+)
 from app.services.corpus.search.backends.memory import tokenize
 from app.services.corpus.search.embeddings import cosine
 from app.services.corpus.search.fusion import (
@@ -126,7 +141,23 @@ def _filter_clauses(filters: CorpusFilters) -> list[Any]:
     clauses: list[Any] = []
     if filters.indexable_only:
         clauses.append(C.indexable.is_(True))
-    if filters.company_ids:
+    if filters.subject_company_ids:
+        # Open-web W3: a chunk of the company's own documents, OR of a document that
+        # names the company as a subject (one article, several companies).
+        named = (
+            select(ResearchDocumentVersion.id)
+            .join(
+                ResearchDocumentSubject,
+                ResearchDocumentSubject.research_document_id
+                == ResearchDocumentVersion.research_document_id,
+            )
+            .where(ResearchDocumentSubject.company_id.in_(list(filters.subject_company_ids)))
+        )
+        own = (
+            C.company_id.in_(list(filters.company_ids)) if filters.company_ids else false()
+        )
+        clauses.append(or_(own, C.research_document_version_id.in_(named)))
+    elif filters.company_ids:
         clauses.append(C.company_id.in_(list(filters.company_ids)))
     if filters.document_types:
         clauses.append(C.document_type.in_(list(filters.document_types)))
@@ -150,6 +181,35 @@ def _filter_clauses(filters: CorpusFilters) -> list[Any]:
     if filters.published_to is not None:
         clauses.append(C.published_at.is_not(None))
         clauses.append(C.published_at <= filters.published_to)
+    # Open-web W3 (spec §12.3). These live on the version / document rather than on the
+    # chunk, so each is a subquery on the chunk's version — still inside the same
+    # statement as the ORDER BY and the LIMIT, never a post-filter.
+    V = ResearchDocumentVersion
+    version_conditions: list[Any] = []
+    if filters.source_classes:
+        version_conditions.append(V.source_class.in_(list(filters.source_classes)))
+    if filters.use_constraints:
+        version_conditions.append(V.use_constraint.in_(list(filters.use_constraints)))
+    if filters.exclude_injection_suspect:
+        version_conditions.append(
+            or_(V.injection_suspect.is_(None), V.injection_suspect.is_(False))
+        )
+    document_conditions: list[Any] = []
+    if filters.subject_scopes:
+        document_conditions.append(
+            ResearchDocument.subject_scope.in_(list(filters.subject_scopes))
+        )
+    if filters.theme_keys:
+        document_conditions.append(ResearchDocument.theme_key.in_(list(filters.theme_keys)))
+    if version_conditions or document_conditions:
+        versions = select(V.id)
+        if document_conditions:
+            versions = versions.join(
+                ResearchDocument, ResearchDocument.id == V.research_document_id
+            ).where(*document_conditions)
+        if version_conditions:
+            versions = versions.where(*version_conditions)
+        clauses.append(C.research_document_version_id.in_(versions))
     return clauses
 
 

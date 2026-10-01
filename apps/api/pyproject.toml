@@ -30,6 +30,10 @@ dependencies = [
     # charset (spec §9.2). Already a transitive dependency; pinned explicitly because
     # the fetch policy imports it directly.
     "charset-normalizer>=3.3,<4",
+    # Open-web W3: main-content extraction for web pages (spec §10.1), run on OUR bytes
+    # only — its downloader is never used. Apache-2.0 since 1.8. Brings lxml, htmldate,
+    # justext and courlan (all pure-Python or manylinux wheels).
+    "trafilatura>=2.2,<3",
 ]
 
 [project.optional-dependencies]

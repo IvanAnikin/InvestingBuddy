@@ -1445,12 +1445,21 @@ def extract_pdf(
     cfg: Settings | None = None,
     original_language: str | None = None,
     capture_blocks: bool = False,
+    pages: Sequence[int] | None = None,
 ) -> PrimaryDocumentExtraction:
     """Extract bounded text excerpts + tables from a native-text PDF.
 
     Never raises. A wrong magic byte / oversize / malformed / encrypted / scanned
     document degrades to an honest status; extraction is bounded by page count,
     per-excerpt length, total characters and a wall-clock budget.
+
+    ``pages`` (open-web W3, the layout pass of the two-pass large-document mode) is an
+    EXPLICIT 1-based page selection. When given, exactly those pages are read — in
+    ascending order, still under the deadline and character caps — instead of the
+    leading window plus the bookmark-targeted supplemental pass, and the result is not
+    marked truncated merely because the document has other pages: the caller that chose
+    the pages owns that accounting. ``None`` (every existing caller) is byte-identical
+    to the previous behaviour.
     """
     cfg = cfg or default_settings
     result = PrimaryDocumentExtraction(
@@ -1747,8 +1756,19 @@ def extract_pdf(
         with pdfplumber.open(io.BytesIO(raw)) as pdf:
             page_count = len(pdf.pages)
             result.page_count = page_count
-            n = min(max_pages, page_count)
-            if page_count > n:
+            if pages is not None:
+                for page_no in sorted({int(p) for p in pages if 1 <= int(p) <= page_count}):
+                    if time.monotonic() > deadline:
+                        result.truncated = True
+                        result.warnings.append(
+                            "Extraction time budget exceeded; partial extraction only."
+                        )
+                        break
+                    if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
+                        break
+                    _extract_one_page(pdf.pages[page_no - 1], page_no)
+            n = 0 if pages is not None else min(max_pages, page_count)
+            if pages is None and page_count > n:
                 result.truncated = True
                 result.warnings.append(
                     f"Document has {page_count} pages; only the first {n} "
@@ -1769,7 +1789,8 @@ def extract_pdf(
             # statement heading are read, and only when pages remain beyond
             # the leading window and extraction budget remains.
             if (
-                page_count > n
+                pages is None
+                and page_count > n
                 and max_supplemental_pages > 0
                 and time.monotonic() <= deadline
                 and total_chars < _MAX_TOTAL_EXTRACTED_CHARS
@@ -2194,6 +2215,7 @@ def extract_primary_document(
     cfg: Settings | None = None,
     original_language: str | None = None,
     capture_blocks: bool = False,
+    pages: Sequence[int] | None = None,
 ) -> PrimaryDocumentExtraction:
     """Dispatch to ``extract_pdf`` / ``extract_html`` by ``document_type``.
 
@@ -2207,6 +2229,7 @@ def extract_primary_document(
             cfg=cfg,
             original_language=original_language,
             capture_blocks=capture_blocks,
+            pages=pages,
         )
     if document_type in ("html", "text"):
         return extract_html(
