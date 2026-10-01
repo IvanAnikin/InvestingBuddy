@@ -118,6 +118,12 @@ REASON_QUALIFIER_DIFFERS = "value_qualifier_differs"
 REASON_HISTORICAL_CITATION = "historical_citation"
 REASON_TARGET_PASSED = "target_date_passed"
 REASON_PERIOD_UNSPECIFIED = "period_unspecified"
+REASON_VALUE_STALE = "value_stale"
+REASON_VALUE_DATE_UNKNOWN = "value_date_unknown"
+
+#: Point-in-time balances: a cash or debt figure answers "what is the balance" only when
+#: it is recent, whether or not the gap says "current".
+POINT_IN_TIME_FIELDS: frozenset[str] = frozenset({"metric:cash", "metric:net_debt"})
 
 #: How recent evidence must be to answer a gap asking for the CURRENT value.
 RECENCY_WINDOW_DAYS = 365
@@ -626,6 +632,21 @@ def _recency_reasons(
     return []
 
 
+def _balance_reasons(finding: FindingFacts, requirement: str, as_of: date) -> list[str]:
+    """A balance (cash, net debt) closes only when dated within a year of the run."""
+    if requirement not in POINT_IN_TIME_FIELDS:
+        return []
+    period = finding.effective_period
+    ended = rf.period_end_date(period)
+    if ended is None:
+        rank = rf.period_rank(period)
+        if rank is None:
+            return [REASON_VALUE_DATE_UNKNOWN]
+        # A year-labelled balance ends at the latest on 31 December of that year.
+        ended = date(rank[0], 12, 31)
+    return [REASON_VALUE_STALE] if (as_of - ended).days > RECENCY_WINDOW_DAYS else []
+
+
 def _milestone_reasons(
     finding: FindingFacts, requirement: str, as_of: date
 ) -> list[str] | None:
@@ -677,6 +698,7 @@ def _assess(
             return None
         reasons.extend(part)
     reasons.extend(_family_subtype_reasons(finding, requirement))
+    reasons.extend(_balance_reasons(finding, requirement, today))
     reasons.extend(_period_reasons(finding, gap_period))
     reasons.extend(_recency_reasons(finding, gap_text, requirement, today))
     reasons.extend(_qualifier_reasons(finding, requirement, gap_text))

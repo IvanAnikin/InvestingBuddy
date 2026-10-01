@@ -337,6 +337,14 @@ any value-type ambiguity means `partially_closed`, never `closed`**:
   (growth, ratios, margins) never are, and a period-bound metric with no period is at
   most annotated.
 
+Round 3: a value withdrawn, deferred, suspended, cancelled, replaced, under review or not
+approved/confirmed ANYWHERE in its clause — including a relative clause ("…, which was
+withdrawn in March") — is not stated, so it never closes a gap or supersedes; only a
+forward "not expected to change" relative clause and an "excluding <cost noun>" phrase
+(up to its noun) are set aside before the negation check. A point-in-time balance (cash,
+net debt) closes a gap only when dated within 365 days of the run; older is
+`value_stale`, undated is `value_date_unknown` — both partial.
+
 `research_findings.superseded_by_finding_id` holds the LATEST newer finding; the per-field
 map in `v3_research.gap_reconciliation.supersessions` is authoritative.
 

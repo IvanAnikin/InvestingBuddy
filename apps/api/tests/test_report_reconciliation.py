@@ -1406,3 +1406,72 @@ class TestRound2Pins:
         assert gr.label_v2_items(missing_items=[name], concerns=[],
                                  closers=closers)["missing_information"] == []
         assert gr.exact_field_for_item("fundamentals.capital_expenditure") == "metric:capex"
+
+
+# ── Review round 3: withdrawn values in relative clauses; stale balances ──────── #
+
+
+class TestRound3Withdrawal:
+    WITHDRAWN = [
+        "The DFS estimates capex of US$302m, which was withdrawn in March",
+        "The DFS estimates capex of US$302m, that has since been withdrawn",
+        "The DFS estimates capex of US$302m, which the board has not approved",
+        "The DFS capex of US$302m excluding contingency has not been confirmed",
+        "The DFS estimates capex of US$302m, which is under review",
+        "The DFS estimates capex of US$302m, which was replaced by the updated plan",
+    ]
+
+    @pytest.mark.parametrize("statement", WITHDRAWN)
+    def test_a_withdrawn_value_is_not_stated(self, statement: str) -> None:
+        assert rf.fields_stated(statement) == ()
+        assert _st("Current capex estimate not acquired",
+                   _pf("f", statement, D(2026, 8, 1))).status == ledger.RECONCILED_STILL_OPEN
+
+    def test_a_deferred_milestone_does_not_close(self) -> None:
+        statement = "First production is targeted for 2027, which has been deferred indefinitely"
+        assert rf.fields_stated(statement) == ()
+        assert _st("First production date not acquired",
+                   _pf("f", statement, D(2026, 8, 1))).status == ledger.RECONCILED_STILL_OPEN
+
+    def test_a_withdrawn_value_never_supersedes(self) -> None:
+        valid = _pf("v", "The DFS estimates capex of US$302m", D(2025, 11, 1))
+        withdrawn = _pf("w", "The DFS estimates capex of US$410m, which was withdrawn in March",
+                        D(2026, 8, 1))
+        assert gr.supersede([valid, withdrawn]) == ([], [])
+
+    def test_excluding_is_set_aside_only_up_to_its_noun(self) -> None:
+        # The main verb after the excluded noun still negates the value.
+        assert rf.fields_stated(
+            "The DFS capex of US$302m excluding contingency is not disclosed") == ()
+        assert "metric:capex" in rf.fields_stated(
+            "The DFS capex of US$302m excluding contingency is the base estimate")
+
+    def test_a_forward_no_change_clause_is_still_set_aside(self) -> None:
+        assert "metric:capex" in rf.fields_stated(
+            "The DFS estimates capex of US$302m, which is not expected to change")
+
+
+class TestRound3Balances:
+    @pytest.mark.parametrize(
+        ("statement", "period_key", "reason"),
+        [
+            ("Cash and cash equivalents of £6.1m at 31 December 2019", None,
+             gr.REASON_VALUE_STALE),
+            ("Cash and cash equivalents of £6.1m", "FY2019", gr.REASON_VALUE_STALE),
+            ("Cash and cash equivalents of £6.1m", None, gr.REASON_VALUE_DATE_UNKNOWN),
+            ("Net debt of £2m at 31 December 2023", None, gr.REASON_VALUE_STALE),
+        ],
+    )
+    def test_an_old_or_undated_balance_only_partly_answers(
+        self, statement: str, period_key, reason: str  # noqa: ANN001
+    ) -> None:
+        gap = "Net debt not acquired" if "Net debt" in statement else "Cash balance not acquired"
+        verdict = _st(gap, _pf("f", statement, period_key=period_key))
+        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
+        assert reason in verdict.reasons
+
+    def test_a_recent_balance_closes(self) -> None:
+        verdict = _st("Cash balance not acquired",
+                      _pf("f", "Cash and cash equivalents of £4.2m at 30 June 2026",
+                          D(2026, 9, 1)))
+        assert verdict.status == ledger.RECONCILED_CLOSED

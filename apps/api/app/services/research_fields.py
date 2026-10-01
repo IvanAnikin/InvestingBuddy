@@ -397,24 +397,48 @@ def clauses(text: str | None) -> list[str]:
     return [c.lower() for c in _raw_clauses(text)]
 
 
-#: Subordinate material whose negation governs something ELSE, not the value: "which is
-#: not expected to change", "not including US$20m of owner's costs", "includes no
-#: contingency", "with no further delays expected", "after the delayed FID", and a
-#: place "outside Johannesburg". Removed before the negation check.
+#: A value WITHDRAWN, deferred, unconfirmed or replaced — anywhere in its clause,
+#: including a relative clause ("…, which was withdrawn in March"). Checked BEFORE any
+#: subordinate material is set aside: a withdrawn value never closes or supersedes.
+_WITHDRAWAL_RE = re.compile(
+    r"\bwithdr[ae]w\w*|\bdefer\w*|\bsuspend\w*|\bsuspension\b|\bcancel\w*|\babandon\w*|"
+    r"\brevok\w*|\brescind\w*|\breplaced\b|\bsuperseded\b|\bno\s+longer\b|"
+    r"\bunder\s+review\b|\bunconfirmed\b|\bnot\s+(?:yet\s+)?(?:been\s+)?(?:approved|"
+    r"confirmed|finali[sz]ed|sanctioned)\b|\bpending\s+(?:approval|review|confirmation)\b",
+    re.IGNORECASE,
+)
+#: Subordinate material whose negation governs something ELSE, set aside before the
+#: negation check — narrowly:
+#:  * a relative clause expecting NO CHANGE ("which is not expected to change");
+#:  * "excluding / not including <cost noun phrase>" up to its noun, never the main
+#:    verb after it ("… excluding contingency has not been confirmed" stays negated);
+#:  * "includes / with no contingency", "with no further delays expected";
+#:  * "after the delayed FID" (another milestone's delay, not this value's).
 _SUBORDINATE_RE = re.compile(
-    r",\s*(?:which|that)\b[^,;]*|,?\s*(?:not\s+including|excluding|exclusive\s+of)\b[^,;]*|"
-    r"\b(?:includes?|including|with|and)\s+no\s+(?:contingency|further|additional|"
-    r"material|change)\b[^,;]*|\b(?:after|following|despite)\s+the\s+(?:delayed|deferred|"
-    r"suspended|withdrawn)\b[^,;]*|\bthe\s+(?:delayed|deferred|suspended)\s+\w+",
+    r",?\s*(?:which|that)\s+(?:is|are|was|were)\s+not\s+(?:currently\s+)?expected\s+to\s+"
+    r"(?:change|be\s+revised|be\s+changed|move|increase)\b[^,;]*|"
+    r"\b(?:not\s+including|excluding|exclusive\s+of)\s+(?:[^\s,;]+\s+){0,5}?"
+    r"(?:costs?|contingency|contingencies|capital|fees?|tax(?:es)?|royalt(?:y|ies)|"
+    r"allowances?|escalation|leases?)\b|"
+    r"\b(?:includes?|including|with)\s+no\s+(?:contingency|allowance|escalation)\b|"
+    r"\bwith\s+no\s+(?:further\s+)?(?:delays?|changes?)\s+(?:expected|anticipated|forecast)\b|"
+    r"\b(?:after|following)\s+the\s+delayed\s+[\w-]+",
     re.IGNORECASE,
 )
 _PLACE_OUTSIDE_RE = re.compile(r"\boutside\s+(?:of\s+)?(?:the\s+)?[A-Z][\w-]*")
 
 
+def is_withdrawn(clause: str | None) -> bool:
+    return _WITHDRAWAL_RE.search(clause or "") is not None
+
+
 def is_negated(clause: str, raw: str | None = None) -> bool:
     """Does a negation govern THIS clause's value? ``raw`` (original case) lets a place
-    name after "outside" be recognised as geography."""
+    name after "outside" be recognised as geography. A withdrawal anywhere in the clause
+    always negates."""
     text = raw if raw is not None else clause or ""
+    if is_withdrawn(text):
+        return True
     text = _PLACE_OUTSIDE_RE.sub(" ", text)
     text = _SUBORDINATE_RE.sub(" ", text)
     return _NEGATION_RE.search(_NEUTRAL_NEGATION_RE.sub(" ", text)) is not None
@@ -1104,6 +1128,7 @@ __all__ = [
     "is_historical_citation",
     "is_known_field",
     "is_negated",
+    "is_withdrawn",
     "label_of",
     "money_values",
     "normalise_period",
