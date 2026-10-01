@@ -80,6 +80,12 @@ _LANGUAGE_MAX = 10
 _PERIOD_KEY_MAX = 20
 _PERIOD_TYPE_MAX = 20
 _PERIOD_BASIS_MAX = 40
+_SUBJECT_SCOPE_MAX = 20
+_THEME_KEY_MAX = 120
+_USE_CONSTRAINT_MAX = 40
+_ORIGIN_KEY_MAX = 255
+_DATE_SOURCE_MAX = 20
+_SOURCE_CLASS_MAX = 40
 
 STATUS_EXTRACTED = "extracted"
 
@@ -129,6 +135,32 @@ class DocumentVersionInput:
     extracted_document_id: uuid.UUID | None = None
     #: ``title_only`` for an official announcement: see ``disclosure_period_policy``.
     period_policy: str | None = None
+    #: Open-web W3 fields (migration 044). ``None`` on every non-web path, which
+    #: writes nothing new.
+    web: "WebVersionFields | None" = None
+
+
+@dataclass(frozen=True)
+class WebVersionFields:
+    """What an open-web retrieval adds to a version and its document (spec §12.3).
+
+    Kept as one value so the non-web writers stay byte-identical: they pass nothing,
+    and nothing here is written. ``subject_scope`` / ``theme_key`` belong to the
+    DOCUMENT and are filled on first sight only (never overwritten).
+    """
+
+    web_fetch_attempt_id: uuid.UUID | None = None
+    use_constraint: str | None = None
+    injection_suspect: bool | None = None
+    simhash: int | None = None
+    origin_key: str | None = None
+    published_at_source: str | None = None
+    source_class: str | None = None
+    web_extractor_version: int | None = None
+    subject_scope: str | None = None
+    theme_key: str | None = None
+    #: WHO PUBLISHED the page (the publisher's domain) — distinct from the transport.
+    content_origin: str | None = None
 
 
 @dataclass
@@ -253,6 +285,7 @@ async def upsert_document_version(
         canonical_url=canonical,
     )
 
+    web = payload.web
     document = await _get_or_create_document(
         session,
         company_id=payload.company_id,
@@ -264,6 +297,8 @@ async def upsert_document_version(
         language=_clip(payload.language, _LANGUAGE_MAX),
         now=stamp,
         result=counts,
+        subject_scope=_clip(web.subject_scope, _SUBJECT_SCOPE_MAX) if web else None,
+        theme_key=_clip(web.theme_key, _THEME_KEY_MAX) if web else None,
     )
 
     existing = (
@@ -284,6 +319,8 @@ async def upsert_document_version(
             existing.research_artifact_id = payload.research_artifact_id
         if payload.extracted_document_id and not existing.extracted_document_id:
             existing.extracted_document_id = payload.extracted_document_id
+        if web is not None and web.web_fetch_attempt_id and not existing.web_fetch_attempt_id:
+            existing.web_fetch_attempt_id = web.web_fetch_attempt_id
         await session.flush()
         return existing
 
@@ -313,6 +350,15 @@ async def upsert_document_version(
         # Inserted NOT current on purpose — see the module docstring on flush order.
         is_current=False,
     )
+    if web is not None:
+        version.web_fetch_attempt_id = web.web_fetch_attempt_id
+        version.use_constraint = _clip(web.use_constraint, _USE_CONSTRAINT_MAX)
+        version.injection_suspect = web.injection_suspect
+        version.simhash = web.simhash
+        version.origin_key = _clip(web.origin_key, _ORIGIN_KEY_MAX)
+        version.published_at_source = _clip(web.published_at_source, _DATE_SOURCE_MAX)
+        version.source_class = _clip(web.source_class, _SOURCE_CLASS_MAX)
+        version.web_extractor_version = web.web_extractor_version
     session.add(version)
     counts.versions_created += 1
     await session.flush()
@@ -333,6 +379,8 @@ async def _get_or_create_document(
     language: str | None,
     now: datetime,
     result: CorpusIngestResult,
+    subject_scope: str | None = None,
+    theme_key: str | None = None,
 ) -> ResearchDocument:
     existing = (
         await session.execute(
@@ -357,6 +405,10 @@ async def _get_or_create_document(
             existing.period_type = period_type
         if language and not existing.language:
             existing.language = language
+        if subject_scope and not existing.subject_scope:
+            existing.subject_scope = subject_scope
+        if theme_key and not existing.theme_key:
+            existing.theme_key = theme_key
         await session.flush()
         return existing
 
@@ -369,6 +421,8 @@ async def _get_or_create_document(
         period_key=period_key,
         period_type=period_type,
         language=language,
+        subject_scope=subject_scope,
+        theme_key=theme_key,
         first_seen_at=now,
         last_seen_at=now,
     )
@@ -434,8 +488,12 @@ async def ingest_extracted_document(
     cfg: "Settings",
     now: datetime | None = None,
     result: CorpusIngestResult | None = None,
+    web: WebVersionFields | None = None,
 ) -> ResearchDocumentVersion | None:
     """Record the corpus version for an ``ExtractedDocument`` just persisted.
+
+    ``web`` (open-web W3) carries the web-only version/document fields; every existing
+    caller passes nothing and writes exactly what it wrote before.
 
     The compatibility bridge, and the reason no bulk migration is needed: the V2
     writer keeps doing exactly what it did, and the corpus record is created
@@ -501,6 +559,8 @@ async def ingest_extracted_document(
         research_artifact_id=artifact_row_id,
         extracted_document_id=document.id,
         period_policy=PERIOD_POLICY_TITLE_ONLY if title_only else None,
+        content_origin=web.content_origin if web is not None else None,
+        web=web,
     )
     version = await upsert_document_version(
         session, payload, cfg=cfg, now=now, result=result
@@ -641,6 +701,7 @@ __all__ = [
     "STATUS_EXTRACTED",
     "CorpusIngestResult",
     "DocumentVersionInput",
+    "WebVersionFields",
     "backfill_from_extracted_documents",
     "ingest_extracted_document",
     "period_fields",

@@ -769,7 +769,16 @@ def _build_prompt(
             )
             if part
         )
-        text = _MARKER_RE.sub("[marker removed]", item.text)
+        # Open-web W3 (threat model §3.3): external text reaches the prompt without the
+        # characters a reader cannot see (Unicode tags, bidi overrides, zero-width);
+        # the stored chunk keeps them for audit. Applied BEFORE the marker neutraliser
+        # so a marker spelled with invisible characters is still caught.
+        raw_text = item.text
+        if item.untrusted:
+            from app.services.web_research.text_safety import render_for_prompt
+
+            raw_text = render_for_prompt(raw_text)
+        text = _MARKER_RE.sub("[marker removed]", raw_text)
         lines.append(
             f"[{item.citation_id}] ({item.kind}{' ' + stamp if stamp else ''}) {text}"
         )

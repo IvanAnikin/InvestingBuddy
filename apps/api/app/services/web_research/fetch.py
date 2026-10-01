@@ -1301,6 +1301,82 @@ async def open_web_fetch(
     return await op.run(url)
 
 
+@dataclass(frozen=True)
+class IngestionClearance:
+    """Whether robots.txt and TDMRep permit INGESTING a page fetched by another path."""
+
+    allowed: bool
+    robots_decision: str | None = None
+    tdm_decision: str | None = None
+    failure_code: str | None = None
+
+
+async def ingestion_clearance(
+    url: str,
+    *,
+    session: Any,
+    context: WebFetchContext | None = None,
+    cfg: Any | None = None,
+    resolver: Resolver | None = None,
+    runtime: OpenWebFetchRuntime | None = None,
+    deadline_seconds: float = 20.0,
+) -> IngestionClearance:
+    """robots.txt + TDMRep for ``url``, through this module's guarded small fetch.
+
+    Open-web W3: ``fetch_public_source`` fetches through ``verify_lead``'s own path,
+    which predates robots/TDM. Before that page's bytes enter the CORPUS, the same
+    origin-level decisions ``open_web_fetch`` makes are made here (cached per origin,
+    so this is usually free). Needs ``V3_WEB_FETCH_ENABLED``: with it off nothing may
+    reach robots.txt, and the answer is a refusal, never an assumption.
+
+    Every physical robots.txt / TDMRep request writes its ``web_fetch_attempts`` row
+    (origin ``robots`` / ``tdm``) on ``session``, exactly as inside ``open_web_fetch``;
+    the rows are flushed, not committed.
+    """
+    cfg = cfg if cfg is not None else default_settings
+    if not bool(getattr(cfg, "v3_web_fetch_enabled", False)):
+        return IngestionClearance(False, failure_code=FAILURE_FETCH_DISABLED)
+    from app.services.web_research.budget import WebBudgetLimits
+
+    op = _OpenWebFetch(
+        session=session,
+        cfg=cfg,
+        runtime=runtime or default_runtime(),
+        resolver=resolver,
+        context=context or WebFetchContext(),
+        budget=WebResearchBudget(
+            limits=WebBudgetLimits(0, 0, 0, 0, 0, deadline_seconds), daily_cap=0
+        ),
+        origin=ORIGIN_LEAD,
+        parent_attempt_id=None,
+        search_result_id=None,
+    )
+    target = normalize_link_url(url) or url
+    reason, _host = check_url_shape(target)
+    if reason:
+        return IngestionClearance(False, failure_code=_block_code(reason))
+    op.deadline = asyncio.get_running_loop().time() + max(0.05, deadline_seconds)
+    robots_fetcher = functools.partial(op.small_fetch, kind=ORIGIN_ROBOTS)
+    tdm_fetcher = functools.partial(op.small_fetch, kind=ORIGIN_TDM)
+    try:
+        async with asyncio.timeout_at(op.deadline):
+            check = await op.rt.robots_gate.check(target, robots_fetcher)
+            if check.decision == robots.ROBOTS_DISALLOWED:
+                return IngestionClearance(False, check.decision,
+                                          failure_code=FAILURE_ROBOTS_DISALLOWED)
+            if check.decision == robots.ROBOTS_UNAVAILABLE:
+                return IngestionClearance(False, check.decision,
+                                          failure_code=FAILURE_ROBOTS_UNAVAILABLE)
+            tdm = await op.rt.tdmrep_gate.check(target, tdm_fetcher)
+    except TimeoutError:
+        return IngestionClearance(False, failure_code=FAILURE_FETCH_TIMEOUT)
+    finally:
+        await session.flush()
+    if tdm.decision == robots.TDM_RESERVED:
+        return IngestionClearance(False, check.decision, tdm.decision, FAILURE_TDM_RESERVED)
+    return IngestionClearance(True, check.decision, tdm.decision)
+
+
 __all__ = [
     "FAILURE_DECOMPRESSION_BOMB",
     "FAILURE_DENYLISTED",
@@ -1325,10 +1401,12 @@ __all__ = [
     "STATUS_PARTIAL",
     "STATUS_REFUSED",
     "STATUS_RETRIED",
+    "IngestionClearance",
     "OpenWebFetchResult",
     "OpenWebFetchRuntime",
     "WebFetchContext",
     "default_runtime",
+    "ingestion_clearance",
     "open_web_fetch",
     "parse_retry_after",
     "reset_default_runtime",

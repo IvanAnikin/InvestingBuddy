@@ -105,6 +105,15 @@ class CorpusChunk:
     #: Whether governance permits this text to enter an index at all. A chunk with
     #: ``False`` may be stored and cited but never retrieved by search.
     indexable: bool = True
+    # -- open-web W3: the version/document fields the web filters read. None / empty
+    #    on every non-web chunk. ----------------------------------------------------
+    source_class: str | None = None
+    use_constraint: str | None = None
+    injection_suspect: bool = False
+    subject_scope: str | None = None
+    theme_key: str | None = None
+    #: Companies the DOCUMENT names as subjects (``research_document_subjects``).
+    subject_company_ids: tuple[uuid.UUID, ...] = ()
     #: Present only when a semantic leg is configured. ``None`` is the normal case
     #: and a hybrid search degrades to its lexical leg rather than failing.
     embedding: tuple[float, ...] | None = None
@@ -129,8 +138,25 @@ class CorpusFilters:
     scope_types: tuple[str, ...] = ()
     scope_keys: tuple[str, ...] = ()
     languages: tuple[str, ...] = ()
+    #: ``published_from`` is also the open-web ``since`` filter (spec §12.3).
     published_from: date | None = None
     published_to: date | None = None
+    # -- open-web W3 (spec §12.3) ------------------------------------------------
+    #: Spec §13.1 source classes (``government_publication`` …). A chunk with no
+    #: class (every non-web chunk) never matches a non-empty constraint.
+    source_classes: tuple[str, ...] = ()
+    #: ``company | theme | industry | macro`` of the chunk's document.
+    subject_scopes: tuple[str, ...] = ()
+    #: Theme keys of company-less documents. Naming one scopes the query as a company
+    #: list does (see ``is_entity_scoped``).
+    theme_keys: tuple[str, ...] = ()
+    #: Spec §20.1 ``use_constraint`` values to admit.
+    use_constraints: tuple[str, ...] = ()
+    #: Drop chunks of documents flagged ``injection_suspect``.
+    exclude_injection_suspect: bool = False
+    #: Also admit chunks of documents that name one of these companies as a SUBJECT
+    #: (an article about three companies is stored once). Additive to ``company_ids``.
+    subject_company_ids: tuple[uuid.UUID, ...] = ()
     #: Governance, on by default: a chunk whose policy forbids indexing is never
     #: returned. Turning it off is not a supported operation — the field exists so
     #: the intent is visible in the type, not so it can be flipped.
@@ -138,7 +164,7 @@ class CorpusFilters:
 
     @property
     def is_entity_scoped(self) -> bool:
-        return bool(self.company_ids)
+        return bool(self.company_ids or self.subject_company_ids or self.theme_keys)
 
     def matches(self, chunk: CorpusChunk) -> bool:
         """Whether ``chunk`` satisfies every constraint. Pure; used by every backend.
@@ -149,8 +175,11 @@ class CorpusFilters:
         """
         if self.indexable_only and not chunk.indexable:
             return False
-        if self.company_ids and chunk.company_id not in self.company_ids:
-            return False
+        if self.company_ids or self.subject_company_ids:
+            own = bool(self.company_ids) and chunk.company_id in self.company_ids
+            named = bool(set(self.subject_company_ids) & set(chunk.subject_company_ids))
+            if not (own or named):
+                return False
         if self.document_types and chunk.document_type not in self.document_types:
             return False
         if self.source_tiers and chunk.source_tier not in self.source_tiers:
@@ -173,6 +202,16 @@ class CorpusFilters:
         if self.published_to is not None:
             if chunk.published_at is None or chunk.published_at > self.published_to:
                 return False
+        if self.source_classes and chunk.source_class not in self.source_classes:
+            return False
+        if self.subject_scopes and chunk.subject_scope not in self.subject_scopes:
+            return False
+        if self.theme_keys and chunk.theme_key not in self.theme_keys:
+            return False
+        if self.use_constraints and chunk.use_constraint not in self.use_constraints:
+            return False
+        if self.exclude_injection_suspect and chunk.injection_suspect:
+            return False
         return True
 
 

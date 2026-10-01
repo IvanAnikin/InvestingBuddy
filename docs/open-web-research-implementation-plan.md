@@ -345,6 +345,39 @@ version.
 **Rollback:** `V3_WEB_CORPUS_INGEST_ENABLED=false`. Web versions stay stored but can be
 excluded by the retrieval filter.
 
+**As built (W3).** Modules: `web_research/extract.py` (trafilatura on our own lxml tree,
+hidden-content removal, metadata with date source, stdlib fallback, PDF two-pass),
+`pool.py` (spawned process pool, SIGKILL on timeout, separate warm-up), `classify.py`
+(source class → tier/access class, document kind, injection taint), `source_policy.py`
+(versioned `use_constraint` registry), `entities.py` (mentions + brand scope), `dedup.py`
+(SimHash, provisional `origin_key`), `ingest.py` (the write path, lead path,
+`ev:x:` resolver), `text_safety.py` (prompt rendering). Deviations, each deliberate:
+
+- **Migration 044, not 043** (043 is the report-reconciliation branch's); temporarily
+  `down_revision="042"`. It adds two version columns beyond the spec list:
+  `source_class` (the retrieval filter needs a stored class) and
+  `web_extractor_version`.
+- **The pipeline version is not bumped** (another branch takes 19); web versions carry
+  `WEB_EXTRACTOR_VERSION` instead, and `ExtractedDocument.pipeline_version` is the current
+  constant.
+- `ExtractedDocument` is created directly by `ingest.py` (not through
+  `persist_primary_document_artifacts`, whose flags and fact validation are V2's); the
+  corpus version then goes through the unchanged `ingest_extracted_document` bridge with
+  a view carrying THIS run's company.
+- Web documents are keyed by address (title-only period policy), never `<kind>:<period>`.
+- A verified lead's bytes come from `verify_lead`'s own fetch, which predates robots/TDM;
+  before storing them `ingest.py` asks `fetch.ingestion_clearance` (robots.txt + TDMRep,
+  cached per origin; needs `V3_WEB_FETCH_ENABLED`; its policy-file requests write
+  `robots`/`tdm` attempt rows as W2 does) and reads the page's TDM meta. Response
+  headers (`X-Robots-Tag: noai`) are not visible on that path.
+- Retrieval: `CorpusFilters` gained `source_classes`, `subject_scopes`, `theme_keys`,
+  `use_constraints`, `exclude_injection_suspect` and `subject_company_ids` (documents that
+  name the company as a subject); `published_from` is the "since" filter. PostgreSQL
+  applies them as subqueries inside the same statement.
+- Not done here: `partial_preview` ingestion (W2 hands no bytes for a walled page),
+  near-duplicate clustering and wire attribution (W4), a licence-id column, crawl-kind
+  scoring (W5), OCR for web PDFs (U6), a B1 memory measurement.
+
 **Complexity:** L (about 4–5 days).
 
 ---

@@ -22,6 +22,8 @@ to disagree. Nothing in slice 2.1 resolves anything — see
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from app.services.sources.fact_scope import SCOPE_TYPE_GROUP, SCOPE_TYPE_SEGMENT
 
 # ── Security types ───────────────────────────────────────────────────────── #
@@ -86,6 +88,10 @@ ALIAS_TRADE_NAME = "trade_name"
 ALIAS_SHORT_NAME = "short_name"
 ALIAS_TRANSLITERATION = "transliteration"
 ALIAS_FORMER_TICKER = "former_ticker"
+#: Open-web W3 (spec §16.2). A consumer brand OWNED by the entity — "Cartier" for
+#: Richemont. A brand is never the entity: a mention resolves to the parent with a
+#: ``segment:`` / ``brand:`` scope and never to the group.
+ALIAS_BRAND = "brand"
 
 ALIAS_TYPES: frozenset[str] = frozenset(
     {
@@ -94,7 +100,47 @@ ALIAS_TYPES: frozenset[str] = frozenset(
         ALIAS_SHORT_NAME,
         ALIAS_TRANSLITERATION,
         ALIAS_FORMER_TICKER,
+        ALIAS_BRAND,
     }
+)
+
+
+@dataclass(frozen=True)
+class BrandAlias:
+    """One curated brand → parent → reporting segment link (spec §16.2).
+
+    ``segment`` is the parent's OWN reported segment name when its filing names the
+    segment the brand sits in; ``None`` means the brand is scoped ``brand:<name>``.
+    Matched against a company by ``parent_names`` (normalised legal/short names), so
+    the vocabulary never needs a database id.
+    """
+
+    brand: str
+    parent_names: tuple[str, ...]
+    segment: str | None = None
+
+
+#: Versioned, curated, deliberately small. A brand that is also a common word is not
+#: listed (it would need an identifier to match, and a brand has none).
+BRAND_VOCABULARY_VERSION = "2026-09-30.1"
+BRAND_ALIASES: tuple[BrandAlias, ...] = (
+    BrandAlias("Cartier", ("richemont", "compagnie financiere richemont"), "Jewellery Maisons"),
+    BrandAlias("Van Cleef & Arpels", ("richemont",), "Jewellery Maisons"),
+    BrandAlias("Buccellati", ("richemont",), "Jewellery Maisons"),
+    BrandAlias("Vacheron Constantin", ("richemont",), "Specialist Watchmakers"),
+    BrandAlias("Jaeger-LeCoultre", ("richemont",), "Specialist Watchmakers"),
+    BrandAlias("IWC Schaffhausen", ("richemont",), "Specialist Watchmakers"),
+    BrandAlias("Panerai", ("richemont",), "Specialist Watchmakers"),
+    BrandAlias("Montblanc", ("richemont",), None),
+    BrandAlias(
+        "Louis Vuitton", ("lvmh", "lvmh moet hennessy louis vuitton"), "Fashion & Leather Goods"
+    ),
+    BrandAlias("Sephora", ("lvmh",), "Selective Retailing"),
+    BrandAlias("Gucci", ("kering",), None),
+    BrandAlias("Bottega Veneta", ("kering",), None),
+    BrandAlias("Instagram", ("meta platforms",), None),
+    BrandAlias("WhatsApp", ("meta platforms",), None),
+    BrandAlias("YouTube", ("alphabet",), None),
 )
 
 # ── Resolution states (vocabulary only; the resolver is slice 2.3) ───────── #

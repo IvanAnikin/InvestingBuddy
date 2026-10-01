@@ -1067,6 +1067,40 @@ has those characters replaced by U+FFFD. Every URL column holds the W0 stored fo
 the fragment removed); `canonical_url` additionally drops tracking parameters and may be a
 same-registrable-domain `rel=canonical`. Page text is never stored here.
 
+## Migration 044 — web documents in the Research Corpus (open-web W3)
+
+Numbered **044** because 043 belongs to the report-reconciliation branch; `down_revision`
+is **temporarily `042`** and is re-pointed to `043` at merge. **Additive only**: every new
+column is nullable with no default and no backfill; no existing column is altered or
+dropped. Downgrade drops exactly what upgrade added. Verified `042 → 044 → 042 → 044` on
+PostgreSQL (`tests/test_web_w3_postgres.py`). Spec: `docs/open-web-research-spec.md` §12.2,
+§26.3 (listed there as "043").
+
+| Table | Added | Why |
+|---|---|---|
+| `research_documents` | `subject_scope` (`company` · `theme` · `industry` · `macro`), `theme_key` | A theme/industry document has no single company. NULL on every pre-W3 row ("not recorded", never "company"). |
+| `research_documents` | partial **unique** index `ix_research_documents_companyless_key` on `document_key WHERE company_id IS NULL` | `(company_id, document_key)` never deduplicates a company-less row (NULLs are distinct). Upgrade first checks for existing duplicate company-less keys and stops with a message rather than a bare constraint error. |
+| `research_document_subjects` (new) | `research_document_id` (CASCADE), `company_id` (SET NULL), `legal_entity_id` (SET NULL), `relation` (`primary` · `mentioned` · `competitor` · `customer` · `supplier`), `confidence` (`exact_identifier` · `domain` · `name_context` · `name_only`, or NULL for a run-assigned primary), `method`, `scope_key`, `evidence_chunk_id`, `created_at` | One article about three companies = one document, three rows. A brand mention carries `segment:<name>` / `brand:<name>`, never `group`. |
+| `research_document_versions` | `web_fetch_attempt_id` (FK `web_fetch_attempts`, SET NULL), `use_constraint`, `injection_suspect`, `simhash` (BIGINT, signed 64-bit), `origin_key`, `published_at_source` (`json_ld` · `meta` · `url` · `text`) | Spec list. |
+| `research_document_versions` | `source_class`, `web_extractor_version` | **Beyond the spec list**: the §13.1 source class the retrieval filter reads (nothing else stores it), and `WEB_EXTRACTOR_VERSION` (web documents are stamped separately from `CURRENT_EXTRACTION_PIPELINE_VERSION`). |
+| `research_leads` | `web_search_result_id` (FK SET NULL), `research_document_version_id` (FK SET NULL) | An `ev:x:` id resolves to the stored version of the bytes it was verified against. |
+
+Indexes: `research_document_versions(web_fetch_attempt_id)`,
+`research_leads(research_document_version_id)`, `research_document_subjects(research_document_id)`,
+`(company_id)`, and the partial unique index above.
+
+**Web version values** (written only by `services/web_research/ingest.py`, only while
+`V3_WEB_CORPUS_INGEST_ENABLED` and `V3_CORPUS_ENABLED` are on): `transport =
+open_web:<provider|direct|lead>`, `content_origin` / `origin_key` = the publisher's
+registrable domain, `access_class` from the source class (`public_official` for
+government/regulator/specialist hosts, `public_issuer` for a verified issuer domain, else
+`public_web`), `source_tier` from the class table. The document is keyed by address
+(title-only period policy), so two different articles can never merge under a
+`<kind>:<period>` key. `ExtractedDocument.source_type = open_web`, shared by content hash.
+
+**Deploy order.** The W3 ORM maps these columns, so every read of the four tables needs
+044 in place: apply 044 **before** deploying the W3 code (decision U9), exactly as 041.
+
 ## `research_job_id` — the five lineage columns, and who writes them (V3.17.9)
 
 Five tables carry a `research_job_id` foreign key to `research_jobs.id`. Between them they

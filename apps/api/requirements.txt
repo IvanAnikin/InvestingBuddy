@@ -31,6 +31,9 @@ publicsuffixlist>=1.0.2,<2
 # Open-web W2: charset detection for open-web pages with no BOM, header or meta charset.
 # Already transitive (requests/httpx stack); pinned because the fetch policy imports it.
 charset-normalizer>=3.3,<4
+# Open-web W3: main-content extraction for web pages, run on our own bytes only (its
+# downloader is never used). Apache-2.0. Brings lxml, htmldate, justext, courlan.
+trafilatura>=2.2,<3
 # Phase 32A Slice 5B.2: real Azure Document Intelligence OCR adapter for
 # scanned/image-only primary documents. Inert unless
 # PRIMARY_DOCUMENT_OCR_ENABLED=true AND an endpoint is configured — see

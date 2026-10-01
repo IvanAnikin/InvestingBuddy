@@ -1431,6 +1431,26 @@ class Settings(BaseSettings):
     # socket, no row. Allowlisted connector fetches are unaffected either way.
     v3_web_fetch_enabled: bool = False
 
+    # ── Open-web research W3: web documents into the Research Corpus (spec §10, §12) ─
+    # Master switch for writing fetched web pages / PDFs into the corpus. The ONLY
+    # consumer is ``services/web_research/ingest.py``: off → ``web_ingest_disabled``, no
+    # extraction, no row. Also needs ``V3_CORPUS_ENABLED`` (the corpus itself).
+    v3_web_corpus_ingest_enabled: bool = False
+    # Worker processes for untrusted web extraction (HTML/PDF parsing runs OUT of the
+    # API process, with a hard kill timeout — threat model FILE-07). 1 on B1-class
+    # hosts. Consumer: ``services/web_research/pool.py``.
+    v3_web_extraction_workers: int = 1
+    # Hard kill timeouts for one extraction inside the pool (spec §10.1/§10.2). A
+    # worker still running at the deadline is killed and the document is recorded
+    # ``extraction_failed`` / ``extraction_timeout``. Consumer: ``web_research/ingest.py``.
+    v3_web_html_extraction_timeout_seconds: int = 20
+    v3_web_pdf_extraction_timeout_seconds: int = 120
+    # Raw-byte retention for web documents whose ``use_constraint`` is ``unknown``
+    # (decision U4: a 30-day TTL). Documents with a known constraint use
+    # ``V3_ARTIFACT_RETENTION_DAYS`` as before; the global default is unchanged.
+    # Consumer: ``services/web_research/ingest.py``. 0 = no TTL configured.
+    v3_web_artifact_retention_days: int = 30
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),

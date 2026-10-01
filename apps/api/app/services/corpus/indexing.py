@@ -173,13 +173,19 @@ def to_corpus_chunks(
     rows: "Sequence[ResearchDocumentChunk]",
     *,
     version: ResearchDocumentVersion | None = None,
+    document: ResearchDocument | None = None,
+    subject_company_ids: "Sequence[uuid.UUID]" = (),
 ) -> "list[CorpusChunk]":
     """Turn stored rows into the search contract's shape.
 
     Every field a citation needs is carried across, so a hit does not require a
     second lookup to be renderable — which is the property Slice 1.6 is built on.
+    Open-web W3: the version's source class / use constraint / taint and the
+    document's subject scope, theme and subject companies travel too, so a backend
+    that filters in memory applies the same web filters PostgreSQL does.
     """
     out: list[CorpusChunk] = []
+    subjects = tuple(dict.fromkeys(subject_company_ids))
     for row in rows:
         out.append(
             CorpusChunk(
@@ -210,6 +216,12 @@ def to_corpus_chunks(
                 language=row.language,
                 published_at=row.published_at,
                 indexable=row.indexable,
+                source_class=getattr(version, "source_class", None),
+                use_constraint=getattr(version, "use_constraint", None),
+                injection_suspect=bool(getattr(version, "injection_suspect", False)),
+                subject_scope=getattr(document, "subject_scope", None),
+                theme_key=getattr(document, "theme_key", None),
+                subject_company_ids=subjects,
             )
         )
     return out
@@ -268,7 +280,28 @@ async def index_version(
         await backend.delete(research_document_version_id=version.id)
     if not rows:
         return IndexResult()
-    return await backend.index(to_corpus_chunks(rows, version=version))
+    document = await session.get(ResearchDocument, version.research_document_id)
+    subject_ids: list[uuid.UUID] = []
+    if document is not None and document.subject_scope is not None:
+        from app.models.research_document import ResearchDocumentSubject
+
+        subject_ids = [
+            cid
+            for cid in (
+                await session.execute(
+                    select(ResearchDocumentSubject.company_id).where(
+                        ResearchDocumentSubject.research_document_id == document.id,
+                        ResearchDocumentSubject.company_id.is_not(None),
+                    )
+                )
+            ).scalars()
+            if cid is not None
+        ]
+    return await backend.index(
+        to_corpus_chunks(
+            rows, version=version, document=document, subject_company_ids=subject_ids
+        )
+    )
 
 
 #: Versions indexed per run at most. A company's live documents number in the tens.
