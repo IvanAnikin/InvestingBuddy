@@ -1020,6 +1020,27 @@ may be applied any time before the slices that map these columns are deployed. T
 order (ORM columns on a schema without them) fails every query on the table. Apply with
 the SSH runbook in `docs/DEPLOYMENT.md`; the deploy workflow never runs migrations.
 
+## Migration 043 — report reconciliation: gap closure and temporal supersession
+
+**Additive only**: four nullable columns, one self-referencing foreign key
+(`ON DELETE SET NULL`) and three CHECKs every existing row satisfies. No backfill. Verified
+`041 → 043 → 041 → 043` on PostgreSQL. (`down_revision` is temporarily `041`; it is
+re-pointed to `042` at merge, see the file header.)
+
+| Table | Columns | Why |
+|---|---|---|
+| `research_gaps` | `reconciliation_status`, `reconciliation_json` | The final reconciliation's verdict — `closed` / `partially_closed` / `superseded` / `still_open` — with the fields the gap is about and the findings, fact or document that addressed it. `ck_research_gaps_reconciled_closed_names_a_finding`: a gap is reconciled `closed` only when `closed_by_finding_id` is set (written through `ledger.close_gap`). |
+| `research_findings` | `source_published_at`, `superseded_by_finding_id` | When the cited source was published (newest cited date, only when every cited item is dated), and the newer finding that replaced this one as current guidance. `ck_research_findings_not_superseded_by_itself`. |
+
+`research_findings.claim_key` (041, previously never written) now carries the fields a
+finding states from the closed vocabulary in `services/research_fields.py`, plus the project
+it names: `metric:capex@foo`.
+
+**Deploy order.** The ORM maps these columns in the same PR. The V3 pipeline checks
+`schema_readiness.migration_043_readiness` before it writes and degrades with a named reason
+("migration 043 is not applied") rather than failing; `GET /company-research/schema-readiness`
+reports it under `migration_043`.
+
 ## `research_job_id` — the five lineage columns, and who writes them (V3.17.9)
 
 Five tables carry a `research_job_id` foreign key to `research_jobs.id`. Between them they
