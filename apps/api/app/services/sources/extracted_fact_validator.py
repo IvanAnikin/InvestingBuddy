@@ -201,7 +201,8 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Item 21 — "Total NON-current assets" contains "current assets": without the
     # guard both labels matched, the row was ambiguous, and neither ever became a fact.
     (
-        re.compile(r"(?<!non-)(?<!non )(?<!non)\bcurrent assets", re.I),
+        # Review M3 — "NET current assets" is current assets LESS current liabilities.
+        re.compile(r"(?<!non-)(?<!non )(?<!non)(?<!net )\bcurrent assets", re.I),
         FIELD_CURRENT_ASSETS,
     ),
     (
@@ -209,7 +210,7 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         FIELD_NON_CURRENT_ASSETS,
     ),
     (
-        re.compile(r"(?<!non-)(?<!non )(?<!non)\bcurrent liabilities", re.I),
+        re.compile(r"(?<!non-)(?<!non )(?<!non)(?<!net )\bcurrent liabilities", re.I),
         FIELD_CURRENT_LIABILITIES,
     ),
     # "Net interest-bearing debt (NIBD)" is the standard Nordic/European
@@ -338,11 +339,15 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
-            r"payments?\s+for\s+(?:mine\s+|project\s+)?development(?:\s+(?:assets|"
-            r"expenditure|costs|activities))?"
-            r"|payments?\s+for\s+mine\s+(?:properties|construction)"
-            r"|additions?\s+to\s+(?:mine\s+)?development\s+(?:assets|expenditure|costs)",
-            re.I,
+            # Review B1 — MINE development only. "Payments for development costs" /
+            # "development of intangible assets" is capitalised R&D or software at a
+            # biotech or a technology company, never a resource project.
+            r"^(?!.*\bintangible)(?:.*?)(?:"
+            r"payments?\s+for\s+mine\s+(?:development|properties|construction)"
+            r"|payments?\s+for\s+(?:the\s+)?development\s+of\s+(?:the\s+)?mine"
+            r"|additions?\s+to\s+mine\s+(?:development|properties)"
+            r"|mine\s+development\s+(?:expenditure|costs)\s+(?:paid|capitali[sz]ed))",
+            re.I | re.S,
         ),
         FIELD_DEVELOPMENT_EXPENDITURE,
     ),
@@ -654,7 +659,10 @@ _BALANCE_ROW_LABELS: frozenset[str] = frozenset(
 
 
 _OPENING_BALANCE_RE = re.compile(
-    r"\b(?:beginning|opening|start)\b|brought\s+forward", re.I
+    r"\b(?:beginning|opening|start)\b|brought\s+forward"
+    # Review L1 — "at 1 January" / "at 1 July 2024" is the opening balance date.
+    r"|\bat\s+1(?:st)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+    re.I,
 )
 
 
@@ -855,6 +863,14 @@ _INFLOW_WORDS_RE = re.compile(
 )
 _LOSS_WORD_RE = re.compile(r"\bloss\b", re.I)
 _PROFIT_WORD_RE = re.compile(r"\bprofit\b", re.I)
+#: Review H1 — a COMBINED caption names both directions: "Net income (loss)", "Net
+#: income/(loss) for the year", "Earnings (loss)", "(Loss)/profit". Under it the printed
+#: sign is the sign; only a pure LOSS caption ("Loss for the year") states a loss.
+_COMBINED_LOSS_CAPTION_RE = re.compile(
+    r"\(\s*loss\s*\)|\bloss\s*\)?\s*/|/\s*\(?\s*loss\b"
+    r"|\b(?:income|earnings|result|profit)s?\s*(?:or|and)\s*\(?\s*loss\b",
+    re.I,
+)
 _LIABILITY_BALANCES: frozenset[str] = frozenset(
     {
         FIELD_TOTAL_LIABILITIES,
@@ -895,7 +911,8 @@ def _signed_value(label: str, caption: str, value: float) -> tuple[float, str | 
             return abs(value), "Liability printed in brackets; stored as the amount owed."
         return value, None
     if label == FIELD_NET_INCOME:
-        if _LOSS_WORD_RE.search(caption) and not _PROFIT_WORD_RE.search(caption):
+        if (_LOSS_WORD_RE.search(caption) and not _PROFIT_WORD_RE.search(caption)
+                and not _COMBINED_LOSS_CAPTION_RE.search(caption)):
             if value > 0:
                 return -value, "Loss caption: stored as a negative net income."
         return value, None
@@ -1025,7 +1042,8 @@ def _candidates_from_table(
     )
     candidates: list[_Candidate] = []
 
-    for row in table.rows:
+    borrowings_rows: list[tuple[int, _Candidate]] = []
+    for row_index, row in enumerate(table.rows):
         if not row:
             continue
         label = _match_label(row[0])
@@ -1098,10 +1116,79 @@ def _candidates_from_table(
             )
             if sign_note:
                 candidates[-1].notes.append(sign_note)
+            if label == FIELD_BORROWINGS:
+                borrowings_rows.append((row_index, candidates[-1]))
 
+    candidates = _combine_current_and_non_current_borrowings(
+        candidates, borrowings_rows, table)
     _apply_subtotal_check(candidates)
     _apply_balance_sheet_check(candidates)
     return candidates
+
+
+def _combine_current_and_non_current_borrowings(
+    candidates: list[_Candidate],
+    borrowings_rows: list[tuple[int, _Candidate]],
+    table: ExtractedTable,
+) -> list[_Candidate]:
+    """Review L3 — a balance sheet prints "Borrowings" twice: under current liabilities
+    and again under non-current. Read as one label, the two rows contradicted each
+    other and both were demoted. When EXACTLY two such rows sit on either side of the
+    table's "Total current liabilities" row, they are the current and the non-current
+    line, and their sum per period is stated explicitly — with both printed values in the
+    fact's text and a note saying it is a sum. Any other layout is left as it was."""
+    rows = sorted({index for index, _cand in borrowings_rows})
+    if len(rows) != 2:
+        return candidates
+    first, second = rows
+    if not any(
+        _match_label((table.rows[k] or [""])[0]) == FIELD_CURRENT_LIABILITIES
+        for k in range(first + 1, second)
+    ):
+        return candidates
+    by_period: dict[str | None, dict[int, _Candidate]] = {}
+    for index, cand in borrowings_rows:
+        by_period.setdefault(cand.period, {})[index] = cand
+    merged_away: set[int] = set()
+    out_extra: list[_Candidate] = []
+    for period, pair in by_period.items():
+        if period is not None and len(pair) == 1:
+            # Only one of the two lines states a value for this period: it is a part,
+            # never the total. Kept as text, not promoted.
+            lone = next(iter(pair.values()))
+            lone.status = VALIDATION_EXCERPT_ONLY
+            lone.notes.append(
+                "One of two 'Borrowings' lines (current / non-current) in this balance "
+                "sheet; not the total borrowings, retained as excerpt."
+            )
+            continue
+        if period is None or set(pair) != {first, second}:
+            continue
+        current, non_current = pair[first], pair[second]
+        if current.value_numeric is None or non_current.value_numeric is None:
+            continue
+        total = _Candidate(
+            label=FIELD_BORROWINGS, period=period,
+            value_numeric=current.value_numeric + non_current.value_numeric,
+            value_text=f"{current.value_text} + {non_current.value_text}",
+            unit=current.unit, currency=current.currency, scale=current.scale,
+            page_number=current.page_number, table_location=current.table_location,
+            method=current.method, base_confidence=current.base_confidence,
+            fully_qualified=current.fully_qualified and non_current.fully_qualified,
+            status=(VALIDATION_VALIDATED
+                    if VALIDATION_VALIDATED == current.status == non_current.status
+                    else VALIDATION_EXCERPT_ONLY),
+            scope=current.scope, from_reconstructed_table=current.from_reconstructed_table,
+        )
+        total.notes.append(
+            "Sum of the current and the non-current 'Borrowings' lines of this balance "
+            "sheet (both printed values are in the text)."
+        )
+        merged_away.update({id(current), id(non_current)})
+        out_extra.append(total)
+    if not merged_away:
+        return candidates
+    return [c for c in candidates if id(c) not in merged_away] + out_extra
 
 
 def _make_candidate(

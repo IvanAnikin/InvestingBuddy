@@ -138,8 +138,10 @@ FINANCIAL_STATEMENT_FIELDS: frozenset[str] = frozenset(
 
 #: Item 21 — statement lines surfaced by the ISSUER statements view (V3,
 #: ``pipeline.issuer_financials``). Deliberately NOT part of
-#: ``FINANCIAL_STATEMENT_FIELDS``: the V2 report's canonical slots are unchanged, so
-#: every report the V2 generator writes stays byte-identical.
+#: ``FINANCIAL_STATEMENT_FIELDS``: the V2 report's canonical SLOTS and their vocabulary
+#: are unchanged. Its INPUTS are not: version 19 reads bracketed negatives and
+#: caption-decided signs on every path, so a regenerated V2 report can show a figure an
+#: older reading dropped (see docs/DEPLOYMENT.md, "Extraction pipeline version 19").
 STATEMENT_DETAIL_FIELDS: frozenset[str] = frozenset(
     {
         FIELD_CURRENT_ASSETS,

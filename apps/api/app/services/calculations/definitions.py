@@ -704,7 +704,10 @@ CASH_RUNWAY_QUARTERS = CalculationDefinition(
     interpretation=(
         "Quarters the period-end cash would last if operating cash flow and capital "
         "expenditure continued at the rate of the period measured. A derived estimate, not "
-        "a forecast: it ignores financing, committed spending and any change in the rate."
+        "a forecast: it ignores financing, committed spending and any change in the rate. "
+        "Capitalised exploration and mine development are NOT in this definition's capital "
+        "expenditure; where an issuer reports them, the runway overstates the time cash "
+        "lasts unless they are added to the capital spend."
     ),
 )
 

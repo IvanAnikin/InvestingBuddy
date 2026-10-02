@@ -96,7 +96,7 @@ authority are required, or both connectors must be switched off.**
 - Headlines and titles are external wording: neutralised before storage (the report
   safety gate matches rating words as substrings — "share buy-back").
 - Flags: `V3_UK_NSM_DISCLOSURES_ENABLED`, `V3_ASX_ANNOUNCEMENTS_ENABLED` (both off by
-  default), `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5), `V3_DISCLOSURE_LOOKBACK_DAYS` (540).
+  default), `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5), `V3_DISCLOSURE_LOOKBACK_DAYS` (560).
   Acquisition also requires the existing corpus and primary-document persistence flags.
 - Known limit: indexing (and so READY) needs the PostgreSQL search backend, as in
   production; extraction of a large PDF can hit the extractor's own time budget on a
@@ -255,12 +255,30 @@ comparative aside. Spend lines are stored as the positive amount spent, cash-flo
 subtotals and net income are signed. The new lines are V3-only
 (`STATEMENT_DETAIL_FIELDS`): the V2 snapshot's slots are unchanged.
 
+**Review round 1.** A combined caption ("Net income (loss)", "Net income/(loss)",
+"Profit/(loss)") keeps the printed sign — only a pure loss caption states a loss; "Net
+current assets / liabilities" are not current assets / liabilities; "Cash and cash
+equivalents at 1 July" is an opening balance; "development of intangible assets" and
+other non-mine development is not `development_expenditure`; a balance sheet's current
+and non-current "Borrowings" lines (either side of "Total current liabilities") are
+summed explicitly, and a lone one is a part, kept as text. A bracketed cell is always
+negative, including a small one ("(12)" → −12). `V3_DISCLOSURE_LOOKBACK_DAYS` is 560 so
+the 18-month "not reported by the issuer" state is reachable; the listing's window and
+document count are recorded, and an ASX "Annual Financial Report" / NSM "Annual
+Financial Report" filing counts as annual evidence. State B's `knowledge_state` is
+`report_acquired_facts_not_extracted`. Known limit: an explorer whose "Revenue from
+continuing operations" is mostly interest income still has a revenue fact; it defeats
+the stage detector's P1 unless it is under 10% of operating costs.
+
 **Cash runway.** `cash_runway_quarters` (calculation definition v1) = cash ÷
 (−(operating cash flow − |capex|) ÷ quarters in the period). Refused unless the three
 inputs share one period, scope and currency, unless the period is a year, half or quarter,
 and unless the net flow is an outflow (`not_a_cash_burn`). Labelled derived, never an
-issuer figure; exploration and development spend are not added in. No EBITDA is ever
-derived.
+issuer figure. In the statements view, capitalised exploration and mine development
+stated for the same period / scope / currency / scale are ADDED to the capital spend
+(`capital_spend_includes`); exploration payments of unstated treatment make the burn
+unstatable and the runway is refused. The definition's own interpretation says what it
+excludes. No EBITDA is ever derived.
 
 Known limits: a whole-currency statement ("US$" headers, no '000) states no scale, so its
 money facts stay excerpt-only (state B, honestly); an issuer's annual period taken from a

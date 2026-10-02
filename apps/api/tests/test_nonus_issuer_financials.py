@@ -540,6 +540,145 @@ def test_listing_coverage_is_recorded_by_the_acquisition():
         doc("other", "2024-11-02"), doc("results_release", "2026-01-30"),
         doc("results_release", "2025-08-20", "Full Year Results 2025"),
     ])
-    coverage = _listing_coverage(listing)
+    coverage = _listing_coverage(listing, 560)
     assert coverage == {"listing_oldest": "2024-11-02", "listing_newest": "2026-01-30",
+                        "listing_window_days": 560, "listing_documents": 3,
                         "annual_documents_listed": 1}
+    # Review H4 — an ASX "Annual Financial Report" headline and an NSM "Annual Financial
+    # Report" filing of any format are evidence the issuer reported a year.
+    listing = DisclosureListing(issuer=None, documents=[
+        doc("other", "2024-11-02", "Annual Financial Report"),
+    ])
+    assert _listing_coverage(listing, 560)["annual_documents_listed"] == 1
+    nsm = doc("other", "2025-03-02", "Publication of report")
+    nsm.venue_category = "Annual Financial Report"
+    assert _listing_coverage(DisclosureListing(issuer=None, documents=[nsm]), 560)[
+        "annual_documents_listed"] == 1
+
+
+def test_not_reported_by_issuer_is_reachable_with_the_real_lookback():
+    """Review H4 — with the shipped lookback, a listing read to its window start can
+    prove "not reported"; a lookback below 18 months never can."""
+    from datetime import timedelta
+
+    from app.core.config import settings
+    from app.services.pipeline.issuer_financials import NOT_REPORTED_MIN_COVERAGE_DAYS
+
+    lookback = int(settings.v3_disclosure_lookback_days)
+    assert lookback >= NOT_REPORTED_MIN_COVERAGE_DAYS
+    oldest = (NOW - timedelta(days=lookback - 3)).date().isoformat()
+    covered = _disclosures(listing_oldest=oldest, listing_window_days=lookback,
+                           listing_documents=12, annual_documents_listed=0)
+    state = build_financial_statements_state([], core_disclosures=covered, now=NOW)
+    assert state["annual"]["state"] == STATE_NOT_REPORTED_BY_ISSUER
+    assert "12 documents listed" in state["annual"]["reason"]
+    short_window = {**covered, "listing_window_days": 540}
+    assert build_financial_statements_state(
+        [], core_disclosures=short_window, now=NOW)["annual"]["state"] == STATE_NOT_ACQUIRED
+
+
+def test_asx_annual_financial_report_is_an_annual_report():
+    from app.services.sources.disclosures.relevance import classify_asx
+
+    assert classify_asx(headline="Annual Financial Report", price_sensitive=False)[1] == (
+        "annual_report")
+
+
+class TestReviewRound1Readings:
+    """H1, M3, L1, L3, B1 — each against the reading that was wrong."""
+
+    @pytest.mark.parametrize("caption", [
+        "Net income (loss)", "Net income/(loss) for the year", "Profit/(loss) for the year",
+        "(Loss)/profit for the year",
+    ])
+    def test_a_profit_under_a_combined_caption_stays_a_profit(self, caption):
+        facts = [f for f in _validate([["", "2025 A$'000"], [caption, "1,500"]])
+                 if f.label == "net_income"]
+        assert len(facts) == 1 and facts[0].value_numeric == 1500
+
+    def test_a_pure_loss_caption_is_still_a_loss(self):
+        [loss] = [f for f in _validate([["", "2025 A$'000"], ["Loss for the year", "1,500"]])
+                  if f.label == "net_income"]
+        assert loss.value_numeric == -1500
+
+    @pytest.mark.parametrize("caption", ["Net current assets", "Net current liabilities",
+                                         "Net current assets/(liabilities)"])
+    def test_net_current_position_is_not_current_assets_or_liabilities(self, caption):
+        assert _match_label(caption) is None
+
+    def test_an_opening_balance_dated_1_july_is_not_cash(self):
+        assert _match_label("Cash and cash equivalents at 1 July 2024") is None
+        assert _match_label("Cash and cash equivalents at 30 June 2025") == (
+            "cash_and_equivalents")
+
+    @pytest.mark.parametrize("caption", [
+        "Payments for development of intangible assets", "Payments for development costs",
+        "Payments for capitalised development", "Payments for project development",
+    ])
+    def test_rnd_and_software_development_is_not_mine_development(self, caption):
+        assert _match_label(caption) is None
+
+    def test_mine_development_is_read(self):
+        assert _match_label("Payments for mine development") == "development_expenditure"
+
+    def test_current_and_non_current_borrowings_are_summed_explicitly(self):
+        rows = [["", "2025 £'000", "2024 £'000"],
+                ["Borrowings", "(1,000)", "(500)"],
+                ["Total current liabilities", "(3,000)", "(2,000)"],
+                ["Borrowings", "(4,000)", "-"]]
+        facts = {(f.label, f.period): f for f in _validate(rows, name="EXAMPLE PLC")}
+        total = facts[("borrowings", "2025")]
+        assert total.value_numeric == 5000 and total.validation_status == "validated"
+        assert "Sum of the current and the non-current" in total.validation_notes[0]
+        # Only one line states 2024: a part, never presented as the total.
+        assert facts[("borrowings", "2024")].validation_status == "excerpt_only"
+
+    def test_two_borrowings_lines_without_the_section_marker_stay_unresolved(self):
+        rows = [["", "2025 £'000"], ["Borrowings", "(1,000)"], ["Borrowings", "(4,000)"]]
+        [b] = [f for f in _validate(rows, name="EXAMPLE PLC") if f.label == "borrowings"]
+        assert b.validation_status == "excerpt_only"
+
+
+class TestRunwaySpend:
+    """M2 — a developer's capital spend includes capitalised exploration and mine
+    development; exploration payments of unstated treatment make the burn unstatable."""
+
+    BASE = [_fact("cash_and_equivalents", 9470), _fact("operating_cash_flow", -2980),
+            _fact("capital_expenditure", 450)]
+
+    def test_capitalised_exploration_and_development_are_in_the_burn(self):
+        facts = [*self.BASE, _fact("exploration_capitalised", 5200),
+                 _fact("development_expenditure", 900)]
+        [runway] = build_financial_statements_state(facts, now=NOW)["derived"]
+        assert runway["status"] == "computed"
+        assert runway["value"] == pytest.approx(9470 / ((2980 + 450 + 5200 + 900) / 4))
+        assert runway["capital_spend_includes"] == [
+            "capital_expenditure", "exploration_capitalised", "development_expenditure"]
+
+    def test_exploration_payments_of_unstated_treatment_refuse(self):
+        facts = [*self.BASE, _fact("exploration_payments", 700)]
+        [runway] = build_financial_statements_state(facts, now=NOW)["derived"]
+        assert runway["status"] == "refused" and runway["value"] is None
+
+    def test_a_nine_month_period_is_refused(self):
+        from app.services.calculations.definitions import REFUSED_RUNWAY_PERIOD
+
+        out = calculate(CASH_RUNWAY_QUARTERS, {
+            "cash": _q(9470, "9M 2025"), "operating_cash_flow": _q(-2980, "9M 2025"),
+            "capital_expenditure": _q(450, "9M 2025")})
+        # The period model has no nine-month type: refused as an unknown period.
+        assert out.refused and out.refusal_reason == "period_unknown"
+        # A period it does know but a runway cannot be stated over (a split year).
+        out = calculate(CASH_RUNWAY_QUARTERS, {
+            "cash": _q(9470, "2025/26"), "operating_cash_flow": _q(-2980, "2025/26"),
+            "capital_expenditure": _q(450, "2025/26")})
+        assert out.refused and out.refusal_reason == REFUSED_RUNWAY_PERIOD
+
+    def test_the_interpretation_states_what_is_excluded(self):
+        assert "exploration" in CASH_RUNWAY_QUARTERS.interpretation
+
+
+def test_state_b_is_labelled_acquired_not_extracted():
+    state = build_financial_statements_state(
+        [], core_disclosures=_disclosures(ANNUAL_READY), now=NOW)
+    assert state["annual"]["knowledge_state"] == STATE_ACQUIRED_NOT_EXTRACTED

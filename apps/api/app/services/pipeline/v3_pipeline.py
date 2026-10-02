@@ -221,9 +221,10 @@ def _mark_pre_revenue(outcome: V3ResearchOutcome, stage: Any) -> None:
         "basis": [b for b in stage.basis if b.startswith("P1")],
         "provenance": "derived",
         "note": (
-            "The company's own statements show no or immaterial revenue and its "
-            "documents describe a project in development. Revenue and margins are not "
-            "applicable yet; this is a stage, not a missing figure."
+            "The company's own annual statements show no or immaterial revenue in the "
+            "latest two years, and its documents describe a mining project under the "
+            "reporting codes. Revenue and margins are not applicable yet; this is a "
+            "stage, not a missing figure."
         ),
     }
 
@@ -566,7 +567,15 @@ async def _run(
 
     profile = await build_subject_profile(session, company)
     outcome.subject_profile = profile.to_dict()
-    stage = await detect_stage(session, company, subject_profile=profile)
+    from app.services.playbooks.industries import MINING_MATERIALS
+
+    stage = await detect_stage(
+        session, company, subject_profile=profile,
+        # Classified in a mining INDUSTRY (never the broad "Materials" sector, which
+        # also holds chemicals and packaging).
+        mining_sector=bool(classification.industry) and MINING_MATERIALS.applies_to.matches(
+            industry=classification.industry),
+    )
     if stage.signals or stage.basis:
         outcome.stage = stage.to_dict()
     if stage.is_development_stage:
@@ -684,6 +693,8 @@ async def _run(
     if plan.superseded:
         # Item 20 — the producer questions an overlay superseded, on the record.
         outcome.stage = {**outcome.stage, "superseded_questions": dict(plan.superseded)}
+    if plan.blocking_demoted:
+        outcome.stage = {**outcome.stage, "blocking_demoted": dict(plan.blocking_demoted)}
     await persist_plan(session, run, plan)
 
     # 5. Investigate, with real tools and a real model where one resolved.

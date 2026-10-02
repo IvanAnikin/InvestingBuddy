@@ -1096,8 +1096,10 @@ class Settings(BaseSettings):
     v3_disclosure_core_max_documents: int = 5
     # How far back a disclosure listing is read. A research run needs the latest
     # annual report (at most ~15 months old) and recent material announcements, not an
-    # issuer's history.
-    v3_disclosure_lookback_days: int = 540
+    # issuer's history. Item 21 review H4: at least 548 days (18 months) — the window
+    # "the issuer has not reported an annual report" is judged over; 540 made that
+    # state unreachable.
+    v3_disclosure_lookback_days: int = 560
     # Wall-clock budget for securing core disclosures before the questions are asked.
     # Once spent, remaining documents are answered from the database only.
     v3_disclosure_core_budget_seconds: float = 300.0

@@ -204,8 +204,13 @@ def _without_conflicts(
                         for f in group
                     ],
                     "note": (
-                        "The issuer's documents state this figure differently for the same "
-                        "period and scope. No value is shown for it; neither was chosen."
+                        (
+                            "The issuer's documents state this figure differently"
+                            if len({f.get("document_id") for f in group}) > 1
+                            else "One issuer document states this figure twice, differently,"
+                        )
+                        + " for the same period and scope. No value is shown for it; "
+                        "neither was chosen."
                     ),
                 }
             )
@@ -277,17 +282,63 @@ def _derived_runway(
                 )
         except (InvalidOperation, KeyError, TypeError, ValueError):
             continue
+        # Review M2 — a developer's investing spend is mostly capitalised exploration and
+        # mine development, not PP&E; a runway over PP&E alone overstates it. Those lines
+        # are ADDED to the capital spend when stated for the same period, scope,
+        # currency and scale; "payments for exploration" of unstated treatment may
+        # already sit in operating cash flow, so with it present no runway is computed.
+        capex = inputs["capital_expenditure"]
+        included: list[str] = []
+        refusal: str | None = None
+        if "exploration_payments" in slots:
+            refusal = (
+                "exploration payments of unstated accounting treatment are reported; they "
+                "may already be in operating cash flow, so the burn cannot be stated"
+            )
+        for extra in ("exploration_capitalised", "development_expenditure"):
+            extra_fact = slots.get(extra)
+            if extra_fact is None or refusal:
+                continue
+            fact = extra_fact
+            same = (
+                fact.get("period") == slots["capital_expenditure"].get("period")
+                and fact.get("currency") == capex.currency
+                and fact.get("scale") == capex.scale
+                and parse_scope(fact.get("scope")).scope_key == (
+                    capex.scope.scope_key if capex.scope else None)
+            )
+            if not same:
+                refusal = (
+                    f"{extra.replace('_', ' ')} is stated for another period, scope, "
+                    "currency or scale than capital expenditure"
+                )
+                continue
+            capex = Quantity(
+                value=abs(capex.value) + abs(Decimal(str(fact["numeric_value"]))),
+                unit=capex.unit, currency=capex.currency, scale=capex.scale,
+                period=capex.period, scope=capex.scope, fact_id=capex.fact_id,
+                label="capital_expenditure+" + extra,
+            )
+            included.append(extra)
+        inputs["capital_expenditure"] = capex
         outcome = calculate(CASH_RUNWAY_QUARTERS, inputs)
         record = outcome.to_dict()
+        if refusal:
+            record.update({"status": "refused", "value": None,
+                           "refusal_reason": "burn_not_statable", "detail": refusal})
         record.update(
             {
                 "label": CASH_RUNWAY_QUARTERS.label,
                 "basis": basis,
                 "provenance": "derived",
                 "interpretation": CASH_RUNWAY_QUARTERS.interpretation,
+                "capital_spend_includes": ["capital_expenditure", *included],
                 "note": (
                     "Derived by InvestingBuddy from the issuer's own statement lines; not "
-                    "an issuer figure and not a forecast."
+                    "an issuer figure and not a forecast. Capital spend = "
+                    + " + ".join(["capital expenditure", *(i.replace("_", " ")
+                                                           for i in included)])
+                    + "."
                 ),
             }
         )
@@ -350,8 +401,13 @@ def _acquired(documents: list[dict[str, Any]], predicate: Any) -> dict[str, Any]
 
 
 def _covers_18_months(core_disclosures: dict[str, Any], now: datetime) -> bool:
+    """The listing READ at least 18 months (its window) AND reaches back that far (its
+    oldest document) — the second guards a truncated or paginated listing."""
     raw = core_disclosures.get("listing_oldest")
     if not raw:
+        return False
+    window = core_disclosures.get("listing_window_days")
+    if window is not None and int(window) < NOT_REPORTED_MIN_COVERAGE_DAYS:
         return False
     try:
         oldest = date.fromisoformat(str(raw)[:10])
@@ -409,7 +465,9 @@ def _annual_state(
             "label": (
                 f"{what} acquired{f' ({when})' if when else ''} — figures not yet extracted"
             ),
-            "knowledge_state": NOT_ACQUIRED_BY_PLATFORM,
+            # Review L2 — acquired is not "not acquired": the report is held,
+            # its figures were not extracted.
+            "knowledge_state": STATE_ACQUIRED_NOT_EXTRACTED,
             "document": _document_view(document),
             "reason": (
                 "The report is in the research corpus, but no validated Group statement "
@@ -432,8 +490,9 @@ def _annual_state(
             "document": None,
             "reason": (
                 f"The official listing ({core_disclosures.get('source_id')}) was read back to "
-                f"{core_disclosures.get('listing_oldest')} and holds no annual report or "
-                "full-year results."
+                f"{core_disclosures.get('listing_oldest')}: "
+                f"{core_disclosures.get('listing_documents', 'its')} documents listed, "
+                "0 of them an annual report, annual financial report or full-year results."
             ),
         }
     return {
@@ -494,7 +553,9 @@ def _current_state(
             "label": (
                 f"{what} acquired{f' ({when})' if when else ''} — figures not yet extracted"
             ),
-            "knowledge_state": NOT_ACQUIRED_BY_PLATFORM,
+            # Review L2 — acquired is not "not acquired": the report is held,
+            # its figures were not extracted.
+            "knowledge_state": STATE_ACQUIRED_NOT_EXTRACTED,
             "document": _document_view(document),
             "reason": (
                 "The report is in the research corpus, but no validated Group statement "
@@ -580,9 +641,13 @@ async def financial_statements_for(
     core_filings: dict[str, Any] | None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Read and build. Never raises: a failure is recorded on the payload."""
+    """Read and build. Never raises: a failure is recorded on the payload.
+
+    The read runs in a SAVEPOINT, so a database error is rolled back to it instead of
+    leaving the run's transaction aborted behind a swallowed exception (review M1)."""
     try:
-        facts = await load_statement_facts(session, getattr(company, "id", None))
+        async with session.begin_nested():
+            facts = await load_statement_facts(session, getattr(company, "id", None))
     except Exception as exc:  # noqa: BLE001 - a statements view must not end the run
         state = build_financial_statements_state(
             [], core_disclosures=core_disclosures, core_filings=core_filings, now=now

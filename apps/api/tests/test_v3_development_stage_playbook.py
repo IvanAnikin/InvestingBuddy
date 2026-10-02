@@ -148,3 +148,95 @@ class TestPreRevenue:
     def test_the_stage_is_on_the_payload(self):
         outcome = V3ResearchOutcome(stage={"stage": DEV, "signals": [DEV]})
         assert outcome.to_dict()["stage"]["stage"] == DEV
+
+
+class TestReviewRound1:
+    async def test_stacked_on_another_blocking_playbook_the_overlay_adds_no_blocking(self):
+        """B1 — whatever selects both, a plan never carries two methodologies' blocking
+        questions; the overlay's are planned non-blocking and that is recorded."""
+        _selection, plan = await _plan("Biotechnology", signals=[DEV], commodities=())
+        assert {q.key for q in plan.blocking_questions} == {"cash_runway", "pipeline_state"}
+        assert plan.blocking_demoted == {"project_portfolio": DEV, "capex_and_funding": DEV}
+        assert plan.to_dict()["blocking_demoted"]["capex_and_funding"] == DEV
+        assert len(plan.blocking_questions) <= 2
+
+    async def test_with_the_mining_playbook_the_overlay_keeps_its_two(self):
+        _selection, plan = await _plan("Metals & Mining", signals=[DEV])
+        assert {q.key for q in plan.blocking_questions} == {
+            "project_portfolio", "capex_and_funding"}
+        assert plan.blocking_demoted == {}
+
+    @pytest.mark.parametrize(
+        "case,industry,texts",
+        [
+            ("biotech", "Biotechnology", [
+                "Capitalised development costs relate to the Phase 3 programme.",
+                "Assets under construction comprise the new manufacturing facility."]),
+            ("luxury", "Luxury Goods", [
+                "The Maisons opened 40 boutiques; final investment decision on a new "
+                "workshop was taken."]),
+            ("mining_producer", "Metals & Mining", [
+                "Copper sales rose; an offtake agreement with a smelter was renewed."]),
+        ],
+    )
+    async def test_realistic_documents_still_give_the_unchanged_plan(self, case, industry,
+                                                                     texts):
+        """The golden plans are only meaningful if realistic documents give NO signal.
+        A loss-making company, a feasibility/FID/offtake vocabulary that is not mining
+        reporting-code evidence — and the plan is still byte-identical."""
+        from app.services.classification.stage import assess
+
+        facts = [
+            {"field": "net_income", "numeric_value": -500.0, "period": p, "scope": "group",
+             "confidence": "high", "currency": "EUR", "scale": "million", "document_id": "d"}
+            for p in ("2025", "2024")
+        ]
+        stage = assess(facts, texts, has_commodity=case == "mining_producer")
+        assert DEV not in stage.signals
+        selection = select(sector=None, industry=industry, signals=stage.signals)
+        plan = await plan_research(
+            subject="ANY:US", mode="deep",
+            playbooks=[_PlaybookAdapter(p) for p in selection.playbooks], cfg=CFG,
+            commodities=[BY_SLUG["copper"]] if case == "mining_producer" else [])
+        before = json.loads(FIXTURE.read_text())[case]
+        assert [q.key for q in plan.questions] == [q["key"] for q in before["questions"]]
+        assert plan.to_dict() == before["plan"]
+
+
+class TestStudyEconomicsScreen:
+    """L4 — an NPV / IRR is the issuer's named, dated study figure or it is withheld."""
+
+    def _finding(self, statement, question_key=None):
+        from app.services.pipeline.professional_research import FindingView
+
+        return FindingView(finding_id="f", statement=statement, domain=None,
+                           question_key=question_key)
+
+    def test_an_attributed_study_figure_is_kept(self):
+        from app.services.pipeline.professional_research import screen
+
+        kept, dropped = screen([self._finding(
+            "The 2025 Definitive Feasibility Study states a post-tax NPV8 of US$1.2 billion "
+            "and an IRR of 24%.")])
+        assert len(kept) == 1 and dropped == 0
+
+    @pytest.mark.parametrize("statement", [
+        "The project has an NPV of US$1.2 billion.",
+        "The feasibility study shows an IRR of 24%.",  # no date
+        "An IRR of 24% was reported in 2025.",  # no study
+    ])
+    def test_an_unattributed_npv_or_irr_is_withheld(self, statement):
+        from app.services.pipeline.professional_research import screen
+
+        kept, dropped = screen([self._finding(statement)])
+        assert kept == [] and dropped == 1
+
+    def test_valuation_wording_under_study_economics_is_withheld(self):
+        from app.services.pipeline.professional_research import screen
+
+        kept, _ = screen([self._finding(
+            "The 2024 DFS operating cost makes the project attractive.", "study_economics")])
+        assert kept == []
+        kept, _ = screen([self._finding(
+            "The 2024 DFS states an operating cost of US$40/t.", "study_economics")])
+        assert len(kept) == 1

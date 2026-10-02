@@ -159,22 +159,33 @@ or a ticker list never sets one. The detector reads the company's own extracted
 statement facts (`pipeline.issuer_financials.load_statement_facts`) and corpus, and
 proves, never assumes:
 
-* **P1** no or immaterial revenue in the latest annual / half-year statements (no revenue
-  line beside a loss or an operating cash outflow, or revenue < 10% of administrative
-  plus expensed exploration costs). No extracted statement ⇒ no P1.
-* **P2** exploration / development spend (an extracted line, or the documents naming
-  exploration-and-evaluation or capitalised development expenditure).
-* **P3** at least two project-disclosure terms (JORC, NI 43-101, S-K 1300, PERC, Mineral
-  Resource, Ore Reserve, scoping / PFS / DFS / BFS, FID, offtake agreement).
+* **Mining evidence (required)** — at least one mining REPORTING-CODE term in the corpus
+  (JORC, NI 43-101, S-K 1300, PERC, Mineral Resource, Ore Reserve) or classification in a
+  mining industry. FID, offtake and PFS/DFS/BFS are shared with LNG, renewables,
+  batteries and hydrogen and never count alone (review round 1, B1/H3).
+* **P1** no or immaterial revenue (< 10% of administrative plus expensed exploration
+  costs) in the latest ANNUAL year AND the prior year, judged from ONE annual statement
+  that reports both years; a revenue fact of any confidence for either year defeats it.
+  An interim loss beside annual revenue proves nothing (H2). No annual statement ⇒ no P1.
+* **P2** mining exploration / development spend (an extracted line, or the documents
+  naming exploration-and-evaluation expenditure, capitalised exploration or mine
+  development). Capitalised R&D and "assets under construction" are not mining spend.
+* **P3** at least two project-disclosure terms, at least one a mining reporting-code term.
 
-`development_stage_resource` = P1 ∧ (P2 ∨ P3); `resource_extraction` = P3 ∧ the subject
-profile names a commodity. The detector never emits `pre_revenue` (that selects
+`development_stage_resource` = mining evidence ∧ P1 ∧ (P2 ∨ P3); `resource_extraction` =
+a mining reporting-code term ∧ the subject profile names a commodity. The detector never emits `pre_revenue` (that selects
 biotech). The assessment is on the report as `v3_research.stage`.
 
 **Overlays.** `Playbook.overlay=True` makes a playbook's `replaces` supersede OTHER
 playbooks' questions as well as the base model's. The supersession is recorded
 (`ResearchPlan.superseded`, `plan.to_dict()["superseded_by"]`,
-`v3_research.stage.superseded_questions`), never silent. `DEVELOPMENT_STAGE_RESOURCE`
+`v3_research.stage.superseded_questions`), never silent. When another selected
+playbook still contributes a blocking question after the supersession (e.g. biotech),
+the overlay's blocking questions are planned non-blocking and recorded
+(`ResearchPlan.blocking_demoted`): a plan never stacks two methodologies' blocking
+questions. An NPV / IRR finding must name the issuer's study and its date or it is
+withheld (`professional_research.screen`); a `study_economics` finding is also held to
+the editor's valuation-wording list. `DEVELOPMENT_STAGE_RESOURCE`
 (v1) asks project questions — portfolio (blocking), product, resource and reserve,
 offtake, permits, construction and schedule, capex and funding (blocking), cash runway
 and dilution (`cash_runway_quarters`), the issuer's own study economics (NPV / IRR /

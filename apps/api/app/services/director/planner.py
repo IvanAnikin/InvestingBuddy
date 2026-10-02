@@ -208,6 +208,10 @@ class ResearchPlan:
     #: superseded (a developer is not asked a producer's revenue-share question).
     #: Recorded, never silent. Empty without an overlay.
     superseded: dict[str, str] = field(default_factory=dict)
+    #: Review B1 — overlay questions planned NON-blocking because another playbook of
+    #: the same plan already blocks: ``{question_key: overlay_playbook_id}``. A plan's
+    #: blocking questions come from one methodology, never two stacked (≤ 2 total).
+    blocking_demoted: dict[str, str] = field(default_factory=dict)
 
     @property
     def blocking_questions(self) -> list[PlannedQuestion]:
@@ -227,6 +231,8 @@ class ResearchPlan:
             "playbook_versions": dict(self.playbook_versions),
             "refined_by_model": self.refined_by_model,
             **({"superseded_by": dict(self.superseded)} if self.superseded else {}),
+            **({"blocking_demoted": dict(self.blocking_demoted)}
+               if self.blocking_demoted else {}),
             "limits": {
                 "max_rounds": self.limits.max_rounds,
                 "max_tasks": self.limits.max_tasks,
@@ -330,6 +336,14 @@ async def plan_research(
             for question in playbook.mandatory_questions():
                 for key in question.replaces:
                     overlay_replaces.setdefault(key, playbook.playbook_id)
+    # Review B1 — does a NON-overlay playbook still block after the overlay's
+    # supersession? Then the overlay adds no blocking question of its own.
+    others_block = any(
+        question.blocking and question.key not in overlay_replaces
+        for playbook in playbooks
+        if overlay_replaces and not getattr(playbook, "overlay", False)
+        for question in playbook.mandatory_questions()
+    )
     for playbook in playbooks:
         plan.playbook_versions[playbook.playbook_id] = playbook.version
         is_overlay = bool(getattr(playbook, "overlay", False))
@@ -337,6 +351,9 @@ async def plan_research(
             if not is_overlay and question.key in overlay_replaces:
                 plan.superseded[question.key] = overlay_replaces[question.key]
                 continue
+            if is_overlay and others_block and question.blocking:
+                question = replace(question, blocking=False)
+                plan.blocking_demoted[question.key] = playbook.playbook_id
             # Carried WHOLE. Rebuilding it field by field here is how
             # `required_calculations` was dropped once already; a copy with the origin
             # pinned cannot drop anything a later slice adds.
