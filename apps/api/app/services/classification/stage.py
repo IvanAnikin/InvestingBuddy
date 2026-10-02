@@ -82,16 +82,45 @@ MINING_CODE_TERMS: frozenset[str] = frozenset(
     {"jorc", "ni_43_101", "sk_1300", "perc", "mineral_resource", "ore_reserve"}
 )
 
-#: P3 — each entry is ONE term, however it is spelt. Acronyms are case-sensitive.
+#: A company NAME, not a statement: "Mineral Resources Limited" (an offtake partner)
+#: is not a Mineral Resource estimate (review round 2, H8).
+_COMPANY_SUFFIX = (
+    r"(?!\s*(?:\(|,)?\s*(?:Limited|Ltd|Inc|Incorporated|plc|PLC|Corp|Corporation|Group"
+    r"|Pty|N\.?L\.?|S\.?A\.?|AG|ASA|AB|LLC)\b)"
+)
+
+#: P3 — each entry is ONE term, however it is spelt. Acronyms are case-sensitive. The
+#: mining reporting-code terms are counted only in REPORTING context — an estimate, a
+#: statement, a code, a technical report — never as a bare phrase or a company name.
 _PROJECT_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (name, re.compile(pattern, re.IGNORECASE))
     for name, pattern in (
-        ("jorc", r"(?-i:\bJORC\b)"),
-        ("ni_43_101", r"\bNI\s?43-?101\b|\bNational\s+Instrument\s+43-?101\b"),
+        (
+            "jorc",
+            r"(?-i:\bJORC\b)\s*(?:\(\s*\d{4}\s*\)\s*)?(?:Code|compliant|-compliant)"
+            r"|\bin\s+accordance\s+with\s+(?:the\s+)?(?-i:JORC)\b"
+            r"|\breported\s+under\s+(?:the\s+)?(?-i:JORC)\b",
+        ),
+        (
+            "ni_43_101",
+            r"\bNI\s?43-?101\b\s*(?:technical\s+report|compliant|standards?)"
+            r"|\bNational\s+Instrument\s+43-?101\b"
+            r"|\bin\s+accordance\s+with\s+NI\s?43-?101\b",
+        ),
         ("sk_1300", r"\bS-K\s?1300\b|\bSubpart\s+1300\b"),
         ("perc", r"(?-i:\bPERC\b)(?=[^.\n]{0,60}\b(?:code|standard|reporting)\b)"),
-        ("mineral_resource", r"\bMineral\s+Resources?\b"),
-        ("ore_reserve", r"\b(?:Ore|Mineral)\s+Reserves?\b"),
+        (
+            "mineral_resource",
+            r"\b(?:Measured|Indicated|Inferred)(?:\s*(?:,|and|&)\s*(?:Measured|Indicated|"
+            r"Inferred))*\s+Mineral\s+Resources?\b" + _COMPANY_SUFFIX
+            + r"|\bMineral\s+Resources?\s+(?:estimate|statement|update)\b",
+        ),
+        (
+            "ore_reserve",
+            r"\b(?:Proved|Proven|Probable)(?:\s*(?:and|&)\s*(?:Proved|Proven|Probable))*"
+            r"\s+(?:Ore|Mineral)\s+Reserves?\b" + _COMPANY_SUFFIX
+            + r"|\b(?:Ore|Mineral)\s+Reserves?\s+(?:estimate|statement|update)\b",
+        ),
         ("scoping_study", r"\bscoping\s+study\b"),
         (
             "feasibility_study",
@@ -102,6 +131,12 @@ _PROJECT_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("offtake", r"\boff-?take\s+(?:agreement|contract|term\s+sheet|partner|MOU)"),
     )
 )
+
+#: A sentence that negates ("JORC does not apply", "no Mineral Resource has been
+#: estimated") states nothing — review round 2, H8.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
+_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|neither|nor|without|n/a)\b|\bnot\s+applicable\b", re.IGNORECASE)
 
 
 @dataclass
@@ -219,9 +254,15 @@ def assess_spend(facts: list[dict[str, Any]], texts: list[str]) -> tuple[bool, s
 
 def project_terms(texts: list[str]) -> list[str]:
     """P3 vocabulary the corpus names, distinct, in declaration order. Pure."""
+    sentences = [
+        sentence
+        for text in texts
+        for sentence in _SENTENCE_SPLIT_RE.split(text or "")
+        if sentence and not _NEGATION_RE.search(sentence)
+    ]
     found: list[str] = []
     for name, pattern in _PROJECT_TERMS:
-        if any(pattern.search(text or "") for text in texts):
+        if any(pattern.search(sentence) for sentence in sentences):
             found.append(name)
     return found
 

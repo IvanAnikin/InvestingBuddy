@@ -697,6 +697,10 @@ def _listing_coverage(listing: DisclosureListing, window_days: int | None = None
         "listing_newest": max(dated).date().isoformat() if dated else None,
         "listing_window_days": int(window_days) if window_days else None,
         "listing_documents": len(listing.documents),
+        # Review round 2, H6 — every page in the window read and nothing refused: only
+        # then can the listing show that an annual report is ABSENT.
+        "listing_complete": (int(getattr(listing, "pages_failed", 0) or 0) == 0
+                             and int(listing.refused or 0) == 0),
         "annual_documents_listed": annual,
     }
 

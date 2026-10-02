@@ -300,8 +300,13 @@ def _derived_runway(
             if extra_fact is None or refusal:
                 continue
             fact = extra_fact
+            base = slots["capital_expenditure"]
             same = (
-                fact.get("period") == slots["capital_expenditure"].get("period")
+                # Review round 2, H4 — from the SAME cash-flow table as the capital
+                # expenditure line: never a balance-sheet asset read as spend.
+                fact.get("document_id") == base.get("document_id")
+                and fact.get("excerpt_id") == base.get("excerpt_id")
+                and fact.get("period") == base.get("period")
                 and fact.get("currency") == capex.currency
                 and fact.get("scale") == capex.scale
                 and parse_scope(fact.get("scope")).scope_key == (
@@ -309,8 +314,8 @@ def _derived_runway(
             )
             if not same:
                 refusal = (
-                    f"{extra.replace('_', ' ')} is stated for another period, scope, "
-                    "currency or scale than capital expenditure"
+                    f"{extra.replace('_', ' ')} is not stated in the same cash-flow table, "
+                    "period, scope, currency and scale as capital expenditure"
                 )
                 continue
             capex = Quantity(
@@ -405,6 +410,8 @@ def _covers_18_months(core_disclosures: dict[str, Any], now: datetime) -> bool:
     oldest document) — the second guards a truncated or paginated listing."""
     raw = core_disclosures.get("listing_oldest")
     if not raw:
+        return False
+    if core_disclosures.get("listing_complete") is not True:
         return False
     window = core_disclosures.get("listing_window_days")
     if window is not None and int(window) < NOT_REPORTED_MIN_COVERAGE_DAYS:

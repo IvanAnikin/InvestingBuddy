@@ -338,7 +338,14 @@ from __future__ import annotations
 # current-assets and equity rows; "Interest revenue" / "Other revenue" are not revenue;
 # the opening cash balance is not cash; "3,265,409" is a number (two or more
 # thousands separators were read as no number at all); and a prose figure's period ignores a
-# "(2024: £1.9m)" comparative aside. Every version-18 row may carry the old readings.
+# "(2024: £1.9m)" comparative aside. Review rounds (still version 19 — not yet
+# released): a part-year document title / column header ("Interim Results", "Six
+# months to", "Unaudited", a December half) never yields an annual or a mislabelled H1
+# period; a scale abbreviation needs a currency symbol or digit beside it ("from" is
+# not "m"); a balance-sheet exploration asset is not spend; pre-tax results are not net
+# income; a profit and a loss for net income in one prose excerpt emit neither; a row
+# that brackets any value keeps its printed signs; "$A" is AUD.
+# Every version-18 row may carry the old readings.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
 CURRENT_EXTRACTION_PIPELINE_VERSION = 19
 

@@ -417,7 +417,8 @@ class TestStatementStates:
         assert state["annual"]["label"] == "No annual report acquired"
 
     def test_not_reported_by_the_issuer_needs_an_18_month_listing(self):
-        covered = _disclosures(listing_oldest="2024-12-01", annual_documents_listed=0)
+        covered = _disclosures(listing_oldest="2024-12-01", annual_documents_listed=0,
+                               listing_complete=True)
         state = build_financial_statements_state([], core_disclosures=covered, now=NOW)
         assert state["annual"]["state"] == STATE_NOT_REPORTED_BY_ISSUER
         assert state["annual"]["knowledge_state"] == "not_disclosed_by_issuer"
@@ -543,7 +544,7 @@ def test_listing_coverage_is_recorded_by_the_acquisition():
     coverage = _listing_coverage(listing, 560)
     assert coverage == {"listing_oldest": "2024-11-02", "listing_newest": "2026-01-30",
                         "listing_window_days": 560, "listing_documents": 3,
-                        "annual_documents_listed": 1}
+                        "listing_complete": True, "annual_documents_listed": 1}
     # Review H4 — an ASX "Annual Financial Report" headline and an NSM "Annual Financial
     # Report" filing of any format are evidence the issuer reported a year.
     listing = DisclosureListing(issuer=None, documents=[
@@ -568,7 +569,8 @@ def test_not_reported_by_issuer_is_reachable_with_the_real_lookback():
     assert lookback >= NOT_REPORTED_MIN_COVERAGE_DAYS
     oldest = (NOW - timedelta(days=lookback - 3)).date().isoformat()
     covered = _disclosures(listing_oldest=oldest, listing_window_days=lookback,
-                           listing_documents=12, annual_documents_listed=0)
+                           listing_documents=12, annual_documents_listed=0,
+                           listing_complete=True)
     state = build_financial_statements_state([], core_disclosures=covered, now=NOW)
     assert state["annual"]["state"] == STATE_NOT_REPORTED_BY_ISSUER
     assert "12 documents listed" in state["annual"]["reason"]

@@ -161,7 +161,10 @@ proves, never assumes:
 
 * **Mining evidence (required)** — at least one mining REPORTING-CODE term in the corpus
   (JORC, NI 43-101, S-K 1300, PERC, Mineral Resource, Ore Reserve) or classification in a
-  mining industry. FID, offtake and PFS/DFS/BFS are shared with LNG, renewables,
+  mining industry. A term counts only in reporting context ("Mineral Resource estimate",
+  "Indicated … Mineral Resources", "in accordance with the JORC Code", "NI 43-101
+  technical report"), never as a company name ("Mineral Resources Limited") and never in
+  a negated sentence ("JORC does not apply") — review round 2, H8. FID, offtake and PFS/DFS/BFS are shared with LNG, renewables,
   batteries and hydrogen and never count alone (review round 1, B1/H3).
 * **P1** no or immaterial revenue (< 10% of administrative plus expensed exploration
   costs) in the latest ANNUAL year AND the prior year, judged from ONE annual statement

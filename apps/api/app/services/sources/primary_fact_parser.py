@@ -346,7 +346,13 @@ def dollar_codes(low: str) -> set[str | None]:
     return codes
 
 
+#: "$A'000", "$US m" — the dollar symbol with its country AFTER it. Rewritten to the
+#: prefixed form ("A$'000") so one rule reads both (review round 2: "$A'000" was USD).
+_SUFFIXED_DOLLAR_RE = re.compile(r"\$\s?(US|AU|A|CA|C|NZ|HK)(?![A-Za-z])")
+
+
 def _find_currency(text: str) -> str | None:
+    text = _SUFFIXED_DOLLAR_RE.sub(lambda m: f"{m.group(1)}$", text or "")
     low = text.lower()
     # Prefer explicit "in millions of euros" / "reporting currency" phrasing.
     # A currency WORD (as opposed to a symbol like "€") must be matched at
@@ -625,7 +631,8 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
     (
         FIELD_NET_INCOME,
         _money_pattern(
-            r"net income|net profit|profit attributable|net result"
+            # Review round 2, H7 — never a PRE-TAX result.
+            r"(?:net income|net profit)(?!\s+before\b)|profit attributable|net result"
             # "profit for the year" alone means the bottom-line/net figure in
             # standard IFRS wording, but is ALSO a literal substring of
             # "operating profit for the year" / "recurring operating profit
@@ -642,7 +649,7 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
         # operating, underlying or adjusted loss (different metrics).
         _LOSS_FIELD,
         _money_pattern(
-            r"net loss(?!\s+(?:on|from|per|attributable\s+to\s+non)\b)"
+            r"net loss(?!\s+(?:on|from|per|before|attributable\s+to\s+non)\b)"
             r"|loss after (?:income )?tax(?:ation)?(?!\s+from\b)"
             r"|loss for the (?:financial )?(?:year|period|half[- ]year)(?!\s+from\b)",
             exclude_prefix=("comprehensive ", "operating ", "underlying ", "adjusted ",
@@ -697,6 +704,9 @@ _MONEY_FIELDS: list[tuple[str, re.Pattern[str]]] = [
         ),
     ),
 ]
+
+_NET_INCOME_PATTERN = next(p for f, p in _MONEY_FIELDS if f == FIELD_NET_INCOME)
+_LOSS_PATTERN = next(p for f, p in _MONEY_FIELDS if f == _LOSS_FIELD)
 
 #: V3.19.1 — the balance fields and the label each one's match begins with, for the
 #: flow/ratio check in ``parse_primary_facts``.
@@ -978,6 +988,19 @@ def _infer_prose_scope(sentence: str) -> str | None:
     return None
 
 
+_TRAILING_YEAR_RE = re.compile(
+    r"\s*(?:in|for|during)\s+(?:the\s+)?(?:(?:financial|fiscal)\s+year\s+)?(?:FY\s?)?"
+    r"((?:19|20)\d{2})\b(?!\s*[:/])",
+    re.IGNORECASE,
+)
+
+
+def _trailing_year(text: str, end: int) -> str | None:
+    """The year directly after a value in its own clause ("… £1.2m in 2024"), or None."""
+    m = _TRAILING_YEAR_RE.match(text, end)
+    return m.group(1) if m else None
+
+
 def _sentence_around(text: str, pos: int) -> str:
     """The sentence (bounded by ``. ! ? \\n``) containing position ``pos``."""
     start = max((text.rfind(ch, 0, pos) for ch in ".!?\n"), default=-1)
@@ -1009,6 +1032,11 @@ _HALF_MARKERS: tuple[tuple[str, str], ...] = (
     ("first six months", "H1"),
     ("six months ended", "H1"),
     ("six-month period ended", "H1"),
+    # Review round 2, H1 — the UK / ASX spellings of a first-half column header.
+    ("six months to", "H1"),
+    ("6 months ended", "H1"),
+    ("6 months to", "H1"),
+    ("six-month period to", "H1"),
     ("second half", "H2"),
     ("second-half", "H2"),
     ("2nd half", "H2"),
@@ -1184,7 +1212,16 @@ def _parse_excerpt(
         )
 
     # -- money fields ---------------------------------------------------------
+    # Review round 2, H5 — "Net loss for 2025 was US$3.3m, compared with a net profit
+    # of US$1.2m in 2024": a profit AND a loss for net income in one excerpt cannot be
+    # paired with their periods safely here, so neither is emitted.
+    net_income_conflict = bool(
+        next(_iter_clause_safe(_NET_INCOME_PATTERN, text), None)
+        and next(_iter_clause_safe(_LOSS_PATTERN, text), None)
+    )
     for field, pattern in _MONEY_FIELDS:
+        if net_income_conflict and field in (FIELD_NET_INCOME, _LOSS_FIELD):
+            continue
         # Phase 32A corrective — only ever a CLAUSE-SAFE candidate; a nearer
         # but clause-unsafe match (crosses a sentence, semicolon, adversative
         # conjunction, or another metric's label) is skipped entirely rather
@@ -1265,7 +1302,10 @@ def _parse_excerpt(
                 currency=currency,
                 scale=scale,
                 scope=_infer_prose_scope(sentence),
-                period=_period_near(text, m.start(), local_only=local_period_only),
+                # Review round 2, H5 — "… of US$1.2m in 2024": a year that follows the
+                # value in its own clause is that value's period.
+                period=_trailing_year(text, m.end())
+                or _period_near(text, m.start(), local_only=local_period_only),
                 source_url=source_url,
                 excerpt_id=excerpt.excerpt_id,
                 page_number=excerpt.page_number,

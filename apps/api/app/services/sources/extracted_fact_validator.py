@@ -173,6 +173,7 @@ _MONEY_LABELS: frozenset[str] = frozenset(
         FIELD_DEVELOPMENT_EXPENDITURE,
         FIELD_BORROWINGS,
         FIELD_ISSUED_CAPITAL,
+        "_revenue_secondary",
     }
 )
 # Phase 32A corrective (Problem A/B): a table row like "Operating margin | 20.0%"
@@ -195,6 +196,10 @@ _NET_CASH_ACTIVITY = (
 # component ("short-term debt", "total current assets") is never swallowed by a
 # broader subtotal pattern ("total debt", "total assets"), and a "recurring"
 # variant is never swallowed by its plain counterpart.
+#: Internal label of a secondary top-line caption; never persisted (see
+#: ``_resolve_secondary_revenue``).
+_FIELD_REVENUE_SECONDARY = "_revenue_secondary"
+
 _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"short[- ]term (?:debt|borrowings)", re.I), FIELD_SHORT_TERM_DEBT),
     (re.compile(r"long[- ]term (?:debt|borrowings)", re.I), FIELD_LONG_TERM_DEBT),
@@ -322,9 +327,13 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
-            r"capitali[sz]ed\s+exploration"
-            r"|exploration(?:\s+and\s+evaluation)?\s+(?:expenditure|costs?)\s+capitali[sz]ed"
-            r"|additions?\s+to\s+exploration(?:\s+and\s+evaluation)?\s+assets?",
+            # Review round 2, H4 — SPEND only: a cash-flow payment or an addition. A
+            # balance-sheet line "Capitalised exploration and evaluation expenditure
+            # 52,300" is the accumulated ASSET; read as spend it made a 0.7-quarter
+            # runway out of an 11-quarter one.
+            r"payments?\s+for\s+capitali[sz]ed\s+exploration"
+            r"|additions?\s+to\s+(?:capitali[sz]ed\s+)?exploration(?:\s+and\s+evaluation)?"
+            r"(?:\s+(?:assets?|expenditure))?",
             re.I,
         ),
         FIELD_EXPLORATION_CAPITALISED,
@@ -383,7 +392,10 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
-            r"net income|net profit"
+            # Review round 2, H7 — never a PRE-TAX line ("Net loss before tax", "Net
+            # profit before taxation"): a UK R&D-tax-credit company's post-tax result
+            # differs from it.
+            r"^(?!.*\bbefore\s+(?:income\s+)?tax)(?:.*?)(?:net income|net profit)"
             # "Profit for the year" is the bottom line; "profit for the year
             # FROM continuing/discontinued operations" is a different, higher
             # line of the same statement. A real income statement prints BOTH
@@ -401,7 +413,7 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"|^(?!.*non[- ]controlling)(?!.*comprehensive)(?!.*\boperating\s+loss).*(?:"
             r"\(loss\)\s*/\s*profit for the (?:financial )?(?:year|period|half[- ]year)"
             r"|(?<!operating )loss for the (?:financial )?(?:year|period|half[- ]year)"
-            r"|net loss(?!\s+(?:on|from|per)\b)"
+            r"|net loss(?!\s+(?:on|from|per|before)\b)"
             r"|loss after (?:income )?tax(?:ation)?"
             r"|loss attributable to (?:owners|members|equity holders|shareholders)"
             r")(?!\s+from\b)",
@@ -448,7 +460,15 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # else, and that must never read as the company having revenue.
     (re.compile(r"(?<!deferred\s)(?<!unearned\s)(?<!accrued\s)(?<!interest\s)"
                 r"(?<!other\s)(?<!finance\s)revenue(?!\s+received in advance)"
+                r"(?!\s+and\s+other\s+income)"
                 r"|net sales|total sales|turnover", re.I), FIELD_REVENUE),
+    # Review round 2 (medium) — a SECONDARY top line: "Revenue and other income"
+    # (interest and grants included) or a producer's product sales caption ("Gold
+    # sales", "Sale of concentrate", "Sales of nickel"). Read as revenue ONLY when the
+    # same table has no primary revenue row, and said so on the fact.
+    (re.compile(r"revenue\s+and\s+other\s+income"
+                r"|^(?!.*\b(?:cost|proceeds|gain|loss|profit|net|total)\b)\s*(?:[a-z]+\s+){1,2}sales\s*$"
+                r"|^\s*sales?\s+of\s+[a-z ]{2,30}$", re.I), _FIELD_REVENUE_SECONDARY),
     (
         # A HEADCOUNT row, never a money row that merely mentions employees — Pensana:
         # "Performance rights and options granted to directors, officers and employees
@@ -479,10 +499,15 @@ _SUBTOTAL_RULES: list[tuple[str, tuple[str, ...]]] = [
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}")
 # Accept singular OR plural scale words ("million"/"millions") + the abbreviations.
 _SCALE_RE = re.compile(
-    r"(?:€|£|\$)?\s*(millions?|billions?|thousands?|bn|mn|m)\b"
-    # A column header "$'000" / "£’000" / "€000" states THOUSANDS (Pro Medicus: a
-    # "$’000" table read "million" from elsewhere on the page).
-    r"|(?:€|£|\$)\s?[’']?(000)\b",
+    # A scale WORD, never the tail of another word.
+    r"(?<![A-Za-z])(?P<word>millions?|billions?|thousands?)\b"
+    # Review round 2, H3 — an abbreviation ("m", "bn", "mn") only directly after a
+    # currency symbol or a digit ("US$m", "£bn", "5.2m"). Without it the "m" ending
+    # "from", "term", "item" or "Platinum" made a whole-dollar table "million".
+    r"|(?:[€£$]|\d)\s?(?P<abbr>bn|mn|m)\b"
+    # A column header "$'000" / "£’000" / "€000" / "$A'000" states THOUSANDS (Pro
+    # Medicus: a "$’000" table read "million" from elsewhere on the page).
+    r"|(?:€|£|\$)\s?(?:[A-Za-z]{1,2}\s?)?[’']?(?P<thousands>000)\b",
     re.IGNORECASE,
 )
 
@@ -701,15 +726,60 @@ def _match_label(text: str) -> str | None:
 def _find_scale(text: str) -> str | None:
     """Return million/billion/thousand if a scale token is present, else None."""
     m = _SCALE_RE.search(text or "")
-    if m and m.group(2):
+    if m is None:
+        return None
+    if m.group("thousands"):
         return "thousand"
     # rstrip("s") normalizes a plural ("millions" → "million") for _scale_word.
-    return _scale_word(m.group(1).rstrip("s")) if m else None
+    return _scale_word((m.group("word") or m.group("abbr")).rstrip("s"))
+
+
+#: Review round 2, H1 — a column header that says it is part of a year without
+#: saying WHICH part ("Unaudited 30 June 2025", "Interim", "Nine months to …",
+#: "Year to date", "Current quarter"). No full year can be read from it.
+_PART_YEAR_HEADER_RE = re.compile(
+    r"\bunaudited\b|\binterim\b|\b(?:three|six|nine|3|6|9)[- ]months?\b|\byear[- ]to[- ]date\b"
+    r"|\bytd\b|\bcurrent\s+quarter\b|\bquarter\b",
+    re.I,
+)
+#: A header that positively states a FULL year.
+_FULL_YEAR_HEADER_RE = re.compile(
+    r"\byear\s+ended\b|\b12[- ]months?\b|\btwelve\s+months?\b|\bfull[- ]year\b"
+    r"|\bFY\s?(?:19|20)?\d{2}\b",
+    re.I,
+)
+_HEADER_MONTH_RE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\b", re.I)
+#: The month a half-year ENDS for the "H1"/"H2" label to be the calendar half.
+_HALF_END_MONTH = {"H1": "jun", "H2": "dec"}
+
+
+def _header_period(text: str, *, part_year_document: bool) -> tuple[str | None, bool]:
+    """``(period, untrusted)`` for one header cell that states a year."""
+    year = _YEAR_RE.search(text)
+    if year is None:
+        return None, False
+    marker = _interim_marker_near(text)
+    month = _HEADER_MONTH_RE.search(text)
+    if marker in _HALF_END_MONTH:
+        # "Half-year ended 31 December 2025" is H1 of a JUNE fiscal year, not H1 2025:
+        # with the fiscal year-end unknown the half cannot be named (review H2).
+        if month is not None and month.group(1).lower() != _HALF_END_MONTH[marker]:
+            return None, True
+        return f"{marker} {year.group(0)}", False
+    if marker is not None:
+        return f"{marker} {year.group(0)}", False
+    if _PART_YEAR_HEADER_RE.search(text):
+        return None, True
+    if part_year_document and not _FULL_YEAR_HEADER_RE.search(text):
+        return None, True
+    return year.group(0), False
 
 
 def _column_periods(
     table: ExtractedTable,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
+    part_year_document: bool = False,
 ) -> dict[int, str]:
     """Map column index → period from the first row that has year tokens (the
     header). Later columns without a year are left unmapped.
@@ -740,18 +810,32 @@ def _column_periods(
     authority for annual figures, whereas a wrong annual figure presented as
     the canonical one is not recoverable downstream.
     """
+    part_year = part_year_document or document_period.is_interim
     for row in table.rows:
         found: dict[int, str] = {}
         untrusted = False
+        bare_months: set[str] = set()
+        bare_cols: list[int] = []
         for col, cell in enumerate(row):
             text = cell or ""
-            m = _YEAR_RE.search(text)
-            if m:
-                marker = _interim_marker_near(text)
-                if marker is None and document_period.is_interim:
-                    untrusted = True
-                    continue
-                found[col] = f"{marker} {m.group(0)}" if marker else m.group(0)
+            if not _YEAR_RE.search(text):
+                continue
+            period, refused = _header_period(text, part_year_document=part_year)
+            if refused or period is None:
+                untrusted = untrusted or refused
+                continue
+            found[col] = period
+            month = _HEADER_MONTH_RE.search(text)
+            if month is not None and _interim_marker_near(text) is None:
+                bare_months.add(month.group(1).lower())
+                bare_cols.append(col)
+        # Review H1 — a header comparing two different balance dates ("31 December
+        # 2025 | 30 June 2025") is an interim balance sheet against a year-end: no
+        # bare-dated column of it is a full year.
+        if len(bare_months) > 1:
+            for col in bare_cols:
+                found.pop(col, None)
+            untrusted = True
         if found:
             return found
         if untrusted:
@@ -886,7 +970,9 @@ _CASH_FLOW_SUBTOTALS: frozenset[str] = frozenset(
 )
 
 
-def _signed_value(label: str, caption: str, value: float) -> tuple[float, str | None]:
+def _signed_value(
+    label: str, caption: str, value: float, *, row_has_brackets: bool = False
+) -> tuple[float, str | None]:
     """The value under the platform's sign convention, and a note when it was changed.
 
     See ``primary_fact_parser`` for the convention: cash-flow subtotals and net income
@@ -909,6 +995,11 @@ def _signed_value(label: str, caption: str, value: float) -> tuple[float, str | 
         # identity check (assets = liabilities + equity) failed on every such sheet.
         if value < 0:
             return abs(value), "Liability printed in brackets; stored as the amount owed."
+        return value, None
+    # Review round 2 (medium) — a row that prints ANY value in brackets uses brackets
+    # for the negative direction, so its unbracketed values are positive as printed:
+    # "Loss for the year (3,265) 1,200" is a FY2024 PROFIT of 1,200, not a loss.
+    if row_has_brackets and label in (FIELD_NET_INCOME, *_CASH_FLOW_SUBTOTALS):
         return value, None
     if label == FIELD_NET_INCOME:
         if (_LOSS_WORD_RE.search(caption) and not _PROFIT_WORD_RE.search(caption)
@@ -1028,6 +1119,7 @@ def _candidates_from_table(
     issuer: IssuerContext,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
     table_units_only: bool = False,
+    part_year_document: bool = False,
 ) -> list[_Candidate]:
     """Turn one bounded table into per-cell candidates + run the subtotal check.
 
@@ -1036,7 +1128,7 @@ def _candidates_from_table(
     interim statements are in whole US dollars ("US$" headers, net loss 3,265,409),
     and a "million" in the page's prose made "40,133" read as US$ 40,133 million.
     """
-    col_period = _column_periods(table, document_period)
+    col_period = _column_periods(table, document_period, part_year_document)
     currency, scale = _table_currency_scale(
         table, {} if table_units_only else excerpts_by_page, issuer
     )
@@ -1087,7 +1179,9 @@ def _candidates_from_table(
             pairs.append((issuer.default_period, t, n, col))
 
         for period, text, raw_num, _col in pairs:
-            num, sign_note = _signed_value(label, row[0], raw_num)
+            num, sign_note = _signed_value(
+                label, row[0], raw_num,
+                row_has_brackets=any(_is_bracketed(cell) for cell in row[1:]))
             status = VALIDATION_VALIDATED
             note = None
             if period is None:
@@ -1121,8 +1215,31 @@ def _candidates_from_table(
 
     candidates = _combine_current_and_non_current_borrowings(
         candidates, borrowings_rows, table)
+    candidates = _resolve_secondary_revenue(candidates)
     _apply_subtotal_check(candidates)
     _apply_balance_sheet_check(candidates)
+    return candidates
+
+
+def _is_bracketed(cell: str) -> bool:
+    text = (cell or "").strip()
+    return len(text) > 2 and text.startswith("(") and text.endswith(")")
+
+
+def _resolve_secondary_revenue(candidates: list[_Candidate]) -> list[_Candidate]:
+    """A secondary top-line caption is revenue only when the table has no primary
+    revenue row; then it is said to be the combined / product line."""
+    secondary = [c for c in candidates if c.label == _FIELD_REVENUE_SECONDARY]
+    if not secondary:
+        return candidates
+    if any(c.label == FIELD_REVENUE for c in candidates):
+        return [c for c in candidates if c.label != _FIELD_REVENUE_SECONDARY]
+    for cand in secondary:
+        cand.label = FIELD_REVENUE
+        cand.notes.append(
+            "Read from a secondary top-line caption (revenue and other income, or a "
+            "product sales line); the table states no separate revenue line."
+        )
     return candidates
 
 
@@ -1509,6 +1626,21 @@ def _refuse_annual_authority_of_interim_document(
             )
 
 
+def _refuse_annual_authority_of_part_year_title(candidates: list[_Candidate]) -> None:
+    """A document whose TITLE says it covers part of a year, with no readable period:
+    every annual-period candidate in it is kept, never promoted (review round 2, H1)."""
+    for cand in candidates:
+        if parse_period(cand.period).period_type != PERIOD_TYPE_ANNUAL:
+            continue
+        if cand.status == VALIDATION_VALIDATED:
+            cand.status = VALIDATION_EXCERPT_ONLY
+            cand.notes.append(
+                "An annual period read inside a document whose title states it covers "
+                "part of a year. Retained, not promoted: the annual report is the "
+                "authority for an annual figure."
+            )
+
+
 def _supersede_prose_read_of_reconstructed_table(
     candidates: list[_Candidate],
 ) -> tuple[list[_Candidate], dict[tuple[str, int | None], int]]:
@@ -1866,6 +1998,7 @@ def validate_extracted_facts(
     cfg: Settings | None = None,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
     title_only_period: bool = False,
+    document_title: str | None = None,
 ) -> list[ValidatedFact]:
     """Validate an extraction's tables into candidate structured facts.
 
@@ -1890,11 +2023,18 @@ def validate_extracted_facts(
     for ex in extraction.excerpts:
         excerpts_by_page.setdefault(ex.page_number, []).append(ex.text)
 
+    from app.services.sources.document_period import title_states_part_year
+
+    # Review round 2, H1 — "Interim Results", "Half-year Report", "Appendix 4D…" state
+    # no period the detector can read, yet they are part-year documents: no bare-dated
+    # column in them is a full year, and nothing in them is an annual authority.
+    part_year_document = document_period.is_interim or title_states_part_year(document_title)
     candidates: list[_Candidate] = []
     for table in extraction.tables:
         candidates.extend(
             _candidates_from_table(table, excerpts_by_page, issuer, document_period,
-                                   table_units_only=title_only_period)
+                                   table_units_only=title_only_period,
+                                   part_year_document=part_year_document)
         )
     # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
     # source, not just tables — see ``_candidates_from_excerpts``.
@@ -1903,6 +2043,8 @@ def validate_extracted_facts(
     )
     candidates, superseded = _supersede_prose_read_of_reconstructed_table(candidates)
     _refuse_annual_authority_of_interim_document(candidates, document_period)
+    if part_year_document and not document_period.is_interim:
+        _refuse_annual_authority_of_part_year_title(candidates)
 
     # Group by (label, period, scope) so the same figure from >1 method/source
     # is reconciled, while a Group-scoped and a segment-scoped candidate for

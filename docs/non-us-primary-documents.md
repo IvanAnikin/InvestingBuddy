@@ -270,6 +270,29 @@ Financial Report" filing counts as annual evidence. State B's `knowledge_state` 
 continuing operations" is mostly interest income still has a revenue fact; it defeats
 the stage detector's P1 unless it is under 10% of operating costs.
 
+**Review round 2 (adversarial probe).** When a period, scale, sign or statement type is
+ambiguous nothing is validated:
+- **Part-year documents.** A title that says part of a year ("Interim Results", "Half-year
+  Report", "Appendix 4D…", quarterly) makes every bare-dated column non-annual and keeps
+  any annual-period figure in it as text. A column header that is part-year without
+  saying which part ("Unaudited 30 June", "Nine months to", "Year to date") gets no
+  period. A balance sheet comparing two different dates is not annual. "Six months to
+  30 June 2025" is H1 2025.
+- **December halves.** "Half-year ended 31 December 2025" (column or title) is H1 of a
+  June fiscal year: with the year-end unknown it gets no period, never "H1 2025".
+- **Scale.** An "m" / "bn" needs a currency symbol or digit beside it; "from", "term" and
+  "Platinum" no longer make a whole-dollar table "million". "$A'000" is AUD thousands.
+- **Statement lines.** "Capitalised exploration and evaluation expenditure" on a balance
+  sheet is the ASSET, not spend; runway adds capitalised exploration only from the
+  capital-expenditure line's own table. "Net loss / profit before tax" is not net income.
+  A row that brackets any value keeps its printed signs ("Loss for the year (3,265)
+  1,200" is a 1,200 profit in 2024). "Revenue and other income" and product sales
+  captions ("Gold sales") are revenue only without a separate revenue line, and say so.
+- **Prose.** A profit and a loss for net income in one excerpt emit neither; a year after
+  the value ("… £1.2m in 2024") is its period.
+- **"Not reported by issuer"** additionally needs a COMPLETE listing: every ASX year page
+  in the window read and no refused NSM / ASX row (`listing_complete`).
+
 **Cash runway.** `cash_runway_quarters` (calculation definition v1) = cash ÷
 (−(operating cash flow − |capex|) ÷ quarters in the period). Refused unless the three
 inputs share one period, scope and currency, unless the period is a year, half or quarter,

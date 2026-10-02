@@ -40,7 +40,8 @@ def _loss_two_years(**kw):
 
 
 MINING_TEXT = [
-    "The JORC (2012) Mineral Resource underpins the Definitive Feasibility Study.",
+    "The Mineral Resource estimate, reported in accordance with the JORC Code, underpins "
+    "the Definitive Feasibility Study.",
     "A binding offtake agreement covers 60% of planned output.",
 ]
 
@@ -65,7 +66,8 @@ LUXURY_TEXT = ["Revenue grew in every region; the Maisons opened 40 boutiques."]
 class TestPositiveMiningProof:
     def test_a_loss_making_miner_with_capitalised_exploration(self):
         facts = [*_loss_two_years(), _fact("exploration_capitalised", 5200)]
-        out = assess(facts, ["Mineral Resource estimate (JORC)."], has_commodity=False)
+        out = assess(facts, ["The updated Mineral Resource estimate (JORC Code)."],
+                     has_commodity=False)
         assert out.signals == (SIGNAL_DEVELOPMENT_STAGE,)
         assert out.proofs["mining_evidence"] and out.proofs["no_or_immaterial_revenue"]
 
