@@ -85,10 +85,10 @@ class ResearchDocument(Base):
     #: Open-web W3 (migration 044). What the document is ABOUT when it is not one
     #: company's: ``company`` | ``theme`` | ``industry`` | ``macro``. NULL on every
     #: document written before W3 — which is "not recorded", not "company".
+    #: The themes a document serves are ROWS (``research_document_subjects`` with
+    #: ``relation='theme'``), never a column here: one document is found by many
+    #: themes (W3 review F3).
     subject_scope: Mapped[str | None] = mapped_column(sa.String(20))
-    #: The theme a company-less document was acquired for (``theme:<slug>``), so a
-    #: theme retrieval can be scoped without naming a company. NULL otherwise.
-    theme_key: Mapped[str | None] = mapped_column(sa.String(120))
     first_seen_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -322,13 +322,26 @@ class ResearchDocumentVersion(Base):
 
 #: ``research_document_subjects.relation`` — closed.
 SUBJECT_RELATIONS: tuple[str, ...] = (
-    "primary", "mentioned", "competitor", "customer", "supplier",
+    "primary", "mentioned", "competitor", "customer", "supplier", "theme",
+)
+#: The identity of a subject row. NULLs are coalesced so the unique index sees two
+#: "no company" rows as the same row (W3 review F10).
+SUBJECT_IDENTITY_SQL: tuple[str, ...] = (
+    "research_document_id",
+    "coalesce(company_id, '00000000-0000-0000-0000-000000000000')",
+    "coalesce(legal_entity_id, '00000000-0000-0000-0000-000000000000')",
+    "relation",
+    "coalesce(scope_key, '')",
+    "coalesce(theme_key, '')",
 )
 #: ``research_document_subjects.confidence`` (spec §16.1) — closed; NULL allowed for a
 #: primary subject assigned by the research run rather than matched in the text.
 SUBJECT_CONFIDENCES: tuple[str, ...] = (
     "exact_identifier", "domain", "name_context", "name_only",
 )
+#: Confidences strong enough to attribute a WHOLE document to a company in retrieval;
+#: anything weaker admits only the mention's evidence chunk (W3 review F2).
+STRONG_SUBJECT_CONFIDENCES: tuple[str, ...] = ("exact_identifier", "domain")
 
 
 class ResearchDocumentSubject(Base):
@@ -380,16 +393,25 @@ class ResearchDocumentSubject(Base):
     #: ``segment:<name>`` / ``brand:<name>`` for a brand mention; NULL otherwise.
     #: Never ``group`` for a brand (spec §16.2).
     scope_key: Mapped[str | None] = mapped_column(sa.String(220))
-    #: The ``chunk_id`` of the first chunk the mention occurs in, when known.
+    #: The ``chunk_id`` of the first chunk the mention occurs in, when known. For a
+    #: ``mentioned`` row this is the ONLY chunk retrieval admits for that company
+    #: (W3 review F2).
     evidence_chunk_id: Mapped[str | None] = mapped_column(sa.String(120))
+    #: ``theme:<slug>`` for a ``relation='theme'`` row; NULL otherwise.
+    theme_key: Mapped[str | None] = mapped_column(sa.String(120))
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
 
     __table_args__ = (
         sa.CheckConstraint(
-            "relation IN ('primary', 'mentioned', 'competitor', 'customer', 'supplier')",
+            "relation IN ('primary', 'mentioned', 'competitor', 'customer', 'supplier', "
+            "'theme')",
             name="ck_research_document_subjects_relation",
+        ),
+        sa.CheckConstraint(
+            "(relation = 'theme') = (theme_key IS NOT NULL)",
+            name="ck_research_document_subjects_theme_key",
         ),
         sa.CheckConstraint(
             "confidence IS NULL OR confidence IN "
@@ -398,10 +420,17 @@ class ResearchDocumentSubject(Base):
         ),
         sa.Index("ix_research_document_subjects_document_id", "research_document_id"),
         sa.Index("ix_research_document_subjects_company_id", "company_id"),
+        sa.Index("ix_research_document_subjects_theme_key", "theme_key"),
+        sa.Index(
+            "ux_research_document_subjects_identity",
+            *(sa.text(expr) if "(" in expr else expr for expr in SUBJECT_IDENTITY_SQL),
+            unique=True,
+        ),
     )
 
 
 __all__ = [
+    "STRONG_SUBJECT_CONFIDENCES",
     "SUBJECT_CONFIDENCES",
     "SUBJECT_RELATIONS",
     "ResearchDocument",

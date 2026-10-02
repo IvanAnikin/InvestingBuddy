@@ -81,7 +81,6 @@ _PERIOD_KEY_MAX = 20
 _PERIOD_TYPE_MAX = 20
 _PERIOD_BASIS_MAX = 40
 _SUBJECT_SCOPE_MAX = 20
-_THEME_KEY_MAX = 120
 _USE_CONSTRAINT_MAX = 40
 _ORIGIN_KEY_MAX = 255
 _DATE_SOURCE_MAX = 20
@@ -145,8 +144,13 @@ class WebVersionFields:
     """What an open-web retrieval adds to a version and its document (spec §12.3).
 
     Kept as one value so the non-web writers stay byte-identical: they pass nothing,
-    and nothing here is written. ``subject_scope`` / ``theme_key`` belong to the
-    DOCUMENT and are filled on first sight only (never overwritten).
+    and nothing here is written. ``subject_scope`` belongs to the DOCUMENT and is
+    filled on first sight only (never overwritten).
+
+    ``published_at`` is a date the page carries that is NOT authoritative enough to
+    drive period logic (``published_at_source='text'``: htmldate's content search may
+    find an unrelated earlier date — W3 review F9). It is stored on the version for the
+    ``since`` filter, labelled by its source, and never handed to the period rules.
     """
 
     web_fetch_attempt_id: uuid.UUID | None = None
@@ -158,9 +162,9 @@ class WebVersionFields:
     source_class: str | None = None
     web_extractor_version: int | None = None
     subject_scope: str | None = None
-    theme_key: str | None = None
     #: WHO PUBLISHED the page (the publisher's domain) — distinct from the transport.
     content_origin: str | None = None
+    published_at: date | None = None
 
 
 @dataclass
@@ -298,7 +302,6 @@ async def upsert_document_version(
         now=stamp,
         result=counts,
         subject_scope=_clip(web.subject_scope, _SUBJECT_SCOPE_MAX) if web else None,
-        theme_key=_clip(web.theme_key, _THEME_KEY_MAX) if web else None,
     )
 
     existing = (
@@ -359,6 +362,8 @@ async def upsert_document_version(
         version.published_at_source = _clip(web.published_at_source, _DATE_SOURCE_MAX)
         version.source_class = _clip(web.source_class, _SOURCE_CLASS_MAX)
         version.web_extractor_version = web.web_extractor_version
+        if version.published_at is None and web.published_at is not None:
+            version.published_at = web.published_at
     session.add(version)
     counts.versions_created += 1
     await session.flush()
@@ -380,7 +385,6 @@ async def _get_or_create_document(
     now: datetime,
     result: CorpusIngestResult,
     subject_scope: str | None = None,
-    theme_key: str | None = None,
 ) -> ResearchDocument:
     existing = (
         await session.execute(
@@ -407,8 +411,6 @@ async def _get_or_create_document(
             existing.language = language
         if subject_scope and not existing.subject_scope:
             existing.subject_scope = subject_scope
-        if theme_key and not existing.theme_key:
-            existing.theme_key = theme_key
         await session.flush()
         return existing
 
@@ -422,7 +424,6 @@ async def _get_or_create_document(
         period_type=period_type,
         language=language,
         subject_scope=subject_scope,
-        theme_key=theme_key,
         first_seen_at=now,
         last_seen_at=now,
     )

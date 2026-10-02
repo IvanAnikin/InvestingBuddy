@@ -479,10 +479,32 @@ _PROVIDER_LABEL_KEYS: tuple[str, ...] = (
 )
 
 
+def _render_untrusted(value: Any, depth: int = 0) -> Any:
+    """Every STRING inside ``value`` in its prompt-safe form (W3 review S-M1).
+
+    Must run BEFORE ``json.dumps``: serialising first turns a Unicode tag, a bidi
+    override or a full-width fake marker into a ``\\uXXXX`` escape that nothing
+    downstream can strip or recognise.
+    """
+    if isinstance(value, str):
+        from app.services.web_research.text_safety import render_for_prompt
+
+        return render_for_prompt(value)
+    if depth > 8:
+        return value
+    if isinstance(value, dict):
+        return {k: _render_untrusted(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_render_untrusted(v, depth + 1) for v in value]
+    return value
+
+
 def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence | None:
     citation = _citation_of(item)
     if not citation:
         return None
+    if untrusted:
+        item = _render_untrusted(item)
     if tool == TOOL_FETCH_PUBLIC_SOURCE:
         shown = {k: item.get(k) for k in _EXTERNAL_EVIDENCE_KEYS if item.get(k)}
         if "claim" in shown:

@@ -162,7 +162,8 @@ class Env:
     async def ingest(self, fetched: Any, **kw: Any) -> ingest_mod.WebIngestResult:
         kw.setdefault("cfg", self.cfg)
         return await ingest_mod.ingest_web_document(
-            self.session, fetched, pool=self.pool, store=self.store, backend=self.backend,
+            self.session, fetched, pool=kw.pop("pool", self.pool), store=self.store,
+            backend=self.backend,
             now=NOW, **kw,
         )
 
@@ -281,10 +282,12 @@ class TestWritePath:
         assert {(s.company_id, s.relation) for s in subjects} == {(a, "primary"), (b, "primary")}
 
     async def test_three_company_article_writes_three_subject_rows(self, env: Env) -> None:
-        hitachi = CandidateEntity(name="Hitachi Energy Ltd", company_id=uuid.uuid4())
+        hitachi = CandidateEntity(name="Hitachi Energy Ltd", company_id=uuid.uuid4(),
+                                  sector_terms=("Transformers",))
         siemens = CandidateEntity(name="Siemens Energy AG", company_id=uuid.uuid4(),
                                   tickers=(("ENR", "XETRA"),))
-        prysmian = CandidateEntity(name="Prysmian S.p.A.", company_id=uuid.uuid4())
+        prysmian = CandidateEntity(name="Prysmian S.p.A.", company_id=uuid.uuid4(),
+                                   sector_terms=("Cables",))
         premier = CandidateEntity(name="Premier plc", company_id=uuid.uuid4())
         result = await env.ingest(
             _fetched(_page("three_company_article.html"), "https://tdworld.com/grid/x"),
@@ -313,12 +316,19 @@ class TestWritePath:
             company_id=richemont.company_id, candidates=(richemont,),
         )
         rows = (await env.session.execute(select(ResearchDocumentSubject))).scalars().all()
-        scoped = [r for r in rows if r.scope_key]
-        assert scoped and scoped[0].scope_key == "segment:jewellery maisons"
-        assert scoped[0].company_id == richemont.company_id
-        assert scoped[0].method == "brand_alias"
+        by_relation = {r.relation: r for r in rows}
+        brand = by_relation["mentioned"]
+        assert brand.scope_key == "segment:jewellery maisons" and brand.method == "brand_alias"
+        assert brand.company_id == richemont.company_id
+        # F11: the page names Richemont ONLY through Cartier, so even the primary row
+        # and every unscoped chunk carry the segment scope — never Group-eligible.
+        assert by_relation["primary"].scope_key == "segment:jewellery maisons"
         assert not any((r.scope_key or "").startswith("group") for r in rows)
         assert result.subjects_written == len(rows)
+        scopes = set(
+            (await env.session.execute(select(ResearchDocumentChunk.scope_key))).scalars()
+        )
+        assert scopes == {"segment:jewellery maisons"}
 
     async def test_companyless_theme_document_dedups_under_the_partial_index(
         self, env: Env
@@ -334,7 +344,11 @@ class TestWritePath:
         assert r1.document_id == r2.document_id  # one company-less document, two versions
         assert await _count(env.session, ResearchDocument) == 1
         document = await env.session.get(ResearchDocument, r1.document_id)
-        assert document.theme_key == "theme:aluminium-demand"
+        themes = (await env.session.execute(
+            select(ResearchDocumentSubject.theme_key).where(
+                ResearchDocumentSubject.relation == "theme")
+        )).scalars().all()
+        assert themes == ["theme:aluminium-demand"]  # one row, not one per version
         assert r1.source_class == "unknown_web"  # international-aluminium.org not curated
         # The database itself refuses a second company-less row with the same key.
         env.session.add(ResearchDocument(
@@ -481,7 +495,8 @@ class TestEndToEndFromTheFetchPolicy:
 
 
 class _FetchResult:
-    def __init__(self, content: bytes, url: str) -> None:
+    def __init__(self, content: bytes, url: str, headers: dict | None = None) -> None:
+        self.headers = dict(headers or {})
         self.content = content
         self.final_url = url
         self.document_type = "html"
@@ -493,18 +508,20 @@ class _FetchResult:
 
 
 class TestVerifiedLeadIngestion:
-    async def _run(self, env: Env, monkeypatch: pytest.MonkeyPatch, *, allowed: bool) -> Any:
+    async def _run(self, env: Env, monkeypatch: pytest.MonkeyPatch, *, allowed: bool,
+                   body: bytes | None = None, headers: dict | None = None,
+                   claim: str | None = None) -> Any:
         from app.models.company import Company
         from app.services.agent_tools.external import _fetch_public_source
         from app.services.agent_tools.session import ToolContext
         from app.services.providers import leads as leads_mod
         from app.services.web_research import fetch as fetch_mod
 
-        body = _page("news_article.html")
+        page = body if body is not None else _page("news_article.html")
         url = "https://www.gridweekly.example/news/transformer-shortage-deepens"
 
         async def _fetcher(u: str, **_kw: Any) -> Any:
-            return _FetchResult(body, url)
+            return _FetchResult(page, url, headers)
 
         async def _clearance(*_a: Any, **_kw: Any) -> Any:
             if allowed:
@@ -513,7 +530,9 @@ class TestVerifiedLeadIngestion:
 
         monkeypatch.setattr(leads_mod, "_default_fetcher", _fetcher)
         monkeypatch.setattr(fetch_mod, "ingestion_clearance", _clearance)
-        monkeypatch.setattr(ingest_mod, "ingest_web_document", _with_env(env))
+        from app.services.web_research import pool as pool_mod
+
+        monkeypatch.setattr(pool_mod, "get_extraction_pool", lambda *_a, **_k: env.pool)
         company_id = uuid.uuid4()
         env.session.add(Company(id=company_id, ticker="GRD", exchange="NYSE",
                                 name="Grid Holdings"))
@@ -521,8 +540,8 @@ class TestVerifiedLeadIngestion:
         context = ToolContext(session=env.session, cfg=env.cfg, company_id=company_id)
         payload = await _fetch_public_source(context, {
             "url": url,
-            "claim": "Lead times for large power transformers have stretched to between "
-                     "120 and 210 weeks",
+            "claim": claim or ("Lead times for large power transformers have stretched "
+                               "to between 120 and 210 weeks"),
             "provider": "tavily",
         })
         return payload, company_id
@@ -563,19 +582,6 @@ class TestVerifiedLeadIngestion:
         assert await _count(env.session, WebFetchAttempt) == 0
 
 
-_REAL_INGEST = ingest_mod.ingest_web_document
-
-
-def _with_env(env: Env) -> Any:
-    """The real write path, with this test's pool, artifact store and search backend."""
-
-    async def _ingest(session: Any, fetched: Any, **kw: Any) -> Any:
-        kw.update(pool=env.pool, store=env.store, backend=env.backend)
-        return await _REAL_INGEST(session, fetched, **kw)
-
-    return _ingest
-
-
 # --------------------------------------------------------------------------- #
 # Retrieval filters (spec §12.3)
 # --------------------------------------------------------------------------- #
@@ -590,7 +596,7 @@ class TestFilters:
         a, b = uuid.uuid4(), uuid.uuid4()
         web_chunk = _chunk("w", company_id=None, source_class="trade_publication",
                      use_constraint="unknown", injection_suspect=True, subject_scope="theme",
-                     theme_key="theme:grid", subject_company_ids=(a,),
+                     theme_keys=("theme:grid",), subject_company_ids=(a,),
                      published_at=date(2026, 5, 1))
         filing = _chunk("f", company_id=a)
         assert CorpusFilters(source_classes=("trade_publication",)).matches(web_chunk)
@@ -635,3 +641,191 @@ class TestFilters:
         assert await hits(use_constraints=("public_domain",)) == {"specialist_agency"}
         assert await hits(theme_keys=("theme:copper",)) == {"specialist_agency"}
         assert await hits(published_from=date(2026, 3, 1)) == {"major_financial_press"}
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1 (W3)
+# --------------------------------------------------------------------------- #
+
+
+def _three(session_ids: bool = True) -> tuple[CandidateEntity, ...]:
+    return (
+        CandidateEntity(name="Hitachi Energy Ltd", company_id=uuid.uuid4(),
+                        sector_terms=("Transformers",)),
+        CandidateEntity(name="Siemens Energy AG", company_id=uuid.uuid4(),
+                        tickers=(("ENR", "XETRA"),)),
+        CandidateEntity(name="Prysmian S.p.A.", company_id=uuid.uuid4(),
+                        sector_terms=("Cables",)),
+    )
+
+
+async def _search(env: Env, **filters: Any) -> list[Any]:
+    query = CorpusQuery(text="transformer cable order backlog capacity grid",
+                        filters=CorpusFilters(**filters), mode=SearchMode.LEXICAL,
+                        top_k=50, allow_cross_entity=True)
+    return [hit.chunk for hit in await env.backend.search(query)]
+
+
+class TestReviewSubjectRetrieval:
+    async def test_a_mention_admits_only_its_evidence_chunk_never_the_group_slot(
+        self, env: Env
+    ) -> None:
+        # F2: an article mentioning Hitachi by name is NOT Hitachi's document.
+        hitachi, siemens, prysmian = _three()
+        body = _page("three_company_article.html").replace(
+            b"</article>", b"<p>" + b"Grid order backlog and capacity remain tight. " * 40
+            + b"</p></article>")
+        await env.ingest(_fetched(body, "https://tdworld.com/grid/x"), subject_scope="industry",
+                         candidates=(hitachi, siemens, prysmian))
+        everything = await _search(env)
+        assert len(everything) > 1
+        hits = await _search(env, company_ids=(hitachi.company_id,),
+                             subject_company_ids=(hitachi.company_id,))
+        assert len(hits) == 1 and "Hitachi" in hits[0].text
+        assert hits[0].via_subject and hits[0].scope_type == "mention"
+        assert hits[0].scope_type != "group" and hits[0].scope_key.startswith("mention:")
+        # A Group-only query never sees it.
+        assert await _search(env, company_ids=(hitachi.company_id,),
+                             subject_company_ids=(hitachi.company_id,),
+                             scope_types=("group",)) == []
+        # An exact-identifier subject (ticker + venue) attributes the whole document.
+        whole = await _search(env, subject_company_ids=(siemens.company_id,))
+        assert len(whole) == len(everything) and all(c.via_subject for c in whole)
+        # Another company entirely sees nothing.
+        assert await _search(env, subject_company_ids=(uuid.uuid4(),)) == []
+
+    async def test_a_document_is_reused_by_a_second_theme(self, env: Env) -> None:
+        # F3: themes are rows; the second theme links and FINDS the same document.
+        body = _page("association_page.html")
+        url = "https://international-aluminium.org/outlook"
+        first = await env.ingest(_fetched(body, url), subject_scope="theme",
+                                 theme_key="theme:aluminium")
+        second = await env.ingest(_fetched(body, url), subject_scope="theme",
+                                  theme_key="theme:lightweighting")
+        assert second.state == ingest_mod.STATE_REUSED
+        assert second.version_id == first.version_id and second.subjects_written == 1
+        rows = (await env.session.execute(
+            select(ResearchDocumentSubject.theme_key).where(
+                ResearchDocumentSubject.relation == "theme"))).scalars().all()
+        assert sorted(rows) == ["theme:aluminium", "theme:lightweighting"]
+        # The memory index was refreshed on reuse (F4): the second theme finds it.
+        query = CorpusQuery(text="aluminium demand", mode=SearchMode.LEXICAL, top_k=10,
+                            filters=CorpusFilters(theme_keys=("theme:lightweighting",)))
+        assert await env.backend.search(query)
+
+    async def test_subject_rows_are_unique_even_with_null_columns(self, env: Env) -> None:
+        # F10: two identical theme rows (company NULL) cannot both exist.
+        result = await env.ingest(_fetched(_page("association_page.html"),
+                                           "https://international-aluminium.org/o"),
+                                  subject_scope="theme", theme_key="theme:a")
+        again = await ingest_mod.write_subjects(env.session, document_id=result.document_id,
+                                                version_id=result.version_id,
+                                                company_id=None, mentions=[],
+                                                theme_key="theme:a")
+        assert again == 0
+        env.session.add(ResearchDocumentSubject(
+            id=uuid.uuid4(), research_document_id=result.document_id, relation="theme",
+            method="research_run", theme_key="theme:a"))
+        with pytest.raises(IntegrityError):
+            await env.session.flush()
+        await env.session.rollback()
+
+    async def test_same_company_filing_bytes_are_linked_not_duplicated(
+        self, env: Env
+    ) -> None:
+        # F5: the issuer PDF the filing pipeline already holds is linked, not re-stored.
+        from app.services.corpus.documents import DocumentVersionInput, upsert_document_version
+
+        company = uuid.uuid4()
+        raw = make_pdf(["Annual Report 2025\nGroup revenue rose in the year under review."])
+        filing = await upsert_document_version(env.session, DocumentVersionInput(
+            content_hash=hashlib.sha256(raw).hexdigest(),
+            canonical_url="https://issuer.example/ar2025.pdf", transport="company_ir",
+            source_tier="T1_primary_filing", company_id=company,
+            document_type="annual_report", title="Annual Report 2025"), cfg=env.cfg)
+        result = await env.ingest(_fetched(raw, "https://mirror.example/ar.pdf",
+                                           content_class="pdf"), company_id=company)
+        assert result.state == ingest_mod.STATE_REUSED and result.version_id == filing.id
+        assert await _count(env.session, ResearchDocumentVersion) == 1
+
+    async def test_a_text_found_date_never_reaches_the_period_rules(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F9: htmldate's content date is stored for "since", labelled, and kept away
+        # from the shared ExtractedDocument and the title-period rules.
+        from app.services.web_research import extract as ex
+
+        monkeypatch.setattr(ex, "_text_date", lambda _tree: date(2025, 3, 12))
+        body = (b"<html><body><article><h1>Grid notes</h1><p>"
+                + b"Transformer backlogs persist across utilities. " * 20
+                + b"</p></article></body></html>")
+        result = await env.ingest(_fetched(body, "https://notes.example/n"),
+                                  company_id=uuid.uuid4(), pool=_InlinePool())
+        assert result.state == ingest_mod.STATE_INGESTED
+        version = await env.session.get(ResearchDocumentVersion, result.version_id)
+        assert version.published_at == date(2025, 3, 12)
+        assert version.published_at_source == "text"
+        shared = await env.session.get(ExtractedDocument, result.extracted_document_id)
+        assert shared.doc_date is None
+
+    def test_undated_documents_are_excluded_unless_asked_for(self) -> None:
+        undated = _chunk("u", company_id=None)
+        window = {"published_from": date(2026, 1, 1)}
+        assert not CorpusFilters(**window).matches(undated)
+        assert CorpusFilters(include_undated=True, **window).matches(undated)
+
+
+class _InlinePool:
+    """Runs a worker function in-process (for a monkeypatched extractor)."""
+
+    async def run(self, fn: Any, *args: Any, timeout: float) -> Any:
+        return fn(*args)
+
+
+class TestReviewLeadPathRefusals:
+    """S-M4: the lead path refuses what open_web_fetch refuses."""
+
+    async def test_a_login_wall_is_not_ingested(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wall = (b"<html><body><main><h1>Sign in</h1><p>Lead times for large power "
+                b"transformers have stretched to between 120 and 210 weeks</p>"
+                b"<form><input type='password' name='pw'></form></main></body></html>")
+        payload, _ = await TestVerifiedLeadIngestion()._run(
+            env, monkeypatch, allowed=True, body=wall)
+        assert payload["items"][0]["verified"]
+        assert payload["items"][0]["corpus_version_id"] is None
+        assert await _count(env.session, ResearchDocumentVersion) == 0
+
+    @pytest.mark.parametrize("headers", [{"tdm-reservation": "1"},
+                                         {"x-robots-tag": "noai"}])
+    async def test_a_header_tdm_reservation_is_not_ingested(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch, headers: dict
+    ) -> None:
+        payload, _ = await TestVerifiedLeadIngestion()._run(
+            env, monkeypatch, allowed=True, headers=headers)
+        assert payload["items"][0]["verified"]
+        assert await _count(env.session, ResearchDocumentVersion) == 0
+        assert await _count(env.session, WebFetchAttempt) == 0
+
+    async def test_preparation_writes_nothing(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F6: robots/TDMRep rows and the attempt row are only written by the store
+        # phase, inside the caller's savepoint.
+        from app.services.web_research import fetch as fetch_mod
+
+        async def _clearance(*_a: Any, session: Any, **_kw: Any) -> Any:
+            session.add(WebFetchAttempt(id=uuid.uuid4(), origin="robots",
+                                        requested_url="https://x/robots.txt",
+                                        status="fetched"))
+            return fetch_mod.IngestionClearance(True, "allowed", "tdm_not_reserved")
+
+        monkeypatch.setattr(fetch_mod, "ingestion_clearance", _clearance)
+        prepared = await ingest_mod.prepare_verified_lead_document(
+            content=_page("news_article.html"), url="https://gridweekly.example/n",
+            fetched_url=None, truncated=False, cfg=env.cfg, company_id=uuid.uuid4(),
+            pool=env.pool)
+        assert isinstance(prepared, ingest_mod.PreparedLeadDocument)
+        assert await _count(env.session, WebFetchAttempt) == 0
+        assert {r.origin for r in prepared.rows} == {"robots", "lead"}

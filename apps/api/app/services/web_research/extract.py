@@ -212,6 +212,14 @@ class WebExtraction:
     pages_layout_pass: int = 0
     selected_pages: tuple[int, ...] = ()
     warnings: list[str] = field(default_factory=list)
+    # -- analysis, computed IN THE WORKER so no regex or hashing pass over up to
+    #    400k characters runs on the event loop (review F8) ------------------------
+    simhash: int | None = None
+    injection_score: float = 0.0
+    injection_suspect: bool = False
+    injection_signals: tuple[str, ...] = ()
+    #: ``entities.Mention`` values for ``ExtractionJob.candidates``.
+    mentions: list[Any] = field(default_factory=list)
 
     @property
     def extracted(self) -> bool:
@@ -233,6 +241,8 @@ class ExtractionJob:
     budget_seconds: float = 20.0
     #: ``Settings`` overrides applied inside the worker (caps only, never secrets).
     overrides: tuple[tuple[str, Any], ...] = ()
+    #: ``entities.CandidateEntity`` values to detect mentions of (plain, picklable).
+    candidates: tuple[Any, ...] = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -315,7 +325,68 @@ def _parse_tree(text: str) -> Any:
     return lxml_html.document_fromstring(text, parser=parser)
 
 
-def _is_hidden(el: Any) -> bool:
+_CSS_RULE_RE = re.compile(r"([^{}]{1,500})\{([^{}]{0,2000})\}")
+_SIMPLE_SELECTOR_RE = re.compile(r"^[a-z0-9]*([.#])([a-z0-9_-]{1,100})$", re.IGNORECASE)
+_COLOR_RE = re.compile(r"(?:^|[;\s])color\s*:\s*([^;!]+)", re.IGNORECASE)
+_BACKGROUND_RE = re.compile(r"background(?:-color)?\s*:\s*([^;!]+)", re.IGNORECASE)
+_NAMED_COLOURS = {"white": "#ffffff", "black": "#000000"}
+MAX_STYLESHEET_CHARS = 262_144
+
+
+def _colour(value: str | None) -> str | None:
+    text = (value or "").strip().lower()
+    text = _NAMED_COLOURS.get(text, text)
+    if re.fullmatch(r"#[0-9a-f]{3}", text):
+        text = "#" + "".join(ch * 2 for ch in text[1:])
+    rgb = re.fullmatch(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)[^)]*\)", text)
+    if rgb:
+        text = "#" + "".join(f"{min(255, int(v)):02x}" for v in rgb.groups())
+    return text or None
+
+
+def _declarations_hide(style: str) -> bool:
+    """Inline/stylesheet declarations that make text invisible to a sighted reader."""
+    if _HIDDEN_STYLE_RE.search(style):
+        return True
+    fg = _COLOR_RE.search(style)
+    bg = _BACKGROUND_RE.search(style)
+    if fg and bg:
+        colour = _colour(fg.group(1))
+        return colour is not None and colour == _colour(bg.group(1).split()[0])
+    return False
+
+
+def stylesheet_hidden_selectors(tree: Any) -> tuple[frozenset[str], frozenset[str]]:
+    """``(classes, ids)`` that ``<style>`` blocks hide with SIMPLE selectors.
+
+    Only ``.cls``, ``#id``, ``tag.cls``, ``tag#id`` (comma lists split): enough for the
+    common hidden-instruction trick (review S-M2) without a CSS engine. Complex
+    selectors are ignored — a miss there is still a taint-scoring input elsewhere.
+    """
+    classes: set[str] = set()
+    ids: set[str] = set()
+    budget = MAX_STYLESHEET_CHARS
+    for style in tree.iter("style"):
+        css = (style.text or "")[:budget]
+        budget -= len(css)
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+        for selectors, body in _CSS_RULE_RE.findall(css):
+            if not _declarations_hide(body):
+                continue
+            for selector in selectors.split(","):
+                match = _SIMPLE_SELECTOR_RE.match(selector.strip())
+                if match:
+                    (classes if match.group(1) == "." else ids).add(match.group(2).lower())
+        if budget <= 0:
+            break
+    return frozenset(classes), frozenset(ids)
+
+
+def _is_hidden(
+    el: Any,
+    hidden_classes: frozenset[str] = frozenset(),
+    hidden_ids: frozenset[str] = frozenset(),
+) -> bool:
     attrs = el.attrib
     if "hidden" in attrs:
         return True
@@ -324,10 +395,17 @@ def _is_hidden(el: Any) -> bool:
     if (attrs.get("type") or "").strip().lower() == "hidden":
         return True
     style = attrs.get("style") or ""
-    if style and _HIDDEN_STYLE_RE.search(style):
+    if style and _declarations_hide(style):
         return True
     classes = attrs.get("class") or ""
-    return bool(classes and _HIDDEN_CLASS_RE.search(classes))
+    if classes and _HIDDEN_CLASS_RE.search(classes):
+        return True
+    if hidden_classes and classes and any(
+        c.lower() in hidden_classes for c in classes.split()
+    ):
+        return True
+    element_id = (attrs.get("id") or "").strip().lower()
+    return bool(element_id and element_id in hidden_ids)
 
 
 def remove_hidden(tree: Any) -> str:
@@ -340,6 +418,8 @@ def remove_hidden(tree: Any) -> str:
     hidden_parts: list[str] = []
     budget = MAX_HIDDEN_TEXT_CHARS
     doomed: list[Any] = []
+    # Read BEFORE ``<style>`` elements are dropped below.
+    hidden_classes, hidden_ids = stylesheet_hidden_selectors(tree)
     for el in tree.iter():
         if el is tree:
             continue
@@ -357,7 +437,7 @@ def remove_hidden(tree: Any) -> str:
         if tag in _DROP_TAGS:
             doomed.append(el)
             continue
-        if _is_hidden(el):
+        if _is_hidden(el, hidden_classes, hidden_ids):
             doomed.append(el)
             if budget > 0:
                 part = _collapse(el.text_content())[:budget]
@@ -415,9 +495,57 @@ def _author_of(obj: dict[str, Any]) -> str | None:
     return _collapse(str(author))[:200] if isinstance(author, str) and author.strip() else None
 
 
+_ARTICLE_TYPES = frozenset({
+    "article", "newsarticle", "reportagenewsarticle", "analysisnewsarticle",
+    "backgroundnewsarticle", "blogposting", "scholarlyarticle", "report", "techarticle",
+    "pressrelease", "webpage",
+})
+
+
+def _norm_url(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("@id") or value.get("url")
+    text = str(value or "").strip().lower()
+    text = re.sub(r"^https?://(www\.)?", "", text)
+    return text.split("#", 1)[0].rstrip("/")
+
+
+def _head_canonical(tree: Any) -> str | None:
+    for link in tree.xpath("//link[@rel]")[:200]:
+        rel = (link.get("rel") or "").lower().split()
+        href = (link.get("href") or "").strip()
+        if "canonical" in rel and href:
+            return href[:2000]
+    return None
+
+
+def main_entity(
+    objects: list[dict[str, Any]], *, url: str | None, canonical: str | None
+) -> dict[str, Any] | None:
+    """The JSON-LD object describing THIS page (review F9).
+
+    A page often carries related-article objects with their own dates. In order: an
+    article-like object whose ``url`` / ``mainEntityOfPage`` / ``@id`` is this page;
+    else the first article-like object; else the only dated object; else none.
+    """
+    page = {u for u in (_norm_url(url), _norm_url(canonical)) if u}
+    articles = [
+        o for o in objects if {t.lower() for t in _types_of(o)} & _ARTICLE_TYPES
+    ]
+    for obj in articles:
+        ids = {_norm_url(obj.get(k)) for k in ("url", "mainEntityOfPage", "@id")}
+        if page & ids:
+            return obj
+    dated_articles = [o for o in articles if o.get("datePublished") or o.get("dateCreated")]
+    if dated_articles:
+        return dated_articles[0]
+    dated = [o for o in objects if o.get("datePublished") or o.get("dateCreated")]
+    return dated[0] if len(dated) == 1 else (articles[0] if articles else None)
+
+
 def _meta_map(tree: Any) -> dict[str, str]:
     out: dict[str, str] = {}
-    for meta in tree.xpath("//meta")[:400]:
+    for meta in tree.xpath(".//meta")[:400]:
         key = (meta.get("property") or meta.get("name") or meta.get("itemprop") or "").strip()
         content = meta.get("content")
         if key and content is not None and key.lower() not in out:
@@ -439,11 +567,11 @@ def page_metadata(
 
     published: date | None = None
     source: str | None = None
-    for obj in objects:
-        found = _parse_date(obj.get("datePublished") or obj.get("dateCreated"))
+    main = main_entity(objects, url=url, canonical=_head_canonical(tree))
+    if main is not None:
+        found = _parse_date(main.get("datePublished") or main.get("dateCreated"))
         if found:
             published, source = found, DATE_SOURCE_JSON_LD
-            break
     if published is None:
         for key in _DATE_META_KEYS:
             found = _parse_date(meta.get(key))
@@ -460,31 +588,30 @@ def page_metadata(
             if found_url and _plausible(found_url):
                 published, source = found_url, DATE_SOURCE_URL
 
-    author = next((a for a in (_author_of(o) for o in objects) if a), None) or (
+    author = (_author_of(main) if main is not None else None) or (
         _collapse(meta.get("author"))[:200] or None
     )
     title_el = tree.find(".//title")
     title = _collapse(title_el.text_content() if title_el is not None else "")[:500] or None
-    canonical = None
+    canonical = _head_canonical(tree)
+    # Licence signals come from the document HEAD and the page's main JSON-LD entity
+    # only: an ``a[rel=license]`` in the body is as often an image credit as the page's
+    # own licence, and body markup can be hidden (review S-L4).
     licence: list[str] = []
-    for link in tree.xpath("//link[@rel]")[:200]:
+    for link in tree.xpath("/html/head/link[@rel]")[:200]:
         rel = (link.get("rel") or "").lower().split()
         href = (link.get("href") or "").strip()
-        if "canonical" in rel and href and canonical is None:
-            canonical = href[:2000]
         if "license" in rel and href:
             licence.append(href[:300])
-    for anchor in tree.xpath('//a[@rel="license"]')[:10]:
-        href = (anchor.get("href") or "").strip()
-        if href:
-            licence.append(href[:300])
-    for key in ("dc.rights", "dcterms.rights", "dcterms.license", "license", "copyright"):
-        if meta.get(key):
-            licence.append(meta[key][:300])
-    for obj in objects:
-        lic = obj.get("license")
-        if isinstance(lic, str) and lic.strip():
-            licence.append(lic.strip()[:300])
+    head_meta = {}
+    for head in tree.xpath("/html/head")[:1]:
+        head_meta = _meta_map(head)
+    for key in ("dc.rights", "dcterms.rights", "dcterms.license", "license"):
+        if head_meta.get(key):
+            licence.append(head_meta[key][:300])
+    lic = main.get("license") if main is not None else None
+    if isinstance(lic, str) and lic.strip():
+        licence.append(lic.strip()[:300])
 
     html_lang = tree.get("lang") or tree.get("{http://www.w3.org/XML/1998/namespace}lang")
     return WebPageMetadata(
@@ -678,10 +805,48 @@ def _html_tables(raw_tables: list[list[list[str]]]) -> list[Any]:
     return out
 
 
+def analyse(result: WebExtraction, job: ExtractionJob) -> WebExtraction:
+    """SimHash, injection taint and entity mentions — the CPU-heavy reads of the text.
+
+    Runs inside the worker (review F8). Never raises: a failed analysis leaves the
+    defaults, which are the conservative ones (no fingerprint, no mention).
+    """
+    try:
+        from app.services.web_research.classify import injection_assessment
+        from app.services.web_research.dedup import simhash64, to_signed64
+
+        meta = result.metadata
+        taint = injection_assessment(
+            result.main_text,
+            hidden_text=result.hidden_text,
+            metadata_text=" ".join(
+                part
+                for part in (meta.title, meta.description, result.document_info_text)
+                if part
+            ),
+        )
+        result.injection_score = taint.score
+        result.injection_suspect = taint.suspect
+        result.injection_signals = taint.signals
+        result.simhash = to_signed64(simhash64(result.main_text))
+        if job.candidates and result.main_text:
+            from urllib.parse import urlsplit
+
+            from app.services.web_research.entities import detect_mentions
+
+            host = (urlsplit(job.url or "").hostname or "").lower() or None
+            result.mentions = detect_mentions(
+                result.main_text, list(job.candidates), page_host=host
+            )
+    except Exception as exc:  # noqa: BLE001
+        result.warnings.append(f"analysis failed: {type(exc).__name__}")
+    return result
+
+
 def extract_html_worker(job: ExtractionJob) -> WebExtraction:
     """HTML → :class:`WebExtraction`. Runs in the pool; never raises."""
     try:
-        return _extract_html(job)
+        return analyse(_extract_html(job), job)
     except Exception as exc:  # noqa: BLE001 - a hostile page must never crash a worker
         return WebExtraction(
             status=STATUS_FAILED,
@@ -790,6 +955,10 @@ def _extract_html(job: ExtractionJob) -> WebExtraction:
         # A JS-only shell (or an empty page): nothing is invented.
         result.failure_code = FAILURE_JS_REQUIRED if job.js_required else FAILURE_EMPTY
         return result
+    if job.js_required and len(main) < MIN_MAIN_TEXT_CHARS:
+        # A shell with a nav bar and "Loading…" is not the document (review S-L2).
+        result.failure_code = FAILURE_JS_REQUIRED
+        return result
     result.extraction = _build_extraction(
         job.raw,
         mime_type="text/html",
@@ -813,6 +982,10 @@ def _extract_html(job: ExtractionJob) -> WebExtraction:
 
 def extract_text_document(job: ExtractionJob) -> WebExtraction:
     """A ``text/plain`` body → paragraphs. JSON and XML are not documents here."""
+    return analyse(_extract_text(job), job)
+
+
+def _extract_text(job: ExtractionJob) -> WebExtraction:
     from app.services.sources import primary_document_extractor as pde
     from app.services.web_research.content import decode_text
 
@@ -871,7 +1044,10 @@ def _fold(text: str | None) -> str:
 
 
 def score_pages(
-    page_texts: dict[int, str], query_terms: tuple[str, ...]
+    page_texts: dict[int, str],
+    query_terms: tuple[str, ...],
+    *,
+    label_to_page: dict[str, int] | None = None,
 ) -> dict[int, float]:
     """Deterministic page scores for the layout pass (spec §10.2, pass 1).
 
@@ -900,7 +1076,10 @@ def score_pages(
                 if not match:
                     continue
                 title = _fold(match.group("title"))
-                target = int(match.group("page"))
+                printed = match.group("page")
+                # A TOC prints PAGE LABELS ("23"), not PDF indices: map through the
+                # document's own page labels when it has them (review F11).
+                target = (label_to_page or {}).get(printed) or int(printed)
                 if terms and any(t in title for t in terms):
                     toc_boost[target] = toc_boost.get(target, 0.0) + 5.0
         scores[page_no] = score
@@ -916,8 +1095,9 @@ def select_layout_pages(scores: dict[int, float], limit: int) -> list[int]:
         return []
     ranked = sorted((p for p, s in scores.items() if s > 0), key=lambda p: (-scores[p], p))
     chosen = ranked[:limit]
-    if 1 in scores and 1 not in chosen:
-        # The cover/abstract page anchors the document's title and date.
+    if limit >= 2 and 1 in scores and 1 not in chosen:
+        # The cover/abstract page anchors the document's title and date — but never at
+        # the cost of the ONLY page a one-page budget allows (review F11).
         chosen = [*chosen[: limit - 1], 1]
     return sorted(set(chosen))
 
@@ -936,12 +1116,127 @@ def _paragraph_blocks(page_no: int, text: str) -> list[Block]:
 def extract_pdf_worker(job: ExtractionJob) -> WebExtraction:
     """PDF → :class:`WebExtraction`. Runs in the pool; never raises."""
     try:
-        return _extract_pdf(job)
+        return analyse(_extract_pdf(job), job)
     except Exception as exc:  # noqa: BLE001
         return WebExtraction(
             status=STATUS_FAILED, method=METHOD_PDF, content_class=job.content_class,
             failure_code=FAILURE_PARSE_ERROR, warnings=[type(exc).__name__],
         )
+
+
+DATE_SOURCE_PDF_METADATA = "pdf_metadata"
+_MONTHS = {m: i for i, m in enumerate(
+    ("january february march april may june july august september october november "
+     "december").split(), start=1)}
+_TEXT_DATE_RES = (
+    re.compile(r"\b((?:19|20)\d{2})-(\d{2})-(\d{2})\b"),
+    re.compile(r"\b(\d{1,2})\s+(" + "|".join(_MONTHS) + r")\s+((?:19|20)\d{2})\b", re.I),
+    re.compile(r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2}),\s+((?:19|20)\d{2})\b", re.I),
+    re.compile(r"\b(" + "|".join(_MONTHS) + r")\s+((?:19|20)\d{2})\b", re.I),
+)
+
+
+def _pdf_creation_date(reader: Any) -> date | None:
+    try:
+        created = reader.metadata.creation_date if reader.metadata else None
+    except Exception:  # noqa: BLE001 - a malformed /CreationDate is no date
+        return None
+    if isinstance(created, datetime):
+        found = created.date()
+        return found if _plausible(found) else None
+    return None
+
+
+def first_page_date(text: str | None) -> date | None:
+    """A date printed on the cover page ("March 2026", "4 March 2026", ISO), or None."""
+    head = (text or "")[:3000]
+    for index, pattern in enumerate(_TEXT_DATE_RES):
+        match = pattern.search(head)
+        if not match:
+            continue
+        g = match.groups()
+        try:
+            if index == 0:
+                found = date(int(g[0]), int(g[1]), int(g[2]))
+            elif index == 1:
+                found = date(int(g[2]), _MONTHS[g[1].lower()], int(g[0]))
+            elif index == 2:
+                found = date(int(g[2]), _MONTHS[g[0].lower()], int(g[1]))
+            else:
+                found = date(int(g[1]), _MONTHS[g[0].lower()], 1)
+        except (ValueError, KeyError):
+            continue
+        if _plausible(found):
+            return found
+    return None
+
+
+def _page_label_map(reader: Any, limit: int) -> dict[str, int]:
+    """Printed page label → 1-based PDF index (review F11). Empty when unlabelled."""
+    try:
+        labels = list(reader.page_labels)[:limit]
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, int] = {}
+    for index, label in enumerate(labels, start=1):
+        if label and str(label) not in out:
+            out[str(label)] = index
+    return out
+
+
+#: A PDF character this small (points) or this close to white is invisible on paper.
+_PDF_TINY_POINTS = 1.0
+_PDF_NEAR_WHITE = 0.95
+MAX_PDF_HIDDEN_PAGES = 40
+
+
+def _near_white(colour: Any) -> bool:
+    if colour is None:
+        return False
+    values = colour if isinstance(colour, (list, tuple)) else (colour,)
+    try:
+        numbers = [float(v) for v in values]
+    except (TypeError, ValueError):
+        return False
+    if len(numbers) == 4:  # CMYK: white is no ink
+        return all(v <= 1 - _PDF_NEAR_WHITE for v in numbers)
+    return bool(numbers) and all(v >= _PDF_NEAR_WHITE for v in numbers)
+
+
+def pdf_hidden_text(raw: bytes, pages: list[int], deadline: float) -> str:
+    """Text a reader cannot see — sub-point or near-white characters (review S-M2).
+
+    A taint-scoring input only: the characters are not removed from the extracted text
+    (the shared PDF extractor is V2's), but a document carrying instructions in them is
+    flagged. Bounded by page count and the worker's deadline; never raises.
+    """
+    try:
+        import pdfplumber
+    except Exception:  # noqa: BLE001
+        return ""
+    parts: list[str] = []
+    budget = MAX_HIDDEN_TEXT_CHARS
+    try:
+        with pdfplumber.open(io.BytesIO(raw)) as pdf:
+            for page_no in pages[:MAX_PDF_HIDDEN_PAGES]:
+                if time.monotonic() > deadline or budget <= 0:
+                    break
+                if not 1 <= page_no <= len(pdf.pages):
+                    continue
+                chars = pdf.pages[page_no - 1].chars or []
+                hidden = "".join(
+                    str(c.get("text", ""))
+                    for c in chars
+                    if float(c.get("size") or 0) < _PDF_TINY_POINTS
+                    or _near_white(c.get("non_stroking_color"))
+                )
+                if hidden.strip():
+                    part = _collapse(hidden)[:budget]
+                    parts.append(part)
+                    budget -= len(part)
+    except Exception:  # noqa: BLE001 - a taint probe must never fail extraction
+        return " ".join(parts)
+    return " ".join(parts)[:MAX_HIDDEN_TEXT_CHARS]
 
 
 def _pdf_info_text(reader: Any) -> tuple[str | None, str]:
@@ -976,6 +1271,7 @@ def _extract_pdf(job: ExtractionJob) -> WebExtraction:
     page_count = 0
     info_title: str | None = None
     info_text = ""
+    created: date | None = None
     try:
         from pypdf import PdfReader
 
@@ -985,8 +1281,10 @@ def _extract_pdf(job: ExtractionJob) -> WebExtraction:
         else:
             page_count = len(reader.pages)
             info_title, info_text = _pdf_info_text(reader)
+            created = _pdf_creation_date(reader)
     except Exception:  # noqa: BLE001 - malformed: the layout extractor says why
         reader = None
+    hidden_deadline = started + budget * 0.95
 
     if reader is None or page_count <= layout_limit:
         pass_cfg = cfg.model_copy(update={
@@ -996,12 +1294,14 @@ def _extract_pdf(job: ExtractionJob) -> WebExtraction:
         extraction = pde.extract_primary_document(job.raw, document_type="pdf", cfg=pass_cfg,
                                                   capture_blocks=True)
         timed_out = any("time budget" in w.lower() for w in extraction.warnings)
+        read_pages = sorted({b.page_number for b in extraction.blocks if b.page_number})
         return _pdf_result(
             job, extraction, method=METHOD_PDF, info_title=info_title,
             info_text=info_text, page_count=extraction.page_count,
             stopped_by=STOPPED_DEADLINE if timed_out else STOPPED_COMPLETE,
-            text_pages=0, layout_pages=len({b.page_number for b in extraction.blocks}),
-            selected=(),
+            text_pages=0, layout_pages=len(read_pages),
+            selected=(), created=created,
+            hidden=pdf_hidden_text(job.raw, read_pages, hidden_deadline),
         )
 
     # Pass 1: cheap text for up to 400 pages.
@@ -1019,7 +1319,9 @@ def _extract_pdf(job: ExtractionJob) -> WebExtraction:
         except Exception:  # noqa: BLE001 - one bad page costs that page
             page_texts[index + 1] = ""
 
-    scores = score_pages(page_texts, job.query_terms)
+    scores = score_pages(
+        page_texts, job.query_terms, label_to_page=_page_label_map(reader, text_limit)
+    )
     selected = select_layout_pages(scores, layout_limit)
     supplemental = pde._select_statement_pages(
         job.raw, total_pages=page_count, exclude=set(selected),
@@ -1053,7 +1355,6 @@ def _extract_pdf(job: ExtractionJob) -> WebExtraction:
         else:
             merged.extend(_paragraph_blocks(page_no, page_texts.get(page_no, "")))
 
-    language = layout.language or "en"
     head_text = " ".join(b[3] for b in merged[:12])
     from app.services.sources.language import detect_language, script_language
 
@@ -1068,19 +1369,30 @@ def _extract_pdf(job: ExtractionJob) -> WebExtraction:
     return _pdf_result(job, extraction, method=METHOD_PDF_TWO_PASS, info_title=info_title,
                        info_text=info_text, page_count=page_count, stopped_by=stopped_by,
                        text_pages=len(page_texts), layout_pages=len(layout_pages),
-                       selected=tuple(chosen))
+                       selected=tuple(chosen), created=created,
+                       hidden=pdf_hidden_text(job.raw, chosen, hidden_deadline))
 
 
 def _pdf_result(
     job: ExtractionJob, extraction: Any, *, method: str, info_title: str | None,
     info_text: str, page_count: int | None, stopped_by: str, text_pages: int,
-    layout_pages: int, selected: tuple[int, ...],
+    layout_pages: int, selected: tuple[int, ...], created: date | None = None,
+    hidden: str = "",
 ) -> WebExtraction:
     blocks = list(getattr(extraction, "blocks", None) or [])
     main = "\n".join(b.text for b in blocks)[:MAX_MAIN_TEXT_CHARS]
     first_line = next((_collapse(b.text)[:200] for b in blocks if _collapse(b.text)), None)
+    # A PDF's own date (review F9): the cover page's printed date first — that is what
+    # the publisher says — then the file's /CreationDate, each labelled with its source.
+    cover = " ".join(b.text for b in blocks if b.page_number == 1)
+    published = first_page_date(cover)
+    source = DATE_SOURCE_TEXT if published else None
+    if published is None and created is not None:
+        published, source = created, DATE_SOURCE_PDF_METADATA
     metadata = WebPageMetadata(
         title=info_title or first_line,
+        published_at=published,
+        published_at_source=source,
         language=extraction.language,
         language_source="content",
     )
@@ -1093,6 +1405,7 @@ def _pdf_result(
         extraction=extraction if status == STATUS_EXTRACTED else None,
         metadata=metadata,
         main_text=main,
+        hidden_text=hidden,
         document_info_text=info_text,
         stopped_by=stopped_by,
         page_count=page_count,
@@ -1127,8 +1440,9 @@ async def extract_web_document(
     query_terms: tuple[str, ...] = (),
     depth: str = "standard",
     pool: Any = None,
+    candidates: tuple[Any, ...] = (),
 ) -> WebExtraction:
-    """Extract one fetched document in the isolated pool. Never raises."""
+    """Extract (and analyse) one fetched document in the isolated pool. Never raises."""
     from app.services.web_research import content as content_mod
     from app.services.web_research.pool import (
         ExtractionCrashed,
@@ -1167,6 +1481,7 @@ async def extract_web_document(
         # usually finishes partial instead of being killed.
         budget_seconds=max(1.0, timeout * 0.9),
         overrides=_WEB_OVERRIDES,
+        candidates=tuple(candidates),
     )
     runner = pool or get_extraction_pool(cfg)
     try:

@@ -62,7 +62,8 @@ def _alembic(*args: str) -> None:
 class TestTheMigrationIsAdditive:
     def test_revision_and_temporary_parent(self) -> None:
         m = _module()
-        assert m.revision == "044" and m.down_revision == "042"
+        # 042 on the W3 branch; re-pointed to 043 (report reconciliation) at merge.
+        assert m.revision == "044" and m.down_revision in ("042", "043")
         assert "# re-pointed to 043 (report reconciliation) at merge" in MIGRATION.read_text()
 
     def test_upgrade_drops_and_alters_nothing(self) -> None:
@@ -86,7 +87,7 @@ class TestTheMigrationIsAdditive:
         m = _module()
         added = {(t, c) for t, c, _type in m.COLUMNS}
         for model, names in (
-            (ResearchDocument, ("subject_scope", "theme_key")),
+            (ResearchDocument, ("subject_scope",)),
             (ResearchDocumentVersion, ("web_fetch_attempt_id", "use_constraint",
                                        "injection_suspect", "simhash", "origin_key",
                                        "published_at_source", "source_class",
@@ -121,11 +122,11 @@ class TestMigrationOnRealPostgres:
         _alembic("upgrade", "head")
         assert "research_document_subjects" in _tables()
         assert {"simhash", "use_constraint"} <= _columns("research_document_versions")
-        _alembic("downgrade", "042")
+        _alembic("downgrade", _module().down_revision)
         assert "research_document_subjects" not in _tables()
         assert "simhash" not in _columns("research_document_versions")
         assert "research_document_version_id" not in _columns("research_leads")
-        assert "theme_key" not in _columns("research_documents")
+        assert "subject_scope" not in _columns("research_documents")
         assert "web_fetch_attempts" in _tables()  # 042's tables untouched
         _alembic("upgrade", "head")
         assert "research_document_subjects" in _tables()
@@ -253,10 +254,12 @@ class TestWritePathOnPostgres:
         pg.add(attempt)
         await pg.flush()
         candidates = (
-            CandidateEntity(name="Hitachi Energy Ltd", company_id=hitachi),
+            CandidateEntity(name="Hitachi Energy Ltd", company_id=hitachi,
+                            sector_terms=("Transformers",)),
             CandidateEntity(name="Siemens Energy AG", company_id=siemens,
                             tickers=(("ENR", "XETRA"),)),
-            CandidateEntity(name="Prysmian S.p.A.", company_id=prysmian),
+            CandidateEntity(name="Prysmian S.p.A.", company_id=prysmian,
+                            sector_terms=("Cables",)),
         )
         result = await ingest_web_document(
             pg, _fetched(_page("three_company_article.html", marker),
@@ -383,3 +386,163 @@ class TestPostgresFilters:
         assert await versions(theme_keys=(f"theme:{marker}",),
                               use_constraints=("unknown",)) == set()
         assert await versions(company_ids=(company,), subject_scopes=("theme",)) == set()
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1 (W3)
+# --------------------------------------------------------------------------- #
+
+
+@requires_postgres
+class TestReviewOnPostgres:
+    async def test_subject_identity_is_unique_with_nulls(self, pg: Any, pool: Any) -> None:
+        # F10: the coalescing unique index — two "no company" theme rows collide.
+        from sqlalchemy.exc import IntegrityError
+
+        from app.models.research_document import ResearchDocumentSubject
+        from app.services.corpus.artifacts.backends.memory import InMemoryArtifactStore
+        from app.services.web_research.ingest import ingest_web_document, write_subjects
+
+        marker = uuid.uuid4().hex
+        result = await ingest_web_document(
+            pg, _fetched(_page("association_page.html", marker),
+                         f"https://international-aluminium.org/{marker}"),
+            cfg=_cfg(), subject_scope="theme", theme_key=f"theme:{marker}", pool=pool,
+            store=InMemoryArtifactStore())
+        again = await write_subjects(pg, document_id=result.document_id,
+                                     version_id=result.version_id, company_id=None,
+                                     mentions=[], theme_key=f"theme:{marker}")
+        assert again == 0  # ON CONFLICT DO NOTHING
+        with pytest.raises(IntegrityError):
+            async with pg.begin_nested():
+                pg.add(ResearchDocumentSubject(
+                    id=uuid.uuid4(), research_document_id=result.document_id,
+                    relation="theme", method="research_run", theme_key=f"theme:{marker}"))
+                await pg.flush()
+
+    async def test_memory_and_postgres_agree_after_reuse(self, pg: Any, pool: Any) -> None:
+        # F4 + F2 + F3: after a second theme and a company run REUSE the stored bytes,
+        # both backends return the same chunks with the same subject marking.
+        from app.services.corpus.artifacts.backends.memory import InMemoryArtifactStore
+        from app.services.corpus.search.backends.memory import InMemorySearchBackend
+        from app.services.corpus.search.backends.postgres import PostgresSearchBackend
+        from app.services.corpus.search.types import CorpusFilters, CorpusQuery, SearchMode
+        from app.services.web_research.entities import CandidateEntity
+        from app.services.web_research.ingest import STATE_REUSED, ingest_web_document
+
+        marker = uuid.uuid4().hex
+        hitachi = await _company(pg, "Hitachi Energy Ltd")
+        siemens = await _company(pg, "Siemens Energy AG")
+        run_company = await _company(pg, "Run Company")
+        memory = InMemorySearchBackend()
+        store = InMemoryArtifactStore()
+        body = _page("three_company_article.html", marker)
+        url = f"https://tdworld.com/{marker}"
+        candidates = (
+            CandidateEntity(name="Hitachi Energy Ltd", company_id=hitachi,
+                            sector_terms=("Transformers",)),
+            CandidateEntity(name="Siemens Energy AG", company_id=siemens,
+                            tickers=(("ENR", "XETRA"),)),
+        )
+        first = await ingest_web_document(
+            pg, _fetched(body, url), cfg=_cfg(), subject_scope="industry",
+            theme_key=f"theme:a{marker}", candidates=candidates, pool=pool, store=store,
+            backend=memory)
+        second = await ingest_web_document(
+            pg, _fetched(body, url), cfg=_cfg(), subject_scope="industry",
+            theme_key=f"theme:b{marker}", pool=pool, store=store, backend=memory)
+        third = await ingest_web_document(
+            pg, _fetched(body, url), cfg=_cfg(), company_id=run_company, pool=pool,
+            store=store, backend=memory)
+        assert second.state == third.state == STATE_REUSED
+        assert first.version_id == second.version_id == third.version_id
+        postgres = PostgresSearchBackend(pg)
+        from app.services.corpus.indexing import index_version
+
+        await index_version(pg, research_document_version_id=first.version_id,
+                            backend=postgres, cfg=_cfg())
+
+        async def view(backend: Any, **filters: Any) -> set[tuple[str, bool, str | None]]:
+            query = CorpusQuery(text="transformer cables order backlog", top_k=50,
+                                mode=SearchMode.LEXICAL, filters=CorpusFilters(**filters),
+                                allow_cross_entity=True)
+            return {(h.chunk.chunk_id, h.chunk.via_subject, h.chunk.scope_type)
+                    for h in await backend.search(query)}
+
+        cases = [
+            {"theme_keys": (f"theme:b{marker}",)},
+            {"subject_company_ids": (hitachi,)},
+            {"subject_company_ids": (siemens,)},
+            {"subject_company_ids": (run_company,)},
+            {"company_ids": (hitachi,), "subject_company_ids": (hitachi,),
+             "scope_types": ("mention",)},
+            {"company_ids": (hitachi,), "subject_company_ids": (hitachi,),
+             "scope_types": ("group",)},
+        ]
+        for filters in cases:
+            assert await view(memory, **filters) == await view(postgres, **filters), filters
+        assert len(await view(postgres, subject_company_ids=(hitachi,))) == 1
+        assert await view(postgres, theme_keys=(f"theme:b{marker}",))
+
+    async def test_a_failed_lead_store_keeps_the_outer_transaction_and_the_lead(
+        self, pg: Any, pool: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F6: an FK violation inside the store phase costs the corpus link only.
+        from app.models.research_document import ResearchDocumentVersion
+        from app.models.research_lead import ResearchLeadRecord
+        from app.services.agent_tools.external import _fetch_public_source
+        from app.services.agent_tools.session import ToolContext
+        from app.services.providers import leads as leads_mod
+        from app.services.web_research import fetch as fetch_mod
+        from app.services.web_research import ingest as ingest_mod
+        from app.services.web_research import pool as pool_mod
+
+        marker = uuid.uuid4().hex
+        company = await _company(pg, "Grid Holdings")
+        body = _page("news_article.html", marker)
+        url = f"https://www.gridweekly.example/{marker}"
+
+        class _Result:
+            content, final_url, document_type, blocked = body, url, "html", False
+            ok, error, status_class, truncated, headers = True, None, "2xx", False, {}
+
+        async def _fetcher(*_a: Any, **_kw: Any) -> Any:
+            return _Result()
+
+        async def _clearance(*_a: Any, **_kw: Any) -> Any:
+            return fetch_mod.IngestionClearance(True, "allowed", "tdm_not_reserved")
+
+        real_write = ingest_mod.write_subjects
+
+        async def _broken_write(session: Any, **kw: Any) -> int:
+            from app.models.research_document import ResearchDocumentSubject
+
+            session.add(ResearchDocumentSubject(
+                id=uuid.uuid4(), research_document_id=kw["document_id"],
+                company_id=uuid.uuid4(),  # no such company → FK violation at flush
+                relation="mentioned", method="test"))
+            await session.flush()
+            return await real_write(session, **kw)
+
+        monkeypatch.setattr(leads_mod, "_default_fetcher", _fetcher)
+        monkeypatch.setattr(fetch_mod, "ingestion_clearance", _clearance)
+        monkeypatch.setattr(pool_mod, "get_extraction_pool", lambda *_a, **_k: pool)
+        monkeypatch.setattr(ingest_mod, "write_subjects", _broken_write)
+        context = ToolContext(session=pg, cfg=_cfg(v3_web_fetch_enabled=True),
+                              company_id=company)
+        payload = await _fetch_public_source(context, {
+            "url": url,
+            "claim": "Lead times for large power transformers have stretched to between "
+                     "120 and 210 weeks",
+            "provider": "tavily",
+        })
+        record = payload["items"][0]
+        assert record["verified"] and record["corpus_version_id"] is None
+        lead = (await pg.execute(sa.select(ResearchLeadRecord).where(
+            ResearchLeadRecord.company_id == company))).scalar_one()
+        assert lead.research_document_version_id is None
+        # The outer transaction is still usable.
+        count = (await pg.execute(sa.select(sa.func.count()).select_from(
+            ResearchDocumentVersion).where(
+            ResearchDocumentVersion.content_hash == lead.fetched_content_hash))).scalar_one()
+        assert count == 0

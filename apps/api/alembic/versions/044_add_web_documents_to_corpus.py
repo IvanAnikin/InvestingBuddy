@@ -2,15 +2,17 @@
 
 WHAT THIS CARRIES
 =================
-* ``research_documents.subject_scope`` / ``theme_key`` — what a document is about when
-  it is not one company's (``company | theme | industry | macro``), plus a PARTIAL
+* ``research_documents.subject_scope`` — what a document is about when it is not one
+  company's (``company | theme | industry | macro``), plus a PARTIAL
   unique index on ``document_key WHERE company_id IS NULL``: the existing
   ``(company_id, document_key)`` index never deduplicates a company-less row, because
   NULLs are distinct.
 * ``research_document_subjects`` — a new table: which companies/entities a document is
   about or mentions (an article about three companies is one document with three
   subject rows), with the match confidence, method, brand scope and the chunk the
-  mention occurs in.
+  mention occurs in — and which THEMES it serves (``relation='theme'`` rows carrying
+  ``theme_key``: one document is reused by many themes). A unique index over the row
+  identity (NULLs coalesced) makes concurrent writers idempotent.
 * ``research_document_versions``: ``web_fetch_attempt_id`` (FK ``web_fetch_attempts``,
   SET NULL), ``use_constraint``, ``injection_suspect``, ``simhash`` (BIGINT),
   ``origin_key``, ``published_at_source`` — the spec's list — plus ``source_class``
@@ -62,7 +64,6 @@ NEW_TABLE = "research_document_subjects"
 #: ``(table, column name, type)`` added by this migration, in order.
 COLUMNS: tuple[tuple[str, str, sa.types.TypeEngine], ...] = (
     ("research_documents", "subject_scope", sa.String(20)),
-    ("research_documents", "theme_key", sa.String(120)),
     ("research_document_versions", "web_fetch_attempt_id", sa.Uuid(as_uuid=True)),
     ("research_document_versions", "use_constraint", sa.String(40)),
     ("research_document_versions", "injection_suspect", sa.Boolean()),
@@ -111,6 +112,19 @@ INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     ("ix_research_document_subjects_document_id", NEW_TABLE, ("research_document_id",)),
     ("ix_research_document_subjects_company_id", NEW_TABLE, ("company_id",)),
+    ("ix_research_document_subjects_theme_key", NEW_TABLE, ("theme_key",)),
+)
+
+#: The subject identity, NULLs coalesced (review F10). Mirrors
+#: ``app.models.research_document.SUBJECT_IDENTITY_SQL``.
+SUBJECT_UNIQUE_INDEX = "ux_research_document_subjects_identity"
+SUBJECT_IDENTITY_SQL: tuple[str, ...] = (
+    "research_document_id",
+    "coalesce(company_id, '00000000-0000-0000-0000-000000000000')",
+    "coalesce(legal_entity_id, '00000000-0000-0000-0000-000000000000')",
+    "relation",
+    "coalesce(scope_key, '')",
+    "coalesce(theme_key, '')",
 )
 
 PARTIAL_UNIQUE_INDEX = "ix_research_documents_companyless_key"
@@ -147,6 +161,7 @@ def upgrade() -> None:
         sa.Column("method", sa.String(40), nullable=False),
         sa.Column("scope_key", sa.String(220), nullable=True),
         sa.Column("evidence_chunk_id", sa.String(120), nullable=True),
+        sa.Column("theme_key", sa.String(120), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -172,8 +187,13 @@ def upgrade() -> None:
             ondelete="SET NULL",
         ),
         sa.CheckConstraint(
-            "relation IN ('primary', 'mentioned', 'competitor', 'customer', 'supplier')",
+            "relation IN ('primary', 'mentioned', 'competitor', 'customer', 'supplier', "
+            "'theme')",
             name="ck_research_document_subjects_relation",
+        ),
+        sa.CheckConstraint(
+            "(relation = 'theme') = (theme_key IS NOT NULL)",
+            name="ck_research_document_subjects_theme_key",
         ),
         sa.CheckConstraint(
             "confidence IS NULL OR confidence IN "
@@ -183,6 +203,12 @@ def upgrade() -> None:
     )
     for name, table, columns in INDEXES:
         op.create_index(name, table, list(columns))
+    op.create_index(
+        SUBJECT_UNIQUE_INDEX,
+        NEW_TABLE,
+        [sa.text(e) if "(" in e else e for e in SUBJECT_IDENTITY_SQL],
+        unique=True,
+    )
     op.create_index(
         PARTIAL_UNIQUE_INDEX,
         "research_documents",
@@ -194,6 +220,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index(PARTIAL_UNIQUE_INDEX, table_name="research_documents")
+    op.drop_index(SUBJECT_UNIQUE_INDEX, table_name=NEW_TABLE)
     for name, table, _columns in reversed(INDEXES):
         op.drop_index(name, table_name=table)
     op.drop_table(NEW_TABLE)

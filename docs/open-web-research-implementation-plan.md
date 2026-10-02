@@ -374,6 +374,20 @@ hidden-content removal, metadata with date source, stdlib fallback, PDF two-pass
   `use_constraints`, `exclude_injection_suspect` and `subject_company_ids` (documents that
   name the company as a subject); `published_from` is the "since" filter. PostgreSQL
   applies them as subqueries inside the same statement.
+- **Review round 1** (fixes): host+path-prefix matching only for `host/path` source
+  rules; subject retrieval admits only strong rows' documents and weak rows' evidence
+  chunks, marked `via_subject` with a non-Group scope; themes as subject rows (044
+  amended in place: no `research_documents.theme_key`, `relation='theme'`, a coalescing
+  unique index); re-index on reuse; same-company non-web bytes linked; lead path
+  prepares (robots/TDMRep, header TDM, walls, extraction) OUTSIDE its savepoint under a
+  180 s bound; pool: process-wide gate, cancellation kills, `RLIMIT_AS`
+  (`V3_WEB_EXTRACTION_MEMORY_MB`, 768) and per-task `RLIMIT_CPU`, 25 tasks per worker,
+  scrubbed environment + empty cwd; analysis (SimHash, taint, mentions) in the worker;
+  `render_for_prompt` before `json.dumps`; stylesheet / colour-hidden text; PDF
+  near-white / sub-point text into the taint score; text-found dates kept out of the
+  period rules; PDF cover / `/CreationDate` dates; `include_undated`; licence signals
+  from `<head>` only; context needs sector words / ticker / venue / legal form.
+  Deferred to W4: down-ranking suspect documents and the "never sole support" rule.
 - Not done here: `partial_preview` ingestion (W2 hands no bytes for a walled page),
   near-duplicate clustering and wire attribution (W4), a licence-id column, crawl-kind
   scoring (W5), OCR for web PDFs (U6), a B1 memory measurement.

@@ -193,8 +193,25 @@ def _on(host: str, suffixes: tuple[str, ...]) -> bool:
 
 
 def _on_path(url: str, entries: tuple[str, ...]) -> bool:
-    lowered = (url or "").lower()
-    return any("/" in e and ("//" + e in lowered or "." + e in lowered) for e in entries)
+    """A ``host/path`` entry matches only the URL's real HOST and the start of its real
+    PATH — never a substring anywhere in the URL (W3 review B1: a query string or a
+    path segment spelling ``ec.europa.eu/eurostat`` must not raise a tier)."""
+    try:
+        parts = urlsplit(url or "")
+        host = (parts.hostname or "").lower().strip(".").removeprefix("www.")
+        path = (parts.path or "/").lower()
+    except ValueError:
+        return False
+    for entry in entries:
+        if "/" not in entry:
+            continue
+        base, _, prefix = entry.lower().partition("/")
+        if not (host == base or host.endswith("." + base)):
+            continue
+        wanted = "/" + prefix.strip("/")
+        if path == wanted or path.startswith(wanted + "/"):
+            return True
+    return False
 
 
 @dataclass(frozen=True)

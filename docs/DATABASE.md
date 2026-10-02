@@ -1078,14 +1078,14 @@ PostgreSQL (`tests/test_web_w3_postgres.py`). Spec: `docs/open-web-research-spec
 
 | Table | Added | Why |
 |---|---|---|
-| `research_documents` | `subject_scope` (`company` · `theme` · `industry` · `macro`), `theme_key` | A theme/industry document has no single company. NULL on every pre-W3 row ("not recorded", never "company"). |
+| `research_documents` | `subject_scope` (`company` · `theme` · `industry` · `macro`) | A theme/industry document has no single company. NULL on every pre-W3 row ("not recorded", never "company"). Themes are subject ROWS, not a column: one document serves many themes. |
 | `research_documents` | partial **unique** index `ix_research_documents_companyless_key` on `document_key WHERE company_id IS NULL` | `(company_id, document_key)` never deduplicates a company-less row (NULLs are distinct). Upgrade first checks for existing duplicate company-less keys and stops with a message rather than a bare constraint error. |
-| `research_document_subjects` (new) | `research_document_id` (CASCADE), `company_id` (SET NULL), `legal_entity_id` (SET NULL), `relation` (`primary` · `mentioned` · `competitor` · `customer` · `supplier`), `confidence` (`exact_identifier` · `domain` · `name_context` · `name_only`, or NULL for a run-assigned primary), `method`, `scope_key`, `evidence_chunk_id`, `created_at` | One article about three companies = one document, three rows. A brand mention carries `segment:<name>` / `brand:<name>`, never `group`. |
+| `research_document_subjects` (new) | `research_document_id` (CASCADE), `company_id` (SET NULL), `legal_entity_id` (SET NULL), `relation` (`primary` · `mentioned` · `competitor` · `customer` · `supplier` · `theme`), `confidence` (`exact_identifier` · `domain` · `name_context` · `name_only`, or NULL for a run-assigned primary), `method`, `scope_key`, `evidence_chunk_id`, `theme_key` (set iff `relation='theme'`, CHECK), `created_at` | One article about three companies = one document, three rows. A brand mention carries `segment:<name>` / `brand:<name>`, never `group`. Unique index `ux_research_document_subjects_identity` on `(research_document_id, coalesce(company_id), coalesce(legal_entity_id), relation, coalesce(scope_key), coalesce(theme_key))`; writers insert `ON CONFLICT DO NOTHING`. Retrieval (`subject_company_ids`): a `primary` / `exact_identifier` / `domain` row admits the whole document, any weaker row only its `evidence_chunk_id`; such hits are `via_subject` with a `segment` or `mention` scope, never Group. |
 | `research_document_versions` | `web_fetch_attempt_id` (FK `web_fetch_attempts`, SET NULL), `use_constraint`, `injection_suspect`, `simhash` (BIGINT, signed 64-bit), `origin_key`, `published_at_source` (`json_ld` · `meta` · `url` · `text`) | Spec list. |
 | `research_document_versions` | `source_class`, `web_extractor_version` | **Beyond the spec list**: the §13.1 source class the retrieval filter reads (nothing else stores it), and `WEB_EXTRACTOR_VERSION` (web documents are stamped separately from `CURRENT_EXTRACTION_PIPELINE_VERSION`). |
 | `research_leads` | `web_search_result_id` (FK SET NULL), `research_document_version_id` (FK SET NULL) | An `ev:x:` id resolves to the stored version of the bytes it was verified against. |
 
-Indexes: `research_document_versions(web_fetch_attempt_id)`,
+Indexes: `research_document_subjects(theme_key)`, `research_document_versions(web_fetch_attempt_id)`,
 `research_leads(research_document_version_id)`, `research_document_subjects(research_document_id)`,
 `(company_id)`, and the partial unique index above.
 

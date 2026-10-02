@@ -79,12 +79,17 @@ _VENUE_WORDS = (
     "epa", "ams", "bit", "bme", "six", "swx", "sto", "cph", "hel", "osl", "otc", "otcqx",
     "hkex", "sgx", "jse", "nzx", "tse", "cse", "euronext", "lon",
 )
-_CONTEXT_WORDS = (
-    "company", "shares", "share", "stock", "listed", "announced", "revenue", "sales",
-    "ceo", "chief executive", "plant", "factory", "mine", "project", "contract", "order",
-    "subsidiary", "group", "inc", "plc", "ltd", "corp", "ag", "nv", "asa",
-    "manufacturer", "producer", "supplier", "customer", "investor", "earnings", "quarter",
+#: A legal-form word printed right after the name ("Siemens Energy AG", "Prysmian
+#: S.p.A.") — the name is being used as a company's name, not as a word.
+_LEGAL_FORM_AFTER = (
+    r"[\s,]+(?:ag|plc|inc|ltd|limited|corp|corporation|nv|asa|sa|se|s\.?p\.?a|spa|gmbh|"
+    r"ab|oyj|a/s|holdings?|group)\b"
 )
+#: Sector words too generic to be context on their own.
+_GENERIC_SECTOR_WORDS = frozenset({
+    "goods", "services", "products", "general", "other", "industry", "industries",
+    "equipment", "materials", "consumer", "basic", "diversified", "specialty",
+})
 
 
 def fold(text: str | None) -> str:
@@ -191,14 +196,37 @@ def _ticker_with_venue(folded_text: str, ticker: str, venue: str | None) -> bool
     return re.search(pattern, folded_text) is not None
 
 
-def _has_context(paragraph: str, candidate: CandidateEntity) -> bool:
-    for word in (*_CONTEXT_WORDS, *(fold(t) for t in candidate.sector_terms)):
-        if word and re.search(r"(?<![a-z0-9])" + re.escape(word) + r"(?![a-z0-9])", paragraph):
+def sector_words(terms: tuple[str, ...]) -> list[str]:
+    """Distinctive words of a company's sector/industry labels (≥ 5 letters)."""
+    out: list[str] = []
+    for term in terms:
+        for word in re.findall(r"[a-z]{5,}", fold(term)):
+            if word in _GENERIC_SECTOR_WORDS:
+                continue
+            stem = word[:-1] if word.endswith("s") else word  # "cables" → "cable"
+            if stem not in out:
+                out.append(stem)
+    return out
+
+
+def _has_context(paragraph: str, candidate: CandidateEntity, name: str) -> bool:
+    """Context that ties a NAME to THIS company (review S-L3).
+
+    Generic business words ("company", "shares", "group") are not context: a music
+    article saying "Pandora's shares of listeners" is not about Pandora A/S. Context is
+    the company's own sector words, its ticker, a listing venue, or a legal-form word
+    printed right after the name.
+    """
+    for word in sector_words(candidate.sector_terms):
+        # A stem match ("transformer" / "transformers") is enough.
+        if re.search(r"(?<![a-z0-9])" + re.escape(word), paragraph):
             return True
     for ticker, _venue in candidate.tickers:
         if ticker and re.search(r"\b" + re.escape(ticker.lower()) + r"\b", paragraph):
             return True
-    return any(re.search(r"\b" + re.escape(v) + r"\b", paragraph) for v in _VENUE_WORDS)
+    if any(re.search(r"\b" + re.escape(v) + r"\b", paragraph) for v in _VENUE_WORDS):
+        return True
+    return re.search(_phrase_re(name).pattern + _LEGAL_FORM_AFTER, paragraph) is not None
 
 
 def _brand_scope(parent: CandidateEntity, brand: str) -> str:
@@ -290,7 +318,7 @@ def detect_mentions(
             for paragraph in paragraphs:
                 if not pattern.search(paragraph):
                     continue
-                if _has_context(paragraph, cand):
+                if _has_context(paragraph, cand, name):
                     _offer(i, Mention(cand, CONF_NAME_CONTEXT, METHOD_NAME_CONTEXT, name))
                     break
                 if cand.is_lead:

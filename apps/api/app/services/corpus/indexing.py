@@ -174,7 +174,7 @@ def to_corpus_chunks(
     *,
     version: ResearchDocumentVersion | None = None,
     document: ResearchDocument | None = None,
-    subject_company_ids: "Sequence[uuid.UUID]" = (),
+    subjects: "Sequence[Any]" = (),
 ) -> "list[CorpusChunk]":
     """Turn stored rows into the search contract's shape.
 
@@ -184,8 +184,24 @@ def to_corpus_chunks(
     document's subject scope, theme and subject companies travel too, so a backend
     that filters in memory applies the same web filters PostgreSQL does.
     """
+    from app.models.research_document import STRONG_SUBJECT_CONFIDENCES
+
     out: list[CorpusChunk] = []
-    subjects = tuple(dict.fromkeys(subject_company_ids))
+    strong = tuple(dict.fromkeys(
+        s.company_id
+        for s in subjects
+        if s.company_id is not None
+        and (s.relation == "primary" or s.confidence in STRONG_SUBJECT_CONFIDENCES)
+    ))
+    weak = [
+        s for s in subjects
+        if s.company_id is not None and s.company_id not in strong
+        and s.relation not in ("primary", "theme")
+    ]
+    themes = tuple(dict.fromkeys(s.theme_key for s in subjects if s.theme_key))
+    scopes = tuple(dict.fromkeys(
+        (s.company_id, s.scope_key) for s in subjects if s.company_id and s.scope_key
+    ))
     for row in rows:
         out.append(
             CorpusChunk(
@@ -220,8 +236,12 @@ def to_corpus_chunks(
                 use_constraint=getattr(version, "use_constraint", None),
                 injection_suspect=bool(getattr(version, "injection_suspect", False)),
                 subject_scope=getattr(document, "subject_scope", None),
-                theme_key=getattr(document, "theme_key", None),
-                subject_company_ids=subjects,
+                theme_keys=themes,
+                subject_company_ids=strong,
+                mention_company_ids=tuple(dict.fromkeys(
+                    s.company_id for s in weak if s.evidence_chunk_id == row.chunk_id
+                )),
+                subject_scope_keys=scopes,
             )
         )
     return out
@@ -281,26 +301,20 @@ async def index_version(
     if not rows:
         return IndexResult()
     document = await session.get(ResearchDocument, version.research_document_id)
-    subject_ids: list[uuid.UUID] = []
-    if document is not None and document.subject_scope is not None:
-        from app.models.research_document import ResearchDocumentSubject
+    from app.models.research_document import ResearchDocumentSubject
 
-        subject_ids = [
-            cid
-            for cid in (
-                await session.execute(
-                    select(ResearchDocumentSubject.company_id).where(
-                        ResearchDocumentSubject.research_document_id == document.id,
-                        ResearchDocumentSubject.company_id.is_not(None),
-                    )
+    subjects = list(
+        (
+            await session.execute(
+                select(ResearchDocumentSubject).where(
+                    ResearchDocumentSubject.research_document_id
+                    == version.research_document_id
                 )
-            ).scalars()
-            if cid is not None
-        ]
+            )
+        ).scalars()
+    )
     return await backend.index(
-        to_corpus_chunks(
-            rows, version=version, document=document, subject_company_ids=subject_ids
-        )
+        to_corpus_chunks(rows, version=version, document=document, subjects=subjects)
     )
 
 

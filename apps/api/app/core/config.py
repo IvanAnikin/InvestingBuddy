@@ -1440,6 +1440,10 @@ class Settings(BaseSettings):
     # API process, with a hard kill timeout — threat model FILE-07). 1 on B1-class
     # hosts. Consumer: ``services/web_research/pool.py``.
     v3_web_extraction_workers: int = 1
+    # Address-space limit of each extraction worker (RLIMIT_AS; enforced on Linux), so a
+    # decompression bomb ends the worker rather than the instance. Consumer:
+    # ``services/web_research/pool.py``.
+    v3_web_extraction_memory_mb: int = 768
     # Hard kill timeouts for one extraction inside the pool (spec §10.1/§10.2). A
     # worker still running at the deadline is killed and the document is recorded
     # ``extraction_failed`` / ``extraction_timeout``. Consumer: ``web_research/ingest.py``.

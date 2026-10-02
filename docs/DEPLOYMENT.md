@@ -1744,6 +1744,16 @@ Then re-run Bicep with `githubActionsPrincipalId=$SP_OBJECT_ID` to grant KV Secr
 
 ---
 
+## Open-web extraction pool (open-web W3) — memory sizing on B1
+
+Web HTML/PDF extraction runs in a spawned worker process (one per API or worker process
+that ingests web documents, `V3_WEB_EXTRACTION_WORKERS=1`). Each worker is capped by
+`RLIMIT_AS` = `V3_WEB_EXTRACTION_MEMORY_MB` (default 768 MB, enforced on Linux), a
+per-task `RLIMIT_CPU`, and is retired after 25 tasks; its environment is scrubbed and it
+runs in an empty temporary directory. On B1 (1.75 GB) keep one worker per process and
+budget up to 768 MB per ingesting process while a document is parsed. Dark unless
+`V3_WEB_CORPUS_INGEST_ENABLED=true`.
+
 ## Environment Variables
 
 Copy `.env.example` to `.env`. The defaults work for local Docker development.

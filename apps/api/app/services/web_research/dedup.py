@@ -99,27 +99,6 @@ def origin_key_for(host: str | None) -> str | None:
     return (registrable_domain(clean) or clean)[:255]
 
 
-async def version_with_hash(session: Any, content_hash: str | None) -> Any:
-    """Any stored web version with exactly these bytes (the earliest), or None."""
-    if not content_hash:
-        return None
-    from sqlalchemy import select
-
-    from app.models.research_document import ResearchDocumentVersion
-
-    return (
-        await session.execute(
-            select(ResearchDocumentVersion)
-            .where(
-                ResearchDocumentVersion.content_hash == content_hash,
-                ResearchDocumentVersion.web_extractor_version.is_not(None),
-            )
-            .order_by(ResearchDocumentVersion.created_at, ResearchDocumentVersion.id)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-
-
 async def near_duplicate_versions(
     session: Any, simhash: int | None, *, limit: int = 2000
 ) -> list[Any]:
@@ -151,5 +130,4 @@ __all__ = [
     "simhash64",
     "to_signed64",
     "to_unsigned64",
-    "version_with_hash",
 ]

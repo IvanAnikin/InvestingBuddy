@@ -8,12 +8,13 @@ result, a crawl, a user URL or a verified lead (``fetch_public_source``):
 1. a ``web_fetch_attempts`` row (written by ``open_web_fetch``, or here for a lead);
 2. refusals first — no bytes, a TDM reservation, a truncated body, an unsupported type
    are never ingested;
-3. extraction in the killable process pool (``extract.py``);
+3. extraction AND analysis (SimHash, injection taint, entity mentions) in the killable
+   process pool (``extract.py``) — nothing CPU-heavy runs on the event loop;
 4. deterministic classification: source class → tier + access class, ``use_constraint``,
-   document kind, injection taint (``classify.py``);
-5. duplicate check by content hash — the same bytes already stored are LINKED (a
-   subjects row), never re-chunked; SimHash + a provisional ``origin_key`` are stored
-   for W4;
+   document kind (``classify.py``);
+5. duplicate check by content hash — the same bytes already stored (by the web path, or
+   for the same company by any path) are LINKED with subject rows and re-indexed, never
+   re-chunked;
 6. raw bytes → the artifact store under the version's access class, with the web TTL
    (``V3_WEB_ARTIFACT_RETENTION_DAYS``) when the constraint is ``unknown``;
 7. ``ExtractedDocument`` — SHARED by content hash, so its ``company_id`` is whoever
@@ -21,8 +22,23 @@ result, a crawl, a user URL or a verified lead (``fetch_public_source``):
 8. ``ingest_extracted_document`` → a version with ``access_class``,
    ``transport="open_web:<provider|direct|user>"``, ``content_origin``, tier and the
    W3 fields, then derivation, pages, sections, tables and chunks (``ev:c:`` ids);
-9. ``research_document_subjects`` rows from entity mention detection;
+9. ``research_document_subjects`` rows: the run's company (``primary``), mentioned
+   companies, brand scopes, and the THEME the document was acquired for;
 10. indexing, so the chunks are retrievable.
+
+PREPARE, THEN STORE
+===================
+:func:`prepare_web_document` does every slow thing (pool extraction, classification)
+and writes NOTHING; :func:`store_web_document` only writes. A caller inside a research
+transaction (the verified-lead path) prepares first and opens its SAVEPOINT only around
+the store (review F6), so a 120 s PDF never holds a database transaction open.
+
+DATES (review F9)
+=================
+A date htmldate found in the page TEXT (``published_at_source='text'``) is stored on the
+version for the ``since`` filter, labelled, but never handed to the period rules: it
+can be an unrelated earlier date, and a title period checked against it would be
+nulled wrongly.
 
 FLAG
 ====
@@ -34,6 +50,7 @@ Logs carry codes, counts and a 12-character URL hash — never a URL, never page
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import uuid
@@ -63,8 +80,10 @@ REASON_EXTRACTION = "extraction_failed"
 SUBJECT_SCOPES: frozenset[str] = frozenset({"company", "theme", "industry", "macro"})
 SOURCE_TYPE_OPEN_WEB = "open_web"
 TRANSPORT_PREFIX = "open_web:"
+DATE_SOURCE_TEXT = "text"
 
 _TRANSPORT_MAX = 100
+_THEME_KEY_MAX = 120
 
 
 @dataclass
@@ -95,6 +114,25 @@ class WebIngestResult:
     @property
     def stored(self) -> bool:
         return self.state in (STATE_INGESTED, STATE_REUSED) and self.version_id is not None
+
+
+@dataclass
+class PreparedWebDocument:
+    """Everything decided about one document BEFORE any database write."""
+
+    fetched: Any
+    url: str
+    canonical: str
+    host: str
+    content_hash: str
+    extraction: Any
+    classification: Any
+    kind: str
+    scope: str
+    company_id: uuid.UUID | None
+    theme_key: str | None
+    provider: str | None
+    result: WebIngestResult
 
 
 def ingest_enabled(cfg: Any) -> bool:
@@ -146,8 +184,12 @@ def _refusal(fetched: Any) -> str | None:
     return None
 
 
-async def ingest_web_document(
-    session: Any,
+# --------------------------------------------------------------------------- #
+# Prepare (slow, writes nothing)
+# --------------------------------------------------------------------------- #
+
+
+async def prepare_web_document(
     fetched: Any,
     *,
     cfg: Any,
@@ -160,16 +202,10 @@ async def ingest_web_document(
     query_terms: tuple[str, ...] = (),
     depth: str = "standard",
     pool: Any = None,
-    store: Any = None,
-    backend: Any = None,
-    now: datetime | None = None,
-) -> WebIngestResult:
-    """Put one fetched document (an ``OpenWebFetchResult``) into the corpus. Never raises
-    for a document-level outcome; a database error propagates to the caller's savepoint.
+) -> PreparedWebDocument | WebIngestResult:
+    """Extract, analyse and classify one fetched document. No database access at all.
 
-    ``company_id`` makes it a company document (``subject_scope="company"``). Without
-    one, ``subject_scope`` (``theme | industry | macro``) is required; the document is
-    company-less and deduplicated by the partial unique index on its key.
+    Returns a :class:`WebIngestResult` when the document is refused or did not extract.
     """
     if not ingest_enabled(cfg):
         return WebIngestResult(STATE_DISABLED, REASON_DISABLED)
@@ -182,26 +218,12 @@ async def ingest_web_document(
     if company_id is not None and scope != "company":
         scope = "company"
 
-    from app.services.web_research.classify import (
-        classify_document_kind,
-        classify_source,
-        injection_assessment,
-    )
-    from app.services.web_research.dedup import (
-        origin_key_for,
-        simhash64,
-        to_signed64,
-        version_with_hash,
-    )
-    from app.services.web_research.extract import (
-        WEB_EXTRACTOR_VERSION,
-        extract_web_document,
-    )
+    from app.services.web_research.classify import classify_document_kind, classify_source
+    from app.services.web_research.extract import extract_web_document
 
     url = fetched.final_url or fetched.requested_url
     canonical = fetched.canonical_url or url
     host = _host(url)
-    stamp = now or datetime.now(timezone.utc)
     content_hash = fetched.content_hash or hashlib.sha256(fetched.content).hexdigest()
 
     extraction = await extract_web_document(
@@ -214,6 +236,7 @@ async def ingest_web_document(
         query_terms=tuple(query_terms),
         depth=depth,
         pool=pool,
+        candidates=tuple(candidates),
     )
     meta = extraction.metadata
     classification = classify_source(
@@ -229,13 +252,6 @@ async def ingest_web_document(
         has_citation_meta=meta.has_citation_meta,
         headings=meta.headings,
     )
-    taint = injection_assessment(
-        extraction.main_text,
-        hidden_text=extraction.hidden_text,
-        metadata_text=" ".join(
-            part for part in (meta.title, meta.description, extraction.document_info_text) if part
-        ),
-    )
     result = WebIngestResult(
         state=STATE_NOT_INGESTED,
         source_class=classification.source_class,
@@ -243,8 +259,8 @@ async def ingest_web_document(
         access_class=classification.access_class,
         use_constraint=classification.use_constraint,
         document_kind=kind,
-        injection_suspect=taint.suspect,
-        injection_signals=taint.signals,
+        injection_suspect=extraction.injection_suspect,
+        injection_signals=tuple(extraction.injection_signals),
         extraction_method=extraction.method,
         extraction_confidence=extraction.confidence,
         stopped_by=extraction.stopped_by,
@@ -254,27 +270,73 @@ async def ingest_web_document(
         result.reason = extraction.failure_code or REASON_EXTRACTION
         _log(result, url)
         return result
+    return PreparedWebDocument(
+        fetched=fetched,
+        url=url,
+        canonical=canonical,
+        host=host,
+        content_hash=content_hash,
+        extraction=extraction,
+        classification=classification,
+        kind=kind,
+        scope=scope,
+        company_id=company_id,
+        theme_key=((theme_key or "").strip()[:_THEME_KEY_MAX] or None)
+        if company_id is None else None,
+        provider=provider,
+        result=result,
+    )
 
 
-    # Same bytes already in the corpus: LINK, never re-chunk (spec §14.1).
-    existing = await version_with_hash(session, content_hash)
-    mentions = _mentions(extraction.main_text, candidates, host)
+# --------------------------------------------------------------------------- #
+# Store (writes only)
+# --------------------------------------------------------------------------- #
+
+
+async def store_web_document(
+    session: Any,
+    prepared: PreparedWebDocument,
+    *,
+    cfg: Any,
+    store: Any = None,
+    backend: Any = None,
+    now: datetime | None = None,
+) -> WebIngestResult:
+    """Write one prepared document: link a duplicate, or store a new version."""
+    result = prepared.result
+    extraction = prepared.extraction
+    meta = extraction.metadata
+    classification = prepared.classification
+    company_id = prepared.company_id
+    stamp = now or datetime.now(timezone.utc)
+    mentions = list(extraction.mentions)
+
+    # Same bytes already in the corpus: LINK, never re-chunk (spec §14.1, review F5).
+    existing = await linked_version(session, prepared.content_hash, company_id=company_id)
     if existing is not None:
         result.state = STATE_REUSED
         result.version_id = existing.id
         result.document_id = existing.research_document_id
         result.extracted_document_id = existing.extracted_document_id
-        if existing.web_fetch_attempt_id is None and getattr(fetched, "attempt_id", None):
-            existing.web_fetch_attempt_id = fetched.attempt_id
+        attempt = getattr(prepared.fetched, "attempt_id", None)
+        if existing.web_fetch_attempt_id is None and attempt and (
+            existing.web_extractor_version is not None
+        ):
+            existing.web_fetch_attempt_id = attempt
         result.subjects_written = await write_subjects(
             session,
             document_id=existing.research_document_id,
             version_id=existing.id,
             company_id=company_id,
             mentions=mentions,
+            theme_key=prepared.theme_key,
         )
+        if result.subjects_written:
+            # The memory backend captures subjects at index time; re-index so it agrees
+            # with PostgreSQL, which reads them at query time (review F4).
+            result.indexed = await _index(session, existing.id, cfg=cfg, backend=backend)
         result.notes.append("same bytes already stored; linked, not re-chunked")
-        _log(result, url)
+        _log(result, prepared.url)
         return result
 
     from app.services.corpus.artifacts.service import record_artifact, store_raw_artifact
@@ -285,7 +347,10 @@ async def ingest_web_document(
     )
     from app.services.corpus.policy import default_policy_for
     from app.services.sources.disclosure_period_policy import PERIOD_POLICY_TITLE_ONLY
+    from app.services.web_research.dedup import origin_key_for
+    from app.services.web_research.extract import WEB_EXTRACTOR_VERSION
 
+    fetched = prepared.fetched
     policy = default_policy_for(
         classification.access_class,
         retention_days=_retention_days(cfg, classification.use_constraint),
@@ -307,16 +372,20 @@ async def ingest_web_document(
 
     body = extraction.extraction
     title = (meta.title or "")[:500] or None
-    transport = transport_for(provider)
+    transport = transport_for(prepared.provider)
+    # A text-found date is not authoritative: it never reaches the period rules.
+    authoritative_date = (
+        meta.published_at if meta.published_at_source != DATE_SOURCE_TEXT else None
+    )
     document = await _get_or_create_extracted_document(
         session,
-        content_hash=content_hash,
-        canonical_url=canonical,
+        content_hash=prepared.content_hash,
+        canonical_url=prepared.canonical,
         transport=transport,
         tier=classification.tier,
         mime_type=media_type,
         title=title,
-        published_at=meta.published_at,
+        published_at=authoritative_date,
         body=body,
         company_id=company_id,
         blob_path=getattr(stored, "storage_key", None),
@@ -328,15 +397,15 @@ async def ingest_web_document(
     # extractor's), this address, this transport.
     view = SimpleNamespace(
         id=document.id,
-        content_hash=content_hash,
-        canonical_url=canonical,
+        content_hash=prepared.content_hash,
+        canonical_url=prepared.canonical,
         provider=transport,
         source_tier=classification.tier,
         company_id=company_id,
         source_type=SOURCE_TYPE_OPEN_WEB,
         title=title,
         mime_type=media_type,
-        doc_date=meta.published_at,
+        doc_date=authoritative_date,
         retrieved_at=stamp,
         status=body.status,
     )
@@ -344,24 +413,24 @@ async def ingest_web_document(
         raw_artifact=stored,
         extraction=body,
         title=title,
-        source_url=canonical,
-        doc_kind=kind,
+        source_url=prepared.canonical,
+        doc_kind=prepared.kind,
         period_policy=PERIOD_POLICY_TITLE_ONLY,
         failure_code=None,
     )
-    origin = origin_key_for(host)
+    origin = origin_key_for(prepared.host)
     web = WebVersionFields(
         web_fetch_attempt_id=getattr(fetched, "attempt_id", None),
         use_constraint=classification.use_constraint,
-        injection_suspect=taint.suspect,
-        simhash=to_signed64(simhash64(extraction.main_text)),
+        injection_suspect=extraction.injection_suspect,
+        simhash=extraction.simhash,
         origin_key=origin,
         published_at_source=meta.published_at_source if meta.published_at else None,
         source_class=classification.source_class,
         web_extractor_version=WEB_EXTRACTOR_VERSION,
-        subject_scope=scope,
-        theme_key=(theme_key or None) if company_id is None else None,
+        subject_scope=prepared.scope,
         content_origin=origin,
+        published_at=meta.published_at,
     )
     counts = CorpusIngestResult()
     version = await ingest_extracted_document(
@@ -370,7 +439,7 @@ async def ingest_web_document(
     )
     if version is None:
         result.reason = "corpus_version_not_written"
-        _log(result, url)
+        _log(result, prepared.url)
         return result
     result.state = STATE_INGESTED if counts.versions_created else STATE_REUSED
     result.version_id = version.id
@@ -382,21 +451,100 @@ async def ingest_web_document(
         version_id=version.id,
         company_id=company_id,
         mentions=mentions,
+        theme_key=prepared.theme_key,
     )
+    if company_id is not None and counts.versions_created:
+        await _scope_brand_only_page(session, version.id, company_id, mentions)
     result.indexed = await _index(session, version.id, cfg=cfg, backend=backend)
-    _log(result, url)
+    _log(result, prepared.url)
     return result
+
+
+async def ingest_web_document(
+    session: Any,
+    fetched: Any,
+    *,
+    cfg: Any,
+    provider: str | None = None,
+    company_id: uuid.UUID | None = None,
+    subject_scope: str | None = None,
+    theme_key: str | None = None,
+    candidates: tuple[Any, ...] | list[Any] = (),
+    issuer_domains: tuple[str, ...] = (),
+    query_terms: tuple[str, ...] = (),
+    depth: str = "standard",
+    pool: Any = None,
+    store: Any = None,
+    backend: Any = None,
+    now: datetime | None = None,
+) -> WebIngestResult:
+    """Prepare then store one fetched document (an ``OpenWebFetchResult``).
+
+    ``company_id`` makes it a company document (``subject_scope="company"``). Without
+    one, ``subject_scope`` (``theme | industry | macro``) is required; the document is
+    company-less and deduplicated by the partial unique index on its key; ``theme_key``
+    links it to a theme through a subject row. Never raises for a document-level
+    outcome; a database error propagates to the caller's savepoint.
+    """
+    prepared = await prepare_web_document(
+        fetched,
+        cfg=cfg,
+        provider=provider,
+        company_id=company_id,
+        subject_scope=subject_scope,
+        theme_key=theme_key,
+        candidates=candidates,
+        issuer_domains=issuer_domains,
+        query_terms=query_terms,
+        depth=depth,
+        pool=pool,
+    )
+    if isinstance(prepared, WebIngestResult):
+        return prepared
+    return await store_web_document(
+        session, prepared, cfg=cfg, store=store, backend=backend, now=now
+    )
 
 
 _MEDIA_TYPES = {"pdf": "application/pdf", "html": "text/html", "text": "text/plain"}
 
 
-def _mentions(text: str, candidates: Any, host: str) -> list[Any]:
-    if not candidates:
-        return []
-    from app.services.web_research.entities import detect_mentions
+async def linked_version(
+    session: Any, content_hash: str | None, *, company_id: uuid.UUID | None
+) -> Any:
+    """The stored version these bytes should be LINKED to, or None (review F5).
 
-    return detect_mentions(text, list(candidates), page_host=host or None)
+    In order: a version of THIS company's own document with the same bytes, by any path
+    (an issuer PDF the filing pipeline already holds must not be stored twice and
+    double-count as corroboration); else the earliest WEB version of the bytes; else,
+    for a company-less run, the earliest version of any kind.
+    """
+    if not content_hash:
+        return None
+    from sqlalchemy import select
+
+    from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+
+    V = ResearchDocumentVersion
+    rows = (
+        await session.execute(
+            select(V, ResearchDocument.company_id)
+            .join(ResearchDocument, ResearchDocument.id == V.research_document_id)
+            .where(V.content_hash == content_hash)
+            .order_by(V.created_at, V.id)
+            .limit(50)
+        )
+    ).all()
+    if not rows:
+        return None
+    if company_id is not None:
+        own = [v for v, owner in rows if owner == company_id]
+        if own:
+            return own[0]
+    web = [v for v, _owner in rows if v.web_extractor_version is not None]
+    if web:
+        return web[0]
+    return rows[0][0] if company_id is None else None
 
 
 async def _get_or_create_extracted_document(
@@ -459,6 +607,19 @@ async def _get_or_create_extracted_document(
     return row
 
 
+def _brand_only_scope(company_id: uuid.UUID | None, mentions: list[Any]) -> str | None:
+    """The brand scope when the run's company appears ONLY through a brand (review F11)."""
+    if company_id is None:
+        return None
+    direct = [m for m in mentions if m.company_id == company_id and m.scope_key is None]
+    if direct:
+        return None
+    brands = sorted(
+        m.scope_key for m in mentions if m.company_id == company_id and m.scope_key
+    )
+    return brands[0] if brands else None
+
+
 async def write_subjects(
     session: Any,
     *,
@@ -466,29 +627,21 @@ async def write_subjects(
     version_id: uuid.UUID | None,
     company_id: uuid.UUID | None,
     mentions: list[Any],
+    theme_key: str | None = None,
 ) -> int:
-    """``research_document_subjects`` rows for one document. Idempotent.
+    """``research_document_subjects`` rows for one document. Idempotent and race-safe.
 
     The run's own company is the ``primary`` subject (with the confidence the text
-    earned, or none when the text never names it). Every other mention is
-    ``mentioned``. A brand mention carries its ``segment:`` / ``brand:`` scope — never
-    ``group``. A ``name_only`` match is recorded for a LEAD only.
+    earned, or none when the text never names it; with the brand's scope when the text
+    names it only through a brand). Every other mention is ``mentioned``. A brand
+    mention carries its ``segment:`` / ``brand:`` scope — never ``group``. A
+    ``name_only`` match is recorded for a LEAD only. ``theme_key`` adds a
+    ``relation='theme'`` row. Inserts are ``ON CONFLICT DO NOTHING`` against the unique
+    row-identity index (review F10), so concurrent writers never duplicate a row.
     """
-    from sqlalchemy import select
-
     from app.models.research_document import ResearchDocumentSubject
     from app.services.web_research.entities import CONF_NAME_ONLY
 
-    existing_keys = {
-        (row.company_id, row.legal_entity_id, row.relation, row.scope_key)
-        for row in (
-            await session.execute(
-                select(ResearchDocumentSubject).where(
-                    ResearchDocumentSubject.research_document_id == document_id
-                )
-            )
-        ).scalars()
-    }
     primary_mention = next(
         (
             m
@@ -497,18 +650,18 @@ async def write_subjects(
         ),
         None,
     )
-    planned: list[tuple[Any, Any, str, str | None, str, str | None, str | None]] = []
+    planned: list[dict[str, Any]] = []
     if company_id is not None:
         planned.append(
-            (
-                company_id,
-                getattr(primary_mention, "legal_entity_id", None),
-                "primary",
-                getattr(primary_mention, "confidence", None),
-                getattr(primary_mention, "method", None) or "research_run",
-                None,
-                getattr(primary_mention, "surface", None),
-            )
+            {
+                "company_id": company_id,
+                "legal_entity_id": getattr(primary_mention, "legal_entity_id", None),
+                "relation": "primary",
+                "confidence": getattr(primary_mention, "confidence", None),
+                "method": getattr(primary_mention, "method", None) or "research_run",
+                "scope_key": _brand_only_scope(company_id, mentions),
+                "surface": getattr(primary_mention, "surface", None),
+            }
         )
     for mention in mentions:
         if mention is primary_mention:
@@ -520,43 +673,66 @@ async def write_subjects(
         if mention.scope_key and not mention.scope_key.startswith(("segment:", "brand:")):
             continue  # a brand never becomes a group fact (spec §16.2)
         planned.append(
-            (
-                mention.company_id,
-                mention.legal_entity_id,
-                "mentioned",
-                mention.confidence,
-                mention.method,
-                mention.scope_key,
-                mention.surface,
-            )
+            {
+                "company_id": mention.company_id,
+                "legal_entity_id": mention.legal_entity_id,
+                "relation": "mentioned",
+                "confidence": mention.confidence,
+                "method": mention.method,
+                "scope_key": mention.scope_key,
+                "surface": mention.surface,
+            }
         )
-    chunks = await _chunk_texts(session, version_id) if planned else []
+    if theme_key:
+        planned.append(
+            {
+                "company_id": None,
+                "legal_entity_id": None,
+                "relation": "theme",
+                "confidence": None,
+                "method": "research_run",
+                "scope_key": None,
+                "theme_key": theme_key,
+                "surface": None,
+            }
+        )
+    if not planned:
+        return 0
+    chunks = await _folded_chunks(session, version_id)
+    surfaces = [p["surface"] for p in planned]
+    evidence = await asyncio.to_thread(_evidence_chunks, chunks, surfaces)
+    dialect = getattr(getattr(session, "bind", None), "dialect", None)
+    if getattr(dialect, "name", "") == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert  # type: ignore[assignment]
     written = 0
-    for company, entity, relation, confidence, method, scope_key, surface in planned:
-        key = (company, entity, relation, scope_key)
-        if key in existing_keys:
-            continue
-        existing_keys.add(key)
-        session.add(
-            ResearchDocumentSubject(
-                id=uuid.uuid4(),
-                research_document_id=document_id,
-                company_id=company,
-                legal_entity_id=entity,
-                relation=relation,
-                confidence=confidence,
-                method=(method or "research_run")[:40],
-                scope_key=scope_key,
-                evidence_chunk_id=_chunk_for(chunks, surface),
-            )
+    for item, chunk_id in zip(planned, evidence, strict=True):
+        values = {
+            "id": uuid.uuid4(),
+            "research_document_id": document_id,
+            "company_id": item["company_id"],
+            "legal_entity_id": item["legal_entity_id"],
+            "relation": item["relation"],
+            "confidence": item["confidence"],
+            "method": (item["method"] or "research_run")[:40],
+            "scope_key": item["scope_key"],
+            "theme_key": item.get("theme_key"),
+            "evidence_chunk_id": chunk_id,
+            "created_at": datetime.now(timezone.utc),
+        }
+        outcome = await session.execute(
+            dialect_insert(ResearchDocumentSubject)
+            .values(**values)
+            .on_conflict_do_nothing()
+            .returning(ResearchDocumentSubject.id)
         )
-        written += 1
-    if written:
-        await session.flush()
+        # RETURNING, not rowcount: the async PostgreSQL driver reports -1 for it.
+        written += len(outcome.fetchall())
     return written
 
 
-async def _chunk_texts(session: Any, version_id: uuid.UUID | None) -> list[tuple[str, str]]:
+async def _folded_chunks(session: Any, version_id: uuid.UUID | None) -> list[tuple[str, str]]:
     if version_id is None:
         return []
     from sqlalchemy import select
@@ -574,16 +750,49 @@ async def _chunk_texts(session: Any, version_id: uuid.UUID | None) -> list[tuple
     return [(str(cid), str(text or "")) for cid, text in rows]
 
 
-def _chunk_for(chunks: list[tuple[str, str]], surface: str | None) -> str | None:
-    if not surface or not chunks:
-        return None
+def _evidence_chunks(
+    chunks: list[tuple[str, str]], surfaces: list[str | None]
+) -> list[str | None]:
+    """The first chunk each surface occurs in. Each chunk is folded ONCE (review F8)."""
     from app.services.web_research.entities import fold
 
-    needle = fold(surface)
-    for chunk_id, text in chunks:
-        if needle and needle in fold(text):
-            return chunk_id[:120]
-    return None
+    folded = [(chunk_id, fold(text)) for chunk_id, text in chunks]
+    out: list[str | None] = []
+    for surface in surfaces:
+        needle = fold(surface) if surface else ""
+        found = None
+        if needle:
+            for chunk_id, text in folded:
+                if needle in text:
+                    found = chunk_id[:120]
+                    break
+        out.append(found)
+    return out
+
+
+async def _scope_brand_only_page(
+    session: Any, version_id: uuid.UUID, company_id: uuid.UUID, mentions: list[Any]
+) -> None:
+    """A page naming the company only through a brand: its unscoped chunks take the
+    brand's scope, so a Cartier headline can never fill a Richemont Group slot
+    (review F11)."""
+    scope_key = _brand_only_scope(company_id, mentions)
+    if not scope_key:
+        return
+    from sqlalchemy import update
+
+    from app.models.research_chunk import ResearchDocumentChunk
+
+    _kind, _sep, name = scope_key.partition(":")
+    await session.execute(
+        update(ResearchDocumentChunk)
+        .where(
+            ResearchDocumentChunk.research_document_version_id == version_id,
+            ResearchDocumentChunk.scope_key.is_(None),
+        )
+        .values(scope_type="segment", scope_name=name[:200] or None, scope_key=scope_key)
+    )
+    await session.flush()
 
 
 async def _chunk_count(session: Any, version_id: uuid.UUID) -> int:
@@ -645,8 +854,27 @@ def _log(result: WebIngestResult, url: str | None) -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def ingest_verified_lead_document(
-    session: Any,
+class _RowCollector:
+    """Stands in for a session while robots/TDMRep are checked OUTSIDE the savepoint:
+    the attempt rows are kept and written later, inside it (review F6)."""
+
+    def __init__(self) -> None:
+        self.rows: list[Any] = []
+
+    def add(self, row: Any) -> None:
+        self.rows.append(row)
+
+    async def flush(self) -> None:
+        return None
+
+
+@dataclass
+class PreparedLeadDocument:
+    rows: list[Any]
+    prepared: PreparedWebDocument
+
+
+async def prepare_verified_lead_document(
     *,
     content: bytes | None,
     url: str,
@@ -654,24 +882,23 @@ async def ingest_verified_lead_document(
     truncated: bool,
     cfg: Any,
     company_id: uuid.UUID | None,
+    headers: dict[str, str] | None = None,
     research_job_id: uuid.UUID | None = None,
     web_search_result_id: uuid.UUID | None = None,
     provider: str | None = None,
     candidates: tuple[Any, ...] = (),
     pool: Any = None,
-    store: Any = None,
-    backend: Any = None,
     resolver: Any = None,
     runtime: Any = None,
-) -> WebIngestResult:
-    """Ingest the bytes ``verify_lead`` fetched and VERIFIED, through the same path.
+) -> PreparedLeadDocument | WebIngestResult:
+    """Everything slow for a VERIFIED lead's bytes — no database write (review F6).
 
-    ``verify_lead`` fetches through ``safe_fetch_document``, which predates robots.txt
-    and TDM handling, so before anything is stored this path asks the open-web policy
-    for the origin's robots/TDMRep decision (``fetch.ingestion_clearance``) and reads
-    the page's own TDM meta signals. Any reservation → not ingested. A
-    ``web_fetch_attempts`` row (origin ``lead``) records the retrieval, so the version
-    has the same provenance as every other web document.
+    ``verify_lead`` fetches through ``safe_fetch_document``, which predates the open-web
+    policy, so the same refusals ``open_web_fetch`` applies are applied here before
+    anything is stored (review S-M4): the origin's robots.txt / TDMRep
+    (``fetch.ingestion_clearance``), the response's TDM / ``noai`` HEADERS, the page's
+    TDM meta, and the access-wall verdict (login, consent, CAPTCHA, a paywall's
+    ``isAccessibleForFree: false``).
     """
     if not ingest_enabled(cfg):
         return WebIngestResult(STATE_DISABLED, REASON_DISABLED)
@@ -697,9 +924,12 @@ async def ingest_verified_lead_document(
     )
 
     final = fetched_url or url
+    if robots.tdm_signals_from_headers({k.lower(): v for k, v in (headers or {}).items()}):
+        return WebIngestResult(STATE_NOT_INGESTED, REASON_TDM_RESERVED)
+    collector = _RowCollector()
     clearance = await ingestion_clearance(
         final,
-        session=session,
+        session=collector,
         context=WebFetchContext(research_job_id=research_job_id),
         cfg=cfg,
         resolver=resolver,
@@ -715,36 +945,36 @@ async def ingest_verified_lead_document(
     )
     js_required = False
     if sniffed.content_class == content_mod.CLASS_HTML:
+        verdict = await asyncio.to_thread(
+            _html_gate, content, charset, url, final
+        )
+        if verdict is not None:
+            return WebIngestResult(STATE_NOT_INGESTED, verdict)
         html = content_mod.decode_text(content, charset)
-        if robots.tdm_signals_from_html(html):
-            return WebIngestResult(STATE_NOT_INGESTED, REASON_TDM_RESERVED)
         js_required = content_mod.js_required(len(content), html)
 
     content_hash = hashlib.sha256(content).hexdigest()
     stored_final = stored_url(final) or final
     canonical = canonical_url(final) or stored_final
     attempt_id = uuid.uuid4()
-    session.add(
-        WebFetchAttempt(
-            id=attempt_id,
-            research_job_id=research_job_id,
-            web_search_result_id=web_search_result_id,
-            origin=ORIGIN_LEAD,
-            requested_url=(stored_url(url) or url)[:2048],
-            final_url=stored_final[:2048],
-            canonical_url=canonical[:2048],
-            policy_decision=POLICY_ALLOWED,
-            robots_decision=clearance.robots_decision,
-            tdm_decision=clearance.tdm_decision,
-            mime_sniffed=sniffed.mime,
-            bytes=len(content),
-            truncated=False,
-            content_hash=content_hash,
-            status=STATUS_FETCHED,
-            created_at=datetime.now(timezone.utc),
-        )
+    attempt = WebFetchAttempt(
+        id=attempt_id,
+        research_job_id=research_job_id,
+        web_search_result_id=web_search_result_id,
+        origin=ORIGIN_LEAD,
+        requested_url=(stored_url(url) or url)[:2048],
+        final_url=stored_final[:2048],
+        canonical_url=canonical[:2048],
+        policy_decision=POLICY_ALLOWED,
+        robots_decision=clearance.robots_decision,
+        tdm_decision=clearance.tdm_decision,
+        mime_sniffed=sniffed.mime,
+        bytes=len(content),
+        truncated=False,
+        content_hash=content_hash,
+        status=STATUS_FETCHED,
+        created_at=datetime.now(timezone.utc),
     )
-    await session.flush()
     fetched = OpenWebFetchResult(
         status=STATUS_FETCHED,
         origin=ORIGIN_LEAD,
@@ -762,21 +992,108 @@ async def ingest_verified_lead_document(
         charset=charset,
         js_required=js_required,
     )
-    return await ingest_web_document(
-        session,
+    prepared = await prepare_web_document(
         fetched,
         cfg=cfg,
         provider=provider or "lead",
         company_id=company_id,
         candidates=candidates,
         pool=pool,
-        store=store,
-        backend=backend,
+    )
+    if isinstance(prepared, WebIngestResult):
+        return prepared
+    return PreparedLeadDocument(rows=[*collector.rows, attempt], prepared=prepared)
+
+
+def _html_gate(content: bytes, charset: str, url: str, final: str) -> str | None:
+    """The refusal code for an HTML page that must not be ingested, or None."""
+    from app.services.web_research import access, robots
+    from app.services.web_research import content as content_mod
+
+    html = content_mod.decode_text(content, charset)
+    if robots.tdm_signals_from_html(html):
+        return REASON_TDM_RESERVED
+    visible: list[str] = []
+
+    def _visible() -> str:
+        if not visible:
+            visible.append(content_mod.visible_text(html))
+        return visible[0]
+
+    verdict = access.classify_page(
+        html, visible_text=_visible, requested_url=url, final_url=final
+    )
+    return None if verdict.retrievable else (verdict.reason or "access_wall")
+
+
+async def store_verified_lead_document(
+    session: Any,
+    prepared: PreparedLeadDocument,
+    *,
+    cfg: Any,
+    store: Any = None,
+    backend: Any = None,
+) -> WebIngestResult:
+    """The writes for a prepared lead document — the only part inside a savepoint."""
+    for row in prepared.rows:
+        session.add(row)
+    await session.flush()
+    return await store_web_document(
+        session, prepared.prepared, cfg=cfg, store=store, backend=backend
+    )
+
+
+async def ingest_verified_lead_document(
+    session: Any,
+    *,
+    content: bytes | None,
+    url: str,
+    fetched_url: str | None,
+    truncated: bool,
+    cfg: Any,
+    company_id: uuid.UUID | None,
+    headers: dict[str, str] | None = None,
+    research_job_id: uuid.UUID | None = None,
+    web_search_result_id: uuid.UUID | None = None,
+    provider: str | None = None,
+    candidates: tuple[Any, ...] = (),
+    pool: Any = None,
+    store: Any = None,
+    backend: Any = None,
+    resolver: Any = None,
+    runtime: Any = None,
+) -> WebIngestResult:
+    """Prepare then store a verified lead's bytes (no savepoint of its own)."""
+    prepared = await prepare_verified_lead_document(
+        content=content,
+        url=url,
+        fetched_url=fetched_url,
+        truncated=truncated,
+        cfg=cfg,
+        company_id=company_id,
+        headers=headers,
+        research_job_id=research_job_id,
+        web_search_result_id=web_search_result_id,
+        provider=provider,
+        candidates=candidates,
+        pool=pool,
+        resolver=resolver,
+        runtime=runtime,
+    )
+    if isinstance(prepared, WebIngestResult):
+        return prepared
+    return await store_verified_lead_document(
+        session, prepared, cfg=cfg, store=store, backend=backend
     )
 
 
 async def version_for_external_evidence(session: Any, evidence_id: str) -> Any:
-    """The corpus version an ``ev:x:`` id resolves to (spec §12.2), or None."""
+    """The corpus version an ``ev:x:`` id resolves to (spec §12.2), or None.
+
+    None is a real answer: verification can succeed while ingestion was refused
+    (TDM, wall, flag off). A consumer must treat an unresolved id as "verified, not
+    stored", never as missing evidence.
+    """
     if not (evidence_id or "").startswith("ev:x:"):
         return None
     from sqlalchemy import select
@@ -807,10 +1124,17 @@ __all__ = [
     "STATE_NOT_INGESTED",
     "STATE_REUSED",
     "SUBJECT_SCOPES",
+    "PreparedLeadDocument",
+    "PreparedWebDocument",
     "WebIngestResult",
     "ingest_enabled",
     "ingest_verified_lead_document",
     "ingest_web_document",
+    "linked_version",
+    "prepare_verified_lead_document",
+    "prepare_web_document",
+    "store_verified_lead_document",
+    "store_web_document",
     "transport_for",
     "version_for_external_evidence",
     "write_subjects",
