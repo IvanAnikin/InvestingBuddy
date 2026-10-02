@@ -27,18 +27,22 @@ Endpoints:
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.structured_logging import log_event
 from app.db.session import get_db
+from app.models.discovery import DiscoveryRun
 from app.schemas.market_discovery import (
     DiscoveryCandidateDetail,
     DiscoveryCandidateListResponse,
     DiscoveryCandidateRead,
     DiscoveryCouncilReviewResponse,
     DiscoveryRunCreate,
+    DiscoveryRunJob,
     DiscoveryRunListResponse,
     DiscoveryRunRead,
     DiscoveryRunSummary,
@@ -51,10 +55,13 @@ from app.schemas.market_discovery import (
 )
 from app.services import market_discovery_service as svc
 from app.services.discovery.intent import build_intent
+from app.services.jobs import discovery_research_job as discovery_job
 from app.services.market_discovery_service import DiscoveryCouncilDisabledError
 from app.services.market_thesis_parser import parse_thesis
 
 router = APIRouter(prefix="/market-discovery", tags=["market-discovery"])
+
+logger = logging.getLogger(__name__)
 
 _INTERNAL = (
     "INTERNAL ADMIN ONLY. Not investment advice. Not a public recommendation. "
@@ -66,6 +73,35 @@ _INTERNAL = (
 # ---------------------------------------------------------------------------
 # Runs
 # ---------------------------------------------------------------------------
+
+
+async def _schedule_run(
+    run: DiscoveryRun, background_tasks: BackgroundTasks
+) -> dict | None:
+    """Start processing an already-committed run. Returns the job block, if durable.
+
+    W6a: with ``V3_DURABLE_JOBS_ENABLED`` and ``V3_DISCOVERY_DURABLE_ENABLED`` both
+    on, the run becomes a ``discovery_research`` job a leased worker claims — it
+    survives a reload, a closed tab and a container recycle. Otherwise (and if
+    the enqueue itself fails) it runs as before, in a process-local
+    ``BackgroundTask`` with its own DB session; only the primitive run id is
+    handed over, never the request-scoped session.
+    """
+    if discovery_job.durable_enabled():
+        try:
+            view, _created = await discovery_job.submit(run)
+            return discovery_job.job_summary_from_view(view)
+        except Exception as exc:  # noqa: BLE001 - fall back; the run must still run
+            log_event(
+                logger,
+                "discovery_durable_enqueue_failed",
+                level=logging.WARNING,
+                run_id=run.id,
+                error_type=type(exc).__name__,
+                fallback="background_task",
+            )
+    background_tasks.add_task(svc.process_discovery_run_task, str(run.id))
+    return None
 
 
 @router.get(
@@ -112,12 +148,10 @@ async def create_discovery_run(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
-    # Process the (already-committed) run in the background using its own DB
-    # session — never the request-scoped one, which is closed after the
-    # response. Only the primitive run_id is handed to the task.
-    background_tasks.add_task(svc.process_discovery_run_task, str(run.id))
+    job = await _schedule_run(run, background_tasks)
 
     dto = DiscoveryRunRead.model_validate(run)
+    dto.job = DiscoveryRunJob.model_validate(job) if job else None
     dto.message = (
         "Discovery run started. Processing in the background — refresh or poll "
         "run status for progress."
@@ -226,13 +260,22 @@ async def create_thesis_discovery_run(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
-    background_tasks.add_task(svc.process_discovery_run_task, str(run.id))
+    job = await _schedule_run(run, background_tasks)
 
     dto = DiscoveryRunRead.model_validate(run)
+    dto.job = DiscoveryRunJob.model_validate(job) if job else None
     dto.message = (
         "Thesis discovery run started. A bounded universe was generated and is "
         "being scanned in the background — poll run status for progress."
     )
+    return dto
+
+
+async def _run_read(run: DiscoveryRun) -> DiscoveryRunRead:
+    """A run, plus its durable job block when it has one (W6a, additive)."""
+    dto = DiscoveryRunRead.model_validate(run)
+    job = await discovery_job.job_summary(dto.id)
+    dto.job = DiscoveryRunJob.model_validate(job) if job else None
     return dto
 
 
@@ -251,7 +294,7 @@ async def get_thesis_discovery_run(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Discovery run {run_id} not found",
         )
-    return DiscoveryRunRead.model_validate(run)
+    return await _run_read(run)
 
 
 @router.get(
@@ -269,7 +312,7 @@ async def get_discovery_run(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Discovery run {run_id} not found",
         )
-    return DiscoveryRunRead.model_validate(run)
+    return await _run_read(run)
 
 
 @router.get(

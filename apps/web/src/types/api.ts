@@ -909,7 +909,17 @@ export interface DiscoveryRun {
   is_async?: boolean;
   message?: string | null;
   progress_pct?: number;
+  // W6a — the durable job running this scan (null on the BackgroundTasks path).
+  // The run's own `status` stays the one the page acts on.
+  job?: DiscoveryRunJob | null;
   disclaimer: string;
+}
+
+export interface DiscoveryRunJob {
+  job_id: string;
+  job_status: string;
+  attempt: number;
+  max_attempts: number;
 }
 
 export interface DiscoveryRunListResponse {

@@ -610,6 +610,20 @@ Operational notes:
   background tasks. Adding workers does not make the tasks durable.
 - No new env var and no migration are required for Phase 25.1.
 
+**W6a — Discovery on the durable worker (`V3_DISCOVERY_DURABLE_ENABLED`, default
+`false`).** With this flag and `V3_DURABLE_JOBS_ENABLED` both `true`, new Discovery
+runs (`POST /market-discovery/runs` and `/thesis-runs`) are enqueued as
+`discovery_research` jobs and run by the durable worker, so a recycle does not
+lose them. A retry resumes from the last committed ticker.
+- **No migration.** The `research_jobs` table already exists.
+- **Worker needed.** The jobs are run by the in-process worker
+  (`V3_JOB_WORKER_IN_PROCESS=true`, the default) or by a separate worker
+  process. With durable jobs on and no worker, runs stay `pending`.
+- **One job at a time.** The worker runs one job at a time, so a Discovery run
+  queued behind a company-research job waits for it (up to about 10 minutes).
+- **Turning the flag off** only stops new runs being enqueued. The handler stays
+  registered, so jobs already queued still finish.
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on
