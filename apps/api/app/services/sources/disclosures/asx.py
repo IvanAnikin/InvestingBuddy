@@ -208,9 +208,10 @@ async def list_asx_announcements(
             detail=why or "the ASX's own list could not be read", requests=requests)
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(
-        days=max(1, int(getattr(cfg, "v3_disclosure_lookback_days", 540) or 540)))
+        days=max(1, int(getattr(cfg, "v3_disclosure_lookback_days", 560) or 560)))
     documents: list[OfficialDocument] = []
     refused = 0
+    pages_failed = 0
     reached = False
     # EVERY calendar year the window touches — a 540-day window read in February spans
     # three, and the middle one holds the latest annual and half-year reports.
@@ -222,6 +223,7 @@ async def list_asx_announcements(
         requests += 1
         content = getattr(result, "content", None) if getattr(result, "ok", False) else None
         if not content:
+            pages_failed += 1
             continue
         reached = True
         import asyncio
@@ -252,6 +254,7 @@ async def list_asx_announcements(
     ordered = sorted(unique.values(), key=lambda d: d.published_at or now, reverse=True)
     return DisclosureListing(
         issuer=issuer, documents=ordered, requests=requests, refused=refused,
+        pages_failed=pages_failed,
         reason=None if ordered else REASON_DATA_NOT_SOURCED,
     )
 
