@@ -424,6 +424,33 @@ class TestEndpoints:
         task.assert_awaited_once_with(str(run.id))
         assert "discovery_durable_enqueue_failed" in caplog.text
 
+    async def test_an_enqueue_that_committed_but_raised_does_not_also_run_a_background_task(
+        self, client, durable_on, factory, monkeypatch  # noqa: ANN001
+    ):
+        """W6a review M1: the job row landed, then the call failed. A BackgroundTask
+        beside that job would scan the run twice (the durable handler ignores the
+        running guard), so the fallback must see the job and stand down."""
+        real_enqueue = JobStore.enqueue
+
+        async def committed_then_raised(self, **kwargs):  # noqa: ANN001, ANN003, ANN202
+            await real_enqueue(self, **kwargs)
+            raise OSError("connection reset after COMMIT")
+
+        monkeypatch.setattr(JobStore, "enqueue", committed_then_raised)
+        run = _api_run(uuid.uuid4())
+        with patch.object(mds, "create_pending_run", AsyncMock(return_value=run)), patch.object(
+            mds, "process_discovery_run_task", AsyncMock()
+        ) as task:
+            res = await client.post(
+                "/api/v1/market-discovery/runs", json={"universe_source": "curated_seed"}
+            )
+        assert res.status_code == 201
+        task.assert_not_awaited()
+        async with factory() as s:
+            jobs = (await s.execute(sa.select(ResearchJob))).scalars().all()
+        assert len(jobs) == 1
+        assert res.json()["job"]["job_id"] == str(jobs[0].id)
+
     async def test_get_run_carries_the_job_block_when_durable(
         self, client, durable_on, store  # noqa: ANN001
     ):
@@ -586,6 +613,56 @@ class TestResume:
         job = await _job_row(factory, view.id)
         assert job.status == contract.STATUS_COMPLETED
         assert job.attempt == 2
+
+    async def test_a_real_db_connection_drop_on_commit_retries_and_resumes(
+        self, factory, store, monkeypatch  # noqa: ANN001
+    ):
+        """W6a review H1: the main case W6a must recover — the per-ticker COMMIT fails
+        with SQLAlchemy's own OperationalError (not an OSError). It must be retried,
+        not fail the job and the run."""
+        from sqlalchemy.exc import OperationalError
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        run_id = await _make_run(factory)
+        view, _ = await djob.submit(await _run(factory, run_id), store=store)
+        state = {"armed": False, "fired": 0}
+
+        async def arm_on_ccc(ticker: str) -> None:
+            if ticker == "CCC" and state["fired"] == 0:
+                state["armed"] = True  # the NEXT commit is CCC's per-ticker commit
+
+        real_commit = AsyncSession.commit
+
+        async def flaky_commit(self):  # noqa: ANN001, ANN202
+            if state["armed"]:
+                state["armed"] = False
+                state["fired"] += 1
+                raise OperationalError(
+                    "COMMIT", {}, Exception("server closed the connection unexpectedly")
+                )
+            return await real_commit(self)
+
+        monkeypatch.setattr(AsyncSession, "commit", flaky_commit)
+        fake = FakeExtractor(on_call=arm_on_ccc)
+        monkeypatch.setattr(mds, "extract_signal", fake)
+
+        await _worker(store).run_once()
+        job = await _job_row(factory, view.id)
+        assert job.status == contract.STATUS_PENDING, "a DB blip failed the job"
+        assert job.error_class == "OperationalError"
+        mid = await _run(factory, run_id)
+        assert mid.status == "running", "a DB blip finished the run"
+        assert mid.processed_count == 2
+
+        await _make_due_now(factory, view.id)
+        await _worker(store, owner="w2").run_once()
+
+        run = await _run(factory, run_id)
+        assert state["fired"] == 1
+        assert run.status == "completed"
+        assert await _candidate_tickers(factory, run_id) == TICKERS
+        assert run.processed_count == 5 and run.candidate_count == 5
+        assert fake.calls == ["AAA", "BBB", "CCC", "CCC", "DDD", "EEE"]
 
     async def test_a_killed_worker_is_reclaimed_and_the_scan_resumes(
         self, factory, store, monkeypatch  # noqa: ANN001
@@ -824,6 +901,33 @@ class TestTerminalFailures:
         run = await _run(factory, run_id)
         assert run.status == "failed"
         assert any("gave up after 1 attempts" in w for w in run.warnings)
+
+    async def test_the_sweep_limit_bounds_open_runs_not_ended_jobs(
+        self, factory, store, durable_on, monkeypatch  # noqa: ANN001
+    ):
+        """W6a review L2: a bound over ENDED jobs fills with ones already reconciled,
+        and an older stranded run is never reached. The bound is over open runs."""
+        monkeypatch.setattr(djob, "SWEEP_LIMIT", 2)
+        stranded = await _make_run(factory)
+        stranded_job, _ = await djob.submit(await _run(factory, stranded), store=store)
+        await store.request_cancel(stranded_job.id)
+        # Newer ended jobs whose runs are already finished.
+        for _ in range(3):
+            done = await _make_run(factory, status="completed")
+            view, _ = await djob.submit(await _run(factory, done), store=store)
+            await store.request_cancel(view.id)
+
+        await djob.reconcile_orphaned_discovery_runs()
+
+        assert (await _run(factory, stranded)).status == "cancelled"
+
+    async def test_the_sweep_leaves_a_run_with_a_live_job_alone(
+        self, factory, store, durable_on  # noqa: ANN001
+    ):
+        run_id = await _make_run(factory)
+        await djob.submit(await _run(factory, run_id), store=store)
+        await djob.reconcile_orphaned_discovery_runs()
+        assert (await _run(factory, run_id)).status == "pending"
 
     async def test_the_sweep_is_inert_with_durable_jobs_off(self, factory, store, monkeypatch):  # noqa: ANN001
         """Registered by the API import in every process: with durable jobs off it

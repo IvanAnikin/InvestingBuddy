@@ -92,14 +92,22 @@ async def _schedule_run(
             view, _created = await discovery_job.submit(run)
             return discovery_job.job_summary_from_view(view)
         except Exception as exc:  # noqa: BLE001 - fall back; the run must still run
+            # The enqueue COMMIT may have landed even though this call failed (the
+            # error came after it, or the acknowledgement was lost). Then a job
+            # exists, and a BackgroundTask beside it would scan the same run twice
+            # — the durable handler deliberately ignores the "already running"
+            # guard. So fall back only when the job is known NOT to exist.
+            existing = await discovery_job.existing_job(run.id)
             log_event(
                 logger,
                 "discovery_durable_enqueue_failed",
                 level=logging.WARNING,
                 run_id=run.id,
                 error_type=type(exc).__name__,
-                fallback="background_task",
+                fallback="none_job_exists" if existing else "background_task",
             )
+            if existing is not None:
+                return discovery_job.job_summary_from_view(existing)
     background_tasks.add_task(svc.process_discovery_run_task, str(run.id))
     return None
 

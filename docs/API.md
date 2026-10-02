@@ -2151,9 +2151,10 @@ and `POST /thesis-runs` enqueue a `discovery_research` durable job
 (`research_jobs`, idempotency key `discovery_research:{run_id}`, payload
 `{discovery_run_id}`, `company_id` NULL) instead of a `BackgroundTask`. A leased
 worker runs it, so a reload, a closed tab or a container recycle does not lose the
-run: the next worker reclaims it. If the enqueue itself fails, the endpoint falls
-back to the `BackgroundTask` and logs `discovery_durable_enqueue_failed`. The
-Discovery Council stays on `BackgroundTasks`.
+run: the next worker reclaims it. If the enqueue itself fails, the endpoint logs
+`discovery_durable_enqueue_failed` and checks whether the job row landed anyway;
+it falls back to the `BackgroundTask` only when no job exists (otherwise the run
+would be scanned twice). The Discovery Council stays on `BackgroundTasks`.
 
 - **Response shape unchanged.** `status` is still `pending` on create. One
   additive, nullable field on `DiscoveryRunRead`: `job` =

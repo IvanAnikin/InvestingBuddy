@@ -79,8 +79,8 @@ _UNFINISHED_TERMINAL = (
     contract.STATUS_CANCELLED,
 )
 
-#: How far back the sweep looks for an unreconciled ended job, and how many it
-#: reads per pass. Bounded so the repair path can never become the outage.
+#: How far back the sweep looks for an open run, and how many open runs it reads
+#: per pass. Bounded so the repair path can never become the outage.
 SWEEP_LOOKBACK = timedelta(days=7)
 SWEEP_LIMIT = 200
 
@@ -152,6 +152,27 @@ async def submit(
         status=view.status,
     )
     return view, created
+
+
+async def existing_job(
+    run_id: uuid.UUID | str, *, store: JobStore | None = None
+) -> JobView | None:
+    """The newest job for ``run_id``, or None when none exists. Never raises.
+
+    Used by the enqueue fallback. When even this lookup fails the database is
+    unreachable, so the enqueue that just failed almost certainly did not commit
+    either; None (fall back to the BackgroundTask) is then the answer that keeps
+    the run from sitting in ``pending`` with nothing to process it.
+    """
+    try:
+        return await (store or JobStore()).latest_for_base_key(dedup_key(run_id))
+    except Exception as exc:  # noqa: BLE001 - the caller must still decide
+        logger.warning(
+            "v3_discovery_job_lookup_failed run_id=%s error_type=%s",
+            run_id,
+            type(exc).__name__,
+        )
+        return None
 
 
 def job_summary_from_view(view: JobView, *, now: datetime | None = None) -> dict[str, Any]:
@@ -297,55 +318,39 @@ async def reconcile_orphaned_discovery_runs() -> None:
         return
 
     from app.models.discovery import DiscoveryRun
-    from app.models.research_job import ResearchJob
-    from app.services.jobs.job_store import to_view
 
+    # The bound applies to OPEN runs — the population that needs repair — not to
+    # ended jobs: a limit over ended jobs fills up with ones already reconciled
+    # and an older stranded run falls off the end for ever.
     since = _utcnow() - SWEEP_LOOKBACK
     async with _session_factory()() as session:
-        rows = (
+        open_ids = (
             (
                 await session.execute(
-                    sa.select(ResearchJob)
+                    sa.select(DiscoveryRun.id)
                     .where(
-                        ResearchJob.job_type == JOB_TYPE,
-                        ResearchJob.status.in_(list(_UNFINISHED_TERMINAL)),
-                        ResearchJob.finished_at >= since,
+                        DiscoveryRun.status.in_(["pending", "running"]),
+                        DiscoveryRun.created_at >= since,
                     )
-                    .order_by(ResearchJob.finished_at.desc())
+                    .order_by(DiscoveryRun.created_at.desc())
                     .limit(SWEEP_LIMIT)
                 )
             )
             .scalars()
             .all()
         )
-        ended: dict[uuid.UUID, JobView] = {}
-        for row in rows:
-            run_id = _run_id_from(row.payload_json)
-            # Newest first, so the first job seen per run is the latest one.
-            if run_id is not None and run_id not in ended:
-                ended[run_id] = to_view(row)
-        if not ended:
-            return
-        open_ids = set(
-            (
-                await session.execute(
-                    sa.select(DiscoveryRun.id).where(
-                        DiscoveryRun.id.in_(list(ended)),
-                        DiscoveryRun.status.in_(["pending", "running"]),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
+    if not open_ids:
+        return
 
     store = JobStore()
     for run_id in open_ids:
-        job = ended[run_id]
+        # The LATEST generation only: an older ended job says nothing about a run
+        # a newer job now owns. A run with no job (the BackgroundTask path) is
+        # skipped — nothing here can speak for it.
         latest = await store.latest_for_base_key(dedup_key(run_id))
-        if latest is not None and latest.id != job.id:
-            continue  # a newer generation owns this run now
-        await reconcile_run_with_job(job, run_id)
+        if latest is None or latest.status not in _UNFINISHED_TERMINAL:
+            continue
+        await reconcile_run_with_job(latest, run_id)
 
 
 # ---------------------------------------------------------------------------
