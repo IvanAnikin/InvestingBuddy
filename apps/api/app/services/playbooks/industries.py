@@ -933,9 +933,320 @@ MINING_MATERIALS = Playbook(
 )
 
 
+# --------------------------------------------------------------------------- #
+# Development-stage resource overlay — item 20
+# --------------------------------------------------------------------------- #
+#
+# A company building its first mine or plant is not a producer with bad numbers. Its
+# research variables are the PROJECT — resource, reserve, grade, recovery, method,
+# planned output, offtake, permits, construction, capex spent and remaining, financing,
+# cash runway and dilution — and the issuer's own study economics. Applied ONLY on the
+# `development_stage_resource` signal (``classification.stage``: positive proof of no or
+# immaterial revenue plus exploration/development spend or project-disclosure
+# vocabulary), and ON TOP of whatever else applies: an OVERLAY, whose `replaces`
+# supersede the mining playbook's producer questions as well as the base model's.
+#
+# Study economics are the ISSUER'S stated figures, named by study and date. This
+# platform does not value the project and says so in the question itself.
+
+_DEV_ISSUER = _Contract(
+    min_items=2, required_kinds=(_ISSUER,), allow_external=True, max_external_searches=2
+)
+_DEV_ONE = _Contract(min_items=1, required_kinds=(_ISSUER,), allow_external=True,
+                     max_external_searches=1)
+
+DEVELOPMENT_STAGE_RESOURCE = Playbook(
+    playbook_id="development_stage_resource",
+    version=1,
+    display_name="Development-stage resource project (overlay)",
+    applies_to=AppliesTo(business_model_signals=("development_stage_resource",)),
+    overlay=True,
+    questions=(
+        PlaybookQuestion(
+            key="project_portfolio",
+            text=(
+                "Which projects does the company hold — name, jurisdiction, ownership "
+                "percentage, stage (exploration, study, permitting, construction, "
+                "commissioning), planned mining and processing method, and planned "
+                "production capacity?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=1,
+            blocking=True,
+            domain=_d.OPERATIONS_ASSETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "A developer IS its projects: without knowing what is owned, at what "
+                "stage and at what share, there is nothing to analyse."
+            ),
+            evidence_contract=_DEV_ISSUER,
+            search_intents=(
+                "{company} project ownership interest stage location",
+                "{company} mining method processing plant planned production capacity",
+            ),
+            replaces=("operations_and_assets", "assets_and_production"),
+        ),
+        PlaybookQuestion(
+            key="project_product",
+            text=(
+                "What will each project produce — product, specification or quality, "
+                "payability or basket, and planned annual output — and for which "
+                "end markets?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=1,
+            # Not blocking: two blocking questions at most (the project, and whether it
+            # can be funded). The planned product is usually stated with the project.
+            domain=_d.PRODUCTS_SERVICES,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Before first production the commodity exposure is the PLANNED product, "
+                "not a share of revenue that does not exist yet."
+            ),
+            evidence_contract=_DEV_ISSUER,
+            search_intents=(
+                "{company} product specification planned annual output concentrate",
+            ),
+            replaces=("products_and_revenue_mix", "commodity_exposure"),
+        ),
+        PlaybookQuestion(
+            key="resource_reserve",
+            text=(
+                "What Mineral Resource and Ore Reserve does each project report, under "
+                "which code (JORC, NI 43-101, S-K 1300), with tonnage, grade, contained "
+                "product, metallurgical recovery and the estimate date?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.OPERATIONS_ASSETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Resource, grade and recovery decide how much can be produced and at "
+                "what cost; the reporting code decides how much weight they carry."
+            ),
+            evidence_contract=_DEV_ISSUER,
+            search_intents=(
+                "{company} mineral resource ore reserve estimate grade JORC",
+            ),
+            replaces=("reserves_and_mine_life",),
+        ),
+        PlaybookQuestion(
+            key="offtake",
+            text=(
+                "What offtake agreements exist — counterparty, share of planned output, "
+                "term, pricing basis, and whether binding or conditional?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.CUSTOMERS_END_MARKETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Binding offtake is what project lenders fund against; a memorandum of "
+                "understanding is not."
+            ),
+            evidence_contract=_DEV_ISSUER,
+            search_intents=("{company} offtake agreement binding term sheet counterparty",),
+            replaces=("customers_and_offtake",),
+        ),
+        PlaybookQuestion(
+            key="permits_and_approvals",
+            text=(
+                "Which permits and approvals — mining licence, environmental approval, "
+                "water, land access — are granted, pending or outstanding for each "
+                "project?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.RISKS,
+            owner_role="risk_analyst",
+            why_it_matters="An unpermitted project cannot be built on schedule.",
+            evidence_contract=_DEV_ISSUER,
+            search_intents=("{company} mining licence environmental approval permit granted",),
+        ),
+        PlaybookQuestion(
+            key="construction_and_schedule",
+            text=(
+                "What is the construction status and the schedule to final investment "
+                "decision, commissioning, first production and ramp-up — and has the "
+                "schedule moved?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_recent_filings"}),
+            priority=1,
+            domain=_d.GROWTH_PIPELINE,
+            owner_role="event_analyst",
+            why_it_matters=(
+                "For a developer the schedule IS the growth: every quarter of delay "
+                "is a quarter of cash burn without revenue."
+            ),
+            evidence_contract=_DEV_ISSUER,
+            search_intents=(
+                "{company} construction progress commissioning first production schedule",
+            ),
+            replaces=("growth_pipeline",),
+        ),
+        PlaybookQuestion(
+            key="capex_and_funding",
+            text=(
+                "What is the development capital expenditure for each project, how much "
+                "has been spent and how much remains, and how is it funded — committed "
+                "or conditional debt, equity, grants or offtake prepayments — and what "
+                "funding gap remains?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_financial_facts"}),
+            priority=1,
+            blocking=True,
+            domain=_d.FINANCIAL_CAPACITY,
+            owner_role="capital_allocation_analyst",
+            why_it_matters=(
+                "Whether the project can be built is a funding question before it is "
+                "anything else."
+            ),
+            evidence_contract=_DEV_ISSUER,
+            search_intents=(
+                "{company} project capital expenditure funding debt facility equity raise",
+                "{company} funding gap committed conditional finance",
+            ),
+            replaces=("cash_generation_and_funding",),
+        ),
+        PlaybookQuestion(
+            key="cash_runway_and_dilution",
+            text=(
+                "What are cash and equivalents, the operating and capital cash burn, "
+                "and the cash runway in quarters, and how has the share count moved "
+                "with each raise?"
+            ),
+            required_tools=frozenset({"get_financial_facts", "get_calculated_metrics"}),
+            required_calculations=("cash_runway_quarters",),
+            priority=1,
+            domain=_d.FINANCIAL_CAPACITY,
+            owner_role="capital_allocation_analyst",
+            why_it_matters=(
+                "Runway decides when the next raise comes, and dilution decides who "
+                "pays for the project."
+            ),
+            evidence_contract=_DEV_ONE,
+            series_labels=("cash_and_equivalents", "operating_cash_flow",
+                           "capital_expenditure"),
+            search_intents=("{company} placement share issue capital raising dilution",),
+        ),
+        PlaybookQuestion(
+            key="study_economics",
+            text=(
+                "What do the issuer's own studies (scoping, pre-feasibility, definitive "
+                "feasibility) state — study name and date, NPV and its discount rate, "
+                "IRR, payback, operating cost, commodity price and exchange-rate "
+                "assumptions and sensitivities? Report them as the issuer's stated "
+                "study figures; this platform does not value the project."
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.VALUATION_CONTEXT,
+            owner_role="valuation_context_analyst",
+            why_it_matters=(
+                "The study is the issuer's own economic case; its assumptions, not its "
+                "headline NPV, are what a reader needs to test."
+            ),
+            evidence_contract=_DEV_ONE,
+            search_intents=(
+                "{company} feasibility study NPV IRR operating cost price assumptions",
+            ),
+            replaces=("unit_costs",),
+        ),
+        PlaybookQuestion(
+            key="infrastructure",
+            text=(
+                "What power, water, transport, port and processing infrastructure does "
+                "each project need, and what is in place, contracted or still to build?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=3,
+            domain=_d.OPERATIONS_ASSETS,
+            owner_role="business_analyst",
+            why_it_matters="Missing infrastructure is capex and schedule not yet counted.",
+            evidence_contract=_DEV_ONE,
+            search_intents=("{company} power water rail port infrastructure project",),
+        ),
+        PlaybookQuestion(
+            key="execution_risk",
+            text=(
+                "What execution risks are evidenced — capex overruns, schedule slippage, "
+                "metallurgical or technical risk, contractor, commissioning and ramp-up "
+                "risk?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=2,
+            domain=_d.RISKS,
+            owner_role="risk_analyst",
+            why_it_matters=(
+                "First projects run late and over budget more often than not; what is "
+                "evidenced here is what the schedule and capex are exposed to."
+            ),
+            evidence_contract=_DEV_ONE,
+            search_intents=("{company} cost overrun delay commissioning ramp-up issues",),
+        ),
+        PlaybookQuestion(
+            key="revenue_status",
+            text=(
+                "Does the company earn revenue yet? If not, when do its own disclosures "
+                "expect first production and first sales, and what other income "
+                "(interest, grants) does it report?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_financial_facts"}),
+            priority=2,
+            domain=_d.FINANCIAL_CAPACITY,
+            owner_role="financial_analyst",
+            why_it_matters=(
+                "Pre-revenue is a stage, not a missing figure: revenue and margins are "
+                "not applicable yet, and the question is when that changes."
+            ),
+            evidence_contract=_DEV_ONE,
+            search_intents=("{company} first production first sales expected timing",),
+            replaces=("revenue_trajectory", "profitability"),
+        ),
+    ),
+    required_metrics=(
+        "cash_and_equivalents",
+        "operating_cash_flow",
+        "capital_expenditure",
+        "cash_runway_quarters",
+        "exploration_capitalised",
+        "development_expenditure",
+    ),
+    preferred_sources=("issuer_primary", "uk_fca_nsm", "asx_announcements", "sec_edgar"),
+    specialist_roles=("capital_allocation_analyst", "industry_analyst", "event_analyst"),
+    risk_framework=(
+        "funding_gap",
+        "dilution",
+        "capex_overrun",
+        "schedule_delay",
+        "permitting",
+        "technical_metallurgical",
+        "commissioning_ramp_up",
+        "offtake_counterparty",
+        "commodity_price",
+        "infrastructure",
+        "political_jurisdiction",
+        "community",
+    ),
+    completion_rules=("all_blocking_questions_answered", "no_council_blocking_gaps"),
+    notes=(
+        "Overlay for pre-revenue resource developers, selected only on positive proof "
+        "(classification.stage). Supersedes the producer questions of the base model and "
+        "of the mining playbook — revenue trajectory, profitability, revenue share by "
+        "commodity, unit costs, reserve life — with the project questions a developer can "
+        "actually answer. Study economics are the issuer's stated figures, never a "
+        "platform assessment."
+    ),
+)
+
+
 PLAYBOOKS: tuple[Playbook, ...] = (
     BANKS_FINANCIALS,
     BIOTECH,
+    DEVELOPMENT_STAGE_RESOURCE,
     INDUSTRIAL_DEFENSE,
     LUXURY,
     MINING_MATERIALS,
@@ -961,6 +1272,7 @@ def register_all() -> tuple[Playbook, ...]:
 __all__ = [
     "BANKS_FINANCIALS",
     "BIOTECH",
+    "DEVELOPMENT_STAGE_RESOURCE",
     "INDUSTRIAL_DEFENSE",
     "LUXURY",
     "MINING_MATERIALS",

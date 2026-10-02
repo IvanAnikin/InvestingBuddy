@@ -305,6 +305,13 @@ class Playbook:
     risk_framework: tuple[str, ...] = ()
     completion_rules: tuple[str, ...] = ("all_blocking_questions_answered",)
     notes: str | None = None
+    #: Item 20 — an OVERLAY applies on top of other playbooks, and its questions'
+    #: ``replaces`` supersede those playbooks' questions too, not only the base model's.
+    #: A development-stage developer is still a mining company; the mining playbook's
+    #: "what share of REVENUE is each commodity" is simply the wrong question for it.
+    #: The supersession is recorded on the plan (``ResearchPlan.superseded``), never
+    #: silent.
+    overlay: bool = False
 
     def __post_init__(self) -> None:
         if self.version < 1:
@@ -361,7 +368,7 @@ class Playbook:
         return tuple(q for q in self.questions if q.blocking)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "playbook_id": self.playbook_id,
             "version": self.version,
             "display_name": self.display_name,
@@ -373,6 +380,15 @@ class Playbook:
             "risk_framework": list(self.risk_framework),
             "completion_rules": list(self.completion_rules),
         }
+        if self.overlay:
+            # Only when set: every existing playbook's record stays byte-identical.
+            out["overlay"] = True
+        return out
+
+    @property
+    def superseded_keys(self) -> "frozenset[str]":
+        """Question keys this playbook's questions replace (an overlay's reach)."""
+        return frozenset(key for q in self.questions for key in q.replaces)
 
 
 @dataclass(frozen=True)
@@ -388,15 +404,32 @@ class PlaybookSelection:
         return {p.playbook_id: p.version for p in self.playbooks}
 
     @property
+    def superseded(self) -> dict[str, str]:
+        """``{question_key: overlay_playbook_id}`` — questions of OTHER playbooks that an
+        overlay's ``replaces`` supersedes (item 20). Empty without an overlay."""
+        out: dict[str, str] = {}
+        for overlay in (p for p in self.playbooks if p.overlay):
+            for other in self.playbooks:
+                if other is overlay:
+                    continue
+                for question in other.questions:
+                    if question.key in overlay.superseded_keys:
+                        out.setdefault(question.key, overlay.playbook_id)
+        return out
+
+    @property
     def questions(self) -> tuple[PlaybookQuestion, ...]:
         """The **union**, de-duplicated on key, first playbook winning.
 
         A conglomerate is legitimately both industrial and financial and should be asked
-        both sets of questions.
+        both sets of questions. A question an overlay supersedes is not in the union.
         """
+        superseded = self.superseded
         seen: dict[str, PlaybookQuestion] = {}
         for playbook in self.playbooks:
             for question in playbook.questions:
+                if question.key in superseded and not playbook.overlay:
+                    continue
                 seen.setdefault(question.key, question)
         return tuple(seen.values())
 

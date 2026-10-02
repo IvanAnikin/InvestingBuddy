@@ -54,7 +54,8 @@ _UK_MATERIAL_TYPES = (
 )
 
 # ── ASX: headline patterns (the yearly listing states no type column) ──────── #
-_ASX_ANNUAL_RE = re.compile(r"\bannual report\b", re.I)
+#: "Annual Report" and "Annual Financial Report" (review H4: the latter was "other").
+_ASX_ANNUAL_RE = re.compile(r"\bannual (?:financial )?report\b", re.I)
 _ASX_NOT_THE_REPORT_RE = re.compile(
     r"corporate governance|appendix 4g|notice of|letter to shareholders|access to|"
     r"proxy|sustainab|\besg\b|tenement|webinar|presentation|briefing|conference call",

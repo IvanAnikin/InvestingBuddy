@@ -119,6 +119,13 @@ class FindingView:
     direction: str | None = None
     period_key: str | None = None
     references: tuple[str, ...] = ()
+    #: Migration 043 — when its source published it (ISO date), and the newer finding
+    #: that replaced it as current guidance.
+    source_published_at: str | None = None
+    superseded_by: str | None = None
+    #: Which of its fields were superseded (labels). A finding stating capex AND a
+    #: milestone may be prior guidance for one and current for the other.
+    superseded_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,11 @@ class GapView:
     question_key: str | None
     knowledge_state: str | None
     kind: str | None = None
+    #: Migration 043 — the final reconciliation verdict. ``closed`` and ``superseded``
+    #: gaps are never listed as platform evidence gaps.
+    reconciliation_status: str | None = None
+    addressed_by_finding_ids: tuple[str, ...] = ()
+    reconciliation_reasons: tuple[str, ...] = ()
 
 
 @dataclass
@@ -176,8 +188,41 @@ def screen(findings: Sequence[FindingView]) -> tuple[list[FindingView], int]:
     """
     from app.services import safety_terms
 
-    kept = [f for f in findings if not safety_terms.scan_value(f.statement, path="finding")]
+    kept = [
+        f for f in findings
+        if not safety_terms.scan_value(f.statement, path="finding")
+        and not _unattributed_study_economics(f)
+    ]
     return kept, len(findings) - len(kept)
+
+
+#: A named study: "the 2025 Definitive Feasibility Study", "PFS (March 2024)".
+_NAMED_STUDY_RE = re.compile(
+    r"\b(?:scoping|pre-?feasibility|definitive\s+feasibility|bankable\s+feasibility|"
+    r"feasibility|optimi[sz]ation|expansion)\s+study\b|(?-i:\b(?:PFS|DFS|BFS)\b)",
+    re.IGNORECASE,
+)
+_STUDY_DATE_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def _unattributed_study_economics(finding: FindingView) -> bool:
+    """Review L4 — an NPV or IRR is the ISSUER'S study figure or it is not reported.
+
+    A finding stating one must name the study and its date ("the 2025 Definitive
+    Feasibility Study"); otherwise it reads as this platform valuing the project, and it
+    is withheld. A finding under the overlay's ``study_economics`` question is also held
+    to the editor's stricter valuation / trading word list.
+    """
+    from app.services.research_fields import fields_mentioned
+
+    text = finding.statement or ""
+    states = set(fields_mentioned(text))
+    if states & {"metric:npv", "metric:irr"} and not (
+        _NAMED_STUDY_RE.search(text) and _STUDY_DATE_RE.search(text)
+    ):
+        return True
+    return finding.question_key == "study_economics" and bool(
+        _EDITOR_FORBIDDEN_RE.search(text))
 
 
 def _finding_dict(finding: FindingView, label: str) -> dict[str, Any]:
@@ -195,7 +240,43 @@ def _finding_dict(finding: FindingView, label: str) -> dict[str, Any]:
         "direction": finding.direction,
         "period_key": finding.period_key,
         "references": list(finding.references),
+        "source_published_at": finding.source_published_at,
+        "superseded_by_finding_id": finding.superseded_by,
+        # Only on a superseded finding, so the pinned key set of an ordinary one holds.
+        **({"superseded_fields": list(finding.superseded_fields)}
+           if finding.superseded_fields else {}),
     }
+
+
+#: Reconciliation verdicts a reader is never shown as an open platform gap.
+HIDDEN_GAP_STATUSES: frozenset[str] = frozenset({"closed", "superseded"})
+
+
+def _apply_supersession(
+    by_section: Mapping[str, list[dict[str, Any]]], labels: Mapping[str, str]
+) -> None:
+    """Mark current and prior guidance, by label, on the findings shown.
+
+    Both are kept: the older finding reads "prior guidance, superseded <date>" and names
+    the current one; the current one names what it superseded.
+    """
+    shown = {f["finding_id"]: f for items in by_section.values() for f in items}
+    for finding in shown.values():
+        newer_id = finding.get("superseded_by_finding_id")
+        if not newer_id:
+            continue
+        newer = shown.get(newer_id)
+        finding["guidance_status"] = "prior"
+        finding["superseded_by_label"] = labels.get(newer_id)
+        finding["superseded_on"] = newer.get("source_published_at") if newer else None
+        if newer is not None:
+            newer["guidance_status"] = "current"
+            newer.setdefault("supersedes", []).append(
+                {
+                    "label": finding.get("label"),
+                    "source_published_at": finding.get("source_published_at"),
+                }
+            )
 
 
 def _question_dict(question: QuestionView) -> dict[str, Any]:
@@ -444,6 +525,8 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
             labels[finding.finding_id] = label
             by_section[key].append(_finding_dict(finding, label))
 
+    _apply_supersession(by_section, labels)
+
     def _referenced_labels(question: QuestionView) -> list[str]:
         return [labels[f] for f in question.referenced_finding_ids if f in labels]
 
@@ -537,18 +620,32 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
 
     platform_gaps: list[dict[str, Any]] = []
     seen_gaps: set[tuple[str | None, str]] = set()
+    reconciled_hidden = 0
     for g in inputs.gaps:
         if (g.kind or "platform_evidence_gap") != "platform_evidence_gap":
+            continue
+        if g.reconciliation_status in HIDDEN_GAP_STATUSES:
+            # A finding states it, or the acquisition it records was overcome: saying
+            # "not acquired" beside the finding would contradict the report itself.
+            reconciled_hidden += 1
             continue
         # One entry per (question, statement): a gap re-recorded each round is one gap.
         identity = (g.question_key, g.description)
         if identity in seen_gaps:
             continue
         seen_gaps.add(identity)
-        platform_gaps.append(
-            {"description": g.description, "question_key": g.question_key,
-             "knowledge_state": g.knowledge_state}
-        )
+        entry: dict[str, Any] = {
+            "description": g.description, "question_key": g.question_key,
+            "knowledge_state": g.knowledge_state,
+        }
+        if g.reconciliation_status:
+            entry["reconciliation_status"] = g.reconciliation_status
+        if g.reconciliation_status == "partially_closed":
+            entry["partially_addressed_by"] = [
+                labels[f] for f in g.addressed_by_finding_ids if f in labels
+            ]
+            entry["reconciliation_reasons"] = list(g.reconciliation_reasons)
+        platform_gaps.append(entry)
     business_risks = [
         f["label"] for f in by_section["risks_and_counter_thesis"]
         if f["domain"] in {"risks", "governance"}
@@ -567,6 +664,7 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
             q.unresolved_reason for q in inputs.questions if q.unresolved_reason
         ),
         "platform_evidence_gaps": platform_gaps[:40],
+        "platform_evidence_gaps_reconciled": reconciled_hidden,
         "business_risk_labels": business_risks,
         "findings_shown": shown_count,
         "findings_not_shown": max(0, total - shown_count - inputs.withheld_for_safety),

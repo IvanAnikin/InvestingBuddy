@@ -1,7 +1,13 @@
 import Link from "next/link";
 import Surface from "@/components/product/Surface";
 import { formatDate } from "@/lib/format";
-import type { CouncilView, IdentityView, ReportingPeriods } from "./reportView";
+import {
+  periodText,
+  type CouncilView,
+  type IdentityView,
+  type PeriodStateView,
+  type ReportingPeriods,
+} from "./reportView";
 
 /**
  * The report header answers, in order: which company, in what reporting state,
@@ -15,6 +21,8 @@ import type { CouncilView, IdentityView, ReportingPeriods } from "./reportView";
 export default function ReportHeader({
   identity,
   periods,
+  annualState = null,
+  currentState = null,
   council,
   evidenceWordLabel,
   updatedAt,
@@ -24,6 +32,12 @@ export default function ReportHeader({
 }: {
   identity: IdentityView;
   periods: ReportingPeriods | null;
+  /**
+   * Item 21 — what is known about a period the report shows no figures for: an
+   * acquired report not yet extracted is never "not reported".
+   */
+  annualState?: PeriodStateView | null;
+  currentState?: PeriodStateView | null;
   council: CouncilView;
   evidenceWordLabel: string | null;
   updatedAt: string;
@@ -37,8 +51,8 @@ export default function ReportHeader({
   supersededBy?: string | null;
 }) {
   const facts: [string, string][] = [
-    ["Latest annual", periods?.latestAnnual ?? "Not reported"],
-    ["Current period", periods?.latestCurrent ?? "Not reported"],
+    ["Latest annual", periodText(periods?.latestAnnual, annualState)],
+    ["Current period", periodText(periods?.latestCurrent, currentState)],
     ["Evidence", evidenceWordLabel ?? "Not assessed"],
     [
       "Council",
@@ -109,7 +123,10 @@ export default function ReportHeader({
         {facts.map(([label, value]) => (
           <div key={label}>
             <dt className="text-xs text-[color:var(--ib-ink-3)]">{label}</dt>
-            <dd className="ib-breakable mt-0.5 text-sm text-[color:var(--ib-ink)]">
+            <dd
+              className="ib-breakable mt-0.5 text-sm text-[color:var(--ib-ink)]"
+              data-testid={`header-${label.toLowerCase().replace(/\s+/g, "-")}`}
+            >
               {value}
             </dd>
           </div>

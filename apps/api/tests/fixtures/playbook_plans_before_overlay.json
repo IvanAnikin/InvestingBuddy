@@ -1,0 +1,4097 @@
+{
+ "biotech": {
+  "degraded": [],
+  "plan": {
+   "blocking_question_count": 2,
+   "dropped_for_capacity": [],
+   "limits": {
+    "max_rounds": 3,
+    "max_tasks": 16,
+    "max_tool_calls": 400
+   },
+   "mode": "deep",
+   "playbook_versions": {
+    "biotech": 1
+   },
+   "question_count": 24,
+   "refined_by_model": false,
+   "subject": "ANY:US",
+   "task_count": 9,
+   "unassignable": []
+  },
+  "questions": [
+   {
+    "blocking": true,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "cash_runway",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [
+     "public_official",
+     "public_issuer"
+    ],
+    "required_tools": [
+     "get_calculated_metrics",
+     "get_financial_facts"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What are cash and equivalents, what is the operating cash burn, and how many quarters of runway does that imply?"
+   },
+   {
+    "blocking": true,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "pipeline_state",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [
+     "public_official",
+     "public_issuer"
+    ],
+    "required_tools": [
+     "get_recent_filings",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "Which assets are in the clinical pipeline, at what phase, for what indication, and with what next milestone?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "business_model",
+    "key": "business_model",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [
+     "public_issuer",
+     "public_official"
+    ],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} business overview products segments revenue by segment",
+     "{company} annual report business description principal products"
+    ],
+    "series_labels": [],
+    "text": "What does the company actually sell, to whom, and how does it make money? Which products, segments or geographies generate most of revenue and profit?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "cash_generation_and_funding",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "cash_conversion",
+     "capex_to_ocf",
+     "net_debt"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics",
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} liquidity capital resources debt maturities"
+    ],
+    "series_labels": [],
+    "text": "How much cash does the business generate after capital spending, how leveraged is it, and can it fund its commitments and projects?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "growth_pipeline",
+    "key": "growth_pipeline",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} projects pipeline capex expected production start date",
+     "{company} expansion project construction status permits"
+    ],
+    "series_labels": [],
+    "text": "What projects, capacity additions or new products could change earnings, and for each: stage, expected capacity, capex, expected timing and the main dependency?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "authoritative_statistical",
+        "government_or_regulator",
+        "industry_specialist"
+       ],
+       "an independent government, statistical or industry-specialist source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "industry_economics",
+    "key": "industry_economics",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "industry_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{industry} market outlook demand supply prices latest statistics",
+     "{industry} industry statistics government agency annual report"
+    ],
+    "series_labels": [],
+    "text": "What variables set revenue and margins across this industry (prices, volumes, input costs, capacity), and what has happened to them recently, in figures from independent sources?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "risks",
+    "key": "material_risks",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} strike protest suspension fine lawsuit latest",
+     "{company} operational disruption regulatory dispute"
+    ],
+    "series_labels": [],
+    "text": "What are the material operational, regulatory, political, environmental and financial risks, and what evidence shows their CURRENT severity (events, disputes, stoppages, fines), not only that they are disclosed?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "operations_assets",
+    "key": "operations_and_assets",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} production volumes by operation unit cost latest results"
+    ],
+    "series_labels": [],
+    "text": "Which operating assets (sites, plants, mines, facilities) produce the output, how much did they produce in the latest period, and at what unit cost where reported?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "products_services",
+    "key": "products_and_revenue_mix",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_segment_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} net sales by product segment information latest annual report"
+    ],
+    "series_labels": [],
+    "text": "How is revenue split by product, segment, material or service line in the latest reported period, with figures?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "dilution",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_series",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "How has the share count moved, and what financing has been announced or is implied by the runway?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "regulatory_posture",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [
+     "public_official"
+    ],
+    "required_tools": [
+     "get_recent_filings",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What regulatory interactions have been disclosed \u2014 designations, holds, complete response letters, approvals?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "rnd_intensity",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What is R&D expense, and how is it distributed across the pipeline?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "balance_sheet_risk",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What is the leverage position, and what does the filing say about covenants or refinancing?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "capital_allocation",
+    "key": "capital_allocation",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "dividend_cover_by_fcf"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} dividend policy capital allocation share repurchase"
+    ],
+    "series_labels": [],
+    "text": "How has cash been allocated across capex, dividends, buybacks, debt reduction and acquisitions, and what policy has the company stated?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "competitive_position",
+    "key": "competitive_position",
+    "optional_tools": [
+     "get_peer_financials",
+     "get_peer_set"
+    ],
+    "origin": "director",
+    "owner_role": "competitive_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} competitors largest producers comparison {industry}"
+    ],
+    "series_labels": [],
+    "text": "Who are the closest competitors, and how does the company compare with them on scale, growth, cost position and financial strength?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [
+     "material_risks"
+    ],
+    "domain": "counter_thesis",
+    "key": "counter_thesis",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} risks challenges analyst concerns"
+    ],
+    "series_labels": [],
+    "text": "What is the strongest evidence-based case against the company \u2014 where would a skeptical analyst say the positive view is weakest?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "customers_end_markets",
+    "key": "customers_and_end_markets",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} sales by geographic area customers concentration annual report"
+    ],
+    "series_labels": [],
+    "text": "Who are the customers and end markets, how concentrated are sales, and to which countries or regions are they made?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "governance",
+    "key": "governance_and_control",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} controlling shareholder ownership board related party transactions"
+    ],
+    "series_labels": [],
+    "text": "Who controls the company (major and controlling shareholders, board composition, related-party arrangements), and what governance issues are disclosed?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "profitability",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "operating_margin",
+     "net_margin",
+     "gross_margin"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What are the reported margins, and what do the deterministic calculations make of them?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "revenue_trajectory",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_series"
+    ],
+    "search_intents": [],
+    "series_labels": [
+     "revenue"
+    ],
+    "text": "How has Group revenue moved over the available reporting periods, and in which period type?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "recent_disclosure",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What has the issuer disclosed most recently, and for which period?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "recent_external_developments",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "external_research_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "fetch_public_source",
+     "search_web"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What were the headline figures of this issuer's most recently reported period, and which primary source states them? Give the figure, the period it covers, and the issuer's own or the regulator's page."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [
+     "growth_pipeline"
+    ],
+    "domain": "catalysts",
+    "key": "upcoming_catalysts",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} upcoming milestones guidance outlook"
+    ],
+    "series_labels": [],
+    "text": "Which dated events in the next 12-24 months (results, approvals, project milestones, contract awards, policy decisions) could change the view?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "valuation_context",
+    "key": "valuation_inputs",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "valuation_context_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "Which valuation inputs are available from sourced data (market capitalisation, enterprise value, earnings, cash flow) and which are missing? State them; never estimate a value, a target or a return."
+   }
+  ],
+  "selection": {
+   "completion_rules": [
+    "all_blocking_questions_answered",
+    "no_council_blocking_gaps"
+   ],
+   "playbook_versions": {
+    "biotech": 1
+   },
+   "question_count": 5,
+   "reason": "1 playbook(s) matched",
+   "risk_framework": [
+    "trial_failure",
+    "regulatory_rejection",
+    "financing_dilution",
+    "patent_cliff",
+    "single_asset_concentration"
+   ],
+   "specialist_roles": [
+    "capital_allocation_analyst",
+    "event_analyst"
+   ]
+  },
+  "tasks": [
+   {
+    "max_iterations": 4,
+    "questions": [
+     "business_model",
+     "operations_and_assets",
+     "products_and_revenue_mix",
+     "customers_and_end_markets"
+    ],
+    "role": "business_analyst",
+    "round": 0,
+    "tool_budget": {
+     "search_company_corpus": 10
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "cash_runway",
+     "dilution"
+    ],
+    "role": "capital_allocation_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "competitive_position"
+    ],
+    "role": "competitive_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "pipeline_state",
+     "growth_pipeline",
+     "recent_disclosure",
+     "upcoming_catalysts"
+    ],
+    "role": "event_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "recent_external_developments"
+    ],
+    "role": "external_research_analyst",
+    "round": 0,
+    "tool_budget": {
+     "fetch_public_source": 6,
+     "search_web": 2
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "cash_generation_and_funding",
+     "rnd_intensity",
+     "balance_sheet_risk",
+     "capital_allocation",
+     "profitability",
+     "revenue_trajectory"
+    ],
+    "role": "financial_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_financial_facts": 12,
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "industry_economics"
+    ],
+    "role": "industry_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_industry_series": 8,
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "material_risks",
+     "regulatory_posture",
+     "counter_thesis",
+     "governance_and_control"
+    ],
+    "role": "risk_analyst",
+    "round": 0,
+    "tool_budget": {
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "valuation_inputs"
+    ],
+    "role": "valuation_context_analyst",
+    "round": 0,
+    "tool_budget": {}
+   }
+  ],
+  "unassignable": []
+ },
+ "luxury": {
+  "degraded": [],
+  "plan": {
+   "blocking_question_count": 1,
+   "dropped_for_capacity": [],
+   "limits": {
+    "max_rounds": 3,
+    "max_tasks": 16,
+    "max_tool_calls": 400
+   },
+   "mode": "deep",
+   "playbook_versions": {
+    "luxury": 1
+   },
+   "question_count": 24,
+   "refined_by_model": false,
+   "subject": "ANY:US",
+   "task_count": 9,
+   "unassignable": []
+  },
+  "questions": [
+   {
+    "blocking": true,
+    "blocking_requires": "named_segments",
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "segment_discipline",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "segment_revenue_mix"
+    ],
+    "required_evidence_classes": [
+     "public_issuer"
+    ],
+    "required_tools": [
+     "get_segment_facts"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What did each reported segment contribute, named explicitly as a segment? Do not report a segment figure as a Group figure."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "regional_mix",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [
+     "public_issuer"
+    ],
+    "required_tools": [
+     "get_segment_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "How is revenue distributed across regions, and what does the issuer say about Chinese demand specifically?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "business_model",
+    "key": "business_model",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [
+     "public_issuer",
+     "public_official"
+    ],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} business overview products segments revenue by segment",
+     "{company} annual report business description principal products"
+    ],
+    "series_labels": [],
+    "text": "What does the company actually sell, to whom, and how does it make money? Which products, segments or geographies generate most of revenue and profit?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "cash_generation_and_funding",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "cash_conversion",
+     "capex_to_ocf",
+     "net_debt"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics",
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} liquidity capital resources debt maturities"
+    ],
+    "series_labels": [],
+    "text": "How much cash does the business generate after capital spending, how leveraged is it, and can it fund its commitments and projects?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "growth_pipeline",
+    "key": "growth_pipeline",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} projects pipeline capex expected production start date",
+     "{company} expansion project construction status permits"
+    ],
+    "series_labels": [],
+    "text": "What projects, capacity additions or new products could change earnings, and for each: stage, expected capacity, capex, expected timing and the main dependency?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "authoritative_statistical",
+        "government_or_regulator",
+        "industry_specialist"
+       ],
+       "an independent government, statistical or industry-specialist source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "industry_economics",
+    "key": "industry_economics",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "industry_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{industry} market outlook demand supply prices latest statistics",
+     "{industry} industry statistics government agency annual report"
+    ],
+    "series_labels": [],
+    "text": "What variables set revenue and margins across this industry (prices, volumes, input costs, capacity), and what has happened to them recently, in figures from independent sources?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "risks",
+    "key": "material_risks",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} strike protest suspension fine lawsuit latest",
+     "{company} operational disruption regulatory dispute"
+    ],
+    "series_labels": [],
+    "text": "What are the material operational, regulatory, political, environmental and financial risks, and what evidence shows their CURRENT severity (events, disputes, stoppages, fines), not only that they are disclosed?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "operations_assets",
+    "key": "operations_and_assets",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} production volumes by operation unit cost latest results"
+    ],
+    "series_labels": [],
+    "text": "Which operating assets (sites, plants, mines, facilities) produce the output, how much did they produce in the latest period, and at what unit cost where reported?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "products_services",
+    "key": "products_and_revenue_mix",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_segment_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} net sales by product segment information latest annual report"
+    ],
+    "series_labels": [],
+    "text": "How is revenue split by product, segment, material or service line in the latest reported period, with figures?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "pricing_power",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "gross_margin"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What evidence is there of pricing power \u2014 price increases taken, volume response, gross margin trajectory?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "balance_sheet_risk",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What is the leverage position, and what does the filing say about covenants or refinancing?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "capital_allocation",
+    "key": "capital_allocation",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "dividend_cover_by_fcf"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} dividend policy capital allocation share repurchase"
+    ],
+    "series_labels": [],
+    "text": "How has cash been allocated across capex, dividends, buybacks, debt reduction and acquisitions, and what policy has the company stated?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "competitive_position",
+    "key": "competitive_position",
+    "optional_tools": [
+     "get_peer_financials",
+     "get_peer_set"
+    ],
+    "origin": "director",
+    "owner_role": "competitive_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} competitors largest producers comparison {industry}"
+    ],
+    "series_labels": [],
+    "text": "Who are the closest competitors, and how does the company compare with them on scale, growth, cost position and financial strength?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [
+     "material_risks"
+    ],
+    "domain": "counter_thesis",
+    "key": "counter_thesis",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} risks challenges analyst concerns"
+    ],
+    "series_labels": [],
+    "text": "What is the strongest evidence-based case against the company \u2014 where would a skeptical analyst say the positive view is weakest?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "customers_end_markets",
+    "key": "customers_and_end_markets",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} sales by geographic area customers concentration annual report"
+    ],
+    "series_labels": [],
+    "text": "Who are the customers and end markets, how concentrated are sales, and to which countries or regions are they made?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "governance",
+    "key": "governance_and_control",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} controlling shareholder ownership board related party transactions"
+    ],
+    "series_labels": [],
+    "text": "Who controls the company (major and controlling shareholders, board composition, related-party arrangements), and what governance issues are disclosed?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "profitability",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "operating_margin",
+     "net_margin",
+     "gross_margin"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What are the reported margins, and what do the deterministic calculations make of them?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "revenue_trajectory",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_series"
+    ],
+    "search_intents": [],
+    "series_labels": [
+     "revenue"
+    ],
+    "text": "How has Group revenue moved over the available reporting periods, and in which period type?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "management_language",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_ir_events",
+     "get_transcripts"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "How has management's language about demand changed between the last two events at which it spoke?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": null,
+    "key": "retail_footprint",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": null,
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "How has the directly-operated store network changed, and what does the issuer say about wholesale versus retail mix?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "recent_disclosure",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What has the issuer disclosed most recently, and for which period?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "recent_external_developments",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "external_research_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "fetch_public_source",
+     "search_web"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What were the headline figures of this issuer's most recently reported period, and which primary source states them? Give the figure, the period it covers, and the issuer's own or the regulator's page."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [
+     "growth_pipeline"
+    ],
+    "domain": "catalysts",
+    "key": "upcoming_catalysts",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} upcoming milestones guidance outlook"
+    ],
+    "series_labels": [],
+    "text": "Which dated events in the next 12-24 months (results, approvals, project milestones, contract awards, policy decisions) could change the view?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "valuation_context",
+    "key": "valuation_inputs",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "valuation_context_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "Which valuation inputs are available from sourced data (market capitalisation, enterprise value, earnings, cash flow) and which are missing? State them; never estimate a value, a target or a return."
+   }
+  ],
+  "selection": {
+   "completion_rules": [
+    "all_blocking_questions_answered",
+    "no_council_blocking_gaps"
+   ],
+   "playbook_versions": {
+    "luxury": 1
+   },
+   "question_count": 5,
+   "reason": "1 playbook(s) matched",
+   "risk_framework": [
+    "brand_dilution",
+    "china_demand_concentration",
+    "currency_translation",
+    "wholesale_channel_destocking",
+    "counterfeiting_and_grey_market"
+   ],
+   "specialist_roles": [
+    "management_analyst",
+    "competitive_analyst"
+   ]
+  },
+  "tasks": [
+   {
+    "max_iterations": 4,
+    "questions": [
+     "segment_discipline",
+     "business_model",
+     "operations_and_assets",
+     "products_and_revenue_mix",
+     "customers_and_end_markets"
+    ],
+    "role": "business_analyst",
+    "round": 0,
+    "tool_budget": {
+     "search_company_corpus": 10
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "competitive_position",
+     "retail_footprint"
+    ],
+    "role": "competitive_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "growth_pipeline",
+     "recent_disclosure",
+     "upcoming_catalysts"
+    ],
+    "role": "event_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "recent_external_developments"
+    ],
+    "role": "external_research_analyst",
+    "round": 0,
+    "tool_budget": {
+     "fetch_public_source": 6,
+     "search_web": 2
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "regional_mix",
+     "cash_generation_and_funding",
+     "balance_sheet_risk",
+     "capital_allocation",
+     "profitability",
+     "revenue_trajectory"
+    ],
+    "role": "financial_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_financial_facts": 12,
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "industry_economics"
+    ],
+    "role": "industry_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_industry_series": 8,
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "management_language"
+    ],
+    "role": "management_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_transcripts": 4,
+     "search_company_corpus": 6
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "material_risks",
+     "pricing_power",
+     "counter_thesis",
+     "governance_and_control"
+    ],
+    "role": "risk_analyst",
+    "round": 0,
+    "tool_budget": {
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "valuation_inputs"
+    ],
+    "role": "valuation_context_analyst",
+    "round": 0,
+    "tool_budget": {}
+   }
+  ],
+  "unassignable": []
+ },
+ "mining_producer": {
+  "degraded": [],
+  "plan": {
+   "blocking_question_count": 1,
+   "dropped_for_capacity": [],
+   "limits": {
+    "max_rounds": 3,
+    "max_tasks": 16,
+    "max_tool_calls": 400
+   },
+   "mode": "deep",
+   "playbook_versions": {
+    "mining_critical_materials": 1
+   },
+   "question_count": 26,
+   "refined_by_model": false,
+   "subject": "ANY:US",
+   "task_count": 8,
+   "unassignable": []
+  },
+  "questions": [
+   {
+    "blocking": true,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "products_services",
+    "key": "commodity_exposure",
+    "optional_tools": [
+     "get_segment_facts"
+    ],
+    "origin": "playbook",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [
+     "products_and_revenue_mix"
+    ],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} net sales by product {commodity} revenue share",
+     "{company} sales by product annual report"
+    ],
+    "series_labels": [],
+    "text": "Which commodities and materials does the company produce and sell, and what share of revenue and of production does each represent in the latest reported period? Give the figures and the period."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "operations_assets",
+    "key": "assets_and_production",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [
+     "operations_and_assets"
+    ],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} production by mine ore grade recovery latest results",
+     "{company} operations overview mines concentrator capacity"
+    ],
+    "series_labels": [],
+    "text": "Which mines, projects and plants does the company operate, with its ownership percentage, production by operation in the latest period, capacity and utilisation, and ore grade and recovery where reported?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": "copper",
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 3,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "authoritative_statistical",
+        "government_or_regulator",
+        "industry_specialist"
+       ],
+       "an independent government, statistical or industry-specialist source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "industry_economics",
+    "key": "commodity_market__copper",
+    "optional_tools": [
+     "get_industry_series"
+    ],
+    "origin": "playbook",
+    "owner_role": "industry_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [
+     "industry_economics"
+    ],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "copper global demand supply balance forecast study group",
+     "copper market outlook inventories deficit surplus"
+    ],
+    "series_labels": [],
+    "text": "For copper: what are the benchmark price level and its change over 3, 12 and 36 months; global mine production and demand and their growth; inventories or the market balance where published; and which countries concentrate supply? Quantify each from independent sources."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 3,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "growth_pipeline",
+    "key": "growth_projects",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [
+     "growth_pipeline"
+    ],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} project pipeline capex capacity expected start production",
+     "{company} project permit construction status community opposition"
+    ],
+    "series_labels": [],
+    "text": "For each important project: name, stage (study, permitting, construction, ramp-up), jurisdiction, capex, expected capacity or production, expected commissioning, permit status, financing, partners or offtake, and the main dependency or controversy."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 3,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "risks",
+    "key": "jurisdiction_and_community",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [
+     "material_risks"
+    ],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} community protest blockade project suspension",
+     "{company} royalty tax mining law change jurisdiction risk"
+    ],
+    "series_labels": [],
+    "text": "What political, regulatory, royalty or tax, permitting and community risks affect the operating jurisdictions now \u2014 with evidence of current events such as protests, blockades, suspensions or legal challenges?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 3,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "competitive_position",
+    "key": "peer_comparison",
+    "optional_tools": [
+     "get_peer_financials",
+     "get_peer_set"
+    ],
+    "origin": "playbook",
+    "owner_role": "competitive_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [
+     "competitive_position"
+    ],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "largest {commodity} producers production cash cost comparison",
+     "{company} peers competitors cost curve position"
+    ],
+    "series_labels": [],
+    "text": "Which listed producers of the same commodity are the closest peers, and how does the company compare with at least three of them on production, growth, unit costs, grades, reserve life, capex, jurisdiction and balance sheet? Use only comparable, sourced metrics."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "operations_assets",
+    "key": "unit_costs",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} cash cost per pound net of by-product credits"
+    ],
+    "series_labels": [],
+    "text": "What are the company's unit or cash costs (C1, all-in sustaining or the issuer's own measure), with and without by-product credits, and how have they moved?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "business_model",
+    "key": "business_model",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [
+     "public_issuer",
+     "public_official"
+    ],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} business overview products segments revenue by segment",
+     "{company} annual report business description principal products"
+    ],
+    "series_labels": [],
+    "text": "What does the company actually sell, to whom, and how does it make money? Which products, segments or geographies generate most of revenue and profit?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "cash_generation_and_funding",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "cash_conversion",
+     "capex_to_ocf",
+     "net_debt"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics",
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} liquidity capital resources debt maturities"
+    ],
+    "series_labels": [],
+    "text": "How much cash does the business generate after capital spending, how leveraged is it, and can it fund its commitments and projects?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "commodity_price_sensitivity",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": "sensitivities",
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} sensitivity change in {commodity} price impact on net income"
+    ],
+    "series_labels": [],
+    "text": "How sensitive are revenue, operating income and cash flow to the price of the main commodity? Use the issuer's own disclosed sensitivity where it gives one."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "customers_end_markets",
+    "key": "customers_and_offtake",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [
+     "customers_and_end_markets"
+    ],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} offtake agreement customers sales contracts export"
+    ],
+    "series_labels": [],
+    "text": "Who buys the output \u2014 offtake agreements, strategic customers, export destinations \u2014 on what terms, and how concentrated are sales?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": "copper",
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 3,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "authoritative_statistical",
+        "government_or_regulator",
+        "industry_specialist"
+       ],
+       "an independent government, statistical or industry-specialist source"
+      ]
+     ]
+    },
+    "depends_on": [
+     "commodity_market",
+     "commodity_market__copper"
+    ],
+    "domain": "industry_economics",
+    "key": "demand_drivers__copper",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "industry_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "copper demand by end use electric vehicles grid data centers share",
+     "copper critical minerals demand outlook IEA"
+    ],
+    "series_labels": [],
+    "text": "For copper: which end uses drive demand (construction, power grid, electric vehicles, data centres, electronics, defence, other), with their shares where published, and what structural growth do independent agencies forecast? Are there substitutes or recycling that cap it?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 3,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "risks",
+    "key": "operational_and_environmental",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} strike labor dispute accident environmental fine water"
+    ],
+    "series_labels": [],
+    "text": "What operational, labour, safety, water, energy, tailings and environmental risks are evidenced \u2014 strikes, accidents, spills, water disputes, fines, grade decline, technical execution problems?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 3,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "policy_and_state_support",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} government support grant loan price floor offtake defense",
+     "{commodity} critical mineral list tariff export controls policy"
+    ],
+    "series_labels": [],
+    "text": "What government policy bears on the company \u2014 critical-mineral designations, grants, loans or price support, tariffs, export controls, defence or industrial-policy offtake, royalty or tax changes?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "operations_assets",
+    "key": "reserves_and_mine_life",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} ore reserves mineral resources grade reserve life"
+    ],
+    "series_labels": [],
+    "text": "What are the proven and probable reserves and the mineral resources, by operation and commodity, at what grade, and what reserve life do they imply at current production?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "business_model",
+    "key": "value_chain_position",
+    "optional_tools": [],
+    "origin": "playbook",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} smelter refinery processing downstream integration"
+    ],
+    "series_labels": [],
+    "text": "Where in the value chain does the company operate \u2014 mining, concentration, smelting or separation, refining, metal or alloy, component manufacturing \u2014 and which stages generate its economics?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "balance_sheet_risk",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What is the leverage position, and what does the filing say about covenants or refinancing?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "capital_allocation",
+    "key": "capital_allocation",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "dividend_cover_by_fcf"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} dividend policy capital allocation share repurchase"
+    ],
+    "series_labels": [],
+    "text": "How has cash been allocated across capex, dividends, buybacks, debt reduction and acquisitions, and what policy has the company stated?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [
+     "material_risks"
+    ],
+    "domain": "counter_thesis",
+    "key": "counter_thesis",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} risks challenges analyst concerns"
+    ],
+    "series_labels": [],
+    "text": "What is the strongest evidence-based case against the company \u2014 where would a skeptical analyst say the positive view is weakest?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "governance",
+    "key": "governance_and_control",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} controlling shareholder ownership board related party transactions"
+    ],
+    "series_labels": [],
+    "text": "Who controls the company (major and controlling shareholders, board composition, related-party arrangements), and what governance issues are disclosed?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "profitability",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "operating_margin",
+     "net_margin",
+     "gross_margin"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What are the reported margins, and what do the deterministic calculations make of them?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "revenue_trajectory",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_series"
+    ],
+    "search_intents": [],
+    "series_labels": [
+     "revenue"
+    ],
+    "text": "How has Group revenue moved over the available reporting periods, and in which period type?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "recent_disclosure",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What has the issuer disclosed most recently, and for which period?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "recent_external_developments",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "external_research_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "fetch_public_source",
+     "search_web"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What were the headline figures of this issuer's most recently reported period, and which primary source states them? Give the figure, the period it covers, and the issuer's own or the regulator's page."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [
+     "growth_pipeline"
+    ],
+    "domain": "catalysts",
+    "key": "upcoming_catalysts",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} upcoming milestones guidance outlook"
+    ],
+    "series_labels": [],
+    "text": "Which dated events in the next 12-24 months (results, approvals, project milestones, contract awards, policy decisions) could change the view?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "valuation_context",
+    "key": "valuation_inputs",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "valuation_context_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "Which valuation inputs are available from sourced data (market capitalisation, enterprise value, earnings, cash flow) and which are missing? State them; never estimate a value, a target or a return."
+   }
+  ],
+  "selection": {
+   "completion_rules": [
+    "all_blocking_questions_answered"
+   ],
+   "playbook_versions": {
+    "mining_critical_materials": 1
+   },
+   "question_count": 14,
+   "reason": "1 playbook(s) matched",
+   "risk_framework": [
+    "commodity_price",
+    "fx",
+    "input_cost",
+    "energy",
+    "labor",
+    "water",
+    "environmental",
+    "permitting",
+    "royalties_tax",
+    "political_jurisdiction",
+    "community",
+    "safety",
+    "technical_execution",
+    "grade_decline",
+    "funding_dilution",
+    "controlling_shareholder_governance",
+    "geographic_concentration"
+   ],
+   "specialist_roles": [
+    "industry_analyst",
+    "competitive_analyst",
+    "event_analyst"
+   ]
+  },
+  "tasks": [
+   {
+    "max_iterations": 4,
+    "questions": [
+     "commodity_exposure",
+     "assets_and_production",
+     "unit_costs",
+     "business_model",
+     "customers_and_offtake",
+     "reserves_and_mine_life",
+     "value_chain_position"
+    ],
+    "role": "business_analyst",
+    "round": 0,
+    "tool_budget": {
+     "search_company_corpus": 10
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "peer_comparison"
+    ],
+    "role": "competitive_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "growth_projects",
+     "policy_and_state_support",
+     "recent_disclosure",
+     "upcoming_catalysts"
+    ],
+    "role": "event_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "recent_external_developments"
+    ],
+    "role": "external_research_analyst",
+    "round": 0,
+    "tool_budget": {
+     "fetch_public_source": 6,
+     "search_web": 2
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "cash_generation_and_funding",
+     "commodity_price_sensitivity",
+     "balance_sheet_risk",
+     "capital_allocation",
+     "profitability",
+     "revenue_trajectory"
+    ],
+    "role": "financial_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_financial_facts": 12,
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "commodity_market__copper",
+     "demand_drivers__copper"
+    ],
+    "role": "industry_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_industry_series": 8,
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "jurisdiction_and_community",
+     "operational_and_environmental",
+     "counter_thesis",
+     "governance_and_control"
+    ],
+    "role": "risk_analyst",
+    "round": 0,
+    "tool_budget": {
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "valuation_inputs"
+    ],
+    "role": "valuation_context_analyst",
+    "round": 0,
+    "tool_budget": {}
+   }
+  ],
+  "unassignable": []
+ },
+ "no_playbook": {
+  "degraded": [],
+  "plan": {
+   "blocking_question_count": 0,
+   "dropped_for_capacity": [],
+   "limits": {
+    "max_rounds": 3,
+    "max_tasks": 16,
+    "max_tool_calls": 400
+   },
+   "mode": "deep",
+   "playbook_versions": {},
+   "question_count": 19,
+   "refined_by_model": false,
+   "subject": "ANY:US",
+   "task_count": 8,
+   "unassignable": []
+  },
+  "questions": [
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "business_model",
+    "key": "business_model",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [
+     "public_issuer",
+     "public_official"
+    ],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} business overview products segments revenue by segment",
+     "{company} annual report business description principal products"
+    ],
+    "series_labels": [],
+    "text": "What does the company actually sell, to whom, and how does it make money? Which products, segments or geographies generate most of revenue and profit?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "cash_generation_and_funding",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "cash_conversion",
+     "capex_to_ocf",
+     "net_debt"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics",
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} liquidity capital resources debt maturities"
+    ],
+    "series_labels": [],
+    "text": "How much cash does the business generate after capital spending, how leveraged is it, and can it fund its commitments and projects?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "growth_pipeline",
+    "key": "growth_pipeline",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} projects pipeline capex expected production start date",
+     "{company} expansion project construction status permits"
+    ],
+    "series_labels": [],
+    "text": "What projects, capacity additions or new products could change earnings, and for each: stage, expected capacity, capex, expected timing and the main dependency?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 2,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "authoritative_statistical",
+        "government_or_regulator",
+        "industry_specialist"
+       ],
+       "an independent government, statistical or industry-specialist source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "industry_economics",
+    "key": "industry_economics",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "industry_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{industry} market outlook demand supply prices latest statistics",
+     "{industry} industry statistics government agency annual report"
+    ],
+    "series_labels": [],
+    "text": "What variables set revenue and margins across this industry (prices, volumes, input costs, capacity), and what has happened to them recently, in figures from independent sources?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "risks",
+    "key": "material_risks",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} strike protest suspension fine lawsuit latest",
+     "{company} operational disruption regulatory dispute"
+    ],
+    "series_labels": [],
+    "text": "What are the material operational, regulatory, political, environmental and financial risks, and what evidence shows their CURRENT severity (events, disputes, stoppages, fines), not only that they are disclosed?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "operations_assets",
+    "key": "operations_and_assets",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} production volumes by operation unit cost latest results"
+    ],
+    "series_labels": [],
+    "text": "Which operating assets (sites, plants, mines, facilities) produce the output, how much did they produce in the latest period, and at what unit cost where reported?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "products_services",
+    "key": "products_and_revenue_mix",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 1,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_segment_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} net sales by product segment information latest annual report"
+    ],
+    "series_labels": [],
+    "text": "How is revenue split by product, segment, material or service line in the latest reported period, with figures?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "balance_sheet_risk",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What is the leverage position, and what does the filing say about covenants or refinancing?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "capital_allocation",
+    "key": "capital_allocation",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "dividend_cover_by_fcf"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts",
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} dividend policy capital allocation share repurchase"
+    ],
+    "series_labels": [],
+    "text": "How has cash been allocated across capex, dividends, buybacks, debt reduction and acquisitions, and what policy has the company stated?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "competitive_position",
+    "key": "competitive_position",
+    "optional_tools": [
+     "get_peer_financials",
+     "get_peer_set"
+    ],
+    "origin": "director",
+    "owner_role": "competitive_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} competitors largest producers comparison {industry}"
+    ],
+    "series_labels": [],
+    "text": "Who are the closest competitors, and how does the company compare with them on scale, growth, cost position and financial strength?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 2,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [
+     "material_risks"
+    ],
+    "domain": "counter_thesis",
+    "key": "counter_thesis",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} risks challenges analyst concerns"
+    ],
+    "series_labels": [],
+    "text": "What is the strongest evidence-based case against the company \u2014 where would a skeptical analyst say the positive view is weakest?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "customers_end_markets",
+    "key": "customers_and_end_markets",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "business_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} sales by geographic area customers concentration annual report"
+    ],
+    "series_labels": [],
+    "text": "Who are the customers and end markets, how concentrated are sales, and to which countries or regions are they made?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [],
+    "domain": "governance",
+    "key": "governance_and_control",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "risk_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} controlling shareholder ownership board related party transactions"
+    ],
+    "series_labels": [],
+    "text": "Who controls the company (major and controlling shareholders, board composition, related-party arrangements), and what governance issues are disclosed?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "profitability",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [
+     "operating_margin",
+     "net_margin",
+     "gross_margin"
+    ],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_calculated_metrics"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What are the reported margins, and what do the deterministic calculations make of them?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "financial_capacity",
+    "key": "revenue_trajectory",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "financial_analyst",
+    "per_commodity": false,
+    "priority": 2,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_series"
+    ],
+    "search_intents": [],
+    "series_labels": [
+     "revenue"
+    ],
+    "text": "How has Group revenue moved over the available reporting periods, and in which period type?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "recent_disclosure",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What has the issuer disclosed most recently, and for which period?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 1,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "catalysts",
+    "key": "recent_external_developments",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "external_research_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "fetch_public_source",
+     "search_web"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "What were the headline figures of this issuer's most recently reported period, and which primary source states them? Give the figure, the period it covers, and the issuer's own or the regulator's page."
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": true,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": [
+      [
+       [
+        "issuer_filing",
+        "issuer_ir"
+       ],
+       "an issuer filing or issuer IR source"
+      ]
+     ]
+    },
+    "depends_on": [
+     "growth_pipeline"
+    ],
+    "domain": "catalysts",
+    "key": "upcoming_catalysts",
+    "optional_tools": [],
+    "origin": "director",
+    "owner_role": "event_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "search_company_corpus"
+    ],
+    "search_intents": [
+     "{company} upcoming milestones guidance outlook"
+    ],
+    "series_labels": [],
+    "text": "Which dated events in the next 12-24 months (results, approvals, project milestones, contract awards, policy decisions) could change the view?"
+   },
+   {
+    "blocking": false,
+    "blocking_requires": null,
+    "commodity": null,
+    "contract": {
+     "allow_external": false,
+     "max_external_searches": 1,
+     "min_distinct_sources": 1,
+     "min_items": 2,
+     "min_tier": null,
+     "required_kinds": []
+    },
+    "depends_on": [],
+    "domain": "valuation_context",
+    "key": "valuation_inputs",
+    "optional_tools": [
+     "get_sec_statements"
+    ],
+    "origin": "director",
+    "owner_role": "valuation_context_analyst",
+    "per_commodity": false,
+    "priority": 3,
+    "replaces": [],
+    "report_section": null,
+    "required_calculations": [],
+    "required_evidence_classes": [],
+    "required_tools": [
+     "get_financial_facts"
+    ],
+    "search_intents": [],
+    "series_labels": [],
+    "text": "Which valuation inputs are available from sourced data (market capitalisation, enterprise value, earnings, cash flow) and which are missing? State them; never estimate a value, a target or a return."
+   }
+  ],
+  "selection": {
+   "completion_rules": [],
+   "playbook_versions": {},
+   "question_count": 0,
+   "reason": "no playbook declares this company: sector=None industry='Nothing Declared' signals=[]",
+   "risk_framework": [],
+   "specialist_roles": []
+  },
+  "tasks": [
+   {
+    "max_iterations": 4,
+    "questions": [
+     "business_model",
+     "operations_and_assets",
+     "products_and_revenue_mix",
+     "customers_and_end_markets"
+    ],
+    "role": "business_analyst",
+    "round": 0,
+    "tool_budget": {
+     "search_company_corpus": 10
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "competitive_position"
+    ],
+    "role": "competitive_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "growth_pipeline",
+     "recent_disclosure",
+     "upcoming_catalysts"
+    ],
+    "role": "event_analyst",
+    "round": 0,
+    "tool_budget": {}
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "recent_external_developments"
+    ],
+    "role": "external_research_analyst",
+    "round": 0,
+    "tool_budget": {
+     "fetch_public_source": 6,
+     "search_web": 2
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "cash_generation_and_funding",
+     "balance_sheet_risk",
+     "capital_allocation",
+     "profitability",
+     "revenue_trajectory"
+    ],
+    "role": "financial_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_financial_facts": 12,
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "industry_economics"
+    ],
+    "role": "industry_analyst",
+    "round": 0,
+    "tool_budget": {
+     "get_industry_series": 8,
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "material_risks",
+     "counter_thesis",
+     "governance_and_control"
+    ],
+    "role": "risk_analyst",
+    "round": 0,
+    "tool_budget": {
+     "search_company_corpus": 8
+    }
+   },
+   {
+    "max_iterations": 4,
+    "questions": [
+     "valuation_inputs"
+    ],
+    "role": "valuation_context_analyst",
+    "round": 0,
+    "tool_budget": {}
+   }
+  ],
+  "unassignable": []
+ }
+}

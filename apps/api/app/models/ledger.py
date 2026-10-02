@@ -35,7 +35,7 @@ step, which is precisely the failure the ledger exists to remove.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
@@ -333,6 +333,21 @@ class ResearchFinding(Base):
         default="unverified",
         server_default=sa.text("'unverified'"),
     )
+    # ── Migration 043: report reconciliation ──────────────────────────────── #
+    #: Publication date of the evidence it cites (the NEWEST, and only when every cited
+    #: item is dated). What orders two statements of the same guidance in time.
+    source_published_at: Mapped[date | None] = mapped_column(sa.Date)
+    #: The newer finding that replaced this one as current guidance. Kept, not deleted:
+    #: the older one is shown as prior guidance, superseded on the newer one's date.
+    superseded_by_finding_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "research_findings.id",
+            ondelete="SET NULL",
+            name="fk_research_findings_superseded_by_finding_id",
+        ),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -362,6 +377,10 @@ class ResearchFinding(Base):
         sa.CheckConstraint(
             "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
             name="ck_research_findings_confidence_range",
+        ),
+        sa.CheckConstraint(
+            "superseded_by_finding_id IS NULL OR superseded_by_finding_id <> id",
+            name="ck_research_findings_not_superseded_by_itself",
         ),
     )
 
@@ -416,6 +435,13 @@ class ResearchGap(Base):
         ),
         nullable=True,
     )
+    # ── Migration 043: report reconciliation ──────────────────────────────── #
+    #: ``closed`` | ``partially_closed`` | ``superseded`` | ``still_open`` — what the
+    #: final reconciliation decided once every finding and document was known. NULL on a
+    #: gap written before reconciliation existed.
+    reconciliation_status: Mapped[str | None] = mapped_column(sa.String(30))
+    #: The fields it is about, the finding labels/ids or fact that addressed it, and why.
+    reconciliation_json: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -431,6 +457,17 @@ class ResearchGap(Base):
         sa.CheckConstraint(
             "status <> 'closed' OR closed_by_finding_id IS NOT NULL",
             name="ck_research_gaps_closed_names_a_finding",
+        ),
+        sa.CheckConstraint(
+            "reconciliation_status IS NULL OR reconciliation_status IN "
+            "('closed', 'partially_closed', 'superseded', 'still_open')",
+            name="ck_research_gaps_reconciliation_status",
+        ),
+        # The same rule for the reconciliation verdict: "closed" names its finding.
+        sa.CheckConstraint(
+            "reconciliation_status IS NULL OR reconciliation_status <> 'closed' "
+            "OR closed_by_finding_id IS NOT NULL",
+            name="ck_research_gaps_reconciled_closed_names_a_finding",
         ),
     )
 

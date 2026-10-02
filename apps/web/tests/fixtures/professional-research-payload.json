@@ -47,7 +47,9 @@
           "confidence": null,
           "direction": null,
           "period_key": null,
-          "references": []
+          "references": [],
+          "source_published_at": null,
+          "superseded_by_finding_id": null
         }
       ],
       "findings_omitted": 0,
@@ -131,7 +133,9 @@
           "confidence": null,
           "direction": null,
           "period_key": null,
-          "references": []
+          "references": [],
+          "source_published_at": null,
+          "superseded_by_finding_id": null
         }
       ],
       "findings_omitted": 0,
@@ -162,7 +166,9 @@
           "confidence": null,
           "direction": null,
           "period_key": null,
-          "references": []
+          "references": [],
+          "source_published_at": null,
+          "superseded_by_finding_id": null
         }
       ],
       "findings_omitted": 0,
@@ -331,7 +337,9 @@
           "confidence": null,
           "direction": null,
           "period_key": null,
-          "references": []
+          "references": [],
+          "source_published_at": null,
+          "superseded_by_finding_id": null
         },
         {
           "label": "F5",
@@ -348,7 +356,9 @@
           "confidence": null,
           "direction": null,
           "period_key": null,
-          "references": []
+          "references": [],
+          "source_published_at": null,
+          "superseded_by_finding_id": null
         }
       ],
       "findings_omitted": 0,
@@ -377,7 +387,9 @@
           "confidence": null,
           "direction": null,
           "period_key": null,
-          "references": []
+          "references": [],
+          "source_published_at": null,
+          "superseded_by_finding_id": null
         }
       ],
       "findings_omitted": 0,
@@ -451,7 +463,8 @@
           "external_searches": 2,
           "fetches": 5
         }
-      }
+      },
+      "platform_evidence_gaps_reconciled": 0
     }
   ],
   "finding_labels": {

@@ -60,10 +60,9 @@ def _alembic(*args: str) -> None:
 
 
 class TestTheMigrationIsAdditive:
-    def test_revision_and_temporary_parent(self) -> None:
+    def test_revision_and_final_parent(self) -> None:
         m = _module()
-        assert m.revision == "044" and m.down_revision == "042"
-        assert "# re-pointed to 043 (report reconciliation) at merge" in MIGRATION.read_text()
+        assert m.revision == "044" and m.down_revision == "043"
 
     def test_upgrade_drops_and_alters_nothing(self) -> None:
         source = MIGRATION.read_text()
@@ -121,7 +120,7 @@ class TestMigrationOnRealPostgres:
         _alembic("upgrade", "head")
         assert "research_document_subjects" in _tables()
         assert {"simhash", "use_constraint"} <= _columns("research_document_versions")
-        _alembic("downgrade", "042")
+        _alembic("downgrade", "043")
         assert "research_document_subjects" not in _tables()
         assert "simhash" not in _columns("research_document_versions")
         assert "research_document_version_id" not in _columns("research_leads")

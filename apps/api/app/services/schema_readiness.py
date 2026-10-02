@@ -37,6 +37,13 @@ MIGRATION_041_COLUMNS: dict[str, tuple[str, ...]] = {
     "macro_series": ("commodity",),
 }
 
+#: Columns migration 043 (report reconciliation) adds — the ORM maps them, so a database
+#: without them fails every ledger query.
+MIGRATION_043_COLUMNS: dict[str, tuple[str, ...]] = {
+    "research_gaps": ("reconciliation_status", "reconciliation_json"),
+    "research_findings": ("source_published_at", "superseded_by_finding_id"),
+}
+
 _CACHE_SECONDS = 300.0
 _cache: dict[str, tuple[float, bool, tuple[str, ...]]] = {}
 
@@ -61,8 +68,23 @@ async def _columns(session: Any, table: str) -> set[str]:
 
 async def migration_041_readiness(session: Any, *, use_cache: bool = True) -> Readiness:
     """Whether every column migration 041 adds is present. Never raises."""
+    return await _readiness(session, "041", MIGRATION_041_COLUMNS, use_cache=use_cache)
+
+
+async def migration_043_readiness(session: Any, *, use_cache: bool = True) -> Readiness:
+    """Whether every column migration 043 adds is present. Never raises."""
+    return await _readiness(session, "043", MIGRATION_043_COLUMNS, use_cache=use_cache)
+
+
+async def _readiness(
+    session: Any,
+    key: str,
+    required: dict[str, tuple[str, ...]],
+    *,
+    use_cache: bool = True,
+) -> Readiness:
     now = time.monotonic()
-    cached = _cache.get("041")
+    cached = _cache.get(key)
     if use_cache and cached and now - cached[0] < _CACHE_SECONDS:
         return Readiness(cached[1], cached[2])
     missing: list[str] = []
@@ -71,7 +93,7 @@ async def migration_041_readiness(session: Any, *, use_cache: bool = True) -> Re
         # transaction, and the `except` below would then hand the caller a session that
         # fails at commit — costing the V2 report this check exists to protect.
         async with session.begin_nested():
-            for table, columns in MIGRATION_041_COLUMNS.items():
+            for table, columns in required.items():
                 present = await _columns(session, table)
                 missing.extend(f"{table}.{c}" for c in columns if c not in present)
     except Exception:  # noqa: BLE001 - "could not tell" is reported as not ready
@@ -80,7 +102,7 @@ async def migration_041_readiness(session: Any, *, use_cache: bool = True) -> Re
     # Only a READY answer is cached for long: once applied, a migration stays applied,
     # while "not ready" must flip to ready as soon as a human runs the upgrade.
     if ready:
-        _cache["041"] = (now, ready, tuple(missing))
+        _cache[key] = (now, ready, tuple(missing))
     return Readiness(ready, tuple(missing))
 
 
@@ -88,4 +110,11 @@ def reset_cache() -> None:
     _cache.clear()
 
 
-__all__ = ["MIGRATION_041_COLUMNS", "Readiness", "migration_041_readiness", "reset_cache"]
+__all__ = [
+    "MIGRATION_041_COLUMNS",
+    "MIGRATION_043_COLUMNS",
+    "Readiness",
+    "migration_041_readiness",
+    "migration_043_readiness",
+    "reset_cache",
+]

@@ -273,6 +273,86 @@ into machine-record noise on live data. Open questions are sourced from the
 **council agents and the ledger's `ResearchGap` records**, not invented by the
 chair.
 
+### 8a. Report reconciliation (`CURRENT`, migration 043)
+
+`services/pipeline/gap_reconciliation.py` runs once, **after the Red Team and before
+the Chair and the professional report are assembled** (`v3_pipeline.reconcile_step`,
+step 7b, in its own SAVEPOINT). The governing rule: **reconciliation never hides a
+genuinely open gap or a business risk, and never retires a historical fact as "prior
+guidance" — when unsure, `partially_closed` or `still_open`, with the finding named.**
+
+Field vocabulary (`services/research_fields.py`): families such as `metric:capex`,
+`metric:production_capacity`, `milestone:first_production`, `commercial:offtake`,
+`metric:cash`, `metric:npv`; capex carries a sub-type (`metric:capex_project`,
+`_sustaining`, `_period`). A finding states a field only in a non-negated,
+non-withdrawn, non-hedged clause carrying the field's VALUE (currency amount, capacity
+with a rate unit, tonnage and grade, "IRR of N%", a target date, a signed offtake with a
+counterparty or volume).
+
+1. **Supersession** — only guidance/estimate fields (project capex estimate, capacity,
+   milestones, NPV, IRR, resource). Same field, scope, period and EXACT project (stage
+   included); issuer/official sources only; the newest `source_published_at` is current
+   and older ones get `superseded_by_finding_id` (per-field detail in
+   `gap_reconciliation.supersessions`). Third-party sources, other currencies, unknown or
+   equal dates, or two values for one reporting period → a capped `value` disagreement.
+   Revenue, cash at a date and historical spend are never superseded. A finding is
+   dated only when all its citations are dated within 180 days of each other.
+2. **Gaps** — `closed` only for absence-type gaps (evidence/source/tool unavailable,
+   period missing, transcript unavailable) whose own words name fields that findings
+   state with the same capex sub-type, the same project, a compatible scope (a segment
+   gap never takes a group figure), the SAME period when one is named, and a newer
+   source when a current value is asked for (persisted via `ledger.close_gap`).
+   `partially_closed` names the finding and a reason. `superseded` only for a
+   source-unreachable / tool-unavailable gap recording a failed FETCH of a document the
+   run now holds, naming no unanswered field. Validated facts only ever partially close.
+3. Closed and superseded gaps never reach the Chair's GAPS block or the report's
+   `platform_evidence_gaps`; `summarise.gaps_open` counts the same population.
+   `attach_to_report` labels V2 `missing_information` field names and council concerns
+   whose gap cue and field share a clause and that carry no risk vocabulary; the web
+   drops a fully stated missing-information field name but only ANNOTATES a concern.
+
+Review round 2 made it stricter still — **any qualifier ambiguity means no supersession;
+any value-type ambiguity means `partially_closed`, never `closed`**:
+
+* a reporting-period cue (FY, H1, "spent", "incurred", "for the year") outranks a study
+  word, so money spent on a DFS is period capex; "capital expenditure estimate" and
+  "capital cost" ask for the project estimate; a capex gap answered by spend or sustaining
+  capital is partial;
+* periods are literal: `FY2025`, `CY2025`, `FY2026-H1`, `2026-H1`, `HYE2025-12-31`
+  (half ended), `FYE2026-06-30` (year ended) and a balance date are different strings,
+  and only an equal string closes;
+* a gap asking for a current value needs evidence published — and, for a balance, dated
+  — within 365 days of the run; a former ("was expected") or passed milestone target
+  never closes; a quoted older study ("the PFS estimated", "the previous estimate")
+  only partly answers and never supersedes;
+* the supersession group key includes value qualifiers — tax basis, NPV discount rate,
+  resource vs reserve and category, product after a capacity unit, pilot vs commercial,
+  stage/phase/expansion anywhere in the clause, scenario; a scale-rounded amount equals a
+  precise one only within its rounding and 5%;
+* negation inside subordinate material ("which is not expected to change", "not
+  including …", "includes no contingency", "outside Johannesburg") does not negate the
+  value; a clause naming two milestones states neither; an Exploration Target is not a
+  resource; ramp-up / first-year output is not capacity;
+* V2 missing-information items are labelled only on an EXACT field name; derived metrics
+  (growth, ratios, margins) never are, and a period-bound metric with no period is at
+  most annotated.
+
+Round 3: a value withdrawn, deferred, suspended, cancelled, replaced, under review or not
+approved/confirmed ANYWHERE in its clause — including a relative clause ("…, which was
+withdrawn in March") — is not stated, so it never closes a gap or supersedes; only a
+forward "not expected to change" relative clause and an "excluding <cost noun>" phrase
+(up to its noun) are set aside before the negation check. A point-in-time balance (cash,
+net debt) closes a gap only when dated within 365 days of the run; older is
+`value_stale`, undated is `value_date_unknown` — both partial.
+
+`research_findings.superseded_by_finding_id` holds the LATEST newer finding; the per-field
+map in `v3_research.gap_reconciliation.supersessions` is authoritative.
+
+The council payload's `primary_source_finding_count` (findings citing issuer filings/IR)
+replaces the always-zero "verified" hint; nothing verifies findings yet, and the Chair's
+deterministic verdict logic is unchanged. Non-English gap text has no field and stays
+open (known limitation).
+
 ---
 
 ## 9. Server-side verification

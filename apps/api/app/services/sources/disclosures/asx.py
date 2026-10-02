@@ -208,7 +208,7 @@ async def list_asx_announcements(
             detail=why or "the ASX's own list could not be read", requests=requests)
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(
-        days=max(1, int(getattr(cfg, "v3_disclosure_lookback_days", 540) or 540)))
+        days=max(1, int(getattr(cfg, "v3_disclosure_lookback_days", 560) or 560)))
     documents: list[OfficialDocument] = []
     refused = 0
     reached = False

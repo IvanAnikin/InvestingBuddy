@@ -46,6 +46,8 @@ from app.services.calculations.definitions import (
     CURRENCY_SAME,
     PERIOD_SAME,
     PERIOD_TWO_OF_ONE_TYPE,
+    REFUSED_NOT_A_CASH_BURN,
+    REFUSED_RUNWAY_PERIOD,
     SCOPE_SAME,
     SCOPE_SEGMENT_OVER_GROUP,
     CalculationDefinition,
@@ -94,6 +96,8 @@ REFUSAL_REASONS: frozenset[str] = frozenset(
         REFUSED_DIVIDE_BY_ZERO,
         REFUSED_NON_POSITIVE_BASE,
         REFUSED_ARITHMETIC_ERROR,
+        REFUSED_NOT_A_CASH_BURN,
+        REFUSED_RUNWAY_PERIOD,
     }
 )
 
@@ -493,6 +497,10 @@ def _check_domain(
                 "like an answer",
                 inputs,
             )
+    if definition.domain_check is not None:
+        refusal = definition.domain_check(inputs)
+        if refusal is not None:
+            return _refuse(definition, refusal[0], refusal[1], inputs)
     return None
 
 

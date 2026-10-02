@@ -73,6 +73,10 @@ function snapshot(
   return {
     present: true,
     periods: null,
+    annualState: null,
+    currentState: null,
+    fromIssuerStatements: false,
+    derived: [],
     annual,
     currentPeriod,
     statements: [],

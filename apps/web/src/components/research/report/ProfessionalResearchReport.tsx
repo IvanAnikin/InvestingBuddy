@@ -325,6 +325,7 @@ function FindingItem({
       ? finding.domainLabel
       : null,
     finding.periodKey,
+    finding.sourcePublishedAt && `source dated ${finding.sourcePublishedAt}`,
     finding.confidence && `${words(finding.confidence)} confidence`,
     finding.direction && words(finding.direction),
     sources && `source: ${sources}`,
@@ -350,6 +351,48 @@ function FindingItem({
           <p className="ib-breakable text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
             {finding.statement}
           </p>
+          {/* Temporal supersession: the newest statement of the same guidance is
+              current; an older one is kept and says it was superseded, and by what. */}
+          {finding.guidanceStatus === "prior" && (
+            <p
+              className="mt-1 text-xs font-medium text-amber-200/90"
+              data-testid="finding-prior-guidance"
+            >
+              Prior guidance
+              {finding.supersededFields.length > 0
+                ? ` for ${finding.supersededFields.join(", ")}`
+                : ""}
+              , superseded
+              {finding.supersededOn ? ` (${finding.supersededOn})` : ""}
+              {finding.supersededByLabel && (
+                <>
+                  {" "}— current:{" "}
+                  <FindingRefs labels={[finding.supersededByLabel]} anchored={anchored} />
+                </>
+              )}
+            </p>
+          )}
+          {finding.guidanceStatus === "current" && finding.supersedes.length > 0 && (
+            <p
+              className="mt-1 text-xs text-[color:var(--ib-ink-3)]"
+              data-testid="finding-current-guidance"
+            >
+              Current guidance
+              {finding.sourcePublishedAt ? ` (${finding.sourcePublishedAt})` : ""}; prior
+              guidance:{" "}
+              {finding.supersedes.map((prior, i) => (
+                <span key={`${prior.label ?? "prior"}-${i}`}>
+                  {i > 0 && ", "}
+                  {prior.label ? (
+                    <FindingRefs labels={[prior.label]} anchored={anchored} />
+                  ) : (
+                    "an earlier statement"
+                  )}
+                  {prior.sourcePublishedAt ? ` (${prior.sourcePublishedAt})` : ""}
+                </span>
+              ))}
+            </p>
+          )}
           {meta.length > 0 && (
             <p className="ib-breakable mt-1 text-xs text-[color:var(--ib-ink-3)]">
               {meta.join(" · ")}
@@ -923,6 +966,20 @@ function EvidenceBody({
                       {KNOWLEDGE_STATE_WORDS[gap.knowledgeState] ?? words(gap.knowledgeState)}
                     </p>
                   )}
+                  {gap.reconciliationStatus === "partially_closed" && (
+                    <p
+                      className="text-xs text-[color:var(--ib-ink-3)]"
+                      data-testid="platform-gap-partial"
+                    >
+                      Partially addressed
+                      {gap.partiallyAddressedBy.length > 0 && (
+                        <>
+                          {" "}by{" "}
+                          <FindingRefs labels={gap.partiallyAddressedBy} anchored={anchored} />
+                        </>
+                      )}
+                    </p>
+                  )}
                 </li>
               ))}
             </ul>
@@ -1027,6 +1084,12 @@ export default function ProfessionalResearchReport({
         <p className={kicker}>Research report</p>
         <p className="ib-breakable mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
           {subject ? `${subject} — ` : ""}
+          {report.subject?.stage === "development_stage_resource" && (
+            <span data-testid="subject-stage">
+              Development-stage resource company: researched as a project, not as a
+              producer — revenue is pre-revenue / not applicable yet.{" "}
+            </span>
+          )}
           {report.sections.length} sections assembled from the research ledger. Each
           finding is stated once, in the section that owns it, under a label such as F1;
           everything else refers to it by that label.

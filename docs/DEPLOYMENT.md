@@ -623,13 +623,41 @@ were already on.
   consent; the ASX permits private and personal use. Before any public or commercial use,
   obtain FCA consent and ASX authority, or set both flags to `false`.
 - Tuning (defaults, not set in production): `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5),
-  `V3_DISCLOSURE_LOOKBACK_DAYS` (540), `V3_DISCLOSURE_CORE_BUDGET_SECONDS` (300),
+  `V3_DISCLOSURE_LOOKBACK_DAYS` (560), `V3_DISCLOSURE_CORE_BUDGET_SECONDS` (300),
   `V3_DISCLOSURE_EXTRACTION_TIMEOUT_SECONDS` (150 — above the generic 60 s
   primary-document budget, and above the unread `primary_document_total_timeout_seconds`
   note in `config.py`).
 - No migration. Hosts contacted: `api.data.fca.org.uk`, `data.fca.org.uk`, `api.gleif.org`,
   `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
+
+#### Extraction pipeline version 19 — the re-read cost (item 21)
+
+Version 19 changes how already-extracted statement tables and prose are READ (bracketed
+negatives, caption-decided signs, new statement lines — see
+[non-us-primary-documents.md](non-us-primary-documents.md)). A version bump re-reads
+every held document whose facts an older pipeline derived, on BOTH paths:
+
+- **V3 disclosure acquisition** (`acquisition._read_by_an_older_pipeline`): each held NSM
+  / ASX core document of a company is fetched and extracted again on that company's next
+  research run. It is budgeted per run by `V3_DISCLOSURE_CORE_BUDGET_SECONDS` (300 s):
+  once spent, the remaining documents are answered from the database (still at the old
+  reading) and re-read on a later run. On B1, the first run per LSE / ASX company after
+  deploy will typically spend the whole budget on re-reads (an 80-page annual report
+  is ~60–150 s).
+- **V2 reuse path** (`extracted_document_service.load_reusable_documents` →
+  `_revalidate_document`): a reused document of ANY venue (EU / company-IR included) is
+  re-derived from its stored excerpts, or re-extracted when its facts are table-derived,
+  and its active facts superseded. This changes V2 inputs: the V2 snapshot's slots and
+  vocabulary are unchanged, but a bracketed "(1,234)" that used to be no number is now
+  −1,234, and loss / outflow captions set the sign, so a V2 report regenerated after the
+  deploy can show figures the previous one omitted.
+
+**Rollout plan (not automated in this slice):** run the research for the held LSE / ASX
+companies in batches of two (the B1 private-use rule) right after deploy so each pays its
+re-read once, outside interactive use; reports regenerated in that window are expected to
+gain statement figures. Rolling back to version 18 is safe — rows stamped 19 are simply
+re-read again by version 18.
 
 ### Deploy health-check hardening (Phase 19.2.1)
 

@@ -41,7 +41,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.models.ledger import (
     ResearchDisagreement,
@@ -50,6 +50,9 @@ from app.models.ledger import (
     ResearchQuestion,
 )
 from app.services.ledger import store as ledger
+
+#: Source kinds that are the issuer's OWN documents (``director.contracts``).
+ISSUER_SOURCE_KINDS: frozenset[str] = frozenset({"issuer_filing", "issuer_ir"})
 
 #: Why the Council was not convened. Closed: "we did not run the council" aggregated by
 #: reason is a coverage finding, and aggregated by free text it is a list of sentences.
@@ -90,6 +93,10 @@ class FindingRef:
     question_key: str | None = None
     source_kinds: tuple[str, ...] = ()
     references_finding_ids: tuple[str, ...] = ()
+    #: Migration 043 — when its source published it, and the newer finding that
+    #: replaced it as current guidance (``None`` = current).
+    source_published_at: str | None = None
+    superseded_by_finding_id: str | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> "FindingRef":
@@ -113,11 +120,20 @@ class FindingRef:
             references_finding_ids=tuple(
                 getattr(row, "references_finding_ids_json", None) or ()
             ),
+            source_published_at=_iso(getattr(row, "source_published_at", None)),
+            superseded_by_finding_id=_str_or_none(
+                getattr(row, "superseded_by_finding_id", None)
+            ),
         )
 
     @property
     def is_verified(self) -> bool:
         return self.verification_status == "verified"
+
+    @property
+    def is_from_issuer_documents(self) -> bool:
+        """Cites the issuer's own filings or investor-relations documents."""
+        return bool(set(self.source_kinds) & ISSUER_SOURCE_KINDS)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +153,8 @@ class FindingRef:
             "question_key": self.question_key,
             "source_kinds": list(self.source_kinds),
             "references_finding_ids": list(self.references_finding_ids),
+            "source_published_at": self.source_published_at,
+            "superseded_by_finding_id": self.superseded_by_finding_id,
         }
 
 
@@ -150,6 +168,12 @@ class GapRef:
     why_it_matters: str | None
     status: str
     closable: bool
+    #: Migration 043 — the final reconciliation's verdict (``partially_closed`` or
+    #: ``still_open`` here: closed and superseded gaps never reach the Council), and the
+    #: findings that partly address it.
+    reconciliation_status: str | None = None
+    addressed_by_finding_ids: tuple[str, ...] = ()
+    reconciliation_reasons: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -159,7 +183,18 @@ class GapRef:
             "why_it_matters": self.why_it_matters,
             "status": self.status,
             "closable": self.closable,
+            "reconciliation_status": self.reconciliation_status,
+            "addressed_by_finding_ids": list(self.addressed_by_finding_ids),
+            "reconciliation_reasons": list(self.reconciliation_reasons),
         }
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if value is not None and hasattr(value, "isoformat") else None
+
+
+def _str_or_none(value: Any) -> str | None:
+    return str(value) if value else None
 
 
 @dataclass(frozen=True)
@@ -233,6 +268,12 @@ class CouncilInput:
         return tuple(f for f in self.findings if f.is_verified)
 
     @property
+    def primary_source_findings(self) -> tuple[FindingRef, ...]:
+        """Findings citing the issuer's own documents. NOT "verified": nothing in the
+        pipeline verifies a finding yet, and a count named so would say otherwise."""
+        return tuple(f for f in self.findings if f.is_from_issuer_documents)
+
+    @property
     def citable_finding_ids(self) -> frozenset[str]:
         """The **only** handles a council key_point may cite.
 
@@ -249,6 +290,7 @@ class CouncilInput:
             "refusal_detail": self.refusal_detail,
             "finding_count": len(self.findings),
             "verified_finding_count": len(self.verified_findings),
+            "primary_source_finding_count": len(self.primary_source_findings),
             "gap_count": len(self.gaps),
             "disagreement_count": len(self.disagreements),
             "unresolved_disagreement_count": len(self.unresolved_disagreements),
@@ -359,8 +401,19 @@ async def _count_gaps(session: Any, run: Any) -> int:
     return await _count(
         session,
         ResearchGap,
+        *_shown_gap_conditions(run),
+    )
+
+
+def _shown_gap_conditions(run: Any) -> tuple[Any, ...]:
+    """A gap the Council sees: not closed, and not reconciled closed or superseded."""
+    return (
         ResearchGap.research_run_id == run.id,
         ResearchGap.status != ledger.GAP_CLOSED,
+        or_(
+            ResearchGap.reconciliation_status.is_(None),
+            ResearchGap.reconciliation_status.not_in(sorted(ledger.RECONCILED_HIDDEN)),
+        ),
     )
 
 
@@ -397,10 +450,7 @@ async def _findings(session: Any, run: Any) -> tuple[FindingRef, ...]:
 async def _gaps(session: Any, run: Any) -> tuple[GapRef, ...]:
     stmt = (
         select(ResearchGap)
-        .where(
-            ResearchGap.research_run_id == run.id,
-            ResearchGap.status != ledger.GAP_CLOSED,
-        )
+        .where(*_shown_gap_conditions(run))
         .order_by(ResearchGap.blocks_council.desc(), ResearchGap.created_at)
         .limit(MAX_GAPS + 1)
     )
@@ -413,6 +463,15 @@ async def _gaps(session: Any, run: Any) -> tuple[GapRef, ...]:
             why_it_matters=row.why_it_matters,
             status=row.status,
             closable=row.closable,
+            reconciliation_status=getattr(row, "reconciliation_status", None),
+            addressed_by_finding_ids=tuple(
+                str(f) for f in ((getattr(row, "reconciliation_json", None) or {})
+                                 .get("finding_ids") or ())
+            ),
+            reconciliation_reasons=tuple(
+                str(r) for r in ((getattr(row, "reconciliation_json", None) or {})
+                                 .get("reasons") or ())
+            ),
         )
         for row in rows
     )

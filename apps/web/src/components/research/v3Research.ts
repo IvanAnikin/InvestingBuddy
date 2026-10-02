@@ -107,6 +107,9 @@ export type V3Council = {
   refusalDetail: string | null;
   findingCount: number | null;
   verifiedFindingCount: number | null;
+  /** Findings citing the issuer's own filings or IR documents. NOT "verified":
+      nothing in the pipeline verifies a finding yet. Null on older reports. */
+  primarySourceFindingCount: number | null;
   gapCount: number | null;
   disagreementCount: number | null;
   unresolvedDisagreementCount: number | null;
@@ -141,9 +144,12 @@ export type V3Consumption = {
   modelCalls: number | null;
   findingsTotal: number | null;
   findingsWithdrawn: number | null;
+  /** Findings not withdrawn by the red team. Read from `useful_findings`, falling
+      back to the older, misleadingly named `verified_useful_findings`. */
   verifiedUsefulFindings: number | null;
   gapsOpen: number | null;
   estimatedCostUsd: number | null;
+  /** Cost per useful finding (`cost_per_useful_finding`, else the older key). */
   costPerVerifiedUsefulFinding: number | null;
   /** Present when the run could not be priced. Unpriced is NOT free. */
   costUnknownBecause: string | null;
@@ -215,6 +221,17 @@ export type ProfessionalFinding = {
   direction: string | null;
   periodKey: string | null;
   references: string[];
+  /** When the cited source was published (ISO date). */
+  sourcePublishedAt: string | null;
+  /** "current" guidance, "prior" (superseded) guidance, or null when never compared. */
+  guidanceStatus: "current" | "prior" | null;
+  /** Prior guidance only: the label of the finding that superseded it, and when. */
+  supersededByLabel: string | null;
+  supersededOn: string | null;
+  /** Which of its fields were superseded (labels) — the rest may still be current. */
+  supersededFields: string[];
+  /** Current guidance only: the prior statements it replaced. */
+  supersedes: { label: string | null; sourcePublishedAt: string | null }[];
 };
 
 /** A question a section was asked and could not settle. */
@@ -287,6 +304,11 @@ export type PlatformEvidenceGap = {
   description: string;
   questionKey: string | null;
   knowledgeState: string | null;
+  /** The final reconciliation's verdict: "partially_closed" or "still_open" (closed
+      and superseded gaps are never listed). Null on older reports. */
+  reconciliationStatus: string | null;
+  /** Labels of the findings that partly address it. */
+  partiallyAddressedBy: string[];
 };
 
 type SectionHead = {
@@ -365,7 +387,12 @@ export type ProfessionalEditor = {
 
 export type ProfessionalResearch = {
   version: number | null;
-  subject: { ticker: string | null; name: string | null } | null;
+  subject: {
+    ticker: string | null;
+    name: string | null;
+    /** Item 20 — "development_stage_resource" when the stage detector proved it. */
+    stage?: string | null;
+  } | null;
   sections: ProfessionalSection[];
   /** Findings shown across all sections. Zero means the ledger had nothing to say. */
   findingCount: number;
@@ -405,6 +432,80 @@ export type V3Research = {
   routing: { slot: string; vendor: string | null; reason: string | null }[];
   /** The reader-facing report assembled from the ledger, when the run produced one. */
   professionalResearch: ProfessionalResearch | null;
+  /** How the run's gaps and the V2 report's own gap statements were reconciled
+      against its findings. Null on reports written before reconciliation existed. */
+  gapReconciliation: V3GapReconciliation | null;
+  /** Item 21 — the issuer's own statements as the run found them. Null on reports
+      written before this existed. */
+  financialStatements: V3FinancialStatements | null;
+};
+
+/**
+ * Item 21 — which of the reporting situations a report is in. Never merged into one
+ * "Not reported": an acquired-but-unread annual report and an issuer that filed none are
+ * opposite statements.
+ */
+export type StatementStateKind =
+  | "facts_extracted"
+  | "report_acquired_facts_not_extracted"
+  | "not_acquired"
+  | "not_reported_by_issuer";
+
+export type StatementState = {
+  state: StatementStateKind;
+  /** "FY2025" when known — the extracted period, or the period the document names. */
+  period: string | null;
+  /** The backend's own sentence, e.g. "FY2025 annual report acquired (2026-04-30) —
+      figures not yet extracted". */
+  label: string;
+  reason: string | null;
+};
+
+export type DerivedMetric = {
+  key: string;
+  label: string;
+  basis: string | null;
+  computed: boolean;
+  value: number | null;
+  periodKey: string | null;
+  refusalDetail: string | null;
+  interpretation: string | null;
+};
+
+export type V3FinancialStatements = {
+  annual: StatementState | null;
+  currentPeriod: StatementState | null;
+  reportingPeriods: {
+    latestAnnual: string | null;
+    latestInterim: string | null;
+    latestQuarter: string | null;
+    latestCurrent: string | null;
+  };
+  /** `<field>_primary_filing` / `<field>_current_period` datapoints, the V2 shape. */
+  slots: Record<string, unknown>;
+  derived: DerivedMetric[];
+  conflictCount: number;
+  /** Item 20 — "Revenue: pre-revenue / not applicable yet" for a proved developer. */
+  revenueStatus: { label: string; note: string | null } | null;
+};
+
+/** A V2 gap statement, labelled against the V3 findings. */
+export type V2ItemLabel = {
+  /** V2 `missing_information` field, verbatim; or a council concern's normalised text. */
+  key: string;
+  /** "closed" | "partially_closed" | "superseded" | "still_open". */
+  status: string;
+  findingIds: string[];
+  /** Council concerns only: the agent that raised it and its position in that agent's
+      list — a handle besides the text. */
+  agent: string | null;
+  index: number | null;
+};
+
+export type V3GapReconciliation = {
+  counts: Record<string, number>;
+  v2MissingInformation: V2ItemLabel[];
+  v2CouncilConcerns: V2ItemLabel[];
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -547,6 +648,7 @@ function readCouncil(v: unknown): V3Council | null {
     refusalDetail: str(v.refusal_detail),
     findingCount: num(v.finding_count),
     verifiedFindingCount: num(v.verified_finding_count),
+    primarySourceFindingCount: num(v.primary_source_finding_count),
     gapCount: num(v.gap_count),
     disagreementCount: num(v.disagreement_count),
     unresolvedDisagreementCount: num(v.unresolved_disagreement_count),
@@ -593,10 +695,11 @@ function readConsumption(v: unknown): V3Consumption | null {
     modelCalls: num(model.model_calls),
     findingsTotal: num(v.findings_total),
     findingsWithdrawn: num(v.findings_withdrawn_by_red_team),
-    verifiedUsefulFindings: num(v.verified_useful_findings),
+    verifiedUsefulFindings: num(v.useful_findings) ?? num(v.verified_useful_findings),
     gapsOpen: num(v.gaps_open),
     estimatedCostUsd: num(v.estimated_cost_usd),
-    costPerVerifiedUsefulFinding: num(v.cost_per_verified_useful_finding),
+    costPerVerifiedUsefulFinding:
+      num(v.cost_per_useful_finding) ?? num(v.cost_per_verified_useful_finding),
     costUnknownBecause: str(v.cost_is_unknown_because),
     byVendor: Object.entries(byVendorRaw)
       .map(([vendor, raw]) => {
@@ -691,6 +794,18 @@ function readProfessionalFinding(r: Record<string, unknown>): ProfessionalFindin
     direction: str(r.direction),
     periodKey: str(r.period_key),
     references: strings(r.references),
+    sourcePublishedAt: str(r.source_published_at),
+    guidanceStatus:
+      r.guidance_status === "current" || r.guidance_status === "prior"
+        ? r.guidance_status
+        : null,
+    supersededByLabel: str(r.superseded_by_label),
+    supersededOn: str(r.superseded_on),
+    supersededFields: strings(r.superseded_fields),
+    supersedes: records(r.supersedes).map((x) => ({
+      label: str(x.label),
+      sourcePublishedAt: str(x.source_published_at),
+    })),
   };
 }
 
@@ -834,6 +949,8 @@ function readEvidenceSection(
               description,
               questionKey: str(g.question_key),
               knowledgeState: str(g.knowledge_state),
+              reconciliationStatus: str(g.reconciliation_status),
+              partiallyAddressedBy: strings(g.partially_addressed_by),
             }
           : null;
       })
@@ -898,7 +1015,12 @@ export function readProfessionalResearch(v3Payload: unknown): ProfessionalResear
   if (sections.length === 0) return null;
 
   const subject = isRecord(raw.subject)
-    ? { ticker: str(raw.subject.ticker), name: str(raw.subject.name) }
+    ? {
+        ticker: str(raw.subject.ticker),
+        name: str(raw.subject.name),
+        // Only when the backend stated one, so every other subject is unchanged.
+        ...(str(raw.subject.stage) ? { stage: str(raw.subject.stage) } : {}),
+      }
     : null;
   const editor = isRecord(raw.editor)
     ? {
@@ -987,5 +1109,127 @@ export function readV3Research(sourceSummary: unknown): V3Research | null {
       };
     }),
     professionalResearch,
+    gapReconciliation: readGapReconciliation(raw.gap_reconciliation),
+    financialStatements: readStatementsPayload(raw.financial_statements_state),
   };
+}
+
+const STATEMENT_STATE_KINDS: readonly StatementStateKind[] = [
+  "facts_extracted",
+  "report_acquired_facts_not_extracted",
+  "not_acquired",
+  "not_reported_by_issuer",
+];
+
+function readStatementState(v: unknown): StatementState | null {
+  if (!isRecord(v)) return null;
+  const state = str(v.state);
+  const label = str(v.label);
+  if (!state || !label) return null;
+  if (!(STATEMENT_STATE_KINDS as readonly string[]).includes(state)) return null;
+  return {
+    state: state as StatementStateKind,
+    period: str(v.period),
+    label,
+    reason: str(v.reason),
+  };
+}
+
+function readStatementsPayload(v: unknown): V3FinancialStatements | null {
+  if (!isRecord(v) || Object.keys(v).length === 0) return null;
+  const periods = isRecord(v.reporting_periods) ? v.reporting_periods : {};
+  return {
+    annual: readStatementState(v.annual),
+    currentPeriod: readStatementState(v.current_period),
+    reportingPeriods: {
+      latestAnnual: str(periods.latest_annual),
+      latestInterim: str(periods.latest_interim),
+      latestQuarter: str(periods.latest_quarter),
+      latestCurrent: str(periods.latest_current_period),
+    },
+    slots: isRecord(v.slots) ? v.slots : {},
+    derived: records(v.derived)
+      .map((d): DerivedMetric | null => {
+        const key = str(d.definition_key);
+        if (!key) return null;
+        return {
+          key,
+          label: str(d.label) ?? key,
+          basis: str(d.basis),
+          computed: d.status === "computed",
+          value: num(d.value),
+          periodKey: str(d.period_key),
+          refusalDetail: str(d.detail),
+          interpretation: str(d.interpretation),
+        };
+      })
+      .filter((d): d is DerivedMetric => d !== null),
+    conflictCount: records(v.conflicts).length,
+    revenueStatus:
+      isRecord(v.revenue_status) &&
+      v.revenue_status.state === "pre_revenue" &&
+      str(v.revenue_status.label)
+        ? {
+            label: str(v.revenue_status.label) as string,
+            note: str(v.revenue_status.note),
+          }
+        : null,
+  };
+}
+
+/**
+ * The issuer statements block alone, straight off `source_summary_json`. The library
+ * reads it for every row; building the whole V3 view there would be wasted work.
+ */
+export function readFinancialStatements(
+  sourceSummary: unknown,
+): V3FinancialStatements | null {
+  if (!isRecord(sourceSummary) || !isRecord(sourceSummary.v3_research)) return null;
+  return readStatementsPayload(sourceSummary.v3_research.financial_statements_state);
+}
+
+function readV2Labels(v: unknown, keyField: "field" | "key"): V2ItemLabel[] {
+  return records(v)
+    .map((r) => {
+      const key = str(r[keyField]);
+      const status = str(r.status);
+      return key && status
+        ? {
+            key,
+            status,
+            findingIds: strings(r.finding_ids),
+            agent: str(r.agent),
+            index: num(r.index),
+          }
+        : null;
+    })
+    .filter((x): x is V2ItemLabel => x !== null);
+}
+
+function readGapReconciliation(v: unknown): V3GapReconciliation | null {
+  if (!isRecord(v) || Object.keys(v).length === 0) return null;
+  const v2 = isRecord(v.v2) ? v.v2 : {};
+  return {
+    counts: counts(v.counts),
+    v2MissingInformation: readV2Labels(v2.missing_information, "field"),
+    v2CouncilConcerns: readV2Labels(v2.council_concerns, "key"),
+  };
+}
+
+/**
+ * The hint under the findings count. "0 verified" was on every report, because nothing
+ * in the pipeline verifies a finding yet — so it said "none of this is checked" about
+ * findings that all cite evidence. What IS known is how many cite the issuer's own
+ * documents; a verified count is shown only once something actually verifies.
+ */
+export function findingsHint(council: V3Council | null): string | undefined {
+  if (!council) return undefined;
+  const parts: string[] = [];
+  if (council.primarySourceFindingCount !== null) {
+    parts.push(`${council.primarySourceFindingCount} from issuer documents`);
+  }
+  if (council.verifiedFindingCount !== null && council.verifiedFindingCount > 0) {
+    parts.push(`${council.verifiedFindingCount} verified`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }

@@ -304,10 +304,18 @@ async def get_company_research_job_lineage(
     ),
 )
 async def research_schema_readiness(db: AsyncSession = Depends(get_db)) -> dict:
-    from app.services.schema_readiness import migration_041_readiness
+    from app.services.schema_readiness import (
+        migration_041_readiness,
+        migration_043_readiness,
+    )
 
     readiness = await migration_041_readiness(db, use_cache=False)
-    return {"migration": "041", **readiness.to_dict()}
+    readiness_043 = await migration_043_readiness(db, use_cache=False)
+    return {
+        "migration": "041",
+        **readiness.to_dict(),
+        "migration_043": readiness_043.to_dict(),
+    }
 
 
 @router.get(
