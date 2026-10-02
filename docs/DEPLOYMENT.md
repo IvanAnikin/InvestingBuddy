@@ -610,6 +610,59 @@ Operational notes:
   background tasks. Adding workers does not make the tasks durable.
 - No new env var and no migration are required for Phase 25.1.
 
+**W6a — Discovery on the durable worker (`V3_DISCOVERY_DURABLE_ENABLED`, default
+`false`).** With this flag and `V3_DURABLE_JOBS_ENABLED` both `true`, new Discovery
+runs (`POST /market-discovery/runs` and `/thesis-runs`) are enqueued as
+`discovery_research` jobs and run by the durable worker, so a recycle does not
+lose them. A retry resumes from the last committed ticker.
+- **No migration.** The `research_jobs` table already exists.
+- **Worker needed.** The jobs are run by the in-process worker
+  (`V3_JOB_WORKER_IN_PROCESS=true`, the default) or by a separate worker
+  process. With durable jobs on and no worker, runs stay `pending`.
+- **One job at a time, both ways.** The worker runs one job at a time. A
+  Discovery scan holds it for **15–45 minutes** (it runs the company-analysis
+  workflow per ticker), and for that whole time no company-research or
+  escalation job starts. A Discovery run queued behind a company-research job
+  likewise waits for it (up to about 10 minutes). Either way the waiting run
+  shows as `pending` / "Queued".
+- **Retries resume.** A transient error (timeouts, connection resets, and
+  database connection errors such as SQLAlchemy `OperationalError` /
+  `InterfaceError`) retries the job, up to `V3_JOB_MAX_ATTEMPTS`, from the last
+  committed ticker. A failed heartbeat write is retried; only a heartbeat the
+  store refuses means the lease is lost.
+- **A ticker that kills the process every time dead-letters the run.** If one
+  ticker crashes the worker process (out of memory, say) on every attempt, the
+  job is abandoned after `V3_JOB_MAX_ATTEMPTS` and the run becomes `failed`
+  with "The research worker gave up after N attempts". Candidates written before
+  that ticker are kept. The run does not skip the ticker and carry on.
+- **Turning the flag off** only stops new runs being enqueued. The handler stays
+  registered, so jobs already queued still finish.
+
+**Activation checklist (before `V3_DISCOVERY_DURABLE_ENABLED=true`):**
+1. `V3_DURABLE_JOBS_ENABLED=true` and a worker running (in-process by default).
+2. Decide the queue contention above. Either run a separate worker for
+   Discovery (`ResearchWorker(job_types=["discovery_research"])` supports this,
+   but `python -m app.services.jobs.worker` has no job-type option yet, so it
+   needs a small entry-point change, plus B1 memory or a second App Service), or
+   give one job type priority (not implemented), or accept that a Discovery scan
+   delays company research by up to 45 minutes. Do not turn the flag on without
+   this decision.
+3. Run the staging validation below.
+
+**Staging validation plan (W6a):**
+
+| # | Check | Pass when |
+|---|---|---|
+| A | Flag off: start a Discovery run | Runs as before; `job` is `null`; no `discovery_research` row in `research_jobs` |
+| B | Flag on: start a Discovery run | `201`, `status: "pending"`, `job.job_status: "pending"`; one `research_jobs` row with key `discovery_research:{run_id}#1` |
+| C | Reload the page and close the tab mid-run, then return | The same run is shown with live progress; it is not restarted |
+| D | Restart the App Service mid-scan | After the lease lapses (about 2 minutes), the job is reclaimed (`attempt` 2) and the scan continues from the last ticker. No duplicate candidates (`SELECT ticker, count(*) … GROUP BY ticker HAVING count(*) > 1` is empty) |
+| E | Run finishes | Run `completed`/`completed_with_warnings`; job `completed*` with `result_type=discovery_run`, `result_ref` = run id |
+| F | Start a company research while a Discovery scan runs | The research waits as `pending` until the scan ends (documents the contention; time it) |
+| G | Double-submit the same thesis twice | Two runs, each with its own job (one job per run) |
+| H | Dead letter: force `V3_JOB_MAX_ATTEMPTS=1` and kill the process mid-scan | Within one sweep (≤5 minutes after worker start) the run is `failed` with "gave up after 1 attempts" |
+| I | Turn the flag off with a job still queued | The queued job still runs to completion |
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

@@ -552,6 +552,27 @@ class TestDurableExecution:
         seen = await durable.get_envelope(uuid.UUID(envelope["job_id"]), store=store)
         assert seen["status"] == contract.STATUS_PENDING
 
+    async def test_a_database_connection_drop_is_retried_not_failed(
+        self, durable_on, store, company, factory
+    ):
+        """W6a review H1: SQLAlchemy's connection errors are not OSErrors, so a DB blip
+        mid-research used to fail the job permanently. It is the event a durable job
+        exists to survive."""
+        from sqlalchemy.exc import OperationalError
+
+        envelope, _ = await durable.submit(company, store=store)
+        await _run_the_job(
+            store,
+            factory,
+            report_id=uuid.uuid4(),
+            fail_with=OperationalError(
+                "COMMIT", {}, Exception("server closed the connection unexpectedly")
+            ),
+        )
+        row = await _job_row(factory, envelope["job_id"])
+        assert row.status == contract.STATUS_PENDING, "a connection blip was not retried"
+        assert row.error_class == "OperationalError"
+
     async def test_a_permanent_failure_fails_the_job_immediately(
         self, durable_on, store, company, factory
     ):

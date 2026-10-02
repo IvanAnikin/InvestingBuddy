@@ -2126,7 +2126,8 @@ until a terminal status is reached. This prevents a gateway/proxy `504` on a
 multi-ticker `free_real` run under a single B1 worker.
 
 - **Statuses:** `pending` → `running` → `completed` | `completed_with_warnings`
-  | `failed`. (`cancelled` is reserved; cancellation is not implemented.)
+  | `failed` | `cancelled` (`cancelled` is reached only on the W6a durable path,
+  when the job is cancelled; there is no cancel endpoint for Discovery runs).
 - **Progress fields on the run:** `processed_count` / `universe_count`,
   `candidate_count`, `error_count`, `warnings`, and a computed
   `progress_pct = round(processed_count / universe_count * 100, 1)` (0 when the
@@ -2139,9 +2140,37 @@ multi-ticker `free_real` run under a single B1 worker.
   durable across an App Service restart. This is acceptable for the Phase 25.1
   MVP — a future phase can add a durable queue (Service Bus / Functions). If the
   browser closes mid-run the admin can reopen `/admin/discovery` and the recent
-  run (and its committed progress) is still visible.
+  run (and its committed progress) is still visible. W6a (below) removes this
+  limitation when its flags are on.
 - The oversized/empty universe guard still runs **before** the row is created,
   so a rejected run (422) schedules no background work.
+
+**Durable execution (W6a, `V3_DISCOVERY_DURABLE_ENABLED`, default off).** With
+both `V3_DURABLE_JOBS_ENABLED` and `V3_DISCOVERY_DURABLE_ENABLED` on, `POST /runs`
+and `POST /thesis-runs` enqueue a `discovery_research` durable job
+(`research_jobs`, idempotency key `discovery_research:{run_id}`, payload
+`{discovery_run_id}`, `company_id` NULL) instead of a `BackgroundTask`. A leased
+worker runs it, so a reload, a closed tab or a container recycle does not lose the
+run: the next worker reclaims it. If the enqueue itself fails, the endpoint logs
+`discovery_durable_enqueue_failed` and checks whether the job row landed anyway;
+it falls back to the `BackgroundTask` only when no job exists (otherwise the run
+would be scanned twice). The Discovery Council stays on `BackgroundTasks`.
+
+- **Response shape unchanged.** `status` is still `pending` on create. One
+  additive, nullable field on `DiscoveryRunRead`: `job` =
+  `{job_id, job_status, attempt, max_attempts}`, set on the two `POST`s and on
+  `GET /runs/{run_id}` / `GET /thesis-runs/{run_id}` when a durable job exists
+  (`null` otherwise, and never read when `V3_DURABLE_JOBS_ENABLED` is off). The
+  list endpoint does not carry it.
+- **Retry resumes.** A retry continues from the run's committed
+  `processed_count`: earlier tickers are not extracted again and no candidate is
+  duplicated. The 30-minute "already running" guard applies only to the
+  `BackgroundTask` path.
+- **No new run statuses.** A job that dead-letters or fails permanently marks the
+  run `failed` with a warning ("The research worker gave up after N attempts…" /
+  "…stopped on a permanent error (ErrorType)…"). A cancelled job marks it
+  `cancelled`. A worker sweep repairs the runs no notification reaches.
+  Candidates already written are kept.
 
 **Run creation (`POST /runs`) body:**
 ```json
