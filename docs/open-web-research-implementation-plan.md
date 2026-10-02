@@ -270,6 +270,13 @@ hosts, which needs U2.
   challenge beacons, nav login boxes and cookie banners are not walls); only WHATWG
   charset labels are honoured; plain `ref` is not a tracking parameter; denylist
   `2026-09-30.2`.
+- Review round 2: no NUL/control/surrogate string reaches a row (URL →
+  `<unparseable-url>`, other text → U+FFFD); robots caps only ever cut toward STRICTER
+  (over-long Disallow truncated, Allows dropped first, >2,000 Disallows → `Disallow: /`);
+  each `X-Robots-Tag` header is scoped separately; Imperva's per-page resource script is
+  not a CAPTCHA; only the matched robots groups are normalised (ASCII fast path); a
+  robots/TDMRep request cut by the run deadline writes a `run_deadline` row. One
+  `AsyncSession` must not be shared by concurrent `open_web_fetch` calls.
 
 **Complexity:** L (about 3–4 days).
 

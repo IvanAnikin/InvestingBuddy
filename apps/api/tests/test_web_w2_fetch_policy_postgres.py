@@ -195,3 +195,85 @@ async def test_attempt_rows_carry_lineage_jsonb_and_survive_their_job(web: Web) 
             await s.execute(sa.delete(ResearchJob).where(ResearchJob.id == job_id))
             await s.commit()
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["hostile_canonical", "nul_url", "surrogate_url"],
+)
+async def test_r2_1_hostile_strings_never_poison_a_postgres_session(web: Web, case: str) -> None:
+    """NUL is illegal in PostgreSQL TEXT and JSONB and a lone surrogate cannot be encoded:
+    either would make the flush raise and leave the caller's session unusable."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.models.research_job import ResearchJob
+    from app.models.web_research import WebFetchAttempt
+
+    clock = FakeClock()
+    runtime = OpenWebFetchRuntime.create(clock=clock, sleep=clock.sleep, rng=random.Random(1))
+    marker = uuid.uuid4().hex[:10]
+    page = (
+        b'<!doctype html><html><head><link rel="canonical" href="/a\x00b"></head><body>'
+        + b"<p>Plant output doubled.</p>" * 40
+        + b"</body></html>"
+    )
+    web.route("example.com", f"/{marker}", respond(body=page))
+    url = {
+        "hostile_canonical": f"https://example.com/{marker}",
+        "nul_url": f"https://example.com/{marker}\x00b",
+        "surrogate_url": f"https://example.com/{marker}\udcff",
+    }[case]
+
+    engine = create_async_engine(POSTGRES_URL, future=True)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    job_id = uuid.uuid4()
+    try:
+        async with maker() as s:
+            s.add(
+                ResearchJob(
+                    id=job_id,
+                    job_type="company_research",
+                    idempotency_key=f"w2-r21-{job_id}",
+                    status="running",
+                )
+            )
+            await s.flush()
+            result = await open_web_fetch(
+                s,
+                url,
+                context=WebFetchContext(research_job_id=job_id),
+                budget=_budget(clock),
+                origin="search",
+                cfg=_cfg(),
+                resolver=FakeDNS(),
+                runtime=runtime,
+            )
+            await s.commit()  # would raise (and poison the session) before R2-1
+            rows = (
+                (
+                    await s.execute(
+                        sa.select(WebFetchAttempt).where(
+                            WebFetchAttempt.research_job_id == job_id,
+                            WebFetchAttempt.origin == "search",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(rows) == 1
+            if case == "hostile_canonical":
+                assert result.status == STATUS_FETCHED
+                meta = rows[0].redirect_chain_json[-1]["meta"]
+                assert meta["rel_canonical"] == "<unparseable-url>"
+            else:
+                assert rows[0].requested_url == "<unparseable-url>"
+                assert rows[0].status == "refused"
+    finally:
+        async with maker() as s:
+            await s.execute(
+                sa.delete(WebFetchAttempt).where(WebFetchAttempt.research_job_id == job_id)
+            )
+            await s.execute(sa.delete(ResearchJob).where(ResearchJob.id == job_id))
+            await s.commit()
+        await engine.dispose()

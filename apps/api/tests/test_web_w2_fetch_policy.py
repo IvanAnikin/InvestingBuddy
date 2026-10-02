@@ -1769,13 +1769,20 @@ class TestReviewSecurity:
     def test_s1_a_huge_robots_file_is_capped_and_cheap(self) -> None:
         import time
 
-        text = "User-agent: *\n" + "".join(f"Disallow: /*x{i}*y*z$\n" for i in range(25_000))
+        at_cap = "User-agent: *\n" + "".join(
+            f"Disallow: /*x{i}*y*z$\n" for i in range(robots.MAX_ROBOTS_RULES)
+        )
         started = time.perf_counter()
-        policy = robots.parse_robots(text)
+        policy = robots.parse_robots(at_cap)
         assert len(policy.rules) == robots.MAX_ROBOTS_RULES
         for _ in range(20):
             policy.decide("/" + "x1y" * 600)
-        assert time.perf_counter() - started < 5.0
+        # Past the cap the file is not evaluated rule by rule: it fails closed (R2-2).
+        huge = robots.parse_robots(at_cap + "".join(f"Disallow: /q{i}\n" for i in range(25_000)))
+        assert huge.rules == (robots.RobotsRule(False, "/"),)
+        # Backstop against a catastrophic regression (the original freeze was minutes);
+        # generous because the full suite shares the machine.
+        assert time.perf_counter() - started < 30.0
 
     def test_s1_tdmrep_uses_the_same_bounded_matcher(self) -> None:
         import time
@@ -1808,7 +1815,7 @@ class TestReviewSecurity:
     async def test_s1_a_hostile_robots_file_does_not_freeze_the_fetch(self, h: Harness) -> None:
         import time
 
-        hostile = b"User-agent: *\n" + b"Disallow: /*a*a*a*a*a*a*a*a*a*a*a*b\n" * 3000
+        hostile = b"User-agent: *\n" + b"Disallow: /*a*a*a*a*a*a*a*a*a*a*a*b\n" * 1900
         h.web.route("example.com", "/robots.txt", respond(body=hostile, content_type="text/plain"))
         h.web.route("example.com", "/" + "a" * 1500, respond())
         started = time.perf_counter()
@@ -1893,3 +1900,156 @@ class TestReviewLow:
 
     def test_denylist_label_rule_is_not_a_substring_rule(self) -> None:
         assert not denylisted("scihub-news.com") and not denylisted("sci-hub")
+
+
+# --------------------------------------------------------------------------- #
+# Review round 2
+# --------------------------------------------------------------------------- #
+
+
+class TestRound2DbSafeStrings:
+    async def test_r2_1_a_nul_in_a_declared_canonical_never_reaches_a_row(self, h: Harness) -> None:
+        body = b'<!doctype html><html><head><link rel="canonical" href="/a\x00b"></head>' + (
+            HTML_PAGE
+        )
+        h.web.route("example.com", "/p", respond(body=body))
+        result = await h.fetch("https://example.com/p")
+        assert result.status == STATUS_FETCHED
+        row = (await h.rows())[0]
+        assert row.redirect_chain_json[-1]["meta"]["rel_canonical"] == "<unparseable-url>"
+
+    @pytest.mark.parametrize("url", ["https://example.com/a\x00b", "https://example.com/\udcff"])
+    async def test_r2_1_nul_and_surrogate_urls_are_refused_and_stored_safely(
+        self, h: Harness, url: str
+    ) -> None:
+        result = await h.fetch(url)
+        assert result.status == STATUS_REFUSED
+        rows = await h.rows()  # the flush succeeded and the session still works
+        assert rows[0].requested_url == "<unparseable-url>"
+        assert h.web.requests == []
+        h.web.route("example.com", "/ok", respond())
+        assert (await h.fetch("https://example.com/ok")).status == STATUS_FETCHED
+
+    def test_r2_1_db_text_and_json_helpers(self) -> None:
+        from app.services.web_research import fetch as fetch_module
+
+        assert fetch_module._db_text("e\x00t\udcffag") == "e�t�ag"
+        assert fetch_module._db_json({"k\x00": ["v\x00"]}) == {"k�": ["v�"]}
+        assert fetch_module._db_url("https://x/\x00") == "<unparseable-url>"
+
+
+class TestRound2RobotsCapsFailSafe:
+    def test_r2_2_allows_past_the_cap_cannot_hide_a_disallow(self) -> None:
+        text = "User-agent: *\n" + "Allow: /pub\n" * 2500 + "Disallow: /\n"
+        policy = robots.parse_robots(text)
+        assert policy.decide("/secret") == robots.ROBOTS_DISALLOWED
+        assert policy.truncated
+
+    def test_r2_2_an_over_long_disallow_is_truncated_not_ignored(self) -> None:
+        policy = robots.parse_robots("User-agent: *\nDisallow: /" + "a" * 3000 + "\n")
+        assert policy.decide("/" + "a" * 2000) == robots.ROBOTS_DISALLOWED
+
+    def test_r2_2_an_over_long_allow_is_dropped(self) -> None:
+        policy = robots.parse_robots("User-agent: *\nDisallow: /a\nAllow: /a" + "b" * 3000 + "\n")
+        assert policy.decide("/a" + "b" * 3000) == robots.ROBOTS_DISALLOWED
+
+    def test_r2_2_too_many_disallows_fails_closed(self) -> None:
+        text = "User-agent: *\n" + "".join(f"Disallow: /p{i}\n" for i in range(2500))
+        policy = robots.parse_robots(text)
+        assert policy.decide("/anything") == robots.ROBOTS_DISALLOWED
+        assert policy.decide("/robots.txt") == robots.ROBOTS_ALLOWED
+
+    def test_r2_5_unmatched_groups_are_not_normalised_and_emoji_is_cheap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        emoji = "\U0001f600" * 100
+        other = "User-agent: OtherBot\n" + f"Disallow: /{emoji}\n" * 1200
+        ours = "User-agent: *\n" + f"Disallow: /{emoji}\n" * 1000
+        calls = 0
+        real = robots.normalise_path
+
+        def counting(path: str) -> str:
+            nonlocal calls
+            calls += 1
+            return real(path)
+
+        monkeypatch.setattr(robots, "normalise_path", counting)
+        started = time.perf_counter()
+        policy = robots.parse_robots(other + ours)
+        elapsed = time.perf_counter() - started
+        assert calls == 1000  # only the group that applies to us
+        assert len(policy.rules) == 1000
+        assert elapsed < 15.0  # backstop only; the count above is the real check
+        assert real("/plain/path?q=1") == "/plain/path?q=1"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("/caf\u00e9", "/caf%C3%A9"),
+            ("/a b", "/a%20b"),
+            ("/%7euser/%2f", "/~user/%2F"),
+            ("/%e2%82%ac\u20ac", "/%E2%82%AC%E2%82%AC"),
+        ],
+    )
+    def test_r2_5_normalisation_is_unchanged(self, raw: str, expected: str) -> None:
+        assert robots.normalise_path(raw) == expected
+
+
+class TestRound2XRobotsTag:
+    def test_r2_3_scope_does_not_carry_across_headers(self) -> None:
+        assert robots.x_robots_tag_noai("otherbot: noindex\nnoai")
+        assert not robots.x_robots_tag_noai("otherbot: noindex, noai")
+
+    async def test_r2_3_two_headers_through_the_fetch(self, h: Harness) -> None:
+        def two_headers(_r: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers=[
+                    ("content-type", "text/html"),
+                    ("x-robots-tag", "otherbot: noindex"),
+                    ("x-robots-tag", "noai"),
+                ],
+                content=HTML_PAGE,
+            )
+
+        h.web.route("example.com", "/a", two_headers)
+        result = await h.fetch("https://example.com/a")
+        assert result.failure_code == "tdm_reserved"
+        assert "noai" in result.tdm_signals
+
+
+class TestRound2Imperva:
+    async def test_r2_4_the_imperva_resource_script_is_not_a_captcha(self, h: Harness) -> None:
+        body = (
+            "<html><head><script src='/_Incapsula_Resource?SWJIYLWA=719d34d31c8e'></script>"
+            f"</head><body>{ARTICLE_900}</body></html>"
+        ).encode()
+        h.web.route("example.com", "/rns", respond(body=body))
+        assert (await h.fetch("https://example.com/rns")).status == STATUS_FETCHED
+
+    async def test_r2_4_the_imperva_incident_page_is_a_captcha(self, h: Harness) -> None:
+        body = (
+            b"<html><body><iframe src='/_Incapsula_Resource?CWUDNSAI=24&xinfo=1'></iframe>"
+            b"Request unsuccessful. Incapsula incident ID: 123-456</body></html>"
+        )
+        h.web.route("example.com", "/x", respond(body=body))
+        assert (await h.fetch("https://example.com/x")).failure_code == "captcha"
+
+
+class TestRound2PolicyFileAudit:
+    async def test_r2_6_a_robots_request_cut_by_the_run_deadline_writes_a_row(
+        self, h: Harness
+    ) -> None:
+        async def slow_robots(_r: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(1.5)
+            return httpx.Response(404)
+
+        h.web.route("example.com", "/robots.txt", slow_robots)
+        result = await h.fetch(
+            "https://example.com/a", cfg=_cfg(source_document_total_deadline_seconds=0.3)
+        )
+        assert result.failure_code == "fetch_timeout"
+        robots_rows = [r for r in await h.all_rows() if r.origin == "robots"]
+        assert [(r.status, r.failure_code) for r in robots_rows] == [("failed", "run_deadline")]

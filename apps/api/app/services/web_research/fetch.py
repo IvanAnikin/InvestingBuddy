@@ -180,6 +180,7 @@ FAILURE_REDIRECT_LIMIT = "redirect_limit"
 FAILURE_REDIRECT_NO_LOCATION = "redirect_without_location"
 FAILURE_EMPTY_URL = "empty_url"
 FAILURE_INTERNAL = "transport_error"
+FAILURE_RUN_DEADLINE = "run_deadline"
 FAILURE_ROBOTS_REDIRECT_LIMIT = "policy_file_redirect_limit"
 FAILURE_DNS = "dns_failure"
 
@@ -386,15 +387,59 @@ def parse_retry_after(value: str | None, *, now: datetime | None = None) -> floa
 UNPARSEABLE_URL = "<unparseable-url>"
 
 
+def _db_unsafe(text: str) -> bool:
+    """C0/DEL controls (incl. NUL) or lone surrogates: PostgreSQL rejects NUL in TEXT and
+    JSONB, and a surrogate cannot be encoded at all — either would fail the flush and
+    poison the caller's session (review R2-1)."""
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F or 0xD800 <= ord(ch) <= 0xDFFF for ch in text)
+
+
+def _db_text(value: str | None, limit: int = 1024) -> str | None:
+    """Any non-URL string bound for a row or JSON: unsafe characters → U+FFFD, bounded."""
+    if value is None:
+        return None
+    text = str(value)[:limit]
+    if not _db_unsafe(text):
+        return text
+    return "".join(
+        "\ufffd" if (ord(ch) < 0x20 or ord(ch) == 0x7F or 0xD800 <= ord(ch) <= 0xDFFF) else ch
+        for ch in text
+    )
+
+
+def _db_url(url: str | None) -> str | None:
+    """A stored URL is stored whole or not at all: never a repaired, different URL."""
+    if url is None:
+        return None
+    return UNPARSEABLE_URL if _db_unsafe(url) else url
+
+
+def _db_json(value: Any, depth: int = 0) -> Any:
+    """Every string (keys too) in a chain/meta JSON value made DB-safe."""
+    if depth > 8:
+        return None
+    if isinstance(value, str):
+        return _db_text(value, limit=MAX_STORED_URL_CHARS)
+    if isinstance(value, dict):
+        return {_db_text(str(k), 64): _db_json(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_db_json(v, depth + 1) for v in value]
+    return value
+
+
 def _stored(url: str | None) -> str:
-    """The W0 stored form; never the raw text (it may carry userinfo or a token)."""
+    """The W0 stored form; never the raw text (it may carry userinfo or a token), and
+    never a string the database cannot hold (NUL, controls, lone surrogates)."""
     text = (url or "")[:MAX_STORED_URL_CHARS]
     if not text:
         return ""
+    if _db_unsafe(text):
+        return UNPARSEABLE_URL
     try:
-        return stored_url(text) or UNPARSEABLE_URL
+        stored = stored_url(text) or UNPARSEABLE_URL
     except Exception:  # noqa: BLE001 - security review S4: never fall back to raw text
         return UNPARSEABLE_URL
+    return UNPARSEABLE_URL if _db_unsafe(stored) else stored
 
 
 def _block_code(reason: str) -> str:
@@ -489,6 +534,13 @@ async def _request(
             async with client.stream("GET", url) as resp:
                 answer = _Answer(status=resp.status_code)
                 for name in _CAPTURED_HEADERS:
+                    if name == "x-robots-tag":
+                        # One line per header: a directive scoped to another bot in
+                        # one header must not swallow a global one (review R2-3).
+                        values = resp.headers.get_list(name)
+                        if values:
+                            answer.headers[name] = "\n".join(values)[:_HEADER_VALUE_CHARS]
+                        continue
                     value = resp.headers.get(name)
                     if value is not None:
                         answer.headers[name] = value[:_HEADER_VALUE_CHARS]
@@ -618,6 +670,9 @@ class _OpenWebFetch:
         self, url: str, *, page: bool = True
     ) -> tuple[str | None, str | None, str | None]:
         """``(failure_code, host, pinned_ip)`` — the full per-hop policy check."""
+        if _db_unsafe(url):
+            # Lone surrogates pass the W0 shape check but are never a real URL.
+            return FAILURE_BLOCKED_HOST, None, None
         reason, host = check_url_shape(url)
         if reason:
             return _block_code(reason), None, None
@@ -708,9 +763,9 @@ class _OpenWebFetch:
                 discovery_run_id=self.context.discovery_run_id,
                 origin=kind,
                 requested_url=_stored(requested),
-                final_url=final,
-                canonical_url=canonical_url(requested),
-                redirect_chain_json=chain or None,
+                final_url=_db_url(final),
+                canonical_url=_db_url(canonical_url(requested)),
+                redirect_chain_json=_db_json(chain) or None,
                 policy_decision=policy,
                 http_status=http_status,
                 bytes=byte_count,
@@ -725,11 +780,30 @@ class _OpenWebFetch:
         """robots.txt / TDMRep through the same policy: guarded, pinned, paced, logged.
 
         Its own deadline (not the run's remainder), up to 5 redirects (RFC 9309), and
-        beyond that FAIL CLOSED. Every physical request writes an attempt row.
+        beyond that FAIL CLOSED. Every physical request writes an attempt row — including
+        one cut off by the run's own deadline (``run_deadline``, review R2-6), whose
+        partial body is lost and so has no byte count.
         """
+        chain: list[dict[str, Any]] = []
+        try:
+            return await self._small_fetch_walk(url, max_bytes, kind=kind, chain=chain)
+        except asyncio.CancelledError:
+            self._policy_file_row(
+                kind,
+                url,
+                chain,
+                status=STATUS_FAILED,
+                failure_code=FAILURE_RUN_DEADLINE,
+                http_status=None,
+                byte_count=None,
+            )
+            raise
+
+    async def _small_fetch_walk(
+        self, url: str, max_bytes: int, *, kind: str, chain: list[dict[str, Any]]
+    ) -> robots.SmallFetch:
         deadline = asyncio.get_running_loop().time() + POLICY_FILE_DEADLINE_SECONDS
         current = url
-        chain: list[dict[str, Any]] = []
         for _ in range(POLICY_FILE_MAX_REDIRECTS + 1):
             code, host, ip = await self._policy(current, page=False)
             if code or not host or not ip:
@@ -839,16 +913,16 @@ class _OpenWebFetch:
                 web_search_result_id=self.search_result_id,
                 parent_attempt_id=self.parent_attempt_id,
                 origin=self.origin,
-                requested_url=result.requested_url,
-                final_url=result.final_url,
-                canonical_url=result.canonical_url,
-                redirect_chain_json=chain or None,
+                requested_url=_db_url(result.requested_url) or "",
+                final_url=_db_url(result.final_url),
+                canonical_url=_db_url(result.canonical_url),
+                redirect_chain_json=_db_json(chain) or None,
                 policy_decision=result.policy_decision,
                 robots_decision=result.robots_decision,
                 tdm_decision=result.tdm_decision,
                 http_status=http_status,
-                mime_served=result.mime_served,
-                mime_sniffed=result.mime_sniffed,
+                mime_served=_db_text(result.mime_served, 120),
+                mime_sniffed=_db_text(result.mime_sniffed, 120),
                 bytes=byte_count,
                 truncated=result.truncated if status != STATUS_RETRIED else None,
                 content_hash=result.content_hash if status != STATUS_RETRIED else None,
@@ -1159,10 +1233,10 @@ class _OpenWebFetch:
         declared = analysis.declared_canonical or rel_canonical_from_header(headers.get("link"))
         decision = await asyncio.to_thread(choose_canonical, final, declared)
         result.canonical_url = decision.canonical_url or result.canonical_url
-        result.rel_canonical = decision.declared
+        result.rel_canonical = _db_url(decision.declared)
         result.rel_canonical_honoured = decision.honoured
         if decision.declared:
-            self.meta["rel_canonical"] = decision.declared
+            self.meta["rel_canonical"] = _db_url(decision.declared)
             self.meta["rel_canonical_honoured"] = decision.honoured
             self.meta["rel_canonical_reason"] = decision.reason
         if not analysis.verdict.retrievable:
@@ -1192,6 +1266,10 @@ async def open_web_fetch(
     runtime: OpenWebFetchRuntime | None = None,
 ) -> OpenWebFetchResult:
     """Fetch one URL under the open-web policy. Never raises for a network outcome.
+
+    ``session`` must not be shared by CONCURRENT calls: each call flushes its rows, and
+    SQLAlchemy refuses a flush while another is in progress on the same session. Run
+    concurrent fetches on one session per task (or one at a time on a shared one).
 
     ``origin`` is ``search`` | ``crawl`` | ``user`` | ``lead``; anything else is a
     programming error and raises ``ValueError``. ``cfg``, ``resolver`` and ``runtime``

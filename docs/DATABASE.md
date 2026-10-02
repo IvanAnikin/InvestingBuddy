@@ -1056,11 +1056,14 @@ refusal `web_fetch_disabled`, no row, so 042 need not exist).
 | `policy_decision` | `allowed` · `denied` (URL shape, SSRF guard, domain denylist, redirect limit) · `budget_refused` · `negative_cached` |
 | `robots_decision` | `allowed` · `disallowed` · `no_robots` (robots.txt answered 4xx) · `unavailable` (5xx/429/unreachable → fail closed) |
 | `tdm_decision` | `tdm_not_reserved` · `tdm_reserved` · `tdm_unknown` (tdmrep.json unreachable) |
-| `failure_code` | e.g. `http_403`, `http_404`, `captcha`, `login_wall`, `consent_wall`, `paywall_jsonld`, `robots_disallowed`, `robots_unavailable`, `tdm_reserved`, `unsupported_type`, `decompression_bomb`, `blocked_host`, `blocked_private_ip`, `blocked_scheme`, `denylisted_domain`, `dns_failure`, `redirect_limit`, `policy_file_redirect_limit`, `connect_error`, `fetch_timeout`, `transport_error` (any unexpected internal error — coded, never raised), `budget:<limit>` (incl. `budget:max_pdfs`, `budget:max_per_domain`) |
+| `failure_code` | e.g. `http_403`, `http_404`, `captcha`, `login_wall`, `consent_wall`, `paywall_jsonld`, `robots_disallowed`, `robots_unavailable`, `tdm_reserved`, `unsupported_type`, `decompression_bomb`, `blocked_host`, `blocked_private_ip`, `blocked_scheme`, `denylisted_domain`, `dns_failure`, `redirect_limit`, `policy_file_redirect_limit`, `connect_error`, `fetch_timeout`, `transport_error` (any unexpected internal error — coded, never raised), `run_deadline` (a robots.txt/TDMRep request cut off by the run's own deadline), `budget:<limit>` (incl. `budget:max_pdfs`, `budget:max_per_domain`) |
 | `mime_served` / `mime_sniffed` | the served media type and the type named by the magic bytes; the body is routed by the sniffed one |
 | `redirect_chain_json` | `[{"url", "status"}…]`, a refused hop as `{"url", "refused": <code>}`. The **last** entry may carry `"meta"`: `etag`, `last_modified` (W3 revalidation), `rel_canonical`, `rel_canonical_honoured`, `rel_canonical_reason`, `charset`, `charset_source`, `js_required`, `mime_mismatch`, `tdm_signals`, `filename_hint`, `upgraded_from_http`, `crawl_delay`, `denylist_version` |
 
-Every URL column holds the W0 stored form (credential-like query parameters, userinfo and
+No string with NUL, another C0 control or a lone surrogate is ever written (PostgreSQL
+rejects them and the flush would poison the caller's session): such a URL is stored as
+`<unparseable-url>` and any other such string, in a column or in the chain/meta JSON,
+has those characters replaced by U+FFFD. Every URL column holds the W0 stored form (credential-like query parameters, userinfo and
 the fragment removed); `canonical_url` additionally drops tracking parameters and may be a
 same-registrable-domain `rel=canonical`. Page text is never stored here.
 

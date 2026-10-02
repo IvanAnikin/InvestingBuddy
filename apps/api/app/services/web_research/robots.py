@@ -66,6 +66,10 @@ TDMREP_PATH = "/.well-known/tdmrep.json"
 
 _UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 _ESCAPE_RE = re.compile(r"%([0-9a-fA-F]{2})")
+#: Printable ASCII other than space: kept as-is by :func:`normalise_path` (``%`` too, so
+#: existing escapes survive to be normalised).
+_SAFE_ASCII = "".join(chr(c) for c in range(0x21, 0x7F))
+_NEEDS_QUOTING_RE = re.compile(r"[\x00-\x20\x7f]")
 
 
 # --------------------------------------------------------------------------- #
@@ -98,10 +102,15 @@ def normalise_path(path: str) -> str:
         char = chr(int(m.group(1), 16))
         return char if char in _UNRESERVED else "%" + m.group(1).upper()
 
-    encoded = "".join(
-        quote(ch, safe="") if (ord(ch) > 127 or ch.isspace()) else ch for ch in path or ""
-    )
-    return _ESCAPE_RE.sub(_fix, encoded)
+    text = path or ""
+    if text.isascii() and "%" not in text and not _NEEDS_QUOTING_RE.search(text):
+        return text  # the common case, without a per-character pass (review R2-5)
+    # Normalise the escapes the INPUT already had, then quote: the escapes ``quote``
+    # adds (non-ASCII bytes, space, controls) are upper-case and never unreserved, so
+    # this equals quote-then-fix without a Python callback per non-ASCII byte (R2-5).
+    if "%" in text:
+        text = _ESCAPE_RE.sub(_fix, text)
+    return quote(text, safe=_SAFE_ASCII)  # UTF-8 %-encodes non-ASCII, space, controls
 
 
 #: Rules kept per robots.txt (all matched groups together) and the longest pattern
@@ -168,7 +177,8 @@ def best_rule(rules: Iterable[RobotsRule], path: str) -> RobotsRule | None:
 @dataclass
 class _Group:
     agents: list[str] = field(default_factory=list)
-    rules: list[RobotsRule] = field(default_factory=list)
+    #: ``(allow, raw value)``: normalised only if the group applies to us (review R2-5).
+    raw_rules: list[tuple[bool, str]] = field(default_factory=list)
     crawl_delay: float | None = None
 
 
@@ -181,6 +191,8 @@ class RobotsPolicy:
     crawl_delay: float | None = None
     #: True when a group named our product token (else ``*`` or nothing applied).
     names_us: bool = False
+    #: True when a cap cut the file (always in the stricter direction).
+    truncated: bool = False
 
     def decide(self, path_and_query: str) -> str:
         if self.decision_source == ROBOTS_UNAVAILABLE:
@@ -220,10 +232,9 @@ def parse_robots(text: str, product_token: str = USER_AGENT_PRODUCT_TOKEN) -> Ro
             continue
         if key in ("allow", "disallow"):
             last_was_agent = False
-            if current is None or not value or len(value) > MAX_PATTERN_CHARS:
+            if current is None or not value:
                 continue  # an empty rule matches nothing (RFC 9309 §2.2.2)
-            if len(current.rules) < MAX_ROBOTS_RULES:
-                current.rules.append(RobotsRule(key == "allow", normalise_path(value)))
+            current.raw_rules.append((key == "allow", value))
         elif key == "crawl-delay":
             last_was_agent = False
             if current is None:
@@ -239,14 +250,46 @@ def parse_robots(text: str, product_token: str = USER_AGENT_PRODUCT_TOKEN) -> Ro
     names_us = bool(matched)
     if not matched:
         matched = [g for g in groups if "*" in g.agents]
-    rules = tuple(rule for g in matched for rule in g.rules)[:MAX_ROBOTS_RULES]
+    rules, truncated = _bounded_rules([r for g in matched for r in g.raw_rules])
     delays = [g.crawl_delay for g in matched if g.crawl_delay is not None]
     return RobotsPolicy(
         decision_source=ROBOTS_ALLOWED,
         rules=rules,
         crawl_delay=max(delays) if delays else None,
         names_us=names_us,
+        truncated=truncated,
     )
+
+
+def _bounded_rules(raw: list[tuple[bool, str]]) -> tuple[tuple[RobotsRule, ...], bool]:
+    """Apply the rule and pattern caps so that every cut makes us STRICTER (review R2-2).
+
+    * an over-long ``Disallow`` is truncated: a prefix of a robots pattern matches a
+      superset of paths, so it disallows at least as much;
+    * an over-long ``Allow`` is dropped: losing an Allow only forbids more;
+    * past the rule cap, Allows are dropped first; if the Disallows alone exceed it, the
+      file is beyond what we evaluate and the origin is treated as ``Disallow: /``.
+    """
+    truncated = False
+    allows: list[RobotsRule] = []
+    disallows: list[RobotsRule] = []
+    for allow, value in raw:
+        if allow and len(allows) >= MAX_ROBOTS_RULES:
+            truncated = True
+            continue  # never kept anyway (Allows are cut first): skip the work
+        if len(value) > MAX_PATTERN_CHARS:
+            truncated = True
+            if allow:
+                continue
+            value = value[:MAX_PATTERN_CHARS]
+        (allows if allow else disallows).append(RobotsRule(allow, normalise_path(value)))
+        if len(disallows) > MAX_ROBOTS_RULES:
+            return (RobotsRule(False, "/"),), True  # fail closed
+    room = MAX_ROBOTS_RULES - len(disallows)
+    if len(allows) > room:
+        truncated = True
+        allows = allows[:room]
+    return tuple(disallows + allows), truncated
 
 
 def _path_and_query(url: str) -> tuple[str, str]:
@@ -488,17 +531,20 @@ def x_robots_tag_noai(value: str | None) -> bool:
     ``otherbot: noai, noindex`` addresses another crawler and is not read as ours.
     """
     ours = USER_AGENT_PRODUCT_TOKEN.lower()
-    agent: str | None = None
-    for part in (value or "").split(","):
-        text = part.strip()
-        if not text:
-            continue
-        name, sep, rest = text.partition(":")
-        if sep and name.strip().lower() not in _VALUED_DIRECTIVES and " " not in name.strip():
-            agent = name.strip().lower()
-            text = rest.strip()
-        if agent in (None, "*", ours) and "noai" in _directive_tokens(text):
-            return True
+    # One line per received header (the fetcher joins them with "\n"): a user-agent
+    # scope never carries over from one header into the next (review R2-3).
+    for header in (value or "").split("\n"):
+        agent: str | None = None
+        for part in header.split(","):
+            text = part.strip()
+            if not text:
+                continue
+            name, sep, rest = text.partition(":")
+            if sep and name.strip().lower() not in _VALUED_DIRECTIVES and " " not in name.strip():
+                agent = name.strip().lower()
+                text = rest.strip()
+            if agent in (None, "*", ours) and "noai" in _directive_tokens(text):
+                return True
     return False
 
 

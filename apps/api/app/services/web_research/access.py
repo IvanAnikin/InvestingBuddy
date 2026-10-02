@@ -78,7 +78,10 @@ _CAPTCHA_MARKERS: tuple[str, ...] = (
     "cf-chl-",
     "captcha-delivery.com",
     "px-captcha",
-    "_incapsula_resource",
+    # Imperva: the incident page, not the ``_Incapsula_Resource`` script every
+    # Imperva-fronted page loads (review R2-4).
+    "incapsula incident id",
+    "_incapsula_resource?cwudnsai",
     "verify you are human",
     "are you a robot",
     "please complete the security check",
@@ -91,7 +94,10 @@ _INTERSTITIAL_MARKERS: tuple[str, ...] = (
     "cf-chl-",
     "captcha-delivery.com",
     "px-captcha",
-    "_incapsula_resource",
+    # Imperva: the incident page, not the ``_Incapsula_Resource`` script every
+    # Imperva-fronted page loads (review R2-4).
+    "incapsula incident id",
+    "_incapsula_resource?cwudnsai",
     "verify you are human",
     "are you a robot",
     "please complete the security check",
