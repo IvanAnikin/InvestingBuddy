@@ -586,6 +586,10 @@ async def _run(
                 themes=[m.commodity.name for m in profile.commodities],
                 development_stage=bool(stage.is_development_stage),
                 search_backend=search_backend,
+                # `private_tokens` (rule G1: portfolio holdings, uploads) is NOT populated
+                # here: public company research carries none. It MUST be wired from the
+                # portfolio/upload context before this stage is used for personalised
+                # (V2) research, or the G1 query check is vacuous.
             ),
             cfg=cfg,
         )
@@ -755,7 +759,10 @@ async def _run(
 
     # Open-web W5: the company web stage and the Investigator's `search_web` spend from
     # ONE ceiling — the searches the stage executed are no longer available to the rung.
-    stage_searches = int(((outcome.web_context or {}).get("queries") or {}).get("executed", 0))
+    # Counted in NETWORK CALLS (what was spent), not queries "executed": a cache serve spent
+    # nothing and a failed paid call spent a call (W5 review C-M4). `web_units` survives a
+    # stage that died before it wrote its summary.
+    stage_searches = int(getattr(web_units, "web_search_calls", 0) or 0)
     external_budget = (
         # The run's BUDGET, not the mode preset: `budget_for` applies the operator's
         # `V3_RUN_MAX_WEB_SEARCHES`, which narrows whatever the mode proposes. Reading
@@ -1888,11 +1895,14 @@ def _attach_web_catalysts(report: Any, web_context: Any) -> None:
     if not isinstance(section, dict) or "web_catalyst_evidence" in section:
         return
     from app.services.pipeline.professional_research import SOURCE_CLASS_LABELS
+    from app.services.web_research.stage import safe_url
 
     rows = [
         {
             "title": neutralize_forbidden_terms(item.get("title")),
-            "url": item.get("url"),
+            # Dropped, not neutralised, when it contains a gate term (C-H2): this block
+            # is written after the safety scan ran, so nothing else would catch it.
+            "url": safe_url(item.get("url")),
             "domain": neutralize_forbidden_terms(item.get("domain")),
             "source_class": item.get("source_class"),
             "source_class_label": SOURCE_CLASS_LABELS.get(

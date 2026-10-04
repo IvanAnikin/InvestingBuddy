@@ -387,9 +387,24 @@ async def ensure_web_context(
         log_event(
             logger, "web_stage_failed", level=logging.WARNING, error_type=type(exc).__name__
         )
-    units = (
-        _stage_units(box.units, box.budget, tally) if box.budget is not None else box.units
-    )
+    if box.budget is not None:
+        # A paid call is spent whether or not its answer came back: when the stage died
+        # inside ``run_searches`` the reservations are the only record of the calls made.
+        units = _stage_units(box.units, box.budget, tally)
+        reserved = box.budget.queries_reserved
+        if reserved > units.web_search_calls:
+            from dataclasses import replace
+
+            unreported = (
+                units.unreported | {"tavily_credits"}
+                if summary.get("provider") == "tavily" else units.unreported
+            )
+            units = replace(
+                units, web_search_calls=reserved, unreported=frozenset(unreported),
+                instrumented=units.instrumented | {"web_search_calls"},
+            )
+    else:
+        units = box.units
     if box.budget is not None:
         summary["budget"] = box.budget.to_dict()
     summary["cost_units"] = units.to_dict()
@@ -455,7 +470,10 @@ async def _execute(
         facts, mode=run_ctx.mode, max_queries=limits.max_queries, today=today,
         private_tokens=private,
     )
-    expansion = await _expansion(cfg, deps, facts, plan, limits, private, tally)
+    expansion = await _expansion(
+        cfg, deps, facts, plan, limits, private, tally,
+        configured=bool(getattr(provider, "is_configured", True)),
+    )
     if expansion is not None and expansion.queries:
         plan = build_plan(
             facts, mode=run_ctx.mode, max_queries=limits.max_queries, today=today,
@@ -618,8 +636,13 @@ async def _expansion(
     limits: Any,
     private: frozenset[str],
     tally: _Tally,
+    configured: bool = True,
 ) -> ExpansionResult | None:
     if limits.max_expansion_queries <= 0 or limits.max_llm_tokens <= 0:
+        return None
+    if not configured:
+        # An unconfigured search provider means no search will run; do not spend a model
+        # call on queries nobody will issue (W5 review F5).
         return None
     transport = deps.llm_transport
     if transport is _UNSET:
@@ -731,6 +754,13 @@ def _stage_units(
     return replace(units + fetched, elapsed_seconds=0.0)
 
 
+def safe_url(url: str | None) -> str | None:
+    """``url`` unless it contains a term the safety gate would reject (then ``None``)."""
+    from app.services import safety_terms
+
+    return url if url and safety_terms.is_safe(url) else None
+
+
 async def _catalyst_evidence(
     session: Any, version_ids: Sequence[uuid.UUID]
 ) -> list[dict[str, Any]]:
@@ -758,7 +788,10 @@ async def _catalyst_evidence(
                 "title": neutralize_forbidden_terms(
                     " ".join(str(row.title or "").split())[:160] or None
                 ),
-                "url": row.canonical_url,
+                # A URL cannot be neutralised without changing the address, so a URL
+                # that contains a gate term is DROPPED (domain and title stay): the
+                # report JSON must never carry a term the safety gate rejects (W5 C-H2).
+                "url": safe_url(row.canonical_url),
                 "domain": neutralize_forbidden_terms(host_of(row.canonical_url)),
                 "source_class": row.source_class,
                 "origin_key": row.origin_key,
@@ -961,6 +994,7 @@ __all__ = [
     "StageDeps",
     "WebRunContext",
     "persist_factory_for",
+    "safe_url",
     "WebStageResult",
     "ensure_web_context",
     "stage_enabled",

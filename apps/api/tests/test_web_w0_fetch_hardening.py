@@ -1264,22 +1264,6 @@ class TestReviewRound1:
         # In-process copies keep the fetch target (pickle is never persisted).
         assert pickle.loads(pickle.dumps(link)).fetch_target.endswith("sig=S")
 
-    async def test_bare_web_search_calls_are_not_evidence_of_search(self) -> None:
-        from types import SimpleNamespace
-
-        from app.services.agent_tools.external import _discovery_mode_of
-
-        result = SimpleNamespace(
-            raw_provider_metadata={}, consumption=SimpleNamespace(web_search_calls=3)
-        )
-        assert _discovery_mode_of(result) == ("model_recall", 0)
-        failed = SimpleNamespace(
-            raw_provider_metadata={"trace": {"query_call_count": 2,
-                                             "failed_query_call_count": 2}},
-            consumption=None,
-        )
-        assert _discovery_mode_of(failed) == ("model_recall", 0)
-
     # -- LOW: D13 applies to every open-web entry point --
 
     async def test_open_web_mode_refuses_on_an_unsafe_runtime(

@@ -630,6 +630,15 @@ deliberate:
   §14.3 corroboration) and `web_research` on evidence_quality_and_gaps (searches run, sources found
   but not accessible). The V2 `news_catalyst_discovery` section gains `web_catalyst_evidence` only
   when catalyst documents were stored. Third-party strings are neutralised.
+- **Review round 1.** Subject profile and stage detector read official (non-web) chunks only
+  (`corpus/official.py`); URLs containing a gate term are dropped from catalyst evidence;
+  `fetch_public_source` stays registered under the legacy flag while `search_web` needs the new
+  ones; the raised mode ceilings apply only with the stage on; the Investigator's headroom is the
+  stage's network calls; provenance falls back to the caller's session (then NULL job/agent-run
+  link); RISK selection never lets the issuer's own page lead and keeps a URL under its
+  best-scoring family; the platform's own fetcher is not a priced vendor unit; NFKC-folded
+  operators, `sk-` keys and connection strings are refused; no expansion for an unconfigured
+  provider; the expansion cache key includes the limit.
 - **Deferred.** Expansion cache is in-process (not durable across restarts); the Director GAP
   follow-up loop and an Investigator step that fetches `search_web` candidates are W7; no browser.
 

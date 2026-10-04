@@ -37,13 +37,15 @@ disagree.
 
 FLAGS
 =====
-Both tools are registered only when the company web path is on AND a web search
+``search_web`` is registered only when the company web path is on AND a web search
 provider is selected (``routing.web_search_provider_for``: ``V3_COMPANY_WEB_RESEARCH_ENABLED``,
-``V3_WEB_SEARCH_ENABLED`` and ``V3_WEB_SEARCH_PROVIDER`` ≠ ``none``). With any of them off
-the tools are not in the registry, so ``implemented_tools()`` reports them absent and the
-Director declares a question that needs one **unassignable at plan time** — a coverage
-fact rather than a mid-run mystery. A credential does not register them; a flag does.
-``V3_DEEPSEEK_SEARCH_ENABLED`` no longer registers anything here (W5, decision U12): it
+``V3_WEB_SEARCH_ENABLED`` and ``V3_WEB_SEARCH_PROVIDER`` ≠ ``none``). ``fetch_public_source``
+needs no provider, so it is also registered under the legacy
+``V3_DEEPSEEK_SEARCH_ENABLED`` (no regression for an environment that has it on).
+With a tool unregistered, ``implemented_tools()`` reports it absent and the Director
+declares a question that needs it **unassignable at plan time** — a coverage fact rather
+than a mid-run mystery. A credential does not register them; a flag does.
+``V3_DEEPSEEK_SEARCH_ENABLED`` no longer registers ``search_web`` (W5, decision U12): it
 still gates the DeepSeek recall paths in Discovery, which are labelled ``model_recall``.
 """
 
@@ -142,36 +144,6 @@ def _validate_search_web(arguments: dict[str, Any]) -> dict[str, Any]:
         "domains": [str(d).strip() for d in domains if str(d).strip()][:20],
         "context": str(arguments.get("context") or "").strip()[:1000] or None,
     }
-
-
-def _discovery_mode_of(result: Any) -> tuple[str, int]:
-    """``(discovery_mode, executed_search_queries)`` for one provider result.
-
-    Spec §22.3 / W0: provenance is a NETWORK FACT. ``search`` requires at least one
-    SUCCESSFUL search query on record: the trace's query count minus its failed
-    queries, else the provider's ``executed_search_queries``. Anything else —
-    including a bare ``web_search_calls`` count, which cannot say whether any call
-    succeeded — is the model's recall and is labelled so. Nothing here can turn
-    recall into search: a provider label of ``search`` with zero successful queries
-    is still recall.
-    """
-    metadata = getattr(result, "raw_provider_metadata", None) or {}
-    trace = metadata.get("trace") or {}
-    if "query_call_count" in trace:
-        executed = int(trace.get("query_call_count") or 0) - int(
-            trace.get("failed_query_call_count") or 0
-        )
-    elif "executed_search_queries" in metadata:
-        executed = int(metadata.get("executed_search_queries") or 0)
-    else:
-        # No record of SUCCESSFUL queries: a bare `web_search_calls` count cannot say
-        # whether any of them succeeded, so it is not evidence of a search (review).
-        executed = 0
-    executed = max(0, executed)
-    mode = "search" if executed > 0 else "model_recall"
-    if metadata.get("discovery_mode") == "model_recall":
-        mode = "model_recall"
-    return mode, executed
 
 
 #: Candidates one ``search_web`` call returns, in rank order.
@@ -715,22 +687,34 @@ FETCH_PUBLIC_SOURCE_SPEC = ToolSpec(
 
 
 def external_tools_enabled(cfg: Any) -> bool:
-    """Whether the external tool surface exists at all for this process.
+    """Whether ``search_web`` exists for this process (kept under its old name).
 
-    One rule, read in one place: the company web path is on AND a web search provider is
-    selected (``routing.web_search_provider_for``). This decides whether the *tool* is
-    registered, which is what decides whether the Director can plan a question that needs
-    it. ``V3_DEEPSEEK_SEARCH_ENABLED`` no longer counts (W5).
+    The company web path is on AND a web search provider is selected
+    (``routing.web_search_provider_for``). ``V3_DEEPSEEK_SEARCH_ENABLED`` no longer counts
+    (W5, decision U12).
     """
     from app.services.agents.routing import web_search_provider_for
 
     return web_search_provider_for(cfg) is not None
 
 
+def fetch_public_source_enabled(cfg: Any) -> bool:
+    """Whether ``fetch_public_source`` exists for this process.
+
+    It needs NO search provider — it retrieves a URL the caller names and verifies a claim
+    against the bytes — so it must not vanish just because the new search flags are off.
+    It stays available under the legacy ``V3_DEEPSEEK_SEARCH_ENABLED`` as before W5 (that
+    flag registered both tools; it now registers only this one), and with the new web path.
+    """
+    return external_tools_enabled(cfg) or bool(
+        getattr(cfg, "v3_deepseek_search_enabled", False)
+    )
+
+
 def register_external_tools(
     registry: "ToolRegistry", *, cfg: Any = None
 ) -> "ToolRegistry":
-    """Register the external tools **only when the web path is on and a provider is chosen**.
+    """Register the external tools. The only tools whose presence is a spending decision.
 
     Absent, ``implemented_tools()`` does not list them and the Director marks a question
     that needs one unassignable at plan time. That is the fail-closed direction: a
@@ -738,10 +722,10 @@ def register_external_tools(
     """
     if cfg is None:
         from app.core.config import settings as cfg  # noqa: PLW0127
-    if not external_tools_enabled(cfg):
-        return registry
-    registry.register(SEARCH_WEB_SPEC)
-    registry.register(FETCH_PUBLIC_SOURCE_SPEC)
+    if external_tools_enabled(cfg):
+        registry.register(SEARCH_WEB_SPEC)
+    if fetch_public_source_enabled(cfg):
+        registry.register(FETCH_PUBLIC_SOURCE_SPEC)
     return registry
 
 
@@ -753,5 +737,6 @@ __all__ = [
     "SEARCH_WEB_SPEC",
     "external_evidence_id",
     "external_tools_enabled",
+    "fetch_public_source_enabled",
     "register_external_tools",
 ]

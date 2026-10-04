@@ -522,12 +522,15 @@ def derive_cost(units: ConsumptionUnits, prices: PriceBook) -> DerivedCost:
             prices.usd_per_thousand_web_searches,
             1_000,
         )
-    add(
-        "url_fetch_calls",
-        units.url_fetch_calls,
-        prices.usd_per_thousand_url_fetches,
-        1_000,
-    )
+    # The platform's OWN open-web fetcher bills nothing (W5 review C-M7). A record that
+    # carries ``bytes_downloaded`` was produced by it, so its fetch calls are free unless a
+    # price was configured — otherwise every run with the company web stage on would be
+    # "cost unknown" merely because the platform fetched a page. A record without that
+    # unit keeps the old rule (an unpriced fetch makes the cost unknown).
+    fetch_price = prices.usd_per_thousand_url_fetches
+    if fetch_price is None and units.measured("bytes_downloaded"):
+        fetch_price = 0.0
+    add("url_fetch_calls", units.url_fetch_calls, fetch_price, 1_000)
     add(
         "provider_research_runs",
         units.provider_research_runs,
