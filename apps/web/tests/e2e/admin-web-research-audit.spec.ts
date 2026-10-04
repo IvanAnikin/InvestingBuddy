@@ -48,6 +48,14 @@ test.describe("W8a web research audit — job audit", () => {
     await expect(page.getByTestId("audit-notice")).toContainText(
       "INTERNAL ADMIN ONLY",
     );
+    await expect(page.getByTestId("audit-scope-note")).toContainText(
+      "Council citations are not part of this audit yet",
+    );
+    // A fractional cost unit is not rounded to zero.
+    await expect(page.getByTestId("audit-cost-units")).toContainText(
+      "bytes_estimate: 0.004",
+    );
+    await expect(page.getByTestId("fetch-parent-attempt").first()).toBeVisible();
 
     // Totals + fetch metrics.
     const totals = page.getByTestId("audit-totals");
@@ -78,6 +86,15 @@ test.describe("W8a web research audit — job audit", () => {
     );
     await expect(first.getByTestId("query-filters-enforced")).toContainText(
       "date_range: client",
+    );
+    await expect(first.getByTestId("query-filters-requested")).toContainText(
+      "date_from: 2026-01-01",
+    );
+    await expect(first.getByTestId("query-filters-counts")).toContainText(
+      "client_filtered_count: 1",
+    );
+    await expect(first.getByTestId("audit-result-hints").first()).toContainText(
+      "score 0.91",
     );
     await expect(first.getByTestId("audit-result-row")).toHaveCount(2);
     await expect(first).toContainText("excluded_domain");

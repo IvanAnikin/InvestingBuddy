@@ -305,7 +305,7 @@ export function webResearchJobAudit(scopeId) {
       results: 3,
       fetch_attempts: 4,
       errors_by_code: { G1_private_token: 1 },
-      cost_units: { web_search_calls: 1, tavily_credits: 1 },
+      cost_units: { web_search_calls: 1, tavily_credits: 1, bytes_estimate: 0.004 },
       fetch_metrics: FETCH_METRICS_JOB,
     },
     queries_truncated: false,

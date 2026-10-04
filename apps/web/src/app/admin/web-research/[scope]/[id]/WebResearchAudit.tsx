@@ -44,7 +44,9 @@ const SCOPE_NOUN: Record<WebResearchAuditPathScope, string> = {
 function dash(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "boolean") return value ? "yes" : "no";
-  if (typeof value === "number") return formatNumber(value);
+  // Up to 6 places: a cost unit of 0.004 must not render as "0" (absent is not zero).
+  if (typeof value === "number")
+    return formatNumber(value, { maximumFractionDigits: 6 });
   if (typeof value === "string") return value;
   return JSON.stringify(value);
 }
@@ -62,7 +64,10 @@ function bytes(value: number | null | undefined): string {
 }
 
 function pct(rate: number): string {
-  return `${formatNumber(rate * 100, { maximumFractionDigits: 1 })}%`;
+  const percent = rate * 100;
+  // A tiny non-zero rate must not round to 0.0%.
+  const digits = percent > 0 && percent < 1 ? 2 : 1;
+  return `${formatNumber(percent, { maximumFractionDigits: digits })}%`;
 }
 
 function isWithheld(q: WebSearchQueryRead): boolean {
@@ -381,6 +386,16 @@ function ResultsTable({
               {r.snippet && (
                 <p className={`${WRAP} mt-1 text-slate-400`}>{r.snippet}</p>
               )}
+              <p
+                className={`${WRAP} mt-1 font-mono text-[11px] text-slate-500`}
+                data-testid="audit-result-hints"
+              >
+                score {dash(r.provider_score)} · published{" "}
+                <span title={isoTimestamp(r.published_hint)}>
+                  {formatDateTime(r.published_hint)}
+                </span>{" "}
+                · lang {dash(r.language_hint)}
+              </p>
             </td>
             <td className={TD}>
               <StatusPill
@@ -501,6 +516,28 @@ function QueryCard({
             }
             testId="query-filters-enforced"
           />
+          {query.filters && (
+            <div className="mt-2 min-w-0 space-y-1">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">
+                Requested
+              </p>
+              <KeyValues
+                data={query.filters.requested}
+                empty="None."
+                testId="query-filters-requested"
+              />
+              <p
+                className="font-mono text-xs text-slate-300"
+                data-testid="query-filters-counts"
+              >
+                <span className="text-slate-500">client_filtered_count:</span>{" "}
+                {dash(query.filters.client_filtered_count)}
+                {" · "}
+                <span className="text-slate-500">date_unchecked_count:</span>{" "}
+                {dash(query.filters.date_unchecked_count)}
+              </p>
+            </div>
+          )}
         </div>
         <div className="min-w-0">
           <p className="mb-1 text-xs font-semibold text-slate-400">Cost units</p>
@@ -582,6 +619,9 @@ function FetchAttemptCard({ attempt }: { attempt: WebFetchAttemptRead }) {
         <Field label="Content hash" mono>{dash(attempt.content_hash)}</Field>
         <Field label="Search result id" mono>
           {dash(attempt.web_search_result_id)}
+        </Field>
+        <Field label="Parent attempt id" mono testId="fetch-parent-attempt">
+          {dash(attempt.parent_attempt_id)}
         </Field>
       </dl>
 
@@ -711,7 +751,12 @@ export default function WebResearchAudit({
 
   if (state.kind === "loading") {
     return (
-      <p className="text-sm text-slate-400" data-testid="audit-loading">
+      <p
+        className="text-sm text-slate-400"
+        data-testid="audit-loading"
+        role="status"
+        aria-live="polite"
+      >
         Loading the web research audit…
       </p>
     );
@@ -733,6 +778,10 @@ export default function WebResearchAudit({
         <p className="mt-1 text-xs">
           Query text, titles, snippets and URLs below are untrusted text, shown
           verbatim as plain text. Links are deliberately not clickable.
+        </p>
+        <p className="mt-1 text-xs" data-testid="audit-scope-note">
+          Ingestion, evidence ids and Council citations are not part of this
+          audit yet.
         </p>
       </SafetyBanner>
 
