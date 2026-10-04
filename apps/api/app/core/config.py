@@ -1457,6 +1457,16 @@ class Settings(BaseSettings):
     # Consumer: ``services/web_research/ingest.py``. 0 = no TTL configured.
     v3_web_artifact_retention_days: int = 30
 
+    # ── Open-web research W5: company research uses live multi-query web search ──
+    # Master switch for the company web stage (``ensure_web_context``) and for the
+    # Investigator's ``search_web`` external rung on the configured search provider.
+    # The ONLY consumers are ``services/web_research/stage.py`` (the stage) and
+    # ``services/agent_tools/external.py`` (tool registration). Off (default): no
+    # query, no fetch, no row, and the pipeline behaves exactly as before. The stage
+    # still needs ``V3_WEB_SEARCH_ENABLED`` (+ a provider), ``V3_WEB_FETCH_ENABLED``
+    # and — to put documents in the corpus — ``V3_WEB_CORPUS_INGEST_ENABLED``.
+    v3_company_web_research_enabled: bool = False
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),

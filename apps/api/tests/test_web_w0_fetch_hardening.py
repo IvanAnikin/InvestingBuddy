@@ -980,47 +980,26 @@ class TestTruthfulSearchLabels:
         assert result.raw_provider_metadata["executed_search_queries"] == 2
         assert not any("web_search_unavailable" in w for w in result.warnings)
 
-    async def test_search_web_labels_recall_and_says_web_search_unavailable(
+    async def test_search_web_is_no_longer_backed_by_a_model_that_searches(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """W5 (decision U12): ``search_web`` queries the configured SearchProvider. The
+        DeepSeek research provider is never asked, so recall can no longer be mistaken for
+        a search there; the recall labelling above still guards the Discovery paths."""
         import app.services.agents.routing as routing
-        from app.integrations.deepseek.providers import DeepSeekResearchProvider
         from app.services.agent_tools.external import SEARCH_WEB_SPEC
 
-        provider = DeepSeekResearchProvider(
-            transport=_FixtureTransport(_fixture_response(keep_search_calls=False)),
-            search_enabled=True,
-        )
-        monkeypatch.setattr(routing, "research_provider_for", lambda _cfg: provider)
+        class _Exploding:
+            async def investigate(self, **kw):  # noqa: ANN003, ANN201
+                raise AssertionError("search_web must not ask a DeepSeek model to search")
+
+        monkeypatch.setattr(routing, "research_provider_for", lambda _cfg: _Exploding())
         payload = await SEARCH_WEB_SPEC.handler(
             _ToolCtx(_cfg()), {"query": "Moderna Q2 2026 revenue", "domains": []}
         )
-        assert payload["summary"].startswith("web_search_unavailable")
+        assert payload["available"] is False
         assert payload["web_search"] == "web_search_unavailable"
-        assert payload["discovery_mode"] == "model_recall"
-        assert payload["leads"] and all(
-            lead["discovery_mode"] == "model_recall" for lead in payload["leads"]
-        )
-        assert all(lead["discovery_mode"] != "search" for lead in payload["leads"])
-
-    async def test_search_web_labels_an_executed_search_as_search(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import app.services.agents.routing as routing
-        from app.integrations.deepseek.providers import DeepSeekResearchProvider
-        from app.services.agent_tools.external import SEARCH_WEB_SPEC
-
-        provider = DeepSeekResearchProvider(
-            transport=_FixtureTransport(_fixture_response(keep_search_calls=True)),
-            search_enabled=True,
-        )
-        monkeypatch.setattr(routing, "research_provider_for", lambda _cfg: provider)
-        payload = await SEARCH_WEB_SPEC.handler(
-            _ToolCtx(_cfg()), {"query": "q", "domains": []}
-        )
-        assert payload["discovery_mode"] == "search"
-        assert payload["executed_search_queries"] == 2
-        assert all(lead["discovery_mode"] == "search" for lead in payload["leads"])
+        assert payload["leads"] == [] and payload["candidates"] == []
 
     async def test_recall_path_without_search_enabled_is_recall(self) -> None:
         from app.integrations.deepseek.providers import DeepSeekResearchProvider

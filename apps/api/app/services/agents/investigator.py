@@ -1665,6 +1665,10 @@ class LLMInvestigator:
             step["stopped"] = f"search_refused:{result.refusal_reason or 'error'}"
             return step, [], used
         leads = (result.payload or {}).get("leads") or []
+        # Open-web W5: the provider returns CANDIDATE URLs, not claims, so `leads` is
+        # empty and nothing here mints evidence. The count is recorded so a reader sees
+        # the search found pointers; retrieval + verification stays `fetch_public_source`.
+        candidates = (result.payload or {}).get("candidates") or []
         verified, spent = await self._verify_external_leads(
             role_id, question, result.payload, budget - used
         )
@@ -1672,6 +1676,7 @@ class LLMInvestigator:
         step.update(
             {
                 "leads": len(leads),
+                "candidates": len(candidates),
                 "fetched": spent,
                 "verified": len(verified),
                 "stopped": "searched_once_this_round",

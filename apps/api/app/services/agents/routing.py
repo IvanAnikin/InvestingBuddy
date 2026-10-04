@@ -219,11 +219,42 @@ def research_provider_for(cfg: "Settings") -> Any:
         return None
     return DeepSeekResearchProvider(transport=transport, search_enabled=True)
 
+def web_search_provider_for(cfg: "Settings") -> Any:
+    """The configured web SearchProvider for the Investigator's external rung, or ``None``.
+
+    Open-web W5 (spec §7.2). ``search_web`` no longer asks a model to "search": it queries
+    the provider selected by ``V3_WEB_SEARCH_PROVIDER`` through the same orchestrator the
+    company web stage uses, and gets CANDIDATES back. Three keys, all required, in the
+    order a spending decision is made:
+
+    ============================================ ==============================
+    ``V3_COMPANY_WEB_RESEARCH_ENABLED``           the company web path is on
+    ``V3_WEB_SEARCH_ENABLED``                     any provider call is permitted
+    a provider that is selected                   ``V3_WEB_SEARCH_PROVIDER`` is
+                                                  ``tavily``/``fake`` (not ``none``)
+    ============================================ ==============================
+
+    ``V3_DEEPSEEK_SEARCH_ENABLED`` is deliberately NOT one of them: a DeepSeek model
+    "searching" is not a search provider (spec §8.2, §22.3) and no longer registers
+    ``search_web``. An UNCONFIGURED provider (no key, fake outside development) still
+    resolves — the tool then reports ``web_search_unavailable`` rather than vanishing,
+    which is a fact the Director's coverage record can show.
+    """
+    if not getattr(cfg, "v3_company_web_research_enabled", False):
+        return None
+    if not getattr(cfg, "v3_web_search_enabled", False):
+        return None
+    from app.integrations.search import web_search_provider_from_settings
+
+    return web_search_provider_from_settings(cfg)
+
+
 __all__ = [
     "DEFAULT_PREFERENCES",
     "ModelRouting",
     "research_provider_for",
     "resolve_routing",
+    "web_search_provider_for",
     "ResolvedSlot",
     "SLOT_CHAIR",
     "SLOT_FOLLOW_UP",

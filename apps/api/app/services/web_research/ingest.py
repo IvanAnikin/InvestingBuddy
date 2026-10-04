@@ -119,6 +119,8 @@ class WebIngestResult:
     #: Open-web W4: the §14.2 origin and the rule that decided it.
     origin_key: str | None = None
     origin_rule: str | None = None
+    #: Open-web W5: pages the extractor read (PDF page count; 0 for HTML/text).
+    pages: int = 0
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -284,6 +286,7 @@ async def prepare_web_document(
         extraction_confidence=extraction.confidence,
         stopped_by=extraction.stopped_by,
         published_at_source=meta.published_at_source,
+        pages=int(extraction.page_count or 0),
     )
     if not extraction.extracted:
         result.reason = extraction.failure_code or REASON_EXTRACTION

@@ -153,6 +153,11 @@ class V3ResearchOutcome:
     #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
     #: evidence counts, why it is still open, and what acquisition tried.
     question_graph: list[dict[str, Any]] = field(default_factory=list)
+    #: Open-web W5: what the company web stage did (state, counts, families, cost units,
+    #: dispositions, source classes). EMPTY — and absent from ``to_dict()`` — unless
+    #: ``V3_COMPANY_WEB_RESEARCH_ENABLED`` ran the stage, so a run without it serialises
+    #: exactly as it did before.
+    web_context: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -163,6 +168,12 @@ class V3ResearchOutcome:
         return self.research_run_id is not None and self.error is None
 
     def to_dict(self) -> dict[str, Any]:
+        payload = self._base_dict()
+        if self.web_context:
+            payload["web_context"] = dict(self.web_context)
+        return payload
+
+    def _base_dict(self) -> dict[str, Any]:
         from app.services.discovery.freshness import ENGINE_VERSION
 
         return {
@@ -519,32 +530,6 @@ async def _run(
             f"the issuer's statement figures could not be read ({type(exc).__name__})"
         )
 
-    if search_backend is not None:
-        from app.services.corpus.indexing import ensure_company_indexed
-
-        try:
-            async with session.begin_nested():
-                outcome.corpus_index = await ensure_company_indexed(
-                    session, company_id=company.id, backend=search_backend, cfg=cfg
-                )
-        except Exception as exc:  # noqa: BLE001 - an index failure costs the search leg
-            outcome.degraded.append(
-                f"the company's corpus could not be indexed ({type(exc).__name__}); "
-                "corpus searches may return nothing"
-            )
-
-    model_routing = routing or resolve_routing(cfg)
-    outcome.routing = model_routing.to_dict()
-    if not model_routing.any_resolved:
-        outcome.degraded.append(
-            "no model provider resolved; investigations run tools and report gaps"
-        )
-
-    # 1. Prior research — the "before" a delta compares against, and the gaps that
-    #    become this run's questions.
-    prior = await memory.recall(session, company_id=company.id)
-    carry_forward = prior.carry_forward_questions if prior.exists else ()
-
     # 2. Classification, then playbook selection.
     #
     # Reading `company.sector` straight off the row was the whole defect: the column is
@@ -580,6 +565,62 @@ async def _run(
         outcome.stage = stage.to_dict()
     if stage.is_development_stage:
         _mark_pre_revenue(outcome, stage)
+    # Open-web W5 — wave 2 + RISK web research for THIS company (spec §7.1), after the
+    # official sources above and BEFORE indexing, so what it stores is indexed with the
+    # rest and reachable through `search_company_corpus`. The classification, subject
+    # profile and stage signals it plans from were computed above from the company's own
+    # official documents ONLY — a third-party page can never feed the stage detector.
+    # Gated, isolated (it never raises) and inert with the flag off: nothing is read.
+    web_units = None
+    if getattr(cfg, "v3_company_web_research_enabled", False):
+        from app.services.web_research.stage import WebRunContext, ensure_web_context
+
+        web = await ensure_web_context(
+            session,
+            company,
+            WebRunContext(
+                mode=resolved_mode.value,
+                research_job_id=research_job_id,
+                agent_run_id=agent_run_id,
+                industry=classification.industry or classification.sector,
+                themes=[m.commodity.name for m in profile.commodities],
+                development_stage=bool(stage.is_development_stage),
+                search_backend=search_backend,
+            ),
+            cfg=cfg,
+        )
+        if web.ran:
+            outcome.web_context = web.summary
+            web_units = web.units
+            if web.summary.get("label") and web.state != "web_search_disabled":
+                outcome.degraded.append(str(web.summary["label"]))
+
+    if search_backend is not None:
+        from app.services.corpus.indexing import ensure_company_indexed
+
+        try:
+            async with session.begin_nested():
+                outcome.corpus_index = await ensure_company_indexed(
+                    session, company_id=company.id, backend=search_backend, cfg=cfg
+                )
+        except Exception as exc:  # noqa: BLE001 - an index failure costs the search leg
+            outcome.degraded.append(
+                f"the company's corpus could not be indexed ({type(exc).__name__}); "
+                "corpus searches may return nothing"
+            )
+
+    model_routing = routing or resolve_routing(cfg)
+    outcome.routing = model_routing.to_dict()
+    if not model_routing.any_resolved:
+        outcome.degraded.append(
+            "no model provider resolved; investigations run tools and report gaps"
+        )
+
+    # 1. Prior research — the "before" a delta compares against, and the gaps that
+    #    become this run's questions.
+    prior = await memory.recall(session, company_id=company.id)
+    carry_forward = prior.carry_forward_questions if prior.exists else ()
+
     selection = select_playbooks(
         sector=classification.matching_sector,
         industry=classification.industry,
@@ -712,12 +753,17 @@ async def _run(
         role_can_search_externally,
     )
 
+    # Open-web W5: the company web stage and the Investigator's `search_web` spend from
+    # ONE ceiling — the searches the stage executed are no longer available to the rung.
+    stage_searches = int(((outcome.web_context or {}).get("queries") or {}).get("executed", 0))
     external_budget = (
         # The run's BUDGET, not the mode preset: `budget_for` applies the operator's
         # `V3_RUN_MAX_WEB_SEARCHES`, which narrows whatever the mode proposes. Reading
         # the preset let a STANDARD run spend 12 paid searches against a cap of 2, while
         # the budget recorded on the run said 2.
-        ExternalSearchBudget(limit=int(budget_for(resolved_mode, cfg).max_web_searches))
+        ExternalSearchBudget(
+            limit=max(0, int(budget_for(resolved_mode, cfg).max_web_searches) - stage_searches)
+        )
         if "search_web" in registry.names()
         else None
     )
@@ -976,6 +1022,7 @@ async def _run(
             editor_client=model_routing.client_for(SLOT_CHAIR),
             supersessions=(outcome.gap_reconciliation or {}).get("supersessions") or [],
             stage=(outcome.stage or {}).get("stage"),
+            web_context=outcome.web_context or None,
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -985,7 +1032,8 @@ async def _run(
             f"the professional report could not be assembled ({type(exc).__name__})"
         )
     outcome.consumption = _consumption(
-        model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
+        model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units,
+        web_units,
     )
     await session.flush()
 
@@ -1037,6 +1085,7 @@ async def _professional_report(
     editor_client: Any,
     supersessions: list[dict[str, Any]] | None = None,
     stage: str | None = None,
+    web_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1161,6 +1210,23 @@ async def _professional_report(
         if ref is not None
     ]
     findings, withheld = pr.screen(findings)
+    web_support: dict[str, Any] = {}
+    if web_context:
+        # Open-web W5: which cited ids are WEB documents, and of what class and origin —
+        # read from what the platform stored, never from page text. Failure costs the
+        # additive web blocks, not the report.
+        try:
+            from app.services.web_research import trust
+
+            async with session.begin_nested():
+                support = await trust.resolve_support(
+                    session,
+                    sorted({e for f in findings for e in f.evidence_ids if e}),
+                    company_id=getattr(company, "id", None),
+                )
+            web_support = {item.evidence_id: item.to_dict() for item in support if item.web}
+        except Exception:  # noqa: BLE001 - the additive blocks are optional
+            web_support = {}
     # The user's own thesis words are shown, never allowed to block the report: the
     # same neutralisation V2 applies to text it copies into its memo.
     safe_thesis = (
@@ -1196,6 +1262,8 @@ async def _professional_report(
         domain_cost=pr.domain_cost(
             [(row.domain, row.acquisition_log_json or []) for row in question_rows]
         ),
+        web_support=web_support,
+        web_context=web_context or None,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)
@@ -1350,6 +1418,9 @@ async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[s
     # across the run. This is what makes the tool leg priceable: without it its tokens
     # arrive as an anonymous sum and can only be priced by guessing whose they were.
     vendors: tuple[VendorUsage, ...] = ()
+    credits = 0.0
+    credits_measured = False
+    credits_unreported = False
     for row in await _rows_for_this_run(session, run, company, ResearchToolCall):
         payload = row.consumption_json or {}
         for unit, value in payload.items():
@@ -1357,7 +1428,19 @@ async def _tool_call_consumption(session: Any, run: Any, company: Any) -> dict[s
                 totals[unit] = int(totals.get(unit, 0)) + int(value)
         parsed = [VendorUsage.from_dict(v) for v in (payload.get("by_vendor") or [])]
         vendors = merge_vendor_usage(vendors, tuple(v for v in parsed if v is not None))
+        # Open-web W5: `search_web` bills in provider CREDITS (a float, never truncated),
+        # and a call that reached the vendor with no credit figure marks them unreported.
+        if "tavily_credits" in (payload.get("instrumented") or ()):
+            credits_measured = True
+            credits += float(payload.get("tavily_credits") or 0.0)
+            credits_unreported = credits_unreported or "tavily_credits" in (
+                payload.get("unreported") or ()
+            )
     totals["by_vendor"] = vendors
+    if credits_measured:
+        totals["tavily_credits"] = credits
+        totals["tavily_credits_measured"] = True
+        totals["tavily_credits_unreported"] = credits_unreported
     return totals
 
 
@@ -1536,6 +1619,7 @@ def _consumption(
     challenge_result: Any,
     cfg: Any = None,
     tool_units: dict[str, Any] | None = None,
+    web_units: Any = None,
 ) -> dict[str, Any]:
     """What the run actually consumed, and what it produced that was worth consuming it.
 
@@ -1639,6 +1723,27 @@ def _consumption(
             vendor_usage, tuple(tool_model.get("by_vendor") or ())
         )
 
+    # Open-web W5: the company web stage's units (searches, credits, fetches, bytes,
+    # expansion tokens) join the run's cost basis. A Tavily call with no credit figure
+    # arrives ``unreported``, which makes the whole cost unknown — never a subtotal.
+    if web_units is not None:
+        vendor_usage = merge_vendor_usage(vendor_usage, tuple(web_units.by_vendor))
+        units = units + replace(web_units, by_vendor=())
+    # The Investigator's own `search_web` calls are provider searches too (credits).
+    # Only the credits are added here: the calls are added from the same tool rows by
+    # `company_research_service._v3_consumption_units`, and counting them twice would
+    # double the run's searches.
+    if (tool_units or {}).get("tavily_credits_measured"):
+        units = units + ConsumptionUnits(
+            tavily_credits=float((tool_units or {}).get("tavily_credits", 0.0) or 0.0),
+            instrumented=frozenset({"tavily_credits"}),
+            unreported=(
+                frozenset({"tavily_credits"})
+                if (tool_units or {}).get("tavily_credits_unreported")
+                else frozenset()
+            ),
+        )
+
     units = replace(units, by_vendor=vendor_usage)
 
     # ONE price book, read through ONE function. V3.17.9.2.
@@ -1698,6 +1803,17 @@ def _consumption(
             (cost.estimated_usd / useful) if (cost.estimated_usd is not None and useful) else None
         ),
         "cost_per_company_research_run": cost.estimated_usd,
+        # Reader-facing copy of the web stage's units; they are ALREADY inside "model"
+        # above (the cost basis), so nothing downstream sums this key.
+        **({"web_stage": web_units.to_dict()} if web_units is not None else {}),
+        **(
+            {
+                "tavily_credits": float(tool_units.get("tavily_credits", 0.0) or 0.0),
+                "tavily_credits_unreported": bool(tool_units.get("tavily_credits_unreported")),
+            }
+            if tool_units and tool_units.get("tavily_credits_measured")
+            else {}
+        ),
         "price_source": getattr(cfg, "v3_price_source", "") or None,
         "cost_basis": (
             "estimated_from_configured_prices" if cost.estimated_usd is not None else None
@@ -1736,7 +1852,73 @@ def attach_to_report(report: Any, outcome: V3ResearchOutcome) -> Any:
             pass
     summary[SOURCE_SUMMARY_KEY] = payload
     report.source_summary_json = summary
+    try:
+        _attach_web_catalysts(report, payload.get("web_context"))
+    except Exception:  # noqa: BLE001 - the additive catalyst rows must never cost the report
+        pass
     return report
+
+
+def _attach_web_catalysts(report: Any, web_context: Any) -> None:
+    """Open-web W5 (spec §17.4): the V2 ``news_catalyst_discovery`` section reads the
+    catalyst-family web documents the stage stored, ADDITIVELY.
+
+    The V2 report was assembled before the web stage ran, so its catalyst section holds
+    the V2 providers' events only. When the stage stored catalyst documents, one extra
+    key — ``web_catalyst_evidence`` — is written into that section's JSON; no existing
+    key is touched, a report with no such documents is byte-identical, and every
+    third-party string passes the same neutralisation V2 applies to external headlines.
+    """
+    import json
+
+    from app.schemas.catalyst import neutralize_forbidden_terms
+
+    evidence = (web_context or {}).get("catalyst_evidence") if isinstance(
+        web_context, dict) else None
+    if not evidence:
+        return
+    markdown = str(getattr(report, "content_markdown", None) or "")
+    start = markdown.find("```json")
+    end = markdown.rfind("```")
+    if start == -1 or end <= start:
+        return
+    head = start + len("```json")
+    content = json.loads(markdown[head:end].strip())
+    section = content.get("news_catalyst_discovery") if isinstance(content, dict) else None
+    if not isinstance(section, dict) or "web_catalyst_evidence" in section:
+        return
+    from app.services.pipeline.professional_research import SOURCE_CLASS_LABELS
+
+    rows = [
+        {
+            "title": neutralize_forbidden_terms(item.get("title")),
+            "url": item.get("url"),
+            "domain": neutralize_forbidden_terms(item.get("domain")),
+            "source_class": item.get("source_class"),
+            "source_class_label": SOURCE_CLASS_LABELS.get(
+                str(item.get("source_class")), "Web document"
+            ),
+            "published_at": item.get("published_at"),
+            "published_at_source": item.get("published_at_source"),
+            "origin": neutralize_forbidden_terms(item.get("origin_key")),
+        }
+        for item in evidence
+        if isinstance(item, dict)
+    ]
+    section["web_catalyst_evidence"] = {
+        "value": rows,
+        "total": len(rows),
+        "provenance": "web_search",
+        "note": (
+            "Recent-event documents found by live web search and stored by the platform. "
+            "Each is labelled by its source class; none is a filing, and none is a "
+            "recommendation. Dates are the document's own where the page states one."
+        ),
+    }
+    report.content_markdown = (
+        markdown[:head] + "\n" + json.dumps(content, indent=2, default=str) + "\n"
+        + markdown[end:]
+    )
 
 
 def _v2_report_content(report: Any) -> dict[str, Any]:

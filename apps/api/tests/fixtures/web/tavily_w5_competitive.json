@@ -1,0 +1,22 @@
+{
+  "_fixture_note": "synthetic recorded-shape fixture for W5 (Tavily response shape, 2026-10-04)",
+  "_fixture_query": "Voltgrid competitors",
+  "query": "Voltgrid competitors",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Who makes the world's large power transformers",
+      "url": "https://www.power-technology.com/features/transformer-makers",
+      "content": "Synthetic snippet: competitors, producers.",
+      "score": 0.8,
+      "published_date": "Thu, 14 May 2026 08:00:00 GMT"
+    }
+  ],
+  "response_time": 0.9,
+  "usage": {
+    "credits": 1
+  },
+  "request_id": "synthetic-w5-003"
+}

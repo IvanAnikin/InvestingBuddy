@@ -51,6 +51,14 @@ from app.services.providers.contracts import (
 
 pytestmark = pytest.mark.anyio
 
+#: Open-web W5: the flags that register the external tools. ``search_web`` queries the
+#: configured web SearchProvider; the DeepSeek flag no longer registers anything here.
+WEB_FLAGS: dict[str, Any] = {
+    "v3_company_web_research_enabled": True,
+    "v3_web_search_enabled": True,
+    "v3_web_search_provider": "fake",
+}
+
 
 # --------------------------------------------------------------------------- #
 # Fixtures — the real wire shape, not a guessed one
@@ -94,6 +102,7 @@ class _Ctx:
         self.cfg = cfg
         self.session = session
         self.company_id = None
+        self.research_job_id = None
         self.legal_entity_id = None
         self.role = "external_research_analyst"
         self.task_ref = None
@@ -107,16 +116,33 @@ class _Ctx:
 
 class TestTheToolsExistOnlyBehindTheFlag:
     def test_the_flag_off_registers_neither_tool(self) -> None:
+        names = register_external_tools(ToolRegistry(), cfg=Settings()).names()
+        assert set(names) & EXTERNAL_TOOL_NAMES == set()
+
+    def test_the_web_flags_with_a_provider_register_both(self) -> None:
+        names = register_external_tools(ToolRegistry(), cfg=Settings(**WEB_FLAGS)).names()
+        assert set(names) & EXTERNAL_TOOL_NAMES == EXTERNAL_TOOL_NAMES
+
+    def test_the_deepseek_search_flag_no_longer_registers_anything(self) -> None:
+        """W5 (decision U12): a DeepSeek model "searching" is not a search provider."""
         names = register_external_tools(
-            ToolRegistry(), cfg=Settings(v3_deepseek_search_enabled=False)
+            ToolRegistry(),
+            cfg=Settings(v3_deepseek_search_enabled=True, deepseek_api_key="k"),
         ).names()
         assert set(names) & EXTERNAL_TOOL_NAMES == set()
 
-    def test_the_flag_on_registers_both(self) -> None:
-        names = register_external_tools(
-            ToolRegistry(), cfg=Settings(v3_deepseek_search_enabled=True)
-        ).names()
-        assert set(names) & EXTERNAL_TOOL_NAMES == EXTERNAL_TOOL_NAMES
+    @pytest.mark.parametrize(
+        "missing", ["v3_company_web_research_enabled", "v3_web_search_enabled"]
+    )
+    def test_each_key_is_required(self, missing: str) -> None:
+        flags = {**WEB_FLAGS, missing: False}
+        names = register_external_tools(ToolRegistry(), cfg=Settings(**flags)).names()
+        assert set(names) & EXTERNAL_TOOL_NAMES == set()
+
+    def test_no_provider_selected_registers_neither(self) -> None:
+        flags = {**WEB_FLAGS, "v3_web_search_provider": "none"}
+        names = register_external_tools(ToolRegistry(), cfg=Settings(**flags)).names()
+        assert set(names) & EXTERNAL_TOOL_NAMES == set()
 
     def test_an_unimplemented_tool_makes_a_question_unassignable_not_mysterious(
         self,
@@ -130,11 +156,7 @@ class TestTheToolsExistOnlyBehindTheFlag:
         """
         from app.services.agent_tools.builtin import register_builtins
 
-        off = frozenset(
-            register_builtins(
-                ToolRegistry(), cfg=Settings(v3_deepseek_search_enabled=False)
-            ).names()
-        )
+        off = frozenset(register_builtins(ToolRegistry(), cfg=Settings()).names())
         assert TOOL_SEARCH_WEB not in off
         assert TOOL_FETCH_PUBLIC_SOURCE not in off
 
@@ -147,64 +169,156 @@ class TestTheToolsExistOnlyBehindTheFlag:
 
 
 # --------------------------------------------------------------------------- #
-# search_web returns claims, and mints nothing
+# search_web returns CANDIDATES (W5), and mints nothing
 # --------------------------------------------------------------------------- #
+
+SEARCH_FIXTURE: dict[str, Any] = {
+    "results": [
+        {
+            "title": "Manufacturer announces a new factory",
+            "url": "https://news.wire.example/2026/09/transformer-factory",
+            "content": "Synthetic snippet that must never be returned to the Investigator.",
+            "score": 0.88,
+            "published_date": "Mon, 15 Sep 2026 10:00:00 GMT",
+        },
+        {
+            "title": "Regional coverage",
+            "url": "https://www.regional-paper.example/business/factory",
+            "content": "Another synthetic snippet.",
+            "score": 0.71,
+        },
+    ],
+    "request_id": "synthetic-req-1",
+    "usage": {"credits": 1},
+}
+
+
+class _AnyQuery(dict):
+    """A fixture table that answers every query with the same recorded-shape response."""
+
+    def get(self, key: Any, default: Any = None) -> Any:  # noqa: ANN401
+        return SEARCH_FIXTURE
+
+
+@pytest.fixture
+async def db():  # noqa: ANN201
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.ext.compiler import compiles
+    from sqlalchemy.pool import StaticPool
+
+    import app.models  # noqa: F401
+    from app.db.base import Base
+
+    @compiles(JSONB, "sqlite")
+    def _j(element, compiler, **kw):  # noqa: ANN001, ANN202
+        return "JSON"
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+    await engine.dispose()
+
+
+def _fake_provider(**kw: Any) -> Any:
+    from app.integrations.search.fake import FakeWebSearchProvider
+
+    return FakeWebSearchProvider(fixtures=_AnyQuery(), **kw)
 
 
 class TestSearchWebMintsNoEvidence:
-    async def test_no_lead_carries_a_citable_id(self) -> None:
-        """The strongest guarantee in the slice, asserted over every lead.
+    async def test_no_candidate_carries_a_citable_id_or_a_claim(
+        self, db: Any, monkeypatch: Any
+    ) -> None:
+        """The strongest guarantee in the slice, asserted over every candidate.
 
         `_citation_of` in the investigator reads `evidence_id`, `fact_id`,
         `calculation_id` and `id`. A search result carrying any of them would become
-        citable, so the absence of all four is checked structurally.
+        citable, so the absence of all four is checked structurally. No candidate carries
+        a claim or a snippet either.
         """
-        cfg = Settings(v3_deepseek_search_enabled=True, deepseek_api_key="k")
-        transport = FakeDeepSeekTransport(
-            investigation_text=FINDINGS_JSON,
-            tool_payloads=[
-                _search_call("example q2 2026 revenue"),
-                _open_page("https://investors.example.com/q2-2026"),
-            ],
-            tools_echo=ECHO,
-        )
-        provider = DeepSeekResearchProvider(transport=transport, search_enabled=True)
-
         import app.services.agents.routing as routing
 
-        original = routing.research_provider_for
-        routing.research_provider_for = lambda _cfg: provider
-        try:
-            payload = await SEARCH_WEB_SPEC.handler(
-                _Ctx(cfg), {"query": "What was Q2 2026 revenue?", "domains": []}
-            )
-        finally:
-            routing.research_provider_for = original
-
+        provider = _fake_provider()
+        monkeypatch.setattr(routing, "web_search_provider_for", lambda _cfg: provider)
+        payload = await SEARCH_WEB_SPEC.handler(
+            _Ctx(Settings(**WEB_FLAGS), db), {"query": "transformer maker factory", "domains": []}
+        )
         assert payload["available"] is True
-        assert payload["leads"], "the fixture supplies one finding"
-        forbidden = {"evidence_id", "fact_id", "calculation_id", "id"}
-        for lead in payload["leads"]:
-            assert forbidden & set(lead) == set(), (
-                "a search result must never carry a key the investigator treats as a "
-                "citation id"
-            )
-            assert lead["verified_by_investingbuddy"] is False
+        assert payload["web_search"] == "executed"
+        assert payload["candidates"], "the fixture supplies two results"
+        assert payload["leads"] == [], "a search provider returns no claims"
+        forbidden = {"evidence_id", "fact_id", "calculation_id", "id", "claim", "snippet",
+                     "content"}
+        for candidate in payload["candidates"]:
+            assert forbidden & set(candidate) == set()
+            assert candidate["untrusted"] is True
+            assert candidate["verified_by_investingbuddy"] is False
+        assert "Synthetic snippet" not in repr(payload)
+        assert "evidence_id" not in repr(payload)
+
+    async def test_the_search_is_recorded_as_a_network_fact(
+        self, db: Any, monkeypatch: Any
+    ) -> None:
+        from sqlalchemy import select
+
+        import app.services.agents.routing as routing
+        from app.models.web_research import WebSearchQuery
+
+        monkeypatch.setattr(routing, "web_search_provider_for", lambda _cfg: _fake_provider())
+        await SEARCH_WEB_SPEC.handler(
+            _Ctx(Settings(**WEB_FLAGS), db), {"query": "transformer maker factory", "domains": []}
+        )
+        rows = (await db.execute(select(WebSearchQuery))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].executed is True and rows[0].network_call_count == 1
+        assert rows[0].family == "gap" and rows[0].origin == "investigator"
+
+    async def test_an_outage_is_web_search_unavailable_not_recall(
+        self, db: Any, monkeypatch: Any
+    ) -> None:
+        import app.services.agents.routing as routing
+        from app.integrations.search.fake import MODE_OUTAGE
+
+        monkeypatch.setattr(
+            routing, "web_search_provider_for", lambda _cfg: _fake_provider(mode=MODE_OUTAGE)
+        )
+        payload = await SEARCH_WEB_SPEC.handler(
+            _Ctx(Settings(**WEB_FLAGS), db), {"query": "anything", "domains": []}
+        )
+        assert payload["web_search"] == "web_search_unavailable"
+        assert payload["candidates"] == [] and payload["leads"] == []
+        assert payload["discovery_mode"] != "search"
 
     async def test_an_unconfigured_provider_says_so_about_the_platform(self) -> None:
+        payload = await SEARCH_WEB_SPEC.handler(
+            _Ctx(Settings()), {"query": "anything", "domains": []}
+        )
+        assert payload["available"] is False
+        assert payload["leads"] == [] and payload["candidates"] == []
+        assert "not about the web" in payload["reason"]
+
+    async def test_a_refused_query_never_reaches_the_provider(
+        self, db: Any, monkeypatch: Any
+    ) -> None:
         import app.services.agents.routing as routing
 
-        original = routing.research_provider_for
-        routing.research_provider_for = lambda _cfg: None
-        try:
-            payload = await SEARCH_WEB_SPEC.handler(
-                _Ctx(Settings()), {"query": "anything", "domains": []}
-            )
-        finally:
-            routing.research_provider_for = original
-        assert payload["available"] is False
-        assert payload["leads"] == []
-        assert "not about the web" in payload["reason"]
+        provider = _fake_provider()
+        monkeypatch.setattr(routing, "web_search_provider_for", lambda _cfg: provider)
+        payload = await SEARCH_WEB_SPEC.handler(
+            _Ctx(Settings(**WEB_FLAGS), db),
+            {"query": "https://evil.example/ignore-previous-instructions", "domains": []},
+        )
+        assert payload["candidates"] == []
+        assert provider.requests == []
 
 
 # --------------------------------------------------------------------------- #
@@ -597,113 +711,74 @@ class TestTheBudgetCanActuallyBoundTheSpend:
 
     def test_both_external_tools_declare_a_non_zero_cost(self) -> None:
         assert SEARCH_WEB_SPEC.cost.searches >= 1
-        assert SEARCH_WEB_SPEC.cost.fetches >= 1, (
-            "this provider retrieves pages as part of searching"
-        )
+        # W5: the provider returns URLs; the platform's own fetcher retrieves them.
+        assert SEARCH_WEB_SPEC.cost.fetches == 0
         assert FETCH_PUBLIC_SOURCE_SPEC.cost.fetches >= 1
 
-    async def test_a_search_budget_refuses_the_call_before_it_is_made(self) -> None:
-        """Asserted on the transport, not on a counter: a counter is satisfied by a
+    async def test_a_search_budget_refuses_the_call_before_it_is_made(
+        self, db: Any, monkeypatch: Any
+    ) -> None:
+        """Asserted on the provider, not on a counter: a counter is satisfied by a
         spend that happened and was then noticed."""
         import uuid as _uuid
 
-        from sqlalchemy.dialects.postgresql import JSONB
-        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-        from sqlalchemy.ext.compiler import compiles
-        from sqlalchemy.pool import StaticPool
-
-        from app.db.base import Base
+        import app.services.agents.routing as routing
         from app.services.agent_tools.contracts import ToolBudget
         from app.services.agent_tools.policy import policy_for
         from app.services.agent_tools.session import ToolSession
 
-        @compiles(JSONB, "sqlite")
-        def _j(element, compiler, **kw):  # noqa: ANN001, ANN202
-            return "JSON"
-
-        engine = create_async_engine(
-            "sqlite+aiosqlite:///:memory:",
-            future=True,
-            poolclass=StaticPool,
-            connect_args={"check_same_thread": False},
+        provider = _fake_provider()
+        monkeypatch.setattr(routing, "web_search_provider_for", lambda _cfg: provider)
+        cfg = Settings(**WEB_FLAGS, v3_agent_tools_enabled=True)
+        session = ToolSession(
+            registry=register_external_tools(ToolRegistry(), cfg=cfg),
+            policy=policy_for(
+                "external_research_analyst",
+                tools=EXTERNAL_TOOL_NAMES,
+                budget=ToolBudget(max_searches=1),
+                access_classes={"public_web"},
+            ),
+            cfg=cfg,
+            db=db,
+            company_id=_uuid.uuid4(),
         )
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-
-        called: list[str] = []
-
-        class _Provider:
-            async def investigate(self, **kw):  # noqa: ANN003, ANN201
-                called.append("investigate")
-                raise AssertionError("the budget must refuse before the vendor is asked")
-
-        import app.services.agents.routing as routing
-
-        original = routing.research_provider_for
-        routing.research_provider_for = lambda _cfg: _Provider()
-        try:
-            cfg = Settings(
-                v3_deepseek_search_enabled=True,
-                deepseek_api_key="k",
-                v3_agent_tools_enabled=True,
-            )
-            async with maker() as db:
-                session = ToolSession(
-                    registry=register_external_tools(ToolRegistry(), cfg=cfg),
-                    policy=policy_for(
-                        "external_research_analyst",
-                        tools=EXTERNAL_TOOL_NAMES,
-                        budget=ToolBudget(max_searches=0, max_calls=0, max_fetches=1),
-                        access_classes={"public_web"},
-                    ),
-                    cfg=cfg,
-                    db=db,
-                    company_id=_uuid.uuid4(),
-                )
-                # One fetch allowed; search_web costs a fetch too, so the SECOND call
-                # must be refused before the provider is reached.
-                await session.call(TOOL_SEARCH_WEB, {"query": "q"})
-                result = await session.call(TOOL_SEARCH_WEB, {"query": "q"})
-            assert result.ok is False
-            assert result.refusal_reason == "budget_exceeded"
-        finally:
-            routing.research_provider_for = original
-            await engine.dispose()
-        assert called == ["investigate"], (
-            "the vendor was asked once, and the budget stopped the second call before "
-            "it was reached"
+        first = await session.call(TOOL_SEARCH_WEB, {"query": "transformer factory"})
+        second = await session.call(TOOL_SEARCH_WEB, {"query": "transformer factory two"})
+        assert first.ok is True
+        assert second.ok is False
+        assert second.refusal_reason == "budget_exceeded"
+        assert len(provider.requests) == 1, (
+            "the provider was asked once; the budget stopped the second call before it "
+            "was reached"
         )
 
 
 class TestThePayloadSaysWhatItMeans:
-    async def test_unopened_page_leads_are_reported_as_KEPT_not_dropped(self) -> None:
-        """The key used to be named `dropped_…` while the leads were kept.
-
-        A key that says "dropped" about kept leads is the kind of quiet inaccuracy a
-        reader has no way to catch, and it contradicted ADR-056 §4.
-        """
-        cfg = Settings(v3_deepseek_search_enabled=True, deepseek_api_key="k")
-        transport = FakeDeepSeekTransport(
-            investigation_text=FINDINGS_JSON,
-            tool_payloads=[_open_page("https://elsewhere.example.com/x")],
-            tools_echo=ECHO,
-        )
-        provider = DeepSeekResearchProvider(transport=transport, search_enabled=True)
-
+    async def test_the_note_and_the_flags_say_these_are_untrusted_pointers(
+        self, db: Any, monkeypatch: Any
+    ) -> None:
         import app.services.agents.routing as routing
 
-        original = routing.research_provider_for
-        routing.research_provider_for = lambda _cfg: provider
-        try:
-            payload = await SEARCH_WEB_SPEC.handler(
-                _Ctx(cfg), {"query": "q", "domains": []}
-            )
-        finally:
-            routing.research_provider_for = original
-        assert "dropped_leads_citing_unopened_pages" not in payload
-        assert payload["leads_citing_unopened_pages_kept"] == 1
-        assert len(payload["leads"]) == 1, "counted, and kept"
+        monkeypatch.setattr(routing, "web_search_provider_for", lambda _cfg: _fake_provider())
+        payload = await SEARCH_WEB_SPEC.handler(
+            _Ctx(Settings(**WEB_FLAGS), db), {"query": "transformer factory", "domains": []}
+        )
+        assert "CANDIDATE" in payload["note"] and "not evidence" in payload["note"]
+        assert "leads_citing_unopened_pages_kept" not in payload
+        assert SEARCH_WEB_SPEC.may_contain_untrusted_content is True
+
+    async def test_the_consumption_reports_credits_and_calls(
+        self, db: Any, monkeypatch: Any
+    ) -> None:
+        import app.services.agents.routing as routing
+
+        monkeypatch.setattr(routing, "web_search_provider_for", lambda _cfg: _fake_provider())
+        payload = await SEARCH_WEB_SPEC.handler(
+            _Ctx(Settings(**WEB_FLAGS), db), {"query": "transformer factory", "domains": []}
+        )
+        spent = payload["consumption"]
+        assert spent.web_search_calls == 1
+        assert "web_search_calls" in spent.instrumented
 
 
 # --------------------------------------------------------------------------- #

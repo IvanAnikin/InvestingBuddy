@@ -109,7 +109,7 @@ MODE_LIMITS: dict[ResearchMode, ModeLimits] = {
         max_rounds=1,
         max_tasks=4,
         max_tool_calls=40,
-        max_web_searches=4,
+        max_web_searches=6,
         max_provider_research_runs=1,
         max_documents=5,
         max_model_calls=20,
@@ -122,7 +122,7 @@ MODE_LIMITS: dict[ResearchMode, ModeLimits] = {
         max_rounds=2,
         max_tasks=8,
         max_tool_calls=150,
-        max_web_searches=12,
+        max_web_searches=16,
         max_provider_research_runs=3,
         max_documents=15,
         max_model_calls=60,
@@ -135,7 +135,7 @@ MODE_LIMITS: dict[ResearchMode, ModeLimits] = {
         max_rounds=3,
         max_tasks=16,
         max_tool_calls=400,
-        max_web_searches=30,
+        max_web_searches=36,
         max_provider_research_runs=8,
         max_documents=30,
         max_model_calls=140,
@@ -154,6 +154,24 @@ MODE_LIMITS: dict[ResearchMode, ModeLimits] = {
         max_wall_seconds=5_400.0,
     ),
 }
+
+
+#: The open-web budget profile (``web_research.budget.PROFILES``) each mode runs the
+#: company web stage under (spec §19.1). The profile carries the per-mode fetch, PDF,
+#: byte, per-domain and wall-time limits; ``ModeLimits.max_web_searches`` above is the
+#: SAME number as the profile's query cap (pinned by a test), so the two budgets cannot
+#: disagree about how many searches one run may make.
+WEB_PROFILE_BY_MODE: dict[ResearchMode, str] = {
+    ResearchMode.QUICK: "company_quick",
+    ResearchMode.STANDARD: "company_standard",
+    ResearchMode.DEEP: "company_deep",
+    ResearchMode.MAX: "company_max",
+}
+
+
+def web_profile_for(mode: ResearchMode | str) -> str:
+    resolved = mode if isinstance(mode, ResearchMode) else parse_mode(str(mode))
+    return WEB_PROFILE_BY_MODE[resolved]
 
 
 def parse_mode(raw: str | None, *, default: ResearchMode = DEFAULT_MODE) -> ResearchMode:
@@ -236,9 +254,11 @@ __all__ = [
     "DEFAULT_MODE",
     "MODE_LIMITS",
     "RESEARCH_MODES",
+    "WEB_PROFILE_BY_MODE",
     "ModeLimits",
     "ResearchMode",
     "budget_for",
     "limits_for",
     "parse_mode",
+    "web_profile_for",
 ]

@@ -533,6 +533,42 @@ it adds runtime to every company job.
 
 **Rollback:** `V3_COMPANY_WEB_RESEARCH_ENABLED=false`.
 
+**As built (W5).** Modules: `web_research/planner.py` (`QUERY_TEMPLATE_VERSION`
+`w5.1`, versioned templates, venue→locale table and glossary, freshness windows, bounded
+cached model expansion), `selection.py` (§11.3 score, per-family quotas, recorded skip
+reasons), `crawl.py` (§11.1/§11.2), `stage.py` (`ensure_web_context`). Decisions, each
+deliberate:
+
+- **No migration.** Dispositions reuse `web_search_results.disposition` (`selected`,
+  `skipped:<reason>`, `ingested`, `reused`, `not_ingested:<reason>`, `not_retrievable:<reason>`,
+  `fetch_failed:<reason>`); the new unit `bytes_downloaded` lives in `consumption_json` and is
+  *listed only once instrumented* (`OPTIONAL_UNITS`), so every record written with the stage off is
+  byte-identical to before.
+- **Order.** Classification, subject profile and stage detection now run BEFORE the stage and
+  indexing (they read corpus rows, not the index), so the stage plans from them and a third-party
+  page can never feed the stage detector. With the flag off the pipeline output is unchanged
+  (checked by diffing `run_v3_research` outcomes against W4 for three companies; the only
+  differences are pre-existing run-to-run ones: open-question row order and a network error text).
+- **Flag semantics.** `V3_COMPANY_WEB_RESEARCH_ENABLED` (default off; consumers: the stage and tool
+  registration). `search_web`/`fetch_public_source` register only when it AND
+  `V3_WEB_SEARCH_ENABLED` AND a provider are set (`routing.web_search_provider_for`);
+  `V3_DEEPSEEK_SEARCH_ENABLED` registers nothing there any more but still gates the labelled
+  `model_recall` Discovery paths. `search_web` returns candidates only (no claim, no id) through
+  `run_searches`; `leads` is an empty list.
+- **Budgets.** Mode → profile (`research_mode.WEB_PROFILE_BY_MODE`); web-search counts 6/16/36/60;
+  `ResearchBudget.check` is called before each search wave and trims it. The Investigator's
+  `ExternalSearchBudget` is the mode ceiling minus the searches the stage executed.
+- **Isolation.** The stage runs in a SAVEPOINT inside `try`; failure is `web_stage_failed`.
+  On PostgreSQL search provenance is written in its own committed session so paid calls survive a
+  failed stage; fetches are sequential on one session (concurrency is the limiter's, per host).
+- **Report.** Additive `web_evidence` blocks on competitive_position, industry_and_market,
+  growth_and_catalysts and risks_and_counter_thesis (class, origin, date, W4 statement label,
+  §14.3 corroboration) and `web_research` on evidence_quality_and_gaps (searches run, sources found
+  but not accessible). The V2 `news_catalyst_discovery` section gains `web_catalyst_evidence` only
+  when catalyst documents were stored. Third-party strings are neutralised.
+- **Deferred.** Expansion cache is in-process (not durable across restarts); the Director GAP
+  follow-up loop and an Investigator step that fetches `search_web` candidates are W7; no browser.
+
 **Complexity:** L–XL (about 5 days).
 
 ---
