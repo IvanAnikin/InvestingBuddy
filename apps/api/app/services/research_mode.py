@@ -174,6 +174,25 @@ def web_profile_for(mode: ResearchMode | str) -> str:
     return WEB_PROFILE_BY_MODE[resolved]
 
 
+#: The web-search ceilings each mode carried BEFORE open-web W5 raised them. A run with
+#: ``V3_COMPANY_WEB_RESEARCH_ENABLED`` off keeps these (it spends nothing the old budget
+#: did not allow, and the budget recorded on its ledger run is unchanged); only a run that
+#: has the company web stage on gets the raised counts in ``MODE_LIMITS`` (decision U12).
+LEGACY_MAX_WEB_SEARCHES: dict[ResearchMode, int] = {
+    ResearchMode.QUICK: 4,
+    ResearchMode.STANDARD: 12,
+    ResearchMode.DEEP: 30,
+    ResearchMode.MAX: 60,
+}
+
+
+def max_web_searches_for(mode: ResearchMode, cfg: "Settings | None" = None) -> int:
+    """The mode's web-search ceiling: raised only when the company web stage is on."""
+    if cfg is not None and getattr(cfg, "v3_company_web_research_enabled", False):
+        return limits_for(mode).max_web_searches
+    return LEGACY_MAX_WEB_SEARCHES[mode]
+
+
 def parse_mode(raw: str | None, *, default: ResearchMode = DEFAULT_MODE) -> ResearchMode:
     """A mode, or the default. An unrecognised name never becomes the deepest one.
 
@@ -231,7 +250,8 @@ def budget_for(
         ),
         max_web_searches=int(
             _narrower(
-                limits.max_web_searches, getattr(cfg, "v3_run_max_web_searches", 0)
+                max_web_searches_for(resolved, cfg),
+                getattr(cfg, "v3_run_max_web_searches", 0),
             )
         ),
         max_documents=int(
@@ -252,6 +272,7 @@ def budget_for(
 
 __all__ = [
     "DEFAULT_MODE",
+    "LEGACY_MAX_WEB_SEARCHES",
     "MODE_LIMITS",
     "RESEARCH_MODES",
     "WEB_PROFILE_BY_MODE",
@@ -259,6 +280,7 @@ __all__ = [
     "ResearchMode",
     "budget_for",
     "limits_for",
+    "max_web_searches_for",
     "parse_mode",
     "web_profile_for",
 ]

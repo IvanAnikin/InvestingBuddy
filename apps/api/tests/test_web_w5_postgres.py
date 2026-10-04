@@ -204,3 +204,48 @@ class TestTheStageOnPostgres:
                 await session.rollback()
         finally:
             await engine.dispose()
+
+
+@requires_postgres
+class TestProvenanceFallbackOnPostgres:
+    async def test_an_unknown_agent_run_does_not_cost_the_paid_calls(self) -> None:
+        """W5 review C-M5/F6: the independent session fails its foreign key (the agent run
+        is not a committed row); the rows are recorded in the caller's transaction, and if
+        that fails too, with the job/agent-run link NULL — the stage never fails and the
+        daily cap never undercounts."""
+        engine = create_async_engine(POSTGRES_URL, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        company = _company()
+        async with maker() as setup:
+            setup.add(company)
+            await setup.commit()
+        try:
+            async with maker() as session:
+                factory = st.persist_factory_for(session)
+                result = await st.ensure_web_context(
+                    session, company,
+                    st.WebRunContext(
+                        mode="quick", industry="Electrical equipment",
+                        agent_run_id=uuid.uuid4(),  # names no agent_runs row
+                    ),
+                    cfg=_cfg(), deps=_deps(None, persist_session_factory=factory),
+                )
+                assert result.state == "ok"
+                assert result.units.web_search_calls == 6
+                rows = (await session.execute(
+                    select(WebSearchQuery).where(WebSearchQuery.company_id == company.id)
+                )).scalars().all()
+                assert len(rows) == 6 and all(r.agent_run_id is None for r in rows)
+                await session.rollback()
+        finally:
+            async with maker() as cleanup:
+                ids = (await cleanup.execute(
+                    select(WebSearchQuery.id).where(WebSearchQuery.company_id == company.id)
+                )).scalars().all()
+                await cleanup.execute(delete(WebSearchResult).where(
+                    WebSearchResult.query_id.in_(ids)))
+                await cleanup.execute(delete(WebSearchQuery).where(
+                    WebSearchQuery.company_id == company.id))
+                await cleanup.execute(delete(Company).where(Company.id == company.id))
+                await cleanup.commit()
+            await engine.dispose()

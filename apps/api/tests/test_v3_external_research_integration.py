@@ -123,13 +123,24 @@ class TestTheToolsExistOnlyBehindTheFlag:
         names = register_external_tools(ToolRegistry(), cfg=Settings(**WEB_FLAGS)).names()
         assert set(names) & EXTERNAL_TOOL_NAMES == EXTERNAL_TOOL_NAMES
 
-    def test_the_deepseek_search_flag_no_longer_registers_anything(self) -> None:
-        """W5 (decision U12): a DeepSeek model "searching" is not a search provider."""
-        names = register_external_tools(
+    def test_the_deepseek_search_flag_no_longer_registers_search_web(self) -> None:
+        """W5 (decision U12): a DeepSeek model "searching" is not a search provider. The
+        legacy flag still keeps ``fetch_public_source`` (it needs no provider), so an
+        environment that has it on does not lose the verify-a-URL tool."""
+        names = set(register_external_tools(
             ToolRegistry(),
             cfg=Settings(v3_deepseek_search_enabled=True, deepseek_api_key="k"),
-        ).names()
-        assert set(names) & EXTERNAL_TOOL_NAMES == set()
+        ).names()) & EXTERNAL_TOOL_NAMES
+        assert names == {TOOL_FETCH_PUBLIC_SOURCE}
+
+    def test_fetch_public_source_does_not_vanish_when_only_the_new_flags_are_off(self) -> None:
+        names = set(register_external_tools(ToolRegistry(), cfg=Settings()).names())
+        assert TOOL_FETCH_PUBLIC_SOURCE not in names, "nothing on: nothing registered"
+        legacy = set(register_external_tools(
+            ToolRegistry(), cfg=Settings(v3_deepseek_search_enabled=True)).names())
+        assert TOOL_FETCH_PUBLIC_SOURCE in legacy and TOOL_SEARCH_WEB not in legacy
+        new = set(register_external_tools(ToolRegistry(), cfg=Settings(**WEB_FLAGS)).names())
+        assert {TOOL_FETCH_PUBLIC_SOURCE, TOOL_SEARCH_WEB} <= new
 
     @pytest.mark.parametrize(
         "missing", ["v3_company_web_research_enabled", "v3_web_search_enabled"]

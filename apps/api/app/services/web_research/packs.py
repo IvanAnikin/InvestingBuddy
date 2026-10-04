@@ -30,9 +30,9 @@ from datetime import date
 
 from app.services import research_fields as rf
 from app.services.web_research.classify import CLASS_TABLE
-from app.services.web_research.trust import FILING_CLASSES, ISSUER_CLASSES
+from app.services.web_research.trust import FILING_CLASSES, ISSUER_CLASSES, independence_key
 
-PACK_WEIGHTS_VERSION = "2026-10-02.1"
+PACK_WEIGHTS_VERSION = "2026-10-04.1"
 
 
 @dataclass(frozen=True)
@@ -84,6 +84,10 @@ class PackItem:
     injection_suspect: bool = False
     #: Admitted through a subject row (the document MENTIONS the company): never primary.
     via_subject: bool = False
+    #: Platform evidence (a typed fact, the company's own corpus filing) as opposed to an
+    #: open-web item. A web item with NO origin (a legacy version stored before origins
+    #: existed) is not primary: nothing says whose it is.
+    platform: bool = False
 
 
 @dataclass
@@ -94,12 +98,22 @@ class PackResult:
     weights_version: str = PACK_WEIGHTS_VERSION
 
 
-def is_primary(item: PackItem) -> bool:
-    """A filing or the issuer's own material — never a mention-scope hit, whose class is
-    the mentioning document's, not the company's."""
-    return not item.via_subject and (
-        item.source_class in FILING_CLASSES or item.source_class in ISSUER_CLASSES
-    )
+def is_primary(item: PackItem, issuer_origin: str | None = None) -> bool:
+    """A filing or the issuer's own material.
+
+    Never a mention-scope hit (its class is the mentioning document's, not the
+    company's), and never a company page that is not THIS run's company's: a web item
+    with an origin is primary only when that origin is the run's verified issuer
+    (``issuer_origin``) — in a theme run, where there is none, no web item is primary
+    (review M4). Platform evidence carries no web origin and keeps its class.
+    """
+    if item.via_subject:
+        return False
+    if item.source_class not in FILING_CLASSES and item.source_class not in ISSUER_CLASSES:
+        return False
+    if item.origin_key is None:
+        return item.platform
+    return issuer_origin is not None and item.origin_key == issuer_origin
 
 
 def source_class_prior(source_class: str | None) -> float:
@@ -119,14 +133,21 @@ def claim_keys_for(text: str | None) -> tuple[str, ...]:
     return tuple(sorted(rf.fields_mentioned(text)))
 
 
-def base_score(item: PackItem, *, weights: PackWeights, today: date, top: float) -> float:
+def base_score(
+    item: PackItem,
+    *,
+    weights: PackWeights,
+    today: date,
+    top: float,
+    issuer_origin: str | None = None,
+) -> float:
     relevance = (item.relevance or 0.0) / top if top > 0 else 0.5
     return (
         weights.source_class_prior * source_class_prior(item.source_class)
         + weights.relevance * relevance
         + weights.freshness * freshness(item.published_at, today=today)
         + weights.company_specificity * item.company_specificity
-        + weights.primary_preference * (1.0 if is_primary(item) else 0.0)
+        + weights.primary_preference * (1.0 if is_primary(item, issuer_origin) else 0.0)
         - weights.injection_suspect * (1.0 if item.injection_suspect else 0.0)
     )
 
@@ -138,13 +159,24 @@ def build_pack(
     max_per_origin: int = MAX_ITEMS_PER_ORIGIN,
     max_items: int | None = None,
     today: date | None = None,
+    issuer_origin: str | None = None,
 ) -> PackResult:
-    """Rank and cap ``candidates``. Deterministic for a given input and ``today``."""
-    day = today or date.today()
+    """Rank and cap ``candidates``. Deterministic for a given input.
+
+    ``today`` defaults to the newest publication date among the candidates — a property
+    of the INPUT, so the same evidence always ranks the same however late it is read
+    (the clock is never consulted). The origin cap and the duplicate penalty count
+    independence keys, so a page claiming another origin shares that origin's budget.
+    """
     pool = list(dict.fromkeys(candidates))
+    day = today or max((c.published_at for c in pool if c.published_at), default=date(1970, 1, 1))
     top = max((c.relevance or 0.0 for c in pool), default=0.0)
-    base = {c.key: base_score(c, weights=weights, today=day, top=top) for c in pool}
+    base = {
+        c.key: base_score(c, weights=weights, today=day, top=top, issuer_origin=issuer_origin)
+        for c in pool
+    }
     order = {c.key: index for index, c in enumerate(pool)}
+    origin_of = {c.key: independence_key(c.origin_key) for c in pool}
     chosen: list[PackItem] = []
     per_origin: dict[str, int] = {}
     covered: set[str] = set()
@@ -156,7 +188,8 @@ def build_pack(
         for item in remaining:
             fresh_keys = set(item.claim_keys) - covered
             coverage = len(fresh_keys) / len(item.claim_keys) if item.claim_keys else 0.0
-            repeats = per_origin.get(item.origin_key or "", 0) if item.origin_key else 0
+            origin = origin_of[item.key]
+            repeats = per_origin.get(origin, 0) if origin else 0
             score = (
                 base[item.key]
                 + weights.claim_coverage * coverage
@@ -168,7 +201,8 @@ def build_pack(
                 best, best_score = item, score
         assert best is not None
         remaining.remove(best)
-        if best.origin_key and per_origin.get(best.origin_key, 0) >= max_per_origin:
+        origin = origin_of[best.key]
+        if origin and per_origin.get(origin, 0) >= max_per_origin:
             result.dropped.setdefault(DROP_ORIGIN_CAP, []).append(best.key)
             continue
         if max_items is not None and len(chosen) >= max_items:
@@ -176,14 +210,16 @@ def build_pack(
             continue
         chosen.append(best)
         result.scores[best.key] = round(best_score, 6)
-        if best.origin_key:
-            per_origin[best.origin_key] = per_origin.get(best.origin_key, 0) + 1
+        if origin:
+            per_origin[origin] = per_origin.get(origin, 0) + 1
         covered.update(best.claim_keys)
 
-    # At least one primary item where one exists — FIRST, so no budget can trim it.
-    primaries = [c for c in pool if is_primary(c)]
+    # At least one primary item where one exists — FIRST, so no budget can trim it. A
+    # suspect page is never FORCED in (it may still rank in on merit): forcing the one
+    # item an attacker controls to the top is the wrong tie-break (review M4).
+    primaries = [c for c in pool if is_primary(c, issuer_origin) and not c.injection_suspect]
     if primaries:
-        in_pack = [c for c in chosen if is_primary(c)]
+        in_pack = [c for c in chosen if c in primaries]
         lead = in_pack[0] if in_pack else max(
             primaries, key=lambda c: (base[c.key], -order[c.key])
         )
@@ -195,14 +231,20 @@ def build_pack(
                     result.dropped[reason].remove(lead.key)
                     if not result.dropped[reason]:
                         del result.dropped[reason]
-            same_origin = [c for c in chosen if lead.origin_key and c.origin_key == lead.origin_key]
+            lead_origin = origin_of[lead.key]
+            same_origin = [
+                c for c in chosen if lead_origin and origin_of[c.key] == lead_origin
+            ]
             if len(same_origin) >= max_per_origin:
                 # Keep the origin cap: the primary item displaces its origin's weakest.
-                evicted = same_origin[-1]
+                evicted = min(same_origin, key=lambda c: result.scores.get(c.key, 0.0))
                 chosen.remove(evicted)
                 result.dropped.setdefault(DROP_ORIGIN_CAP, []).append(evicted.key)
             elif max_items is not None and len(chosen) >= max_items and chosen:
-                evicted = chosen.pop()
+                # Evict the weakest NON-primary item; a primary is never the casualty.
+                pool_evictable = [c for c in chosen if not is_primary(c, issuer_origin)] or chosen
+                evicted = min(pool_evictable, key=lambda c: result.scores.get(c.key, 0.0))
+                chosen.remove(evicted)
                 result.dropped.setdefault("max_items", []).append(evicted.key)
             result.scores[lead.key] = round(base[lead.key], 6)
         chosen.insert(0, lead)

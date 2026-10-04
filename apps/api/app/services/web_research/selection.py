@@ -34,7 +34,13 @@ from urllib.parse import urlsplit
 
 from app.services.providers.contracts import QueryFamily, SearchResultItem
 from app.services.sources.public_suffix import registrable_domain
-from app.services.web_research.classify import classify_source
+from app.services.web_research.classify import (
+    SC_COMPANY_PRESS_RELEASE,
+    SC_COMPANY_WEB_PAGE,
+    SC_INVESTOR_PRESENTATION,
+    SC_ISSUER_FILING,
+    classify_source,
+)
 from app.services.web_research.domain_policy import denylisted
 from app.services.web_research.packs import source_class_prior
 from app.services.web_research.planner import FAMILY_TERMS, WAVE_FAMILIES, window_days
@@ -58,6 +64,14 @@ W_IDENTITY_ISSUER_DOMAIN = 0.5
 W_IDENTITY_NAME = 0.3
 DUPLICATE_DOMAIN_PENALTY = 0.5
 UNDATED_FRESHNESS = 0.3
+
+#: The issuer's OWN voice. Disconfirming (RISK) research must not rank a self-published
+#: page above an independent source, so for RISK these classes get no identity bonus and a
+#: capped class prior, and the family always picks one non-issuer result when one exists.
+ISSUER_VOICE_CLASSES: frozenset[str] = frozenset(
+    {SC_ISSUER_FILING, SC_COMPANY_PRESS_RELEASE, SC_INVESTOR_PRESENTATION, SC_COMPANY_WEB_PAGE}
+)
+RISK_ISSUER_PRIOR_CAP = 0.4
 
 SKIP_ALREADY_HELD = "already_held"
 SKIP_DUPLICATE_URL = "duplicate_url"
@@ -217,8 +231,14 @@ def score_candidate(candidate: SearchCandidate, ctx: SelectionContext) -> Scored
     issuer = any(host == d or host.endswith("." + d) for d in issuer_hosts)
     classification = classify_source(url, issuer_domains=ctx.issuer_domains)
     terms = ctx.family_terms.get(candidate.family) or FAMILY_TERMS.get(candidate.family, ())
+    risk = candidate.family is QueryFamily.RISK
+    self_published = classification.source_class in ISSUER_VOICE_CLASSES
+    prior = source_class_prior(classification.source_class)
+    if risk and self_published:
+        prior = min(prior, RISK_ISSUER_PRIOR_CAP)
+        issuer = False  # no identity bonus for the issuer's own page when seeking risk
     components = {
-        "class_prior": W_CLASS * source_class_prior(classification.source_class),
+        "class_prior": W_CLASS * prior,
         "relevance": W_RELEVANCE * relevance(item, terms),
         "freshness": W_FRESHNESS * freshness_fit(
             item, family=candidate.family, mode=ctx.mode, today=ctx.today
@@ -226,8 +246,20 @@ def score_candidate(candidate: SearchCandidate, ctx: SelectionContext) -> Scored
         "novelty": W_NOVELTY if url not in ctx.held_urls else 0.0,
         "identity": identity_hint(item, ctx, issuer=issuer),
     }
+    if risk and self_published:
+        components["identity"] = 0.0  # not even a name match: it is the issuer's own page
     return Scored(candidate, round(sum(components.values()), 6), components,
                   classification.source_class)
+
+
+def _occurrence_key(
+    scored: Scored, family_order: Mapping[QueryFamily, int]
+) -> tuple[float, int, int]:
+    return (
+        -scored.score,
+        family_order.get(scored.candidate.family, 99),
+        scored.candidate.item.rank,
+    )
 
 
 def select_results(
@@ -237,32 +269,40 @@ def select_results(
     result = SelectionResult()
     family_order = {f: i for i, f in enumerate(WAVE_FAMILIES)}
 
-    # 1. Hygiene, in a fixed order so a duplicate is attributed the same way every run.
+    # 1. Hygiene, in a fixed order so a skip is attributed the same way every run.
     ordered = sorted(
         candidates,
         key=lambda c: (family_order.get(c.family, 99), c.item.rank, c.url),
     )
-    seen_urls: set[str] = set()
-    viable: list[Scored] = []
+    scored_all: list[Scored] = []
     for candidate in ordered:
         url = candidate.url
         if not url:
             result.skipped.append((candidate, SKIP_NO_URL))
-            continue
-        if not url.lower().startswith("https://"):
+        elif not url.lower().startswith("https://"):
             result.skipped.append((candidate, SKIP_NOT_HTTPS))
-            continue
-        if denylisted(host_of(url)):
+        elif denylisted(host_of(url)):
             result.skipped.append((candidate, SKIP_DENYLISTED))
-            continue
-        if url in ctx.held_urls:
+        elif url in ctx.held_urls:
             result.skipped.append((candidate, SKIP_ALREADY_HELD))
-            continue
-        if url in seen_urls:
-            result.skipped.append((candidate, SKIP_DUPLICATE_URL))
-            continue
-        seen_urls.add(url)
-        viable.append(score_candidate(candidate, ctx))
+        else:
+            scored_all.append(score_candidate(candidate, ctx))
+    # The same URL under several queries is ONE document, kept under the family in which
+    # it scores best (a risk article found by a catalyst query belongs to RISK).
+    best_by_url: dict[str, Scored] = {}
+    for scored in scored_all:
+        url = scored.candidate.url
+        incumbent = best_by_url.get(url)
+        if incumbent is None or _occurrence_key(scored, family_order) < _occurrence_key(
+            incumbent, family_order
+        ):
+            best_by_url[url] = scored
+    viable: list[Scored] = []
+    for scored in scored_all:
+        if best_by_url[scored.candidate.url] is scored:
+            viable.append(scored)
+        else:
+            result.skipped.append((scored.candidate, SKIP_DUPLICATE_URL))
 
     # 2. Top K per family, greedy, so the duplicate-domain penalty is order-stable.
     quotas = dict(ctx.quotas) if ctx.quotas is not None else family_quotas(ctx.total)
@@ -295,10 +335,16 @@ def select_results(
     total_cap = max(0, int(ctx.total))
     for family in WAVE_FAMILIES:
         pool = by_family.get(family, [])
-        for _ in range(max(0, quotas.get(family, 0))):
+        for n in range(max(0, quotas.get(family, 0))):
             if len(result.selected) >= total_cap:
                 break
-            choice = best(pool)
+            choice = None
+            if family is QueryFamily.RISK and n == 0:
+                # Disconfirming evidence: the first RISK pick is independent of the issuer
+                # whenever any independent result exists.
+                choice = best([s for s in pool if s.source_class not in ISSUER_VOICE_CLASSES])
+            if choice is None:
+                choice = best(pool)
             if choice is None:
                 break
             take(choice)
@@ -325,6 +371,7 @@ def select_results(
 __all__ = [
     "FAMILY_WEIGHTS",
     "SELECTION_VERSION",
+    "ISSUER_VOICE_CLASSES",
     "SKIP_ALREADY_HELD",
     "SKIP_DENYLISTED",
     "SKIP_DUPLICATE_URL",

@@ -55,7 +55,7 @@ extra ``COMPETITIVE`` / ``INDUSTRY`` queries (synonyms, technology and process t
 Every proposal passes :func:`~app.services.web_research.queries.sanitise_query` AND is
 refused if cleaning changed it (a URL or operator was in it), exceeds
 :data:`MAX_EXPANSION_WORDS`, repeats a template query, or contains a private token. They
-are cached by ``(intent_hash, model, prompt_version)`` so the same company produces the
+are cached by ``(intent_hash, model, prompt_version, limit)`` so the same company produces the
 same query set until the prompt version changes, and recorded with
 ``origin="llm_expansion"``.
 """
@@ -703,7 +703,7 @@ _EXPANSION_SYSTEM = (
 )
 
 _CACHE_MAX = 256
-_CACHE: OrderedDict[tuple[str, str, str], tuple[str, ...]] = OrderedDict()
+_CACHE: OrderedDict[tuple[str, str, str, int], tuple[str, ...]] = OrderedDict()
 
 
 def clear_expansion_cache() -> None:
@@ -809,7 +809,9 @@ async def propose_expansion(
     model = str(getattr(transport, "model", "") or "unknown")
     result.model = model
     template_queries = [q.request.query for q in plan.queries if q.origin == ORIGIN_TEMPLATE]
-    key = (intent_hash(facts, template_queries), model, EXPANSION_PROMPT_VERSION)
+    # ``limit`` is part of the key (W5 review): a cached answer to a smaller request must
+    # not truncate a larger one, nor a larger one overrun a smaller budget.
+    key = (intent_hash(facts, template_queries), model, EXPANSION_PROMPT_VERSION, int(limit))
     cached = _CACHE.get(key)
     if cached is not None:
         _CACHE.move_to_end(key)
