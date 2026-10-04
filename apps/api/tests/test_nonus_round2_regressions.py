@@ -360,3 +360,134 @@ class TestMediums:
 def test_title_period_unaffected_for_annual_documents():
     assert not document_period_of(title="Annual Report 2025", url=None, extraction=None).is_known
     assert date(2026, 1, 1)  # keep the import honest
+
+
+# ── Round 3 re-probe ─────────────────────────────────────────────────────────── #
+
+
+def _validate_ctx(rows, *, title, **context):
+    extraction = PrimaryDocumentExtraction(
+        content_hash="x" * 64, mime_type="application/pdf", extraction_method="native_pdf",
+        status="extracted",
+        tables=[ExtractedTable(table_location="p3:t0", table_index=0, page_number=3,
+                               rows=rows, row_count=len(rows), col_count=len(rows[0]))])
+    return validate_extracted_facts(
+        extraction,
+        issuer_context=IssuerContext(company_name="EXAMPLE LTD", bare_dollar_is_usd=False,
+                                     **context),
+        cfg=CFG, title_only_period=True, document_title=title)
+
+
+DEC_ROWS = [["", "31 Dec 2025 A$'000", "31 Dec 2024 A$'000"],
+            ["Loss for the half-year", "(1,500)", "(1,100)"],
+            ["Net cash used in operating activities", "(1,400)", "(900)"]]
+
+
+class TestRound3HalfYearWithAnAtypicalTitle:
+    @pytest.mark.parametrize("title", ["Financial Report 31 December 2025", "Accounts"])
+    def test_the_listings_part_year_classification_reaches_validation(self, title):
+        assert _validated(_validate_ctx(DEC_ROWS, title=title)), "control: no signal"
+        assert _validated(_validate_ctx(DEC_ROWS, title=title, part_year_document=True)) == []
+
+    @pytest.mark.parametrize("title", ["Financial Report 31 December 2025", "Accounts"])
+    def test_an_asx_december_column_needs_an_annual_signal(self, title):
+        assert _validated(_validate_ctx(DEC_ROWS, title=title, venue="AU")) == []
+
+    def test_an_asx_december_year_end_annual_report_still_reads(self):
+        facts = _validate_ctx(DEC_ROWS, title="Annual Report 2025", venue="AU")
+        assert {f.period for f in _validated(facts)} == {"2025", "2024"}
+        rows = [["", "Year ended 31 Dec 2025 A$'000"], ["Loss for the year", "(1,500)"]]
+        assert _validated(_validate_ctx(rows, title="Accounts", venue="AU"))
+
+    def test_the_listing_classification_helper(self):
+        from app.services.sources.disclosures.acquisition import is_part_year_listing
+
+        assert is_part_year_listing("interim_report", "Accounts")
+        assert is_part_year_listing("results_release", "Quarterly Activities Report")
+        assert not is_part_year_listing("results_release", "Full Year Results 2025")
+        assert not is_part_year_listing("annual_report", "Annual Report")
+
+    async def test_the_cached_path_reads_the_listing_classification(self):
+        from types import SimpleNamespace
+
+        from app.services.extracted_document_service import (
+            _context_for_document,
+            _part_year_by_listing,
+        )
+
+        class _Session:
+            async def execute(self, *_a, **_k):  # noqa: ANN202
+                return SimpleNamespace(scalars=lambda: SimpleNamespace(
+                    all=lambda: ["interim_report"]))
+
+        doc = SimpleNamespace(content_hash="h", title="Accounts",
+                              source_type="asx_announcement")
+        assert await _part_year_by_listing(_Session(), doc)
+        assert _context_for_document(doc, None).venue == "AU"
+
+    @pytest.mark.parametrize("title", ["Annual Report 2025 including fourth quarter review",
+                                       "Full Year Results compared with the half year"])
+    def test_an_annual_title_with_a_part_year_word_is_annual(self, title):
+        assert not title_states_part_year(title)
+
+
+class TestRound3ProseBinding:
+    def test_a_trailing_year_after_another_value_is_not_this_values(self):
+        f = _prose("Net loss narrowed to £3.2m from £4.0m in 2024.")
+        assert f["net_income"].period is None
+
+    @pytest.mark.parametrize("text,period", [
+        ("Net loss of £3.2m for the year ended 31 December 2025 compared with £2.1m in 2024.",
+         "2025"),
+        ("Revenue for 2025 increased to £4.2m (2024: £3.1m), while the loss for the year "
+         "was £1.0m in 2025.", "2025"),
+        ("Revenue of £4.2m in FY2025 compared with £3.1m in FY2024.", "2025"),
+    ])
+    def test_the_values_own_year_is_kept(self, text, period):
+        facts = _prose(text)
+        assert all(f.period == period for k, f in facts.items() if k in ("revenue",
+                                                                          "net_income"))
+        assert {"revenue", "net_income"} & set(facts)
+
+
+class TestRound3ThirdPartyMiningText:
+    REFINERY_TEXT = [
+        "Our lithium hydroxide refinery reached FID after the DFS; we signed a binding "
+        "offtake agreement.",
+        "The refinery takes feedstock from a supplier whose Ore Reserve was reported in "
+        "accordance with the JORC Code.",
+        "MinRes reported a Mineral Resource estimate for its mine; we are its offtake partner.",
+    ]
+
+    def test_third_party_reporting_is_not_the_issuers_mining_evidence(self):
+        out = assess(_loss_two_years(), self.REFINERY_TEXT, has_commodity=True,
+                     issuer_name="Example Lithium Limited")
+        assert out.signals == ()
+
+    def test_one_attributed_sentence_needs_a_mining_classification(self):
+        from app.services.classification.stage import attributed_code_sentences
+
+        texts = ["Example Lithium's Mineral Resource estimate was updated in 2025, "
+                 "ahead of the DFS."]
+        assert attributed_code_sentences(texts, "Example Lithium Limited") == 1
+        facts = [*_loss_two_years(), {"field": "exploration_capitalised",
+                                      "numeric_value": 500, "period": "2025"}]
+        assert assess(facts, texts, has_commodity=True,
+                      issuer_name="Example Lithium Limited").signals == ()
+        assert SIGNAL_DEVELOPMENT_STAGE in assess(
+            facts, texts, has_commodity=True, issuer_name="Example Lithium Limited",
+            mining_sector=True).signals
+
+
+class TestRound3HeaderScale:
+    def test_a_data_cell_does_not_scale_the_table(self):
+        rows = [["", "2025 US$", "2024 US$"],
+                ["Loss for the year", "(3,265,409)", "(2,104,000)"],
+                ["Loans repayable within 12m", "500,000", "-"],
+                ["Shares (millions)", "120", "100"]]
+        facts = _validate(rows)
+        assert all(f.scale is None for f in facts)
+
+    def test_a_header_units_cell_still_scales(self):
+        rows = [["(in millions of euros)", "2025", "2024"], ["Revenue", "12,000", "10,000"]]
+        assert {f.scale for f in _validate(rows) if f.label == "revenue"} == {"million"}

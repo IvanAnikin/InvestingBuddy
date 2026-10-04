@@ -995,6 +995,46 @@ _TRAILING_YEAR_RE = re.compile(
 )
 
 
+#: A money amount in prose: "£4.0m", "US$ 3.1 billion", "EUR 22,420 million".
+_MONEY_AMOUNT_RE = re.compile(
+    r"(?:[€£$]|\b(?:EUR|GBP|USD|AUD|CHF|DKK)\s?)\s?\d"
+    r"|\d[\d.,]*\s?(?:m|bn|mn|million|billion)\b",
+    re.IGNORECASE,
+)
+
+
+def _own_period(text: str, match: "re.Match[str]", *, local_only: bool) -> str | None:
+    """The period of THIS value (track C review round 3, H1).
+
+    A year directly after the value ("… £1.2m in 2024") is its period. Otherwise the
+    nearest-year rule applies — unless that year sits AFTER another money value later
+    in the same sentence ("Net loss narrowed to £3.2m from £4.0m in 2024"): then the
+    year belongs to that other value, and this one has no period of its own."""
+    trailing = _trailing_year(text, match.end())
+    if trailing:
+        return trailing
+    period = _period_near(text, match.start(), local_only=local_only)
+    if not period:
+        return period
+    year = _YEAR_RE.search(period)
+    if year is None:
+        return period
+    # The year stated BEFORE the value in its own sentence ("Revenue for 2025 increased
+    # to £4.2m …") is the value's own, whatever follows.
+    start = 0
+    for found_boundary in _SENTENCE_BOUNDARY_RE.finditer(text, 0, match.start()):
+        start = found_boundary.end()
+    if re.search(rf"\b{year.group(0)}\b", text[start: match.start("num")]):
+        return period
+    # A decimal point ("£4.0m") is not a sentence end: a terminator followed by space is.
+    boundary = _SENTENCE_BOUNDARY_RE.search(text, match.end())
+    rest = text[match.end(): boundary.start() if boundary else len(text)]
+    found = re.search(rf"\b{year.group(0)}\b", rest)
+    if found and _MONEY_AMOUNT_RE.search(rest[: found.start()]):
+        return None
+    return period
+
+
 def _trailing_year(text: str, end: int) -> str | None:
     """The year directly after a value in its own clause ("… £1.2m in 2024"), or None."""
     m = _TRAILING_YEAR_RE.match(text, end)
@@ -1304,8 +1344,7 @@ def _parse_excerpt(
                 scope=_infer_prose_scope(sentence),
                 # Review round 2, H5 — "… of US$1.2m in 2024": a year that follows the
                 # value in its own clause is that value's period.
-                period=_trailing_year(text, m.end())
-                or _period_near(text, m.start(), local_only=local_period_only),
+                period=_own_period(text, m, local_only=local_period_only),
                 source_url=source_url,
                 excerpt_id=excerpt.excerpt_id,
                 page_number=excerpt.page_number,

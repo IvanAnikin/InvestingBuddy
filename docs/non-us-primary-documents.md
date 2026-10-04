@@ -293,6 +293,20 @@ ambiguous nothing is validated:
 - **"Not reported by issuer"** additionally needs a COMPLETE listing: every ASX year page
   in the window read and no refused NSM / ASX row (`listing_complete`).
 
+**Review round 3.** The listing's own classification (interim report, or a results
+release that is not the full-year results) reaches validation on both the live and the
+cached path (`IssuerContext.part_year_document`), whatever the title says; for an ASX
+issuer (`IssuerContext.venue = "AU"`, where June fiscal years are common) a December-dated
+column is a full year only with an annual title or "year ended" in the header. A title
+that states an annual report or full-year results is annual even if it also mentions a
+quarter or half. In prose, a year after ANOTHER money value later in the sentence ("Net
+loss narrowed to £3.2m from £4.0m in 2024") is that value's, not this one's. A table's
+scale comes from its header / units rows only, never from a data cell ("within 12m",
+"Shares (millions)"). The stage detector counts a mining reporting-code statement only
+when it is about the issuer or its own project (we / our / the Company / the Project /
+the issuer's name) and never in a supplier, partner, customer, feedstock or third-party
+sentence; it needs two such sentences, or one plus a mining industry classification.
+
 **Cash runway.** `cash_runway_quarters` (calculation definition v1) = cash ÷
 (−(operating cash flow − |capex|) ÷ quarters in the period). Refused unless the three
 inputs share one period, scope and currency, unless the period is a year, half or quarter,

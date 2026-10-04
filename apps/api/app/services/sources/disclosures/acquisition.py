@@ -505,8 +505,12 @@ async def ensure_disclosure_evidence(
         artifact = await extractor(
             url, allowed_domains=(host,), title_hint=_title(document),
             # A bare "$" in an ASX / LSE announcement is not known to be US dollars.
-            issuer_context=IssuerContext(company_name=issuer.name, ticker=issuer.ticker,
-                                         bare_dollar_is_usd=False),
+            issuer_context=IssuerContext(
+                company_name=issuer.name, ticker=issuer.ticker, bare_dollar_is_usd=False,
+                # Track C review round 3, H2 — the listing's own classification and the
+                # venue reach validation, whatever the title says.
+                part_year_document=is_part_year_listing(document.doc_kind, document.headline),
+                venue=issuer.venue),
             cfg=_extraction_cfg(cfg), period_policy=PERIOD_POLICY_TITLE_ONLY,
             published_at=document.published_on,
         )
@@ -667,6 +671,15 @@ _ANNUAL_EVIDENCE_RE = re.compile(
     r"|\b(?:annual|full[- ]year|final|preliminary)\s+(?:results|accounts)\b",
     re.I,
 )
+
+
+def is_part_year_listing(doc_kind: str | None, headline: str | None) -> bool:
+    """The listing classified this as an interim report, or a results release that is
+    not the full-year results."""
+    from app.services.sources.disclosures.relevance import is_full_year_results
+
+    return doc_kind == DOC_KIND_INTERIM_REPORT or (
+        doc_kind == DOC_KIND_RESULTS_RELEASE and not is_full_year_results(headline))
 
 
 def _listing_coverage(listing: DisclosureListing, window_days: int | None = None) -> dict[str, Any]:

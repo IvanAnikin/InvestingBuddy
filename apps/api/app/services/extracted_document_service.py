@@ -973,13 +973,39 @@ def _context_for_document(
     cash equivalents of $3.8 million" (Australian dollars) as USD under the default
     context and stamped the row current, so the corrected reading never ran.
     """
-    from app.services.sources.disclosure_period_policy import is_title_only
+    from app.services.sources.disclosure_period_policy import (
+        SOURCE_TYPE_ASX_ANNOUNCEMENT,
+        is_title_only,
+    )
     from app.services.sources.extracted_fact_validator import IssuerContext
 
     context = issuer_context or IssuerContext()
     if is_title_only(source_type=doc.source_type):
-        return context.model_copy(update={"bare_dollar_is_usd": False})
+        update: dict = {"bare_dollar_is_usd": False}
+        if doc.source_type == SOURCE_TYPE_ASX_ANNOUNCEMENT:
+            update["venue"] = "AU"  # track C review round 3, H2 — as on the live path
+        return context.model_copy(update=update)
     return context
+
+
+async def _part_year_by_listing(session: Any, doc: ExtractedDocument) -> bool:
+    """Whether the listing classified this stored document as part-year (round 3, H2):
+    the ingestion attempt keeps the listing's ``doc_kind``. Never raises."""
+    try:
+        from sqlalchemy import select
+
+        from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+        from app.services.sources.disclosures.acquisition import is_part_year_listing
+
+        kinds = (await session.execute(
+            select(DocumentIngestionAttempt.doc_kind).where(
+                DocumentIngestionAttempt.content_hash == doc.content_hash,
+                DocumentIngestionAttempt.doc_kind.is_not(None),
+            )
+        )).scalars().all()
+    except Exception:  # noqa: BLE001
+        return False
+    return any(is_part_year_listing(kind, doc.title) for kind in kinds)
 
 
 async def _attempt_full_reextraction(
@@ -1177,9 +1203,12 @@ async def _revalidate_document(
     # path as on the live one, or a reused document would re-derive different
     # periods than a fresh extraction of the identical bytes — the cache
     # round-trip defect class this campaign already paid for once with scope.
+    context = _context_for_document(doc, issuer_context)
+    if await _part_year_by_listing(session, doc):
+        context = context.model_copy(update={"part_year_document": True})
     validated_facts = validate_extracted_facts(
         extraction,
-        issuer_context=_context_for_document(doc, issuer_context),
+        issuer_context=context,
         cfg=cfg,
         # Same policy on the cached path as the live one — keyed by the persisted
         # source type, so an announcement reused from the cache keeps title-only.

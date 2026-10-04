@@ -267,28 +267,74 @@ def project_terms(texts: list[str]) -> list[str]:
     return found
 
 
+#: Track C review round 3, H3 — who a sentence is about. A reporting-code statement
+#: counts as the ISSUER'S mining evidence only when attributed to it or its own
+#: project, and never in a supplier / partner / customer / feedstock context.
+_ATTRIBUTION_RE = re.compile(r"\b(?:we|our)\b|\bthe\s+(?:Company|Group|Project)\b",
+                             re.IGNORECASE)
+_THIRD_PARTY_RE = re.compile(
+    r"\b(?:suppliers?|partners?|customers?|offtakers?|feedstock|third[- ]part(?:y|ies)"
+    r"|counterpart(?:y|ies)|vendors?|purchasers?|buyers?|toll(?:ing)?\s+treat\w*)\b",
+    re.IGNORECASE,
+)
+_LEGAL_SUFFIX_RE = re.compile(
+    r"\b(?:limited|ltd|plc|inc|incorporated|corp|corporation|n\.?l\.?|pty|holdings|group"
+    r"|company|co)\b\.?", re.IGNORECASE)
+#: Attributed reporting-code sentences needed WITHOUT a mining industry classification.
+MIN_ATTRIBUTED_CODE_SENTENCES = 2
+
+
+def _issuer_stem(issuer_name: str | None) -> str | None:
+    stem = " ".join(_LEGAL_SUFFIX_RE.sub(" ", issuer_name or "").split())
+    return stem if len(stem) >= 4 else None
+
+
+def attributed_code_sentences(texts: list[str], issuer_name: str | None = None) -> int:
+    """How many non-negated sentences state a mining reporting-code term ABOUT the
+    issuer or its own project, outside any third-party context. Pure."""
+    stem = _issuer_stem(issuer_name)
+    stem_re = re.compile(rf"\b{re.escape(stem)}\b", re.IGNORECASE) if stem else None
+    count = 0
+    for text in texts:
+        for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+            if not sentence or _NEGATION_RE.search(sentence) or _THIRD_PARTY_RE.search(sentence):
+                continue
+            if not (_ATTRIBUTION_RE.search(sentence) or (stem_re and stem_re.search(sentence))):
+                continue
+            if any(pattern.search(sentence) for name, pattern in _PROJECT_TERMS
+                   if name in MINING_CODE_TERMS):
+                count += 1
+    return count
+
+
 def assess(
     facts: list[dict[str, Any]],
     texts: list[str],
     *,
     has_commodity: bool,
     mining_sector: bool = False,
+    issuer_name: str | None = None,
 ) -> StageAssessment:
     """The pure decision. See the module docstring for the rule."""
     p1, p1_basis, refs = assess_revenue(facts)
     p2, p2_basis = assess_spend(facts, texts)
     terms = project_terms(texts)
-    codes = [t for t in terms if t in MINING_CODE_TERMS]
-    p3 = len(terms) >= MIN_PROJECT_TERMS and bool(codes)
-    mining = bool(codes) or mining_sector
+    attributed = attributed_code_sentences(texts, issuer_name)
+    codes = [t for t in terms if t in MINING_CODE_TERMS] if attributed else []
+    p3 = len(terms) >= MIN_PROJECT_TERMS and attributed >= 1
+    own_mining_reporting = attributed >= MIN_ATTRIBUTED_CODE_SENTENCES or (
+        attributed >= 1 and mining_sector)
+    mining = own_mining_reporting or mining_sector
     out = StageAssessment(
         proofs={"mining_evidence": mining, "no_or_immaterial_revenue": p1,
                 "exploration_or_development_spend": p2,
                 "project_disclosure_vocabulary": p3},
         evidence_refs=refs,
     )
-    if codes:
-        out.basis.append(f"mining reporting code terms: {', '.join(codes)}")
+    if own_mining_reporting:
+        out.basis.append(
+            f"mining reporting code terms attributed to the issuer in {attributed} "
+            f"sentence(s): {', '.join(codes)}")
     elif mining_sector:
         out.basis.append("classified in a mining industry")
     if p1_basis:
@@ -300,7 +346,7 @@ def assess(
     signals: list[str] = []
     if mining and p1 and (p2 or p3):
         signals.append(SIGNAL_DEVELOPMENT_STAGE)
-    if codes and has_commodity:
+    if own_mining_reporting and has_commodity:
         signals.append(SIGNAL_RESOURCE_EXTRACTION)
     out.signals = tuple(signals)
     if not signals:
@@ -341,12 +387,15 @@ async def detect_stage(
         return StageAssessment(reason=f"stage evidence unreadable ({type(exc).__name__})")
     commodities = list(getattr(subject_profile, "commodities", None) or [])
     return assess(facts, [str(t or "") for t in texts], has_commodity=bool(commodities),
-                  mining_sector=mining_sector)
+                  mining_sector=mining_sector,
+                  issuer_name=str(getattr(company, "name", "") or "") or None)
 
 
 __all__ = [
     "IMMATERIAL_REVENUE_SHARE",
     "MINING_CODE_TERMS",
+    "MIN_ATTRIBUTED_CODE_SENTENCES",
+    "attributed_code_sentences",
     "MIN_PROJECT_TERMS",
     "SIGNAL_DEVELOPMENT_STAGE",
     "SIGNAL_RESOURCE_EXTRACTION",
