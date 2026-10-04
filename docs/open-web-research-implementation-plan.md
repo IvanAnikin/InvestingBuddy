@@ -516,6 +516,31 @@ from page text is a claim.* It may only reduce independence.
   from the evidence (no clock); verified leads use the stored version's class/origin, an
   unresolved lead is one shared non-independent origin; lead strings are rendered and
   capped like chunks.
+**W4 verification round (principle: when in doubt, understate independence and never
+link).**
+
+- *Independence-bearing* (`trust.bears_independence`): the run's verified issuer (one
+  origin), or a page with a known non-weak class that is not an issuer-voice / filing
+  class, from a verified non-wire publisher. Wire / RNS / ASX / open-submission hosts
+  (and the opaque `unknown:` token that stands in for them), unresolved leads (no class),
+  weak classes and unverified claims never are. Corroboration needs two independence keys
+  AND two verified publishers, one not the issuer, computed order-independently.
+  Understated by design: a subsidiary's brand domain, a syndicated issuer release.
+- Only the VERIFIED issuer's page is "company says"; a page that claims the issuer's text
+  is one unverified source. A claimed origin on a wire host has the page as its
+  publisher, so two releases on one wire can still contradict.
+- Filing/exchange header authorship: the issuer's full name OPENS the first line, the
+  document was ingested for the run's company, and the header is not the issuer as the
+  object of an act ("Name of Issuer", "proposal / offer / bid for X").
+- Near-duplicate linking is `dedup.safe_to_link`: equal token sequences, or differences
+  confined to ordinary words (no digit, FY/H1/Q token, negation, direction/trend word,
+  re-ordering; at most 40 changed tokens). A PR-wire host ranks below an issuer's own
+  domain and the filing classes, and a document with a verified `issuer:<id>` origin links
+  only to a candidate with that same origin.
+- Primary pack items: a web item with no origin is not primary; platform evidence is
+  flagged. The contradiction scan also reads findings with no `claim_key` (classified
+  from their text, same bound).
+
 - Known limits: `resolve_support` cannot know `via_subject` for a PRIOR finding's items;
   "(Reuters)" in a wire's own lead on a verified Reuters host is still a claim.
 

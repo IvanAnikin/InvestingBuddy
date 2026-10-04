@@ -272,3 +272,32 @@ class TestNearDuplicatePrefilterOnPostgres:
                 ) == []
         finally:
             await engine.dispose()
+
+
+@requires_postgres
+class TestLegacyRowsAreStillCompared:
+    async def test_a_prior_finding_with_no_claim_key_is_compared(self) -> None:
+        engine = create_async_engine(POSTGRES_URL, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with maker() as session:
+                run = await ledger.open_run(session, mode="standard")
+                legacy = await ledger.record_finding(
+                    session, run, statement="Revenue for FY2025 was US$1.20 billion.",
+                    evidence_ids=["fact-1"], claim_key=None, period_key="FY2025",
+                    support=[trust.SupportItem("fact-1", "issuer_filing", ISSUER_ORIGIN)],
+                    issuer_key=ISSUER_KEY,
+                )
+                assert legacy.claim_key is None
+                web = await ledger.record_finding(
+                    session, run, statement="Revenue for FY2025 was US$9.00 billion.",
+                    evidence_ids=["ev:x:p"], claim_key=rf.claim_key_for(
+                        "Revenue for FY2025 was US$9.00 billion."),
+                    period_key="FY2025",
+                    support=[_web("ev:x:p", "major_financial_press", "reuters.com")],
+                    issuer_key=ISSUER_KEY,
+                )
+                assert web._trust_outcome.contradictions == ["metric:revenue"]  # type: ignore[attr-defined]
+                await session.rollback()
+        finally:
+            await engine.dispose()

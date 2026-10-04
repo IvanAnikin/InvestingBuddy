@@ -1093,6 +1093,7 @@ def _compose_pack(
                 claim_keys=claim_keys_for(item.text),
                 injection_suspect=item.injection_suspect,
                 via_subject=item.via_subject,
+                platform=not item.web,
             )
             for item in prose
         ],

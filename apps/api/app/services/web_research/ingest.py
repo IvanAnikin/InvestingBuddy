@@ -413,6 +413,7 @@ async def store_web_document(
             text=extraction.main_text,
             source_class=classification.source_class,
             rel_canonical=getattr(prepared.fetched, "rel_canonical", None),
+            company_id=company_id,
         ),
         simhash=extraction.simhash,
         text=extraction.main_text,

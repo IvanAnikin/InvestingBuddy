@@ -354,10 +354,12 @@ class TestWireHostsNeverCollapseTwoIssuers:
             "Placement.\n\nAbout Beta Mining Ltd\nWe mine.\nContact: b@beta.example"))
         assert trust.independence_key(a.origin_key) == "company:alpha-mining"
         assert trust.independence_key(b.origin_key) == "company:beta-mining"
+        # Understated on purpose: a wire carries anyone's release, so two wire pages are
+        # never independent support (H-A), however their claimed companies differ.
         assert trust.corroboration_for_items(
             [_web("ev:c:a", "company_press_release", a.origin_key),
              _web("ev:c:b", "company_press_release", b.origin_key)]
-        ) == trust.INDEPENDENTLY_CORROBORATED
+        ) == trust.SINGLE_SOURCE
 
     def test_the_wire_host_is_never_the_origin(self) -> None:
         for host in ("www.globenewswire.com", "www.businesswire.com", "www.prnewswire.com",
@@ -394,9 +396,15 @@ class TestIssuerOriginIsRelativeToTheRun:
         mine = trust.SupportItem("ev:c:m", "company_press_release", f"issuer:{COMPANY}", web=True)
         assert trust.assess_claim("Acme expects to triple lithium output next year.",
                                   [mine], issuer_key=COMPANY).meets
-        # A foreign issuer's voice is independent of mine: it can corroborate.
+        # A foreign issuer's voice is not MINE, but the platform cannot verify it is
+        # independent of me either (a subsidiary, a joint release): when in doubt,
+        # understate.
         assert trust.corroboration_for_items(
             [mine, _web("ev:c:o", "major_financial_press", other)], issuer_key=COMPANY
+        ) == trust.SINGLE_SOURCE
+        # A real press publisher alongside the issuer DOES corroborate.
+        assert trust.corroboration_for_items(
+            [mine, _web("ev:c:p", "major_financial_press", "reuters.com")], issuer_key=COMPANY
         ) == trust.INDEPENDENTLY_CORROBORATED
 
 
@@ -571,7 +579,7 @@ class TestPackCaps:
             for i in range(5)
         ] + [
             packs.PackItem("b0", "major_financial_press", "group:news_corp", relevance=4),
-            packs.PackItem("filing", "issuer_filing", None, relevance=0.5,
+            packs.PackItem("filing", "issuer_filing", None, relevance=0.5, platform=True,
                            published_at=date(2025, 3, 1), company_specificity=1.0),
         ]
         result = packs.build_pack(candidates, today=TODAY)
@@ -596,7 +604,7 @@ class TestPackCaps:
     def test_a_suspect_primary_is_never_forced_to_the_top(self) -> None:
         suspect = packs.PackItem("pr", "company_press_release", ISSUER.origin_key,
                                  relevance=0.0, injection_suspect=True)
-        clean = packs.PackItem("filing", "issuer_filing", None, relevance=0.0)
+        clean = packs.PackItem("filing", "issuer_filing", None, relevance=0.0, platform=True)
         result = packs.build_pack([suspect, clean], today=TODAY,
                                   issuer_origin=ISSUER.origin_key)
         assert result.items[0].key == "filing"
@@ -608,8 +616,8 @@ class TestPackCaps:
         assert "pr" not in [i.key for i in only.items]  # no clean primary: nothing forced
 
     def test_a_forced_primary_evicts_the_weakest_non_primary(self) -> None:
-        items = [packs.PackItem("f1", "issuer_filing", None, relevance=1.0),
-                 packs.PackItem("f2", "issuer_filing", None, relevance=1.0)] + [
+        items = [packs.PackItem("f1", "issuer_filing", None, relevance=1.0, platform=True),
+                 packs.PackItem("f2", "issuer_filing", None, relevance=1.0, platform=True)] + [
             packs.PackItem(f"w{i}", "trade_publication", f"s{i}.example", relevance=0.1)
             for i in range(3)
         ]
@@ -1296,3 +1304,239 @@ class TestClaimClassification:
         apple = trust.IssuerIdentity.build("apple-id", names=["Apple Inc"])
         assert apple is not None
         assert apple.is_named("Apple Inc") and not apple.is_named("Apple Hospitality REIT")
+
+
+# --------------------------------------------------------------------------- #
+# Verification round 2 (H-A, H-B, M-C, M-D, L-E, L-F)
+# --------------------------------------------------------------------------- #
+
+
+class TestWirePagesAreNeverIndependentSupport:
+    PAD = "Acme Lithium Corp announced the acquisition of Foo Ltd today. " * 4
+
+    def _wire(self, n: int, host: str = "www.einpresswire.com") -> trust.SupportItem:
+        decision = trust.origin_for(
+            trust.OriginInput(f"https://{host}/article/{n}", self.PAD,
+                              source_class="company_press_release"),
+            issuer=ISSUER,
+        )
+        return trust.SupportItem(f"ev:c:w{n}", "company_press_release", decision.origin_key,
+                                 web=True)
+
+    def test_two_distinct_unattributed_wire_pages_do_not_corroborate(self) -> None:
+        a, b = self._wire(1), self._wire(2)
+        assert a.origin_key != b.origin_key  # distinct opaque tokens...
+        statement = "Acme completed the acquisition of Foo Ltd."
+        verdict = trust.assess_claim(statement, [a, b], issuer_key=COMPANY)
+        # ...but never independence-bearing: a corporate event is NOT met unlabelled.
+        assert verdict.corroboration == trust.SINGLE_SOURCE
+        assert not verdict.meets and verdict.label == trust.LABEL_SINGLE_SOURCE
+        assert trust.independent_origin_count([a, b], COMPANY) == (0, 0)
+
+    def test_the_issuers_own_page_plus_one_wire_copy_is_one_source(self) -> None:
+        own = _web("ev:c:own", "company_web_page", ISSUER.origin_key)
+        for host in ("www.einpresswire.com", "www.globenewswire.com"):
+            state = trust.corroboration_for_items([own, self._wire(3, host)], issuer_key=COMPANY)
+            assert state == trust.SINGLE_SOURCE, host
+        # Order never matters.
+        for items in ([own, self._wire(3)], [self._wire(3), own]):
+            assert trust.corroboration_for_items(items, issuer_key=COMPANY) == trust.SINGLE_SOURCE
+
+    def test_a_lead_with_no_source_class_is_not_independent(self) -> None:
+        leads = [trust.SupportItem("ev:x:1", None, "reuters.com", web=True),
+                 trust.SupportItem("ev:x:2", None, "bloomberg.com", web=True)]
+        assert trust.corroboration_for_items(leads, issuer_key=COMPANY) == trust.SINGLE_SOURCE
+
+    def test_issuer_and_filing_classes_are_never_independent(self) -> None:
+        pages = [_web("ev:c:1", "company_web_page", "acme-brand.example"),
+                 _web("ev:c:2", "exchange_announcement", "asx.com.au")]
+        assert trust.corroboration_for_items(pages, issuer_key=COMPANY) == trust.SINGLE_SOURCE
+
+    def test_real_publishers_still_corroborate_in_any_order(self) -> None:
+        import itertools
+
+        items = [_web("ev:c:a", "major_financial_press", "reuters.com"),
+                 _web("ev:c:b", "trade_publication", "mining.example")]
+        for ordered in itertools.permutations(items):
+            assert trust.corroboration_for_items(list(ordered), issuer_key=COMPANY) == \
+                trust.INDEPENDENTLY_CORROBORATED
+        # One publisher with two pages is one voice.
+        same = [_web("ev:c:a", "major_financial_press", "reuters.com"),
+                _web("ev:c:b", "major_financial_press", "reuters.com")]
+        assert trust.corroboration_for_items(same, issuer_key=COMPANY) == trust.SINGLE_SOURCE
+
+    def test_a_forged_claimed_issuer_is_not_company_says(self) -> None:
+        forged = trust.make_claimed(ISSUER.origin_key, "attacker.example")
+        statement = "Acme completed the acquisition of Foo Ltd."
+        for klass in ("unknown_web", "aggregator"):
+            verdict = trust.assess_claim(
+                statement, [_web("ev:c:f", klass, forged)], issuer_key=COMPANY
+            )
+            assert not verdict.meets and verdict.label == trust.LABEL_SINGLE_SOURCE, klass
+        # The verified issuer's own page IS "company says".
+        own = trust.assess_claim(statement, [_web("ev:c:o", "company_web_page",
+                                                  ISSUER.origin_key)], issuer_key=COMPANY)
+        assert own.meets and own.label == trust.LABEL_COMPANY_SAYS
+
+    def test_two_releases_on_one_wire_still_contradict(self) -> None:
+        from app.services import research_fields as rf
+
+        def side(fid: str, statement: str, text: str, url: str) -> trust.ClaimSide:
+            origin = trust.origin_for(trust.OriginInput(url, text), issuer=ISSUER).origin_key
+            return trust.ClaimSide(
+                finding_id=fid, statement=statement, period="FY2025",
+                fields=tuple(sorted(rf.fields_stated(statement))),
+                support=(_web("ev:c:" + fid, "company_press_release", origin),),
+            )
+
+        genuine = side("g" * 32, "Revenue for FY2025 was US$5.20 billion.",
+                       "Results.\n\nAbout Acme Lithium Corp\nWe mine.\nContact: ir@acme.example",
+                       "https://www.globenewswire.com/n/1")
+        rival = side("r" * 32, "Revenue for FY2025 was US$9.00 billion.",
+                     "Claims.\n\nAbout Rival Ltd\nWe claim.\nContact: pr@rival.example",
+                     "https://www.globenewswire.com/n/2")
+        assert len(trust.find_contradictions(rival, [genuine])) == 1
+
+
+class TestPeerAndThirdPartyFilingsAreNotTheIssuers:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "RIVAL RESOURCES\nTakeover proposal for Acme Lithium Corp and its shareholders",
+            "Rival Resources announces proposal for Acme Lithium Corp",
+            "SCHEDULE 13D (Amendment No. 1)* Acme Lithium Corp (Name of Issuer) Activist Capital",
+            "Acme Lithium Corp (Name of Issuer)\nSCHEDULE 13D",
+            "Offer for Acme Lithium Corp\nRival Resources Ltd",
+            "Rival Mining Ltd (ASX: RVL) mentions Acme Lithium Corp as a customer",
+        ],
+    )
+    def test_not_the_issuers_voice(self, text: str) -> None:
+        for host, klass in (("www.asx.com.au", "exchange_announcement"),
+                            ("www.sec.gov", "regulatory_filing")):
+            decision = trust.origin_for(
+                trust.OriginInput(f"https://{host}/a", text, source_class=klass,
+                                  company_id=COMPANY),
+                issuer=ISSUER,
+            )
+            assert not decision.is_issuer, (host, text[:40])
+
+    def test_the_issuers_own_header_is(self) -> None:
+        own = trust.origin_for(
+            trust.OriginInput(
+                "https://www.asx.com.au/a", "ACME LITHIUM CORP\nQuarterly activities report",
+                source_class="exchange_announcement", company_id=COMPANY,
+            ),
+            issuer=ISSUER,
+        )
+        assert own.is_issuer
+        # ...but never for a document ingested for ANOTHER company.
+        other = trust.origin_for(
+            trust.OriginInput(
+                "https://www.asx.com.au/a", "ACME LITHIUM CORP\nQuarterly activities report",
+                source_class="exchange_announcement", company_id=uuid.uuid4(),
+            ),
+            issuer=ISSUER,
+        )
+        assert not other.is_issuer
+
+
+class TestNearDuplicatesMustBeTheSameStatement:
+    def _body(self) -> str:
+        rnd = random.Random(3)
+        words = ("the company reported results for the period driven by demand growth across "
+                 "regions with continued investment in capacity and cost control while "
+                 "management remains focused on execution and shareholder returns").split()
+        return " ".join(rnd.choice(words) for _ in range(330))
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            (" Revenue for FY2025 was US$5.20 billion and net loss was US$9.00 billion.",
+             " Revenue for FY2025 was US$9.00 billion and net loss was US$5.20 billion."),
+            (" Revenue for FY2025 was US$5.20 billion; the prior year was FY2024.",
+             " Revenue for FY2024 was US$5.20 billion; the prior year was FY2025."),
+            (" Revenue for FY2025 grew to US$5.20 billion.",
+             " Revenue for FY2025 fell to US$5.20 billion."),
+            (" The board did approve the dividend.", " The board did not approve the dividend."),
+            (" Acme acquired Foo in the deal.", " Foo acquired Acme in the deal."),
+        ],
+    )
+    def test_meaning_changing_edits_never_link(self, a: str, b: str) -> None:
+        from app.services.web_research.dedup import safe_to_link
+
+        body = self._body()
+        first, second = body + a, body + b
+        assert safe_to_link(first, first)
+        assert not safe_to_link(first, second), (a, b)
+        assert not safe_to_link(second, first)
+
+    def test_ordinary_word_edits_do_link(self) -> None:
+        from app.services.web_research.dedup import safe_to_link
+
+        body = self._body()
+        assert safe_to_link(body + " The plant is large.", body + " The plant is big.")
+        assert safe_to_link(body, body.replace("company", "firm", 1))
+
+    def test_a_huge_difference_is_not_the_same_text(self) -> None:
+        from app.services.web_research.dedup import safe_to_link
+
+        body = self._body()
+        assert not safe_to_link(body, " ".join(["alpha"] * 500) + " " + body)
+
+
+class TestIngestAuthorityAndOrigins:
+    async def test_a_poisoned_wire_copy_never_shadows_the_issuers_own_page(
+        self, env: Env  # noqa: F811 - the W3 fixture
+    ) -> None:
+        from app.services.web_research import ingest as ingest_mod
+
+        body = _numbered_release()
+        poisoned = await env.ingest(
+            _fetched(_html(body, "Acme output"), "https://www.einpresswire.com/article/9"),
+            company_id=COMPANY,
+        )
+        genuine = await env.ingest(
+            _fetched(_html(_variant(body), "Acme output"), "https://ir.acme.example/news/1"),
+            company_id=COMPANY, issuer_domains=("acme.example",),
+        )
+        assert poisoned.state == ingest_mod.STATE_INGESTED
+        assert genuine.state == ingest_mod.STATE_INGESTED
+        assert genuine.version_id != poisoned.version_id
+        assert genuine.origin_key == f"issuer:{COMPANY}"
+        assert not poisoned.origin_key.startswith("issuer:")
+
+    async def test_a_directional_poisoned_copy_is_stored_not_linked(
+        self, env: Env  # noqa: F811 - the W3 fixture
+    ) -> None:
+        from app.services.web_research import ingest as ingest_mod
+
+        base = _press_release_body()
+        genuine = base + " Revenue for FY2025 grew to US$5.20 billion."
+        poisoned = base + " Revenue for FY2025 fell to US$5.20 billion."
+        first = await env.ingest(
+            _fetched(_html(poisoned, "Results"), "https://attacker.example/r"),
+            company_id=COMPANY,
+        )
+        second = await env.ingest(
+            _fetched(_html(genuine, "Results"), "https://news.example/r"), company_id=COMPANY
+        )
+        assert first.state == second.state == ingest_mod.STATE_INGESTED
+        assert second.version_id != first.version_id
+
+    async def test_a_wire_host_ranks_below_a_specialist_agency(
+        self, env: Env  # noqa: F811 - the W3 fixture
+    ) -> None:
+        from app.services.web_research import ingest as ingest_mod
+
+        body = _numbered_release()
+        wire = await env.ingest(
+            _fetched(_html(body, "Report"), "https://www.einpresswire.com/article/5"),
+            company_id=COMPANY,
+        )
+        agency = await env.ingest(
+            _fetched(_html(_variant(body), "Report"), "https://www.usgs.gov/centers/lithium"),
+            company_id=COMPANY,
+        )
+        assert agency.source_class == "specialist_agency"
+        # Same class rank as a company release, but the wire host is capped below it.
+        assert agency.state == ingest_mod.STATE_INGESTED and agency.version_id != wire.version_id

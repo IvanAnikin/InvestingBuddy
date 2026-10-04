@@ -238,9 +238,28 @@ _AUTHORITY: dict[str, int] = {
     "local_press": 2, "research_consultancy": 2, "aggregator": 1, "unknown_web": 1,
 }
 
+#: A PR wire / open-submission host publishes whatever it is sent (einpresswire takes
+#: third-party submissions outright): whatever its class says, it ranks BELOW an issuer's
+#: own domain and the filing classes, and ties with nobody above the press.
+WIRE_HOST_AUTHORITY = 2
 
-def authority_of(source_class: str | None) -> int:
-    return _AUTHORITY.get(source_class or "", 1)
+
+def authority_of(source_class: str | None, host: str | None = None) -> int:
+    """Authority of a source class, capped for a PR-wire host."""
+    rank = _AUTHORITY.get(source_class or "", 1)
+    if host and _is_wire_host(host):
+        return min(rank, WIRE_HOST_AUTHORITY)
+    return rank
+
+
+def _is_wire_host(host: str) -> bool:
+    from urllib.parse import urlsplit
+
+    from app.services.web_research.trust import PR_WIRE_HOSTS
+
+    name = (urlsplit(host).hostname if "//" in host else host) or ""
+    name = name.lower().strip(".").removeprefix("www.")
+    return any(name == w or name.endswith("." + w) for w in PR_WIRE_HOSTS)
 
 
 #: Least to most restrictive (spec §20.1). Linking keeps the STRICTER of the two.
@@ -270,15 +289,85 @@ _NUMBER_RE = re.compile(r"\d[\d.,]{0,20}")
 
 
 def numeric_signature(text: str | None) -> Counter[str]:
-    """The multiset of numbers in ``text`` (trailing punctuation stripped).
-
-    Two texts that differ only in WORDS may be re-typeset copies; two that differ in a
-    number are different statements — swapping two figures in a 350-word release is a
-    Hamming distance of about 3 (review F2), so SimHash alone must never link them.
-    """
+    """The multiset of numbers in ``text`` (trailing punctuation stripped). Kept as a
+    cheap first filter; the linking decision is :func:`safe_to_link`."""
     folded = unicodedata.normalize("NFKC", text or "")
     tokens = (token.rstrip(".,") for token in _NUMBER_RE.findall(folded))
     return Counter(token for token in tokens if token)
+
+
+#: Tokens whose change CHANGES THE MEANING of a sentence. A SimHash near-duplicate that
+#: differs in any of them is a different statement, not a re-typeset copy: swapping
+#: "FY2025" and "FY2024", or "grew" and "fell", is a Hamming distance of about 3.
+_NEGATIONS = frozenset(
+    "not no never none nor neither without cannot nothing nobody isn aren wasn weren "
+    "don doesn didn won wouldn shouldn couldn hasn haven hadn t".split()
+)
+_DIRECTIONS = frozenset(
+    """grew grow grows growth growing fell fall falls falling decline declined declines
+    declining decrease decreased decreases decreasing increase increased increases
+    increasing rise rose rises rising risen drop dropped drops dropping up down higher
+    lower gain gained gains loss losses lost profit profits profitable surplus deficit
+    positive negative beat beats missed miss above below more less most least highest
+    lowest best worst record strong weak stronger weaker improve improved improves
+    worsen worsened expand expanded expands contract contracted contracts reduce reduced
+    reduces approve approved approves reject rejected rejects win won lose acquire
+    acquired sell sold buy bought raise raised cut""".split()
+)
+_PERIOD_TOKEN_RE = re.compile(r"^(?:fy\d*|h[12]|q[1-4]|[1-4]q|\d+h|ytd|ltm|ttm|cy\d*)$")
+#: How many changed tokens a link may paper over, and how large a differing region the
+#: diff will examine (anything larger is "not the same text": understate).
+MAX_CHANGED_TOKENS = 40
+MAX_DIFF_REGION = 400
+
+
+def _risky_token(token: str) -> bool:
+    return (
+        any(ch.isdigit() for ch in token)
+        or token in _NEGATIONS
+        or token in _DIRECTIONS
+        or bool(_PERIOD_TOKEN_RE.match(token))
+    )
+
+
+def safe_to_link(new_text: str | None, stored_text: str | None) -> bool:
+    """Whether two near-identical texts are the SAME statement (review H-B).
+
+    Yes when their normalised token sequences are equal, or when every difference is
+    confined to ordinary words: no digit, period token (FY2025, H1, Q3), negation or
+    direction/trend word on either side of any difference, and no difference that merely
+    re-orders the same words. A region too large to examine is a "no".
+    """
+    from difflib import SequenceMatcher
+
+    a = normalised_tokens(new_text)
+    b = normalised_tokens(stored_text)
+    if a == b:
+        return True
+    start = 0
+    limit = min(len(a), len(b))
+    while start < limit and a[start] == b[start]:
+        start += 1
+    end = 0
+    while end < limit - start and a[-1 - end] == b[-1 - end]:
+        end += 1
+    mid_a = a[start: len(a) - end]
+    mid_b = b[start: len(b) - end]
+    if len(mid_a) > MAX_DIFF_REGION or len(mid_b) > MAX_DIFF_REGION:
+        return False
+    changed = 0
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, mid_a, mid_b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        removed, added = mid_a[i1:i2], mid_b[j1:j2]
+        changed += len(removed) + len(added)
+        if changed > MAX_CHANGED_TOKENS:
+            return False
+        if any(_risky_token(t) for t in (*removed, *added)):
+            return False
+        if removed and added and Counter(removed) == Counter(added):
+            return False  # the same words in another order
+    return True
 
 
 @dataclass(frozen=True)
@@ -293,6 +382,7 @@ class StoredDuplicate:
     source_class: str | None = None
     use_constraint: str | None = None
     simhash: int | None = None
+    canonical_url: str | None = None
 
 
 def _scope_clauses(company_id: Any, theme_key: str | None) -> tuple[Any, ...] | None:
@@ -359,6 +449,7 @@ async def near_duplicate_rows(
             select(
                 V.id, V.research_document_id, V.origin_key, V.created_at,
                 V.extracted_document_id, V.source_class, V.use_constraint, V.simhash,
+                V.canonical_url,
             )
             .join(D, D.id == V.research_document_id)
             .where(
@@ -375,13 +466,14 @@ async def near_duplicate_rows(
         StoredDuplicate(
             id=r[0], research_document_id=r[1], origin_key=r[2], created_at=r[3],
             extracted_document_id=r[4], source_class=r[5], use_constraint=r[6], simhash=r[7],
+            canonical_url=r[8],
         )
         for r in rows
         if is_near_duplicate(r[7], simhash)
     ]
 
 
-async def _stored_numbers(session: Any, version_id: Any, *, max_chunks: int = 400) -> Counter[str]:
+async def _stored_text(session: Any, version_id: Any, *, max_chunks: int = 400) -> str:
     from sqlalchemy import select
 
     from app.models.research_chunk import ResearchDocumentChunk as C
@@ -394,7 +486,7 @@ async def _stored_numbers(session: Any, version_id: Any, *, max_chunks: int = 40
             .limit(max_chunks)
         )
     ).scalars().all()
-    return numeric_signature("\n".join(texts))
+    return "\n".join(texts)
 
 
 async def find_linkable_duplicate(
@@ -405,29 +497,38 @@ async def find_linkable_duplicate(
     source_class: str | None,
     company_id: Any = None,
     theme_key: str | None = None,
+    new_origin: str | None = None,
+    new_host: str | None = None,
 ) -> StoredDuplicate | None:
     """A stored near-duplicate this document may be LINKED to instead of chunked again.
 
-    All of these must hold (review F2/M7); otherwise the document is stored on its own
-    and the two simply coexist:
+    All of these must hold (review F2/M7/H-B); otherwise the document is stored on its
+    own and the two simply coexist:
 
     * the text is long enough for SimHash to mean something;
     * the candidate is in the same company / theme scope;
-    * the candidate carries IDENTICAL numbers (a poisoned copy with two figures swapped
-      is a different statement, not a duplicate);
-    * the candidate's source class is not of lower authority than the new document's;
+    * the two texts are the SAME statement (:func:`safe_to_link`): equal token
+      sequences, or differences confined to ordinary words — never a digit, period,
+      negation or direction word;
+    * the candidate's authority is not LOWER than the new document's (a PR-wire host
+      ranks below an issuer's own domain and the filing classes);
+    * a document whose origin is the VERIFIED issuer links only to a candidate with that
+      same origin;
     * the earliest-STORED candidate wins, never one chosen by a page-declared date.
     """
     if simhash is None or len(normalised_tokens(text)) < MIN_NEAR_DUPLICATE_TOKENS:
         return None
-    wanted = numeric_signature(text)
-    new_rank = authority_of(source_class)
+    new_rank = authority_of(source_class, new_host)
     for candidate in await near_duplicate_rows(
         session, simhash, company_id=company_id, theme_key=theme_key
     ):
-        if authority_of(candidate.source_class) < new_rank:
+        if authority_of(candidate.source_class, candidate.canonical_url) < new_rank:
             continue
-        if await _stored_numbers(session, candidate.id) == wanted:
+        if new_origin and new_origin.startswith("issuer:") and (
+            candidate.origin_key != new_origin
+        ):
+            continue
+        if safe_to_link(text, await _stored_text(session, candidate.id)):
             return candidate
     return None
 
@@ -484,6 +585,7 @@ __all__ = [
     "find_linkable_duplicate",
     "near_duplicate_rows",
     "numeric_signature",
+    "safe_to_link",
     "stricter_use_constraint",
     "representative_order",
     "same_document",

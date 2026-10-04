@@ -84,6 +84,10 @@ class PackItem:
     injection_suspect: bool = False
     #: Admitted through a subject row (the document MENTIONS the company): never primary.
     via_subject: bool = False
+    #: Platform evidence (a typed fact, the company's own corpus filing) as opposed to an
+    #: open-web item. A web item with NO origin (a legacy version stored before origins
+    #: existed) is not primary: nothing says whose it is.
+    platform: bool = False
 
 
 @dataclass
@@ -107,9 +111,9 @@ def is_primary(item: PackItem, issuer_origin: str | None = None) -> bool:
         return False
     if item.source_class not in FILING_CLASSES and item.source_class not in ISSUER_CLASSES:
         return False
-    return item.origin_key is None or (
-        issuer_origin is not None and item.origin_key == issuer_origin
-    )
+    if item.origin_key is None:
+        return item.platform
+    return issuer_origin is not None and item.origin_key == issuer_origin
 
 
 def source_class_prior(source_class: str | None) -> float:

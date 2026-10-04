@@ -549,9 +549,12 @@ async def _plan_contradictions(
             .where(
                 ResearchFinding.research_run_id == run_id,
                 ResearchFinding.id != uuid.UUID(finding_id),
-                or_(*(
-                    ResearchFinding.claim_key.contains(f, autoescape=True) for f in fields
-                )),
+                or_(
+                    # A finding with no stored claim key is classified from its text
+                    # below (bounded by the same limit), so it is never invisible.
+                    ResearchFinding.claim_key.is_(None),
+                    *(ResearchFinding.claim_key.contains(f, autoescape=True) for f in fields),
+                ),
             )
             .order_by(ResearchFinding.created_at.desc(), ResearchFinding.id.desc())
             .limit(_CONTRADICTION_SCAN_LIMIT)
@@ -576,6 +579,8 @@ async def _plan_contradictions(
     for row in rows:
         row_statement = trust.unlabelled_statement(row.statement)
         row_fields, _project = finding_fields(row_statement, row.claim_key)
+        if not set(row_fields) & set(fields):
+            continue
         row_support = tuple(
             support_by_id[ev] for ev in (row.evidence_ids_json or ()) if ev in support_by_id
         )

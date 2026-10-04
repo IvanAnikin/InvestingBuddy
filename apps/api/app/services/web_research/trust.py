@@ -369,6 +369,13 @@ def _fold_text(text: str) -> str:
     return "".join(ch for ch in folded if not unicodedata.combining(ch))
 
 
+#: The issuer as the OBJECT of another party's act: "Name of Issuer" (a 13D/13G cover),
+#: "proposal for X", "offer for X", "bid for X", "takeover of X", "acquisition of X".
+_OBJECT_OF_ACT_RE = re.compile(
+    r"name of issuer|issuer\)|\b(?:proposal|offer|bid|approach|takeover|acquisition|"
+    r"merger|tender)\s+(?:for|of|to acquire|to buy)\b|\bto (?:acquire|buy|takeover)\b"
+)
+
 #: A legal-entity suffix: another company named earlier in a header.
 _LEGAL_ENTITY_RE = re.compile(
     r"(?<![a-z0-9])(?:ltd|limited|inc|corp|corporation|plc|ag|gmbh|sa|nv|llc|lp|asa|ab|oyj|spa)"
@@ -402,22 +409,31 @@ class IssuerIdentity:
         return slug in own
 
     def authored_in_lead(self, text: str | None, *, limit: int = 400) -> bool:
-        """A FULL name of the issuer stands in the first ``limit`` characters (a filing's
-        header) and no OTHER legal entity is named before it. Used only on hosts the
-        platform already classifies as filings or exchange announcements — the host is
-        the verification, the name picks the issuer. A peer's announcement that merely
-        mentions the issuer names the peer first.
+        """The document is the ISSUER'S OWN: a FULL name of the issuer OPENS its header
+        (the first entity named, at the start of the first line), and the header does not
+        make the issuer the object of someone else's act.
+
+        Used only on hosts the platform already classifies as filings or exchange
+        announcements — the host is the verification, the name picks the issuer. A peer's
+        announcement that merely mentions the issuer, a takeover proposal FOR it, or a
+        13D that lists it as "(Name of Issuer)" are all someone else's documents.
         """
         head = _fold_text((text or "")[:limit])
+        first_line = next((ln for ln in head.splitlines() if ln.strip()), "")
+        opening = re.sub(r"^[\W_]+", "", first_line)
+        if _OBJECT_OF_ACT_RE.search(head):
+            return False
         for name in self.names:
-            words = _name_words(name).split()
-            if len(" ".join(words)) < 5:
-                continue
-            joined = r"[\W_]+".join(re.escape(w) for w in words)
-            pattern = r"(?<![a-z0-9])" + joined + r"(?![a-z0-9])"
-            match = re.search(pattern, head)
-            if match is not None and not _LEGAL_ENTITY_RE.search(head[: match.start()]):
-                return True
+            # The name as registered ("Acme Corp") and without its legal suffix
+            # ("Acme"): the header may print either, but a stripped name must still be
+            # long enough to mean something.
+            raw = re.findall(r"[a-z0-9]+", _fold_text(name))
+            for words in (raw, _name_words(name).split()):
+                if len(" ".join(words)) < 5:
+                    continue
+                joined = r"[\W_]+".join(re.escape(w) for w in words)
+                if re.match(joined + r"(?![a-z0-9])", opening):
+                    return True
         return False
 
     @classmethod
@@ -647,6 +663,9 @@ class OriginInput:
     source_class: str | None = None
     #: The page's ``rel=canonical`` (W2 records it even when it did not honour it).
     rel_canonical: str | None = None
+    #: The company the document was ingested FOR. An issuer origin is only ever minted
+    #: for the run's own company.
+    company_id: Any = None
 
 
 @dataclass(frozen=True)
@@ -700,6 +719,7 @@ def origin_for(doc: OriginInput, *, issuer: IssuerIdentity | None = None) -> Ori
     if (
         issuer is not None
         and doc.source_class in FILING_CLASSES
+        and (doc.company_id is None or str(doc.company_id) == issuer.key)
         and issuer.authored_in_lead(text)
     ):
         return OriginDecision(issuer.origin_key, RULE_ISSUER_SOURCE, domain)
@@ -728,6 +748,11 @@ def _claimed_origin(
     issuer: IssuerIdentity | None,
 ) -> OriginDecision | None:
     publisher = domain or None
+    if host and _on(host, PR_WIRE_HOSTS):
+        # One wire host carries many unrelated issuers: two releases there are NOT one
+        # publisher (a rival's release must not "overlap" the issuer's and hide a
+        # contradiction). The publisher is the page itself.
+        publisher = f"{UNKNOWN_ORIGIN_PREFIX}{_url_token(doc.url)}"
     wire = wire_attribution(text)
     if wire is not None:
         return OriginDecision(make_claimed(wire[0], publisher), RULE_WIRE, wire[1][:60])
@@ -805,6 +830,8 @@ async def document_origin(
         source_class=doc.source_class,
         company_id=company_id,
         theme_key=theme_key,
+        new_origin=own.origin_key,
+        new_host=_host(doc.url),
     )
     if duplicate is None:
         return own, None
@@ -886,14 +913,69 @@ def corroboration_state(
     return SINGLE_SOURCE
 
 
+def is_wire_publisher(publisher: str | None) -> bool:
+    """A PR wire / RNS / ASX feed / open-submission host — or an opaque page token that
+    stands in for one. Such a page can never be independence-bearing: anyone can have a
+    release published there (einpresswire takes third-party submissions outright)."""
+    if not publisher:
+        return False
+    if publisher.startswith(UNKNOWN_ORIGIN_PREFIX):
+        return True
+    return _on(publisher, PR_WIRE_HOSTS)
+
+
+def bears_independence(item: "SupportItem", issuer_key: Any = None) -> bool:
+    """Whether ``item`` counts as an INDEPENDENT origin (when in doubt: it does not).
+
+    Yes for the run's verified issuer (one origin, never an independent one), and for a
+    page with a known, non-weak, non-issuer source class from a VERIFIED non-wire
+    publisher. No for a missing class (an unresolved lead), weak classes, issuer-voice /
+    filing classes (we cannot tell whose they are), unknown or wire-hosted pages.
+    """
+    if is_verified_issuer(item.origin_key, issuer_key):
+        return True
+    if item.source_class is None or item.source_class in WEAK_CLASSES:
+        return False
+    if item.source_class in ISSUER_CLASSES or item.source_class in FILING_CLASSES:
+        return False
+    origin = item.origin_key
+    if not origin or origin.startswith(UNKNOWN_ORIGIN_PREFIX):
+        return False
+    publisher = publisher_of(origin)
+    return bool(publisher) and not is_wire_publisher(publisher) and not str(
+        publisher
+    ).startswith(ISSUER_ORIGIN_PREFIX)
+
+
+def independent_origin_count(
+    items: Sequence["SupportItem"], issuer_key: Any = None
+) -> tuple[int, int]:
+    """``(distinct independence keys, distinct verified publishers)`` among the items
+    that bear independence. Corroboration needs BOTH to reach two: a page's claim can
+    merge origins (fewer keys) but never invent one, and one publisher is one voice."""
+    keys: set[str] = set()
+    publishers: set[str] = set()
+    for item in items:
+        if not bears_independence(item, issuer_key):
+            continue
+        key = independence_key(item.origin_key)
+        publisher = group_origin(publisher_of(item.origin_key))
+        if key:
+            keys.add(key)
+        if publisher:
+            publishers.add(publisher)
+    return len(keys), len(publishers)
+
+
 def corroboration_for_items(
     items: Sequence["SupportItem"], *, issuer_key: Any = None, conflicting: bool = False
 ) -> str | None:
-    """The §14.3 state of a finding's support, from its ITEMS.
+    """The §14.3 state of a finding's support, from its ITEMS (order-independent).
 
-    As :func:`corroboration_state`, except that "independently corroborated" counts only
-    origins of items whose source class is not weak (aggregators and unknown pages are
-    never independent support: two scraper pages are not two sources — review M2).
+    "Independently corroborated" needs two independent origins (see
+    :func:`bears_independence`), at least one of them not the issuer. Understating is the
+    rule: aggregators, unknown pages, wire-hosted pages, unresolved leads and unverified
+    claims never raise the state (review M2, H-A).
     """
     if conflicting:
         return CONFLICTING
@@ -903,12 +985,12 @@ def corroboration_for_items(
         return None
     if all(_is_issuer_key(k, issuer_key) for k in keys):
         return ISSUER_ONLY
-    strong = {
-        independence_key(i.origin_key) for i in items
-        if i.origin_key and i.source_class not in WEAK_CLASSES
-    }
-    strong.discard(None)
-    if len(strong) >= 2 and any(not _is_issuer_key(k, issuer_key) for k in strong):
+    n_keys, n_publishers = independent_origin_count(items, issuer_key)
+    has_non_issuer = any(
+        bears_independence(i, issuer_key) and not is_verified_issuer(i.origin_key, issuer_key)
+        for i in items
+    )
+    if min(n_keys, n_publishers) >= 2 and has_non_issuer:
         return INDEPENDENTLY_CORROBORATED
     return SINGLE_SOURCE
 
@@ -1255,16 +1337,21 @@ NOT_APPLICABLE = ClaimVerdict(None, None, True, applies=False)
 def _independent_origins(
     items: Sequence[SupportItem], classes: frozenset[str], *, issuer_key: Any = None
 ) -> set[str]:
-    """Distinct independence keys of items of ``classes`` — never the issuer's, never a
-    weak class's, never a key that is only a claim of the issuer."""
-    out: set[str] = set()
-    for i in items:
-        if not i.origin_key or i.source_class not in classes or i.source_class in WEAK_CLASSES:
-            continue
-        key = independence_key(i.origin_key)
-        if key and not key.startswith(ISSUER_ORIGIN_PREFIX):
-            out.add(key)
-    return out
+    """Independence keys of items of ``classes`` that BEAR independence — never the
+    issuer's, never weak, never wire-hosted, never an unverified claim; capped by the
+    number of distinct verified publishers."""
+    eligible = [
+        i for i in items
+        if i.source_class in classes
+        and bears_independence(i, issuer_key)
+        and not is_verified_issuer(i.origin_key, issuer_key)
+    ]
+    keys = {k for k in (independence_key(i.origin_key) for i in eligible) if k}
+    publishers = {
+        p for p in (group_origin(publisher_of(i.origin_key)) for i in eligible) if p
+    }
+    # Two keys but one publisher (or the reverse) is one voice: understate.
+    return keys if len(keys) <= len(publishers) else set(sorted(keys)[: len(publishers)])
 
 
 def assess_claim(
@@ -1311,7 +1398,10 @@ def assess_claim(
     if claim_type == CT_GUIDANCE:
         return verdict(True, None) if issuer_present else verdict(False, LABEL_MANAGEMENT_SAYS)
     if claim_type == CT_SUPERLATIVE:
-        if len(_independent_origins(items, INDEPENDENT_AUTHORITY_CLASSES)) >= 2:
+        authorities = _independent_origins(
+            items, INDEPENDENT_AUTHORITY_CLASSES, issuer_key=issuer_key
+        )
+        if len(authorities) >= 2:
             return verdict(True, None)
         # Issuer material (or a page CLAIMING the issuer's text) behind it and fewer than
         # two independent T2–T4 origins: the company's own description, never stated as
@@ -1334,7 +1424,9 @@ def assess_claim(
     if claim_type == CT_CORPORATE_EVENT:
         if state == INDEPENDENTLY_CORROBORATED:
             return verdict(True, None)
-        if only_issuer:
+        if only_issuer and issuer_present:
+            # Only the VERIFIED issuer's own voice is "company says". A page that merely
+            # CLAIMS the issuer's text is one unverified source (review M-D).
             return verdict(True, LABEL_COMPANY_SAYS)
         if present & (PRESS_CLASSES | GOVERNMENT_CLASSES):
             return verdict(True, LABEL_SINGLE_SOURCE)
@@ -1353,8 +1445,10 @@ def assess_claim(
         return verdict(False, LABEL_SINGLE_SOURCE)
     if claim_type == CT_INDUSTRY_METRIC:
         qualifying = _independent_origins(
-            items, GOVERNMENT_CLASSES | SPECIALIST_CLASSES | {SC_TRADE_PUBLICATION,
-                                                              SC_MAJOR_FINANCIAL_PRESS}
+            items,
+            GOVERNMENT_CLASSES | SPECIALIST_CLASSES | {SC_TRADE_PUBLICATION,
+                                                       SC_MAJOR_FINANCIAL_PRESS},
+            issuer_key=issuer_key,
         )
         needed = 2 if rf.has_figure(statement or "") else 1
         if len(qualifying) >= needed:
@@ -1661,6 +1755,9 @@ __all__ = [
     "corroboration_state",
     "find_contradictions",
     "group_origin",
+    "bears_independence",
+    "independent_origin_count",
+    "is_wire_publisher",
     "is_issuer_origin",
     "is_non_closing_label",
     "issuer_from_candidates",
