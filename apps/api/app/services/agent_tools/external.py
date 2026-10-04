@@ -512,8 +512,10 @@ async def _fetch_public_source(
     # (dedup by content hash), so the `ev:x:` id resolves to a stored version. Its own
     # savepoint: a failed ingestion costs the link, never the verification.
     version_id = None
+    stored_lead: Any = None
     if session is not None and minted and getattr(outcome, "fetched_content", None):
-        version_id = await _ingest_verified(context, outcome, arguments["url"])
+        stored_lead = await _ingest_verified(context, outcome, arguments["url"])
+        version_id = stored_lead.version_id if stored_lead is not None else None
 
     if session is not None:
         try:
@@ -581,6 +583,12 @@ async def _fetch_public_source(
         # Whether the verified bytes are ALSO in the corpus. None is "verified, not
         # stored" (refused by TDM / a wall / the flag), never "missing evidence".
         record["corpus_version_id"] = str(version_id) if version_id else None
+        # Open-web W4 (review M5): the STORED version's class and origin, so the
+        # investigator ranks and counts the lead exactly as a later read of the version
+        # will — not by a different origin string. Absent when nothing was stored.
+        if stored_lead is not None:
+            record["origin_key"] = stored_lead.origin_key
+            record["stored_source_class"] = stored_lead.source_class
         record["claim"] = arguments["claim"]
         # The document's OWN words at the point verification matched. A finding built on
         # this lead reads the source, not the provider's paraphrase of it.
@@ -639,7 +647,7 @@ LEAD_INGEST_PREPARE_TIMEOUT_SECONDS = 180.0
 
 
 async def _ingest_verified(context: "ToolContext", outcome: Any, url: str) -> Any:
-    """The corpus version id of a verified lead's bytes, or ``None``. Never raises.
+    """The stored ``WebIngestResult`` of a verified lead's bytes, or ``None``. Never raises.
 
     Gated by ``V3_WEB_CORPUS_INGEST_ENABLED``. Two phases (W3 review F6): everything
     slow — robots/TDMRep, the pool, extraction — runs FIRST, outside any transaction and
@@ -686,7 +694,7 @@ async def _ingest_verified(context: "ToolContext", outcome: Any, url: str) -> An
             )
     except Exception:  # noqa: BLE001 - the verification stands without the corpus link
         return None
-    return ingested.version_id if ingested.stored else None
+    return ingested if ingested.stored else None
 
 
 FETCH_PUBLIC_SOURCE_SPEC = ToolSpec(

@@ -5,33 +5,37 @@ Spec §13.3 (claim type ↔ source class), §14.2 (origin), §14.3 (corroboratio
 rules, versioned lists and regular expressions over text the platform stored. No LLM
 decides an origin, a class, a claim type or a label.
 
-ORIGIN (spec §14.2)
-===================
-Two items are **independent** only when their origin keys differ. ``origin_key`` is
-assigned in this order:
+ORIGIN (spec §14.2) — VERIFIED ORIGINS AND CLAIMS
+=================================================
+Two items are **independent** only when their independence keys differ. The design
+rule (review round 1, F1/F2): *what a page says about itself is a CLAIM*. A claim may
+only REDUCE independence; it never creates an issuer origin, merges with a
+platform-verified origin, raises corroboration or hides a contradiction.
 
-1. near-duplicate cluster — the whole cluster takes the origin of its earliest-published
-   member (``dedup.cluster_near_duplicates``);
-2. the issuer's own voice — a filing, an exchange announcement, a page on the verified
-   issuer domain, or a document served by a **PR wire / RNS / ASX feed** host → the
-   issuer (``issuer:<id>``), or the company named by the release;
-3. wire and syndication attribution, multilingual — "(Reuters)", "Reuters reported",
-   "according to Bloomberg", "laut dpa", "selon l'AFP", a ``dpa`` / ``AFP`` / ``ANSA``
-   byline, "Source: <Company>";
-4. press-release boilerplate — an "About <Company>" heading plus a contact block →
-   that company (the issuer when it is the subject);
-5. a ``rel=canonical`` pointing at another registrable domain → that domain;
-6. the publisher's registrable domain;
+**Verified origins** (the platform decides): the verified issuer domain or a filing /
+exchange-announcement host whose header names the run's issuer → ``issuer:<id>``;
+a publisher-group registry entry → ``group:<id>``; otherwise the registrable domain the
+bytes were served from. A PR-wire / RNS / ASX host is never an origin (it carries many
+issuers); an unattributed wire release is ``unknown:<url hash>``.
 
-and finally the **publisher-group registry** (versioned data): outlets under one owner
-count as one origin (``group:<id>``). Five copies of one press release are one origin.
+**Claimed origins** (the page says): "(Reuters)", "laut dpa", a "Source:" line, an
+"About <Company>" block with a contact block, a cross-domain ``rel=canonical`` →
+``claimed:<what it says>@<publisher domain>``. Independence treats it as the claimed
+origin (a page claiming Reuters is not independent of Reuters); contradiction checks key
+on the PUBLISHER, so a forged claim cannot hide a real disagreement; labels and prompts
+never show a page-derived name.
+
+Near-duplicates (SimHash <= 3) are linked at ingest only when they are in the same
+company/theme scope, carry IDENTICAL numbers, are not of lower authority than the new
+document, and the text is long enough; stored origins are never rewritten.
 
 ORIGIN KEY SHAPES
 =================
-``issuer:<company id or verified domain>`` · ``company:<normalised name>`` (another
-company's own voice) · ``group:<id>`` · a bare registrable domain. Non-web platform
-evidence (typed facts, filings in the corpus) uses the same ``issuer:<company id>``, so
-"the 10-K and the company's press release" is ONE origin, ``issuer_only``.
+``issuer:<company id>`` (verified; compared to the RUN's company every time) ·
+``group:<id>`` · a bare registrable domain · ``unknown:<token>`` ·
+``claimed:<body>@<publisher>``. Non-web platform evidence (typed facts, filings in the
+corpus) uses ``issuer:<company id>``, so "the 10-K and the company's own page" is ONE
+origin, ``issuer_only``.
 
 CLAIM RULES (spec §13.3) — KEPT WITH A LABEL, NEVER DELETED
 ==========================================================
@@ -45,11 +49,13 @@ are unchanged — W4 is inert until web documents exist.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from itertools import islice
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -77,12 +83,14 @@ from app.services.web_research.classify import (
 )
 from app.services.web_research.dedup import DedupMember, cluster_near_duplicates
 
-TRUST_RULES_VERSION = "2026-10-02.1"
+TRUST_RULES_VERSION = "2026-10-04.1"
 PUBLISHER_GROUPS_VERSION = "2026-10-02.1"
 
 ISSUER_ORIGIN_PREFIX = "issuer:"
 COMPANY_ORIGIN_PREFIX = "company:"
 GROUP_ORIGIN_PREFIX = "group:"
+CLAIMED_ORIGIN_PREFIX = "claimed:"
+UNKNOWN_ORIGIN_PREFIX = "unknown:"
 _ORIGIN_MAX = 255
 
 # ── Origin rules ────────────────────────────────────────────────────────── #
@@ -240,6 +248,7 @@ def name_slug(name: str | None) -> str | None:
 
 
 def is_issuer_origin(origin_key: str | None) -> bool:
+    """``issuer:<id>`` — platform-verified only (a claimed origin never starts so)."""
     return bool(origin_key) and str(origin_key).startswith(ISSUER_ORIGIN_PREFIX)
 
 
@@ -251,19 +260,127 @@ def group_origin(origin_key: str | None) -> str | None:
     return f"{GROUP_ORIGIN_PREFIX}{group}" if group else origin_key
 
 
+#: Brand → parent for the cross-brand aliases a claimed company name may use (a page that
+#: says "Source: Google" and one that says "Source: Alphabet" are one source).
+BRAND_ALIASES: dict[str, str] = {
+    "google": "alphabet", "youtube": "alphabet", "waymo": "alphabet",
+    "facebook": "meta", "instagram": "meta", "whatsapp": "meta", "meta-platforms": "meta",
+    "aws": "amazon", "amazon-web-services": "amazon", "whole-foods": "amazon",
+    "linkedin": "microsoft", "github": "microsoft", "azure": "microsoft",
+    "volkswagen-group": "volkswagen", "audi": "volkswagen", "porsche-ag": "volkswagen",
+    "rio-tinto-plc": "rio-tinto", "rio-tinto-limited": "rio-tinto",
+    "bhp-billiton": "bhp", "bhp-group": "bhp",
+}
+
+
+def make_claimed(body: str, publisher: str | None) -> str:
+    """``claimed:<what the page says>@<registrable publisher>`` — a CLAIM, never verified."""
+    return f"{CLAIMED_ORIGIN_PREFIX}{body}@{publisher or 'unknown'}"[:_ORIGIN_MAX]
+
+
+def is_claimed_origin(origin_key: str | None) -> bool:
+    return bool(origin_key) and str(origin_key).startswith(CLAIMED_ORIGIN_PREFIX)
+
+
+def claimed_body(origin_key: str | None) -> str | None:
+    """What a claimed origin says the text came from, or None for a verified origin."""
+    if not is_claimed_origin(origin_key):
+        return None
+    return str(origin_key)[len(CLAIMED_ORIGIN_PREFIX):].rpartition("@")[0] or None
+
+
+def publisher_of(origin_key: str | None) -> str | None:
+    """The PLATFORM-VERIFIED publisher behind an origin (the registrable domain the bytes
+    were served from). For ``issuer:`` / ``group:`` / bare-domain keys, the key itself."""
+    if not origin_key:
+        return None
+    if is_claimed_origin(origin_key):
+        return str(origin_key).rpartition("@")[2] or None
+    return str(origin_key)
+
+
+def independence_key(origin_key: str | None) -> str | None:
+    """What an origin counts as when independence is judged.
+
+    A claimed origin counts as the thing it claims to depend on — a page that says
+    "(Reuters)" is NOT independent of Reuters, one that says "About <the issuer>" is not
+    independent of the issuer. That can only REDUCE the number of independent origins; a
+    claim never creates an origin (spec §14.2, review F1). The claim is never used to
+    decide whether two findings may contradict: that is keyed on :func:`publisher_of`.
+    """
+    if not origin_key:
+        return None
+    body = claimed_body(origin_key) if is_claimed_origin(origin_key) else str(origin_key)
+    if not body:
+        return publisher_of(origin_key)
+    if body.startswith(COMPANY_ORIGIN_PREFIX):
+        slug = body[len(COMPANY_ORIGIN_PREFIX):]
+        return f"{COMPANY_ORIGIN_PREFIX}{BRAND_ALIASES.get(slug, slug)}"
+    if body.startswith((ISSUER_ORIGIN_PREFIX, GROUP_ORIGIN_PREFIX, UNKNOWN_ORIGIN_PREFIX)):
+        return body
+    return group_origin(body)
+
+
+def is_verified_issuer(origin_key: str | None, issuer_key: Any) -> bool:
+    """The origin is the RUN's issuer, verified (never claimed, never another company's).
+
+    ``issuer:<id>`` is stored on a version shared by content hash, so the same string can
+    be one run's own voice and another run's third party: it is compared to the run's
+    issuer here, every time (review H2). No issuer key → nothing is "mine" (fail closed).
+    """
+    return bool(issuer_key) and origin_key == f"{ISSUER_ORIGIN_PREFIX}{issuer_key}"
+
+
 def origin_display(origin_key: str | None) -> str:
-    """A short human name for an origin, for labels ("estimate by woodmac.com")."""
+    """A short name for an origin, for labels and gap text.
+
+    Only platform data is ever shown: the issuer, a registry group, a registrable domain.
+    A name taken from page text (a claimed company) is never displayed (review F4): a
+    page can title itself anything, and the label ends up beside a finding.
+    """
     if not origin_key:
         return "an unidentified source"
     if is_issuer_origin(origin_key):
         return "the company"
-    for prefix in (COMPANY_ORIGIN_PREFIX, GROUP_ORIGIN_PREFIX):
-        if origin_key.startswith(prefix):
-            return origin_key[len(prefix):].replace("-", " ").replace("_", " ")
-    return origin_key
+    if is_claimed_origin(origin_key):
+        publisher = publisher_of(origin_key)
+        if not publisher:
+            return "an unidentified source"
+        return f"{publisher} (page claims another source)"
+    if origin_key.startswith(GROUP_ORIGIN_PREFIX):
+        return origin_key[len(GROUP_ORIGIN_PREFIX):].replace("_", " ")
+    if origin_key.startswith((COMPANY_ORIGIN_PREFIX, UNKNOWN_ORIGIN_PREFIX)):
+        return "an unidentified source"
+    if re.fullmatch(r"[a-z0-9.-]{3,120}", origin_key):
+        return origin_key
+    return "an unidentified source"
 
 
 # ── Issuer identity ─────────────────────────────────────────────────────── #
+
+
+def _name_words(text: str | None) -> str:
+    slug = name_slug(text) or ""
+    return " ".join(slug.split("-"))
+
+
+def _fold_text(text: str) -> str:
+    folded = unicodedata.normalize("NFKD", text).casefold()
+    return "".join(ch for ch in folded if not unicodedata.combining(ch))
+
+
+#: The issuer as the OBJECT of another party's act: "Name of Issuer" (a 13D/13G cover),
+#: "proposal for X", "offer for X", "bid for X", "takeover of X", "acquisition of X".
+_OBJECT_OF_ACT_RE = re.compile(
+    r"name of issuer|issuer\)|\b(?:proposal|offer|bid|approach|takeover|acquisition|"
+    r"merger|tender)\s+(?:for|of|to acquire|to buy)\b|\bto (?:acquire|buy|takeover)\b"
+)
+
+#: A legal-entity suffix: another company named earlier in a header.
+_LEGAL_ENTITY_RE = re.compile(
+    r"(?<![a-z0-9])(?:ltd|limited|inc|corp|corporation|plc|ag|gmbh|sa|nv|llc|lp|asa|ab|oyj|spa)"
+    r"(?![a-z0-9])"
+)
 
 
 @dataclass(frozen=True)
@@ -271,7 +388,11 @@ class IssuerIdentity:
     """The company a run is about: its key, names and VERIFIED domains."""
 
     key: str
+    #: Full registered / trading names. Authorship rules read only these.
     names: tuple[str, ...] = ()
+    #: Short names ("Meta", "Target"): too ambiguous to prove authorship, so they are only
+    #: ever used to recognise a CLAIM of the same company.
+    short_names: tuple[str, ...] = ()
     domains: tuple[str, ...] = ()
 
     @property
@@ -279,23 +400,40 @@ class IssuerIdentity:
         return f"{ISSUER_ORIGIN_PREFIX}{self.key}"[:_ORIGIN_MAX]
 
     def is_named(self, name: str | None) -> bool:
+        """EXACT slug equality with a full or short name. "Acme Rivals Inc" is not Acme;
+        "Apple Hospitality REIT" is not Apple (review F1/M3)."""
         slug = name_slug(name)
         if not slug:
             return False
-        own = {s for s in (name_slug(n) for n in self.names) if s}
-        return slug in own or any(
-            slug.startswith(s + "-") or s.startswith(slug + "-") for s in own
-        )
+        own = {s for s in (name_slug(n) for n in (*self.names, *self.short_names)) if s}
+        return slug in own
 
-    def mentioned_in(self, text: str | None) -> bool:
-        haystack = " ".join((name_slug(text or "") or "").split("-"))
+    def authored_in_lead(self, text: str | None, *, limit: int = 400) -> bool:
+        """The document is the ISSUER'S OWN: a FULL name of the issuer OPENS its header
+        (the first entity named, at the start of the first line), and the header does not
+        make the issuer the object of someone else's act.
+
+        Used only on hosts the platform already classifies as filings or exchange
+        announcements — the host is the verification, the name picks the issuer. A peer's
+        announcement that merely mentions the issuer, a takeover proposal FOR it, or a
+        13D that lists it as "(Name of Issuer)" are all someone else's documents.
+        """
+        head = _fold_text((text or "")[:limit])
+        first_line = next((ln for ln in head.splitlines() if ln.strip()), "")
+        opening = re.sub(r"^[\W_]+", "", first_line)
+        if _OBJECT_OF_ACT_RE.search(head):
+            return False
         for name in self.names:
-            slug = name_slug(name)
-            if slug and re.search(
-                r"(?<![a-z0-9])" + re.escape(slug.replace("-", " ")) + r"(?![a-z0-9])",
-                haystack,
-            ):
-                return True
+            # The name as registered ("Acme Corp") and without its legal suffix
+            # ("Acme"): the header may print either, but a stripped name must still be
+            # long enough to mean something.
+            raw = re.findall(r"[a-z0-9]+", _fold_text(name))
+            for words in (raw, _name_words(name).split()):
+                if len(" ".join(words)) < 5:
+                    continue
+                joined = r"[\W_]+".join(re.escape(w) for w in words)
+                if re.match(joined + r"(?![a-z0-9])", opening):
+                    return True
         return False
 
     @classmethod
@@ -304,9 +442,11 @@ class IssuerIdentity:
         company_id: Any = None,
         *,
         names: Iterable[str | None] = (),
+        short_names: Iterable[str | None] = (),
         domains: Iterable[str | None] = (),
     ) -> "IssuerIdentity | None":
         clean_names = tuple(dict.fromkeys(n.strip() for n in names if n and n.strip()))
+        clean_short = tuple(dict.fromkeys(n.strip() for n in short_names if n and n.strip()))
         clean_domains = tuple(
             dict.fromkeys(d for d in (registrable(x) for x in domains) if d)
         )
@@ -318,7 +458,7 @@ class IssuerIdentity:
             key = str(name_slug(clean_names[0]))
         else:
             return None
-        return cls(key=key, names=clean_names, domains=clean_domains)
+        return cls(key=key, names=clean_names, short_names=clean_short, domains=clean_domains)
 
 
 def issuer_from_candidates(
@@ -326,21 +466,34 @@ def issuer_from_candidates(
 ) -> IssuerIdentity | None:
     """The subject issuer from W3's entity candidates (``entities.CandidateEntity``)."""
     names: list[str] = []
+    short: list[str] = []
     for candidate in candidates or ():
         if company_id is not None and getattr(candidate, "company_id", None) == company_id:
             names.append(getattr(candidate, "name", "") or "")
-            names.extend(getattr(candidate, "short_names", ()) or ())
+            short.extend(getattr(candidate, "short_names", ()) or ())
     if company_id is None and not issuer_domains:
         return None
-    return IssuerIdentity.build(company_id, names=names, domains=issuer_domains)
+    return IssuerIdentity.build(company_id, names=names, short_names=short, domains=issuer_domains)
 
 
-# ── Text attribution (spec §14.2 steps 2–3) ─────────────────────────────── #
+# ── Text attribution (spec §14.2 steps 2–3): CLAIMS, never verified ─────── #
+#
+# Everything below reads PAGE TEXT. A page can say anything, so what it says is only a
+# claim of dependence: it may reduce how independent a document counts as, and never
+# creates an issuer origin, merges with a verified one, raises corroboration or hides a
+# contradiction (review F1/F2). Every scan is bounded to a fixed window and every pattern
+# is anchored per line, so no page can make an origin rule cost more than a constant
+# (review F3).
 
 _WIRE_NAMES = sorted(WIRE_SERVICES, key=len, reverse=True)
 _LATIN_WIRES = [w for w in _WIRE_NAMES if w.isascii()]
 _CJK_WIRES = [w for w in _WIRE_NAMES if not w.isascii()]
 _WIRE_ALT = "|".join(re.escape(w) for w in _LATIN_WIRES)
+
+#: Short agency names that are also ordinary words: only an ALL-CAPS spelling is the
+#: agency ("(AP)", "TT", "PTI"). Longer unambiguous codes ("dpa", "afp") are accepted in
+#: any case — a lowercase "(dpa)" is still dpa (review H1).
+_CASE_SENSITIVE_WIRES = frozenset({"ap", "tt", "pti", "apa", "anp", "ntb", "pap", "aap", "efe"})
 
 #: A dateline / byline: "LONDON (Reuters) -", "(dpa-AFX)", "(ANSA) - ROMA".
 _DATELINE_RE = re.compile(r"\(\s*(" + _WIRE_ALT + r")\s*\)", re.IGNORECASE)
@@ -355,8 +508,8 @@ _ATTRIBUTION_RES: tuple[re.Pattern[str], ...] = tuple(
     for pattern in (
         r"\b(" + _WIRE_ALT + r")\s+(?:reported|reports|said|wrote|first reported)\b",
         r"\b(?:according to|reported by|as reported by|told)\s+(" + _WIRE_ALT + r")\b",
-        r"\b(?:laut|berichtete|berichtet|meldete|meldet)\s+(?:die\s+|der\s+)?(?:nachrichtenagentur\s+)?("
-        + _WIRE_ALT + r")\b",
+        r"\b(?:laut|berichtete|berichtet|meldete|meldet)\s+(?:die\s+|der\s+)?"
+        r"(?:nachrichtenagentur\s+)?(" + _WIRE_ALT + r")\b",
         r"\b(?:selon|d'après|rapporte|a rapporté)\s+(?:l'|l’|le\s+|la\s+)?(?:agence\s+)?("
         + _WIRE_ALT + r")\b",
         r"\b(?:secondo|riporta|ha riportato)\s+(?:l'|l’|la\s+|il\s+)?(?:agenzia\s+)?("
@@ -375,8 +528,11 @@ _CJK_ATTRIBUTION_RE = (
     else None
 )
 #: A whole line naming the source: "Source: Acme Corp", "Quelle: dpa", "Fonte: ANSA".
+#: ``[ \t]*`` (not ``\s*``) at the line start: ``\s*`` also eats newlines, which made a
+#: page of blank lines quadratic.
 _SOURCE_LINE_RE = re.compile(
-    r"^\s*(?:source|sources|quelle|fonte|fuente|bron|källa|kilde)\s*[:：]\s*(?P<name>[^\n]{2,80}?)\s*\.?\s*$",
+    r"^[ \t]*(?:source|sources|quelle|fonte|fuente|bron|källa|kilde)[ \t]*[:：][ \t]*"
+    r"(?P<name>[^\n]{2,80}?)[ \t]*\.?[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
 _GENERIC_SOURCE_WORDS = frozenset(
@@ -389,21 +545,33 @@ _GENERIC_SOURCE_WORDS = frozenset(
 )
 #: "About Acme Corp" as a heading line, multilingual.
 _ABOUT_RE = re.compile(
-    r"^\s*(?:about|über|uber|à propos de|a propos de|a proposito di|informazioni su|"
-    r"acerca de|sobre|over|om|tietoa)\s+(?P<name>[A-ZÀ-ÖØ-Þ0-9][^\n]{1,80}?)\s*[:：]?\s*$",
+    r"^[ \t]*(?:about|über|uber|à propos de|a propos de|a proposito di|informazioni su|"
+    r"acerca de|sobre|over|om|tietoa)[ \t]+"
+    r"(?P<name>[A-ZÀ-ÖØ-Þ0-9][^\n]{1,80}?)[ \t]*[:：]?[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
+)
+#: "About us" / "Om oss" is the page talking about itself — it names nobody.
+_SELF_REFERENCES = frozenset(
+    {
+        "us", "oss", "nous", "uns", "ons", "noi", "nosotros", "this site", "this website",
+        "this company", "the company", "our company", "the author", "this page", "me",
+    }
 )
 _CONTACT_RE = re.compile(
-    r"(?:^\s*(?:contacts?|media contacts?|press contacts?|investor contacts?|"
+    r"(?:^[ \t]*(?:contacts?|media contacts?|press contacts?|investor contacts?|"
     r"investor relations|media relations|for further information|for more information|"
     r"kontakt|pressekontakt|contacts? presse|contatti|contacto|contactos)\b)"
-    r"|[\w.+-]+@[\w-]+\.[\w.-]+"
-    r"|\+?\d[\d\s().-]{7,}\d",
+    r"|[\w.+-]{1,64}@[\w-]{1,64}\.[\w.-]{1,64}"
+    r"|\+?\d[\d ().-]{7,30}\d",
     re.IGNORECASE | re.MULTILINE,
 )
-#: How much of a document's start / end the attribution rules read.
+#: How much of a document's start / end the attribution rules read, and how far past a
+#: heading the contact block may sit.
 LEAD_CHARS = 700
 TAIL_CHARS = 1200
+BOILERPLATE_WINDOW = 3000
+CONTACT_WINDOW = 600
+MAX_ATTRIBUTION_MATCHES = 20
 
 
 def _wire_domain(name: str | None) -> str | None:
@@ -413,8 +581,14 @@ def _wire_domain(name: str | None) -> str | None:
     return WIRE_SERVICES.get((name or "").strip())
 
 
+def _plausible_wire_surface(surface: str) -> bool:
+    """Reject a short ordinary word posing as an agency ("The plant (ap) runs…")."""
+    folded = surface.strip().lower()
+    return not (folded in _CASE_SENSITIVE_WIRES and surface != surface.upper())
+
+
 def wire_attribution(text: str | None) -> tuple[str, str] | None:
-    """``(wire domain, matched surface)`` when the text says a wire wrote it."""
+    """``(wire domain, matched surface)`` when the text CLAIMS a wire wrote it."""
     body = text or ""
     lead = body[:LEAD_CHARS]
     tail = body[-TAIL_CHARS:]
@@ -427,9 +601,7 @@ def wire_attribution(text: str | None) -> tuple[str, str] | None:
         if match is None:
             continue
         surface = match.group(1)
-        # Short all-caps wire names ("AP", "TT", "PTI") must be printed in capitals: "ap"
-        # and "tt" are not news agencies.
-        if len(surface) <= 3 and surface != surface.upper():
+        if not _plausible_wire_surface(surface):
             continue
         domain = _wire_domain(surface)
         if domain:
@@ -444,9 +616,9 @@ def wire_attribution(text: str | None) -> tuple[str, str] | None:
 
 
 def source_line(text: str | None) -> str | None:
-    """The name on a trailing "Source: <name>" line, when it names a source."""
+    """The name on a trailing "Source: <name>" line, when it names a source (a claim)."""
     tail = (text or "")[-TAIL_CHARS:]
-    for match in _SOURCE_LINE_RE.finditer(tail):
+    for match in islice(_SOURCE_LINE_RE.finditer(tail), MAX_ATTRIBUTION_MATCHES):
         name = match.group("name").strip().strip(".")
         low = name.lower()
         if low in _GENERIC_SOURCE_WORDS or len(name.split()) > 6:
@@ -458,23 +630,25 @@ def source_line(text: str | None) -> str | None:
 
 
 def boilerplate_company(text: str | None) -> str | None:
-    """The company of an "About <Company>" block followed by a contact block."""
-    body = text or ""
-    for match in _ABOUT_RE.finditer(body):
+    """The company of an "About <Company>" block followed by a contact block (a claim)."""
+    body = (text or "")[-BOILERPLATE_WINDOW:]
+    for match in islice(_ABOUT_RE.finditer(body), MAX_ATTRIBUTION_MATCHES):
         name = match.group("name").strip()
-        if len(name.split()) > 8 or name.lower().startswith(("us", "this", "the author")):
+        words = name.lower().split()
+        if len(words) > 8 or name.lower() in _SELF_REFERENCES or words[0] in _SELF_REFERENCES:
             continue
-        after = body[match.end(): match.end() + 2500]
+        after = body[match.end(): match.end() + CONTACT_WINDOW]
         if _CONTACT_RE.search(after):
             return name
     return None
 
 
-def _company_origin(name: str, issuer: IssuerIdentity | None) -> str | None:
+def _claimed_company(name: str, issuer: IssuerIdentity | None, publisher: str | None) -> str | None:
+    """A claimed origin for a company NAME read from page text (never ``issuer:``)."""
     if issuer is not None and issuer.is_named(name):
-        return issuer.origin_key
+        return make_claimed(issuer.origin_key, publisher)
     slug = name_slug(name)
-    return f"{COMPANY_ORIGIN_PREFIX}{slug}"[:_ORIGIN_MAX] if slug else None
+    return make_claimed(f"{COMPANY_ORIGIN_PREFIX}{slug}", publisher) if slug else None
 
 
 # ── The origin algorithm ────────────────────────────────────────────────── #
@@ -489,6 +663,9 @@ class OriginInput:
     source_class: str | None = None
     #: The page's ``rel=canonical`` (W2 records it even when it did not honour it).
     rel_canonical: str | None = None
+    #: The company the document was ingested FOR. An issuer origin is only ever minted
+    #: for the run's own company.
+    company_id: Any = None
 
 
 @dataclass(frozen=True)
@@ -503,6 +680,10 @@ class OriginDecision:
     def is_issuer(self) -> bool:
         return is_issuer_origin(self.origin_key)
 
+    @property
+    def is_claim(self) -> bool:
+        return is_claimed_origin(self.origin_key)
+
 
 def _grouped(origin: str, rule: str, detail: str | None) -> OriginDecision:
     grouped = group_origin(origin) or origin
@@ -514,55 +695,89 @@ def _grouped(origin: str, rule: str, detail: str | None) -> OriginDecision:
     )
 
 
+def _url_token(url: str | None) -> str:
+    return hashlib.sha256((url or "").encode("utf-8", "replace")).hexdigest()[:20]
+
+
 def origin_for(doc: OriginInput, *, issuer: IssuerIdentity | None = None) -> OriginDecision:
-    """Spec §14.2 steps 2–6 for ONE document (step 1, the cluster, is ``assign_origins``)."""
+    """Spec §14.2 steps 2–6 for ONE document (step 1, the cluster, is ``assign_origins``).
+
+    Verified origins come from the PLATFORM only: the verified issuer domain, a
+    filing/exchange host whose header names the run's issuer, a registry group, a
+    registrable domain. Anything read from the page is a claim (``claimed:…@<publisher>``).
+    """
     host = _host(doc.url)
     domain = registrable(host)
     text = doc.text or ""
 
-    # The issuer's own voice: its filings, its announcements, its own domain.
-    on_issuer_domain = bool(issuer and issuer.domains and _on(host, issuer.domains))
-    if issuer is not None and (on_issuer_domain or doc.source_class in FILING_CLASSES):
+    # Verified issuer voice 1: a page on the issuer's VERIFIED domain.
+    if issuer is not None and issuer.domains and _on(host, issuer.domains):
+        return OriginDecision(issuer.origin_key, RULE_ISSUER_SOURCE, domain)
+    # Verified issuer voice 2: a filing / exchange-announcement host (the platform's own
+    # classification) whose header names the issuer. Not any filing: a peer's ASX
+    # announcement is the peer's (review H2).
+    if (
+        issuer is not None
+        and doc.source_class in FILING_CLASSES
+        and (doc.company_id is None or str(doc.company_id) == issuer.key)
+        and issuer.authored_in_lead(text)
+    ):
         return OriginDecision(issuer.origin_key, RULE_ISSUER_SOURCE, domain)
 
-    # PR wire / RNS / ASX feed → the issuer whose release it is.
-    if host and _on(host, PR_WIRE_HOSTS):
-        if issuer is not None and issuer.mentioned_in(text[:4000]):
-            return OriginDecision(issuer.origin_key, RULE_PR_WIRE, host)
-        named = boilerplate_company(text) or source_line(text)
-        if named:
-            origin = _company_origin(named, issuer)
-            if origin:
-                return OriginDecision(origin, RULE_PR_WIRE, host)
+    claim = _claimed_origin(doc, text, host, domain, issuer)
 
-    # Wire and syndication attribution.
+    # A PR wire / RNS / ASX feed carries many issuers' releases under ONE host: the host
+    # is never the origin (it would merge two issuers). Claim or opaque.
+    if host and _on(host, PR_WIRE_HOSTS):
+        if claim is not None:
+            return claim
+        return OriginDecision(f"{UNKNOWN_ORIGIN_PREFIX}{_url_token(doc.url)}", RULE_UNKNOWN, host)
+
+    if claim is not None:
+        return claim
+    if domain:
+        return _grouped(domain, RULE_DOMAIN, None)
+    return OriginDecision(f"{UNKNOWN_ORIGIN_PREFIX}{_url_token(doc.url)}", RULE_UNKNOWN, None)
+
+
+def _claimed_origin(
+    doc: OriginInput,
+    text: str,
+    host: str,
+    domain: str | None,
+    issuer: IssuerIdentity | None,
+) -> OriginDecision | None:
+    publisher = domain or None
+    if host and _on(host, PR_WIRE_HOSTS):
+        # One wire host carries many unrelated issuers: two releases there are NOT one
+        # publisher (a rival's release must not "overlap" the issuer's and hide a
+        # contradiction). The publisher is the page itself.
+        publisher = f"{UNKNOWN_ORIGIN_PREFIX}{_url_token(doc.url)}"
     wire = wire_attribution(text)
     if wire is not None:
-        return _grouped(wire[0], RULE_WIRE, wire[1][:120])
+        return OriginDecision(make_claimed(wire[0], publisher), RULE_WIRE, wire[1][:60])
     named_source = source_line(text)
     if named_source:
         wire_domain = _wire_domain(named_source)
         if wire_domain:
-            return _grouped(wire_domain, RULE_SOURCE_LINE, named_source[:120])
-        origin = _company_origin(named_source, issuer)
+            return OriginDecision(
+                make_claimed(wire_domain, publisher), RULE_SOURCE_LINE, named_source[:60]
+            )
+        origin = _claimed_company(named_source, issuer, publisher)
         if origin:
-            return OriginDecision(origin, RULE_SOURCE_LINE, named_source[:120])
-
-    # Press-release boilerplate.
+            return OriginDecision(origin, RULE_SOURCE_LINE, None)
     about = boilerplate_company(text)
     if about:
-        origin = _company_origin(about, issuer)
+        origin = _claimed_company(about, issuer, publisher)
         if origin:
-            return OriginDecision(origin, RULE_BOILERPLATE, about[:120])
-
-    # A cross-domain rel=canonical names where the text really lives.
+            return OriginDecision(origin, RULE_BOILERPLATE, None)
+    # A cross-domain rel=canonical is where the author SAYS the text lives — a claim.
     canonical_domain = registrable(_host(doc.rel_canonical))
     if canonical_domain and domain and canonical_domain != domain:
-        return _grouped(canonical_domain, RULE_CANONICAL, canonical_domain)
-
-    if domain:
-        return _grouped(domain, RULE_DOMAIN, None)
-    return OriginDecision(f"unknown:{(doc.url or '')[:200]}", RULE_UNKNOWN, None)
+        return OriginDecision(
+            make_claimed(canonical_domain, publisher), RULE_CANONICAL, canonical_domain
+        )
+    return None
 
 
 def assign_origins(
@@ -572,8 +787,9 @@ def assign_origins(
 ) -> dict[str, OriginDecision]:
     """Origins for a set of documents, near-duplicate clusters first (spec §14.2 step 1).
 
-    Every member of a cluster takes its earliest-published member's origin, so five
-    copies of one press release are one origin however each copy is dressed.
+    Every member of a cluster takes its representative's origin, so copies of one text
+    are one origin however each copy is dressed. Used for analysis and tests; ingest
+    links through ``dedup.find_linkable_duplicate``.
     """
     inputs = {member.key: doc for member, doc in documents}
     out: dict[str, OriginDecision] = {}
@@ -591,49 +807,36 @@ async def document_origin(
     session: Any,
     *,
     doc: OriginInput,
-    published_at: date | None,
     simhash: int | None,
+    text: str | None,
+    company_id: Any = None,
+    theme_key: str | None = None,
     issuer: IssuerIdentity | None = None,
 ) -> tuple[OriginDecision, Any]:
-    """The origin of a document about to be stored, and its stored near-duplicate.
+    """The origin of a document about to be stored, and a stored text it may link to.
 
-    Returns ``(decision, duplicate)``. ``duplicate`` is the cluster's stored
-    representative (a ``dedup.StoredDuplicate``) when one exists — the caller LINKS to
-    it instead of chunking the text again (spec §14.1). The cluster takes the origin of
-    its earliest-PUBLISHED member: the stored one's when it is earlier, otherwise this
-    document's, which is then written to every stored member so the cluster stays one
-    origin.
+    ``duplicate`` (a ``dedup.StoredDuplicate``) is returned only for a near-duplicate
+    that is safe to link (``dedup.find_linkable_duplicate``: same scope, identical
+    numbers, never to a lower-authority class). Linking NEVER rewrites a stored origin:
+    the new document simply reports the representative's.
     """
-    from app.services.web_research.dedup import (
-        DedupMember,
-        near_duplicate_rows,
-        representative_order,
-    )
+    from app.services.web_research.dedup import find_linkable_duplicate
 
     own = origin_for(doc, issuer=issuer)
-    stored = await near_duplicate_rows(session, simhash)
-    if not stored:
-        return own, None
-    representative = stored[0]
-    me = DedupMember(key="__new__", published_at=published_at)
-    if representative.origin_key and representative_order(
-        representative.as_member()
-    ) <= representative_order(me):
-        return (
-            OriginDecision(representative.origin_key, RULE_CLUSTER, str(representative.id)),
-            representative,
-        )
-    # This document is the earliest: its origin becomes the cluster's.
-    from sqlalchemy import update
-
-    from app.models.research_document import ResearchDocumentVersion
-
-    await session.execute(
-        update(ResearchDocumentVersion)
-        .where(ResearchDocumentVersion.id.in_([row.id for row in stored]))
-        .values(origin_key=own.origin_key)
+    duplicate = await find_linkable_duplicate(
+        session,
+        simhash=simhash,
+        text=text,
+        source_class=doc.source_class,
+        company_id=company_id,
+        theme_key=theme_key,
+        new_origin=own.origin_key,
+        new_host=_host(doc.url),
     )
-    return own, representative
+    if duplicate is None:
+        return own, None
+    origin = duplicate.origin_key or own.origin_key
+    return OriginDecision(origin, RULE_CLUSTER, str(duplicate.id)), duplicate
 
 
 @dataclass(frozen=True)
@@ -655,13 +858,15 @@ class OriginSummary:
         return f"{self.origins} {noun}{who}{tail}"
 
 
-def summarise_origins(origin_keys: Sequence[str | None]) -> OriginSummary:
-    keys = [k for k in origin_keys if k]
+def summarise_origins(
+    origin_keys: Sequence[str | None], *, issuer_key: Any = None
+) -> OriginSummary:
+    keys = [independence_key(k) for k in origin_keys if k]
     distinct = set(keys)
     return OriginSummary(
         origins=len(distinct),
         republications=len(keys) - len(distinct),
-        issuer_only=bool(distinct) and all(is_issuer_origin(k) for k in distinct),
+        issuer_only=bool(distinct) and all(_is_issuer_key(k, issuer_key) for k in distinct),
     )
 
 
@@ -676,21 +881,116 @@ CORROBORATION_STATES: frozenset[str] = frozenset(
 )
 
 
+def _is_issuer_key(key: str | None, issuer_key: Any) -> bool:
+    """An independence key that IS the run's issuer. With no issuer key given, any
+    ``issuer:`` key counts (a coarse view for summaries; the rules always pass one)."""
+    if not key or not key.startswith(ISSUER_ORIGIN_PREFIX):
+        return False
+    return key == f"{ISSUER_ORIGIN_PREFIX}{issuer_key}" if issuer_key else True
+
+
 def corroboration_state(
-    origin_keys: Iterable[str | None], *, conflicting: bool = False
+    origin_keys: Iterable[str | None],
+    *,
+    conflicting: bool = False,
+    issuer_key: Any = None,
 ) -> str | None:
     """The §14.3 state of a claim supported by items with these origins.
 
-    ``None`` when nothing has an origin — no state is better than an invented one.
+    Independence is judged on :func:`independence_key`, so a page that CLAIMS another
+    origin counts as that origin (fewer independent origins, never more). ``None`` when
+    nothing has an origin — no state is better than an invented one.
     """
     if conflicting:
         return CONFLICTING
-    distinct = {k for k in origin_keys if k}
+    distinct = {k for k in (independence_key(o) for o in origin_keys) if k}
     if not distinct:
         return None
-    if all(is_issuer_origin(k) for k in distinct):
+    if all(_is_issuer_key(k, issuer_key) for k in distinct):
         return ISSUER_ONLY
     if len(distinct) >= 2:
+        return INDEPENDENTLY_CORROBORATED
+    return SINGLE_SOURCE
+
+
+def is_wire_publisher(publisher: str | None) -> bool:
+    """A PR wire / RNS / ASX feed / open-submission host — or an opaque page token that
+    stands in for one. Such a page can never be independence-bearing: anyone can have a
+    release published there (einpresswire takes third-party submissions outright)."""
+    if not publisher:
+        return False
+    if publisher.startswith(UNKNOWN_ORIGIN_PREFIX):
+        return True
+    return _on(publisher, PR_WIRE_HOSTS)
+
+
+def bears_independence(item: "SupportItem", issuer_key: Any = None) -> bool:
+    """Whether ``item`` counts as an INDEPENDENT origin (when in doubt: it does not).
+
+    Yes for the run's verified issuer (one origin, never an independent one), and for a
+    page with a known, non-weak, non-issuer source class from a VERIFIED non-wire
+    publisher. No for a missing class (an unresolved lead), weak classes, issuer-voice /
+    filing classes (we cannot tell whose they are), unknown or wire-hosted pages.
+    """
+    if is_verified_issuer(item.origin_key, issuer_key):
+        return True
+    if item.source_class is None or item.source_class in WEAK_CLASSES:
+        return False
+    if item.source_class in ISSUER_CLASSES or item.source_class in FILING_CLASSES:
+        return False
+    origin = item.origin_key
+    if not origin or origin.startswith(UNKNOWN_ORIGIN_PREFIX):
+        return False
+    publisher = publisher_of(origin)
+    return bool(publisher) and not is_wire_publisher(publisher) and not str(
+        publisher
+    ).startswith(ISSUER_ORIGIN_PREFIX)
+
+
+def independent_origin_count(
+    items: Sequence["SupportItem"], issuer_key: Any = None
+) -> tuple[int, int]:
+    """``(distinct independence keys, distinct verified publishers)`` among the items
+    that bear independence. Corroboration needs BOTH to reach two: a page's claim can
+    merge origins (fewer keys) but never invent one, and one publisher is one voice."""
+    keys: set[str] = set()
+    publishers: set[str] = set()
+    for item in items:
+        if not bears_independence(item, issuer_key):
+            continue
+        key = independence_key(item.origin_key)
+        publisher = group_origin(publisher_of(item.origin_key))
+        if key:
+            keys.add(key)
+        if publisher:
+            publishers.add(publisher)
+    return len(keys), len(publishers)
+
+
+def corroboration_for_items(
+    items: Sequence["SupportItem"], *, issuer_key: Any = None, conflicting: bool = False
+) -> str | None:
+    """The §14.3 state of a finding's support, from its ITEMS (order-independent).
+
+    "Independently corroborated" needs two independent origins (see
+    :func:`bears_independence`), at least one of them not the issuer. Understating is the
+    rule: aggregators, unknown pages, wire-hosted pages, unresolved leads and unverified
+    claims never raise the state (review M2, H-A).
+    """
+    if conflicting:
+        return CONFLICTING
+    keys = {independence_key(i.origin_key) for i in items if i.origin_key}
+    keys.discard(None)
+    if not keys:
+        return None
+    if all(_is_issuer_key(k, issuer_key) for k in keys):
+        return ISSUER_ONLY
+    n_keys, n_publishers = independent_origin_count(items, issuer_key)
+    has_non_issuer = any(
+        bears_independence(i, issuer_key) and not is_verified_issuer(i.origin_key, issuer_key)
+        for i in items
+    )
+    if min(n_keys, n_publishers) >= 2 and has_non_issuer:
         return INDEPENDENTLY_CORROBORATED
     return SINGLE_SOURCE
 
@@ -751,26 +1051,34 @@ def platform_origin(
     return registrable(_host(url))
 
 
+#: Every unresolvable verified lead shares ONE origin: an id the platform cannot place is
+#: not evidence of a second source (review M5).
+UNRESOLVED_LEAD_ORIGIN = f"{UNKNOWN_ORIGIN_PREFIX}unresolved-lead"
+
+
 async def resolve_support(
     session: Any, evidence_ids: Sequence[str], *, company_id: Any = None
 ) -> list[SupportItem]:
-    """Support for ids already stored on a finding (the conflict check's other side).
+    """Support for ids already stored on findings (the conflict check's other side).
 
-    ``ev:x:`` → the verified lead's stored version; ``ev:<chunk>`` → the chunk's
-    version; anything else is a typed platform record (a validated fact, a
-    calculation) — the issuer's filing data, never web.
+    ``ev:x:`` → the verified lead's stored version; ``ev:<chunk>`` → the chunk's version;
+    anything else is a typed platform record (a validated fact, a calculation) — the
+    issuer's filing data, never web. **Two queries at most, whatever the number of ids**:
+    callers batch every prior finding's ids into one call (review H4).
     """
     from sqlalchemy import select
 
     from app.models.research_chunk import ResearchDocumentChunk as C
     from app.models.research_document import ResearchDocumentVersion as V
+    from app.models.research_lead import ResearchLeadRecord as L
     from app.services.corpus.retrieval import chunk_id_from_evidence_id
 
-    ids = [str(i) for i in evidence_ids if i]
+    ids = list(dict.fromkeys(str(i) for i in evidence_ids if i))
     chunk_ids = [
         chunk_id_from_evidence_id(i) for i in ids
         if i.startswith("ev:") and not i.startswith("ev:x:")
     ]
+    lead_ids = [i for i in ids if i.startswith("ev:x:")]
     rows: dict[str, Any] = {}
     if chunk_ids:
         for row in (
@@ -784,22 +1092,28 @@ async def resolve_support(
             )
         ).all():
             rows[row[0]] = row
+    leads: dict[str, Any] = {}
+    if lead_ids:
+        for row in (
+            await session.execute(
+                select(
+                    L.promoted_evidence_id, V.source_class, V.origin_key, V.published_at,
+                    V.canonical_url,
+                )
+                .join(V, V.id == L.research_document_version_id)
+                .where(L.promoted_evidence_id.in_(lead_ids))
+            )
+        ).all():
+            leads.setdefault(row[0], row)
     out: list[SupportItem] = []
     for evidence_id in ids:
         if evidence_id.startswith("ev:x:"):
-            from app.services.web_research.ingest import version_for_external_evidence
-
-            version = await version_for_external_evidence(session, evidence_id)
-            out.append(
-                SupportItem(
-                    evidence_id=evidence_id,
-                    source_class=getattr(version, "source_class", None),
-                    origin_key=getattr(version, "origin_key", None)
-                    or f"lead:{evidence_id}",
-                    published_at=getattr(version, "published_at", None),
-                    web=True,
-                )
-            )
+            row = leads.get(evidence_id)
+            if row is None:
+                out.append(SupportItem(evidence_id, None, UNRESOLVED_LEAD_ORIGIN, None, True))
+                continue
+            origin = row[2] or registrable(_host(row[4])) or UNRESOLVED_LEAD_ORIGIN
+            out.append(SupportItem(evidence_id, row[1], origin, row[3], True))
             continue
         if evidence_id.startswith("ev:"):
             row = rows.get(chunk_id_from_evidence_id(evidence_id))
@@ -865,7 +1179,9 @@ _GUIDANCE_RE = re.compile(
     re.IGNORECASE,
 )
 _SUPERLATIVE_RE = re.compile(
-    r"\b(?:largest|biggest|leading|market leader|leader in|world'?s (?:first|only|top|"
+    r"\b(?:largest|biggest|(?:a|the) leading (?:provider|producer|supplier|player|"
+    r"company|manufacturer|developer|operator|maker|firm|vendor|miner|name)|"
+    r"market leader|leader in|world'?s (?:first|only|top|"
     r"largest|biggest|leading)|first[- ]ever|number one|no\.\s?1|#1|top (?:three|five|"
     r"ten|\d+)|only (?:company|producer|supplier|player)|best-in-class|dominant|"
     r"most advanced|fastest[- ]growing|lowest[- ]cost|highest[- ]grade|unrivalled|"
@@ -962,6 +1278,24 @@ LABEL_SELF_DESCRIBED = "company describes itself as …"
 LABEL_ISSUER_TECHNICAL = "issuer technical claim"
 LABEL_ANECDOTAL = "anecdotal"
 LABEL_PRESS_NOT_FILING = "reported in the press; not from a filing"
+#: Stored on a web finding whose value differs from a filing's. Value-free on purpose:
+#: the filing's figure lives in the ``conflicting_sources`` gap, so no second money
+#: figure rides inside the statement for numeric readers to pick up (review H3).
+LABEL_PRESS_FILING_DIFFERS = "reported in the press; a filing figure differs"
+
+#: Labels that mean "this finding is context, not the answer": reconciliation never lets
+#: a finding carrying one close a gap (review H3).
+NON_CLOSING_LABELS: frozenset[str] = frozenset(
+    {LABEL_PRESS_NOT_FILING, LABEL_PRESS_FILING_DIFFERS, LABEL_SELF_DESCRIBED, LABEL_ANECDOTAL}
+)
+
+
+def is_non_closing_label(label: str | None) -> bool:
+    """A label that means "context, not the answer". Includes the earlier value-bearing
+    relabel ("…; the filing says X") that rows stored before the value-free label carry."""
+    return bool(label) and (
+        label in NON_CLOSING_LABELS or str(label).startswith("reported in the press")
+    )
 
 
 def label_estimate_by(origin_key: str | None) -> str:
@@ -1000,11 +1334,24 @@ class ClaimVerdict:
 NOT_APPLICABLE = ClaimVerdict(None, None, True, applies=False)
 
 
-def _independent_origins(items: Sequence[SupportItem], classes: frozenset[str]) -> set[str]:
-    return {
-        i.origin_key for i in items
-        if i.origin_key and i.source_class in classes and not is_issuer_origin(i.origin_key)
+def _independent_origins(
+    items: Sequence[SupportItem], classes: frozenset[str], *, issuer_key: Any = None
+) -> set[str]:
+    """Independence keys of items of ``classes`` that BEAR independence — never the
+    issuer's, never weak, never wire-hosted, never an unverified claim; capped by the
+    number of distinct verified publishers."""
+    eligible = [
+        i for i in items
+        if i.source_class in classes
+        and bears_independence(i, issuer_key)
+        and not is_verified_issuer(i.origin_key, issuer_key)
+    ]
+    keys = {k for k in (independence_key(i.origin_key) for i in eligible) if k}
+    publishers = {
+        p for p in (group_origin(publisher_of(i.origin_key)) for i in eligible) if p
     }
+    # Two keys but one publisher (or the reverse) is one voice: understate.
+    return keys if len(keys) <= len(publishers) else set(sorted(keys)[: len(publishers)])
 
 
 def assess_claim(
@@ -1012,23 +1359,28 @@ def assess_claim(
     support: Sequence[SupportItem],
     *,
     conflicting: bool = False,
+    issuer_key: Any = None,
 ) -> ClaimVerdict:
-    """Spec §13.3 for one finding. Only applies when the support includes web evidence."""
+    """Spec §13.3 for one finding. Only applies when the support includes web evidence.
+
+    ``issuer_key`` is the RUN's company: ``issuer:<id>`` is stored document-wide and is
+    "mine" only when the id is this run's (review H2). Without one nothing is "mine".
+    """
     items = list(support)
     if not any(item.web for item in items):
         return NOT_APPLICABLE
     claim_type = classify_claim(statement)
     origins = tuple(sorted({i.origin_key for i in items if i.origin_key}))
     classes = tuple(sorted({i.source_class for i in items if i.source_class}))
-    state = corroboration_state(origins, conflicting=conflicting)
+    state = corroboration_for_items(items, issuer_key=issuer_key, conflicting=conflicting)
     present = set(classes)
     # A mention-scope hit (an article NAMING the company) is not the company's voice and
     # not its filing: it never counts as issuer material or fills a filing slot.
     own = [i for i in items if not i.via_subject]
-    own_classes = {i.source_class for i in own if i.source_class}
-    issuer_present = any(
-        is_issuer_origin(i.origin_key)
-        or (i.source_class in ISSUER_CLASSES and i.origin_key is None)
+    # The issuer's VOICE: verified (never claimed), this run's, from its own material.
+    issuer_present = any(is_verified_issuer(i.origin_key, issuer_key) for i in own)
+    verified_filing = any(
+        is_verified_issuer(i.origin_key, issuer_key) and i.source_class in FILING_CLASSES
         for i in own
     )
     only_issuer = state == ISSUER_ONLY
@@ -1040,22 +1392,28 @@ def assess_claim(
         return verdict(True, None)
     if claim_type == CT_FINANCIAL_STATEMENT:
         # A web value is context only; the filing path is canonical.
-        if own_classes & FILING_CLASSES:
+        if verified_filing:
             return verdict(True, None)
         return verdict(False, LABEL_PRESS_NOT_FILING)
     if claim_type == CT_GUIDANCE:
         return verdict(True, None) if issuer_present else verdict(False, LABEL_MANAGEMENT_SAYS)
     if claim_type == CT_SUPERLATIVE:
-        if len(_independent_origins(items, INDEPENDENT_AUTHORITY_CLASSES)) >= 2:
+        authorities = _independent_origins(
+            items, INDEPENDENT_AUTHORITY_CLASSES, issuer_key=issuer_key
+        )
+        if len(authorities) >= 2:
             return verdict(True, None)
-        # Issuer material behind it and fewer than two independent T2–T4 origins: the
-        # company's own description, never stated as fact.
-        if issuer_present:
+        # Issuer material (or a page CLAIMING the issuer's text) behind it and fewer than
+        # two independent T2–T4 origins: the company's own description, never stated as
+        # fact.
+        if issuer_present or only_issuer:
             return verdict(False, LABEL_SELF_DESCRIBED)
         return verdict(False, LABEL_SINGLE_SOURCE)
     if claim_type == CT_MARKET_SIZE:
         estimator = next(
-            (o for o in origins if not is_issuer_origin(o)), origins[0] if origins else None
+            (o for o in origins if independence_key(o) and not _is_issuer_key(
+                independence_key(o), issuer_key)),
+            origins[0] if origins else None,
         )
         acceptable = bool(present & (GOVERNMENT_CLASSES | SPECIALIST_CLASSES
                                      | {SC_RESEARCH_CONSULTANCY}))
@@ -1066,7 +1424,9 @@ def assess_claim(
     if claim_type == CT_CORPORATE_EVENT:
         if state == INDEPENDENTLY_CORROBORATED:
             return verdict(True, None)
-        if only_issuer:
+        if only_issuer and issuer_present:
+            # Only the VERIFIED issuer's own voice is "company says". A page that merely
+            # CLAIMS the issuer's text is one unverified source (review M-D).
             return verdict(True, LABEL_COMPANY_SAYS)
         if present & (PRESS_CLASSES | GOVERNMENT_CLASSES):
             return verdict(True, LABEL_SINGLE_SOURCE)
@@ -1074,7 +1434,7 @@ def assess_claim(
     if claim_type == CT_REGULATORY_STATUS:
         if present & REGULATOR_CLASSES:
             return verdict(True, None)
-        if issuer_present:
+        if issuer_present or only_issuer:
             return verdict(False, LABEL_COMPANY_SAYS)
         return verdict(False, LABEL_SINGLE_SOURCE)
     if claim_type == CT_LITIGATION:
@@ -1085,8 +1445,10 @@ def assess_claim(
         return verdict(False, LABEL_SINGLE_SOURCE)
     if claim_type == CT_INDUSTRY_METRIC:
         qualifying = _independent_origins(
-            items, GOVERNMENT_CLASSES | SPECIALIST_CLASSES | {SC_TRADE_PUBLICATION,
-                                                              SC_MAJOR_FINANCIAL_PRESS}
+            items,
+            GOVERNMENT_CLASSES | SPECIALIST_CLASSES | {SC_TRADE_PUBLICATION,
+                                                       SC_MAJOR_FINANCIAL_PRESS},
+            issuer_key=issuer_key,
         )
         needed = 2 if rf.has_figure(statement or "") else 1
         if len(qualifying) >= needed:
@@ -1106,6 +1468,13 @@ _LABEL_PREFIX_RE = re.compile(
     r"company describes itself as …|issuer technical claim|anecdotal|estimate by [^\]]{1,120}|"
     r"reported in the press[^\]]{0,200})\] "
 )
+
+
+def label_of_statement(statement: str | None) -> str | None:
+    """The W4 label a stored statement carries, or None. The label is the finding's
+    structured trust record for readers that only see the statement (review H3)."""
+    match = _LABEL_PREFIX_RE.match(statement or "")
+    return match.group(0)[1:-2] if match else None
 
 
 def unlabelled_statement(statement: str | None) -> str:
@@ -1143,6 +1512,15 @@ class ClaimSide:
     @property
     def origins(self) -> frozenset[str]:
         return frozenset(i.origin_key for i in self.support if i.origin_key)
+
+    @property
+    def publishers(self) -> frozenset[str]:
+        """The platform-verified publishers behind the support. Two findings from one
+        publisher are one voice; a page's CLAIMED origin never makes two voices one
+        (review F1: a forged "(Reuters)" must not hide a real disagreement)."""
+        return frozenset(
+            p for p in (publisher_of(i.origin_key) for i in self.support) if p
+        )
 
     @property
     def classes(self) -> frozenset[str]:
@@ -1239,7 +1617,7 @@ def find_contradictions(new: ClaimSide, existing: Sequence[ClaimSide]) -> list[C
         ]
         if not shared or not _same_frame(new, other):
             continue
-        if new.origins and other.origins and new.origins & other.origins:
+        if new.publishers and other.publishers and new.publishers & other.publishers:
             continue
         for field_key in shared:
             if not _money_disagree(new, other, field_key):
@@ -1334,6 +1712,19 @@ class TrustOutcome:
 
 
 __all__ = [
+    "origin_display",
+    "LABEL_PRESS_FILING_DIFFERS",
+    "NON_CLOSING_LABELS",
+    "UNRESOLVED_LEAD_ORIGIN",
+    "BRAND_ALIASES",
+    "label_of_statement",
+    "corroboration_for_items",
+    "is_verified_issuer",
+    "claimed_body",
+    "is_claimed_origin",
+    "make_claimed",
+    "publisher_of",
+    "independence_key",
     "CLAIM_TYPES",
     "CONFLICTING",
     "CORROBORATION_STATES",
@@ -1364,7 +1755,11 @@ __all__ = [
     "corroboration_state",
     "find_contradictions",
     "group_origin",
+    "bears_independence",
+    "independent_origin_count",
+    "is_wire_publisher",
     "is_issuer_origin",
+    "is_non_closing_label",
     "issuer_from_candidates",
     "labelled_statement",
     "origin_for",
