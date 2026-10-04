@@ -196,6 +196,7 @@ def _hit_payload(result: Any) -> dict[str, Any]:
         "scope_type": reference.scope_type,
         "scope_name": reference.scope_name,
         "scope_key": reference.scope_key,
+        "via_subject": reference.via_subject,
         "page_start": reference.page_start,
         "page_end": reference.page_end,
         "section_path": reference.section_path,

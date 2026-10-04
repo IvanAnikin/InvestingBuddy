@@ -145,7 +145,7 @@ _ISO_DATE_RE = re.compile(r"((?:19|20)\d{2})-(\d{2})-(\d{2})")
 _HIDDEN_STYLE_RE = re.compile(
     r"display\s*:\s*none"
     r"|visibility\s*:\s*hidden"
-    r"|font-size\s*:\s*0(?:\.0+)?(?:px|pt|em|rem|%)?\s*(?:;|!|$)"
+    r"|font-size\s*:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)(?:px|pt|em|rem|%)?\s*(?:;|!|$)"
     r"|opacity\s*:\s*0(?:\.0+)?\s*(?:;|!|$)"
     r"|(?:^|;)\s*(?:width|height)\s*:\s*0(?:px)?\s*(?:;|!|$)"
     r"|(?:left|top|text-indent|margin-left)\s*:\s*-\d{3,}(?:px|em|rem)?"
@@ -1491,6 +1491,9 @@ async def extract_web_document(
         return WebExtraction(STATUS_FAILED, method, content_class, failure_code=FAILURE_TIMEOUT)
     except ExtractionCrashed:
         return WebExtraction(STATUS_FAILED, method, content_class, failure_code=FAILURE_CRASHED)
+    except Exception as exc:  # noqa: BLE001 - "never raises" holds for ANY pool failure
+        return WebExtraction(STATUS_FAILED, method, content_class,
+                             failure_code=FAILURE_CRASHED, warnings=[type(exc).__name__])
 
 
 __all__ = [

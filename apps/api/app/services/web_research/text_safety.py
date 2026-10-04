@@ -31,7 +31,16 @@ _BIDI_CHARS = "‪-‮⁦-⁩‎‏؜"
 #: Zero-width and invisible formatting characters (BOM mid-text included).
 _ZERO_WIDTH_CHARS = "​-‍⁠-⁤﻿᠎­"
 
-_INVISIBLE_RE = re.compile(f"[{_TAG_CHARS}{_BIDI_CHARS}{_ZERO_WIDTH_CHARS}]")
+#: Variation selectors (U+FE00-FE0F, U+E0100-E01EF: a byte-per-character smuggling
+#: channel) and blank "letters" that render as nothing: U+2800 (braille blank), U+3164
+#: (Hangul filler), U+115F / U+1160 (Hangul fillers), U+FFA0 (half-width filler).
+_BLANK_CHARS = (
+    "\ufe00-\ufe0f\U000e0100-\U000e01ef\u2800\u3164\u115f\u1160\uffa0"
+)
+
+_INVISIBLE_RE = re.compile(
+    f"[{_TAG_CHARS}{_BIDI_CHARS}{_ZERO_WIDTH_CHARS}{_BLANK_CHARS}]"
+)
 _SPACE_RUN_RE = re.compile(r"[ \t]{2,}")
 
 

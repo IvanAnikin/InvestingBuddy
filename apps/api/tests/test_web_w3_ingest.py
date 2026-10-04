@@ -162,7 +162,7 @@ class Env:
     async def ingest(self, fetched: Any, **kw: Any) -> ingest_mod.WebIngestResult:
         kw.setdefault("cfg", self.cfg)
         return await ingest_mod.ingest_web_document(
-            self.session, fetched, pool=kw.pop("pool", self.pool), store=self.store,
+            self.session, fetched, pool=kw.pop("pool", self.pool), store=kw.pop("store", self.store),
             backend=self.backend,
             now=NOW, **kw,
         )
@@ -829,3 +829,76 @@ class TestReviewLeadPathRefusals:
         assert isinstance(prepared, ingest_mod.PreparedLeadDocument)
         assert await _count(env.session, WebFetchAttempt) == 0
         assert {r.origin for r in prepared.rows} == {"robots", "lead"}
+
+
+# --------------------------------------------------------------------------- #
+# Re-review robustness items (W3)
+# --------------------------------------------------------------------------- #
+
+
+class _CountingStore(InMemoryArtifactStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts = 0
+
+    async def put(self, data: bytes, *, media_type: str) -> Any:
+        self.puts += 1
+        return await super().put(data, media_type=media_type)
+
+
+class TestRobustnessIngest:
+    async def test_the_artifact_upload_happens_in_prepare_not_in_the_savepoint(
+        self, env: Env
+    ) -> None:
+        # #3: an azure_blob PUT of up to 35 MB must not run inside the research
+        # transaction's savepoint — prepare does it, store only records lineage.
+        store = _CountingStore()
+        prepared = await ingest_mod.prepare_web_document(
+            _fetched(_page("news_article.html"), "https://www.gridweekly.example/n"),
+            cfg=env.cfg, company_id=uuid.uuid4(), pool=env.pool, store=store, now=NOW,
+        )
+        assert isinstance(prepared, ingest_mod.PreparedWebDocument)
+        assert store.puts == 1 and prepared.stored_artifact is not None
+        result = await ingest_mod.store_web_document(env.session, prepared, cfg=env.cfg,
+                                                     store=_ExplodingStore(), now=NOW)
+        assert result.state == ingest_mod.STATE_INGESTED
+        assert store.puts == 1  # the store phase uploaded nothing
+        artifact = (await env.session.execute(select(ResearchArtifact))).scalar_one()
+        assert artifact.storage_key == prepared.stored_artifact.storage_key
+
+    async def test_a_failed_upload_costs_the_bytes_not_the_document(self, env: Env) -> None:
+        result = await env.ingest(
+            _fetched(_page("news_article.html"), "https://www.gridweekly.example/n"),
+            company_id=uuid.uuid4(), store=_ExplodingStore(),
+        )
+        assert result.state == ingest_mod.STATE_INGESTED
+        artifact = (await env.session.execute(select(ResearchArtifact))).scalar_one()
+        assert artifact.storage_key is None  # lineage row, no bytes
+
+    async def test_a_pdf_creation_date_is_not_an_authoritative_date(
+        self, env: Env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #4: /CreationDate is often inherited from the prior year's file; it is stored
+        # (labelled) for "since" but never reaches the period rules / ExtractedDocument.
+        from app.services.web_research import extract as ex
+
+        original = ex._pdf_creation_date
+        monkeypatch.setattr(ex, "_pdf_creation_date", lambda _r: date(2024, 12, 20))
+        raw = make_pdf(["Interim report\nGroup revenue rose in the half year."])
+        result = await env.ingest(_fetched(raw, "https://issuer.example/ir.pdf",
+                                           content_class="pdf"),
+                                  company_id=uuid.uuid4(), pool=_InlinePool())
+        assert original is not ex._pdf_creation_date
+        assert result.state == ingest_mod.STATE_INGESTED
+        version = await env.session.get(ResearchDocumentVersion, result.version_id)
+        assert version.published_at == date(2024, 12, 20)
+        assert version.published_at_source == "pdf_metadata"
+        shared = await env.session.get(ExtractedDocument, result.extracted_document_id)
+        assert shared.doc_date is None
+
+
+class _ExplodingStore:
+    backend_name = "memory"
+
+    async def put(self, *_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("storage account unreachable")

@@ -38,9 +38,12 @@ Every worker, before its first task:
 * sets ``RLIMIT_AS`` to ``V3_WEB_EXTRACTION_MEMORY_MB`` (Linux enforces it; macOS does
   not), so a Flate bomb ends the worker, not the App Service instance.
 
-Each task sets ``RLIMIT_CPU`` to its own budget (current usage + timeout), and a worker
-is retired after ``MAX_TASKS_PER_CHILD`` tasks, so slow leaks and fragmentation do not
-accumulate.
+Each task sets ``RLIMIT_CPU`` to its own budget (current usage + timeout). The POOL
+recycles its executor itself after ``MAX_TASKS_PER_CHILD`` runs — at the start of the
+next run, under the gate, and warms the replacement BEFORE that run's timeout is charged
+— so slow leaks and fragmentation do not accumulate and no document is ever killed for
+its worker's cold start (``ProcessPoolExecutor(max_tasks_per_child=...)`` would respawn
+the worker lazily, inside the next document's own timeout).
 
 SIZING (B1, 1.75 GB): every API / worker process that ingests web documents owns ONE
 pool. With the default of one worker per pool, each such process adds one extraction
@@ -178,28 +181,52 @@ class ExtractionPool:
         self._lock = threading.Lock()
         self._gate = threading.BoundedSemaphore(self.workers)
         self.kills = 0
+        #: Runs submitted to the CURRENT executor (reset when it is replaced).
+        self._runs = 0
+        self.recycles = 0
+        #: Module-level callable run once per worker to warm it (a test seam).
+        self._warm_fn: Callable[[], Any] = warm_up
 
     def _get_executor(self) -> tuple[ProcessPoolExecutor, bool]:
+        """``(executor, fresh)``. An executor that has served its quota is replaced."""
         with self._lock:
+            retired = None
+            if self._executor is not None and self._runs >= self.max_tasks_per_child:
+                retired, self._executor = self._executor, None
+                self.recycles += 1
             if self._executor is None:
+                self._runs = 0
                 self._executor = ProcessPoolExecutor(
                     max_workers=self.workers,
                     mp_context=multiprocessing.get_context("spawn"),
                     initializer=_init_worker,
                     initargs=(self.memory_mb,),
-                    max_tasks_per_child=self.max_tasks_per_child,
                 )
-                return self._executor, True
-            return self._executor, False
+                fresh = True
+            else:
+                fresh = False
+            executor = self._executor
+        if retired is not None:
+            # The gate is held, so no call is in flight on it: nothing is cut short.
+            # Killing is instant; the dead processes are reaped by the runtime, so the
+            # event loop never waits here.
+            self._forget(retired, kill=True)
+        return executor, fresh
 
     async def _warm(self, executor: ProcessPoolExecutor) -> None:
-        futures = [executor.submit(warm_up) for _ in range(self.workers)]
+        """Warm every worker of a NEW executor. Any failure discards it (never installed
+        half-warmed) and surfaces as :class:`ExtractionCrashed` — an ``ImportError`` or
+        ``MemoryError`` under ``RLIMIT_AS`` included."""
         try:
+            futures = [executor.submit(self._warm_fn) for _ in range(self.workers)]
             await asyncio.wait_for(
                 asyncio.gather(*(asyncio.wrap_future(f) for f in futures)),
                 timeout=WARM_UP_TIMEOUT_SECONDS,
             )
-        except (TimeoutError, BrokenProcessPool) as exc:
+        except asyncio.CancelledError:
+            self._forget(executor, kill=True)
+            raise
+        except Exception as exc:  # noqa: BLE001 - TimeoutError, BrokenProcessPool, ImportError…
             await self._discard(executor, kill=True)
             raise ExtractionCrashed("an extraction worker failed to start") from exc
 
@@ -239,6 +266,7 @@ class ExtractionPool:
             if fresh:
                 await self._warm(executor)
             try:
+                self._runs += 1
                 future = executor.submit(
                     _run_limited, fn, float(timeout) + self.cpu_margin_seconds, args
                 )

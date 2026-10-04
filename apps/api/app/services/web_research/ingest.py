@@ -81,6 +81,10 @@ SUBJECT_SCOPES: frozenset[str] = frozenset({"company", "theme", "industry", "mac
 SOURCE_TYPE_OPEN_WEB = "open_web"
 TRANSPORT_PREFIX = "open_web:"
 DATE_SOURCE_TEXT = "text"
+DATE_SOURCE_PDF_METADATA = "pdf_metadata"
+NON_AUTHORITATIVE_DATES: frozenset[str] = frozenset(
+    {DATE_SOURCE_TEXT, DATE_SOURCE_PDF_METADATA}
+)
 
 _TRANSPORT_MAX = 100
 _THEME_KEY_MAX = 120
@@ -133,6 +137,10 @@ class PreparedWebDocument:
     theme_key: str | None
     provider: str | None
     result: WebIngestResult
+    #: The raw bytes as already PUT in the artifact store (hash-addressed, idempotent),
+    #: so ``store_web_document`` — which runs inside the caller's savepoint — does no
+    #: network upload (review F6). None when the corpus is off or this is a duplicate.
+    stored_artifact: Any = None
 
 
 def ingest_enabled(cfg: Any) -> bool:
@@ -202,8 +210,11 @@ async def prepare_web_document(
     query_terms: tuple[str, ...] = (),
     depth: str = "standard",
     pool: Any = None,
+    store: Any = None,
+    now: datetime | None = None,
 ) -> PreparedWebDocument | WebIngestResult:
-    """Extract, analyse and classify one fetched document. No database access at all.
+    """Extract, analyse and classify one fetched document, and PUT its raw bytes in the
+    artifact store. No database access at all.
 
     Returns a :class:`WebIngestResult` when the document is refused or did not extract.
     """
@@ -270,7 +281,12 @@ async def prepare_web_document(
         result.reason = extraction.failure_code or REASON_EXTRACTION
         _log(result, url)
         return result
+    stamp = now or datetime.now(timezone.utc)
+    stored_artifact = await _put_artifact(
+        fetched, classification, cfg=cfg, store=store, stamp=stamp
+    )
     return PreparedWebDocument(
+        stored_artifact=stored_artifact,
         fetched=fetched,
         url=url,
         canonical=canonical,
@@ -286,6 +302,37 @@ async def prepare_web_document(
         provider=provider,
         result=result,
     )
+
+
+async def _put_artifact(
+    fetched: Any, classification: Any, *, cfg: Any, store: Any, stamp: datetime
+) -> Any:
+    """Retain the raw bytes where policy permits. Content-addressed, so a duplicate or
+    a retry is a no-op; a failure is a recorded outcome, never an exception."""
+    from app.services.corpus.artifacts.service import store_raw_artifact
+    from app.services.corpus.policy import default_policy_for
+
+    policy = default_policy_for(
+        classification.access_class,
+        retention_days=_retention_days(cfg, classification.use_constraint),
+        now=stamp,
+    )
+    media_type = _MEDIA_TYPES.get(
+        fetched.content_class, fetched.mime_sniffed or "application/octet-stream"
+    )
+    try:
+        return await store_raw_artifact(
+            fetched.content,
+            media_type=media_type,
+            access_class=classification.access_class,
+            cfg=cfg,
+            store=store,
+            policy=policy,
+            now=stamp,
+        )
+    except Exception:  # noqa: BLE001 - losing the bytes costs re-extraction, not the document
+        logger.warning("web artifact could not be stored")
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -339,43 +386,31 @@ async def store_web_document(
         _log(result, prepared.url)
         return result
 
-    from app.services.corpus.artifacts.service import record_artifact, store_raw_artifact
+    from app.services.corpus.artifacts.service import record_artifact
     from app.services.corpus.documents import (
         CorpusIngestResult,
         WebVersionFields,
         ingest_extracted_document,
     )
-    from app.services.corpus.policy import default_policy_for
     from app.services.sources.disclosure_period_policy import PERIOD_POLICY_TITLE_ONLY
     from app.services.web_research.dedup import origin_key_for
     from app.services.web_research.extract import WEB_EXTRACTOR_VERSION
 
     fetched = prepared.fetched
-    policy = default_policy_for(
-        classification.access_class,
-        retention_days=_retention_days(cfg, classification.use_constraint),
-        now=stamp,
-    )
     media_type = _MEDIA_TYPES.get(
         fetched.content_class, fetched.mime_sniffed or "application/octet-stream"
     )
-    stored = await store_raw_artifact(
-        fetched.content,
-        media_type=media_type,
-        access_class=classification.access_class,
-        cfg=cfg,
-        store=store,
-        policy=policy,
-        now=stamp,
-    )
+    stored = prepared.stored_artifact  # already PUT during prepare: no upload here
     await record_artifact(session, stored, cfg=cfg, now=stamp)
 
     body = extraction.extraction
     title = (meta.title or "")[:500] or None
     transport = transport_for(prepared.provider)
-    # A text-found date is not authoritative: it never reaches the period rules.
+    # A text-found date and a PDF /CreationDate (often inherited from last year's file)
+    # are not authoritative: neither reaches the period rules (review F9).
     authoritative_date = (
-        meta.published_at if meta.published_at_source != DATE_SOURCE_TEXT else None
+        meta.published_at if meta.published_at_source not in NON_AUTHORITATIVE_DATES
+        else None
     )
     document = await _get_or_create_extracted_document(
         session,
@@ -498,6 +533,8 @@ async def ingest_web_document(
         query_terms=query_terms,
         depth=depth,
         pool=pool,
+        store=store,
+        now=now,
     )
     if isinstance(prepared, WebIngestResult):
         return prepared
@@ -888,6 +925,7 @@ async def prepare_verified_lead_document(
     provider: str | None = None,
     candidates: tuple[Any, ...] = (),
     pool: Any = None,
+    store: Any = None,
     resolver: Any = None,
     runtime: Any = None,
 ) -> PreparedLeadDocument | WebIngestResult:
@@ -999,6 +1037,7 @@ async def prepare_verified_lead_document(
         company_id=company_id,
         candidates=candidates,
         pool=pool,
+        store=store,
     )
     if isinstance(prepared, WebIngestResult):
         return prepared
@@ -1077,6 +1116,7 @@ async def ingest_verified_lead_document(
         provider=provider,
         candidates=candidates,
         pool=pool,
+        store=store,
         resolver=resolver,
         runtime=runtime,
     )

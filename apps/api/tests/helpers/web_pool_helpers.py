@@ -18,3 +18,12 @@ def worker_pid(_: int = 0) -> int:
 
 def crash(_: int = 0) -> int:
     os._exit(9)
+
+
+def warm_up_import_error() -> bool:
+    """A warm-up that fails the way a tight RLIMIT_AS does (an import can't allocate)."""
+    raise ImportError("cannot allocate memory in static TLS block")
+
+
+def warm_up_memory_error() -> bool:
+    raise MemoryError
