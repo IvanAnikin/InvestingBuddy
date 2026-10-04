@@ -403,6 +403,7 @@ async def store_web_document(
 
     # Open-web W4 (spec §14.1–14.2): the origin algorithm, and a near-duplicate of a
     # stored document is LINKED to it rather than chunked again.
+    from app.services.web_research.dedup import apply_stricter_use_constraint
     from app.services.web_research.trust import OriginInput, document_origin
 
     decision, duplicate = await document_origin(
@@ -413,8 +414,10 @@ async def store_web_document(
             source_class=classification.source_class,
             rel_canonical=getattr(prepared.fetched, "rel_canonical", None),
         ),
-        published_at=meta.published_at,
         simhash=extraction.simhash,
+        text=extraction.main_text,
+        company_id=company_id,
+        theme_key=prepared.theme_key,
         issuer=prepared.issuer,
     )
     result.origin_key = decision.origin_key
@@ -434,6 +437,12 @@ async def store_web_document(
         )
         if result.subjects_written:
             result.indexed = await _index(session, duplicate.id, cfg=cfg, backend=backend)
+        # Linking must not loosen a licence: keep the stricter use_constraint (review M7).
+        stricter = await apply_stricter_use_constraint(
+            session, duplicate, classification.use_constraint
+        )
+        if stricter:
+            result.notes.append(f"use_constraint tightened to {stricter} on link")
         result.notes.append("near-duplicate of a stored document; linked, not re-chunked")
         _log(result, prepared.url)
         return result

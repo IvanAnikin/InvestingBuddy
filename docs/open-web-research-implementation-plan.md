@@ -448,7 +448,7 @@ publisher groups `PUBLISHER_GROUPS_VERSION`, corroboration states, claim types a
 
 - **No migration.** The plan's data model holds: `simhash` / `origin_key` (044) carry
   dedup and origin. The finding's label is a statement PREFIX (`[company says] …`,
-  `[company describes itself as …] …`, `[reported in the press; the filing says X] …`),
+  `[company describes itself as …] …`, `[reported in the press; a filing figure differs] …`),
   never stacked, and `claim_key` is computed from the unlabelled text. The structured
   verdict (claim type, corroboration state, origins, classes, web fact) is written to the
   question's `acquisition_log_json` as a `rung="trust"` step. A queryable column for the
@@ -458,18 +458,18 @@ publisher groups `PUBLISHER_GROUPS_VERSION`, corroboration states, claim types a
   web evidence is present; the origin cap applies to web origins only, so a filing's
   chunks are never capped. Note: verified leads ARE web evidence, so a lead-backed
   finding is now checked and labelled (e.g. one USGS figure → `single source estimate`).
-- **Ingest.** Origin = `trust.document_origin` (cluster → issuer voice / PR-wire host →
-  wire attribution → "Source:" line → boilerplate → cross-domain canonical → publisher
-  group → registrable domain). A near-duplicate (SimHash ≤ 3, bounded scan of the newest
-  2,000 fingerprints) is LINKED to the stored document (subjects row), never re-chunked;
-  when the new document was published earlier its origin is written to the stored
-  members. `content_origin` stays the publisher's registrable domain.
+- **Ingest.** Origin = `trust.document_origin` (verified issuer domain / filing header →
+  claims from page text → registry group → registrable domain; see the review round below
+  for the verified-vs-claimed rule). A near-duplicate is LINKED to the stored document
+  (subjects row), never re-chunked, under the guards listed below. `content_origin` stays
+  the publisher's registrable domain.
 - **Contradictions.** At persistence, a non-guidance money field stated for the same
   period and scope by a different origin with a different value (track B's
   `compare_values`) records a `conflicting_sources` gap describing every side (class,
   origin, date, value; display order regulator > issuer > press, newer first). For a
   financial-statement field the filing side is canonical and the web finding is relabelled
-  "reported in the press; the filing says X"; otherwise there is no winner. Guidance
+  "reported in the press; a filing figure differs" (value-free, see the review round);
+  otherwise there is no winner. Guidance
   fields are excluded (temporal supersession is track B's).
 - **Claim keys reuse `research_fields`** (`fields_stated`, `field_clause`, `money_values`,
   `SUPERSEDABLE_FIELDS`) — no parallel vocabulary. Financial-statement fields:
@@ -480,6 +480,45 @@ publisher groups `PUBLISHER_GROUPS_VERSION`, corroboration states, claim types a
 - **Retrieval.** `search_corpus` forwards `source_classes`, `theme_keys`,
   `subject_scopes`, `exclude_injection_suspect`; hits carry `source_class`, `origin_key`,
   `injection_suspect`. `search_theme_corpus` is registered but held by no role (W6).
+**W4 review round 1 (fixes, branch `feature/web-w4-fix`).** Design rule: *an origin read
+from page text is a claim.* It may only reduce independence.
+
+- Origins are **verified** (verified issuer domain; filing/exchange host whose header
+  names the run's issuer; registry group; registrable domain) or **claimed**
+  (`claimed:<what the page says>@<publisher>`: wire attribution, "Source:", "About X" +
+  contact block, cross-domain canonical). A claim counts as the thing it claims
+  (`independence_key`); it never becomes `issuer:<id>`, never merges with a verified
+  origin, never counts as issuer voice. PR-wire / RNS / ASX hosts are never an origin
+  (`unknown:<url hash>` or a claim). Residual: a wire release naming the issuer is
+  "management says"-labelled for guidance, because no wire account is verified to an
+  issuer yet.
+- `issuer:<id>` is compared to the RUN's company in every rule (`is_verified_issuer`);
+  `ledger.record_finding(issuer_key=…)` defaults to `run.company_id`; no issuer key means
+  nothing is "mine".
+- Corroboration counts independence keys of NON-weak classes only (two scraper pages are
+  one weak source). Contradiction detection skips pairs by PUBLISHER, not by claimed
+  origin. Display (labels, prompt) shows only domains / registry groups / "the company".
+- Near-duplicate linking: exact bytes (W3) or SimHash <= 3 with identical numbers, same
+  company/theme scope, never to a lower-authority representative, min 40 tokens, band
+  prefilter (4 x 16-bit) in SQL; "earliest" is stored order (never a page date); stored
+  origins are never rewritten; a link keeps the stricter `use_constraint`.
+- Reconciliation reads the stored label (`trust.label_of_statement`): a finding labelled
+  "reported in the press…", self-described or anecdotal never closes a gap
+  (`web_context_only`). The relabel is value-free ("a filing figure differs"); the
+  filing's figure lives in the `conflicting_sources` gap. Readers strip labels
+  (`unlabelled_statement`).
+- Ledger contradiction scan: newest 50 findings that state the same money field, ONE
+  batched support lookup, at most 3 gaps per finding, in a SAVEPOINT that degrades to "no
+  contradiction" (nothing the caller holds is modified inside it).
+- Attribution regexes read fixed windows with per-line anchors (no quadratic scans);
+  `cluster_near_duplicates` is banded (5,000 members: 68 s -> < 1 s); packs: suspect
+  primaries are never forced, primary needs the run's issuer origin, the pack date comes
+  from the evidence (no clock); verified leads use the stored version's class/origin, an
+  unresolved lead is one shared non-independent origin; lead strings are rendered and
+  capped like chunks.
+- Known limits: `resolve_support` cannot know `via_subject` for a PRIOR finding's items;
+  "(Reuters)" in a wire's own lead on a verified Reuters host is still a claim.
+
 - Not done here: event facts in a fact table (§17.3 is computed and logged, not stored as
   rows — no table exists), Discovery's 6-item per-candidate pack (W6), a Hamming index.
 

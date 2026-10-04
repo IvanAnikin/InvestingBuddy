@@ -541,15 +541,21 @@ _WEB_CORPUS_EVIDENCE_KEYS: tuple[str, ...] = (
     "evidence_id",
     "text",
     "source_class",
-    "origin_key",
+    "origin",
     "published_at",
     "document_type",
     "period_key",
     "scope_key",
     "page_start",
     "page_end",
-    "section_path",
+    "section",
 )
+
+#: A page-derived heading is capped before it reaches the prompt (review M6).
+_SECTION_PROMPT_CHARS = 120
+_LEAD_URL_PROMPT_CHARS = 200
+_LEAD_CLAIM_PROMPT_CHARS = 300
+_LEAD_EXCERPT_PROMPT_CHARS = 700
 
 _CORPUS_TOOLS: frozenset[str] = frozenset({TOOL_SEARCH_COMPANY_CORPUS, TOOL_SEARCH_THEME_CORPUS})
 
@@ -568,7 +574,11 @@ _TYPED_TOOL_CLASS: dict[str, str] = {
 
 def _trust_fields(tool: str, item: dict[str, Any]) -> dict[str, Any]:
     """Class, origin and taint of one record — from the tool's typed fields only."""
-    from app.services.web_research.trust import class_for_tier, group_origin
+    from app.services.web_research.trust import (
+        UNRESOLVED_LEAD_ORIGIN,
+        class_for_tier,
+        group_origin,
+    )
 
     if tool in _CORPUS_TOOLS:
         web_class = _clean(item.get("source_class"))
@@ -597,10 +607,16 @@ def _trust_fields(tool: str, item: dict[str, Any]) -> dict[str, Any]:
             host = urlsplit(url or "").hostname or ""
         except ValueError:
             host = ""
+        # The STORED version's class and origin when the lead was stored (the same
+        # strings a later read of the version gives); else the publisher's registrable
+        # domain, platform-derived from the fetched host (review M5).
         return {
             "web": True,
-            "source_class": classify_source(url).source_class if url else None,
-            "origin_key": _clean(item.get("origin_key")) or group_origin(origin_key_for(host)),
+            "source_class": _clean(item.get("stored_source_class"))
+            or (classify_source(url).source_class if url else None),
+            "origin_key": _clean(item.get("origin_key"))
+            or group_origin(origin_key_for(host))
+            or UNRESOLVED_LEAD_ORIGIN,
         }
     return {"source_class": _TYPED_TOOL_CLASS.get(tool)}
 
@@ -613,14 +629,33 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
     if untrusted:
         item = _render_untrusted(item)
     if tool in _CORPUS_TOOLS and trust.get("web"):
+        # Whitelist (PI-09). ``origin`` is a platform-derived DISPLAY of the origin (a
+        # domain, a registry group, "the company") — never the raw key, whose claimed
+        # part is a name read from page text (review F4/M6). The heading is capped.
+        from app.services.web_research.trust import origin_display
+
+        shown_item = dict(item)
+        shown_item["origin"] = origin_display(trust.get("origin_key"))
+        section = str(item.get("section_path") or "").strip()
+        shown_item["section"] = section[:_SECTION_PROMPT_CHARS] or None
         text = json.dumps(
-            {k: item.get(k) for k in _WEB_CORPUS_EVIDENCE_KEYS if item.get(k) is not None},
+            {k: shown_item.get(k) for k in _WEB_CORPUS_EVIDENCE_KEYS
+             if shown_item.get(k) is not None},
             default=str,
         )
     elif tool == TOOL_FETCH_PUBLIC_SOURCE:
         shown = {k: item.get(k) for k in _EXTERNAL_EVIDENCE_KEYS if item.get(k)}
         if "claim" in shown:
             shown["provider_claim_not_verified_wording"] = shown.pop("claim")
+        # Provider- and page-controlled strings are rendered (above) AND capped: the
+        # lead path is whitelisted like the corpus path (review M6).
+        for key, limit in (
+            ("fetched_url", _LEAD_URL_PROMPT_CHARS),
+            ("provider_claim_not_verified_wording", _LEAD_CLAIM_PROMPT_CHARS),
+            ("source_excerpt", _LEAD_EXCERPT_PROMPT_CHARS),
+        ):
+            if key in shown:
+                shown[key] = str(shown[key])[:limit]
         # Verification located the VALUE in the page, near the claim's words. It did not
         # check what the provider said the value measures, in what unit or currency, or
         # for where — so those travel labelled as the provider's, unverified. A page
@@ -859,6 +894,7 @@ def _build_prompt(
     *,
     retry: bool = False,
     established: "Sequence[tuple[str, str, str | None]]" = (),
+    issuer_key: Any = None,
 ) -> tuple[str, str]:
     system = (
         "You are a research analyst on an evidence-first investment research platform.\n"
@@ -925,7 +961,7 @@ def _build_prompt(
     # Built from the items that FIT, not from everything retrieved: an id whose text the
     # budget trimmed away is an id this model has not read, and a citation to unread
     # evidence is the fabrication rule 1 exists to prevent.
-    shown, dropped = _fit_to_budget(evidence)
+    shown, dropped = _fit_to_budget(evidence, issuer_key)
     lines.extend(f"  - {item.citation_id}" for item in shown)
     lines.append("")
     # A marker no page can know. Up to 700 characters of fetched web text now sit inside
@@ -994,7 +1030,7 @@ _TYPED_RECORD_TOOLS: frozenset[str] = frozenset({
 
 
 def _fit_to_budget(
-    evidence: "Sequence[_Evidence]",
+    evidence: "Sequence[_Evidence]", issuer_key: Any = None
 ) -> "tuple[list[_Evidence], dict[str, int]]":
     """What fits in the prompt's evidence budget, and what each tool lost to it.
 
@@ -1005,7 +1041,7 @@ def _fit_to_budget(
     flow statement.
     """
     shown: list[_Evidence] = []
-    packed, dropped = _compose_pack(evidence)
+    packed, dropped = _compose_pack(evidence, issuer_key)
     total = 0
     for item in _by_density(packed):
         # The block's own framing costs characters too; counting the text alone let the
@@ -1025,7 +1061,7 @@ PACK_MAX_ITEMS = 16
 
 
 def _compose_pack(
-    evidence: "Sequence[_Evidence]",
+    evidence: "Sequence[_Evidence]", issuer_key: Any = None
 ) -> "tuple[list[_Evidence], dict[str, int]]":
     """The ranked evidence pack (spec §17.1) — only when web evidence is present.
 
@@ -1061,6 +1097,9 @@ def _compose_pack(
             for item in prose
         ],
         max_items=PACK_MAX_ITEMS,
+        # Who "primary" is for THIS run; never the clock (the pack date comes from the
+        # evidence itself).
+        issuer_origin=f"issuer:{issuer_key}" if issuer_key else None,
     )
     dropped: dict[str, int] = {}
     for keys in result.dropped.values():
@@ -1914,7 +1953,9 @@ class LLMInvestigator:
                 False,
             )
 
-        system, user = _build_prompt(question, evidence, role_id, established=established)
+        system, user = _build_prompt(
+            question, evidence, role_id, established=established, issuer_key=self.company_id
+        )
         self.diagnostics.responses_total += 1
         try:
             reply = await self._complete(system, user)
@@ -2171,7 +2212,9 @@ class LLMInvestigator:
         second call erasing a good diagnosis.
         """
         self.diagnostics.responses_retried_after_truncation += 1
-        system, user = _build_prompt(question, evidence, role_id, retry=True)
+        system, user = _build_prompt(
+            question, evidence, role_id, retry=True, issuer_key=self.company_id
+        )
         try:
             retry = await self._complete(system, user)
         except Exception:  # noqa: BLE001 - see the docstring: never worse than no retry
