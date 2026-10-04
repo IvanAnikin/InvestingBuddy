@@ -37,13 +37,13 @@ from typing import Any
 
 from app.services import safety_terms
 from app.services.llm.discovery_schemas import (
-    WEB_CONFIDENCE_LEVELS,
-    WEB_DIMENSIONS,
     ALLOWED_INTERNAL_ACTIONS,
     ALLOWED_RUN_QUALITY,
     DEFAULT_INTERNAL_ACTION,
     DEFAULT_RUN_QUALITY,
     STATUS_FAILED,
+    WEB_CONFIDENCE_LEVELS,
+    WEB_DIMENSIONS,
     DiscoveryCouncilAgentOutput,
 )
 from app.services.llm.gap_attribution import ground_gap_text

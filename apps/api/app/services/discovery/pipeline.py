@@ -513,14 +513,14 @@ async def run_dynamic_stage(
             from app.services.discovery import admission as adm
 
             if not adm.search_lead_has_provenance(lead.web, executed_query_ids):
-                decision = adm.decide(discovery_mode="search", has_provenance=False,
-                                      identity_verified=False)
-                _attach_admission(lead, decision.to_dict())
+                a1_decision = adm.decide(discovery_mode="search", has_provenance=False,
+                                         identity_verified=False)
+                _attach_admission(lead, a1_decision.to_dict())
                 stage.rejected.append(
                     IdentityOutcome(lead=lead, status=IDENTITY_REJECTED, ticker=lead.ticker,
                                     exchange=venue, name=lead.name,
                                     rejection_reason=adm.CODE_NO_SEARCH_PROVENANCE,
-                                    detail=decision.detail or "")
+                                    detail=a1_decision.detail or "")
                 )
                 continue
         if (key and key in seen_keys) or (name_key and name_key in seen_names):
@@ -729,7 +729,9 @@ def _web_enabled(cfg: Any) -> bool:
     return bool(getattr(cfg, "v3_discovery_web_search_enabled", False))
 
 
-def _known_names(leads: list[CompanyLead], held: list[Any]) -> tuple[tuple[str, ...], frozenset[str]]:
+def _known_names(
+    leads: list[CompanyLead], held: list[Any]
+) -> tuple[tuple[str, ...], frozenset[str]]:
     """IR / site domains and ``venue:ticker`` keys of the names this run already knows.
 
     Saturation (spec §5.3) and the novelty metric compare against these: a curated-registry
@@ -817,20 +819,20 @@ def _web_block(
 
     lead = identity.lead
     if lead.discovery_mode == "search" and lead.web:
-        block = dict(lead.web)
-        decision = dict(block.get("admission") or {})
+        found = dict(lead.web)
         # Evidence ids use the passages as A3 saw them (issuer pages upgraded).
-        block["mentions"] = _a3_mentions(lead, identity.name)
-        block["admission"] = adm.apply_a4(
-            decision, status=eligibility.status, reasons=eligibility.reasons
+        found["mentions"] = _a3_mentions(lead, identity.name)
+        found["admission"] = adm.apply_a4(
+            dict(found.get("admission") or {}), status=eligibility.status,
+            reasons=eligibility.reasons,
         )
-        return block
+        return found
     corr = (
         corroboration.get(dedup_key(identity.ticker, identity.exchange) or "")
         or corroboration.get(normalised_name(identity.name))
         or lead.web
     )
-    decision = adm.decide(
+    labelled = adm.decide(
         discovery_mode=lead.discovery_mode,
         has_provenance=False,
         identity_verified=True,
@@ -845,7 +847,7 @@ def _web_block(
     block: dict[str, Any] = {
         "schema": "discovery_web_lead/1",
         "discovery_mode": lead.discovery_mode or lead.source,
-        "admission": adm.apply_a4(decision.to_dict(), status=eligibility.status,
+        "admission": adm.apply_a4(labelled.to_dict(), status=eligibility.status,
                                   reasons=eligibility.reasons),
     }
     if corr:

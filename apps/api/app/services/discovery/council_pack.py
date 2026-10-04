@@ -58,16 +58,32 @@ BASE_QUOTA: dict[str, int] = {DIM_THEME: 3, DIM_CATALYSTS: 2, DIM_DOWNSIDE: 1}
 LEFTOVER_ORDER: tuple[str, ...] = (DIM_THEME, DIM_DOWNSIDE, DIM_CATALYSTS)
 
 #: Source classes that speak with authority on a company or a market.
-_AUTHORITATIVE = frozenset({
-    "industry_association", "government_publication", "regulator_publication",
-    "statistical_agency", "specialist_agency", "standards_body",
-    "issuer_filing", "regulatory_filing", "exchange_announcement",
-    "company_press_release", "investor_presentation", "company_web_page",
-})
-_ISSUER_CLASSES = frozenset({
-    "issuer_filing", "regulatory_filing", "exchange_announcement", "company_press_release",
-    "investor_presentation", "company_web_page",
-})
+_AUTHORITATIVE = frozenset(
+    {
+        "industry_association",
+        "government_publication",
+        "regulator_publication",
+        "statistical_agency",
+        "specialist_agency",
+        "standards_body",
+        "issuer_filing",
+        "regulatory_filing",
+        "exchange_announcement",
+        "company_press_release",
+        "investor_presentation",
+        "company_web_page",
+    }
+)
+_ISSUER_CLASSES = frozenset(
+    {
+        "issuer_filing",
+        "regulatory_filing",
+        "exchange_announcement",
+        "company_press_release",
+        "investor_presentation",
+        "company_web_page",
+    }
+)
 
 CONF_HIGH = "high"
 CONF_MEDIUM = "medium"
@@ -77,8 +93,13 @@ CONFIDENCE_LEVELS: frozenset[str] = frozenset({CONF_HIGH, CONF_MEDIUM, CONF_LOW,
 
 #: The dimensions the Council may assess (spec §6.3), each with evidence_confidence + ids.
 COUNCIL_DIMENSIONS: tuple[str, ...] = (
-    "theme_relevance", "growth_drivers", "profitability_cash", "business_quality",
-    "catalysts", "resilience", "principal_downside",
+    "theme_relevance",
+    "growth_drivers",
+    "profitability_cash",
+    "business_quality",
+    "catalysts",
+    "resilience",
+    "principal_downside",
 )
 
 
@@ -145,8 +166,16 @@ def build_candidate_web_pack(
                 continue
             if dim == DIM_THEME and entry.get("source_class") not in A3_SOURCE_CLASSES:
                 continue
-            terms = entry.get({"theme_relevance": "theme_terms", "catalysts": "catalyst_terms",
-                               "principal_downside": "risk_terms"}[dim]) or []
+            terms = (
+                entry.get(
+                    {
+                        "theme_relevance": "theme_terms",
+                        "catalysts": "catalyst_terms",
+                        "principal_downside": "risk_terms",
+                    }[dim]
+                )
+                or []
+            )
             source_class = entry.get("source_class")
             item = PackItem(
                 key=f"{entry.get('evidence_id')}#{dim}",
@@ -168,8 +197,10 @@ def build_candidate_web_pack(
         order = {item.key: i for i, item in enumerate(pack.items)}
         entry_of = {p.key: e for p, e in pool}
         item_of = {p.key: p for p, _ in pool}
-        chosen_by_dim[dim] = [(item_of[p.key], entry_of[p.key])
-                              for p in sorted(pack.items, key=lambda x: order[x.key])]
+        chosen_by_dim[dim] = [
+            (item_of[p.key], entry_of[p.key])
+            for p in sorted(pack.items, key=lambda x: order[x.key])
+        ]
         for reason, keys in pack.dropped.items():
             dropped[reason] = dropped.get(reason, 0) + len(keys)
 
@@ -191,9 +222,16 @@ def build_candidate_web_pack(
                 "source_class": e.get("source_class"),
                 "domain": e.get("domain"),
                 "kind": e.get("kind"),
-                "terms": list(e.get({"theme_relevance": "theme_terms",
-                                     "catalysts": "catalyst_terms",
-                                     "principal_downside": "risk_terms"}[dim]) or [])[:4],
+                "terms": list(
+                    e.get(
+                        {
+                            "theme_relevance": "theme_terms",
+                            "catalysts": "catalyst_terms",
+                            "principal_downside": "risk_terms",
+                        }[dim]
+                    )
+                    or []
+                )[:4],
                 "excerpt": _excerpt(e.get("passage")),
             }
             for i, (_p, e) in enumerate(picked)
@@ -203,9 +241,9 @@ def build_candidate_web_pack(
             "item_ids": [i["local_id"] for i in local],
             "evidence_confidence": evidence_confidence(local),
         }
-    dropped_count = sum(
-        max(0, len(chosen_by_dim[d]) - quota[d]) for d in DIMENSIONS
-    ) + sum(dropped.values())
+    dropped_count = sum(max(0, len(chosen_by_dim[d]) - quota[d]) for d in DIMENSIONS) + sum(
+        dropped.values()
+    )
 
     theme_items = [i for i in items if i["dimension"] == DIM_THEME]
     catalyst_items = [i for i in items if i["dimension"] == DIM_CATALYSTS]

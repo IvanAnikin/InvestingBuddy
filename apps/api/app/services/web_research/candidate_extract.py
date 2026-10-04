@@ -61,15 +61,61 @@ METHOD_NAME_VENUE_CONTEXT = "name_venue_context"
 VENUE_WORDS: tuple[str, ...] = tuple(
     sorted(
         {
-            "NYSE American", "NYSE Arca", "NYSE", "NASDAQ Stockholm", "NASDAQ Copenhagen",
-            "NASDAQ Helsinki", "NASDAQ First North", "Nasdaq First North", "First North",
-            "NASDAQ", "Euronext Growth Oslo", "Euronext Growth Milan", "Euronext Growth Paris",
-            "Euronext Growth", "Euronext Paris", "Euronext Amsterdam", "Euronext Brussels",
-            "Euronext Milan", "Euronext Oslo", "Euronext Lisbon", "Euronext Dublin",
-            "Euronext", "TSX Venture", "TSXV", "TSX-V", "TSX", "CSE", "ASX", "AIM", "LSE",
-            "XETRA", "Xetra", "Frankfurt", "SIX", "OTCQX", "OTCQB", "OTC Pink", "OTC", "NZX",
-            "HKEX", "TSE", "JSE", "STO", "CPH", "HEL", "OSL", "EPA", "BIT", "BME", "WSE",
-            "NGM", "Spotlight", "Oslo Børs", "Oslo Bors", "Warsaw",
+            "NYSE American",
+            "NYSE Arca",
+            "NYSE",
+            "NASDAQ Stockholm",
+            "NASDAQ Copenhagen",
+            "NASDAQ Helsinki",
+            "NASDAQ First North",
+            "Nasdaq First North",
+            "First North",
+            "NASDAQ",
+            "Euronext Growth Oslo",
+            "Euronext Growth Milan",
+            "Euronext Growth Paris",
+            "Euronext Growth",
+            "Euronext Paris",
+            "Euronext Amsterdam",
+            "Euronext Brussels",
+            "Euronext Milan",
+            "Euronext Oslo",
+            "Euronext Lisbon",
+            "Euronext Dublin",
+            "Euronext",
+            "TSX Venture",
+            "TSXV",
+            "TSX-V",
+            "TSX",
+            "CSE",
+            "ASX",
+            "AIM",
+            "LSE",
+            "XETRA",
+            "Xetra",
+            "Frankfurt",
+            "SIX",
+            "OTCQX",
+            "OTCQB",
+            "OTC Pink",
+            "OTC",
+            "NZX",
+            "HKEX",
+            "TSE",
+            "JSE",
+            "STO",
+            "CPH",
+            "HEL",
+            "OSL",
+            "EPA",
+            "BIT",
+            "BME",
+            "WSE",
+            "NGM",
+            "Spotlight",
+            "Oslo Børs",
+            "Oslo Bors",
+            "Warsaw",
         },
         key=len,
         reverse=True,
@@ -90,33 +136,138 @@ _LEGAL_FORMS = (
     r"(?:Pty\s+Ltd|Ltd\.?|Limited|PLC|plc|Inc\.?|Corp\.?|Corporation|AG|SA|S\.A\.|ASA|AB|"
     r"Oyj|NV|N\.V\.|SE|SpA|S\.p\.A\.|GmbH|A/S|AS|Holdings|Group)"
 )
-_NAME_WITH_FORM_RE = re.compile(
-    rf"(?P<name>(?:[A-Z][\w&'’.\-]*\s+){{1,5}}{_LEGAL_FORMS})(?![\w])"
-)
+_NAME_WITH_FORM_RE = re.compile(rf"(?P<name>(?:[A-Z][\w&'’.\-]*\s+){{1,5}}{_LEGAL_FORMS})(?![\w])")
 _VENUE_CONTEXT_RE = re.compile(
     rf"(?i:(?:listed|traded|trading|quoted)\s+(?:on|in)\s+(?:the\s+)?)"
     rf"(?P<venue>(?i:{_VENUE_ALT}))\b"
     rf"|(?P<venue2>(?i:{_VENUE_ALT}))[\s-]+(?i:listed)\b"
 )
 
-_CONNECTORS = frozenset({"&", "of", "and", "de", "du", "van", "von", "la", "le", "del", "della",
-                         "di", "da", "des", "den", "af", "och", "og", "oy", "the"})
-_BAD_LEADING = frozenset({
-    "the", "a", "an", "in", "on", "at", "as", "by", "for", "from", "with", "shares",
-    "following", "after", "today", "yesterday", "recently", "meanwhile", "also", "however",
-    "last", "this", "these", "those", "stock", "australian", "canadian", "british", "european",
-    "announced", "said", "says", "company", "companies", "listed", "like", "such", "including",
-    "and", "or", "but", "its", "their", "our", "both", "other", "see", "per",
-})
-_BAD_NAMES = frozenset({
-    "company", "the company", "shares", "stock", "exchange", "announcement", "limited",
-    "group", "holdings", "corporation", "ltd", "plc", "inc", "market", "markets",
-})
-_LEGAL_FORM_WORDS = frozenset({
-    "pty", "ltd", "ltd.", "limited", "plc", "inc", "inc.", "corp", "corp.", "corporation",
-    "ag", "sa", "s.a.", "asa", "ab", "oyj", "nv", "n.v.", "se", "spa", "s.p.a.", "gmbh",
-    "a/s", "as", "holdings", "group",
-})
+_CONNECTORS = frozenset(
+    {
+        "&",
+        "of",
+        "and",
+        "de",
+        "du",
+        "van",
+        "von",
+        "la",
+        "le",
+        "del",
+        "della",
+        "di",
+        "da",
+        "des",
+        "den",
+        "af",
+        "och",
+        "og",
+        "oy",
+        "the",
+    }
+)
+_BAD_LEADING = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "in",
+        "on",
+        "at",
+        "as",
+        "by",
+        "for",
+        "from",
+        "with",
+        "shares",
+        "following",
+        "after",
+        "today",
+        "yesterday",
+        "recently",
+        "meanwhile",
+        "also",
+        "however",
+        "last",
+        "this",
+        "these",
+        "those",
+        "stock",
+        "australian",
+        "canadian",
+        "british",
+        "european",
+        "announced",
+        "said",
+        "says",
+        "company",
+        "companies",
+        "listed",
+        "like",
+        "such",
+        "including",
+        "and",
+        "or",
+        "but",
+        "its",
+        "their",
+        "our",
+        "both",
+        "other",
+        "see",
+        "per",
+    }
+)
+_BAD_NAMES = frozenset(
+    {
+        "company",
+        "the company",
+        "shares",
+        "stock",
+        "exchange",
+        "announcement",
+        "limited",
+        "group",
+        "holdings",
+        "corporation",
+        "ltd",
+        "plc",
+        "inc",
+        "market",
+        "markets",
+    }
+)
+_LEGAL_FORM_WORDS = frozenset(
+    {
+        "pty",
+        "ltd",
+        "ltd.",
+        "limited",
+        "plc",
+        "inc",
+        "inc.",
+        "corp",
+        "corp.",
+        "corporation",
+        "ag",
+        "sa",
+        "s.a.",
+        "asa",
+        "ab",
+        "oyj",
+        "nv",
+        "n.v.",
+        "se",
+        "spa",
+        "s.p.a.",
+        "gmbh",
+        "a/s",
+        "as",
+        "holdings",
+        "group",
+    }
+)
 
 # --------------------------------------------------------------------------- #
 # ISIN validation (Luhn over the letter-expanded digits)
@@ -125,9 +276,24 @@ _LEGAL_FORM_WORDS = frozenset({
 #: The primary listing venue (registry code) of an ISIN's country, for the countries
 #: whose listings sit on ONE venue family. Anything else yields no venue.
 ISIN_COUNTRY_VENUE: dict[str, str] = {
-    "AU": "AU", "GB": "LSE", "US": "US", "FR": "PA", "DE": "XETRA", "IT": "MI", "ES": "MC",
-    "SE": "ST", "DK": "CO", "NO": "OL", "FI": "HE", "NL": "AS", "BE": "BR", "CH": "SW",
-    "PT": "LS", "AT": "VI", "PL": "WA", "IE": "IR",
+    "AU": "AU",
+    "GB": "LSE",
+    "US": "US",
+    "FR": "PA",
+    "DE": "XETRA",
+    "IT": "MI",
+    "ES": "MC",
+    "SE": "ST",
+    "DK": "CO",
+    "NO": "OL",
+    "FI": "HE",
+    "NL": "AS",
+    "BE": "BR",
+    "CH": "SW",
+    "PT": "LS",
+    "AT": "VI",
+    "PL": "WA",
+    "IE": "IR",
 }
 
 
@@ -151,22 +317,65 @@ def valid_isin(value: str) -> bool:
 # --------------------------------------------------------------------------- #
 
 _RISK_TERMS: tuple[str, ...] = (
-    "delay", "delayed", "lawsuit", "litigation", "profit warning", "going concern",
-    "dilution", "impairment", "suspended", "suspension", "default", "insolvency",
-    "write-down", "writedown", "downgrade", "shortfall", "cancelled", "canceled",
-    "terminated", "investigation", "recall", "cost overrun", "cost overruns", "loss",
+    "delay",
+    "delayed",
+    "lawsuit",
+    "litigation",
+    "profit warning",
+    "going concern",
+    "dilution",
+    "impairment",
+    "suspended",
+    "suspension",
+    "default",
+    "insolvency",
+    "write-down",
+    "writedown",
+    "downgrade",
+    "shortfall",
+    "cancelled",
+    "canceled",
+    "terminated",
+    "investigation",
+    "recall",
+    "cost overrun",
+    "cost overruns",
+    "loss",
 )
 _CATALYST_TERMS: tuple[str, ...] = (
-    "offtake", "permit", "permits", "permitting", "grant", "funding", "loan", "contract",
-    "award", "awarded", "order", "orders", "backlog", "commissioning", "first production",
-    "ramp-up", "approval", "approved", "acquisition", "expansion", "capacity",
-    "partnership", "supply agreement", "feasibility study", "final investment decision",
+    "offtake",
+    "permit",
+    "permits",
+    "permitting",
+    "grant",
+    "funding",
+    "loan",
+    "contract",
+    "award",
+    "awarded",
+    "order",
+    "orders",
+    "backlog",
+    "commissioning",
+    "first production",
+    "ramp-up",
+    "approval",
+    "approved",
+    "acquisition",
+    "expansion",
+    "capacity",
+    "partnership",
+    "supply agreement",
+    "feasibility study",
+    "final investment decision",
     "financing",
 )
 
 
 def _stem(token: str) -> str:
-    return token[:-1] if len(token) > 4 and token.endswith("s") and not token.endswith("ss") else token
+    return (
+        token[:-1] if len(token) > 4 and token.endswith("s") and not token.endswith("ss") else token
+    )
 
 
 def _tokens(text: str) -> list[str]:
@@ -200,8 +409,10 @@ class ThemeVocabulary:
                     found.append(phrase)
                 continue
             n = len(tokens)
-            if any(tuple(passage_tokens[i : i + n]) == tokens
-                   for i in range(len(passage_tokens) - n + 1)):
+            if any(
+                tuple(passage_tokens[i : i + n]) == tokens
+                for i in range(len(passage_tokens) - n + 1)
+            ):
                 found.append(phrase)
         return tuple(dict.fromkeys(found))
 
@@ -325,8 +536,9 @@ def _passage(text: str, limit: int = MAX_PASSAGE_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def _tag(passage: str, theme: ThemeVocabulary) -> tuple[tuple[str, ...], tuple[str, ...],
-                                                         tuple[str, ...]]:
+def _tag(
+    passage: str, theme: ThemeVocabulary
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     return (
         theme.match(passage),
         terms_in(passage, _CATALYST_TERMS),
@@ -353,8 +565,14 @@ def _paragraph_mentions(
             passage_text = _passage(text)
         return passage_text
 
-    def emit(name: str | None, ticker: str | None, venue: str | None, isin: str | None,
-             method: str, span: tuple[int, int]) -> None:
+    def emit(
+        name: str | None,
+        ticker: str | None,
+        venue: str | None,
+        isin: str | None,
+        method: str,
+        span: tuple[int, int],
+    ) -> None:
         if not _name_ok(name, has_identifier=bool(ticker or isin)):
             stats.rejected_names += 1
             return
@@ -366,20 +584,32 @@ def _paragraph_mentions(
         if name and name not in shown:
             at = text.find(name)
             if at >= 0:
-                shown = _passage(text[max(0, at - 120):], MAX_PASSAGE_CHARS)
+                shown = _passage(text[max(0, at - 120) :], MAX_PASSAGE_CHARS)
         out.append(
             RawMention(
-                name=name or "", ticker=ticker, venue_raw=venue, isin=isin, method=method,
-                passage=shown, passage_kind=PASSAGE_PARAGRAPH,
-                theme_terms=whole_terms[0], catalyst_terms=whole_terms[1],
+                name=name or "",
+                ticker=ticker,
+                venue_raw=venue,
+                isin=isin,
+                method=method,
+                passage=shown,
+                passage_kind=PASSAGE_PARAGRAPH,
+                theme_terms=whole_terms[0],
+                catalyst_terms=whole_terms[1],
                 risk_terms=whole_terms[2],
             )
         )
         taken.append(span)
 
     for m in _TICKER_MENTION_RE.finditer(text):
-        emit(name_before(text, m.start()), m.group("ticker"), _venue_text(m.group("venue")),
-             None, METHOD_TICKER_VENUE, m.span())
+        emit(
+            name_before(text, m.start()),
+            m.group("ticker"),
+            _venue_text(m.group("venue")),
+            None,
+            METHOD_TICKER_VENUE,
+            m.span(),
+        )
     for m in _ISIN_RE.finditer(text):
         isin = m.group("isin")
         if not valid_isin(isin):
@@ -442,9 +672,12 @@ def _table_mentions(
                 method = METHOD_TICKER_VENUE
                 for j in list(range(i - 1, -1, -1)) + list(range(i + 1, len(cells))):
                     candidate = cells[j]
-                    if candidate and re.search(r"[A-Za-z]", candidate) and not (
-                        _TICKER_MENTION_RE.search(candidate)
-                    ) and candidate[0].isupper():
+                    if (
+                        candidate
+                        and re.search(r"[A-Za-z]", candidate)
+                        and not (_TICKER_MENTION_RE.search(candidate))
+                        and candidate[0].isupper()
+                    ):
                         name = candidate
                         break
                 break
@@ -455,8 +688,11 @@ def _table_mentions(
                 if re.fullmatch(_TICKER, raw_ticker):
                     ticker = raw_ticker
                     name = cells[name_col]
-                    venue = cells[venue_col].strip() if venue_col is not None and venue_col < len(
-                        cells) else None
+                    venue = (
+                        cells[venue_col].strip()
+                        if venue_col is not None and venue_col < len(cells)
+                        else None
+                    )
                     if not venue:
                         # ``AIM: PRE`` style combined cells are handled above; a bare
                         # ticker with no venue cannot be verified, so it is not a lead.
@@ -470,9 +706,16 @@ def _table_mentions(
         t, c, r = _tag(text, theme)
         out.append(
             RawMention(
-                name=(name or "").strip(), ticker=ticker, venue_raw=venue, isin=None,
-                method=method, passage=_passage(text), passage_kind=PASSAGE_TABLE_ROW,
-                theme_terms=t, catalyst_terms=c, risk_terms=r,
+                name=(name or "").strip(),
+                ticker=ticker,
+                venue_raw=venue,
+                isin=None,
+                method=method,
+                passage=_passage(text),
+                passage_kind=PASSAGE_TABLE_ROW,
+                theme_terms=t,
+                catalyst_terms=c,
+                risk_terms=r,
             )
         )
     return out

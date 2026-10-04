@@ -31,8 +31,7 @@ from app.integrations.search.fake import MODE_OUTAGE, FakeWebSearchProvider
 from app.models.web_research import WebFetchAttempt, WebSearchQuery, WebSearchResult
 from app.services.discovery import admission as adm
 from app.services.discovery import constraints as cons
-from app.services.discovery import directories
-from app.services.discovery import fx
+from app.services.discovery import directories, fx
 from app.services.discovery.intent import build_intent
 from app.services.discovery.pipeline import run_dynamic_stage, universe_item
 from app.services.providers.contracts import QueryFamily, ResearchProviderResult
@@ -72,7 +71,9 @@ def pool() -> Any:
 @pytest.fixture
 async def session():  # noqa: ANN201
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:", future=True, poolclass=StaticPool,
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        poolclass=StaticPool,
         connect_args={"check_same_thread": False},
     )
     async with engine.begin() as conn:
@@ -125,15 +126,24 @@ class _Recall:
 
     async def complete(self, **_kw: Any) -> DeepSeekResponse:
         self.calls += 1
-        return DeepSeekResponse(text=json.dumps({"companies": self.companies}),
-                                prompt_tokens=100, completion_tokens=50, finish_reason="stop")
+        return DeepSeekResponse(
+            text=json.dumps({"companies": self.companies}),
+            prompt_tokens=100,
+            completion_tokens=50,
+            finish_reason="stop",
+        )
 
     async def investigate(self, **_kw: Any) -> ResearchProviderResult:
         from datetime import datetime, timezone
 
-        return ResearchProviderResult(provider="deepseek", model="m", task_id="t",
-                                      status="completed", started_at=datetime.now(timezone.utc),
-                                      research_leads=[])
+        return ResearchProviderResult(
+            provider="deepseek",
+            model="m",
+            task_id="t",
+            status="completed",
+            started_at=datetime.now(timezone.utc),
+            research_leads=[],
+        )
 
 
 class H:
@@ -148,19 +158,36 @@ class H:
 
     def deps(self, **over: Any) -> ds.DiscoveryWebDeps:
         values: dict[str, Any] = {
-            "provider": self.provider, "fetch": self.net, "pool": self.pool,
-            "llm_transport": None, "persist_session_factory": None, "today": TODAY, "now": NOW,
+            "provider": self.provider,
+            "fetch": self.net,
+            "pool": self.pool,
+            "llm_transport": None,
+            "persist_session_factory": None,
+            "today": TODAY,
+            "now": NOW,
         }
         values.update(over)
         return ds.DiscoveryWebDeps(**values)
 
-    async def stage(self, *, config: Settings | None = None, recall: Any = None,
-                    run_universe: Any = None, run_id: Any = None, fetcher: Any = None,
-                    **deps: Any) -> Any:
+    async def stage(
+        self,
+        *,
+        config: Settings | None = None,
+        recall: Any = None,
+        run_universe: Any = None,
+        run_id: Any = None,
+        fetcher: Any = None,
+        **deps: Any,
+    ) -> Any:
         return await run_dynamic_stage(
-            self.session, intent=self.intent, run_universe=run_universe or {"items": []},
-            cfg=config or cfg(), provider=recall, fetcher=fetcher or directory_fetcher,
-            max_candidates=10, run_id=self.run_id if run_id is None else run_id,
+            self.session,
+            intent=self.intent,
+            run_universe=run_universe or {"items": []},
+            cfg=config or cfg(),
+            provider=recall,
+            fetcher=fetcher or directory_fetcher,
+            max_candidates=10,
+            run_id=self.run_id if run_id is None else run_id,
             web_deps=self.deps(**deps),
         )
 
@@ -178,8 +205,11 @@ def h(session: Any, pool: Any) -> H:
 
 
 def _record(stage: Any, ticker: str) -> Any:
-    return next(r for r in [*stage.candidates, *stage.excluded, *stage.also_surfaced]
-                if r.identity.ticker == ticker)
+    return next(
+        r
+        for r in [*stage.candidates, *stage.excluded, *stage.also_surfaced]
+        if r.identity.ticker == ticker
+    )
 
 
 async def _count(session: Any, model: Any) -> int:
@@ -207,25 +237,35 @@ class TestAnObscureCompanyIsAdmitted:
         assert alg.web["admission"]["evidence_ids"], "the A3 passage became an evidence id"
         assert alg.web["novel"] is True, "absent from the curated registry and the held set"
 
-    async def test_provenance_names_the_query_result_and_fetch_attempt(self, h: H,
-                                                                          session: Any) -> None:
+    async def test_provenance_names_the_query_result_and_fetch_attempt(
+        self, h: H, session: Any
+    ) -> None:
         h.serve_obscure()
         stage = await h.stage()
         alg = _record(stage, "ALG")
         sighting = alg.web["sightings"][0]
-        query = (await session.execute(
-            select(WebSearchQuery).where(WebSearchQuery.id == uuid.UUID(sighting["query_id"]))
-        )).scalar_one()
+        query = (
+            await session.execute(
+                select(WebSearchQuery).where(WebSearchQuery.id == uuid.UUID(sighting["query_id"]))
+            )
+        ).scalar_one()
         assert query.executed is True and query.stage == "discovery_web"
         assert query.discovery_run_id == h.run_id and query.family == "entity"
-        result = (await session.execute(
-            select(WebSearchResult).where(WebSearchResult.id == uuid.UUID(sighting["result_id"]))
-        )).scalar_one()
+        result = (
+            await session.execute(
+                select(WebSearchResult).where(
+                    WebSearchResult.id == uuid.UUID(sighting["result_id"])
+                )
+            )
+        ).scalar_one()
         assert result.url == ART
-        attempt = (await session.execute(
-            select(WebFetchAttempt).where(
-                WebFetchAttempt.id == uuid.UUID(sighting["fetch_attempt_id"]))
-        )).scalar_one()
+        attempt = (
+            await session.execute(
+                select(WebFetchAttempt).where(
+                    WebFetchAttempt.id == uuid.UUID(sighting["fetch_attempt_id"])
+                )
+            )
+        ).scalar_one()
         assert attempt.discovery_run_id == h.run_id and attempt.origin == "search"
         assert sighting["provider"] == "fake_web_search" and sighting["rank"] == 1
 
@@ -291,8 +331,9 @@ class TestWhatIsNotAdmitted:
         serve(h.provider, h.plan, {"entity_listed.0": [hit(gamma, "Gamma", SNIPPET_ONLY_NOTE)]})
         h.net.not_retrievable[gamma] = "paywall"
         stage = await h.stage()
-        names = {r.identity.name for r in [*stage.candidates, *stage.excluded,
-                                           *stage.also_surfaced]}
+        names = {
+            r.identity.name for r in [*stage.candidates, *stage.excluded, *stage.also_surfaced]
+        }
         assert "Gamma Gallium Ltd" not in names
         assert all(r.lead.ticker != "GGL" for r in stage.rejected)
         assert stage.to_dict()["web"]["fetch"]["not_retrievable"] == 1
@@ -310,7 +351,9 @@ class TestWhatIsNotAdmitted:
         assert rejected.rejection_reason == "name_mismatch_with_listing"
         assert rejected.lead.web["admission"]["state"] == "rejected"
         assert rejected.lead.web["admission"]["codes"] == [
-            "identity_unverified", "name_mismatch_with_listing"]
+            "identity_unverified",
+            "name_mismatch_with_listing",
+        ]
         payload = next(x for x in stage.to_dict()["rejected_leads"] if x["ticker"] == "APX")
         assert payload["admission"]["rules"]["A2"]["code"] == "identity_unverified"
         assert payload["discovery_mode"] == "search"
@@ -321,8 +364,16 @@ class TestWhatIsNotAdmitted:
     ) -> None:
         """Zeta Gallium is on the ASX list and a model names it. No search surfaced it, so it
         is a recall lead, labelled as one — never ``search``, never A1–A3 evidence."""
-        recall = _Recall([{"legal_name": "Zeta Gallium Limited", "ticker": "ZGL",
-                           "exchange": "ASX", "country": "Australia"}])
+        recall = _Recall(
+            [
+                {
+                    "legal_name": "Zeta Gallium Limited",
+                    "ticker": "ZGL",
+                    "exchange": "ASX",
+                    "country": "Australia",
+                }
+            ]
+        )
         h.serve_obscure()
         stage = await h.stage(recall=recall)
         zeta = _record(stage, "ZGL")
@@ -332,8 +383,11 @@ class TestWhatIsNotAdmitted:
         assert zeta.web["admission"]["source_label"] == "external_search"
         assert "sightings" not in zeta.web
         # Nothing the stage produced is labelled search without a query row behind it.
-        search_leads = [r for r in [*stage.candidates, *stage.excluded, *stage.also_surfaced]
-                        if r.identity.lead.discovery_mode == "search"]
+        search_leads = [
+            r
+            for r in [*stage.candidates, *stage.excluded, *stage.also_surfaced]
+            if r.identity.lead.discovery_mode == "search"
+        ]
         assert {r.identity.ticker for r in search_leads} == {"ALG", "BGM"}
 
     async def test_a_lead_labelled_search_without_an_executed_query_is_rejected(
@@ -345,11 +399,19 @@ class TestWhatIsNotAdmitted:
         from app.services.discovery.leads import CompanyLead
 
         forged = CompanyLead(
-            name="Zeta Gallium Limited", ticker="ZGL", exchange_raw="ASX", country=None,
-            listing_source_url=None, evidence_url=None, why=None, source="external_search",
+            name="Zeta Gallium Limited",
+            ticker="ZGL",
+            exchange_raw="ASX",
+            country=None,
+            listing_source_url=None,
+            evidence_url=None,
+            why=None,
+            source="external_search",
             discovery_mode="search",
-            web={"sightings": [{"query_id": str(uuid.uuid4()), "fetch_attempt_id": "x"}],
-                 "mentions": []},
+            web={
+                "sightings": [{"query_id": str(uuid.uuid4()), "fetch_attempt_id": "x"}],
+                "mentions": [],
+            },
         )
 
         async def fake_stage(*a: Any, **k: Any) -> ds.DiscoveryWebResult:
@@ -390,26 +452,36 @@ class TestWhatIsNotAdmitted:
 
 
 class TestAnOutageIsNotMaskedByRecall:
-    async def test_a_provider_outage_falls_back_to_labelled_recall(self, h: H,
-                                                                     session: Any) -> None:
+    async def test_a_provider_outage_falls_back_to_labelled_recall(
+        self, h: H, session: Any
+    ) -> None:
         h.provider.mode = MODE_OUTAGE
-        recall = _Recall([{"legal_name": "Zeta Gallium Limited", "ticker": "ZGL",
-                           "exchange": "ASX", "country": "Australia"}])
+        recall = _Recall(
+            [
+                {
+                    "legal_name": "Zeta Gallium Limited",
+                    "ticker": "ZGL",
+                    "exchange": "ASX",
+                    "country": "Australia",
+                }
+            ]
+        )
         stage = await h.stage(recall=recall)
         assert stage.web["state"] == "web_search_unavailable"
         assert "Live web search unavailable" in stage.web["label"]
         zeta = _record(stage, "ZGL")
         assert zeta.provenance["discovery_mode"] == "model_recall"
-        assert not [r for r in [*stage.candidates, *stage.excluded, *stage.also_surfaced]
-                    if r.identity.lead.discovery_mode == "search"]
+        assert not [
+            r
+            for r in [*stage.candidates, *stage.excluded, *stage.also_surfaced]
+            if r.identity.lead.discovery_mode == "search"
+        ]
         rows = (await session.execute(select(WebSearchQuery))).scalars().all()
         assert rows and all(r.executed is False and r.error_code for r in rows)
         assert h.net.requested == [], "no fetch without a search"
         assert stage.web["queries"]["failed"] == len(h.provider.requests) > 0
 
-    async def test_search_disabled_or_no_provider_is_a_labelled_unavailability(
-        self, h: H
-    ) -> None:
+    async def test_search_disabled_or_no_provider_is_a_labelled_unavailability(self, h: H) -> None:
         stage = await h.stage(config=cfg(v3_web_search_enabled=False))
         assert stage.web["state"] == "web_search_unavailable"
         assert stage.web["reason"] == "search_disabled"
@@ -428,9 +500,11 @@ class TestAnOutageIsNotMaskedByRecall:
         assert web["state"] == "web_search_degraded"
         assert web["label"] == (
             f"Web search incomplete ({web['queries']['executed']} of "
-            f"{web['queries']['planned']} searches ran)")
-        assert any(r.identity.ticker == "ALG" for r in stage.candidates), \
+            f"{web['queries']['planned']} searches ran)"
+        )
+        assert any(r.identity.ticker == "ALG" for r in stage.candidates), (
             "what executed is still used"
+        )
 
     async def test_a_stage_that_raises_is_isolated_and_yields_no_web_leads(
         self, h: H, monkeypatch: pytest.MonkeyPatch
@@ -456,9 +530,15 @@ class TestAnOutageIsNotMaskedByRecall:
         h.serve_obscure()
         with pytest.raises(LeaseLost):
             await run_dynamic_stage(
-                h.session, intent=h.intent, run_universe={"items": []}, cfg=cfg(),
-                provider=None, fetcher=directory_fetcher, run_id=h.run_id,
-                web_deps=h.deps(), progress=progress,
+                h.session,
+                intent=h.intent,
+                run_universe={"items": []},
+                cfg=cfg(),
+                provider=None,
+                fetcher=directory_fetcher,
+                run_id=h.run_id,
+                web_deps=h.deps(),
+                progress=progress,
             )
 
 
@@ -470,8 +550,16 @@ class TestAnOutageIsNotMaskedByRecall:
 class TestFlagOffIsV319:
     async def test_no_query_no_fetch_no_row_no_key(self, h: H, session: Any) -> None:
         h.serve_obscure()
-        recall = _Recall([{"legal_name": "Zeta Gallium Limited", "ticker": "ZGL",
-                           "exchange": "ASX", "country": "Australia"}])
+        recall = _Recall(
+            [
+                {
+                    "legal_name": "Zeta Gallium Limited",
+                    "ticker": "ZGL",
+                    "exchange": "ASX",
+                    "country": "Australia",
+                }
+            ]
+        )
         stage = await h.stage(config=cfg(v3_discovery_web_search_enabled=False), recall=recall)
         assert h.provider.requests == [] and h.net.requested == []
         assert await _count(session, WebSearchQuery) == 0
@@ -483,33 +571,74 @@ class TestFlagOffIsV319:
 
     async def test_the_persisted_shapes_are_exactly_v319(self, h: H) -> None:
         """GOLDEN: the key sets of the V3.19 stage payload, a candidate and a rejected lead."""
-        recall = _Recall([{"legal_name": "Zeta Gallium Limited", "ticker": "ZGL",
-                           "exchange": "ASX", "country": "Australia"},
-                          {"legal_name": "Nowhere AG", "ticker": "NWL",
-                           "exchange": "Moon Exchange"}])
+        recall = _Recall(
+            [
+                {
+                    "legal_name": "Zeta Gallium Limited",
+                    "ticker": "ZGL",
+                    "exchange": "ASX",
+                    "country": "Australia",
+                },
+                {"legal_name": "Nowhere AG", "ticker": "NWL", "exchange": "Moon Exchange"},
+            ]
+        )
         stage = await h.stage(config=cfg(v3_discovery_web_search_enabled=False), recall=recall)
         payload = stage.to_dict()
         assert set(payload) == {
-            "schema", "status", "external_discovery", "funnel", "queries", "excluded",
-            "rejected_leads", "warnings", "elapsed_seconds"}
+            "schema",
+            "status",
+            "external_discovery",
+            "funnel",
+            "queries",
+            "excluded",
+            "rejected_leads",
+            "warnings",
+            "elapsed_seconds",
+        }
         assert set(stage.funnel) == {
-            "raw_leads", "external_leads", "registry_leads", "verified_issuers",
-            "rejected_leads", "screened", "excluded", "met_hard_constraints",
-            "eligible_unverified", "returned"}
+            "raw_leads",
+            "external_leads",
+            "registry_leads",
+            "verified_issuers",
+            "rejected_leads",
+            "screened",
+            "excluded",
+            "met_hard_constraints",
+            "eligible_unverified",
+            "returned",
+        }
         candidate = stage.candidates[0].to_dict()
         assert set(candidate) == {
-            "schema", "identity", "provenance", "constraint_results", "verified_attributes",
-            "unknown_constraints", "failed_constraints", "eligibility", "screening"}
+            "schema",
+            "identity",
+            "provenance",
+            "constraint_results",
+            "verified_attributes",
+            "unknown_constraints",
+            "failed_constraints",
+            "eligibility",
+            "screening",
+        }
         assert set(payload["rejected_leads"][0]) == {
-            "name", "ticker", "exchange_raw", "exchange", "source", "listing_source_url",
-            "why", "rejection_reason", "detail"}
+            "name",
+            "ticker",
+            "exchange_raw",
+            "exchange",
+            "source",
+            "listing_source_url",
+            "why",
+            "rejection_reason",
+            "detail",
+        }
         assert stage.candidates[0].provenance["discovery_mode"] == "model_recall"
 
     async def test_the_flag_defaults_off_and_has_a_consumer(self) -> None:
         assert Settings.model_fields["v3_discovery_web_search_enabled"].default is False
         assert ds.stage_enabled(SimpleNamespace(v3_discovery_web_search_enabled=False)) is False
         out = await ds.run_discovery_web_stage(
-            None, build_intent(GALLIUM), ds.DiscoveryWebContext(),
+            None,
+            build_intent(GALLIUM),
+            ds.DiscoveryWebContext(),
             cfg=SimpleNamespace(v3_discovery_web_search_enabled=False),
         )
         assert out.ran is False and out.summary == {} and out.leads == []
@@ -528,21 +657,20 @@ class TestLongTailMeasures:
         urls = [f"https://www.{d}/investors" for d in known] + ["https://www.niche.example/x"]
         serve(h.provider, h.plan, {"entity_listed.0": [hit(u) for u in urls[:3]]})
         out = await ds.run_discovery_web_stage(
-            h.session, h.intent,
+            h.session,
+            h.intent,
             ds.DiscoveryWebContext(run_id=h.run_id, known_domains=known),
-            cfg=cfg(), deps=h.deps(),
+            cfg=cfg(),
+            deps=h.deps(),
         )
         follow = [r for r in h.provider.requests if r.family is QueryFamily.ENTITY and r.page == 2]
         assert len(follow) == 1
         assert set(known) <= set(follow[0].exclude_domains)
-        assert follow[0].query == h.plan.queries[0].request.query, \
-            "ENTITY: the same query, page 2"
+        assert follow[0].query == h.plan.queries[0].request.query, "ENTITY: the same query, page 2"
         assert out.summary["queries"]["followups"] == 1
         assert "entity_listed.0" in out.summary["queries"]["saturated_queries"]
 
-    async def test_a_non_entity_family_gets_its_next_variant_with_the_exclusion(
-        self, h: H
-    ) -> None:
+    async def test_a_non_entity_family_gets_its_next_variant_with_the_exclusion(self, h: H) -> None:
         known = ("bigminer.com", "famousmetals.com", "giantco.com")
         h.intent = build_intent("european electrical grid transformer manufacturers")
         h.plan = plan_for(h.intent)
@@ -550,8 +678,11 @@ class TestLongTailMeasures:
         planned_q = next(q for q in h.plan.queries if q.family is family)
         serve(h.provider, h.plan, {planned_q.key: [hit(f"https://www.{d}/p") for d in known]})
         await ds.run_discovery_web_stage(
-            h.session, h.intent, ds.DiscoveryWebContext(run_id=h.run_id, known_domains=known),
-            cfg=cfg(), deps=h.deps(),
+            h.session,
+            h.intent,
+            ds.DiscoveryWebContext(run_id=h.run_id, known_domains=known),
+            cfg=cfg(),
+            deps=h.deps(),
         )
         follow = [r for r in h.provider.requests if r.family is family and r.exclude_domains]
         assert len(follow) == 1
@@ -570,39 +701,65 @@ class TestLongTailMeasures:
         assert follow[0].request.exclude_domains == tuple(sorted(known))
 
     async def test_an_unsaturated_query_gets_no_follow_up(self, h: H) -> None:
-        serve(h.provider, h.plan, {"entity_listed.0": [
-            hit("https://www.niche.example/a"), hit("https://www.other.example/b"),
-            hit("https://www.bigminer.com/c")]})
+        serve(
+            h.provider,
+            h.plan,
+            {
+                "entity_listed.0": [
+                    hit("https://www.niche.example/a"),
+                    hit("https://www.other.example/b"),
+                    hit("https://www.bigminer.com/c"),
+                ]
+            },
+        )
         out = await ds.run_discovery_web_stage(
-            h.session, h.intent,
+            h.session,
+            h.intent,
             ds.DiscoveryWebContext(run_id=h.run_id, known_domains=("bigminer.com",)),
-            cfg=cfg(), deps=h.deps(),
+            cfg=cfg(),
+            deps=h.deps(),
         )
         assert out.summary["queries"]["followups"] == 0
         assert all(r.page == 1 for r in h.provider.requests)
 
     async def test_a_known_names_own_pages_rank_below_an_unfamiliar_domain(self) -> None:
-        from app.services.web_research.selection import SearchCandidate
         from app.services.providers.contracts import SearchResultItem
+        from app.services.web_research.selection import SearchCandidate
 
         def cand(url: str, rank: int) -> SearchCandidate:
             host = url.split("/")[2]
             return SearchCandidate(
                 QueryFamily.ENTITY,
-                SearchResultItem(rank=rank, url=url, canonical_url=url, domain=host,
-                                 title="gallium producer", snippet="gallium"))
+                SearchResultItem(
+                    rank=rank,
+                    url=url,
+                    canonical_url=url,
+                    domain=host,
+                    title="gallium producer",
+                    snippet="gallium",
+                ),
+            )
 
         sel = ds.select_discovery_results(
-            [cand("https://www.bigminer.com/investors", 1),
-             cand("https://www.niche.example/gallium", 2)],
-            today=TODAY, known_domains=("bigminer.com",),
-            terms_by_family={QueryFamily.ENTITY: ("gallium",)}, total=1,
+            [
+                cand("https://www.bigminer.com/investors", 1),
+                cand("https://www.niche.example/gallium", 2),
+            ],
+            today=TODAY,
+            known_domains=("bigminer.com",),
+            terms_by_family={QueryFamily.ENTITY: ("gallium",)},
+            total=1,
         )
         assert [s.candidate.url for s in sel.selected] == ["https://www.niche.example/gallium"]
 
     async def test_the_expansion_cannot_name_a_company(self) -> None:
-        proposals = ["gallium arsenide wafer supplier", "Pensana rare earths", "Foo Ltd gallium",
-                     "ASX: ALG gallium", "germanium optics recovery"]
+        proposals = [
+            "gallium arsenide wafer supplier",
+            "Pensana rare earths",
+            "Foo Ltd gallium",
+            "ASX: ALG gallium",
+            "germanium optics recovery",
+        ]
         accepted, refused = dp.validate_proposals(proposals, template_queries=[], limit=10)
         kept = [t for t in accepted if not dp._company_like(t)]
         assert kept == ["gallium arsenide wafer supplier", "germanium optics recovery"]
@@ -618,9 +775,13 @@ class TestLongTailMeasures:
             async def complete(self, **kw: Any) -> DeepSeekResponse:
                 sent.append(kw["user"] + kw["system"])
                 return DeepSeekResponse(
-                    text=json.dumps({"queries": ["gallium recovery from bauxite residue",
-                                                 "Umicore gallium"]}),
-                    prompt_tokens=10, completion_tokens=5, finish_reason="stop")
+                    text=json.dumps(
+                        {"queries": ["gallium recovery from bauxite residue", "Umicore gallium"]}
+                    ),
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    finish_reason="stop",
+                )
 
         first = await dp.propose_discovery_expansion(T(), facts, plan, limit=4, max_tokens=200)
         again = await dp.propose_discovery_expansion(T(), facts, plan, limit=4, max_tokens=200)
@@ -636,8 +797,9 @@ class TestLongTailMeasures:
 
 
 class TestResume:
-    async def test_a_retry_reuses_the_recorded_queries_and_issues_none(self, h: H,
-                                                                        session: Any) -> None:
+    async def test_a_retry_reuses_the_recorded_queries_and_issues_none(
+        self, h: H, session: Any
+    ) -> None:
         h.serve_obscure()
         first = await h.stage()
         issued = len(h.provider.requests)
@@ -659,18 +821,34 @@ class TestResume:
         second = await h.stage()
         assert second.web["budget"]["queries_reserved"] >= used
 
-    async def test_only_never_recorded_queries_are_issued_after_a_crash(self, h: H,
-                                                                          session: Any) -> None:
+    async def test_only_never_recorded_queries_are_issued_after_a_crash(
+        self, h: H, session: Any
+    ) -> None:
         h.serve_obscure()
         await h.stage()
         # Simulate a crash that lost the last two recorded rows (and their results).
-        rows = (await session.execute(
-            select(WebSearchQuery).order_by(WebSearchQuery.created_at.desc(),
-                                            WebSearchQuery.id))).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    select(WebSearchQuery).order_by(
+                        WebSearchQuery.created_at.desc(), WebSearchQuery.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         lost = rows[:2]
         for row in lost:
-            for res in (await session.execute(select(WebSearchResult).where(
-                    WebSearchResult.query_id == row.id))).scalars().all():
+            for res in (
+                (
+                    await session.execute(
+                        select(WebSearchResult).where(WebSearchResult.query_id == row.id)
+                    )
+                )
+                .scalars()
+                .all()
+            ):
                 await session.delete(res)
             await session.delete(row)
         await session.flush()
@@ -702,9 +880,14 @@ class TestA4AndV319Guards:
             from app.services.sources.document_fetcher import DocumentFetchResult
 
             if "markitdigital" in url:
-                return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
-                                           content_type="text/csv", document_type="text",
-                                           content=big.encode())
+                return DocumentFetchResult(
+                    requested_url=url,
+                    final_url=url,
+                    status_code=200,
+                    content_type="text/csv",
+                    document_type="text",
+                    content=big.encode(),
+                )
             return await directory_fetcher(url, **kw)
 
         h.intent = build_intent("small cap gallium producers in Australia")
@@ -722,10 +905,16 @@ class TestA4AndV319Guards:
     async def test_a_registry_lead_keeps_its_true_label_and_gets_search_corroboration(
         self, h: H
     ) -> None:
-        item = {"ticker": "ALG", "exchange": "AU", "company_name": "Alpha Gallium Limited",
-                "country": "Australia", "industry": "Metals & Mining",
-                "theme": "mining_materials", "universe_source": "curated_theme_registry",
-                "source_tier": "T3_curated_reference_list"}
+        item = {
+            "ticker": "ALG",
+            "exchange": "AU",
+            "company_name": "Alpha Gallium Limited",
+            "country": "Australia",
+            "industry": "Metals & Mining",
+            "theme": "mining_materials",
+            "universe_source": "curated_theme_registry",
+            "source_tier": "T3_curated_reference_list",
+        }
         h.serve_obscure()
         stage = await h.stage(run_universe={"items": [item]})
         alg = _record(stage, "ALG")
@@ -740,9 +929,17 @@ class TestA4AndV319Guards:
         assert stage.to_dict()["web"]["admission"]["novel_candidates"] == 0
 
     async def test_the_attribute_guard_still_strips_unverified_why(self, h: H) -> None:
-        recall = _Recall([{"legal_name": "Zeta Gallium Limited", "ticker": "ZGL",
-                           "exchange": "ASX", "country": "Australia",
-                           "why": "a fast-growing small-cap gallium producer"}])
+        recall = _Recall(
+            [
+                {
+                    "legal_name": "Zeta Gallium Limited",
+                    "ticker": "ZGL",
+                    "exchange": "ASX",
+                    "country": "Australia",
+                    "why": "a fast-growing small-cap gallium producer",
+                }
+            ]
+        )
         stage = await h.stage(recall=recall)
         zeta = _record(stage, "ZGL")
         out = zeta.to_dict()["provenance"]

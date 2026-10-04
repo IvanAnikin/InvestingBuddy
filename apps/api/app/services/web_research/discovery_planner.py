@@ -110,32 +110,47 @@ THEME_NOUNS: dict[str, str] = {
 #: Theme key -> value-chain components (suppliers / inputs / sub-systems).
 VALUE_CHAIN_TERMS: dict[str, tuple[str, ...]] = {
     "grid_electrification": (
-        "transformer", "switchgear", "high voltage cable", "grain oriented electrical steel",
+        "transformer",
+        "switchgear",
+        "high voltage cable",
+        "grain oriented electrical steel",
         "grid automation",
     ),
     "semiconductors": (
-        "silicon wafer", "photoresist", "etching equipment", "specialty gases",
+        "silicon wafer",
+        "photoresist",
+        "etching equipment",
+        "specialty gases",
         "advanced packaging",
     ),
     "defense": ("munitions", "radar components", "military electronics", "drone components"),
     "nuclear_energy": (
-        "uranium enrichment", "nuclear fuel fabrication", "reactor components",
+        "uranium enrichment",
+        "nuclear fuel fabrication",
+        "reactor components",
         "small modular reactor",
     ),
     "luxury_goods": ("leather goods", "watch components", "fine jewellery", "fragrance"),
     "robotics_automation": ("servo drive", "harmonic reducer", "machine vision", "robot arm"),
     "biotech_pharma": (
-        "contract manufacturing organisation", "active pharmaceutical ingredient",
+        "contract manufacturing organisation",
+        "active pharmaceutical ingredient",
         "clinical stage",
     ),
     "ai_infrastructure": (
-        "liquid cooling", "optical transceiver", "data centre power equipment", "GPU server",
+        "liquid cooling",
+        "optical transceiver",
+        "data centre power equipment",
+        "GPU server",
     ),
     "banks_fintech": ("payments processor", "core banking software"),
 }
 #: For a material: where in ITS value chain a long-tail company sits.
 MATERIAL_CHAIN_TERMS: tuple[str, ...] = (
-    "refining processing", "by-product recovery", "recycling", "project developer",
+    "refining processing",
+    "by-product recovery",
+    "recycling",
+    "project developer",
 )
 
 #: Theme / material -> alternative words (a versioned synonym table).
@@ -248,23 +263,62 @@ def theme_terms(facts: DiscoveryFacts) -> tuple[str, ...]:
 #: intent vocabulary", spec §6.2). Generic words are deliberately absent: "company" or
 #: "growth" in a paragraph is not evidence of a theme.
 THEME_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "luxury_goods": ("luxury", "jewellery", "jewelry", "watchmaker", "watches", "leather goods",
-                     "fragrance", "couture", "high-end fashion"),
-    "critical_materials": ("critical minerals", "critical raw materials", "strategic metals",
-                           "rare earth", "critical metals"),
+    "luxury_goods": (
+        "luxury",
+        "jewellery",
+        "jewelry",
+        "watchmaker",
+        "watches",
+        "leather goods",
+        "fragrance",
+        "couture",
+        "high-end fashion",
+    ),
+    "critical_materials": (
+        "critical minerals",
+        "critical raw materials",
+        "strategic metals",
+        "rare earth",
+        "critical metals",
+    ),
     "mining_materials": ("mining", "mineral resource", "ore body", "concentrate", "exploration"),
-    "defense": ("defence", "defense", "military", "munitions", "missile", "radar",
-                "armoured vehicles"),
+    "defense": (
+        "defence",
+        "defense",
+        "military",
+        "munitions",
+        "missile",
+        "radar",
+        "armoured vehicles",
+    ),
     "semiconductors": ("semiconductor", "wafer", "foundry", "lithography", "chip manufacturing"),
     "nuclear_energy": ("nuclear", "uranium", "reactor", "enrichment", "small modular reactor"),
-    "grid_electrification": ("transformer", "switchgear", "substation", "high voltage",
-                             "grid equipment", "power cable", "electrification"),
+    "grid_electrification": (
+        "transformer",
+        "switchgear",
+        "substation",
+        "high voltage",
+        "grid equipment",
+        "power cable",
+        "electrification",
+    ),
     "robotics_automation": ("robot", "robotics", "cobot", "industrial automation", "servo"),
-    "biotech_pharma": ("biotech", "pharmaceutical", "clinical trial", "drug candidate",
-                       "therapeutics"),
+    "biotech_pharma": (
+        "biotech",
+        "pharmaceutical",
+        "clinical trial",
+        "drug candidate",
+        "therapeutics",
+    ),
     "banks_fintech": ("bank", "fintech", "payments", "lending"),
-    "ai_infrastructure": ("data centre", "data center", "gpu", "hyperscale", "liquid cooling",
-                          "ai infrastructure"),
+    "ai_infrastructure": (
+        "data centre",
+        "data center",
+        "gpu",
+        "hyperscale",
+        "liquid cooling",
+        "ai infrastructure",
+    ),
 }
 
 
@@ -348,63 +402,218 @@ _NO_SHORTAGE = ("luxury_goods", "banks_fintech", "biotech_pharma")
 
 TEMPLATES: tuple[DTemplate, ...] = (
     # -- ENTITY ------------------------------------------------------------------
-    DTemplate(QueryFamily.ENTITY, "entity_listed", "{noun} companies listed {region}", 0,
-              terms=("listed", "companies")),
-    DTemplate(QueryFamily.ENTITY, "entity_producer", "{noun} producer publicly traded company {region}",
-              1, terms=("producer", "traded")),
-    DTemplate(QueryFamily.ENTITY, "entity_small_cap", "small cap {noun} company {region}", 2,
-              size_bands=_SMALL, terms=("small", "cap")),
-    DTemplate(QueryFamily.ENTITY, "entity_junior", "junior {noun} developer explorer listed", 3,
-              noun_kind="material", terms=("junior", "developer", "explorer")),
-    DTemplate(QueryFamily.ENTITY, "entity_synonym", "{synonym} public company {region}", 4,
-              needs=("synonym",), terms=("public", "company")),
+    DTemplate(
+        QueryFamily.ENTITY,
+        "entity_listed",
+        "{noun} companies listed {region}",
+        0,
+        terms=("listed", "companies"),
+    ),
+    DTemplate(
+        QueryFamily.ENTITY,
+        "entity_producer",
+        "{noun} producer publicly traded company {region}",
+        1,
+        terms=("producer", "traded"),
+    ),
+    DTemplate(
+        QueryFamily.ENTITY,
+        "entity_small_cap",
+        "small cap {noun} company {region}",
+        2,
+        size_bands=_SMALL,
+        terms=("small", "cap"),
+    ),
+    DTemplate(
+        QueryFamily.ENTITY,
+        "entity_junior",
+        "junior {noun} developer explorer listed",
+        3,
+        noun_kind="material",
+        terms=("junior", "developer", "explorer"),
+    ),
+    DTemplate(
+        QueryFamily.ENTITY,
+        "entity_synonym",
+        "{synonym} public company {region}",
+        4,
+        needs=("synonym",),
+        terms=("public", "company"),
+    ),
     # -- VALUE_CHAIN ---------------------------------------------------------------
-    DTemplate(QueryFamily.VALUE_CHAIN, "vc_component", "{component} supplier listed company {region}",
-              0, needs=("component",), terms=("supplier", "listed")),
-    DTemplate(QueryFamily.VALUE_CHAIN, "vc_input", "{component} manufacturer {noun}", 1,
-              needs=("component",), noun_kind="theme", terms=("manufacturer",)),
-    DTemplate(QueryFamily.VALUE_CHAIN, "vc_project", "{noun} project permit approval {region}", 2,
-              catalyst="permitting", topic="news", terms=("project", "permit", "approval")),
-    DTemplate(QueryFamily.VALUE_CHAIN, "vc_offtake", "{noun} offtake agreement signed", 3,
-              catalyst="offtake", topic="news", terms=("offtake", "agreement")),
-    DTemplate(QueryFamily.VALUE_CHAIN, "vc_financing", "{noun} project financing funding {region}", 4,
-              noun_kind="material", topic="news", terms=("financing", "funding")),
-    DTemplate(QueryFamily.VALUE_CHAIN, "vc_production", "{noun} first production commissioning ramp-up",
-              5, catalyst="production", topic="news", terms=("production", "commissioning")),
-    DTemplate(QueryFamily.VALUE_CHAIN, "vc_contracts", "{noun} contract award supplier selected", 6,
-              catalyst="contracts", topic="news", terms=("contract", "award")),
+    DTemplate(
+        QueryFamily.VALUE_CHAIN,
+        "vc_component",
+        "{component} supplier listed company {region}",
+        0,
+        needs=("component",),
+        terms=("supplier", "listed"),
+    ),
+    DTemplate(
+        QueryFamily.VALUE_CHAIN,
+        "vc_input",
+        "{component} manufacturer {noun}",
+        1,
+        needs=("component",),
+        noun_kind="theme",
+        terms=("manufacturer",),
+    ),
+    DTemplate(
+        QueryFamily.VALUE_CHAIN,
+        "vc_project",
+        "{noun} project permit approval {region}",
+        2,
+        catalyst="permitting",
+        topic="news",
+        terms=("project", "permit", "approval"),
+    ),
+    DTemplate(
+        QueryFamily.VALUE_CHAIN,
+        "vc_offtake",
+        "{noun} offtake agreement signed",
+        3,
+        catalyst="offtake",
+        topic="news",
+        terms=("offtake", "agreement"),
+    ),
+    DTemplate(
+        QueryFamily.VALUE_CHAIN,
+        "vc_financing",
+        "{noun} project financing funding {region}",
+        4,
+        noun_kind="material",
+        topic="news",
+        terms=("financing", "funding"),
+    ),
+    DTemplate(
+        QueryFamily.VALUE_CHAIN,
+        "vc_production",
+        "{noun} first production commissioning ramp-up",
+        5,
+        catalyst="production",
+        topic="news",
+        terms=("production", "commissioning"),
+    ),
+    DTemplate(
+        QueryFamily.VALUE_CHAIN,
+        "vc_contracts",
+        "{noun} contract award supplier selected",
+        6,
+        catalyst="contracts",
+        topic="news",
+        terms=("contract", "award"),
+    ),
     # -- VENUE ---------------------------------------------------------------------
-    DTemplate(QueryFamily.VENUE, "venue_segment", "{noun} company {segment}", 0,
-              needs=("segment",), terms=("company",)),
+    DTemplate(
+        QueryFamily.VENUE,
+        "venue_segment",
+        "{noun} company {segment}",
+        0,
+        needs=("segment",),
+        terms=("company",),
+    ),
     # -- DEMAND --------------------------------------------------------------------
-    DTemplate(QueryFamily.DEMAND, "demand_shortage", "{region} {noun} shortage {year}", 0,
-              terms=("shortage", "supply"), skip_keys=_NO_SHORTAGE),
-    DTemplate(QueryFamily.DEMAND, "demand_supply", "{noun} supply demand outlook {year}", 1,
-              terms=("supply", "demand", "outlook")),
-    DTemplate(QueryFamily.DEMAND, "demand_capacity", "{noun} capacity expansion investment {region}", 2,
-              terms=("capacity", "expansion", "investment")),
-    DTemplate(QueryFamily.DEMAND, "demand_government", "{noun} government support funding {region}",
-              3, terms=("government", "support", "funding")),
-    DTemplate(QueryFamily.DEMAND, "demand_regulation", "{noun} regulation policy {region}", 4,
-              terms=("regulation", "policy")),
-    DTemplate(QueryFamily.DEMAND, "demand_counter", "{noun} oversupply demand weakness risks", 5,
-              terms=("oversupply", "weakness", "risks")),
-    DTemplate(QueryFamily.DEMAND, "demand_orders", "{noun} orders backlog lead times", 6,
-              catalyst="orders", topic="news", terms=("orders", "backlog", "lead")),
-    DTemplate(QueryFamily.DEMAND, "demand_approval", "{noun} regulatory approval decision", 7,
-              catalyst="regulatory_approval", topic="news", terms=("approval", "regulatory")),
+    DTemplate(
+        QueryFamily.DEMAND,
+        "demand_shortage",
+        "{region} {noun} shortage {year}",
+        0,
+        terms=("shortage", "supply"),
+        skip_keys=_NO_SHORTAGE,
+    ),
+    DTemplate(
+        QueryFamily.DEMAND,
+        "demand_supply",
+        "{noun} supply demand outlook {year}",
+        1,
+        terms=("supply", "demand", "outlook"),
+    ),
+    DTemplate(
+        QueryFamily.DEMAND,
+        "demand_capacity",
+        "{noun} capacity expansion investment {region}",
+        2,
+        terms=("capacity", "expansion", "investment"),
+    ),
+    DTemplate(
+        QueryFamily.DEMAND,
+        "demand_government",
+        "{noun} government support funding {region}",
+        3,
+        terms=("government", "support", "funding"),
+    ),
+    DTemplate(
+        QueryFamily.DEMAND,
+        "demand_regulation",
+        "{noun} regulation policy {region}",
+        4,
+        terms=("regulation", "policy"),
+    ),
+    DTemplate(
+        QueryFamily.DEMAND,
+        "demand_counter",
+        "{noun} oversupply demand weakness risks",
+        5,
+        terms=("oversupply", "weakness", "risks"),
+    ),
+    DTemplate(
+        QueryFamily.DEMAND,
+        "demand_orders",
+        "{noun} orders backlog lead times",
+        6,
+        catalyst="orders",
+        topic="news",
+        terms=("orders", "backlog", "lead"),
+    ),
+    DTemplate(
+        QueryFamily.DEMAND,
+        "demand_approval",
+        "{noun} regulatory approval decision",
+        7,
+        catalyst="regulatory_approval",
+        topic="news",
+        terms=("approval", "regulatory"),
+    ),
     # -- DOCUMENT ------------------------------------------------------------------
-    DTemplate(QueryFamily.DOCUMENT, "doc_market_report", "{noun} market report", 0, pdf=True,
-              terms=("market", "report")),
-    DTemplate(QueryFamily.DOCUMENT, "doc_presentation",
-              "{noun} company investor presentation {year}", 1, pdf=True,
-              terms=("investor", "presentation")),
-    DTemplate(QueryFamily.DOCUMENT, "doc_whitepaper", "{noun} white paper industry association", 2,
-              terms=("white", "paper", "association")),
-    DTemplate(QueryFamily.DOCUMENT, "doc_consultation",
-              "{noun} government consultation strategy {region}", 3, terms=("consultation", "strategy")),
-    DTemplate(QueryFamily.DOCUMENT, "doc_critical", "{noun} critical raw materials strategy report", 4,
-              noun_kind="material", pdf=True, terms=("critical", "strategy")),
+    DTemplate(
+        QueryFamily.DOCUMENT,
+        "doc_market_report",
+        "{noun} market report",
+        0,
+        pdf=True,
+        terms=("market", "report"),
+    ),
+    DTemplate(
+        QueryFamily.DOCUMENT,
+        "doc_presentation",
+        "{noun} company investor presentation {year}",
+        1,
+        pdf=True,
+        terms=("investor", "presentation"),
+    ),
+    DTemplate(
+        QueryFamily.DOCUMENT,
+        "doc_whitepaper",
+        "{noun} white paper industry association",
+        2,
+        terms=("white", "paper", "association"),
+    ),
+    DTemplate(
+        QueryFamily.DOCUMENT,
+        "doc_consultation",
+        "{noun} government consultation strategy {region}",
+        3,
+        terms=("consultation", "strategy"),
+    ),
+    DTemplate(
+        QueryFamily.DOCUMENT,
+        "doc_critical",
+        "{noun} critical raw materials strategy report",
+        4,
+        noun_kind="material",
+        pdf=True,
+        terms=("critical", "strategy"),
+    ),
 )
 
 FAMILY_TERMS: dict[QueryFamily, tuple[str, ...]] = {
@@ -499,7 +708,11 @@ def _synonyms(facts: DiscoveryFacts) -> list[str]:
 
 
 def _local_queries(
-    facts: DiscoveryFacts, *, mode: str, today: date, private_tokens: Collection[str],
+    facts: DiscoveryFacts,
+    *,
+    mode: str,
+    today: date,
+    private_tokens: Collection[str],
     plan: DiscoveryPlan,
 ) -> list[PlannedQuery]:
     """``LOCAL_LANG``: the theme, in each requested geography's language."""
@@ -516,28 +729,43 @@ def _local_queries(
         subject: str | None = None
         for kind, key in facts.nouns():
             subject = (
-                loc.material_phrase(key, language) if kind == "material"
-                else loc.theme_phrase(key, language) if kind == "theme" else None
+                loc.material_phrase(key, language)
+                if kind == "material"
+                else loc.theme_phrase(key, language)
+                if kind == "theme"
+                else None
             )
             if subject:
                 break
         if not subject:
             continue
         seen_lang.add(language)
-        text = " ".join(
-            [subject, producer or "", listed] if facts.materials else [subject, listed]
-        )
+        text = " ".join([subject, producer or "", listed] if facts.materials else [subject, listed])
         request, refusal = _make_request(
-            text, None, family=QueryFamily.LOCAL_LANG, today=today,
-            private_tokens=private_tokens, origin=ORIGIN_TEMPLATE,
+            text,
+            None,
+            family=QueryFamily.LOCAL_LANG,
+            today=today,
+            private_tokens=private_tokens,
+            origin=ORIGIN_TEMPLATE,
             version=f"{DISCOVERY_TEMPLATE_VERSION}:local.{language}",
-            language=language, country=country,
+            language=language,
+            country=country,
         )
         if request is None:
             plan.refused.append((f"local.{language}", refusal or "refused"))
             continue
-        out.append(PlannedQuery(request, QueryFamily.LOCAL_LANG, f"local.{language}", 1,
-                                len(out), (), locale=language))
+        out.append(
+            PlannedQuery(
+                request,
+                QueryFamily.LOCAL_LANG,
+                f"local.{language}",
+                1,
+                len(out),
+                (),
+                locale=language,
+            )
+        )
         if len(out) >= cap:
             break
     return out
@@ -592,7 +820,8 @@ def build_discovery_plan(
         # than exhausting one material's variants first.
         variants: list[dict[str, str]] = []
         applicable = [
-            (kind, key) for kind, key in nouns
+            (kind, key)
+            for kind, key in nouns
             if (not template.noun_kind or kind == template.noun_kind)
             and key not in template.skip_keys
         ]
@@ -630,9 +859,14 @@ def build_discovery_plan(
             text = _fill(template.pattern, slots)
             key = f"{template.key}.{index}"
             request, refusal = _make_request(
-                text, template, family=template.family, today=today,
-                private_tokens=private_tokens, origin=ORIGIN_TEMPLATE,
-                version=f"{DISCOVERY_TEMPLATE_VERSION}:{key}", pdf=template.pdf,
+                text,
+                template,
+                family=template.family,
+                today=today,
+                private_tokens=private_tokens,
+                origin=ORIGIN_TEMPLATE,
+                version=f"{DISCOVERY_TEMPLATE_VERSION}:{key}",
+                pdf=template.pdf,
                 topic=template.topic,
             )
             if request is None:
@@ -640,13 +874,17 @@ def build_discovery_plan(
                 continue
             add(
                 pools[template.family],
-                PlannedQuery(request, template.family, key, 1,
-                             (template.priority + index) * 100 + index,
-                             template.terms or FAMILY_TERMS[template.family]),
+                PlannedQuery(
+                    request,
+                    template.family,
+                    key,
+                    1,
+                    (template.priority + index) * 100 + index,
+                    template.terms or FAMILY_TERMS[template.family],
+                ),
             )
 
-    local = _local_queries(facts, mode=mode, today=today, private_tokens=private_tokens,
-                           plan=plan)
+    local = _local_queries(facts, mode=mode, today=today, private_tokens=private_tokens, plan=plan)
     plan.locales = [q.locale for q in local if q.locale]
     for q in local:
         add(pools[QueryFamily.LOCAL_LANG], q)
@@ -658,8 +896,12 @@ def build_discovery_plan(
     for index, text in enumerate(expansion):
         family = EXPANSION_FAMILIES[index % len(EXPANSION_FAMILIES)]
         request, refusal = _make_request(
-            text, expansion_template, family=family, today=today,
-            private_tokens=private_tokens, origin=expansion_origin,
+            text,
+            expansion_template,
+            family=family,
+            today=today,
+            private_tokens=private_tokens,
+            origin=expansion_origin,
             version=f"{DISCOVERY_TEMPLATE_VERSION}+{DISCOVERY_EXPANSION_PROMPT_VERSION}",
         )
         if request is None:
@@ -670,8 +912,7 @@ def build_discovery_plan(
             continue
         seen.add(marker)
         exp_queries.append(
-            PlannedQuery(request, family, f"expansion{index}", 1, 100 + index,
-                         FAMILY_TERMS[family])
+            PlannedQuery(request, family, f"expansion{index}", 1, 100 + index, FAMILY_TERMS[family])
         )
 
     for pool in pools.values():
@@ -697,7 +938,8 @@ def build_discovery_plan(
 def intent_hash(facts: DiscoveryFacts, template_queries: Iterable[str]) -> str:
     blob = json.dumps(
         {"intent": facts.intent(), "queries": list(template_queries)},
-        sort_keys=True, separators=(",", ":"),
+        sort_keys=True,
+        separators=(",", ":"),
     )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -713,9 +955,9 @@ def saturation_share(domains: Sequence[str], known_domains: Collection[str]) -> 
         return 0.0
     known = {d.lower().removeprefix("www.") for d in known_domains}
     hits = sum(
-        1 for d in domains
-        if (h := d.lower().removeprefix("www.")) in known
-        or any(h.endswith("." + k) for k in known)
+        1
+        for d in domains
+        if (h := d.lower().removeprefix("www.")) in known or any(h.endswith("." + k) for k in known)
     )
     return hits / len(domains)
 
@@ -746,9 +988,11 @@ def build_followups(
     # Domains seen in the saturated queries' results come first: they are the ones that
     # demonstrably crowded the answer out.
     seen_domains = [d for q in saturated for d in (result_domains or {}).get(q.key, ())]
-    ordered = list(dict.fromkeys(
-        [d for d in seen_domains if d in set(known_ir_domains)] + list(known_ir_domains)
-    ))
+    ordered = list(
+        dict.fromkeys(
+            [d for d in seen_domains if d in set(known_ir_domains)] + list(known_ir_domains)
+        )
+    )
     exclude = tuple(sorted(ordered[:MAX_EXCLUDE_DOMAINS]))
     reserve = list(plan.reserve)
     out: list[PlannedQuery] = []
@@ -772,8 +1016,15 @@ def build_followups(
             origin=ORIGIN_TEMPLATE,
         )
         out.append(
-            PlannedQuery(request, query.family, f"{(variant or query).key}.sat", 1,
-                         1000 + len(out), (variant or query).terms, locale=query.locale)
+            PlannedQuery(
+                request,
+                query.family,
+                f"{(variant or query).key}.sat",
+                1,
+                1000 + len(out),
+                (variant or query).terms,
+                locale=query.locale,
+            )
         )
     return out
 
@@ -786,7 +1037,7 @@ _EXPANSION_SYSTEM = (
     "You propose additional web search queries to FIND listed companies in a thematic "
     "area, especially smaller and less-known ones: synonyms, technology names, process "
     "terms, product categories, supplier and value-chain terms. Reply in json: "
-    f"{{\"queries\": [\"...\"]}}. Each query is at most {MAX_EXPANSION_WORDS} words of "
+    f'{{"queries": ["..."]}}. Each query is at most {MAX_EXPANSION_WORDS} words of '
     "plain lower-case words. NEVER name a company, brand, ticker or person. No URLs, no "
     "search operators, no quotation marks. You are given only the closed brief and the "
     "queries already planned."
@@ -856,8 +1107,13 @@ async def propose_discovery_expansion(
     )
     try:
         response = await transport.complete(
-            system=_EXPANSION_SYSTEM, user=user, max_tokens=max_tokens, temperature=0.2,
-            timeout=timeout, json_mode=True, thinking=False,
+            system=_EXPANSION_SYSTEM,
+            user=user,
+            max_tokens=max_tokens,
+            temperature=0.2,
+            timeout=timeout,
+            json_mode=True,
+            thinking=False,
         )
     except Exception as exc:  # noqa: BLE001 - expansion is optional; the templates stand
         result.error = type(exc).__name__
@@ -889,7 +1145,10 @@ async def propose_discovery_expansion(
         return result
     result.proposed = len(proposals)
     accepted, refused = validate_proposals(
-        proposals, template_queries=template_queries, limit=limit, private_tokens=private_tokens,
+        proposals,
+        template_queries=template_queries,
+        limit=limit,
+        private_tokens=private_tokens,
     )
     kept: list[str] = []
     vocabulary = set(theme_terms(facts)) | {

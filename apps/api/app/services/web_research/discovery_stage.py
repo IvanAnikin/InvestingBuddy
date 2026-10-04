@@ -71,7 +71,6 @@ from app.services.web_research.domain_policy import denylisted
 from app.services.web_research.entities import fold
 from app.services.web_research.search import (
     STATE_DEGRADED,
-    STATE_DISABLED,
     STATE_OK,
     STATE_UNAVAILABLE,
     QueryOutcome,
@@ -265,8 +264,11 @@ def theme_key_for_run(run_id: uuid.UUID | str | None) -> str | None:
 
 
 def _depth(cfg: Any) -> str:
-    return "deep" if str(getattr(cfg, "v3_discovery_web_depth", "standard")).lower() == "deep" \
+    return (
+        "deep"
+        if str(getattr(cfg, "v3_discovery_web_depth", "standard")).lower() == "deep"
         else "standard"
+    )
 
 
 async def _progress(hook: ProgressHook | None, stage: str) -> None:
@@ -288,7 +290,9 @@ def theme_vocabulary(facts: dp.DiscoveryFacts) -> ce.ThemeVocabulary:
     return ce.ThemeVocabulary(dp.theme_vocabulary_phrases(facts))
 
 
-def _units_of(tally: _Tally, budget: WebResearchBudget, units: ConsumptionUnits) -> ConsumptionUnits:
+def _units_of(
+    tally: _Tally, budget: WebResearchBudget, units: ConsumptionUnits
+) -> ConsumptionUnits:
     from dataclasses import replace
 
     fetched = ConsumptionUnits(
@@ -313,16 +317,20 @@ async def _recorded_rows(
     if run_id is None or not hashes:
         return {}
     rows = (
-        await session.execute(
-            sa.select(Q)
-            .where(
-                Q.discovery_run_id == run_id,
-                Q.stage == STAGE_NAME,
-                Q.request_hash.in_(list(hashes)),
+        (
+            await session.execute(
+                sa.select(Q)
+                .where(
+                    Q.discovery_run_id == run_id,
+                    Q.stage == STAGE_NAME,
+                    Q.request_hash.in_(list(hashes)),
+                )
+                .order_by(Q.created_at, Q.id)
             )
-            .order_by(Q.created_at, Q.id)
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     out: dict[str, Any] = {}
     for row in rows:
         # Reused: anything that reached the provider, or re-served a call that did.
@@ -341,31 +349,41 @@ async def _outcome_from_row(session: Any, row: Any, request: SearchRequest) -> Q
     results: list[SearchResultItem] = []
     if row.executed:
         for r in (
-            await session.execute(
-                sa.select(R).where(R.query_id == row.id).order_by(R.rank)
-            )
-        ).scalars().all():
+            (await session.execute(sa.select(R).where(R.query_id == row.id).order_by(R.rank)))
+            .scalars()
+            .all()
+        ):
             results.append(
                 SearchResultItem(
-                    rank=int(r.rank), url=r.url, canonical_url=r.canonical_url or r.url,
-                    domain=r.domain or host_of(r.url), title=r.title, snippet=r.snippet,
-                    published_hint=r.published_hint, language_hint=r.language_hint,
+                    rank=int(r.rank),
+                    url=r.url,
+                    canonical_url=r.canonical_url or r.url,
+                    domain=r.domain or host_of(r.url),
+                    title=r.title,
+                    snippet=r.snippet,
+                    published_hint=r.published_hint,
+                    language_hint=r.language_hint,
                     provider_score=r.provider_score,
                 )
             )
     if row.executed:
         cached = str(row.served_from_query_id) if row.served_from_query_id else None
         execution = SearchExecution(
-            provider=row.provider, executed=True,
+            provider=row.provider,
+            executed=True,
             provider_request_id=row.provider_request_id or "reused",
-            http_status=row.http_status or 200, latency_ms=int(row.latency_ms or 0),
-            result_count=int(row.result_count or 0), cost_units=dict(row.cost_units_json or {}),
+            http_status=row.http_status or 200,
+            latency_ms=int(row.latency_ms or 0),
+            result_count=int(row.result_count or 0),
+            cost_units=dict(row.cost_units_json or {}),
             network_call_count=0 if cached else max(1, int(row.network_call_count or 1)),
             cached_from=cached,
         )
     else:
         execution = SearchExecution.not_executed(
-            row.provider, row.error_code or "failed", http_status=row.http_status,
+            row.provider,
+            row.error_code or "failed",
+            http_status=row.http_status,
             network_call_count=int(row.network_call_count or 0),
         )
     return QueryOutcome(request, execution, results, query_id=row.id)
@@ -404,12 +422,18 @@ async def _search_batch(
             box.budget.queries_reserved += int(row.network_call_count)
     if todo:
         persist = (
-            _persist_factory(session) if deps.persist_session_factory is _UNSET
+            _persist_factory(session)
+            if deps.persist_session_factory is _UNSET
             else deps.persist_session_factory
         )
         run = await run_searches(
-            session, [q.request for q in todo], search_ctx, provider=provider, cfg=cfg,
-            now=now, persist_session_factory=persist,
+            session,
+            [q.request for q in todo],
+            search_ctx,
+            provider=provider,
+            cfg=cfg,
+            now=now,
+            persist_session_factory=persist,
         )
         box.units = box.units + run.consumption
         by_request = {id(q.request): q for q in todo}
@@ -487,13 +511,10 @@ def select_discovery_results(
         return host in known or any(host.endswith("." + k) for k in known)
 
     order = {f: i for i, f in enumerate(dp.DISCOVERY_FAMILIES)}
-    ordered = sorted(
-        candidates, key=lambda c: (order.get(c.family, 99), c.item.rank, c.url)
-    )
+    ordered = sorted(candidates, key=lambda c: (order.get(c.family, 99), c.item.rank, c.url))
     seen: set[str] = set()
     pools: dict[QueryFamily, list[Scored]] = {}
-    ctx = SelectionContext(today=today, family_terms=dict(terms_by_family), mode=mode,
-                           total=total)
+    ctx = SelectionContext(today=today, family_terms=dict(terms_by_family), mode=mode, total=total)
     for candidate in ordered:
         url = candidate.url
         if not url:
@@ -512,8 +533,12 @@ def select_discovery_results(
         scored = score_candidate(candidate, ctx)
         adj = -KNOWN_DOMAIN_PENALTY if is_known(host_of(url)) else UNKNOWN_DOMAIN_BONUS
         pools.setdefault(candidate.family, []).append(
-            Scored(candidate, round(scored.score + adj, 6),
-                   {**scored.components, "domain_novelty": adj}, scored.source_class)
+            Scored(
+                candidate,
+                round(scored.score + adj, 6),
+                {**scored.components, "domain_novelty": adj},
+                scored.source_class,
+            )
         )
     per_domain: dict[str, int] = {}
     chosen: set[int] = set()
@@ -525,9 +550,12 @@ def select_discovery_results(
         return min(
             remaining,
             key=lambda s: (
-                -(s.score - DUPLICATE_DOMAIN_PENALTY
-                  * per_domain.get(domain_of(s.candidate.url), 0)),
-                s.candidate.item.rank, s.candidate.url,
+                -(
+                    s.score
+                    - DUPLICATE_DOMAIN_PENALTY * per_domain.get(domain_of(s.candidate.url), 0)
+                ),
+                s.candidate.item.rank,
+                s.candidate.url,
             ),
         )
 
@@ -591,7 +619,14 @@ async def run_discovery_web_stage(
     state: str
     try:
         state, leads, executed_ids = await _execute(
-            session, intent, ctx, cfg=cfg, deps=deps, tally=tally, summary=summary, box=box,
+            session,
+            intent,
+            ctx,
+            cfg=cfg,
+            deps=deps,
+            tally=tally,
+            summary=summary,
+            box=box,
             progress=progress,
         )
     except _Abort as abort:
@@ -601,8 +636,12 @@ async def run_discovery_web_stage(
         leads, executed_ids = [], frozenset()
         summary["error"] = type(exc).__name__
         tally.notes.append("the web stage raised and was isolated; no web leads were produced")
-        log_event(logger, "discovery_web_stage_failed", level=logging.WARNING,
-                  error_type=type(exc).__name__)
+        log_event(
+            logger,
+            "discovery_web_stage_failed",
+            level=logging.WARNING,
+            error_type=type(exc).__name__,
+        )
     summary["state"] = state
     units = _units_of(tally, box.budget, box.units) if box.budget is not None else box.units
     if box.budget is not None:
@@ -618,8 +657,9 @@ def _label(summary: Mapping[str, Any]) -> str | None:
     state = summary.get("state")
     if state == STATE_DEGRADED:
         q = summary.get("queries") or {}
-        return (f"Web search incomplete ({q.get('executed', 0)} of "
-                f"{q.get('planned', 0)} searches ran)")
+        return (
+            f"Web search incomplete ({q.get('executed', 0)} of {q.get('planned', 0)} searches ran)"
+        )
     if state in (STATE_UNAVAILABLE, STATE_STAGE_FAILED):
         return LABEL_UNAVAILABLE
     return None
@@ -644,9 +684,7 @@ async def _execute(
         return STATE_UNAVAILABLE, [], frozenset()
     from app.integrations.search import web_search_provider_from_settings
 
-    provider = (
-        web_search_provider_from_settings(cfg) if deps.provider is _UNSET else deps.provider
-    )
+    provider = web_search_provider_from_settings(cfg) if deps.provider is _UNSET else deps.provider
     if provider is None:
         summary["reason"] = "no_provider"
         return STATE_UNAVAILABLE, [], frozenset()
@@ -664,7 +702,11 @@ async def _execute(
     limits = budget.limits
     private = frozenset(ctx.private_tokens)
     plan = dp.build_discovery_plan(
-        facts, mode=depth, max_queries=limits.max_queries, today=today, private_tokens=private,
+        facts,
+        mode=depth,
+        max_queries=limits.max_queries,
+        today=today,
+        private_tokens=private,
     )
     if not plan.queries:
         summary["reason"] = "intent_names_nothing_a_search_can_be_built_from"
@@ -674,8 +716,12 @@ async def _execute(
         box.units = box.units + expansion.units
         if expansion.queries:
             plan = dp.build_discovery_plan(
-                facts, mode=depth, max_queries=limits.max_queries, today=today,
-                private_tokens=private, expansion=expansion.queries,
+                facts,
+                mode=depth,
+                max_queries=limits.max_queries,
+                today=today,
+                private_tokens=private,
+                expansion=expansion.queries,
             )
             plan.expansion = expansion.to_dict()
     tally.planned = len(plan.queries)
@@ -683,31 +729,51 @@ async def _execute(
     # 3. Search (wave 1), then saturation follow-ups. Every call is a provenance row.
     await _progress(progress, PROGRESS_SEARCH)
     search_ctx = SearchContext(
-        discovery_run_id=ctx.run_id, stage=STAGE_NAME, private_tokens=private,
-        budget=budget, budget_profile=profile,
+        discovery_run_id=ctx.run_id,
+        stage=STAGE_NAME,
+        private_tokens=private,
+        budget=budget,
+        budget_profile=profile,
     )
     pairs = await _search_batch(
-        session, plan.queries, ctx=ctx, search_ctx=search_ctx, provider=provider, cfg=cfg,
-        deps=deps, now=now, tally=tally, box=box,
+        session,
+        plan.queries,
+        ctx=ctx,
+        search_ctx=search_ctx,
+        provider=provider,
+        cfg=cfg,
+        deps=deps,
+        now=now,
+        tally=tally,
+        box=box,
     )
     saturated = [
-        q for q, o in pairs
+        q
+        for q, o in pairs
         if o.execution.executed and dp.is_saturated(_domains_of(o), ctx.known_domains)
     ]
     if saturated and ctx.known_domains:
         followups = dp.build_followups(
-            plan, saturated, ctx.known_domains,
+            plan,
+            saturated,
+            ctx.known_domains,
             limit=max(0, limits.max_queries - len(plan.queries)),
             result_domains={q.key: _domains_of(o) for q, o in pairs},
         )
         tally.saturated = [q.key for q in saturated]
         tally.followups = len(followups)
-        tally.excluded_domains = (
-            len(followups[0].request.exclude_domains) if followups else 0
-        )
+        tally.excluded_domains = len(followups[0].request.exclude_domains) if followups else 0
         extra = await _search_batch(
-            session, followups, ctx=ctx, search_ctx=search_ctx, provider=provider, cfg=cfg,
-            deps=deps, now=now, tally=tally, box=box,
+            session,
+            followups,
+            ctx=ctx,
+            search_ctx=search_ctx,
+            provider=provider,
+            cfg=cfg,
+            deps=deps,
+            now=now,
+            tally=tally,
+            box=box,
         )
         pairs.extend(extra)
         tally.planned += len(followups)
@@ -747,16 +813,26 @@ async def _execute(
         for item in outcome.results:
             row = rows.get((outcome.query_id, item.rank))
             candidates.append(
-                SearchCandidate(family=q.family, item=item, query_key=q.key,
-                                query_id=outcome.query_id, result_id=getattr(row, "id", None))
+                SearchCandidate(
+                    family=q.family,
+                    item=item,
+                    query_key=q.key,
+                    query_id=outcome.query_id,
+                    result_id=getattr(row, "id", None),
+                )
             )
     tally.results_seen = len(candidates)
     selection = select_discovery_results(
-        candidates, today=today, known_domains=ctx.known_domains,
-        terms_by_family={f: tuple(dict.fromkeys(t for q, _ in pairs if q.family is f
-                                                for t in q.terms)) or dp.FAMILY_TERMS[f]
-                         for f in dp.DISCOVERY_FAMILIES},
-        total=limits.max_fetches, mode=depth,
+        candidates,
+        today=today,
+        known_domains=ctx.known_domains,
+        terms_by_family={
+            f: tuple(dict.fromkeys(t for q, _ in pairs if q.family is f for t in q.terms))
+            or dp.FAMILY_TERMS[f]
+            for f in dp.DISCOVERY_FAMILIES
+        },
+        total=limits.max_fetches,
+        mode=depth,
     )
     tally.selected = len(selection.selected)
     rows_by_id = {r.id: r for r in rows.values()}
@@ -775,10 +851,23 @@ async def _execute(
     vocab = theme_vocabulary(facts)
     async with session.begin_nested():
         await _fetch_phase(
-            session, ctx, selection, meta, rows_by_id, vocab, facts, pages,
-            budget=budget, cfg=cfg, deps=deps, tally=tally, summary=summary,
-            theme_key=theme_key_for_run(ctx.run_id), provider_name=summary.get("provider"),
-            progress=progress, depth=depth,
+            session,
+            ctx,
+            selection,
+            meta,
+            rows_by_id,
+            vocab,
+            facts,
+            pages,
+            budget=budget,
+            cfg=cfg,
+            deps=deps,
+            tally=tally,
+            summary=summary,
+            theme_key=theme_key_for_run(ctx.run_id),
+            provider_name=summary.get("provider"),
+            progress=progress,
+            depth=depth,
         )
     if ctx.commit is not None:
         await ctx.commit()
@@ -786,31 +875,47 @@ async def _execute(
     # 6. Leads.
     await _progress(progress, PROGRESS_VERIFY)
     leads = await _build_leads(
-        session, pages, ctx, deps=deps, cfg=cfg, tally=tally, summary=summary,
+        session,
+        pages,
+        ctx,
+        deps=deps,
+        cfg=cfg,
+        tally=tally,
+        summary=summary,
         provider_name=summary.get("provider"),
     )
     summary["results"] = {
-        "seen": tally.results_seen, "selected": tally.selected,
+        "seen": tally.results_seen,
+        "selected": tally.selected,
         "skipped_by_reason": dict(sorted(tally.skipped.items())),
         "selected_by_family": dict(sorted(tally.family_selected.items())),
     }
     summary["fetch"] = {
-        "attempted": tally.fetch_attempted, "fetched": tally.fetched,
-        "not_retrievable": tally.not_retrievable, "failed": tally.fetch_failed,
-        "bytes": budget.bytes_downloaded, "pdfs": budget.pdfs,
+        "attempted": tally.fetch_attempted,
+        "fetched": tally.fetched,
+        "not_retrievable": tally.not_retrievable,
+        "failed": tally.fetch_failed,
+        "bytes": budget.bytes_downloaded,
+        "pdfs": budget.pdfs,
     }
     summary["pages"] = {
         "extracted": tally.pages_extracted,
         "with_mentions": tally.pages_with_mentions,
         "injection_suspect": tally.pages_suspect,
-        "ingested": tally.ingested, "reused": tally.reused_docs,
+        "ingested": tally.ingested,
+        "reused": tally.reused_docs,
         "not_ingested": dict(sorted(tally.not_ingested.items())),
         "source_classes": dict(sorted(tally.source_classes.items())),
     }
     summary["not_retrievable"] = tally.not_retrievable_list[:20]
     log_event(
-        logger, "discovery_web_stage_completed", state=state, queries=tally.executed,
-        selected=tally.selected, fetched=tally.fetched, leads=len(leads),
+        logger,
+        "discovery_web_stage_completed",
+        state=state,
+        queries=tally.executed,
+        selected=tally.selected,
+        fetched=tally.fetched,
+        leads=len(leads),
         run_id=ctx.run_id,
     )
     return state, leads, executed_ids
@@ -836,16 +941,24 @@ async def _result_rows(session: Any, query_ids: Sequence[uuid.UUID]) -> dict[tup
     if not query_ids:
         return {}
     rows = (
-        await session.execute(
-            sa.select(WebSearchResult).where(WebSearchResult.query_id.in_(list(query_ids)))
+        (
+            await session.execute(
+                sa.select(WebSearchResult).where(WebSearchResult.query_id.in_(list(query_ids)))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {(r.query_id, int(r.rank)): r for r in rows}
 
 
 async def _expansion(
-    cfg: Any, deps: DiscoveryWebDeps, facts: dp.DiscoveryFacts, plan: dp.DiscoveryPlan,
-    limits: Any, private: frozenset[str],
+    cfg: Any,
+    deps: DiscoveryWebDeps,
+    facts: dp.DiscoveryFacts,
+    plan: dp.DiscoveryPlan,
+    limits: Any,
+    private: frozenset[str],
 ) -> Any:
     if limits.max_expansion_queries <= 0 or limits.max_llm_tokens <= 0:
         return None
@@ -860,8 +973,12 @@ async def _expansion(
     if transport is None:
         return None
     return await dp.propose_discovery_expansion(
-        transport, facts, plan, limit=limits.max_expansion_queries,
-        max_tokens=min(600, limits.max_llm_tokens), private_tokens=private,
+        transport,
+        facts,
+        plan,
+        limit=limits.max_expansion_queries,
+        max_tokens=min(600, limits.max_llm_tokens),
+        private_tokens=private,
     )
 
 
@@ -894,7 +1011,8 @@ async def _chunk_evidence_id(
         await session.execute(
             sa.select(C.chunk_id, C.text)
             .where(C.research_document_version_id == version_id)
-            .order_by(C.ordinal).limit(2000)
+            .order_by(C.ordinal)
+            .limit(2000)
         )
     ).all()
     needle = fold(mention.passage)[:60]
@@ -937,8 +1055,11 @@ async def _fetch_phase(
     if not bool(getattr(cfg, "v3_web_fetch_enabled", False)):
         tally.notes.append("open-web fetch is disabled; search results were not retrieved")
         for scored in selection.selected:
-            _disposition(rows_by_id.get(scored.candidate.result_id), "not_ingested",
-                         fetch_mod.FAILURE_FETCH_DISABLED)
+            _disposition(
+                rows_by_id.get(scored.candidate.result_id),
+                "not_ingested",
+                fetch_mod.FAILURE_FETCH_DISABLED,
+            )
         return
     fetch_fn: FetchFn = deps.fetch or fetch_mod.open_web_fetch
     fetch_ctx = fetch_mod.WebFetchContext(discovery_run_id=ctx.run_id)
@@ -959,8 +1080,12 @@ async def _fetch_phase(
         item = scored.candidate.item
         try:
             fetched = await fetch_fn(
-                session, item.url, context=fetch_ctx, budget=budget,
-                origin=fetch_mod.ORIGIN_SEARCH, search_result_id=scored.candidate.result_id,
+                session,
+                item.url,
+                context=fetch_ctx,
+                budget=budget,
+                origin=fetch_mod.ORIGIN_SEARCH,
+                search_result_id=scored.candidate.result_id,
                 **dict(deps.fetch_kwargs),
             )
         except Exception as exc:  # noqa: BLE001 - one bad URL costs that URL
@@ -983,9 +1108,17 @@ async def _fetch_phase(
         try:
             if ingest_on:
                 prepared = await ingest_mod.prepare_web_document(
-                    fetched, cfg=cfg, provider=None, subject_scope="theme",
-                    theme_key=theme_key, candidates=(), issuer_domains=(),
-                    query_terms=terms, depth=depth, pool=deps.pool, store=deps.store,
+                    fetched,
+                    cfg=cfg,
+                    provider=None,
+                    subject_scope="theme",
+                    theme_key=theme_key,
+                    candidates=(),
+                    issuer_domains=(),
+                    query_terms=terms,
+                    depth=depth,
+                    pool=deps.pool,
+                    store=deps.store,
                     now=deps.now,
                 )
                 if isinstance(prepared, ingest_mod.WebIngestResult):
@@ -998,8 +1131,12 @@ async def _fetch_phase(
                 try:
                     async with session.begin_nested():
                         stored = await ingest_mod.store_web_document(
-                            session, prepared, cfg=cfg, store=deps.store,
-                            backend=ctx.search_backend or deps.search_backend, now=deps.now,
+                            session,
+                            prepared,
+                            cfg=cfg,
+                            store=deps.store,
+                            backend=ctx.search_backend or deps.search_backend,
+                            now=deps.now,
                         )
                     if stored.stored:
                         version_id = stored.version_id
@@ -1007,8 +1144,11 @@ async def _fetch_phase(
                             tally.ingested += 1
                         else:
                             tally.reused_docs += 1
-                        _disposition(row, "ingested" if stored.state ==
-                                     ingest_mod.STATE_INGESTED else "reused", None)
+                        _disposition(
+                            row,
+                            "ingested" if stored.state == ingest_mod.STATE_INGESTED else "reused",
+                            None,
+                        )
                 except Exception as exc:  # noqa: BLE001 - the passages are still usable
                     tally.not_ingested[type(exc).__name__] = (
                         tally.not_ingested.get(type(exc).__name__, 0) + 1
@@ -1016,15 +1156,22 @@ async def _fetch_phase(
             else:
                 from app.services.web_research import robots
 
-                if (getattr(fetched, "tdm_decision", None) == robots.TDM_RESERVED
-                        or not getattr(fetched, "complete", False)):
+                if getattr(fetched, "tdm_decision", None) == robots.TDM_RESERVED or not getattr(
+                    fetched, "complete", False
+                ):
                     _disposition(row, "not_ingested", "refused_for_analysis")
                     continue
                 extraction = await extract_web_document(
-                    raw=fetched.content, content_class=fetched.content_class, cfg=cfg,
-                    url=fetched.final_url or fetched.requested_url, charset=fetched.charset,
+                    raw=fetched.content,
+                    content_class=fetched.content_class,
+                    cfg=cfg,
+                    url=fetched.final_url or fetched.requested_url,
+                    charset=fetched.charset,
                     js_required=bool(getattr(fetched, "js_required", False)),
-                    query_terms=terms, depth=depth, pool=deps.pool, candidates=(),
+                    query_terms=terms,
+                    depth=depth,
+                    pool=deps.pool,
+                    candidates=(),
                 )
                 if not extraction.extracted:
                     reason = extraction.failure_code or "extraction_failed"
@@ -1032,7 +1179,8 @@ async def _fetch_phase(
                     _disposition(row, "not_ingested", reason)
                     continue
                 source_class = classify_source(
-                    fetched.final_url or fetched.requested_url, issuer_domains=(),
+                    fetched.final_url or fetched.requested_url,
+                    issuer_domains=(),
                     licence_signals=extraction.metadata.licence_signals,
                 ).source_class
         except Exception as exc:  # noqa: BLE001 - a page that fails costs itself
@@ -1044,15 +1192,22 @@ async def _fetch_phase(
         tally.pages_extracted += 1
         if source_class:
             tally.source_classes[source_class] = tally.source_classes.get(source_class, 0) + 1
+        if scored.candidate.query_id is None or scored.candidate.query_id not in meta:
+            continue
         q, _outcome = meta[scored.candidate.query_id]
         attempt = getattr(fetched, "attempt_id", None)
         page = _Page(
             url=fetched.canonical_url or fetched.final_url or item.url,
-            domain=host_of(item.url), candidate=scored.candidate, query_key=q.key,
-            query_origin=q.origin, template_version=q.request.template_version,
+            domain=host_of(item.url),
+            candidate=scored.candidate,
+            query_key=q.key,
+            query_origin=q.origin,
+            template_version=q.request.template_version,
             provider=str(provider_name) if provider_name else None,
-            attempt_id=str(attempt) if attempt else None, source_class=source_class,
-            version_id=version_id, suspect=bool(extraction.injection_suspect),
+            attempt_id=str(attempt) if attempt else None,
+            source_class=source_class,
+            version_id=version_id,
+            suspect=bool(extraction.injection_suspect),
         )
         if page.suspect:
             # Hostile or manipulated text names nobody (its passages could never be A3
@@ -1123,7 +1278,7 @@ async def _build_leads(
     summary: dict[str, Any],
     provider_name: Any,
 ) -> list[CompanyLead]:
-    from app.services.discovery.identity import normalised_name, normalise_venue
+    from app.services.discovery.identity import normalise_venue, normalised_name
 
     accs: dict[str, _Acc] = {}
     for page in pages:
@@ -1155,22 +1310,24 @@ async def _build_leads(
                 acc.pages.add(page.url)
                 acc.sightings.append(sighting)
             acc.domains.add(page.domain)
-            acc.mentions.append({
-                "evidence_id": evidence_id,
-                "passage_ref": ref,
-                "kind": mention.passage_kind,
-                "method": mention.method,
-                "source_class": page.source_class,
-                "url": page.url,
-                "domain": page.domain,
-                "dimensions": _dimensions(mention),
-                "theme_terms": list(mention.theme_terms)[:6],
-                "catalyst_terms": list(mention.catalyst_terms)[:6],
-                "risk_terms": list(mention.risk_terms)[:6],
-                "passage": mention.passage,
-                "injection_suspect": page.suspect,
-                "query_id": sighting["query_id"],
-            })
+            acc.mentions.append(
+                {
+                    "evidence_id": evidence_id,
+                    "passage_ref": ref,
+                    "kind": mention.passage_kind,
+                    "method": mention.method,
+                    "source_class": page.source_class,
+                    "url": page.url,
+                    "domain": page.domain,
+                    "dimensions": _dimensions(mention),
+                    "theme_terms": list(mention.theme_terms)[:6],
+                    "catalyst_terms": list(mention.catalyst_terms)[:6],
+                    "risk_terms": list(mention.risk_terms)[:6],
+                    "passage": mention.passage,
+                    "injection_suspect": page.suspect,
+                    "query_id": sighting["query_id"],
+                }
+            )
 
     # An ISIN-only or name+venue mention joins the ticker-keyed lead of the same company.
     by_name = {normalised_name(a.name): a for a in accs.values() if a.ticker}
@@ -1200,7 +1357,8 @@ async def _build_leads(
     leads: list[CompanyLead] = []
     resolutions = 0
     for acc in ordered:
-        ticker, venue_raw = acc.ticker, acc.venue_raw
+        ticker: str | None = acc.ticker
+        venue_raw: str | None = acc.venue_raw
         if not venue_raw and acc.isin:
             venue_raw = ce.ISIN_COUNTRY_VENUE.get(acc.isin[:2])
         # A generic "Euronext"/"Euronext Growth" mention does not say WHICH Euronext
@@ -1214,9 +1372,10 @@ async def _build_leads(
                     break
         if not ticker and venue_raw and resolutions < MAX_TICKER_RESOLUTIONS:
             resolutions += 1
-            code = normalise_venue(venue_raw)
-            row, _reason = await finder(name=acc.name, ticker=None, venue=code, isin=acc.isin,
-                                        cfg=cfg)
+            venue_code = normalise_venue(venue_raw)
+            row, _reason = await finder(
+                name=acc.name, ticker=None, venue=venue_code, isin=acc.isin, cfg=cfg
+            )
             if row is not None:
                 ticker = row.ticker
         if not ticker and not venue_raw:
@@ -1242,16 +1401,23 @@ async def _build_leads(
         }
         leads.append(
             CompanyLead(
-                name=acc.name, ticker=ticker.upper() if ticker else None,
-                exchange_raw=venue_raw, country=None, listing_source_url=None,
-                evidence_url=(sightings[0]["url"] if sightings else None), why=None,
-                source="external_search", discovery_query=None,
+                name=acc.name,
+                ticker=ticker.upper() if ticker else None,
+                exchange_raw=venue_raw,
+                country=None,
+                listing_source_url=None,
+                evidence_url=(sightings[0]["url"] if sightings else None),
+                why=None,
+                source="external_search",
+                discovery_query=None,
                 provider=str(provider_name) if provider_name else None,
-                discovery_mode="search", web=block,
+                discovery_mode="search",
+                web=block,
             )
         )
     summary["mentions"] = {
-        "found": tally.mentions, "leads": len(leads),
+        "found": tally.mentions,
+        "leads": len(leads),
         "name_only_dropped": tally.name_only_dropped,
         "rejected_names": tally.rejected_names,
     }

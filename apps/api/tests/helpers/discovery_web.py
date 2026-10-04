@@ -85,39 +85,68 @@ SNIPPET_ONLY_NOTE = "Gamma Gallium Ltd (ASX: GGL) is a gallium explorer."
 
 
 def tavily(results: list[dict[str, Any]], request_id: str) -> dict[str, Any]:
-    return {"query": "q", "follow_up_questions": None, "answer": None, "images": [],
-            "results": results, "response_time": 0.5, "usage": {"credits": 1},
-            "request_id": request_id}
+    return {
+        "query": "q",
+        "follow_up_questions": None,
+        "answer": None,
+        "images": [],
+        "results": results,
+        "response_time": 0.5,
+        "usage": {"credits": 1},
+        "request_id": request_id,
+    }
 
 
-def hit(url: str, title: str = "result", snippet: str = "Synthetic snippet.",
-        published: str = "Sat, 12 Sep 2026 08:00:00 GMT") -> dict[str, Any]:
-    return {"title": title, "url": url, "content": snippet, "score": 0.9,
-            "published_date": published}
+def hit(
+    url: str,
+    title: str = "result",
+    snippet: str = "Synthetic snippet.",
+    published: str = "Sat, 12 Sep 2026 08:00:00 GMT",
+) -> dict[str, Any]:
+    return {
+        "title": title,
+        "url": url,
+        "content": snippet,
+        "score": 0.9,
+        "published_date": published,
+    }
 
 
 class Net:
     """The ``open_web_fetch`` stand-in. Writes a real attempt row per fetch."""
 
-    def __init__(self, pages: dict[str, bytes] | None = None,
-                 not_retrievable: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, pages: dict[str, bytes] | None = None, not_retrievable: dict[str, str] | None = None
+    ) -> None:
         self.pages = pages or {}
         self.not_retrievable = not_retrievable or {}
         self.requested: list[str] = []
         self.discovery_run_ids: list[Any] = []
 
-    async def __call__(self, session: Any, url: str, *, context: Any, budget: Any,
-                       origin: str, search_result_id: Any = None,
-                       **_kw: Any) -> OpenWebFetchResult:
+    async def __call__(
+        self,
+        session: Any,
+        url: str,
+        *,
+        context: Any,
+        budget: Any,
+        origin: str,
+        search_result_id: Any = None,
+        **_kw: Any,
+    ) -> OpenWebFetchResult:
         self.requested.append(url)
         self.discovery_run_ids.append(getattr(context, "discovery_run_id", None))
         refusal = budget.fetch_refusal()
         if refusal:
-            return OpenWebFetchResult(status=STATUS_REFUSED, origin=origin, requested_url=url,
-                                      failure_code=refusal)
+            return OpenWebFetchResult(
+                status=STATUS_REFUSED, origin=origin, requested_url=url, failure_code=refusal
+            )
         attempt = WebFetchAttempt(
-            id=uuid.uuid4(), discovery_run_id=getattr(context, "discovery_run_id", None),
-            web_search_result_id=search_result_id, origin=origin, requested_url=url,
+            id=uuid.uuid4(),
+            discovery_run_id=getattr(context, "discovery_run_id", None),
+            web_search_result_id=search_result_id,
+            origin=origin,
+            requested_url=url,
             status="fetched",
         )
         if url in self.not_retrievable:
@@ -125,42 +154,68 @@ class Net:
             session.add(attempt)
             await session.flush()
             return OpenWebFetchResult(
-                status=STATUS_NOT_RETRIEVABLE, origin=origin, requested_url=url,
-                failure_code=self.not_retrievable[url], attempt_id=attempt.id,
+                status=STATUS_NOT_RETRIEVABLE,
+                origin=origin,
+                requested_url=url,
+                failure_code=self.not_retrievable[url],
+                attempt_id=attempt.id,
             )
         body = self.pages.get(url)
         if body is None:
             attempt.status = "failed"
             session.add(attempt)
             await session.flush()
-            return OpenWebFetchResult(status="failed", origin=origin, requested_url=url,
-                                      failure_code="http_404", attempt_id=attempt.id)
+            return OpenWebFetchResult(
+                status="failed",
+                origin=origin,
+                requested_url=url,
+                failure_code="http_404",
+                attempt_id=attempt.id,
+            )
         budget.record_fetch(byte_count=len(body), is_pdf=False)
         session.add(attempt)
         await session.flush()
         return OpenWebFetchResult(
-            status=STATUS_FETCHED, origin=origin, requested_url=url, final_url=url,
-            canonical_url=url, content=body, content_class="html", charset="utf-8",
-            content_hash=hashlib.sha256(body).hexdigest(), bytes=len(body),
-            tdm_decision="tdm_not_reserved", attempt_id=attempt.id,
+            status=STATUS_FETCHED,
+            origin=origin,
+            requested_url=url,
+            final_url=url,
+            canonical_url=url,
+            content=body,
+            content_class="html",
+            charset="utf-8",
+            content_hash=hashlib.sha256(body).hexdigest(),
+            bytes=len(body),
+            tdm_decision="tdm_not_reserved",
+            attempt_id=attempt.id,
         )
 
 
 async def directory_fetcher(url: str, **_kw: Any) -> DocumentFetchResult:
     if "fredgraph" in url:
         return DocumentFetchResult(
-            requested_url=url, final_url=url, status_code=200, content_type="text/csv",
+            requested_url=url,
+            final_url=url,
+            status_code=200,
+            content_type="text/csv",
             document_type="text",
-            content=b"observation_date,DEXUSAL\n2026-09-17,0.66\n2026-09-18,0.66\n")
+            content=b"observation_date,DEXUSAL\n2026-09-17,0.66\n2026-09-18,0.66\n",
+        )
     if "markitdigital" in url:
-        return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
-                                   content_type="text/csv", document_type="text",
-                                   content=ASX_CSV.encode())
+        return DocumentFetchResult(
+            requested_url=url,
+            final_url=url,
+            status_code=200,
+            content_type="text/csv",
+            document_type="text",
+            content=ASX_CSV.encode(),
+        )
     return DocumentFetchResult(requested_url=url, error="nope", failure_code="http_404")
 
 
-def serve(provider: FakeWebSearchProvider, plan: dp.DiscoveryPlan,
-          by_key: dict[str, list[dict[str, Any]]]) -> None:
+def serve(
+    provider: FakeWebSearchProvider, plan: dp.DiscoveryPlan, by_key: dict[str, list[dict[str, Any]]]
+) -> None:
     """Serve ``by_key`` (template key -> result hits) under the plan's own query texts."""
     for q in plan.queries:
         if q.key in by_key:

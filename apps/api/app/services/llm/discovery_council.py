@@ -187,7 +187,7 @@ def _aggregate_chair(
         return buckets
     for note in chair.candidate_notes:
         cand = pack.candidate_by_id(note.candidate_ref) if note.candidate_ref else None
-        entry = {
+        entry: dict[str, Any] = {
             "candidate_ref": note.candidate_ref,
             "candidate_id": cand.candidate_id if cand else None,
             "ticker": note.ticker or (cand.ticker if cand else None),

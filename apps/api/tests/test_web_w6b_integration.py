@@ -70,7 +70,9 @@ def pool() -> Any:
 @pytest.fixture
 async def session():  # noqa: ANN201
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:", future=True, poolclass=StaticPool,
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        poolclass=StaticPool,
         connect_args={"check_same_thread": False},
     )
     async with engine.begin() as conn:
@@ -89,11 +91,16 @@ def _flags(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202
     directories.reset_cache()
     fx._CACHE.clear()
     for name, value in {
-        "v3_dynamic_discovery_enabled": True, "v3_discovery_web_search_enabled": True,
-        "v3_web_search_enabled": True, "v3_web_search_provider": "fake",
-        "v3_web_search_max_queries_per_day": 300, "v3_web_fetch_enabled": True,
-        "v3_corpus_enabled": True, "v3_web_corpus_ingest_enabled": False,
-        "v3_artifact_store_backend": "none", "v3_run_max_web_searches": 0,
+        "v3_dynamic_discovery_enabled": True,
+        "v3_discovery_web_search_enabled": True,
+        "v3_web_search_enabled": True,
+        "v3_web_search_provider": "fake",
+        "v3_web_search_max_queries_per_day": 300,
+        "v3_web_fetch_enabled": True,
+        "v3_corpus_enabled": True,
+        "v3_web_corpus_ingest_enabled": False,
+        "v3_artifact_store_backend": "none",
+        "v3_run_max_web_searches": 0,
     }.items():
         monkeypatch.setattr(settings, name, value)
     yield
@@ -103,21 +110,34 @@ def _flags(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202
 
 def cfg(**over: Any) -> Settings:
     values: dict[str, Any] = {
-        "app_env": "test", "v3_discovery_web_search_enabled": True,
-        "v3_web_search_enabled": True, "v3_web_search_provider": "fake",
-        "v3_web_search_max_queries_per_day": 300, "v3_run_max_web_searches": 0,
-        "v3_web_fetch_enabled": True, "v3_corpus_enabled": True,
-        "v3_web_corpus_ingest_enabled": False, "v3_artifact_store_backend": "none",
-        "v3_run_max_model_calls": 0, "deepseek_api_key": "",
+        "app_env": "test",
+        "v3_discovery_web_search_enabled": True,
+        "v3_web_search_enabled": True,
+        "v3_web_search_provider": "fake",
+        "v3_web_search_max_queries_per_day": 300,
+        "v3_run_max_web_searches": 0,
+        "v3_web_fetch_enabled": True,
+        "v3_corpus_enabled": True,
+        "v3_web_corpus_ingest_enabled": False,
+        "v3_artifact_store_backend": "none",
+        "v3_run_max_model_calls": 0,
+        "deepseek_api_key": "",
     }
     values.update(over)
     return Settings(**values)
 
 
-def web_deps(pool: Any, net: Net, provider: FakeWebSearchProvider, **over: Any) -> ds.DiscoveryWebDeps:
+def web_deps(
+    pool: Any, net: Net, provider: FakeWebSearchProvider, **over: Any
+) -> ds.DiscoveryWebDeps:
     values: dict[str, Any] = {
-        "provider": provider, "fetch": net, "pool": pool, "llm_transport": None,
-        "persist_session_factory": None, "today": TODAY, "now": NOW,
+        "provider": provider,
+        "fetch": net,
+        "pool": pool,
+        "llm_transport": None,
+        "persist_session_factory": None,
+        "today": TODAY,
+        "now": NOW,
     }
     values.update(over)
     return ds.DiscoveryWebDeps(**values)
@@ -143,7 +163,10 @@ class TestProcessRun:
         run = await thesis_run(session)
         serve(provider, plan_for(mds_intent(run)), {"entity_listed.0": [hit(ART)]})
         run = await mds.process_run(
-            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
+            session,
+            run,
+            extractor=_fake_extractor(),
+            discovery_fetcher=directory_fetcher,
             discovery_web_deps=web_deps(pool, net, provider),
         )
         dynamic = run.universe_json["dynamic"]
@@ -151,9 +174,15 @@ class TestProcessRun:
         assert dynamic["web"]["state"] == "ok"
         assert dynamic["web"]["queries"]["executed"] == dynamic["web"]["queries"]["planned"]
         assert dynamic["web"]["theme_key"] == f"discovery:{run.id}"
-        rows = (await session.execute(
-            select(DiscoveryCandidate).where(DiscoveryCandidate.discovery_run_id == run.id)
-        )).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    select(DiscoveryCandidate).where(DiscoveryCandidate.discovery_run_id == run.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         alg = next(c for c in rows if c.ticker == "ALG")
         v319 = alg.thesis_match_json["v319"]
         assert v319["v3_web"]["discovery_mode"] == "search"
@@ -174,7 +203,10 @@ class TestProcessRun:
         provider = FakeWebSearchProvider(mode=MODE_OUTAGE)
         run = await thesis_run(session)
         run = await mds.process_run(
-            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
+            session,
+            run,
+            extractor=_fake_extractor(),
+            discovery_fetcher=directory_fetcher,
             discovery_web_deps=web_deps(pool, Net(), provider),
         )
         web = run.universe_json["dynamic"]["web"]
@@ -184,15 +216,19 @@ class TestProcessRun:
         assert read.web_search_state == "web_search_unavailable"
         assert read.web_search_label.startswith("Live web search unavailable")
 
-    async def test_flag_off_the_run_row_has_no_web_keys(self, session: Any, pool: Any,
-                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_flag_off_the_run_row_has_no_web_keys(
+        self, session: Any, pool: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from app.core.config import settings
 
         monkeypatch.setattr(settings, "v3_discovery_web_search_enabled", False)
         provider = FakeWebSearchProvider()
         run = await thesis_run(session)
         run = await mds.process_run(
-            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
+            session,
+            run,
+            extractor=_fake_extractor(),
+            discovery_fetcher=directory_fetcher,
             discovery_web_deps=web_deps(pool, Net(), provider),
         )
         dynamic = run.universe_json["dynamic"]
@@ -228,10 +264,16 @@ class TestThemeCorpus:
         from app.services.discovery.pipeline import run_dynamic_stage
 
         stage = await run_dynamic_stage(
-            session, intent=mds_intent(run), run_universe={"items": []}, cfg=config,
-            provider=None, fetcher=directory_fetcher, run_id=run.id,
-            web_deps=web_deps(pool, net, provider, store=InMemoryArtifactStore(),
-                              search_backend=backend),
+            session,
+            intent=mds_intent(run),
+            run_universe={"items": []},
+            cfg=config,
+            provider=None,
+            fetcher=directory_fetcher,
+            run_id=run.id,
+            web_deps=web_deps(
+                pool, net, provider, store=InMemoryArtifactStore(), search_backend=backend
+            ),
         )
         theme_key = stage.web["theme_key"]
         subjects = (await session.execute(select(ResearchDocumentSubject))).scalars().all()
@@ -243,17 +285,27 @@ class TestThemeCorpus:
 
         args = validate_search_theme_corpus({"query": "gallium recovery plant offtake"})
         found = await _search_theme_corpus(
-            SimpleNamespace(session=session, cfg=config, search_backend=backend,
-                            theme_key=theme_key), args)
+            SimpleNamespace(
+                session=session, cfg=config, search_backend=backend, theme_key=theme_key
+            ),
+            args,
+        )
         assert found["theme_scoped"] and found["items"]
         assert found["items"][0]["source_class"] == "trade_publication"
         other = await _search_theme_corpus(
-            SimpleNamespace(session=session, cfg=config, search_backend=backend,
-                            theme_key="discovery:" + str(uuid.uuid4())), args)
+            SimpleNamespace(
+                session=session,
+                cfg=config,
+                search_backend=backend,
+                theme_key="discovery:" + str(uuid.uuid4()),
+            ),
+            args,
+        )
         assert other["items"] == [], "another run's theme is not readable"
         none = await _search_theme_corpus(
-            SimpleNamespace(session=session, cfg=config, search_backend=backend,
-                            theme_key=None), args)
+            SimpleNamespace(session=session, cfg=config, search_backend=backend, theme_key=None),
+            args,
+        )
         assert none["refusal"] == "no_theme_scope_for_this_run"
 
     async def test_an_unstored_page_still_gives_a_passage_ref_as_evidence(
@@ -266,8 +318,13 @@ class TestThemeCorpus:
         from app.services.discovery.pipeline import run_dynamic_stage
 
         stage = await run_dynamic_stage(
-            session, intent=mds_intent(run), run_universe={"items": []}, cfg=cfg(),
-            provider=None, fetcher=directory_fetcher, run_id=run.id,
+            session,
+            intent=mds_intent(run),
+            run_universe={"items": []},
+            cfg=cfg(),
+            provider=None,
+            fetcher=directory_fetcher,
+            run_id=run.id,
             web_deps=web_deps(pool, net, provider),
         )
         alg = next(r for r in stage.candidates if r.identity.ticker == "ALG")
@@ -278,22 +335,34 @@ class TestThemeCorpus:
     ) -> None:
         run = await thesis_run(session)
         cand = DiscoveryCandidate(
-            id=uuid.uuid4(), discovery_run_id=run.id, ticker="ALG", exchange="AU",
-            company_name="Alpha Gallium Limited", human_review_required=True, is_public=False,
-            candidate_score=0.0, positive_catalyst_count=0, high_strength_catalyst_count=0,
-            press_release_event_count=0, news_event_count=0, filing_event_count=0,
-            primary_or_regulator_event_count=0, aggregator_only_event_count=0,
+            id=uuid.uuid4(),
+            discovery_run_id=run.id,
+            ticker="ALG",
+            exchange="AU",
+            company_name="Alpha Gallium Limited",
+            human_review_required=True,
+            is_public=False,
+            candidate_score=0.0,
+            positive_catalyst_count=0,
+            high_strength_catalyst_count=0,
+            press_release_event_count=0,
+            news_event_count=0,
+            filing_event_count=0,
+            primary_or_regulator_event_count=0,
+            aggregator_only_event_count=0,
         )
         session.add(cand)
         await session.flush()
         assert await ds.theme_key_for_candidate(session, cand.id) is None, "no web stage yet"
-        run.universe_json = {"dynamic": {"status": "completed",
-                                         "web": {"state": "ok", "theme_key": "discovery:x"}}}
+        run.universe_json = {
+            "dynamic": {"status": "completed", "web": {"state": "ok", "theme_key": "discovery:x"}}
+        }
         await session.flush()
         assert await ds.theme_key_for_candidate(session, cand.id) == "discovery:x"
         assert await ds.theme_key_for_candidate(session, str(cand.id)) == "discovery:x"
-        run.universe_json = {"dynamic": {"web": {"state": "web_search_unavailable",
-                                                 "theme_key": "discovery:x"}}}
+        run.universe_json = {
+            "dynamic": {"web": {"state": "web_search_unavailable", "theme_key": "discovery:x"}}
+        }
         await session.flush()
         assert await ds.theme_key_for_candidate(session, cand.id) is None
         assert await ds.theme_key_for_candidate(session, uuid.uuid4()) is None
@@ -308,11 +377,20 @@ class TestThemeCorpus:
         run = await thesis_run(session)
         run.universe_json = {"dynamic": {"web": {"state": "ok", "theme_key": "discovery:k"}}}
         cand = DiscoveryCandidate(
-            id=uuid.uuid4(), discovery_run_id=run.id, ticker="ALG", exchange="AU",
-            human_review_required=True, is_public=False, candidate_score=0.0,
-            positive_catalyst_count=0, high_strength_catalyst_count=0,
-            press_release_event_count=0, news_event_count=0, filing_event_count=0,
-            primary_or_regulator_event_count=0, aggregator_only_event_count=0,
+            id=uuid.uuid4(),
+            discovery_run_id=run.id,
+            ticker="ALG",
+            exchange="AU",
+            human_review_required=True,
+            is_public=False,
+            candidate_score=0.0,
+            positive_catalyst_count=0,
+            high_strength_catalyst_count=0,
+            press_release_event_count=0,
+            news_event_count=0,
+            filing_event_count=0,
+            primary_or_regulator_event_count=0,
+            aggregator_only_event_count=0,
         )
         session.add(cand)
         await session.flush()
@@ -326,12 +404,17 @@ class TestThemeCorpus:
         import app.services.pipeline.v3_pipeline as v3
 
         monkeypatch.setattr(v3, "run_v3_research", fake_run)
-        await crs._run_v3_pipeline(session, company=SimpleNamespace(id=uuid.uuid4()),
-                                   report_id=uuid.uuid4(), discovery_candidate_id=cand.id)
+        await crs._run_v3_pipeline(
+            session,
+            company=SimpleNamespace(id=uuid.uuid4()),
+            report_id=uuid.uuid4(),
+            discovery_candidate_id=cand.id,
+        )
         assert seen["theme_key"] == "discovery:k"
         seen.clear()
-        await crs._run_v3_pipeline(session, company=SimpleNamespace(id=uuid.uuid4()),
-                                   report_id=uuid.uuid4())
+        await crs._run_v3_pipeline(
+            session, company=SimpleNamespace(id=uuid.uuid4()), report_id=uuid.uuid4()
+        )
         assert seen["theme_key"] is None, "a company run has no theme scope"
 
     def test_the_industry_role_holds_the_theme_tool(self) -> None:
@@ -347,20 +430,26 @@ class TestThemeCorpus:
 class TestApiFields:
     def test_candidate_read_exposes_the_mode_and_the_admission(self) -> None:
         read = DiscoveryCandidateRead.model_construct(
-            thesis_match_json={"v319": {
-                "provenance": {"discovery_mode": "search"},
-                "v3_web": {"admission": {"state": "admitted", "codes": []}}}})
+            thesis_match_json={
+                "v319": {
+                    "provenance": {"discovery_mode": "search"},
+                    "v3_web": {"admission": {"state": "admitted", "codes": []}},
+                }
+            }
+        )
         assert read.discovery_mode == "search"
         assert read.admission == {"state": "admitted", "codes": []}
 
     def test_a_curated_candidate_has_no_mode_and_a_v319_one_has_no_admission(self) -> None:
         read = DiscoveryCandidateRead.model_construct(
-            thesis_match_json={"v319": {"provenance": {"discovery_mode": None}}})
+            thesis_match_json={"v319": {"provenance": {"discovery_mode": None}}}
+        )
         assert read.discovery_mode is None and read.admission is None
         assert DiscoveryCandidateRead.model_construct(thesis_match_json=None).admission is None
 
     def test_the_fields_are_in_the_serialised_response(self) -> None:
         read = DiscoveryCandidateRead.model_construct(
-            thesis_match_json={"v319": {"provenance": {"discovery_mode": "model_recall"}}})
+            thesis_match_json={"v319": {"provenance": {"discovery_mode": "model_recall"}}}
+        )
         dumped = read.model_dump()
         assert dumped["discovery_mode"] == "model_recall" and "admission" in dumped

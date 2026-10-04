@@ -73,12 +73,22 @@ STATE_LABELLED = "labelled"
 #: Source classes at least as good as a trade publication (spec §6.2 A3).
 A3_SOURCE_CLASSES: frozenset[str] = frozenset(
     {
-        SC_TRADE_PUBLICATION, SC_INDUSTRY_ASSOCIATION, SC_GOVERNMENT_PUBLICATION,
-        SC_REGULATOR_PUBLICATION, SC_STATISTICAL_AGENCY, SC_SPECIALIST_AGENCY,
-        SC_STANDARDS_BODY, SC_ACADEMIC_PAPER, SC_MAJOR_FINANCIAL_PRESS,
+        SC_TRADE_PUBLICATION,
+        SC_INDUSTRY_ASSOCIATION,
+        SC_GOVERNMENT_PUBLICATION,
+        SC_REGULATOR_PUBLICATION,
+        SC_STATISTICAL_AGENCY,
+        SC_SPECIALIST_AGENCY,
+        SC_STANDARDS_BODY,
+        SC_ACADEMIC_PAPER,
+        SC_MAJOR_FINANCIAL_PRESS,
         # issuer material
-        SC_ISSUER_FILING, SC_REGULATORY_FILING, SC_EXCHANGE_ANNOUNCEMENT,
-        SC_COMPANY_PRESS_RELEASE, SC_INVESTOR_PRESENTATION, SC_COMPANY_WEB_PAGE,
+        SC_ISSUER_FILING,
+        SC_REGULATORY_FILING,
+        SC_EXCHANGE_ANNOUNCEMENT,
+        SC_COMPANY_PRESS_RELEASE,
+        SC_INVESTOR_PRESENTATION,
+        SC_COMPANY_WEB_PAGE,
     }
 )
 
@@ -102,8 +112,11 @@ def is_a3_passage(entry: Mapping[str, Any]) -> bool:
 
 
 def a3_evidence_ids(mentions: Iterable[Mapping[str, Any]]) -> list[str]:
-    return list(dict.fromkeys(str(m["evidence_id"]) for m in mentions
-                              if is_a3_passage(m) and m.get("evidence_id")))
+    return list(
+        dict.fromkeys(
+            str(m["evidence_id"]) for m in mentions if is_a3_passage(m) and m.get("evidence_id")
+        )
+    )
 
 
 @dataclass
@@ -131,7 +144,9 @@ class AdmissionDecision:
         }
 
 
-def search_lead_has_provenance(web: Mapping[str, Any] | None, executed_query_ids: Iterable[str]) -> bool:
+def search_lead_has_provenance(
+    web: Mapping[str, Any] | None, executed_query_ids: Iterable[str]
+) -> bool:
     """A1: the lead cites at least one sighting whose query is an EXECUTED search row.
 
     ``executed_query_ids`` is the set of ``web_search_queries.id`` the stage verified as
@@ -175,7 +190,9 @@ def decide(
     if not has_provenance:
         rules["A1"]["code"] = CODE_NO_SEARCH_PROVENANCE
         return AdmissionDecision(
-            STATE_REJECTED, rules, [CODE_NO_SEARCH_PROVENANCE],
+            STATE_REJECTED,
+            rules,
+            [CODE_NO_SEARCH_PROVENANCE],
             detail="no executed search with a fetched page names this company",
         )
     rules["A2"] = {"passed": bool(identity_verified)}
@@ -183,14 +200,18 @@ def decide(
         rules["A2"].update(code=CODE_IDENTITY_UNVERIFIED, reason=identity_reason)
         codes = [CODE_IDENTITY_UNVERIFIED] + ([identity_reason] if identity_reason else [])
         return AdmissionDecision(
-            STATE_REJECTED, rules, codes,
+            STATE_REJECTED,
+            rules,
+            codes,
             detail="the listing was not confirmed by an official source",
         )
     rules["A3"] = {"passed": bool(evidence), "passages": len(evidence)}
     if not evidence:
         rules["A3"]["code"] = CODE_THEME_EVIDENCE_MISSING
         return AdmissionDecision(
-            STATE_ALSO_SURFACED, rules, [CODE_THEME_EVIDENCE_MISSING],
+            STATE_ALSO_SURFACED,
+            rules,
+            [CODE_THEME_EVIDENCE_MISSING],
             detail="eligible_unverified(theme): no fetched passage ties the company to the theme",
         )
     return AdmissionDecision(STATE_ADMITTED, rules, [], evidence_ids=evidence)
