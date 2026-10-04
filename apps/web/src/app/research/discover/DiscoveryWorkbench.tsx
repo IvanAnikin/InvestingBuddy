@@ -86,6 +86,8 @@ function runStateLabel(run: DiscoveryRun): string {
       return "Complete, with warnings";
     case "failed":
       return "Failed";
+    case "cancelled":
+      return "Cancelled";
     default:
       return run.status;
   }

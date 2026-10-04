@@ -1082,6 +1082,34 @@ class TestFailureClassification:
         assert is_transient_failure(ConnectionError()) is True
         assert is_transient_failure(OSError("reset by peer")) is True
 
+    async def test_database_connection_errors_are_transient(self):
+        """W6a review H1: a dropped DB connection during a commit is exactly the event
+        a durable job exists to survive. SQLAlchemy's errors are not OSErrors, so
+        before this they failed the job permanently."""
+        from sqlalchemy import exc as sa_exc
+
+        orig = Exception("server closed the connection unexpectedly")
+        assert is_transient_failure(sa_exc.OperationalError("COMMIT", {}, orig)) is True
+        assert is_transient_failure(sa_exc.InterfaceError("SELECT 1", {}, orig)) is True
+        assert is_transient_failure(sa_exc.DisconnectionError("gone")) is True
+        assert is_transient_failure(sa_exc.TimeoutError("pool exhausted")) is True
+        # Any DBAPI error SQLAlchemy reports as having invalidated the connection.
+        assert (
+            is_transient_failure(
+                sa_exc.DBAPIError("SELECT 1", {}, orig, connection_invalidated=True)
+            )
+            is True
+        )
+
+    async def test_database_statement_errors_stay_permanent(self):
+        """The database refusing a STATEMENT repeats the same answer on retry."""
+        from sqlalchemy import exc as sa_exc
+
+        orig = Exception("duplicate key")
+        assert is_transient_failure(sa_exc.IntegrityError("INSERT", {}, orig)) is False
+        assert is_transient_failure(sa_exc.ProgrammingError("SELECT x", {}, orig)) is False
+        assert is_transient_failure(sa_exc.InvalidRequestError("misuse")) is False
+
     async def test_logic_errors_are_permanent(self):
         assert is_transient_failure(ValueError("bug")) is False
         assert is_transient_failure(KeyError("missing")) is False
@@ -1090,6 +1118,67 @@ class TestFailureClassification:
     async def test_control_flow_signals_are_not_failures(self):
         assert is_transient_failure(JobCancelled()) is False
         assert is_transient_failure(worker_mod.LeaseLostError()) is False
+
+
+class TestHeartbeatResilience:
+    """W6a review H2: one failed heartbeat WRITE must not end the heartbeat.
+
+    It used to: the exception killed the heartbeat task silently, ``lease_lost``
+    stayed False, and a long unit of work then outlived its lease — so another
+    worker reclaimed the job mid-step and ran it twice.
+    """
+
+    async def test_a_failed_heartbeat_write_does_not_stop_the_heartbeat(self, store, factory):
+        from sqlalchemy import exc as sa_exc
+
+        real = store.heartbeat
+        calls = {"n": 0}
+
+        async def flaky_heartbeat(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise sa_exc.OperationalError(
+                    "UPDATE research_jobs", {}, Exception("connection reset")
+                )
+            return await real(*args, **kwargs)
+
+        store.heartbeat = flaky_heartbeat
+        w = _worker(store, HandlerRegistry(), heartbeat_seconds=0.02)
+
+        async def handler(ctx: JobContext) -> JobOutcome:
+            # Only a heartbeat task that survived the two failures gets here.
+            await _wait_until(lambda: w.heartbeats_sent >= 3)
+            return JobOutcome()
+
+        w.handlers.register(JOB_TYPE, handler)
+        view, _ = await store.enqueue(job_type=JOB_TYPE, idempotency_key="hb-blip")
+        await w.run_once()
+
+        assert w.heartbeat_failures == 2
+        assert w.lease_lost is False, "a write failure is not a lost lease"
+        assert (await _row(factory, view.id)).status == contract.STATUS_COMPLETED
+
+    async def test_a_refused_heartbeat_still_means_the_lease_is_lost(self, store, factory):
+        """The resilience must not swallow a REAL loss: the store refusing the beat."""
+
+        async def refused(*args, **kwargs):
+            return None
+
+        store.heartbeat = refused
+        w = _worker(store, HandlerRegistry(), heartbeat_seconds=0.02)
+
+        async def handler(ctx: JobContext) -> JobOutcome:
+            await _wait_until(lambda: w.lease_lost)
+            ctx.raise_if_stopped()
+            return JobOutcome()
+
+        w.handlers.register(JOB_TYPE, handler)
+        view, _ = await store.enqueue(job_type=JOB_TYPE, idempotency_key="hb-lost")
+        await w.run_once()
+
+        assert w.lease_lost is True
+        # Lease lost -> the worker writes no outcome; the row is left for its new owner.
+        assert (await _row(factory, view.id)).status == contract.STATUS_RUNNING
 
 
 class TestWorkerIdentity:

@@ -99,6 +99,21 @@ class ThesisDiscoveryRunCreate(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class DiscoveryRunJob(BaseModel):
+    """W6a — the durable job executing a run (``V3_DISCOVERY_DURABLE_ENABLED``).
+
+    Additive and optional: ``null`` on the BackgroundTasks path. ``job_status`` is
+    the durable contract's reader-facing status (``pending`` while queued or
+    awaiting a reclaim, ``running``, ``completed``, ``dead_letter`` …); the run's
+    own ``status`` stays the one a page should act on.
+    """
+
+    job_id: str
+    job_status: str
+    attempt: int
+    max_attempts: int
+
+
 class DiscoveryRunRead(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -139,6 +154,9 @@ class DiscoveryRunRead(BaseModel):
     # this endpoint for progress.
     is_async: bool = True
     message: str | None = None
+    # W6a — the durable job behind this run, when there is one. Never read from
+    # the ORM row (the run has no such column); the endpoint attaches it.
+    job: DiscoveryRunJob | None = None
     disclaimer: str = INTERNAL_DISCLAIMER
 
     @model_validator(mode="after")

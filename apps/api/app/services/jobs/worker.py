@@ -326,14 +326,47 @@ def register_handler(job_type: str) -> Callable[[JobHandler], JobHandler]:
 TRANSIENT_ATTR = "job_transient"
 
 
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """A database CONNECTION condition, as opposed to a statement the DB refused.
+
+    SQLAlchemy wraps a dropped connection, a server restart, a failover or a pool
+    timeout in its own exception types, none of which is an ``OSError`` — so
+    before this check a connection blip during a commit failed the job
+    permanently. That is precisely the event a durable job exists to survive.
+
+    Transient: ``OperationalError`` / ``InterfaceError`` (connection lost, server
+    shutting down, too many connections, serialization or lock failures),
+    ``DisconnectionError``, a pool ``TimeoutError``, and ANY ``DBAPIError`` that
+    SQLAlchemy reports invalidated the connection. Everything else the database
+    says — an ``IntegrityError``, a ``ProgrammingError`` such as a missing column —
+    is about the statement, and repeating the statement repeats the answer.
+    """
+    try:
+        from sqlalchemy import exc as sa_exc
+    except ImportError:  # pragma: no cover - SQLAlchemy is a hard dependency
+        return False
+    if isinstance(exc, sa_exc.DBAPIError) and exc.connection_invalidated:
+        return True
+    return isinstance(
+        exc,
+        (
+            sa_exc.OperationalError,
+            sa_exc.InterfaceError,
+            sa_exc.DisconnectionError,
+            sa_exc.TimeoutError,
+        ),
+    )
+
+
 def is_transient_failure(exc: BaseException) -> bool:
     """Whether ``exc`` is worth another attempt.
 
     Reuses the council's existing taxonomy (``llm.client.is_transient_llm_error``)
     rather than inventing a second one, and adds the transport-level errors a
     worker sees that an LLM client does not: timeouts, connection resets and DNS
-    failures. Everything else is permanent, because retrying a bug reproduces the
-    bug at full research cost.
+    failures — and database CONNECTION errors (:func:`_is_transient_db_error`).
+    Everything else is permanent, because retrying a bug reproduces the bug at
+    full research cost.
     """
     from app.services.llm.client import is_transient_llm_error
 
@@ -347,6 +380,8 @@ def is_transient_failure(exc: BaseException) -> bool:
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
         return True
     if isinstance(exc, socket.gaierror):
+        return True
+    if _is_transient_db_error(exc):
         return True
     if isinstance(exc, OSError):
         # A broad net, but an OSError reaching here is an I/O condition rather
@@ -410,6 +445,7 @@ class ResearchWorker:
         self.cancellation_requested = False
         self.lease_lost = False
         self.heartbeats_sent = 0
+        self.heartbeat_failures = 0
 
     # -- configuration ----------------------------------------------------
 
@@ -683,12 +719,40 @@ class ResearchWorker:
         Also the only moment a running worker reads ``cancel_requested``: polling
         it separately would double the write-path traffic for a flag that is only
         actionable at the next boundary anyway.
+
+        A heartbeat WRITE that fails (a database blip) must not end the loop. It
+        used to: the exception killed this task silently, ``lease_lost`` was never
+        set, and the lease was then renewed only when the handler happened to reach
+        a checkpoint — so a long unit of work outlived its lease and another worker
+        reclaimed the job mid-step, running it twice and spending an attempt. A
+        failed write is logged by type and retried sooner, backing off to the
+        normal interval; only a heartbeat the store REFUSES (the lease is really
+        someone else's) means the lease is lost.
         """
         interval = max(0.01, self.heartbeat_seconds)
+        delay = interval
+        failures = 0
         while True:
-            await asyncio.sleep(interval)
-            if not await self._beat():
+            await asyncio.sleep(delay)
+            try:
+                alive = await self._beat()
+            except Exception as exc:  # noqa: BLE001 - a blip must not stop liveness
+                failures += 1
+                self.heartbeat_failures += 1
+                # Retry sooner than a full interval — the lease is what is at
+                # stake — doubling up to the interval while the blip persists.
+                delay = min(interval, max(0.01, interval / 4) * (2 ** (failures - 1)))
+                logger.warning(
+                    "v3_job_heartbeat_failed job_id=%s consecutive=%s error_type=%s",
+                    job_id,
+                    failures,
+                    type(exc).__name__,
+                )
+                continue
+            if not alive:
                 return
+            failures = 0
+            delay = interval
 
     async def _beat(self, *, stage: str | None = None) -> bool:
         """One heartbeat. False once the lease is gone."""

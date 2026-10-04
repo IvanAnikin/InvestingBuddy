@@ -1016,6 +1016,12 @@ class Settings(BaseSettings):
     v3_job_worker_in_process: bool = True
     # How long an idle worker waits before polling for work again.
     v3_job_poll_interval_seconds: float = 2.0
+    # W6a — run Discovery scans (POST /market-discovery/runs and /thesis-runs) as a
+    # ``discovery_research`` durable job instead of a FastAPI BackgroundTask, so a
+    # reload, a closed tab or an App Service recycle does not lose the run. Only
+    # consulted when ``v3_durable_jobs_enabled`` is also on. OFF by default.
+    # Consumer: ``api/v1/market_discovery.py`` via ``discovery_research_job.durable_enabled``.
+    v3_discovery_durable_enabled: bool = False
 
     # ── V3.0: run consumption telemetry and budgets ─────────────────────────
     # Persist one ``research_run_consumption`` row per research run. OFF by
