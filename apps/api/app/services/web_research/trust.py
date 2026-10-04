@@ -708,6 +708,9 @@ class SupportItem:
     published_at: date | None = None
     #: Open-web document or verified external lead (the rules apply only then).
     web: bool = False
+    #: Admitted through a subject row (an article that MENTIONS the company): not the
+    #: company's own document, so never the issuer's voice and never a filing for it.
+    via_subject: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -716,6 +719,7 @@ class SupportItem:
             "origin_key": self.origin_key,
             "published_at": self.published_at.isoformat() if self.published_at else None,
             "web": self.web,
+            "via_subject": self.via_subject,
         }
 
 
@@ -1018,8 +1022,14 @@ def assess_claim(
     classes = tuple(sorted({i.source_class for i in items if i.source_class}))
     state = corroboration_state(origins, conflicting=conflicting)
     present = set(classes)
-    issuer_present = bool(present & ISSUER_CLASSES) or any(
-        is_issuer_origin(o) for o in origins
+    # A mention-scope hit (an article NAMING the company) is not the company's voice and
+    # not its filing: it never counts as issuer material or fills a filing slot.
+    own = [i for i in items if not i.via_subject]
+    own_classes = {i.source_class for i in own if i.source_class}
+    issuer_present = any(
+        is_issuer_origin(i.origin_key)
+        or (i.source_class in ISSUER_CLASSES and i.origin_key is None)
+        for i in own
     )
     only_issuer = state == ISSUER_ONLY
 
@@ -1030,7 +1040,7 @@ def assess_claim(
         return verdict(True, None)
     if claim_type == CT_FINANCIAL_STATEMENT:
         # A web value is context only; the filing path is canonical.
-        if present & FILING_CLASSES:
+        if own_classes & FILING_CLASSES:
             return verdict(True, None)
         return verdict(False, LABEL_PRESS_NOT_FILING)
     if claim_type == CT_GUIDANCE:

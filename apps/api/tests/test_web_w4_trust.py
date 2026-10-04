@@ -634,3 +634,46 @@ class TestIngestLinksNearDuplicates:
             if expected:
                 assert payload["items"][0]["source_class"] == "specialist_agency"
                 assert payload["items"][0]["origin_key"] == "usgs.gov"
+
+
+# --------------------------------------------------------------------------- #
+# Mention scope (W3 review F2): a via_subject hit never fills an issuer / Group slot
+# --------------------------------------------------------------------------- #
+
+
+class TestMentionScopeNeverFillsAGroupSlot:
+    def test_a_mentioning_article_is_not_a_primary_pack_item(self) -> None:
+        mention = packs.PackItem("m", "company_press_release", "company:rival", relevance=9,
+                                 via_subject=True)
+        own = packs.PackItem("own", "company_press_release", ISSUER.origin_key, relevance=1)
+        assert not packs.is_primary(mention) and packs.is_primary(own)
+        result = packs.build_pack([mention, own], today=TODAY)
+        assert result.items[0].key == "own"
+        # With no own item at all, the mention is NOT promoted to "the primary item".
+        only = packs.build_pack([mention, packs.PackItem("w", "trade_publication", "a.example")],
+                                today=TODAY)
+        assert not any(packs.is_primary(i) for i in only.items)
+
+    def test_a_mentioning_filing_does_not_make_a_web_revenue_canonical(self) -> None:
+        mention_filing = trust.SupportItem("ev:c:rival", "regulatory_filing", "sec.gov",
+                                           web=True, via_subject=True)
+        verdict = trust.assess_claim("Revenue for FY2025 was US$1.5 billion.", [mention_filing])
+        assert not verdict.meets and verdict.label == trust.LABEL_PRESS_NOT_FILING
+        own_filing = trust.SupportItem("ev:c:own", "regulatory_filing", ISSUER.origin_key,
+                                       web=True)
+        assert trust.assess_claim("Revenue for FY2025 was US$1.5 billion.", [own_filing]).meets
+
+    def test_a_rivals_press_release_is_not_the_issuers_voice(self) -> None:
+        rival = trust.SupportItem("ev:c:r", "company_press_release", "company:rival", web=True,
+                                  via_subject=True)
+        verdict = trust.assess_claim("Acme is the largest lithium producer.", [rival])
+        assert verdict.label == trust.LABEL_SINGLE_SOURCE  # not "company describes itself"
+
+    def test_support_and_payload_carry_via_subject(self) -> None:
+        hit = _web_hit(1, "mining.example")
+        hit["via_subject"] = True
+        (evidence,) = inv._harvest(TOOL_SEARCH_COMPANY_CORPUS, {"items": [hit]}, True)
+        assert evidence.via_subject
+        (support,) = inv._support_for(["ev:c:web1"], [evidence], COMPANY)
+        assert support.via_subject
+        assert inv._company_specificity(evidence) == 0.5

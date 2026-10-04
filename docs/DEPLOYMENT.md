@@ -1780,7 +1780,23 @@ that ingests web documents, `V3_WEB_EXTRACTION_WORKERS=1`). Each worker is cappe
 per-task `RLIMIT_CPU`, and is retired after 25 tasks; its environment is scrubbed and it
 runs in an empty temporary directory. On B1 (1.75 GB) keep one worker per process and
 budget up to 768 MB per ingesting process while a document is parsed. Dark unless
-`V3_WEB_CORPUS_INGEST_ENABLED=true`.
+`V3_WEB_CORPUS_INGEST_ENABLED=true`. The pool recycles its executor itself every 25 runs
+and warms the replacement before the next document's timeout starts.
+
+**Before enabling on App Service (Linux): run a smoke test.** `RLIMIT_AS` is enforced only
+on Linux, and the development machines (macOS) never exercise it. With the flag still off,
+call the extraction pool once from the deployed container with a normal HTML page and a
+normal PDF and confirm they extract: an `RLIMIT_AS` too tight for lxml / pdfplumber /
+trafilatura imports shows up as `extraction_crashed` on every document (warm-up fails),
+which is the signal to raise `V3_WEB_EXTRACTION_MEMORY_MB`.
+
+**Known residuals (hidden-text detection).** Only simple `.class` / `#id` selectors in
+`<style>` blocks are resolved; compound or descendant selectors, `color:white` with no
+stated background, and text hidden by an off-page transform are NOT removed from the
+extracted text (they still raise the injection-taint score when they carry instruction
+phrases). Pool workers inherit the parent's initial environment block at the OS level
+(it remains readable through `/proc/self/environ`); the pool scrubs `os.environ`, it is
+not a sandbox.
 
 ## Environment Variables
 

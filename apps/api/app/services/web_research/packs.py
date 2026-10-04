@@ -82,6 +82,8 @@ class PackItem:
     #: Research fields the item's stored text mentions (``research_fields``).
     claim_keys: tuple[str, ...] = ()
     injection_suspect: bool = False
+    #: Admitted through a subject row (the document MENTIONS the company): never primary.
+    via_subject: bool = False
 
 
 @dataclass
@@ -93,7 +95,11 @@ class PackResult:
 
 
 def is_primary(item: PackItem) -> bool:
-    return item.source_class in FILING_CLASSES or item.source_class in ISSUER_CLASSES
+    """A filing or the issuer's own material — never a mention-scope hit, whose class is
+    the mentioning document's, not the company's."""
+    return not item.via_subject and (
+        item.source_class in FILING_CLASSES or item.source_class in ISSUER_CLASSES
+    )
 
 
 def source_class_prior(source_class: str | None) -> float:

@@ -243,6 +243,7 @@ def _hit_payload(result: Any) -> dict[str, Any]:
         "scope_type": reference.scope_type,
         "scope_name": reference.scope_name,
         "scope_key": reference.scope_key,
+        "via_subject": reference.via_subject,
         "page_start": reference.page_start,
         "page_end": reference.page_end,
         "section_path": reference.section_path,
@@ -256,9 +257,6 @@ def _hit_payload(result: Any) -> dict[str, Any]:
         "source_class": reference.source_class,
         "origin_key": reference.origin_key,
         "injection_suspect": bool(reference.injection_suspect),
-        # Admitted through a subject row (an article naming the company), not the
-        # company's own document: ranked below its own evidence in a pack.
-        "via_subject": bool(reference.via_subject),
     }
 
 

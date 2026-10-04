@@ -106,8 +106,8 @@ class EvidenceReference:
     source_class: str | None = None
     origin_key: str | None = None
     injection_suspect: bool = False
-    #: The hit was admitted through a subject row, not the chunk's own company (W3
-    #: review F2): it is not that company's own Group evidence.
+    #: True when the hit was admitted only through a document-subject row (the article
+    #: MENTIONS the company); its scope is then ``segment``/``mention``, never Group.
     via_subject: bool = False
 
     @property
@@ -210,7 +210,7 @@ def _reference_from_hit(hit: CorpusHit) -> EvidenceReference:
         source_class=chunk.source_class,
         origin_key=chunk.origin_key,
         injection_suspect=bool(chunk.injection_suspect),
-        via_subject=bool(chunk.via_subject),
+        via_subject=bool(getattr(chunk, "via_subject", False)),
     )
 
 
