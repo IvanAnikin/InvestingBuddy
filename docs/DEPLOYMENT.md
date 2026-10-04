@@ -680,6 +680,10 @@ lose them. A retry resumes from the last committed ticker.
   queries the run already recorded (keyed by run id and request hash); the run's query
   ceiling carries across attempts, so a recycle cannot double-spend searches. The pages are
   fetched again (bounded by the budget).
+- **No page-to-query path (PI-07):** the query set is built from the intent's closed
+  vocabularies and the glossary only; the model expansion sees the same facts and may not name
+  a company. Nothing the corpus holds (theme chunks included) is read by the planner, and a
+  regression test pins that a stored page changes no later query.
 - **Cost:** up to 24 (48 deep) provider calls and 40 (80) fetches per run, recorded as
   `cost_units` on the run's `web` summary and on the `discovery_screening` consumption row.
 - **Staging check:** run a thesis whose answer is a small company the registry does not hold;

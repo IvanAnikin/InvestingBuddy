@@ -474,15 +474,22 @@ class TestDurableWorker:
             stages.append(stage)
 
         run = await mds.process_run(
-            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
-            discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+            session,
+            run,
+            extractor=_fake_extractor(),
+            discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider),
+            owned_by_lease=True,
             progress=checkpoint,
         )
         assert run.universe_json["dynamic"]["web"]["state"] == "ok"
         first_scan = stages.index("discovery_scanning")
         web = [s for s in stages[:first_scan] if s and s.startswith("discovery_web")]
         assert [*dict.fromkeys(web)] == [
-            "discovery_web_search", "discovery_web_fetch", "discovery_web_verify"]
+            "discovery_web_search",
+            "discovery_web_fetch",
+            "discovery_web_verify",
+        ]
         assert stages[0] == "discovery_dynamic_stage"
         assert all(len(s) <= 50 for s in stages if s), "research_jobs.stage is String(50)"
 
@@ -502,9 +509,12 @@ class TestDurableWorker:
 
         with pytest.raises(JobCancelled):
             await mds.process_run(
-                session, run, extractor=_fake_extractor(),
+                session,
+                run,
+                extractor=_fake_extractor(),
                 discovery_fetcher=directory_fetcher,
-                discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+                discovery_web_deps=web_deps(pool, net, provider),
+                owned_by_lease=True,
                 progress=cancel_at_fetch,
             )
         assert run.universe_json["dynamic"]["status"] == "running", "not swallowed, not failed"
@@ -513,16 +523,26 @@ class TestDurableWorker:
         assert paid > 0, "the searches were issued and recorded before the stop"
         # The retry (a new lease) re-enters the stage and issues no search twice.
         run = await mds.process_run(
-            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
-            discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+            session,
+            run,
+            extractor=_fake_extractor(),
+            discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider),
+            owned_by_lease=True,
         )
         assert len(provider.requests) == paid
         dynamic = run.universe_json["dynamic"]
         assert dynamic["status"] == "completed"
         assert dynamic["web"]["queries"]["reused_on_resume"] == paid
-        rows = (await session.execute(
-            select(DiscoveryCandidate).where(DiscoveryCandidate.discovery_run_id == run.id)
-        )).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    select(DiscoveryCandidate).where(DiscoveryCandidate.discovery_run_id == run.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         assert [c.ticker for c in rows].count("ALG") == 1, "one candidate, not two"
 
     async def test_a_retry_after_the_scan_began_does_not_rerun_the_web_stage(
@@ -533,8 +553,12 @@ class TestDurableWorker:
         run = await thesis_run(session)
         serve(provider, plan_for(mds_intent(run)), {"entity_listed.0": [hit(ART)]})
         await mds.process_run(
-            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
-            discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+            session,
+            run,
+            extractor=_fake_extractor(),
+            discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider),
+            owned_by_lease=True,
         )
         paid = len(provider.requests)
         run.status = "running"  # a crash after the scan began: the job is retried
@@ -542,7 +566,73 @@ class TestDurableWorker:
         run.processed_count = 1
         await session.commit()
         await mds.process_run(
-            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
-            discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+            session,
+            run,
+            extractor=_fake_extractor(),
+            discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider),
+            owned_by_lease=True,
         )
         assert len(provider.requests) == paid
+
+
+# --------------------------------------------------------------------------- #
+# PI-07: a fetched page never feeds query planning
+# --------------------------------------------------------------------------- #
+
+
+class TestNoPageToQueryPath:
+    async def test_stored_theme_pages_change_no_later_query(self, session: Any, pool: Any) -> None:
+        """Run 1 stores a page full of a distinctive term; run 2 (same intent, new run, the
+        corpus now holding that page) plans and sends EXACTLY the same queries. Nothing the
+        corpus holds — theme chunks included — is read by the planner, the expansion or the
+        selection."""
+        from app.services.discovery.pipeline import run_dynamic_stage
+
+        marker = "zebraquery"
+        page_bytes = GALLIUM_ARTICLE.replace(
+            b"Industry analysts expect",
+            f"The {marker} consortium and {marker} supplier network matter. "
+            "Industry analysts expect".encode(),
+        )
+        config = cfg(v3_web_corpus_ingest_enabled=True)
+        run = await thesis_run(session)
+        intent = mds_intent(run)
+        provider = FakeWebSearchProvider()
+        serve(provider, plan_for(intent), {"entity_listed.0": [hit(ART)]})
+        store, backend = InMemoryArtifactStore(), InMemorySearchBackend()
+
+        async def once(run_id: uuid.UUID) -> list[str]:
+            before = len(provider.requests)
+            await run_dynamic_stage(
+                session,
+                intent=intent,
+                run_universe={"items": []},
+                cfg=config,
+                provider=None,
+                fetcher=directory_fetcher,
+                run_id=run_id,
+                web_deps=web_deps(
+                    pool, Net({ART: page_bytes}), provider, store=store, search_backend=backend
+                ),
+            )
+            return [r.query for r in provider.requests[before:]]
+
+        first = await once(run.id)
+        assert marker in " ".join(
+            c.text.lower()
+            for c in (
+                await session.execute(
+                    select(
+                        __import__(
+                            "app.models.research_chunk", fromlist=["x"]
+                        ).ResearchDocumentChunk
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        ), "the page really is in the corpus"
+        second = await once(uuid.uuid4())
+        assert first == second
+        assert not any(marker in q.lower() for q in [*first, *second])
