@@ -105,6 +105,9 @@ class ToolContext:
     #: OPEN DECISION #1 (Azure AI Search vs PostgreSQL + pgvector) is the user's, and a
     #: tool that picked one would take it by accident.
     search_backend: Any = None
+    #: Open-web W4: the run's theme key, when the run is a theme run. The ONLY scope
+    #: ``search_theme_corpus`` searches — an agent cannot name another theme.
+    theme_key: str | None = None
 
 
 @dataclass
@@ -120,6 +123,8 @@ class ToolSession:
     legal_entity_id: uuid.UUID | None = None
     #: Handed to every tool via the context. See ``ToolContext.search_backend``.
     search_backend: Any = None
+    #: See ``ToolContext.theme_key``.
+    theme_key: str | None = None
     spend: ToolSpend = field(default_factory=ToolSpend)
     #: The safety ceiling. See ``MAX_RECORDED_CALLS_PER_SESSION``.
     max_recorded_calls: int = MAX_RECORDED_CALLS_PER_SESSION
@@ -268,6 +273,7 @@ class ToolSession:
             role=self.policy.role,
             task_ref=task_ref,
             search_backend=self.search_backend,
+            theme_key=self.theme_key,
         )
         try:
             payload = await spec.handler(context, args)

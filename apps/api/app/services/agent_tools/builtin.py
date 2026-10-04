@@ -149,7 +149,10 @@ LOOKUP_ENTITY_SPEC = ToolSpec(
 def register_builtins(registry: "ToolRegistry", *, cfg: Any = None) -> "ToolRegistry":
     """Register every builtin tool."""
     from app.services.agent_tools.calculations import register_calculation_tools
-    from app.services.agent_tools.corpus_search import register_corpus_tools
+    from app.services.agent_tools.corpus_search import (
+        register_corpus_tools,
+        register_theme_corpus_tool,
+    )
     from app.services.agent_tools.external import register_external_tools
     from app.services.agent_tools.facts import register_fact_tools
     from app.services.agent_tools.filings import register_filing_tools
@@ -162,6 +165,8 @@ def register_builtins(registry: "ToolRegistry", *, cfg: Any = None) -> "ToolRegi
     register_fact_tools(registry)
     register_calculation_tools(registry)
     register_corpus_tools(registry)
+    # Open-web W4: read-only, scoped to the run's theme (spec §17.2).
+    register_theme_corpus_tool(registry)
     register_macro_tools(registry)
     register_ir_event_tools(registry)
     register_filing_tools(registry)

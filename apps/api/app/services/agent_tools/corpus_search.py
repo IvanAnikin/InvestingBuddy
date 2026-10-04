@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 from app.services.agent_tools.contracts import (
     TOOL_SEARCH_COMPANY_CORPUS,
     TOOL_SEARCH_PRIVATE_RESEARCH,
+    TOOL_SEARCH_THEME_CORPUS,
     ToolCost,
     ToolSpec,
     units_for,
@@ -121,6 +122,51 @@ def _iso_date(raw: Any, field: str) -> date | None:
         raise ValueError(f"{field} must be an ISO date (YYYY-MM-DD).") from exc
 
 
+def _source_classes(raw: Any) -> list[str]:
+    """Open-web W4: spec §13.1 classes, from the CLOSED list — never a free string."""
+    from app.services.web_research.classify import SOURCE_CLASSES
+
+    values = _str_list(raw, "source_classes")
+    unknown = sorted(set(values) - SOURCE_CLASSES)
+    if unknown:
+        raise ValueError(
+            f"source_classes contains {unknown}, which are not source classes. "
+            f"Recognised: {', '.join(sorted(SOURCE_CLASSES))}."
+        )
+    return list(dict.fromkeys(values))
+
+
+def _flag(raw: Any, field: str, default: bool) -> bool:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    raise ValueError(f"{field} must be true or false.")
+
+
+def _web_filters(arguments: dict[str, Any], *, exclude_suspect_default: bool) -> dict[str, Any]:
+    """The open-web filters both corpus tools accept (spec §17.2)."""
+    return {
+        "source_classes": _source_classes(arguments.get("source_classes")),
+        # ``since`` is the spec's name for the lower publication bound.
+        "since": _iso_date(arguments.get("since"), "since"),
+        "exclude_suspect": _flag(
+            arguments.get("exclude_suspect"), "exclude_suspect", exclude_suspect_default
+        ),
+    }
+
+
+def _published_from(arguments: dict[str, Any]) -> date | None:
+    """The later of ``published_from`` and ``since`` — both are lower bounds."""
+    bounds = [d for d in (arguments.get("published_from"), arguments.get("since")) if d]
+    return max(bounds) if bounds else None
+
+
 def validate_search_company_corpus(arguments: dict[str, Any]) -> dict[str, Any]:
     """Validate, and refuse the two requests the retrieval service would refuse anyway.
 
@@ -170,6 +216,7 @@ def validate_search_company_corpus(arguments: dict[str, Any]) -> dict[str, Any]:
         "published_to": _iso_date(arguments.get("published_to"), "published_to"),
         "mode": mode,
         "top_k": max(1, min(top_k, MAX_TOP_K)),
+        **_web_filters(arguments, exclude_suspect_default=False),
     }
 
 
@@ -204,6 +251,14 @@ def _hit_payload(result: Any) -> dict[str, Any]:
             reference.published_at.isoformat() if reference.published_at else None
         ),
         "company_id": str(reference.company_id) if reference.company_id else None,
+        # Open-web W4: what the evidence pack ranks and caps on. None/False for every
+        # non-web span.
+        "source_class": reference.source_class,
+        "origin_key": reference.origin_key,
+        "injection_suspect": bool(reference.injection_suspect),
+        # Admitted through a subject row (an article naming the company), not the
+        # company's own document: ranked below its own evidence in a pack.
+        "via_subject": bool(reference.via_subject),
     }
 
 
@@ -245,11 +300,13 @@ async def _search_company_corpus(
         scope_types=arguments["scope_types"] or None,
         scope_keys=arguments["scope_keys"] or None,
         languages=arguments["languages"] or None,
-        published_from=arguments["published_from"],
+        published_from=_published_from(arguments),
         published_to=arguments["published_to"],
         top_k=arguments["top_k"],
         mode=REQUESTABLE_MODES[arguments["mode"]],
         allow_cross_entity=arguments["allow_cross_entity"],
+        source_classes=arguments.get("source_classes") or None,
+        exclude_injection_suspect=bool(arguments.get("exclude_suspect")),
     )
     items = [_hit_payload(result) for result in results]
     return {
@@ -263,6 +320,98 @@ async def _search_company_corpus(
         ),
         # Every hit is text from a fetched document. Labelled, never sanitised: a
         # sanitiser is a filter an attacker iterates against.
+        "contains_untrusted_content": True,
+    }
+
+
+#: Why a theme-corpus call returned nothing without searching.
+THEME_SCOPE_ABSENT = "no_theme_scope_for_this_run"
+
+
+def validate_search_theme_corpus(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Validate a theme-corpus call. The scope is the RUN's, never an argument.
+
+    An argument naming a theme, a company or cross-entity search is refused rather than
+    ignored: an agent that could name a theme could read another run's research.
+    """
+    query = str(arguments.get("query") or "").strip()
+    if not query:
+        raise ValueError("query is required.")
+    for forbidden in ("theme_key", "theme_keys", "company_ids", "allow_cross_entity"):
+        if arguments.get(forbidden) not in (None, "", [], False):
+            raise ValueError(
+                f"{forbidden} is not an argument of search_theme_corpus: the theme is "
+                "the run's own and cannot be chosen by the caller."
+            )
+    mode = str(arguments.get("mode") or "lexical").strip().lower()
+    if mode not in REQUESTABLE_MODES:
+        raise ValueError(
+            f"mode must be one of {', '.join(sorted(REQUESTABLE_MODES))}. "
+            "Semantic-only retrieval is refused in this domain."
+        )
+    try:
+        top_k = int(arguments.get("top_k") or DEFAULT_TOP_K)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("top_k must be a number.") from exc
+    return {
+        "query": query,
+        "mode": mode,
+        "top_k": max(1, min(top_k, MAX_TOP_K)),
+        # Theme documents are all open-web text: suspect pages are excluded unless the
+        # caller asks for them (they stay stored as evidence of an attack).
+        **_web_filters(arguments, exclude_suspect_default=True),
+    }
+
+
+async def _search_theme_corpus(
+    context: "ToolContext", arguments: dict[str, Any]
+) -> dict[str, Any]:
+    from app.services.corpus.retrieval import search_corpus
+
+    theme_key = (getattr(context, "theme_key", None) or "").strip()
+    if not theme_key:
+        # A company run has no theme: "not searched" is a different answer from
+        # "searched and found nothing".
+        return {
+            "items": [],
+            "theme_scoped": False,
+            "refusal": THEME_SCOPE_ABSENT,
+            "consumption": units_for(SEARCH_INSTRUMENTED_UNITS, search_index_queries=0),
+            "summary": "this run has no theme, so the theme corpus was not searched",
+            "contains_untrusted_content": False,
+        }
+    backend = getattr(context, "search_backend", None)
+    if backend is None:
+        return {
+            "items": [],
+            "backend_configured": False,
+            "theme_scoped": True,
+            "consumption": units_for(SEARCH_INSTRUMENTED_UNITS, search_index_queries=0),
+            "summary": (
+                "no corpus search backend is configured, so this is not a statement "
+                "about what the theme corpus contains"
+            ),
+            "contains_untrusted_content": False,
+        }
+    results = await search_corpus(
+        context.session,
+        backend=backend,
+        cfg=context.cfg,
+        query=arguments["query"],
+        theme_keys=[theme_key],
+        published_from=arguments.get("since"),
+        top_k=arguments["top_k"],
+        mode=REQUESTABLE_MODES[arguments["mode"]],
+        source_classes=arguments.get("source_classes") or None,
+        exclude_injection_suspect=bool(arguments.get("exclude_suspect")),
+    )
+    items = [_hit_payload(result) for result in results]
+    return {
+        "items": items,
+        "backend_configured": True,
+        "theme_scoped": True,
+        "consumption": units_for(SEARCH_INSTRUMENTED_UNITS, search_index_queries=1),
+        "summary": f"{len(items)} hit(s) in the run's theme corpus",
         "contains_untrusted_content": True,
     }
 
@@ -332,9 +481,30 @@ SEARCH_PRIVATE_RESEARCH_SPEC = ToolSpec(
 )
 
 
+SEARCH_THEME_CORPUS_SPEC = ToolSpec(
+    name=TOOL_SEARCH_THEME_CORPUS,
+    description=(
+        "Search this platform's corpus of theme, industry and macro documents for the "
+        "run's own theme. Read-only; lexical or hybrid only; the theme is the run's and "
+        "cannot be chosen. Optional filters: source_classes, since, exclude_suspect."
+    ),
+    handler=_search_theme_corpus,
+    validate_arguments=validate_search_theme_corpus,
+    cost=ToolCost(searches=1),
+    instrumented_units=SEARCH_INSTRUMENTED_UNITS,
+    may_contain_untrusted_content=True,
+)
+
+
 def register_corpus_tools(registry: "ToolRegistry") -> "ToolRegistry":
     registry.register(SEARCH_COMPANY_CORPUS_SPEC)
     registry.register(SEARCH_PRIVATE_RESEARCH_SPEC)
+    return registry
+
+
+def register_theme_corpus_tool(registry: "ToolRegistry") -> "ToolRegistry":
+    """Open-web W4 (spec §17.2). Registered from ``builtin.register_builtins``."""
+    registry.register(SEARCH_THEME_CORPUS_SPEC)
     return registry
 
 
@@ -346,7 +516,11 @@ __all__ = [
     "REQUESTABLE_MODES",
     "SEARCH_COMPANY_CORPUS_SPEC",
     "SEARCH_PRIVATE_RESEARCH_SPEC",
+    "SEARCH_THEME_CORPUS_SPEC",
+    "THEME_SCOPE_ABSENT",
     "register_corpus_tools",
+    "register_theme_corpus_tool",
+    "validate_search_theme_corpus",
     "validate_search_company_corpus",
     "validate_search_private_research",
 ]

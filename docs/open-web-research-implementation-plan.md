@@ -439,6 +439,50 @@ existing reports once web documents exist.
 
 **Rollback:** Revert. Weights are versioned, and web items can be filtered out.
 
+**As built (W4).** Modules: `web_research/trust.py` (origin algorithm, issuer identity,
+publisher groups `PUBLISHER_GROUPS_VERSION`, corroboration states, claim types and
+§13.3 rules `TRUST_RULES_VERSION`, contradictions, §17.3 web facts),
+`web_research/packs.py` (`PACK_WEIGHTS_VERSION` weights, greedy deterministic selection),
+`web_research/dedup.py` (union-find clustering, earliest-published representative,
+`near_duplicate_rows`). Decisions, each deliberate:
+
+- **No migration.** The plan's data model holds: `simhash` / `origin_key` (044) carry
+  dedup and origin. The finding's label is a statement PREFIX (`[company says] …`,
+  `[company describes itself as …] …`, `[reported in the press; the filing says X] …`),
+  never stacked, and `claim_key` is computed from the unlabelled text. The structured
+  verdict (claim type, corroboration state, origins, classes, web fact) is written to the
+  question's `acquisition_log_json` as a `rung="trust"` step. A queryable column for the
+  corroboration state (for W8's UI) is a later migration decision.
+- **W4 is inert without web evidence.** The rules run only when a finding cites open-web
+  evidence (a web corpus chunk or a verified `ev:x:` lead); the pack re-ranks only when
+  web evidence is present; the origin cap applies to web origins only, so a filing's
+  chunks are never capped. Note: verified leads ARE web evidence, so a lead-backed
+  finding is now checked and labelled (e.g. one USGS figure → `single source estimate`).
+- **Ingest.** Origin = `trust.document_origin` (cluster → issuer voice / PR-wire host →
+  wire attribution → "Source:" line → boilerplate → cross-domain canonical → publisher
+  group → registrable domain). A near-duplicate (SimHash ≤ 3, bounded scan of the newest
+  2,000 fingerprints) is LINKED to the stored document (subjects row), never re-chunked;
+  when the new document was published earlier its origin is written to the stored
+  members. `content_origin` stays the publisher's registrable domain.
+- **Contradictions.** At persistence, a non-guidance money field stated for the same
+  period and scope by a different origin with a different value (track B's
+  `compare_values`) records a `conflicting_sources` gap describing every side (class,
+  origin, date, value; display order regulator > issuer > press, newer first). For a
+  financial-statement field the filing side is canonical and the web finding is relabelled
+  "reported in the press; the filing says X"; otherwise there is no winner. Guidance
+  fields are excluded (temporal supersession is track B's).
+- **Claim keys reuse `research_fields`** (`fields_stated`, `field_clause`, `money_values`,
+  `SUPERSEDABLE_FIELDS`) — no parallel vocabulary. Financial-statement fields:
+  revenue, operating cash flow, net debt, cash, period capex.
+- **PI-09.** A web corpus hit reaches the prompt as a whitelist (`evidence_id`, `text`,
+  `source_class`, `origin_key`, date, period, scope, page, section): no title, citation
+  label or URL. Search snippets and titles never enter the corpus.
+- **Retrieval.** `search_corpus` forwards `source_classes`, `theme_keys`,
+  `subject_scopes`, `exclude_injection_suspect`; hits carry `source_class`, `origin_key`,
+  `injection_suspect`. `search_theme_corpus` is registered but held by no role (W6).
+- Not done here: event facts in a fact table (§17.3 is computed and logged, not stored as
+  rows — no table exists), Discovery's 6-item per-candidate pack (W6), a Hamming index.
+
 **Complexity:** L (about 4 days).
 
 ---
