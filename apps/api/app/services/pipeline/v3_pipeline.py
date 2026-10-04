@@ -86,6 +86,8 @@ class _PlaybookAdapter:
         self._playbook = playbook
         self.playbook_id = playbook.playbook_id
         self.version = playbook.version
+        #: Item 20 — the planner lets an overlay supersede other playbooks' questions.
+        self.overlay = bool(getattr(playbook, "overlay", False))
 
     def mandatory_questions(self):  # noqa: ANN201
         return self._playbook.mandatory_questions()
@@ -137,6 +139,17 @@ class V3ResearchOutcome:
     #: Non-US issuers: which official disclosures (UK FCA NSM / ASX) were secured into
     #: the corpus before the questions were asked, and why any was not.
     core_disclosures: dict[str, Any] = field(default_factory=dict)
+    #: Item 21 — the issuer's own statements as this run found them: which slots its
+    #: acquired documents fill, and — when none — whether the report was acquired but not
+    #: extracted, not acquired, or (with the official listing as evidence) never filed.
+    financial_statements: dict[str, Any] = field(default_factory=dict)
+    #: Item 20 — the development-stage assessment (``classification.stage``) when it
+    #: found anything: the signals it gave playbook selection and the evidence for them.
+    stage: dict[str, Any] = field(default_factory=dict)
+    #: Migration 043 — the final reconciliation: each gap closed / partially closed /
+    #: superseded / still open, the temporal supersessions, and (once attached to a
+    #: report) the labels on the V2 report's own gap statements.
+    gap_reconciliation: dict[str, Any] = field(default_factory=dict)
     #: V3.18.2 — every planned question as a node: domain, owner, contract verdict,
     #: evidence counts, why it is still open, and what acquisition tried.
     question_graph: list[dict[str, Any]] = field(default_factory=list)
@@ -177,6 +190,9 @@ class V3ResearchOutcome:
             "corpus_index": dict(self.corpus_index),
             "core_filings": dict(self.core_filings),
             "core_disclosures": dict(self.core_disclosures),
+            "financial_statements_state": dict(self.financial_statements),
+            "stage": dict(self.stage),
+            "gap_reconciliation": dict(self.gap_reconciliation),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
             "error": self.error,
@@ -188,6 +204,29 @@ class V3ResearchOutcome:
                 "council's verdict and the Red Team's challenges, with citable ids."
             ),
         }
+
+
+def _mark_pre_revenue(outcome: V3ResearchOutcome, stage: Any) -> None:
+    """Item 20 — for a development-stage company with no revenue slot, revenue is
+    "pre-revenue / not applicable yet": a stage, not a missing-evidence gap."""
+    statements = outcome.financial_statements
+    if not isinstance(statements, dict):
+        return
+    slots = statements.get("slots") or {}
+    if any(key.startswith("revenue_") for key in slots):
+        return
+    statements["revenue_status"] = {
+        "state": "pre_revenue",
+        "label": "Revenue: pre-revenue / not applicable yet",
+        "basis": [b for b in stage.basis if b.startswith("P1")],
+        "provenance": "derived",
+        "note": (
+            "The company's own annual statements show no or immaterial revenue in the "
+            "latest two years, and its documents describe a mining project under the "
+            "reporting codes. Revenue and margins are not applicable yet; this is a "
+            "stage, not a missing figure."
+        ),
+    }
 
 
 def _investigator_degraded_reasons(diagnostics: dict[str, Any]) -> list[str]:
@@ -276,17 +315,21 @@ async def run_v3_research(
     # V3.18.2 — the ledger this code writes has columns migration 041 adds. On a database
     # without them every ledger query fails, so the run is not attempted: it degrades
     # with the reason named, and the report the V2 path produced is untouched.
-    from app.services.schema_readiness import migration_041_readiness
+    from app.services import schema_readiness
 
-    readiness = await migration_041_readiness(session)
-    if not readiness.ready:
-        outcome.error = "schema_not_ready"
-        outcome.degraded.append(
-            "the V3 research graph was not run: migration 041 is not applied to this "
-            f"database (missing {', '.join(readiness.missing[:4])})"
-        )
-        outcome.elapsed_seconds = clock() - started
-        return outcome
+    for migration, check in (
+        ("041", schema_readiness.migration_041_readiness),
+        ("043", schema_readiness.migration_043_readiness),
+    ):
+        readiness = await check(session)
+        if not readiness.ready:
+            outcome.error = "schema_not_ready"
+            outcome.degraded.append(
+                f"the V3 research graph was not run: migration {migration} is not applied "
+                f"to this database (missing {', '.join(readiness.missing[:4])})"
+            )
+            outcome.elapsed_seconds = clock() - started
+            return outcome
 
     try:
         # A SAVEPOINT, so a V3 error that PROPAGATES releases only V3's writes rather
@@ -458,6 +501,24 @@ async def _run(
                 f"corpus ({item.get('reason')})"
             )
 
+    # Item 21 — the statements those documents yielded, read the way the V2 snapshot
+    # reads its own facts. The V2 report was assembled before any of this was acquired,
+    # so without it an acquired annual report still rendered as "Not reported".
+    from app.services.pipeline.issuer_financials import financial_statements_for
+
+    try:
+        async with session.begin_nested():
+            outcome.financial_statements = await financial_statements_for(
+                session,
+                company,
+                core_disclosures=outcome.core_disclosures,
+                core_filings=outcome.core_filings,
+            )
+    except Exception as exc:  # noqa: BLE001 - a statements view must not end the run
+        outcome.degraded.append(
+            f"the issuer's statement figures could not be read ({type(exc).__name__})"
+        )
+
     if search_backend is not None:
         from app.services.corpus.indexing import ensure_company_indexed
 
@@ -497,9 +558,32 @@ async def _run(
     # reason, never the nearest-looking playbook.
     classification = await ensure_company_classification(session, company)
     outcome.classification = classification.to_dict()
+    # Item 20 — what the company's own documents say it produces, and whether they
+    # positively show a pre-revenue resource developer. Built BEFORE selection so the
+    # business-model signals the playbooks declare are finally given to selection. A
+    # company with no such proof gets no signal, and its selection is unchanged.
+    from app.services.classification.stage import detect_stage
+    from app.services.director.subject_profile import build_subject_profile
+
+    profile = await build_subject_profile(session, company)
+    outcome.subject_profile = profile.to_dict()
+    from app.services.playbooks.industries import MINING_MATERIALS
+
+    stage = await detect_stage(
+        session, company, subject_profile=profile,
+        # Classified in a mining INDUSTRY (never the broad "Materials" sector, which
+        # also holds chemicals and packaging).
+        mining_sector=bool(classification.industry) and MINING_MATERIALS.applies_to.matches(
+            industry=classification.industry),
+    )
+    if stage.signals or stage.basis:
+        outcome.stage = stage.to_dict()
+    if stage.is_development_stage:
+        _mark_pre_revenue(outcome, stage)
     selection = select_playbooks(
         sector=classification.matching_sector,
         industry=classification.industry,
+        signals=stage.signals,
     )
     if selection.is_empty:
         outcome.degraded.append(f"no playbook applied: {selection.reason}")
@@ -558,12 +642,9 @@ async def _run(
     )
     outcome.research_run_id = run.id
 
-    # 4. Plan. V3.18.4 — what the company produces, from its OWN documents, so a
-    #    per-commodity question is asked about the commodities this company sells.
-    from app.services.director.subject_profile import build_subject_profile
-
-    profile = await build_subject_profile(session, company)
-    outcome.subject_profile = profile.to_dict()
+    # 4. Plan. V3.18.4 — what the company produces, from its OWN documents (the
+    #    profile, built above for selection), so a per-commodity question is asked
+    #    about the commodities this company sells.
     # V3.18.8 — WHY this company is being researched. Each dimension the originating
     # thesis names becomes a question the research must answer with evidence; the run
     # records the thesis so the report can test it rather than decorate it.
@@ -609,6 +690,11 @@ async def _run(
     # where a reader sees it — not only in the planner's own record.
     for reason in plan.degraded:
         outcome.degraded.append(reason)
+    if plan.superseded:
+        # Item 20 — the producer questions an overlay superseded, on the record.
+        outcome.stage = {**outcome.stage, "superseded_questions": dict(plan.superseded)}
+    if plan.blocking_demoted:
+        outcome.stage = {**outcome.stage, "blocking_demoted": dict(plan.blocking_demoted)}
     await persist_plan(session, run, plan)
 
     # 5. Investigate, with real tools and a real model where one resolved.
@@ -814,6 +900,12 @@ async def _run(
     outcome.challenges = challenge_result.to_dict()
     outcome.challenges["discarded_unknown_targets"] = len(red.discarded_unknown_targets)
 
+    # 7b. Reconciliation — BEFORE the Chair and the report are assembled, so neither
+    #     calls a field missing that a finding states, nor shows superseded guidance as
+    #     current. A failure costs the reconciliation only: the gaps then stand as
+    #     recorded, which is the fail-closed direction.
+    await reconcile_step(session, run, company=company, outcome=outcome)
+
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
     #    and the Chair must not see one that was retired.
     council = await council_inputs.assemble(session, run)
@@ -882,6 +974,8 @@ async def _run(
             table_payloads=investigator.table_payloads,
             council_convened=bool(council.convened),
             editor_client=model_routing.client_for(SLOT_CHAIR),
+            supersessions=(outcome.gap_reconciliation or {}).get("supersessions") or [],
+            stage=(outcome.stage or {}).get("stage"),
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -894,6 +988,32 @@ async def _run(
         model_routing, loop_result, summary, verdict, challenge_result, cfg, tool_units
     )
     await session.flush()
+
+
+async def reconcile_step(session: Any, run: Any, *, company: Any, outcome: Any) -> None:
+    """Step 7b: reconcile gaps and supersede guidance. Never raises.
+
+    In a SAVEPOINT: a database error inside it releases only its own writes, so the
+    Chair, the report and the V2 report after it still write on a clean transaction.
+    A failure costs the reconciliation only; the gaps then stand as recorded, which is
+    the fail-closed direction.
+    """
+    from app.services.pipeline import gap_reconciliation
+
+    try:
+        async with session.begin_nested():
+            outcome.gap_reconciliation = await gap_reconciliation.reconcile_run(
+                session,
+                run,
+                company_id=getattr(company, "id", None),
+                core_filings=outcome.core_filings,
+                core_disclosures=outcome.core_disclosures,
+            )
+    except Exception as exc:  # noqa: BLE001 - reconciliation must not end the run
+        outcome.degraded.append(
+            f"gaps were not reconciled against the findings ({type(exc).__name__}); "
+            "they are shown as recorded"
+        )
 
 
 #: Findings read into the report. The ledger may hold more; the report says how many.
@@ -915,6 +1035,8 @@ async def _professional_report(
     table_payloads: dict[str, list[dict[str, Any]]],
     council_convened: bool,
     editor_client: Any,
+    supersessions: list[dict[str, Any]] | None = None,
+    stage: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -986,6 +1108,11 @@ async def _professional_report(
         )
         for row in question_rows
     ]
+    superseded_fields: dict[str, list[str]] = {}
+    for item in supersessions or []:
+        label = item.get("field_label") or item.get("field")
+        if item.get("finding_id") and label:
+            superseded_fields.setdefault(str(item["finding_id"]), []).append(str(label))
     findings = [
         pr.FindingView(
             finding_id=str(row.id),
@@ -999,6 +1126,13 @@ async def _professional_report(
             direction=row.direction,
             period_key=row.period_key,
             references=tuple(str(r) for r in (row.references_finding_ids_json or ())),
+            source_published_at=(
+                row.source_published_at.isoformat() if row.source_published_at else None
+            ),
+            superseded_by=(
+                str(row.superseded_by_finding_id) if row.superseded_by_finding_id else None
+            ),
+            superseded_fields=tuple(superseded_fields.get(str(row.id), ())),
         )
         for row in finding_rows
     ]
@@ -1008,9 +1142,17 @@ async def _professional_report(
             question_key=row.question_key,
             knowledge_state=row.knowledge_state,
             kind="platform_evidence_gap",
+            reconciliation_status=row.reconciliation_status,
+            addressed_by_finding_ids=tuple(
+                str(f) for f in ((row.reconciliation_json or {}).get("finding_ids") or ())
+            ),
+            reconciliation_reasons=tuple(
+                str(r) for r in ((row.reconciliation_json or {}).get("reasons") or ())
+            ),
         )
         for row in gap_rows
         if row.status in (ledger.GAP_OPEN, ledger.GAP_ACCEPTED)
+        and row.reconciliation_status not in ledger.RECONCILED_HIDDEN
     ]
     acquired = [
         {"kind": ref.source_kind, "source_ref": ref.source_ref, "tier": ref.source_tier}
@@ -1034,6 +1176,9 @@ async def _professional_report(
             "ticker": getattr(company, "ticker", None),
             "exchange": getattr(company, "exchange", None),
             "name": getattr(company, "name", None),
+            # Item 20 — only when the stage detector proved it, so every other
+            # company's subject is unchanged.
+            **({"stage": stage} if stage else {}),
         },
         questions=questions,
         findings=findings,
@@ -1538,12 +1683,18 @@ def _consumption(
         "findings_total": summary.findings_total,
         "findings_withdrawn_by_red_team": challenge_result.withdrawn_findings,
         "verified_useful_findings": useful,
+        # The same count under its true name: nothing in the pipeline VERIFIES a
+        # finding, so "verified useful" overstated it. The old key stays for old readers.
+        "useful_findings": useful,
         "gaps_open": summary.gaps_open,
         "model": units.to_dict(),
         "model_by_vendor": by_vendor,
         "estimated_cost_usd": cost.estimated_usd,
         "unpriced_units": list(cost.unpriced_units),
         "cost_per_verified_useful_finding": (
+            (cost.estimated_usd / useful) if (cost.estimated_usd is not None and useful) else None
+        ),
+        "cost_per_useful_finding": (
             (cost.estimated_usd / useful) if (cost.estimated_usd is not None and useful) else None
         ),
         "cost_per_company_research_run": cost.estimated_usd,
@@ -1569,9 +1720,67 @@ def attach_to_report(report: Any, outcome: V3ResearchOutcome) -> Any:
     read.
     """
     summary = dict(getattr(report, "source_summary_json", None) or {})
-    summary[SOURCE_SUMMARY_KEY] = outcome.to_dict()
+    payload = outcome.to_dict()
+    reconciliation = payload.get("gap_reconciliation")
+    if isinstance(reconciliation, dict) and reconciliation.get("closing_findings") is not None:
+        # The V2 report was assembled BEFORE this research ran; its own gap statements
+        # are labelled here against the V3 findings, so the page can drop the ones a
+        # finding answers. Never raises: an unlabelled V2 item is shown as V2 wrote it.
+        try:
+            reconciliation = {
+                **reconciliation,
+                "v2": _label_v2(report, summary, reconciliation["closing_findings"]),
+            }
+            payload["gap_reconciliation"] = reconciliation
+        except Exception:  # noqa: BLE001 - labels are additive
+            pass
+    summary[SOURCE_SUMMARY_KEY] = payload
     report.source_summary_json = summary
     return report
+
+
+def _v2_report_content(report: Any) -> dict[str, Any]:
+    """The V2 report content, read the way the page reads it (a fenced JSON block)."""
+    import json
+
+    markdown = str(getattr(report, "content_markdown", None) or "")
+    start = markdown.find("```json")
+    end = markdown.rfind("```")
+    if start == -1 or end <= start:
+        return {}
+    try:
+        parsed = json.loads(markdown[start + len("```json"):end].strip())
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _label_v2(
+    report: Any, summary: dict[str, Any], closing_findings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    from app.services.pipeline import gap_reconciliation
+
+    content = _v2_report_content(report)
+    missing_section = content.get("missing_information") or {}
+    missing = (missing_section.get("missing_items") or {}) if isinstance(
+        missing_section, dict) else {}
+    missing_items = missing.get("value") if isinstance(missing, dict) else missing
+    concerns: list[dict[str, Any]] = []
+    for agent in ((summary.get("llm_council") or {}).get("agents") or []):
+        if not isinstance(agent, dict):
+            continue
+        for index, gap in enumerate(agent.get("risks_or_gaps") or []):
+            item = gap.get("item") if isinstance(gap, dict) else None
+            if item:
+                # agent + index: a stable handle the page can match besides the text.
+                concerns.append(
+                    {"text": str(item), "agent": agent.get("agent_name"), "index": index}
+                )
+    return gap_reconciliation.label_v2_items(
+        missing_items=[m for m in (missing_items or []) if isinstance(m, (dict, str))],
+        concerns=concerns,
+        closers=gap_reconciliation.closers_from_payload(closing_findings),
+    )
 
 
 __all__ = [

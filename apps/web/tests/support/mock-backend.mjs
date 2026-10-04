@@ -2056,6 +2056,318 @@ function mockProfessionalLegacyReport(id) {
   return base;
 }
 
+// Report reconciliation (items 18, 19, 22). A V3 report whose V2 half was assembled
+// BEFORE the research ran: its own gap statements carry the backend's labels
+// (`v3_research.gap_reconciliation.v2`), and the page must not show a closed one as open.
+const RECONCILED_V2_REPORT_ID = "00000000-0000-0000-0000-0000000000fa";
+const RECONCILED_PRO_REPORT_ID = "00000000-0000-0000-0000-0000000000fb";
+const CAPEX_CONCERN = "Capital expenditure is not disclosed in the filings retrieved.";
+
+function withReconciliationLabels(base) {
+  const v3 = base.source_summary_json.v3_research;
+  // Nothing in the pipeline verifies a finding: the count that matters is how many cite
+  // the issuer's own documents.
+  v3.council.verified_finding_count = 0;
+  v3.council.primary_source_finding_count = 2;
+  v3.consumption.useful_findings = 3;
+  v3.consumption.estimated_cost_usd = 0.0369;
+  v3.consumption.cost_per_useful_finding = 0.0123;
+  v3.consumption.cost_per_verified_useful_finding = 0.0123;
+  v3.gap_reconciliation = {
+    version: 1,
+    counts: { closed: 1, partially_closed: 1, still_open: 1 },
+    gaps: [],
+    supersessions: [],
+    temporal_disagreements: [],
+    closing_findings: [],
+    v2: {
+      missing_information: [
+        {
+          field: "fundamentals.capital_expenditure",
+          source: "company_snapshot",
+          status: "closed",
+          fields: ["metric:capex"],
+          field_labels: ["capital expenditure"],
+          finding_ids: ["aaaaaaaa-0000-4000-8000-000000000001"],
+          reasons: [],
+        },
+        {
+          field: "fundamentals.cash_and_equivalents",
+          source: "company_snapshot",
+          status: "partially_closed",
+          fields: ["metric:cash"],
+          field_labels: ["cash and equivalents"],
+          finding_ids: ["aaaaaaaa-0000-4000-8000-000000000002"],
+          reasons: ["older_period"],
+        },
+      ],
+      council_concerns: [
+        {
+          text: CAPEX_CONCERN,
+          key: CAPEX_CONCERN.toLowerCase().replace(/[.]+$/, ""),
+          agent: "valuation_guard",
+          index: 0,
+          status: "closed",
+          fields: ["metric:capex"],
+          field_labels: ["capital expenditure"],
+          finding_ids: ["aaaaaaaa-0000-4000-8000-000000000001"],
+          reasons: [],
+        },
+      ],
+    },
+  };
+  return base;
+}
+
+function withReconciledV2Content(base) {
+  const content = sampleReportContent({ withCouncil: true });
+  content.missing_information.missing_items.value.push(
+    { field: "fundamentals.capital_expenditure", source: "company_snapshot" },
+    { field: "fundamentals.cash_and_equivalents", source: "company_snapshot" },
+  );
+  content.missing_information.total_missing_items += 2;
+  base.content_markdown = finalReportMarkdown(content);
+  const guard = base.source_summary_json.llm_council.agents.find(
+    (a) => a.agent_name === "valuation_guard",
+  );
+  guard.risks_or_gaps.unshift({ item: CAPEX_CONCERN, citation_ids: ["E2"], severity: "low" });
+  return base;
+}
+
+function mockReconciledV2Report(id) {
+  return withReconciliationLabels(withReconciledV2Content(mockV3Report(id)));
+}
+
+function mockReconciledProfessionalReport(id) {
+  const base = withReconciliationLabels(withReconciledV2Content(mockProfessionalReport(id)));
+  const pro = base.source_summary_json.v3_research.professional_research;
+  const growth = pro.sections.find((s) => s.key === "growth_and_catalysts");
+  const finding = (label, findingId, statement, extra) => ({
+    label,
+    finding_id: findingId,
+    statement,
+    question_key: "growth_projects",
+    domain: "growth_pipeline",
+    domain_label: "Growth pipeline",
+    evidence_ids: [`ev:${findingId}`],
+    calculation_ids: [],
+    source_kinds: ["issuer_filing"],
+    confidence: 0.8,
+    direction: "neutral",
+    period_key: null,
+    references: [],
+    source_published_at: null,
+    superseded_by_finding_id: null,
+    ...extra,
+  });
+  growth.findings = [
+    finding("F7", "h", "First production at the Tia Maria Project is expected in 2028.", {
+      source_published_at: "2025-11-03",
+      superseded_by_finding_id: "i",
+      guidance_status: "prior",
+      superseded_fields: ["first production"],
+      superseded_by_label: "F8",
+      superseded_on: "2026-08-12",
+    }),
+    finding("F8", "i", "First production at the Tia Maria Project is expected in 2027.", {
+      source_published_at: "2026-08-12",
+      guidance_status: "current",
+      supersedes: [{ label: "F7", source_published_at: "2025-11-03" }],
+    }),
+    finding("F9", "j", "Capex of US$1,400m for the Tia Maria Project.", {
+      source_published_at: "2026-08-12",
+    }),
+  ];
+  Object.assign(pro.finding_labels, { h: "F7", i: "F8", j: "F9" });
+  const evidence = pro.sections.find((s) => s.key === "evidence_quality_and_gaps");
+  evidence.platform_evidence_gaps.push({
+    description: "Group capital expenditure was not acquired.",
+    question_key: "capex_and_capacity",
+    knowledge_state: "not_acquired_by_platform",
+    reconciliation_status: "partially_closed",
+    partially_addressed_by: ["F9"],
+    reconciliation_reasons: ["scope_differs"],
+  });
+  evidence.platform_evidence_gaps_reconciled = 2;
+  return base;
+}
+
+// Item 21 — non-US statements. The V2 snapshot was assembled before the V3 run
+// acquired the issuer's reports, so it names no annual period; the V3 statements view
+// says which of the situations the report is in.
+const STATEMENTS_C_REPORT_ID = "00000000-0000-0000-0000-0000000000fc";
+const STATEMENTS_B_REPORT_ID = "00000000-0000-0000-0000-0000000000fd";
+const STATEMENTS_A_REPORT_ID = "00000000-0000-0000-0000-0000000000fe";
+
+function statementDatapoint(value, period) {
+  return {
+    value: String(value),
+    numeric_value: value,
+    unit: "currency_amount",
+    currency: "AUD",
+    scale: "thousand",
+    period,
+    scope: "group",
+    provenance: "sourced_fact",
+    source_tier: "T1_primary_filing",
+    source: "issuer_document",
+    source_url: "https://official.example/annual-report-2025.pdf",
+    confidence: "high",
+    human_review_required: true,
+  };
+}
+
+const NO_CURRENT_PERIOD = {
+  state: "not_acquired",
+  period: null,
+  label: "No interim report acquired",
+  knowledge_state: "not_acquired_by_platform",
+  document: null,
+  reason: "No interim or quarterly report is in the research corpus.",
+};
+
+function mockStatementsReport(id, statements) {
+  const base = mockV3Report(id);
+  base.title =
+    "LLM Council Analysis Draft — EXRTEST — Example Resources Test Issuer [MOCK DATA]";
+  base.company_id = "00000000-0000-0000-0000-00000000c0fc";
+  base.source_summary_json.v3_research.financial_statements_state = statements;
+  return base;
+}
+
+function mockStatementsReportC(id) {
+  return mockStatementsReport(id, {
+    version: 1,
+    annual: {
+      state: "facts_extracted",
+      period: "FY2025",
+      label: "FY2025",
+      knowledge_state: null,
+      document: null,
+      reason: null,
+    },
+    current_period: NO_CURRENT_PERIOD,
+    reporting_periods: {
+      latest_annual: "FY2025",
+      latest_interim: null,
+      latest_quarter: null,
+      latest_current_period: null,
+    },
+    slots: {
+      cash_and_equivalents_primary_filing: statementDatapoint(9470, "2025"),
+      net_income_primary_filing: statementDatapoint(-3265, "2025"),
+      operating_cash_flow_primary_filing: statementDatapoint(-2980, "2025"),
+      capital_expenditure_primary_filing: statementDatapoint(450, "2025"),
+      exploration_capitalised_primary_filing: statementDatapoint(5200, "2025"),
+    },
+    derived: [
+      {
+        definition_key: "cash_runway_quarters",
+        label: "Cash runway (quarter-equivalents, derived)",
+        status: "computed",
+        value: 11.04,
+        period_key: "2025",
+        basis: "annual",
+        provenance: "derived",
+        interpretation:
+          "Quarters the period-end cash would last if operating cash flow and capital expenditure continued at the rate of the period measured.",
+      },
+    ],
+    conflicts: [],
+    provenance: "derived",
+    source: "issuer_documents",
+  });
+}
+
+function mockStatementsReportB(id) {
+  return mockStatementsReport(id, {
+    version: 1,
+    annual: {
+      state: "report_acquired_facts_not_extracted",
+      period: "FY2025",
+      label: "FY2025 annual report acquired (2025-09-30) — figures not yet extracted",
+      knowledge_state: "not_acquired_by_platform",
+      document: {
+        document_kind: "annual_report",
+        headline: "Annual Report 2025",
+        filing_date: "2025-09-30",
+        source_url: "https://official.example/annual-report-2025.pdf",
+      },
+      reason:
+        "The report is in the research corpus, but no validated Group statement figure was extracted from it.",
+    },
+    current_period: NO_CURRENT_PERIOD,
+    reporting_periods: {
+      latest_annual: null,
+      latest_interim: null,
+      latest_quarter: null,
+      latest_current_period: null,
+    },
+    slots: {},
+    derived: [],
+    conflicts: [],
+  });
+}
+
+function mockStatementsReportA(id) {
+  return mockStatementsReport(id, {
+    version: 1,
+    annual: {
+      state: "not_reported_by_issuer",
+      period: null,
+      label: "Issuer has not reported an annual report in the last 18 months",
+      knowledge_state: "not_disclosed_by_issuer",
+      document: null,
+      reason:
+        "The official listing (asx_announcements) was read back to 2024-11-02 and holds no annual report or full-year results.",
+    },
+    current_period: NO_CURRENT_PERIOD,
+    reporting_periods: {
+      latest_annual: null,
+      latest_interim: null,
+      latest_quarter: null,
+      latest_current_period: null,
+    },
+    slots: {},
+    derived: [],
+    conflicts: [],
+  });
+}
+
+// Item 20 — a proved pre-revenue developer: the professional report names the stage and
+// revenue is "pre-revenue / not applicable yet", never a missing figure.
+const DEV_STAGE_REPORT_ID = "00000000-0000-0000-0000-0000000001a0";
+
+function mockDevStageReport(id) {
+  const base = mockStatementsReportB(id);
+  const content = sampleReportContent({ withCouncil: true });
+  content.missing_information.missing_items.value.push({
+    field: "fundamentals.revenue",
+    source: "company_snapshot",
+  });
+  content.missing_information.total_missing_items += 1;
+  base.content_markdown = finalReportMarkdown(content);
+  const v3 = base.source_summary_json.v3_research;
+  v3.professional_research = professionalResearchPayload();
+  v3.professional_research.subject = {
+    ticker: "EXRTEST",
+    exchange: "AU",
+    name: "Example Resources Test Issuer",
+    stage: "development_stage_resource",
+  };
+  v3.stage = {
+    stage: "development_stage_resource",
+    signals: ["development_stage_resource"],
+    basis: ["P1: no revenue line in the FY2025 statements, which report a loss"],
+  };
+  v3.financial_statements_state.revenue_status = {
+    state: "pre_revenue",
+    label: "Revenue: pre-revenue / not applicable yet",
+    note: "Revenue and margins are not applicable yet; this is a stage, not a missing figure.",
+  };
+  return base;
+}
+
 function mockScopeReport(id) {
   const base = mockReport(id);
   base.title =
@@ -3271,6 +3583,24 @@ const server = createServer((req, res) => {
     }
     if (rid === PROFESSIONAL_LEGACY_REPORT_ID) {
       return send(res, 200, mockProfessionalLegacyReport(rid));
+    }
+    if (rid === RECONCILED_V2_REPORT_ID) {
+      return send(res, 200, mockReconciledV2Report(rid));
+    }
+    if (rid === RECONCILED_PRO_REPORT_ID) {
+      return send(res, 200, mockReconciledProfessionalReport(rid));
+    }
+    if (rid === STATEMENTS_C_REPORT_ID) {
+      return send(res, 200, mockStatementsReportC(rid));
+    }
+    if (rid === STATEMENTS_B_REPORT_ID) {
+      return send(res, 200, mockStatementsReportB(rid));
+    }
+    if (rid === STATEMENTS_A_REPORT_ID) {
+      return send(res, 200, mockStatementsReportA(rid));
+    }
+    if (rid === DEV_STAGE_REPORT_ID) {
+      return send(res, 200, mockDevStageReport(rid));
     }
     if (rid === LEGACY_TECH_REPORT_ID) {
       return send(res, 200, mockLegacyTechnicalReport(rid));

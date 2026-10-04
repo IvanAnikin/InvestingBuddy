@@ -635,6 +635,8 @@ const FIELD_GROUPS: { key: string; label: string; fields: string[] }[] = [
       "net_income",
       "net_income_usd_m",
       "eps_diluted",
+      "administrative_expenses",
+      "exploration_expensed",
     ],
   },
   {
@@ -647,6 +649,12 @@ const FIELD_GROUPS: { key: string; label: string; fields: string[] }[] = [
       "free_cash_flow_usd_m",
       "operating_free_cash_flow",
       "capital_expenditures_usd_m",
+      "investing_cash_flow",
+      "financing_cash_flow",
+      "capital_expenditure",
+      "exploration_capitalised",
+      "exploration_payments",
+      "development_expenditure",
     ],
   },
   {
@@ -664,6 +672,11 @@ const FIELD_GROUPS: { key: string; label: string; fields: string[] }[] = [
       "total_debt_usd_m",
       "net_debt",
       "net_cash",
+      "total_current_assets",
+      "total_current_liabilities",
+      "total_liabilities",
+      "borrowings",
+      "issued_capital",
     ],
   },
 ];

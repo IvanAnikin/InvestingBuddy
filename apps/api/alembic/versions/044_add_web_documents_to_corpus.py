@@ -38,7 +38,8 @@ naming the problem rather than a bare constraint error.
 REVISION
 ========
 Numbered 044 because 043 is taken by the report-reconciliation branch.
-``down_revision`` points at 042 TEMPORARILY and is re-pointed at merge.
+``down_revision`` was 042 on the W3 branch and was re-pointed to 043 at the merge
+(done). Final chain: 041 -> 042 -> 043 -> 044.
 
 DEPLOY ORDER
 ============
@@ -54,8 +55,8 @@ from alembic import op
 
 # revision identifiers
 revision: str = "044"
-# re-pointed to 043 (report reconciliation) at merge
-down_revision: str | None = "042"
+# re-pointed 042 -> 043 (report reconciliation): done at the merge.
+down_revision: str | None = "043"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

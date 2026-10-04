@@ -60,11 +60,9 @@ def _alembic(*args: str) -> None:
 
 
 class TestTheMigrationIsAdditive:
-    def test_revision_and_temporary_parent(self) -> None:
+    def test_revision_and_final_parent(self) -> None:
         m = _module()
-        # 042 on the W3 branch; re-pointed to 043 (report reconciliation) at merge.
-        assert m.revision == "044" and m.down_revision in ("042", "043")
-        assert "# re-pointed to 043 (report reconciliation) at merge" in MIGRATION.read_text()
+        assert m.revision == "044" and m.down_revision == "043"
 
     def test_upgrade_drops_and_alters_nothing(self) -> None:
         source = MIGRATION.read_text()

@@ -662,6 +662,49 @@ def select_core_documents(
     return chosen[: max(0, int(max_documents))]
 
 
+_ANNUAL_EVIDENCE_RE = re.compile(
+    r"\bannual\s+(?:financial\s+)?report|\bappendix\s+4e\b|preliminary\s+final\s+report"
+    r"|\b(?:annual|full[- ]year|final|preliminary)\s+(?:results|accounts)\b",
+    re.I,
+)
+
+
+def _listing_coverage(listing: DisclosureListing, window_days: int | None = None) -> dict[str, Any]:
+    """How far back the official listing reaches, and how many annual documents it holds.
+
+    Item 21 — the evidence behind "the issuer has not reported an annual report": a
+    listing that reaches back at least 18 months and lists no annual report or
+    full-year results. Without the reach, an empty result says nothing about the issuer.
+    """
+    from app.services.sources.disclosures.relevance import is_full_year_results
+
+    dated = [d.published_at for d in listing.documents if d.published_at is not None]
+    # Counted BROADLY (review H4): anything that is evidence the issuer reported a year
+    # — the report, the full-year results, an NSM "Annual Financial Report" filing of any
+    # format (a notice of publication is still evidence), an "Annual Financial Report" /
+    # Appendix 4E / preliminary final report headline. Over-counting can only make "not
+    # reported by the issuer" LESS likely, which is the safe direction.
+    annual = sum(
+        1
+        for d in listing.documents
+        if d.doc_kind == DOC_KIND_ANNUAL_REPORT
+        or (d.doc_kind == DOC_KIND_RESULTS_RELEASE and is_full_year_results(d.headline))
+        or "annual financial report" in (d.venue_category or "").lower()
+        or _ANNUAL_EVIDENCE_RE.search(d.headline or "")
+    )
+    return {
+        "listing_oldest": min(dated).date().isoformat() if dated else None,
+        "listing_newest": max(dated).date().isoformat() if dated else None,
+        "listing_window_days": int(window_days) if window_days else None,
+        "listing_documents": len(listing.documents),
+        # Review round 2, H6 — every page in the window read and nothing refused: only
+        # then can the listing show that an annual report is ABSENT.
+        "listing_complete": (int(getattr(listing, "pages_failed", 0) or 0) == 0
+                             and int(listing.refused or 0) == 0),
+        "annual_documents_listed": annual,
+    }
+
+
 async def ensure_core_disclosures(
     session: Any, *, company: Any, cfg: Any, fetcher: Any = None, poster: Any = None,
     extractor: Any = None, now: datetime | None = None,
@@ -687,7 +730,9 @@ async def ensure_core_disclosures(
         return out
     out.update({"issuer": listing.issuer.to_dict() if listing.issuer else None,
                 "listed": len(listing.documents), "refused": listing.refused,
-                "requests": listing.requests})
+                "requests": listing.requests,
+                **_listing_coverage(
+                    listing, int(getattr(cfg, "v3_disclosure_lookback_days", 560) or 560))})
     if listing.issuer is None or not listing.documents:
         out["skipped"] = listing.reason or REASON_DATA_NOT_SOURCED
         if listing.detail:

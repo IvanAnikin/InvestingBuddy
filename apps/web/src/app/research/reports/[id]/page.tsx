@@ -24,6 +24,7 @@ import TrendChart from "@/components/research/TrendChart";
 import {
   buildResearchReportView,
   readCouncilMetadata,
+  relabelPreRevenue,
 } from "@/components/research/reportView";
 import {
   buildInvestmentCases,
@@ -35,6 +36,11 @@ import {
 } from "@/components/research/reportSections";
 import { readServerVerification } from "@/components/research/numericConsistency";
 import { readV3Research } from "@/components/research/v3Research";
+import {
+  reconcileConcernTexts,
+  reconcileMissingItems,
+  reconcileOpenQuestions,
+} from "@/components/research/gapReconciliation";
 import {
   buildResearchLinkState,
   NO_RESEARCH_LINK,
@@ -158,12 +164,45 @@ export default async function ResearchReportPage({
   // Passed as it IS — a markdown string — not cast to an object it never was. The cast
   // compiled and silently returned "no conflicts" for every report.
   const serverNumeric = readServerVerification(report.content_markdown);
-  const investor = reconcileCouncilNumbers(
+  const reconciledInvestor = reconcileCouncilNumbers(
     buildInvestorReportView(report.content_markdown, council),
     view.snapshot,
     view.trends.series,
     serverNumeric,
   );
+  // The V2 report was assembled before the V3 research ran. A council concern a V3
+  // finding speaks to is ANNOTATED with that finding — never removed; a missing-
+  // information field name a finding fully states is not listed as missing. The backend
+  // decides; the page only applies its labels.
+  const findingLabels = v3?.professionalResearch?.findingLabels ?? {};
+  const investor = {
+    ...reconciledInvestor,
+    openQuestions: reconcileOpenQuestions(
+      reconciledInvestor.openQuestions,
+      v3?.gapReconciliation ?? null,
+      findingLabels,
+    ),
+    routedLimitations: reconcileConcernTexts(
+      reconciledInvestor.routedLimitations,
+      v3?.gapReconciliation ?? null,
+      findingLabels,
+    ),
+    recordGaps: reconcileConcernTexts(
+      reconciledInvestor.recordGaps,
+      v3?.gapReconciliation ?? null,
+      findingLabels,
+    ),
+  };
+  const reconciledMissing = reconcileMissingItems(
+    view.missing.items,
+    view.missing.total,
+    v3?.gapReconciliation ?? null,
+    findingLabels,
+  );
+  const missing = {
+    ...reconciledMissing,
+    items: relabelPreRevenue(reconciledMissing.items, view.snapshot.revenueStatus),
+  };
   // The two cases, argued by the COUNCIL rather than lifted verbatim from the
   // deterministic layer. Built from the RECONCILED reading, so a numeric claim
   // the guard withheld cannot reappear here. A report whose council predates
@@ -177,7 +216,7 @@ export default async function ResearchReportPage({
   );
   const confidence = buildResearchConfidence(
     investor.risks,
-    view.missing.total,
+    missing.total,
     investor.agents,
     // Record-completeness entries lifted out of the bear case and the chair's
     // open-question list. They are reported here, where they describe what
@@ -226,6 +265,8 @@ export default async function ResearchReportPage({
       <ReportHeader
         identity={view.identity}
         periods={view.snapshot.periods}
+        annualState={view.snapshot.annualState}
+        currentState={view.snapshot.currentState}
         council={view.council}
         evidenceWordLabel={
           view.evidence.overall ? evidenceWord(view.evidence.overall) : null
@@ -427,7 +468,7 @@ export default async function ResearchReportPage({
           <ResearchConfidence
             dimensions={view.evidence.dimensions}
             confidence={confidence}
-            missingItems={view.missing.items}
+            missingItems={missing.items}
             numericConflicts={investor.numericConflicts}
             reportId={report.id}
           />

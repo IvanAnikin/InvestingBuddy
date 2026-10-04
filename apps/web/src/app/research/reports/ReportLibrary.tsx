@@ -217,10 +217,10 @@ export default function ReportLibrary({ rows }: { rows: LibraryRow[] }) {
                     )}
                   </td>
                   <td className="px-3 py-3.5 text-[color:var(--ib-ink-2)]">
-                    {row.latestAnnual ?? "—"}
+                    {row.latestAnnual ?? row.annualStateShort ?? "—"}
                   </td>
                   <td className="px-3 py-3.5 text-[color:var(--ib-ink-2)]">
-                    {row.latestCurrent ?? "—"}
+                    {row.latestCurrent ?? row.currentStateShort ?? "—"}
                   </td>
                   <td className="px-3 py-3.5">
                     {row.evidence ? (
@@ -286,13 +286,13 @@ export default function ReportLibrary({ rows }: { rows: LibraryRow[] }) {
                   <div>
                     <dt className="text-[color:var(--ib-ink-3)]">Latest annual</dt>
                     <dd className="text-[color:var(--ib-ink-2)]">
-                      {row.latestAnnual ?? "—"}
+                      {row.latestAnnual ?? row.annualStateShort ?? "—"}
                     </dd>
                   </div>
                   <div>
                     <dt className="text-[color:var(--ib-ink-3)]">Current period</dt>
                     <dd className="text-[color:var(--ib-ink-2)]">
-                      {row.latestCurrent ?? "—"}
+                      {row.latestCurrent ?? row.currentStateShort ?? "—"}
                     </dd>
                   </div>
                   <div>
