@@ -1,7 +1,7 @@
 "use client";
 
 import type { DiscoveryDynamicStage } from "@/types/api";
-import { exclusionReason, funnelSteps } from "./v319View";
+import { exclusionReason, funnelSteps, humanise, webSearchBanner } from "./v319View";
 
 /**
  * The discovery funnel and what was left out, with why.
@@ -17,8 +17,20 @@ export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicS
   const steps = funnelSteps(stage);
   const excluded = stage.excluded ?? [];
   const rejected = stage.rejected_leads ?? [];
+  const banner = webSearchBanner(stage.web);
+  const alsoSurfaced = stage.also_surfaced ?? [];
   return (
     <div className="space-y-2" data-testid="discovery-funnel-block">
+      {banner && (
+        <p
+          className="rounded-md border border-amber-400/30 px-3 py-2 text-xs text-amber-300/90"
+          role="status"
+          data-testid="web-search-banner"
+          data-state={banner.state}
+        >
+          {banner.text}
+        </p>
+      )}
       {steps.length > 0 && (
         <p className="text-xs text-[color:var(--ib-ink-3)]" data-testid="discovery-funnel">
           {steps.join(" → ")}
@@ -29,6 +41,28 @@ export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicS
           Open company discovery was unavailable for this run; only the curated
           registry and companies already on this platform were screened.
         </p>
+      )}
+      {alsoSurfaced.length > 0 && (
+        <details className="text-xs text-[color:var(--ib-ink-3)]" data-testid="discovery-also-surfaced">
+          <summary className="cursor-pointer underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink-2)]">
+            Also surfaced ({alsoSurfaced.length}) — listing verified, theme evidence missing
+          </summary>
+          <ul className="mt-2 space-y-1">
+            {alsoSurfaced.map((record, i) => (
+              <li key={i} className="ib-breakable" data-testid="discovery-also-surfaced-item">
+                <span className="text-[color:var(--ib-ink-2)]">
+                  {record.identity.name ?? record.identity.ticker}
+                </span>{" "}
+                <span className="font-mono">
+                  ({record.identity.ticker} · {record.identity.exchange})
+                </span>{" "}
+                — {(record.v3_web?.admission?.codes ?? ["theme_evidence_missing"])
+                  .map(humanise)
+                  .join(", ")}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {excluded.length > 0 && (
         <details className="text-xs text-[color:var(--ib-ink-3)]" data-testid="discovery-excluded">

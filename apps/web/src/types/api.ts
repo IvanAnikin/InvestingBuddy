@@ -758,6 +758,61 @@ export interface VerifiedAttributes {
   industry_exposure?: { matched?: string[]; exposure?: string; statement?: string };
 }
 
+// Open-web W6b — A1–A4 admission of a candidate (apps/api discovery/admission.py).
+// `labelled`: a curated / held / model-recall lead, not gated by A1 and shown with its
+// true source. `also_surfaced`: eligible_unverified(theme) — identity verified, no fetched
+// passage ties it to the theme; shown separately, never filling the shortlist.
+export type DiscoveryAdmissionState =
+  | "admitted"
+  | "also_surfaced"
+  | "rejected"
+  | "labelled"
+  | (string & {});
+
+export interface DiscoveryAdmission {
+  version?: string;
+  state: DiscoveryAdmissionState;
+  rules?: Record<string, { passed?: boolean; code?: string; applies?: boolean; reason?: string | null }>;
+  codes?: string[];
+  evidence_ids?: string[];
+  detail?: string | null;
+  source_label?: string | null;
+  eligibility?: string;
+}
+
+export interface DiscoveryWebBlock {
+  schema?: string;
+  discovery_mode?: string | null;
+  admission?: DiscoveryAdmission | null;
+  novel?: boolean;
+  families?: string[];
+  query_ids?: string[];
+  sightings?: { url?: string; domain?: string; source_class?: string | null; family?: string }[];
+}
+
+export interface DiscoveryWebSummary {
+  version?: number;
+  /** ok | web_search_degraded | web_search_unavailable | web_stage_failed | web_plan_empty */
+  state: string;
+  /** The banner text for a run whose live search did not fully run. */
+  label?: string | null;
+  depth?: string;
+  provider?: string | null;
+  queries?: {
+    planned: number;
+    executed: number;
+    failed?: number;
+    followups?: number;
+    locales?: string[];
+    by_family?: Record<string, number>;
+  };
+  admission?: {
+    by_state?: Record<string, number>;
+    rejected_codes?: Record<string, number>;
+    novel_candidates?: number;
+  };
+}
+
 export interface DiscoveryCandidateRecord {
   schema: "discovery_candidate/1";
   identity: {
@@ -770,6 +825,10 @@ export interface DiscoveryCandidateRecord {
   };
   provenance: {
     discovery_source: "external_search" | "curated_registry" | "platform_registry" | string;
+    // W6b — how the lead was produced: `search` (a real search + a fetched page) or
+    // `model_recall` (a model's suggestion, verified on the exchange's list); absent for a
+    // curated or held company.
+    discovery_mode?: "search" | "model_recall" | null;
     discovery_query?: string | null;
     source_url?: string | null;
     why?: string | null;
@@ -781,6 +840,7 @@ export interface DiscoveryCandidateRecord {
   failed_constraints: string[];
   eligibility: CandidateEligibility;
   screening: { status: string; business_description?: string | null };
+  v3_web?: DiscoveryWebBlock | null;
 }
 
 export interface DiscoveryDynamicStage {
@@ -795,9 +855,14 @@ export interface DiscoveryDynamicStage {
     exchange?: string | null;
     rejection_reason?: string | null;
     detail?: string | null;
+    discovery_mode?: string | null;
+    admission?: DiscoveryAdmission | null;
   }[];
   warnings?: string[];
   error?: string;
+  // W6b — present only for a run that used live web search.
+  web?: DiscoveryWebSummary | null;
+  also_surfaced?: DiscoveryCandidateRecord[];
 }
 
 export interface ResearchFreshness {
@@ -909,6 +974,9 @@ export interface DiscoveryRun {
   is_async?: boolean;
   message?: string | null;
   progress_pct?: number;
+  // W6b — additive; null/absent for a run that never tried live web search.
+  web_search_state?: string | null;
+  web_search_label?: string | null;
   disclaimer: string;
 }
 
@@ -938,6 +1006,9 @@ export interface DiscoveryCandidate {
   thesis_match_json?: ({ v319?: DiscoveryCandidateRecord | null } & Record<string, unknown>) | null;
   // V3.19.6 — freshness of this company's prior research (absent: none exists).
   research_freshness?: ResearchFreshness | null;
+  // W6b — how the lead was produced and its A1–A4 admission (additive).
+  discovery_mode?: string | null;
+  admission?: DiscoveryAdmission | null;
   momentum_score: number | null;
   fundamentals_score: number | null;
   catalyst_score: number | null;

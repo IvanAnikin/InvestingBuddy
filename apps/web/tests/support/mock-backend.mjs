@@ -16,6 +16,16 @@ import {
   V319_THESIS,
   v319Candidates,
 } from "./v319-fixtures.mjs";
+import {
+  W6B_INTENT,
+  W6B_OUTAGE_INTENT,
+  W6B_OUTAGE_RUN_ID,
+  W6B_OUTAGE_THESIS,
+  W6B_RUN_ID,
+  W6B_RUNS,
+  W6B_THESIS,
+  w6bCandidates,
+} from "./w6b-fixtures.mjs";
 
 const PORT = Number(process.env.PORT ?? 8799);
 
@@ -1285,6 +1295,10 @@ const THESIS_RUN_IDS = {
   "European defense suppliers benefiting from NATO spending":
     "77777777-0000-0000-0000-000000000def",
   [V319_THESIS]: V319_RUN_ID,
+  // Open-web W6b: a run whose candidates were surfaced by live web search, and one whose
+  // search was unavailable (labelled model-recall fallback).
+  [W6B_THESIS]: W6B_RUN_ID,
+  [W6B_OUTAGE_THESIS]: W6B_OUTAGE_RUN_ID,
   __default: "77777777-0000-0000-0000-000000000027",
 };
 
@@ -3921,9 +3935,10 @@ const server = createServer((req, res) => {
       const needs_narrowing = themes.length === 0 && !sector;
       // V3.19 — the structured intent for the small-cap/growing luxury thesis.
       const v319 = t.includes("small cap") && t.includes("luxury");
+      const w6b = t.includes("gallium") ? W6B_INTENT : t.includes("lithium") ? W6B_OUTAGE_INTENT : null;
       send(res, 200, {
-        discovery_intent: v319 ? V319_INTENT : null,
-        dynamic_discovery_enabled: v319,
+        discovery_intent: v319 ? V319_INTENT : w6b,
+        dynamic_discovery_enabled: v319 || w6b !== null,
         themes,
         region,
         country,
@@ -4142,6 +4157,11 @@ const server = createServer((req, res) => {
       return send(res, 200, { candidates: v319, total: v319.length, run_id: runId,
                               disclaimer: DISC });
     }
+    if (W6B_RUNS[runId]) {
+      const w6b = w6bCandidates(mockCandidate, runId);
+      return send(res, 200, { candidates: w6b, total: w6b.length, run_id: runId,
+                              disclaimer: DISC });
+    }
     const candidates = [
       mockCandidate(runId, {
         id: "cccccccc-0000-0000-0000-000000000001",
@@ -4242,6 +4262,14 @@ const server = createServer((req, res) => {
       base.parsed_thesis_json = { ...(base.parsed_thesis_json ?? {}), discovery_intent: V319_INTENT };
       base.universe_json = { items: [], excluded: [], source_summary: {}, warnings: [],
                              needs_narrowing: false, requested_max: 25, dynamic: V319_STAGE };
+    }
+    if (W6B_RUNS[runId]) {
+      const w6b = W6B_RUNS[runId];
+      base.parsed_thesis_json = { ...(base.parsed_thesis_json ?? {}), discovery_intent: w6b.intent };
+      base.universe_json = { items: [], excluded: [], source_summary: {}, warnings: [],
+                             needs_narrowing: false, requested_max: 25, dynamic: w6b.stage };
+      base.web_search_state = w6b.stage.web.state;
+      base.web_search_label = w6b.stage.web.label;
     }
     return send(res, 200, {
       ...base,

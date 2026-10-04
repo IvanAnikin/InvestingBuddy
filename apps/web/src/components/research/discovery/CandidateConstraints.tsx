@@ -2,7 +2,9 @@
 
 import type { DiscoveryCandidateRecord, ResearchFreshness } from "@/types/api";
 import {
+  admissionLabel,
   constraintRows,
+  discoveryModeLabel,
   eligibilityWord,
   freshnessBadge,
   provenanceLine,
@@ -39,6 +41,8 @@ export default function CandidateConstraints({
   const rows = constraintRows(record);
   const provenance = provenanceLine(record);
   const eligibility = eligibilityWord(record?.eligibility);
+  const mode = discoveryModeLabel(record?.provenance.discovery_mode);
+  const admission = admissionLabel(record?.v3_web?.admission);
   if (!record && !badge) return null;
   return (
     <div className="mt-4 space-y-2" data-testid="candidate-verification">
@@ -46,6 +50,16 @@ export default function CandidateConstraints({
         {provenance && (
           <span className="text-[color:var(--ib-ink-3)]" data-testid="candidate-provenance">
             {provenance}
+          </span>
+        )}
+        {mode && (
+          <span
+            className="rounded-md border border-[color:var(--ib-line-strong)] px-2 py-0.5 text-[color:var(--ib-ink-2)]"
+            title={mode.title}
+            data-testid="candidate-discovery-mode"
+            data-mode={record?.provenance.discovery_mode ?? undefined}
+          >
+            {mode.label}
           </span>
         )}
         {badge && (
@@ -59,6 +73,15 @@ export default function CandidateConstraints({
           </span>
         )}
       </div>
+      {admission && (
+        <p
+          className="ib-breakable text-xs text-[color:var(--ib-ink-3)]"
+          data-testid="candidate-admission"
+          data-state={record?.v3_web?.admission?.state}
+        >
+          {admission}
+        </p>
+      )}
       {record?.provenance.why && (
         <p className="ib-breakable text-xs text-[color:var(--ib-ink-3)]" data-testid="candidate-why">
           Why it surfaced: {record.provenance.why}
