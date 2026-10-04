@@ -865,6 +865,34 @@ class TestResume:
         alg = next(r for r in second.candidates if r.identity.ticker == "ALG")
         assert alg.web["admission"]["state"] == "admitted"
 
+    async def test_a_retry_after_midnight_plans_the_same_queries_from_the_run_date(
+        self, h: H
+    ) -> None:
+        """The plan's date windows come from the run's creation date, so a retry on the next
+        UTC day produces the SAME request hashes and reuses the recorded rows."""
+        from datetime import date as _date
+
+        h.serve_obscure()
+
+        async def attempt(now: Any) -> Any:
+            return await ds.run_discovery_web_stage(
+                h.session,
+                h.intent,
+                ds.DiscoveryWebContext(run_id=h.run_id, plan_date=TODAY),
+                cfg=cfg(),
+                deps=h.deps(today=None, now=now),
+            )
+
+        from datetime import datetime, timezone
+
+        first = await attempt(datetime(2026, 10, 4, 23, 55, tzinfo=timezone.utc))
+        paid = len(h.provider.requests)
+        second = await attempt(datetime(2026, 10, 5, 0, 5, tzinfo=timezone.utc))
+        assert len(h.provider.requests) == paid
+        assert second.summary["queries"]["reused_on_resume"] == paid
+        assert first.summary["queries"]["executed"] == second.summary["queries"]["executed"]
+        assert all(r.date_to == _date(2026, 10, 4) for r in h.provider.requests)
+
     async def test_the_run_query_ceiling_carries_across_attempts(self, h: H) -> None:
         h.serve_obscure()
         await h.stage()

@@ -147,6 +147,10 @@ class DiscoveryWebContext:
     search_backend: Any = None
     #: ``await commit()`` after the search phase, so a crash keeps the recorded rows.
     commit: Callable[[], Awaitable[None]] | None = None
+    #: The date the query set is planned for (date windows, the year slot). The run's
+    #: CREATION date, so a retry after midnight UTC plans the SAME queries and reuses the
+    #: recorded rows instead of paying for them again.
+    plan_date: date | None = None
 
 
 @dataclass
@@ -696,7 +700,7 @@ async def _execute(
     profile = f"discovery_{depth}"
     summary["profile"] = profile
     now = deps.now or datetime.now(timezone.utc)
-    today = deps.today or now.date()
+    today = deps.today or ctx.plan_date or now.date()
     budget = await budget_for_run(session, profile, cfg=cfg, now=now, clock=deps.clock)
     box.budget = budget
     limits = budget.limits

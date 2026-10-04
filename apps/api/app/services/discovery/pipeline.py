@@ -437,6 +437,7 @@ async def run_dynamic_stage(
     web_deps: Any = None,
     progress: Any = None,
     commit: Any = None,
+    plan_date: Any = None,
 ) -> StageResult:
     """The whole stage. Never raises for a single lead's failure.
 
@@ -469,7 +470,7 @@ async def run_dynamic_stage(
         web_result = await run_discovery_web_stage(
             session, intent,
             DiscoveryWebContext(run_id=run_id, known_domains=known_domains,
-                                known_keys=known_keys, commit=commit),
+                                known_keys=known_keys, commit=commit, plan_date=plan_date),
             cfg=cfg, deps=web_deps, progress=progress,
         )
         stage.web = dict(web_result.summary)

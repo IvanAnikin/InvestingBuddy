@@ -1170,6 +1170,7 @@ async def _run_dynamic_discovery(
             run_id=run.id,
             web_deps=web_deps,
             commit=db.commit,
+            plan_date=_aware(run.created_at).date() if run.created_at else None,
             # The durable job's checkpoint: the web stage reports its phases and a lost
             # lease or a cancellation raised by it STOPS the run (see below).
             progress=progress,
