@@ -547,6 +547,57 @@ class TestAnOutageIsNotMaskedByRecall:
 # --------------------------------------------------------------------------- #
 
 
+class TestBudget:
+    async def test_the_daily_platform_cap_bounds_the_run_and_degrades_it(self, h: H) -> None:
+        h.serve_obscure()
+        stage = await h.stage(config=cfg(v3_web_search_max_queries_per_day=3))
+        queries = stage.web["queries"]
+        assert queries["executed"] == 3 and len(h.provider.requests) == 3
+        assert queries["not_issued"] == queries["planned"] - 3
+        assert stage.web["state"] == "web_search_degraded"
+        assert stage.web["budget"]["daily_cap"] == 3
+
+    async def test_a_failed_call_counts_against_the_run_and_the_units(self, h: H) -> None:
+        h.provider.mode = MODE_OUTAGE
+        stage = await h.stage()
+        assert stage.web["cost_units"]["web_search_calls"] == len(h.provider.requests) > 0
+        assert stage.web["budget"]["queries_reserved"] == len(h.provider.requests)
+
+    async def test_the_run_query_ceiling_is_the_operators_when_narrower(self, h: H) -> None:
+        h.serve_obscure()
+        stage = await h.stage(config=cfg(v3_run_max_web_searches=5))
+        # The ceiling bounds the plan (less the small follow-up reserve), never exceeded.
+        assert 0 < len(h.provider.requests) <= 5
+        assert stage.web["budget"]["max_queries"] == 5
+
+    async def test_deep_uses_the_deep_profile_and_a_longer_plan(self, h: H) -> None:
+        h.intent = build_intent("european electrical grid transformer manufacturers")
+        standard = await h.stage(config=cfg())
+        directories.reset_cache()
+        deep = await h.stage(config=cfg(v3_discovery_web_depth="deep"), run_id=uuid.uuid4())
+        assert standard.web["profile"] == "discovery_standard"
+        assert deep.web["profile"] == "discovery_deep"
+        assert deep.web["queries"]["planned"] > standard.web["queries"]["planned"]
+        assert deep.web["budget"]["max_queries"] == 48
+
+    async def test_the_fetch_ceiling_stops_fetching_and_says_so(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.web_research import budget as bud
+
+        limits = bud.PROFILES["discovery_standard"]
+        from dataclasses import replace
+
+        monkeypatch.setitem(bud.PROFILES, "discovery_standard", replace(limits, max_fetches=1))
+        a, b = ART, ART + "-2"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(a), hit(b)]})
+        h.net.pages[a] = GALLIUM_ARTICLE
+        h.net.pages[b] = GALLIUM_ARTICLE
+        stage = await h.stage()
+        assert len(h.net.requested) == 1
+        assert stage.web["fetch"]["fetched"] == 1
+
+
 class TestFlagOffIsV319:
     async def test_no_query_no_fetch_no_row_no_key(self, h: H, session: Any) -> None:
         h.serve_obscure()
