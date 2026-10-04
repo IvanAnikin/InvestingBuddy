@@ -152,9 +152,25 @@ _PART_YEAR_TITLE_RE = re.compile(
 )
 
 
+#: A title that states a FULL year: an annual report or full-year results. Wins over
+#: an incidental part-year word ("Annual Report 2025 including fourth quarter review").
+_ANNUAL_TITLE_RE = re.compile(
+    r"\bannual\s+(?:financial\s+)?(?:report|accounts|results)\b|\bfull[- ]year\s+results\b"
+    r"|\b(?:final|preliminary)\s+(?:final\s+)?(?:results|report)\b|\bappendix\s+4e\b"
+    r"|\bannual\s+report\s+and\s+accounts\b",
+    re.IGNORECASE,
+)
+
+
+def title_states_annual(title: str | None) -> bool:
+    """True when a document's own title says it covers a full year."""
+    return bool(title and _ANNUAL_TITLE_RE.search(title))
+
+
 def title_states_part_year(title: str | None) -> bool:
-    """True when a document's own title says it covers part of a year."""
-    return bool(title and _PART_YEAR_TITLE_RE.search(title))
+    """True when a document's own title says it covers part of a year (and does not
+    also say it is an annual report or full-year results)."""
+    return bool(title and _PART_YEAR_TITLE_RE.search(title) and not title_states_annual(title))
 
 
 def _expand_year(raw: str) -> int | None:
@@ -320,6 +336,7 @@ def document_period_of(
 
 
 __all__ = [
+    "title_states_annual",
     "title_states_part_year",
     "BASIS_FISCAL_LABEL",
     "BASIS_PERIOD_END_PHRASE",

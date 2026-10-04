@@ -562,6 +562,12 @@ class IssuerContext(BaseModel):
     # dollars" is USD; otherwise the currency stays unknown and the money fact is not
     # validated. Default True keeps every existing (SEC / US) path unchanged.
     bare_dollar_is_usd: bool = True
+    # Track C review round 3, H2 — what the SOURCE says about the document and venue.
+    # ``part_year_document``: the listing classified it an interim / half-year report
+    # (whatever its title says). ``venue``: "AU" for an ASX issuer, where a June
+    # fiscal year is common and a December balance date is not evidence of a year.
+    part_year_document: bool = False
+    venue: str | None = None
 
     def is_known(self) -> bool:
         return bool(
@@ -754,7 +760,9 @@ _HEADER_MONTH_RE = re.compile(
 _HALF_END_MONTH = {"H1": "jun", "H2": "dec"}
 
 
-def _header_period(text: str, *, part_year_document: bool) -> tuple[str | None, bool]:
+def _header_period(
+    text: str, *, part_year_document: bool, december_needs_annual_signal: bool = False,
+) -> tuple[str | None, bool]:
     """``(period, untrusted)`` for one header cell that states a year."""
     year = _YEAR_RE.search(text)
     if year is None:
@@ -773,6 +781,9 @@ def _header_period(text: str, *, part_year_document: bool) -> tuple[str | None, 
         return None, True
     if part_year_document and not _FULL_YEAR_HEADER_RE.search(text):
         return None, True
+    if (december_needs_annual_signal and month is not None
+            and month.group(1).lower() == "dec" and not _FULL_YEAR_HEADER_RE.search(text)):
+        return None, True
     return year.group(0), False
 
 
@@ -780,6 +791,7 @@ def _column_periods(
     table: ExtractedTable,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
     part_year_document: bool = False,
+    december_needs_annual_signal: bool = False,
 ) -> dict[int, str]:
     """Map column index → period from the first row that has year tokens (the
     header). Later columns without a year are left unmapped.
@@ -820,7 +832,9 @@ def _column_periods(
             text = cell or ""
             if not _YEAR_RE.search(text):
                 continue
-            period, refused = _header_period(text, part_year_document=part_year)
+            period, refused = _header_period(
+                text, part_year_document=part_year,
+                december_needs_annual_signal=december_needs_annual_signal)
             if refused or period is None:
                 untrusted = untrusted or refused
                 continue
@@ -888,7 +902,15 @@ def _table_currency_scale(
     """
     flat = " ".join(cell for row in table.rows for cell in row)
     currency = _resolve_dollar(_find_currency(flat), flat, issuer)
-    scale = _find_scale(flat)
+    # Track C review round 3 — the scale comes from the HEADER / units rows (those
+    # before the first row with a recognised line label), never from a data cell: a
+    # "Loans repayable within 12m" or "Shares (millions)" row does not scale the table.
+    header_rows: list[list[str]] = []
+    for row in table.rows:
+        if row and _match_label(row[0] or "") is not None:
+            break
+        header_rows.append(row)
+    scale = _find_scale(" ".join(cell for row in header_rows for cell in row))
 
     if currency is None or scale is None:
         for text in excerpts_by_page.get(table.page_number, []):
@@ -1120,6 +1142,7 @@ def _candidates_from_table(
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
     table_units_only: bool = False,
     part_year_document: bool = False,
+    december_needs_annual_signal: bool = False,
 ) -> list[_Candidate]:
     """Turn one bounded table into per-cell candidates + run the subtotal check.
 
@@ -1128,7 +1151,8 @@ def _candidates_from_table(
     interim statements are in whole US dollars ("US$" headers, net loss 3,265,409),
     and a "million" in the page's prose made "40,133" read as US$ 40,133 million.
     """
-    col_period = _column_periods(table, document_period, part_year_document)
+    col_period = _column_periods(table, document_period, part_year_document,
+                                 december_needs_annual_signal)
     currency, scale = _table_currency_scale(
         table, {} if table_units_only else excerpts_by_page, issuer
     )
@@ -2023,18 +2047,31 @@ def validate_extracted_facts(
     for ex in extraction.excerpts:
         excerpts_by_page.setdefault(ex.page_number, []).append(ex.text)
 
-    from app.services.sources.document_period import title_states_part_year
+    from app.services.sources.document_period import (
+        title_states_annual,
+        title_states_part_year,
+    )
 
     # Review round 2, H1 — "Interim Results", "Half-year Report", "Appendix 4D…" state
     # no period the detector can read, yet they are part-year documents: no bare-dated
     # column in them is a full year, and nothing in them is an annual authority.
-    part_year_document = document_period.is_interim or title_states_part_year(document_title)
+    part_year_document = (
+        document_period.is_interim
+        or issuer.part_year_document
+        or title_states_part_year(document_title)
+    )
+    # Track C review round 3, H2 — an ASX issuer's fiscal year often ends in June, so a
+    # December-dated column is a full year only with a positive annual signal (an
+    # annual title, or "year ended" in the header itself).
+    december_needs_annual_signal = (
+        (issuer.venue or "").upper() == "AU" and not title_states_annual(document_title))
     candidates: list[_Candidate] = []
     for table in extraction.tables:
         candidates.extend(
             _candidates_from_table(table, excerpts_by_page, issuer, document_period,
                                    table_units_only=title_only_period,
-                                   part_year_document=part_year_document)
+                                   part_year_document=part_year_document,
+                                   december_needs_annual_signal=december_needs_annual_signal)
         )
     # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
     # source, not just tables — see ``_candidates_from_excerpts``.
