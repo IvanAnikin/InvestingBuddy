@@ -801,6 +801,7 @@ async def process_run(
     extractor: SignalExtractor | None = None,
     discovery_provider: Any = None,
     discovery_fetcher: Any = None,
+    discovery_web_deps: Any = None,
 ) -> DiscoveryRun:
     """
     Process an already-loaded discovery run to completion using ``db``.
@@ -862,7 +863,8 @@ async def process_run(
         stage_state = ((run.universe_json or {}).get(STAGE_KEY) or {}).get("status")
         if intent is not None and stage_state != "completed":
             await _run_dynamic_discovery(
-                db, run, intent, provider=discovery_provider, fetcher=discovery_fetcher
+                db, run, intent, provider=discovery_provider, fetcher=discovery_fetcher,
+                web_deps=discovery_web_deps,
             )
         dynamic_ran = intent is not None
         universe = _run_universe(run)
@@ -1050,6 +1052,7 @@ async def _run_dynamic_discovery(
     *,
     provider: Any = None,
     fetcher: Any = None,
+    web_deps: Any = None,
 ) -> None:
     """Run the dynamic stage and replace the run's universe with its shortlist.
 
@@ -1075,6 +1078,11 @@ async def _run_dynamic_discovery(
             provider=provider,
             fetcher=fetcher,
             max_candidates=(run.config_json or {}).get("max_candidates"),
+            # Open-web W6b: the run id keys the web stage's provenance rows (and its
+            # resume); ``commit`` lets it persist them before the fetch phase.
+            run_id=run.id,
+            web_deps=web_deps,
+            commit=db.commit,
         )
     except Exception as exc:  # noqa: BLE001 - the run continues on the curated universe
         logger.exception("dynamic_discovery_failed run=%s", run.id)
