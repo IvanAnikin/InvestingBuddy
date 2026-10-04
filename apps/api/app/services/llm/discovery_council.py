@@ -202,6 +202,8 @@ def _aggregate_chair(
             "key_financial_signal": note.key_financial_signal,
             "strongest_dimension": note.strongest_dimension,
         }
+        if note.dimensions:
+            entry["dimensions"] = [d.model_dump() for d in note.dimensions]
         field = _ACTION_TO_FIELD.get(note.internal_action)
         if field:
             buckets[field].append(entry)
@@ -225,13 +227,22 @@ def _messages_for(
     recovered) prior summaries every time it is called, so a chair retry
     synthesizes over agents that recovered in the retry pass.
     """
+    # Open-web W6b: the web-discovery contract is part of the prompt only when the pack
+    # carries a web block; every other run's prompt is byte-identical to V3.19.
+    web = prompts.pack_has_web_discovery(evidence_json)
     if agent_name == AGENT_DISCOVERY_CHAIR:
-        system = prompts.discovery_chair_system_prompt()
+        system = (
+            prompts.discovery_chair_system_prompt(web_discovery=True) if web
+            else prompts.discovery_chair_system_prompt()
+        )
         user = prompts.build_user_message(
             evidence_json, _prior_summaries(result.agents)
         )
     else:
-        system = prompts.system_prompt_for(agent_name)
+        system = (
+            prompts.system_prompt_for(agent_name, web_discovery=True) if web
+            else prompts.system_prompt_for(agent_name)
+        )
         user = prompts.build_user_message(evidence_json)
     return system, user
 

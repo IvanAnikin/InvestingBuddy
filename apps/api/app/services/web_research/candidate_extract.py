@@ -455,9 +455,9 @@ def _table_mentions(
                 if re.fullmatch(_TICKER, raw_ticker):
                     ticker = raw_ticker
                     name = cells[name_col]
-                    venue = cells[venue_col] if venue_col is not None and venue_col < len(
+                    venue = cells[venue_col].strip() if venue_col is not None and venue_col < len(
                         cells) else None
-                    if venue is None:
+                    if not venue:
                         # ``AIM: PRE`` style combined cells are handled above; a bare
                         # ticker with no venue cannot be verified, so it is not a lead.
                         stats.name_only_dropped += 1

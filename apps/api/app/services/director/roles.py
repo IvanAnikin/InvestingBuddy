@@ -47,6 +47,7 @@ from app.services.agent_tools.contracts import (
     TOOL_LOOKUP_ENTITY,
     TOOL_NAMES,
     TOOL_SEARCH_COMPANY_CORPUS,
+    TOOL_SEARCH_THEME_CORPUS,
     TOOL_SEARCH_WEB,
 )
 
@@ -201,6 +202,9 @@ INDUSTRY_ANALYST = RoleSpec(
     tools=frozenset(
         {
             TOOL_SEARCH_COMPANY_CORPUS,
+            # Open-web W6b: theme / industry documents a Discovery run ingested for ITS
+            # theme. A session offers it only when the run has a theme scope.
+            TOOL_SEARCH_THEME_CORPUS,
             TOOL_GET_MACRO_SERIES,
             TOOL_GET_INDUSTRY_SERIES,
         }

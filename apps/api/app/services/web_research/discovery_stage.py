@@ -166,6 +166,8 @@ class DiscoveryWebDeps:
     now: datetime | None = None
     #: Replaces ``find_listing`` for ticker resolution (same keyword signature).
     find_listing: Any = None
+    #: The corpus search backend a stored page is indexed into (default: the configured one).
+    search_backend: Any = None
 
 
 @dataclass
@@ -997,7 +999,7 @@ async def _fetch_phase(
                     async with session.begin_nested():
                         stored = await ingest_mod.store_web_document(
                             session, prepared, cfg=cfg, store=deps.store,
-                            backend=ctx.search_backend, now=deps.now,
+                            backend=ctx.search_backend or deps.search_backend, now=deps.now,
                         )
                     if stored.stored:
                         version_id = stored.version_id

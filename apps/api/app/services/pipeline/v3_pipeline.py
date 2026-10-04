@@ -291,6 +291,7 @@ async def run_v3_research(
     now: Any = None,
     discovery_candidate_id: str | uuid.UUID | None = None,
     report_agent_run_id: uuid.UUID | None = None,
+    theme_key: str | None = None,
 ) -> V3ResearchOutcome:
     """Run the V3 pipeline for one company. **Never raises.**
 
@@ -361,6 +362,7 @@ async def run_v3_research(
                 research_job_id=research_job_id,
                 discovery_candidate_id=discovery_candidate_id,
                 agent_run_id=agent_run_id,
+                theme_key=theme_key,
             )
     except Exception as exc:  # noqa: BLE001 - additive work must not fail the report
         outcome.error = type(exc).__name__
@@ -425,6 +427,7 @@ async def _run(
     research_job_id: uuid.UUID | None = None,
     discovery_candidate_id: str | uuid.UUID | None = None,
     agent_run_id: uuid.UUID | None = None,
+    theme_key: str | None = None,
 ) -> None:
     resolved_mode = parse_mode(mode or getattr(cfg, "v3_research_mode_default", None))
     limits = limits_for(resolved_mode)
@@ -814,6 +817,12 @@ async def _run(
             # ladder tool does not ASSIGN questions (that is `tools`), and the ladder is
             # climbed only when a question's contract is unmet and allows it.
             tools = role.session_tools if role is not None else frozenset()
+            if theme_key is None:
+                # Open-web W6b: ``search_theme_corpus`` needs the run's theme scope; a
+                # company run has none, so its sessions are not offered the tool.
+                from app.services.agent_tools.contracts import TOOL_SEARCH_THEME_CORPUS
+
+                tools = tools - {TOOL_SEARCH_THEME_CORPUS}
             # A role's declared source classes must reach its policy, or the governance
             # check refuses every tool that reads anything but platform-internal data.
             # V3.12 found this by running it: `search_web` reads `public_web`, the
@@ -856,6 +865,9 @@ async def _run(
                 company_id=company.id,
                 legal_entity_id=getattr(company, "legal_entity_id", None),
                 search_backend=search_backend,
+                # Open-web W6b: the Discovery run's theme, so the W4 theme tool can read the
+                # documents that run ingested. None for a company run.
+                theme_key=theme_key,
             )
             worker = LLMInvestigator(
                 session=tool_session,

@@ -932,6 +932,13 @@ async def _run_v3_pipeline(
         )
 
         report = await session.get(Report, report_id)
+        theme_key = None
+        if discovery_candidate_id is not None:
+            # Open-web W6b: a candidate a Discovery web run surfaced researches with that
+            # run's theme scope, so ``search_theme_corpus`` can read its theme documents.
+            from app.services.web_research.discovery_stage import theme_key_for_candidate
+
+            theme_key = await theme_key_for_candidate(session, discovery_candidate_id)
         outcome = await run_v3_research(
             session,
             company,
@@ -939,6 +946,7 @@ async def _run_v3_pipeline(
             mode=research_mode,
             research_job_id=research_job_id,
             discovery_candidate_id=discovery_candidate_id,
+            theme_key=theme_key,
             # The report's OWN run — what its primary-documents view is scoped to —
             # so the official documents this research acquires are visible there.
             report_agent_run_id=(

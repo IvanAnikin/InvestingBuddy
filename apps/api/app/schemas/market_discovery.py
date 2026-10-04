@@ -174,6 +174,26 @@ class DiscoveryRunRead(BaseModel):
         pct = (self.processed_count / self.universe_count) * 100.0
         return round(min(100.0, max(0.0, pct)), 1)
 
+    def _web(self) -> dict | None:
+        web = ((self.universe_json or {}).get("dynamic") or {}).get("web")
+        return web if isinstance(web, dict) else None
+
+    # Open-web W6b — additive. ``None`` for a run that did not use live web search.
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def web_search_state(self) -> str | None:
+        """``ok`` | ``web_search_degraded`` | ``web_search_unavailable`` |
+        ``web_stage_failed`` | ``web_plan_empty``; None when the run never tried."""
+        web = self._web()
+        return str(web["state"]) if web and web.get("state") else None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def web_search_label(self) -> str | None:
+        """The banner text for a run whose live search did not fully run (spec §23.1)."""
+        web = self._web()
+        return str(web["label"]) if web and web.get("label") else None
+
 
 class DiscoveryRunSummary(BaseModel):
     """Compact aggregate view of a run (top scores, status breakdown)."""
@@ -289,6 +309,28 @@ class DiscoveryCandidateRead(BaseModel):
     created_at: datetime
 
     disclaimer: str = INTERNAL_DISCLAIMER
+
+    def _v3_web(self) -> dict | None:
+        v319 = (self.thesis_match_json or {}).get("v319") or {}
+        block = v319.get("v3_web") if isinstance(v319, dict) else None
+        return block if isinstance(block, dict) else None
+
+    # Open-web W6b — additive. How the lead was produced (``search`` | ``model_recall`` |
+    # None for a curated / held company) and the A1–A4 admission state.
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def discovery_mode(self) -> str | None:
+        v319 = (self.thesis_match_json or {}).get("v319") or {}
+        provenance = v319.get("provenance") if isinstance(v319, dict) else None
+        mode = (provenance or {}).get("discovery_mode")
+        return str(mode) if mode else None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def admission(self) -> dict | None:
+        block = self._v3_web()
+        admission = (block or {}).get("admission")
+        return admission if isinstance(admission, dict) else None
 
 
 class ReportLinkSummary(BaseModel):
@@ -629,6 +671,9 @@ class DiscoveryCouncilCandidateEntry(BaseModel):
     key_financial_signal: str | None = None
     # Which of the council's comparison dimensions this candidate stands out on.
     strongest_dimension: str | None = None
+    # Open-web W6b — per-dimension assessments of a web-discovered candidate, each with its
+    # OWN evidence_confidence and item ids. Empty for a candidate without a web block.
+    dimensions: list[dict] = Field(default_factory=list)
 
 
 class DiscoveryCouncilReviewResponse(BaseModel):

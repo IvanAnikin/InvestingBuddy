@@ -53,6 +53,9 @@ REGION_LOCALES: dict[str, tuple[tuple[str, str], ...]] = {
         ("da", "DK"), ("no", "NO"), ("fi", "FI"), ("pl", "PL"), ("cs", "CZ"),
     ),
     "Asia": (("ja", "JP"), ("zh", "CN"), ("zh", "HK")),
+    # ``intent.regions`` also carries these two as regions (the parser's region table).
+    "Japan": (("ja", "JP"),),
+    "China": (("zh", "CN"),),
     "South America": (("pt", "BR"), ("es", "MX")),
 }
 

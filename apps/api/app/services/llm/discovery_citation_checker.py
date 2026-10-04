@@ -33,8 +33,12 @@ Returned issue strings are guaranteed forbidden-term-free.
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.services import safety_terms
 from app.services.llm.discovery_schemas import (
+    WEB_CONFIDENCE_LEVELS,
+    WEB_DIMENSIONS,
     ALLOWED_INTERNAL_ACTIONS,
     ALLOWED_RUN_QUALITY,
     DEFAULT_INTERNAL_ACTION,
@@ -79,6 +83,35 @@ def _quarantine(
         next_source_tasks=[],
         run_quality=None,
     )
+
+
+def _clean_dimensions(
+    note: Any, evidence_ids: set[str], issues: list[str], agent: str
+) -> list[Any]:
+    """Open-web W6b: keep only known dimensions, valid confidence labels and real ids.
+
+    An unknown dimension is dropped; an invalid confidence becomes ``not_established``
+    (never silently "high"); a citation id not in the pack is dropped. An assessment with
+    no valid id under a confidence above ``not_established`` is lowered to ``low``: a view
+    that cites nothing is not a well-sourced one.
+    """
+    out = []
+    for dim in note.dimensions[:7]:
+        if dim.dimension not in WEB_DIMENSIONS:
+            issues.append(f"{agent}: dropped an unknown dimension '{dim.dimension[:40]}'.")
+            continue
+        valid, invalid = _split_citations(dim.citation_ids, evidence_ids)
+        if invalid:
+            issues.append(f"{agent}: dropped {len(invalid)} dimension citation id(s) not "
+                          "present in the evidence pack.")
+        confidence = dim.evidence_confidence
+        if confidence not in WEB_CONFIDENCE_LEVELS:
+            confidence = "not_established"
+        if confidence in ("high", "medium") and not valid:
+            confidence = "low"
+        out.append(dim.model_copy(update={"citation_ids": valid,
+                                          "evidence_confidence": confidence}))
+    return out
 
 
 def check_and_sanitize(
@@ -144,6 +177,8 @@ def check_and_sanitize(
                     "citation_ids": valid,
                     "candidate_ref": note.candidate_ref if ref_ok else None,
                     "internal_action": action,
+                    "dimensions": _clean_dimensions(note, evidence_ids, issues,
+                                                    output.agent_name),
                 }
             )
         )

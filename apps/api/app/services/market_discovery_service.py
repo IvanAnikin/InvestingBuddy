@@ -2081,7 +2081,7 @@ def _run_to_evidence_dict(run: DiscoveryRun) -> dict[str, Any]:
     }
     intent = (run.parsed_thesis_json or {}).get("discovery_intent") or {}
     stage = (run.universe_json or {}).get("dynamic") or {}
-    return {
+    data = {
         "run_id": str(run.id),
         "mode": run.mode,
         "status": run.status,
@@ -2102,6 +2102,32 @@ def _run_to_evidence_dict(run: DiscoveryRun) -> dict[str, Any]:
         "error_count": run.error_count,
         "warnings": list(run.warnings or []),
     }
+    web = stage.get("web")
+    if isinstance(web, dict) and web:
+        # Open-web W6b: the run's web-search state, as one cited run fact. Absent with the
+        # flag off, so the pack is byte-identical to V3.19.
+        data["discovery_web"] = {k: web.get(k) for k in ("state", "label", "queries",
+                                                         "admission")}
+    return data
+
+
+def _web_evidence(v319: dict[str, Any]) -> dict[str, Any]:
+    """``web_discovery`` for the Council pack from ``v319.v3_web``; ``{}`` without one."""
+    v3_web = v319.get("v3_web") if isinstance(v319, dict) else None
+    if not v3_web:
+        return {}
+    from app.services.discovery.council_pack import build_candidate_web_pack
+
+    block = build_candidate_web_pack(
+        v3_web,
+        verified_attributes=v319.get("verified_attributes") or {},
+        constraint_status={
+            str(r.get("key")): str(r.get("status"))
+            for r in v319.get("constraint_results") or []
+            if isinstance(r, dict) and r.get("status") != "not_requested"
+        },
+    )
+    return {"web_discovery": block} if block else {}
 
 
 def _candidate_to_evidence_dict(
@@ -2132,6 +2158,9 @@ def _candidate_to_evidence_dict(
             k: (v319.get("provenance") or {}).get(k)
             for k in ("discovery_source", "identity_status")
         } if v319 else {},
+        # Open-web W6b: ONLY when the candidate carries a web block (flag on), so the pack
+        # of a flag-off run is byte-identical to V3.19.
+        **_web_evidence(v319),
         "candidate_id": str(c.id),
         "ticker": c.ticker,
         "exchange": c.exchange,
