@@ -49,7 +49,8 @@ from app.services.consumption import UNIT_NAMES, ConsumptionUnits
 
 # ── The closed tool vocabulary ───────────────────────────────────────────── #
 #
-# The nineteen names in AGENTIC_RESEARCH_ARCHITECTURE.md §4 and nothing else. A name
+# The names in AGENTIC_RESEARCH_ARCHITECTURE.md §4 (plus V3.18's `get_sec_statements` and
+# open-web W4's `search_theme_corpus`, spec §17.2) and nothing else. A name
 # is added HERE and nowhere else, so adding a tool is a deliberate change to a
 # vocabulary rather than a call to `register()` in a module nobody re-reads.
 
@@ -66,6 +67,9 @@ TOOL_GET_PREVIOUS_RESEARCH = "get_previous_research"
 TOOL_GET_OPEN_RESEARCH_GAPS = "get_open_research_gaps"
 TOOL_SEARCH_COMPANY_CORPUS = "search_company_corpus"
 TOOL_SEARCH_PRIVATE_RESEARCH = "search_private_research"
+#: Open-web W4 (spec §17.2): the corpus search scoped to the RUN's theme, for
+#: company-less (theme / industry / macro) documents. Read-only.
+TOOL_SEARCH_THEME_CORPUS = "search_theme_corpus"
 TOOL_SEARCH_WEB = "search_web"
 TOOL_FETCH_PUBLIC_SOURCE = "fetch_public_source"
 TOOL_GET_PEER_SET = "get_peer_set"
@@ -89,6 +93,7 @@ TOOL_NAMES: frozenset[str] = frozenset(
         TOOL_GET_OPEN_RESEARCH_GAPS,
         TOOL_SEARCH_COMPANY_CORPUS,
         TOOL_SEARCH_PRIVATE_RESEARCH,
+        TOOL_SEARCH_THEME_CORPUS,
         TOOL_SEARCH_WEB,
         TOOL_FETCH_PUBLIC_SOURCE,
         TOOL_GET_PEER_SET,
@@ -426,6 +431,7 @@ __all__ = [
     "TOOL_NAMES",
     "TOOL_SEARCH_COMPANY_CORPUS",
     "TOOL_SEARCH_PRIVATE_RESEARCH",
+    "TOOL_SEARCH_THEME_CORPUS",
     "TOOL_SEARCH_WEB",
     "ToolBudget",
     "ToolCallResult",

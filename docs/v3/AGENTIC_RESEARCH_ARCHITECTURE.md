@@ -120,7 +120,15 @@ get_recent_filings            get_peer_set
 get_ir_events                 get_peer_financials
 get_transcripts               get_macro_series
 get_sec_statements            get_industry_series
+search_theme_corpus
 ```
+
+`search_theme_corpus` (open-web W4, spec §17.2) searches company-less theme / industry /
+macro documents for the RUN's own theme key (`ToolContext.theme_key`); an argument naming
+a theme or a company is refused, and a run without a theme gets a refusal, not an empty
+result. `search_company_corpus` gained the web filters `source_classes` (closed §13.1
+list), `since` and `exclude_suspect`. No role holds `search_theme_corpus` yet: its consumer
+is the W6 theme/discovery run.
 
 `get_sec_statements` (V3.18) returns the SUBJECT's latest annual statement lines and
 defined metrics from its own SEC XBRL filings — the producer the report's own figures and

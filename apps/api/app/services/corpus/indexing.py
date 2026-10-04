@@ -219,6 +219,7 @@ def to_corpus_chunks(
                 source_class=getattr(version, "source_class", None),
                 use_constraint=getattr(version, "use_constraint", None),
                 injection_suspect=bool(getattr(version, "injection_suspect", False)),
+                origin_key=getattr(version, "origin_key", None),
                 subject_scope=getattr(document, "subject_scope", None),
                 theme_key=getattr(document, "theme_key", None),
                 subject_company_ids=subjects,

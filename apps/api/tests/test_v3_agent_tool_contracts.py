@@ -186,10 +186,11 @@ def _session(
 
 
 class TestClosedVocabulary:
-    def test_the_twenty_names_from_the_architecture_document(self) -> None:
+    def test_the_twenty_one_names_from_the_architecture_document(self) -> None:
         # V3.18 added `get_sec_statements`: the subject's own SEC XBRL statements, the
-        # producer the report's figures and the peer table already use.
-        assert len(TOOL_NAMES) == 20
+        # producer the report's figures and the peer table already use. Open-web W4
+        # added `search_theme_corpus` (spec §17.2).
+        assert len(TOOL_NAMES) == 21
         assert TOOL_LOOKUP_ENTITY in TOOL_NAMES
         assert EXTERNAL_TOOL_NAMES <= TOOL_NAMES
 

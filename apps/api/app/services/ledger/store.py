@@ -348,8 +348,17 @@ async def record_finding(
     references_finding_ids: Sequence[str] = (),
     source_kinds: Sequence[str] = (),
     source_published_at: date | None = None,
+    support: Sequence[Any] = (),
 ) -> ResearchFinding:
-    """Persist one finding. **The counts are derived here and nowhere else.**"""
+    """Persist one finding. **The counts are derived here and nowhere else.**
+
+    Open-web W4: ``support`` (``trust.SupportItem`` per cited id) turns on the
+    claim-type rules of spec §13.3 when it includes open-web evidence. A finding that
+    fails them is STORED WITH ITS LABEL ("[company says] …"), never dropped; a money
+    value that disagrees with another origin's for the same field, period and scope
+    records a ``conflicting_sources`` gap and both findings are kept (spec §14.4). The
+    outcome is attached to the returned row as ``_trust_outcome`` for the audit log.
+    """
     evidence = [str(value).strip() for value in evidence_ids if str(value).strip()]
     calculations = [
         str(value).strip() for value in calculation_ids if str(value).strip()
@@ -363,12 +372,15 @@ async def record_finding(
         raise ValueError(f"{direction!r} is not a finding direction.")
     if confidence is not None and not (0.0 <= float(confidence) <= 1.0):
         raise ValueError("confidence is a probability, so it lies in [0, 1].")
+    support_items = tuple(support or ())
+    outcome = _assess_trust(statement, support_items)
+    stored_statement = outcome.stored_statement if outcome is not None else statement
     finding = ResearchFinding(
         id=uuid.uuid4(),
         research_run_id=run.id,
         research_task_id=task.id if task is not None else None,
         question_key=_clip(question_key, _KEY_MAX),
-        statement=_clip(statement, _STATEMENT_MAX) or "",
+        statement=_clip(stored_statement, _STATEMENT_MAX) or "",
         mechanism=_clip(mechanism, _STATEMENT_MAX),
         direction=direction,
         confidence=float(confidence) if confidence is not None else None,
@@ -392,7 +404,151 @@ async def record_finding(
     )
     session.add(finding)
     await session.flush()
+    if support_items:
+        outcome = await _record_contradictions(
+            session, run, finding, statement, support_items, outcome
+        )
+    if outcome is not None:
+        finding._trust_outcome = outcome  # type: ignore[attr-defined]
     return finding
+
+
+def _assess_trust(statement: str, support: Sequence[Any]) -> Any:
+    """Spec §13.3 at persistence. None when no open-web evidence stands behind it."""
+    if not any(getattr(item, "web", False) for item in support):
+        return None
+    from app.services.web_research.trust import (
+        TrustOutcome,
+        assess_claim,
+        labelled_statement,
+        web_fact_for,
+    )
+
+    verdict = assess_claim(statement, support)
+    return TrustOutcome(
+        verdict=verdict,
+        stored_statement=labelled_statement(statement, verdict.label, limit=_STATEMENT_MAX),
+        web_fact=web_fact_for(statement, verdict),
+    )
+
+
+#: How many of a run's findings a contradiction check reads (bounded).
+_CONTRADICTION_SCAN_LIMIT = 200
+
+
+async def _record_contradictions(
+    session: Any,
+    run: ResearchRun,
+    finding: ResearchFinding,
+    statement: str,
+    support: Sequence[Any],
+    outcome: Any,
+) -> Any:
+    """Spec §14.4: retain both sides, record a ``conflicting_sources`` gap.
+
+    Only money fields that are history (never guidance — a newer guidance figure
+    supersedes, track B) and only when at least one side is open-web evidence. For a
+    financial-statement value the filing side is canonical (P4): the web finding is
+    relabelled "reported in the press; the filing says X" and its value is context.
+    """
+    from app.services import research_fields as rf
+    from app.services.pipeline.gap_reconciliation import finding_fields
+    from app.services.web_research import trust
+
+    fields = tuple(
+        f for f in sorted(rf.fields_stated(statement))
+        if f not in rf.SUPERSEDABLE_FIELDS
+        and getattr(rf.FIELDS_BY_KEY.get(f), "needs", None) == rf.NEEDS_MONEY
+    )
+    if not fields:
+        return outcome
+    rows = (
+        await session.execute(
+            select(ResearchFinding)
+            .where(
+                ResearchFinding.research_run_id == run.id,
+                ResearchFinding.id != finding.id,
+                ResearchFinding.claim_key.is_not(None),
+            )
+            .order_by(ResearchFinding.created_at, ResearchFinding.id)
+            .limit(_CONTRADICTION_SCAN_LIMIT)
+        )
+    ).scalars().all()
+    new_side = trust.ClaimSide(
+        finding_id=str(finding.id),
+        statement=statement,
+        fields=fields,
+        period=finding.period_key,
+        scope_key=finding.scope_key,
+        support=tuple(support),
+        published_at=finding.source_published_at,
+    )
+    others: list[Any] = []
+    rows_by_id: dict[str, ResearchFinding] = {}
+    for row in rows:
+        row_statement = trust.unlabelled_statement(row.statement)
+        row_fields, _project = finding_fields(row_statement, row.claim_key)
+        if not set(row_fields) & set(fields):
+            continue
+        row_support = await trust.resolve_support(
+            session, list(row.evidence_ids_json or ()), company_id=run.company_id
+        )
+        if not (new_side.web or any(item.web for item in row_support)):
+            continue
+        rows_by_id[str(row.id)] = row
+        others.append(
+            trust.ClaimSide(
+                finding_id=str(row.id),
+                statement=row_statement,
+                fields=tuple(row_fields),
+                period=row.period_key,
+                scope_key=row.scope_key,
+                support=tuple(row_support),
+                published_at=row.source_published_at,
+            )
+        )
+    contradictions = trust.find_contradictions(new_side, others)
+    if not contradictions:
+        return outcome
+    if outcome is None:
+        outcome = trust.TrustOutcome(
+            verdict=trust.NOT_APPLICABLE, stored_statement=finding.statement
+        )
+    for contradiction in contradictions:
+        gap = await record_gap(
+            session,
+            run,
+            gap_type=GAP_CONFLICTING_SOURCES,
+            description=contradiction.describe(),
+            question_key=finding.question_key,
+            why_it_matters=(
+                "Sources disagree. Every side is retained with its class, date and "
+                "origin; a follow-up search can resolve it."
+            ),
+            sources_tried=tuple(
+                sorted({s.source_class for s in support if getattr(s, "source_class", None)})
+            ),
+        )
+        outcome.contradictions.append(contradiction.field_key)
+        outcome.conflict_gap_ids.append(str(gap.id))
+        canonical_id = contradiction.canonical_finding_id
+        if canonical_id is None:
+            continue
+        canonical = next(s for s in contradiction.sides if s.finding_id == canonical_id)
+        web_side = next(s for s in contradiction.sides if s.finding_id != canonical_id)
+        value = canonical.value_text(contradiction.field_key) or "a different value"
+        label = trust.label_press_vs_filing(value)
+        target = finding if web_side.finding_id == str(finding.id) else rows_by_id.get(
+            web_side.finding_id
+        )
+        if target is not None:
+            target.statement = trust.labelled_statement(
+                trust.unlabelled_statement(target.statement), label, limit=_STATEMENT_MAX
+            )
+            if target is finding:
+                outcome.stored_statement = target.statement
+    await session.flush()
+    return outcome
 
 
 #: Why a question is still open when its run ended. Closed, so "which domain does this

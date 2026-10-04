@@ -112,6 +112,9 @@ class FindingDraft:
     #: Migration 043 — publication date of the cited evidence (newest; None when any
     #: cited item is undated). Inherited from the tools, never from the model's prose.
     source_published_at: date | None = None
+    #: Open-web W4 — ``trust.SupportItem`` per cited id (class, origin, web?). The
+    #: ledger applies the claim-type rules (spec §13.3) from it.
+    support: tuple[Any, ...] = ()
 
 
 @dataclass
@@ -450,7 +453,29 @@ async def run_investigation(
                         references_finding_ids=[
                             ref for ref in draft.references if ref in known_ids
                         ],
+                        # Open-web W4 — the claim-type rules (spec §13.3) run here.
+                        support=tuple(getattr(draft, "support", ()) or ()),
                     )
+                    trust_outcome = getattr(recorded, "_trust_outcome", None)
+                    if trust_outcome is not None and draft.question_key:
+                        # The durable record of the check: class, origin, corroboration,
+                        # label and any web fact (spec §17.3) — ids and keys only.
+                        try:
+                            await ledger.update_question_graph_state(
+                                session,
+                                run,
+                                draft.question_key,
+                                acquisition_steps=[
+                                    {
+                                        "rung": "trust",
+                                        "round": round_index,
+                                        "finding_id": str(recorded.id),
+                                        **trust_outcome.to_dict(),
+                                    }
+                                ],
+                            )
+                        except Exception:  # noqa: BLE001 - an audit step must not end a run
+                            pass
                     ownership.add(
                         str(recorded.id),
                         domain=domain,

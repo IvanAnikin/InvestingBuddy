@@ -11,9 +11,10 @@ result, a crawl, a user URL or a verified lead (``fetch_public_source``):
 3. extraction in the killable process pool (``extract.py``);
 4. deterministic classification: source class → tier + access class, ``use_constraint``,
    document kind, injection taint (``classify.py``);
-5. duplicate check by content hash — the same bytes already stored are LINKED (a
-   subjects row), never re-chunked; SimHash + a provisional ``origin_key`` are stored
-   for W4;
+5. duplicate check by content hash, then (W4) by SimHash — the same or nearly the same
+   text already stored is LINKED (a subjects row), never re-chunked; the §14.2 origin
+   (``trust.document_origin``: cluster, issuer, PR wire, wire attribution, boilerplate,
+   cross-domain canonical, publisher group, domain) is stored as ``origin_key``;
 6. raw bytes → the artifact store under the version's access class, with the web TTL
    (``V3_WEB_ARTIFACT_RETENTION_DAYS``) when the constraint is ``unknown``;
 7. ``ExtractedDocument`` — SHARED by content hash, so its ``company_id`` is whoever
@@ -90,6 +91,9 @@ class WebIngestResult:
     extraction_confidence: str | None = None
     stopped_by: str | None = None
     published_at_source: str | None = None
+    #: Open-web W4: the §14.2 origin and the rule that decided it.
+    origin_key: str | None = None
+    origin_rule: str | None = None
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -277,6 +281,45 @@ async def ingest_web_document(
         _log(result, url)
         return result
 
+    # Open-web W4 (spec §14.1–14.2): the origin algorithm, and a near-duplicate of a
+    # stored document is LINKED to it rather than chunked again.
+    from app.services.web_research.trust import (
+        OriginInput,
+        document_origin,
+        issuer_from_candidates,
+    )
+
+    fingerprint = simhash64(extraction.main_text)
+    decision, duplicate = await document_origin(
+        session,
+        doc=OriginInput(
+            url=url,
+            text=extraction.main_text,
+            source_class=classification.source_class,
+            rel_canonical=getattr(fetched, "rel_canonical", None),
+        ),
+        published_at=meta.published_at,
+        simhash=fingerprint,
+        issuer=issuer_from_candidates(company_id, candidates, issuer_domains),
+    )
+    result.origin_key = decision.origin_key
+    result.origin_rule = decision.rule
+    if duplicate is not None:
+        result.state = STATE_REUSED
+        result.version_id = duplicate.id
+        result.document_id = duplicate.research_document_id
+        result.extracted_document_id = duplicate.extracted_document_id
+        result.subjects_written = await write_subjects(
+            session,
+            document_id=duplicate.research_document_id,
+            version_id=duplicate.id,
+            company_id=company_id,
+            mentions=mentions,
+        )
+        result.notes.append("near-duplicate of a stored document; linked, not re-chunked")
+        _log(result, url)
+        return result
+
     from app.services.corpus.artifacts.service import record_artifact, store_raw_artifact
     from app.services.corpus.documents import (
         CorpusIngestResult,
@@ -349,19 +392,20 @@ async def ingest_web_document(
         period_policy=PERIOD_POLICY_TITLE_ONLY,
         failure_code=None,
     )
-    origin = origin_key_for(host)
+    origin = decision.origin_key
     web = WebVersionFields(
         web_fetch_attempt_id=getattr(fetched, "attempt_id", None),
         use_constraint=classification.use_constraint,
         injection_suspect=taint.suspect,
-        simhash=to_signed64(simhash64(extraction.main_text)),
+        simhash=to_signed64(fingerprint),
         origin_key=origin,
         published_at_source=meta.published_at_source if meta.published_at else None,
         source_class=classification.source_class,
         web_extractor_version=WEB_EXTRACTOR_VERSION,
         subject_scope=scope,
         theme_key=(theme_key or None) if company_id is None else None,
-        content_origin=origin,
+        # The PUBLISHER (where the bytes were served); ``origin_key`` is who wrote them.
+        content_origin=origin_key_for(host),
     )
     counts = CorpusIngestResult()
     version = await ingest_extracted_document(

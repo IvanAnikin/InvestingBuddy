@@ -112,6 +112,10 @@ class CorpusChunk:
     injection_suspect: bool = False
     subject_scope: str | None = None
     theme_key: str | None = None
+    #: Open-web W4 (spec §14.2): who the text ORIGINALLY came from — the cluster /
+    #: wire / issuer / publisher-group origin. Two items are independent only when
+    #: their origin keys differ. None on every non-web chunk.
+    origin_key: str | None = None
     #: Companies the DOCUMENT names as subjects (``research_document_subjects``).
     subject_company_ids: tuple[uuid.UUID, ...] = ()
     #: Present only when a semantic leg is configured. ``None`` is the normal case
