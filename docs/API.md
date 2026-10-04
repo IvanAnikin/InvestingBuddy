@@ -2172,6 +2172,40 @@ would be scanned twice). The Discovery Council stays on `BackgroundTasks`.
   `cancelled`. A worker sweep repairs the runs no notification reaches.
   Candidates already written are kept.
 
+**Live web search (open-web W6b, `V3_DISCOVERY_WEB_SEARCH_ENABLED`, default off).**
+With the flag on (and `V3_DYNAMIC_DISCOVERY_ENABLED`, `V3_WEB_SEARCH_ENABLED` + a provider,
+`V3_WEB_FETCH_ENABLED`), a thesis run adds a REAL-search lead source before the model-recall
+one: planned queries (closed intent vocabulary, locale glossary) -> executed search ->
+fetched pages -> listed-company mentions -> the existing official listing verification ->
+admission rules A1-A4. With the flag off the responses are byte-identical to V3.19. All
+changes are additive:
+
+- `DiscoveryRunRead.web_search_state` (`ok` | `web_search_degraded` |
+  `web_search_unavailable` | `web_stage_failed` | `web_plan_empty`; `null` when the run never
+  tried) and `web_search_label` (the banner text, e.g. "Live web search unavailable -
+  results come from official sources and model suggestions verified on exchange lists").
+  The full summary (queries by family, follow-ups, locale variants, fetch/extraction counts,
+  admission counts, `novel_candidates`, cost units, `theme_key`) is
+  `universe_json.dynamic.web`; leads that verified but have no theme evidence are
+  `universe_json.dynamic.also_surfaced`.
+- `DiscoveryCandidateRead.discovery_mode` (`search` | `model_recall` | `null` for a curated or
+  held company) and `admission` (`{state, rules, codes, evidence_ids, ...}`). `state` is
+  `admitted`, `also_surfaced` (`eligible_unverified(theme)`, never a candidate row),
+  `rejected` or `labelled` (a registry / held / recall lead, not gated by A1).
+  Per-candidate provenance (query, result and fetch-attempt ids, rank, URL, mention
+  passages with evidence ids) is `thesis_match_json.v319.v3_web`.
+- Rejected leads carry `discovery_mode` and `admission` with the persisted failure code
+  (`no_search_provenance`, `identity_unverified` + the identity reason,
+  `theme_evidence_missing`; hard-constraint failures keep the V3.19 reasons).
+- Council: a candidate with a web block carries `web_discovery` in the evidence pack
+  (at most 6 items; `priority_basis` keeps thesis fit, economics, catalyst relevance and size
+  fit apart from `evidence_confidence`), and `candidate_notes[].dimensions` /
+  the aggregated bucket entries may carry per-dimension assessments with their own
+  `evidence_confidence` and item ids (`C2.1`).
+
+`discovery_mode="search"` exists ONLY for a lead whose provenance names an executed
+`web_search_queries` row and a fetched page; a model naming a company admits nothing.
+
 **Run creation (`POST /runs`) body:**
 ```json
 {

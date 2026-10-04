@@ -623,6 +623,24 @@ worker. The durable move is its own slice (W6a) so it can be reverted independen
 
 **Complexity:** XL (about 6–7 days, as two slices: W6a durable, W6b search).
 
+**W6b as built (`feature/web-w6b-discovery-search`).** New: `web_research/discovery_planner.py`
+(families ENTITY / VALUE_CHAIN / VENUE / LOCAL_LANG / DEMAND / DOCUMENT from the intent's closed
+vocabularies, project / permit / offtake / financing / capacity / regulation / counter-thesis
+templates, saturation follow-ups, bounded cached expansion that may not name a company),
+`locales.py` (venue->locale, region/country->locales, versioned glossary: de fr it es da sv no fi
+pl cs ja zh), `candidate_extract.py` (deterministic mention extraction from paragraphs and table
+rows), `discovery_stage.py` (search with resume, round-robin selection that ranks a known name's
+own site down, fetch + W3 extraction, theme documents), `discovery/admission.py` (A1-A4 with
+persisted codes), `discovery/council_pack.py` (<= 6 items per candidate, `priority_basis`). The
+pipeline puts web leads after registry / held and before model recall; a lead labelled `search`
+without an executed query row and a fetched page is rejected `no_search_provenance`.
+Decisions and deviations: a web lead's printed name must agree with the exchange's name under
+the STRICT rule (V3.19's ticker-matched rule accepts one shared word - "Apex Metals" vs "Apex
+Fisheries"); recall leads are not rejected for lacking A1 but are labelled `model_recall` and
+get no A3 evidence of their own; an issuer's own page counts as issuer material for A3 once its
+identity is verified; the LLM entity extractor and LLM translation fill-in are NOT built (the
+extractor is regex-only; the glossary is extended in reviewed diffs).
+
 ---
 
 ## W7: Bounded follow-up research loop

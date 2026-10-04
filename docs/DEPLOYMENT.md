@@ -663,6 +663,30 @@ lose them. A retry resumes from the last committed ticker.
 | H | Dead letter: force `V3_JOB_MAX_ATTEMPTS=1` and kill the process mid-scan | Within one sweep (≤5 minutes after worker start) the run is `failed` with "gave up after 1 attempts" |
 | I | Turn the flag off with a job still queued | The queued job still runs to completion |
 
+**W6b - Discovery uses live web search (`V3_DISCOVERY_WEB_SEARCH_ENABLED`, default
+`false`).** No migration (uses 042/043). Needs `V3_DYNAMIC_DISCOVERY_ENABLED`,
+`V3_WEB_SEARCH_ENABLED` with a provider (`V3_WEB_SEARCH_PROVIDER`, `TAVILY_API_KEY`),
+`V3_WEB_FETCH_ENABLED`, and - to keep theme documents for `search_theme_corpus` -
+`V3_WEB_CORPUS_INGEST_ENABLED` + `V3_CORPUS_ENABLED`. `V3_DISCOVERY_WEB_DEPTH`
+(`standard` = 24 queries, `deep` = 48) picks the budget profile; the platform daily cap
+`V3_WEB_SEARCH_MAX_QUERIES_PER_DAY` and `V3_RUN_MAX_WEB_SEARCHES` still bound it.
+- **Rollback:** `V3_DISCOVERY_WEB_SEARCH_ENABLED=false` restores V3.19 behaviour exactly (no
+  query, no fetch, no row, no response key).
+- **Search unavailable:** the run still completes from the curated registry, held companies
+  and model recall, every recall lead labelled `model_recall`, and the run carries
+  `web_search_state=web_search_unavailable` with the banner text. Nothing is ever labelled
+  `search` without an executed query row and a fetched page.
+- **Durable resume:** with W6a on, a retried job re-enters the web stage and REUSES the
+  queries the run already recorded (keyed by run id and request hash); the run's query
+  ceiling carries across attempts, so a recycle cannot double-spend searches. The pages are
+  fetched again (bounded by the budget).
+- **Cost:** up to 24 (48 deep) provider calls and 40 (80) fetches per run, recorded as
+  `cost_units` on the run's `web` summary and on the `discovery_screening` consumption row.
+- **Staging check:** run a thesis whose answer is a small company the registry does not hold;
+  confirm `discovery_mode=search`, `admission.state=admitted`, and that the query/result/fetch
+  ids in `v3_web.sightings` resolve in `web_search_queries` / `web_search_results` /
+  `web_fetch_attempts` (all carry the run id).
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

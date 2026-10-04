@@ -453,3 +453,96 @@ class TestApiFields:
         )
         dumped = read.model_dump()
         assert dumped["discovery_mode"] == "model_recall" and "admission" in dumped
+
+
+# --------------------------------------------------------------------------- #
+# W6a integration: the durable handler's lease, checkpoints and retries
+# --------------------------------------------------------------------------- #
+
+
+class TestDurableWorker:
+    async def test_the_web_stage_reports_its_phases_through_the_job_checkpoint(
+        self, session: Any, pool: Any
+    ) -> None:
+        provider = FakeWebSearchProvider()
+        net = Net({ART: GALLIUM_ARTICLE})
+        run = await thesis_run(session)
+        serve(provider, plan_for(mds_intent(run)), {"entity_listed.0": [hit(ART)]})
+        stages: list[str | None] = []
+
+        async def checkpoint(stage: str | None = None) -> None:
+            stages.append(stage)
+
+        run = await mds.process_run(
+            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+            progress=checkpoint,
+        )
+        assert run.universe_json["dynamic"]["web"]["state"] == "ok"
+        first_scan = stages.index("discovery_scanning")
+        web = [s for s in stages[:first_scan] if s and s.startswith("discovery_web")]
+        assert [*dict.fromkeys(web)] == [
+            "discovery_web_search", "discovery_web_fetch", "discovery_web_verify"]
+        assert stages[0] == "discovery_dynamic_stage"
+        assert all(len(s) <= 50 for s in stages if s), "research_jobs.stage is String(50)"
+
+    async def test_a_cancellation_during_the_web_stage_stops_the_run_and_a_retry_resumes(
+        self, session: Any, pool: Any
+    ) -> None:
+        from app.services.jobs.worker import JobCancelled
+
+        provider = FakeWebSearchProvider()
+        net = Net({ART: GALLIUM_ARTICLE})
+        run = await thesis_run(session)
+        serve(provider, plan_for(mds_intent(run)), {"entity_listed.0": [hit(ART)]})
+
+        async def cancel_at_fetch(stage: str | None = None) -> None:
+            if stage == "discovery_web_fetch":
+                raise JobCancelled("cancelled")
+
+        with pytest.raises(JobCancelled):
+            await mds.process_run(
+                session, run, extractor=_fake_extractor(),
+                discovery_fetcher=directory_fetcher,
+                discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+                progress=cancel_at_fetch,
+            )
+        assert run.universe_json["dynamic"]["status"] == "running", "not swallowed, not failed"
+        assert run.processed_count == 0 and net.requested == []
+        paid = len(provider.requests)
+        assert paid > 0, "the searches were issued and recorded before the stop"
+        # The retry (a new lease) re-enters the stage and issues no search twice.
+        run = await mds.process_run(
+            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+        )
+        assert len(provider.requests) == paid
+        dynamic = run.universe_json["dynamic"]
+        assert dynamic["status"] == "completed"
+        assert dynamic["web"]["queries"]["reused_on_resume"] == paid
+        rows = (await session.execute(
+            select(DiscoveryCandidate).where(DiscoveryCandidate.discovery_run_id == run.id)
+        )).scalars().all()
+        assert [c.ticker for c in rows].count("ALG") == 1, "one candidate, not two"
+
+    async def test_a_retry_after_the_scan_began_does_not_rerun_the_web_stage(
+        self, session: Any, pool: Any
+    ) -> None:
+        provider = FakeWebSearchProvider()
+        net = Net({ART: GALLIUM_ARTICLE})
+        run = await thesis_run(session)
+        serve(provider, plan_for(mds_intent(run)), {"entity_listed.0": [hit(ART)]})
+        await mds.process_run(
+            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+        )
+        paid = len(provider.requests)
+        run.status = "running"  # a crash after the scan began: the job is retried
+        run.completed_at = None
+        run.processed_count = 1
+        await session.commit()
+        await mds.process_run(
+            session, run, extractor=_fake_extractor(), discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider), owned_by_lease=True,
+        )
+        assert len(provider.requests) == paid
