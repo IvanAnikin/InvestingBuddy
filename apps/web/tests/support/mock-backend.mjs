@@ -27,6 +27,16 @@ import {
   w6bCandidates,
 } from "./w6b-fixtures.mjs";
 import {
+  W8B_INTENT,
+  W8B_REPORT_ID,
+  W8B_RUN_ID,
+  W8B_RUNS,
+  W8B_THESIS,
+  applyW8bWebEvidence,
+  w8bCandidates,
+  w8bCouncilReview,
+} from "./w8b-fixtures.mjs";
+import {
   WR_EMPTY_ID,
   WR_JOB_ID,
   WR_RUN_ID,
@@ -1308,6 +1318,9 @@ const THESIS_RUN_IDS = {
   // search was unavailable (labelled model-recall fallback).
   [W6B_THESIS]: W6B_RUN_ID,
   [W6B_OUTAGE_THESIS]: W6B_OUTAGE_RUN_ID,
+  // Open-web W8b: web-found, recall-corroborated, recall-demoted, identity-unverified and
+  // theme-missing candidates, with a council review that carries per-dimension confidence.
+  [W8B_THESIS]: W8B_RUN_ID,
   __default: "77777777-0000-0000-0000-000000000027",
 };
 
@@ -2061,6 +2074,20 @@ function mockProfessionalReport(id) {
     "LLM Council Analysis Draft — SCCO — Professional Research Test Issuer [MOCK DATA]";
   base.source_summary_json.v3_research.professional_research =
     professionalResearchPayload();
+  return base;
+}
+
+// Open-web W8b — a professional report carrying EVERY open-web block (producer shapes, read
+// from tests/fixtures/w8b-web-evidence.json): web_evidence in four sections, the
+// evidence-quality web_research block with not-accessible sources and follow-up summary, the
+// run's web_context, red-team risk-evidence counts, and V2 catalyst web evidence.
+function mockW8bWebReport(id) {
+  const base = mockProfessionalReport(id);
+  base.title =
+    "LLM Council Analysis Draft — TRL — Web Evidence Test Issuer [MOCK DATA]";
+  const content = sampleReportContent({ withCouncil: true });
+  applyW8bWebEvidence(base, content);
+  base.content_markdown = finalReportMarkdown(content);
   return base;
 }
 
@@ -3186,6 +3213,7 @@ function discoveryCouncilReview(runId) {
 // moves a run into this set, so the trigger is testable end to end.
 const COUNCIL_REVIEWED_RUNS = new Set([
   THESIS_RUN_IDS["European luxury goods companies"],
+  W8B_RUN_ID,
 ]);
 
 const KNOWN_RUN_IDS = new Set(Object.values(THESIS_RUN_IDS));
@@ -3634,6 +3662,9 @@ const server = createServer((req, res) => {
     if (rid === PROFESSIONAL_LEGACY_REPORT_ID) {
       return send(res, 200, mockProfessionalLegacyReport(rid));
     }
+    if (rid === W8B_REPORT_ID) {
+      return send(res, 200, mockW8bWebReport(rid));
+    }
     if (rid === RECONCILED_V2_REPORT_ID) {
       return send(res, 200, mockReconciledV2Report(rid));
     }
@@ -3971,7 +4002,13 @@ const server = createServer((req, res) => {
       const needs_narrowing = themes.length === 0 && !sector;
       // V3.19 — the structured intent for the small-cap/growing luxury thesis.
       const v319 = t.includes("small cap") && t.includes("luxury");
-      const w6b = t.includes("gallium") ? W6B_INTENT : t.includes("lithium") ? W6B_OUTAGE_INTENT : null;
+      const w6b = t.includes("gallium")
+        ? W6B_INTENT
+        : t.includes("lithium")
+          ? W6B_OUTAGE_INTENT
+          : t.includes("tungsten")
+            ? W8B_INTENT
+            : null;
       send(res, 200, {
         discovery_intent: v319 ? V319_INTENT : w6b,
         dynamic_discovery_enabled: v319 || w6b !== null,
@@ -4198,6 +4235,11 @@ const server = createServer((req, res) => {
       return send(res, 200, { candidates: w6b, total: w6b.length, run_id: runId,
                               disclaimer: DISC });
     }
+    if (W8B_RUNS[runId]) {
+      const w8b = w8bCandidates(mockCandidate, runId);
+      return send(res, 200, { candidates: w8b, total: w8b.length, run_id: runId,
+                              disclaimer: DISC });
+    }
     const candidates = [
       mockCandidate(runId, {
         id: "cccccccc-0000-0000-0000-000000000001",
@@ -4284,7 +4326,13 @@ const server = createServer((req, res) => {
         detail: "No discovery council review found for this run.",
       });
     }
-    return send(res, 200, discoveryCouncilReview(runId));
+    return send(
+      res,
+      200,
+      W8B_RUNS[runId]
+        ? w8bCouncilReview(discoveryCouncilReview(runId), runId)
+        : discoveryCouncilReview(runId),
+    );
   }
 
   const discRun = /^\/api\/v1\/market-discovery\/runs\/([^/]+)$/.exec(path);
@@ -4306,6 +4354,14 @@ const server = createServer((req, res) => {
                              needs_narrowing: false, requested_max: 25, dynamic: w6b.stage };
       base.web_search_state = w6b.stage.web.state;
       base.web_search_label = w6b.stage.web.label;
+    }
+    if (W8B_RUNS[runId]) {
+      const w8b = W8B_RUNS[runId];
+      base.parsed_thesis_json = { ...(base.parsed_thesis_json ?? {}), discovery_intent: w8b.intent };
+      base.universe_json = { items: [], excluded: [], source_summary: {}, warnings: [],
+                             needs_narrowing: false, requested_max: 25, dynamic: w8b.stage };
+      base.web_search_state = w8b.stage.web.state;
+      base.web_search_label = w8b.stage.web.label;
     }
     return send(res, 200, {
       ...base,

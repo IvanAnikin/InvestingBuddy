@@ -27,12 +27,12 @@ test.describe("W6b — candidates found by live web search", () => {
     await run(page, FOUND);
     const card = page.getByTestId("candidate-card").filter({ hasText: "Alpha Gallium" });
     const mode = card.getByTestId("candidate-discovery-mode");
-    await expect(mode).toHaveText("Found by live web search");
+    await expect(mode).toHaveText("Found via web search");
     await expect(mode).toHaveAttribute("data-mode", "search");
     const admission = card.getByTestId("candidate-admission");
     await expect(admission).toHaveAttribute("data-state", "admitted");
-    await expect(admission).toContainText("listing verified");
-    await expect(admission).toContainText("fetched source ties it to the theme");
+    await expect(admission).toContainText("listing is verified");
+    await expect(admission).toContainText("fetched page ties it to the theme");
   });
 
   test("a model-named company search did not corroborate is not a candidate", async ({
@@ -45,7 +45,7 @@ test.describe("W6b — candidates found by live web search", () => {
     const also = page.getByTestId("discovery-also-surfaced");
     await also.locator("summary").click();
     const item = also.getByTestId("discovery-also-surfaced-item").filter({ hasText: "Zeta Gallium" });
-    await expect(item).toContainText("Recall not corroborated");
+    await expect(item).toContainText("no search result corroborated it");
   });
 
   test("a healthy run shows no unavailability banner", async ({ page }) => {
@@ -63,7 +63,7 @@ test.describe("W6b — candidates found by live web search", () => {
     const beta = also
       .getByTestId("discovery-also-surfaced-item")
       .filter({ hasText: "Beta Germanium" });
-    await expect(beta).toContainText("Theme evidence missing");
+    await expect(beta).toContainText("Eligible but unverified (theme)");
     // It is not a candidate card.
     await expect(
       page.getByTestId("candidate-card").filter({ hasText: "Beta Germanium" }),
@@ -91,8 +91,8 @@ test.describe("W6b — live web search unavailable", () => {
     await expect(banner).toContainText("model suggestions verified on exchange lists");
     const card = page.getByTestId("candidate-card").filter({ hasText: "Zeta Gallium" });
     await expect(card.getByTestId("candidate-discovery-mode")).toContainText(
-      "Model suggestion",
+      "Suggested by model, verified on exchange",
     );
-    await expect(page.getByText("Found by live web search")).toHaveCount(0);
+    await expect(page.getByText("Found via web search")).toHaveCount(0);
   });
 });

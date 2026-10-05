@@ -149,6 +149,28 @@ export function councilHasReview(review: DiscoveryCouncilReview | null): boolean
 // Derived view
 // ---------------------------------------------------------------------------
 
+/**
+ * One dimension the council assessed for a web-discovered candidate (open-web W6b).
+ * `evidenceConfidence` says how well-sourced the VIEW is; it is a different thing from
+ * what the assessment says about the business, and the page never merges the two.
+ */
+export interface CouncilDimensionView {
+  dimension: string;
+  label: string;
+  assessment: string | null;
+  evidenceConfidence: string | null;
+}
+
+export const COUNCIL_DIMENSION_LABELS: Record<string, string> = {
+  theme_relevance: "Theme relevance",
+  growth_drivers: "Growth drivers",
+  profitability_cash: "Profitability and cash",
+  business_quality: "Business quality",
+  catalysts: "Catalysts",
+  resilience: "Resilience",
+  principal_downside: "Principal downside",
+};
+
 export interface CouncilPriorityEntry {
   action: string;
   candidateRef: string | null;
@@ -172,6 +194,8 @@ export interface CouncilPriorityEntry {
   unverifiedConstraints: string[];
   /** V3.19.11 — why the platform moved it out of the council's own placement. */
   placementNote: string | null;
+  /** Open-web W6b: per-dimension assessments with their own evidence confidence. */
+  dimensions: CouncilDimensionView[];
   /** Other agents that placed this candidate in the SAME band, with why. */
   supporting: { agent: string; rationale: string | null }[];
   /** Other agents that placed it in a DIFFERENT band, with why. */
@@ -337,6 +361,24 @@ const EMPTY_VIEW: DiscoveryCouncilView = {
   councilNotes: [],
 };
 
+function readCouncilDimensions(raw: unknown): CouncilDimensionView[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CouncilDimensionView[] = [];
+  for (const d of raw) {
+    if (typeof d !== "object" || d === null) continue;
+    const row = d as Record<string, unknown>;
+    const dimension = text(row.dimension);
+    if (!dimension) continue;
+    out.push({
+      dimension,
+      label: COUNCIL_DIMENSION_LABELS[dimension] ?? dimension.replace(/_/g, " "),
+      assessment: text(row.assessment),
+      evidenceConfidence: text(row.evidence_confidence),
+    });
+  }
+  return out;
+}
+
 export function buildDiscoveryCouncilView(
   review: DiscoveryCouncilReview | null,
 ): DiscoveryCouncilView {
@@ -403,6 +445,7 @@ export function buildDiscoveryCouncilView(
         strongestDimension: text(entry.strongest_dimension),
         unverifiedConstraints: (entry.unverified_constraints ?? []).filter(Boolean),
         placementNote: text(entry.placement_note),
+        dimensions: readCouncilDimensions(entry.dimensions),
         supporting: others
           .filter((p) => p.action === band)
           .map((p) => ({ agent: p.agent, rationale: p.rationale })),

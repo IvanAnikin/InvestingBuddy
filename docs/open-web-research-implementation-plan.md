@@ -788,6 +788,48 @@ extractor is regex-only; the glossary is extended in reviewed diffs).
 
 **Complexity:** M (about 3 days).
 
+**W8b as built (`feature/web-w8b-investor-ux`, web only).** The investor-facing half of W8; the
+admin audit page is W8a.
+
+- *Discovery card* (`CandidateWebEvidence.tsx`, `webEvidenceView.ts`; shown only for a candidate
+  with a `v3_web` block): why it surfaced (mode label *Found via web search* / *Suggested by
+  model, verified on exchange* / *Curated* / *Held*, source host, one cited excerpt), thesis fit
+  (admission rule A3), catalyst signal, strongest evidence (up to three items, one per publisher,
+  admitted passages first), main downside (the council's words first), what is unknown, and the
+  evidence-confidence chip. Evidence confidence is the council's own per-dimension
+  `dimensions[].evidence_confidence` and is kept apart from *What the priority rests on*
+  (thesis fit, growth from verified facts, catalyst relevance, size fit). Admission is worded in
+  plain language, including *eligible but unverified (theme | listing)* and the model-suggestion
+  demotion; "Also surfaced" says why each company is not in the shortlist.
+- *Company report* (`webEvidence.ts`, `report/WebEvidenceParts.tsx`): `web_evidence` blocks in the
+  four sections with publisher, class, date, corroboration and the W4 label chips; a *Current
+  developments* strip in the growth and catalysts section (from the V2 section's
+  `web_catalyst_evidence`, which the backend writes into the report's embedded JSON, not into
+  `source_summary_json`); the evidence drawer's *Web sources* list; *Web research* in the
+  evidence-quality section with *Sources found but not accessible* and the follow-up summary
+  (rounds; stopped: answered, no further new sources, or budget reached); the red team's
+  risk-evidence counts. Every block renders nothing when its data is absent, so older reports
+  are unchanged.
+- *Never shown to an investor:* search queries, query keys, the search vendor, cost units, result
+  or fetch-attempt ids. Third-party text is a React text node only; a link is rendered only for an
+  https URL (`rel="noopener noreferrer nofollow"`); a passage with recommendation vocabulary is
+  withheld; invisible and bidi characters are stripped.
+- *Key pins.* `apps/web/tests/fixtures/w8b-web-evidence.json` is the producers' shape;
+  `apps/api/tests/test_web_w8b_fixture_keys.py` runs the real writers (`web_evidence_block`,
+  `web_research_block`, `_attach_web_catalysts`, `AdmissionDecision`, `_mention_entry`,
+  `_sighting_of`, `DimensionAssessment`) and compares key sets; it also checks that the web's
+  vocabularies (source classes, W4 labels, access reasons, admission codes, progress stages)
+  cover the backend's.
+- *Known gaps the UI cannot close alone (additive backend fields wanted):* the discovery mention
+  and sighting records carry no published date (the card says "date not stated"); the
+  not-accessible rows carry no date; `priority_basis` exists only in the Council's input pack and
+  is not persisted, so the card derives *What the priority rests on* from persisted facts;
+  `DiscoveryRunRead.job` does not expose the job's stage, so the progress words render only when a
+  `job.stage` is supplied; `challenges.risk_evidence_items` (W7) is a count, not a list of
+  sources.
+- *Tests.* `apps/web/tests/e2e/w8b-web-evidence.spec.ts` on its own ports
+  (`playwright.w8b.config.ts`: dev server 3600, mock backend 9299).
+
 ---
 
 ## W9: Live acceptance campaign

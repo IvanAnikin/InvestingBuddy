@@ -8,7 +8,7 @@ export const W6B_OUTAGE_THESIS = "lithium producers in Canada";
 export const W6B_RUN_ID = "77777777-0000-0000-0000-00000000006b";
 export const W6B_OUTAGE_RUN_ID = "77777777-0000-0000-0000-00000000006c";
 
-function intent(text, material, country) {
+export function intent(text, material, country) {
   return {
     schema: "discovery_intent/1",
     text,
@@ -40,7 +40,7 @@ function intent(text, material, country) {
 export const W6B_INTENT = intent(W6B_THESIS, "gallium", "Australia");
 export const W6B_OUTAGE_INTENT = intent(W6B_OUTAGE_THESIS, "lithium", "Canada");
 
-function record({ ticker, exchange, name, country, source, mode, why, web, eligibility }) {
+export function record({ ticker, exchange, name, country, source, mode, why, web, eligibility }) {
   return {
     schema: "discovery_candidate/1",
     identity: {

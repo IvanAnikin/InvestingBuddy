@@ -8,7 +8,6 @@
  */
 import type {
   CandidateEligibility,
-  DiscoveryAdmission,
   DiscoveryWebSummary,
   ConstraintResult,
   DiscoveryCandidate,
@@ -253,43 +252,8 @@ export function provenanceLine(record: DiscoveryCandidateRecord | null): string 
   return `${source} · ${identity}`;
 }
 
-// ─── Open-web W6b: how the lead was produced, and whether it was admitted ───
-
-/** How a lead was produced, in plain words. `null` for a curated or held company. */
-export function discoveryModeLabel(
-  mode: string | null | undefined,
-): { label: string; title: string } | null {
-  if (mode === "search") {
-    return {
-      label: "Found by live web search",
-      title:
-        "A web search surfaced this company and a page the platform fetched names it; its listing was then confirmed on an official source.",
-    };
-  }
-  if (mode === "model_recall") {
-    return {
-      label: "Model suggestion — verified on the exchange list",
-      title:
-        "A model suggested this company from memory (no web search). Its listing was confirmed on the exchange's own list; nothing else about it came from a search.",
-    };
-  }
-  return null;
-}
-
-/** The A1–A4 admission state as one short sentence. `null` when there is nothing to add. */
-export function admissionLabel(admission: DiscoveryAdmission | null | undefined): string | null {
-  if (!admission) return null;
-  switch (admission.state) {
-    case "admitted":
-      return "Admitted: surfaced by search, listing verified, and a fetched source ties it to the theme";
-    case "also_surfaced":
-      return "Also surfaced: listing verified, but no fetched source ties it to the theme yet";
-    case "rejected":
-      return `Not admitted: ${(admission.codes ?? []).slice(0, 2).map(humanise).join(", ") || "a requirement failed"}`;
-    default:
-      return null;
-  }
-}
+// ─── Open-web W6b: the run-level web-search banner (the per-candidate mode and
+// admission wording lives in webEvidenceView.ts) ───
 
 /**
  * The banner for a run whose live web search did not fully run. `null` when it ran in

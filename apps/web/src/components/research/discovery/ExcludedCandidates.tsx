@@ -1,7 +1,8 @@
 "use client";
 
 import type { DiscoveryDynamicStage } from "@/types/api";
-import { exclusionReason, funnelSteps, humanise, webSearchBanner } from "./v319View";
+import { exclusionReason, funnelSteps, webSearchBanner } from "./v319View";
+import { alsoSurfacedReason, surfaceMode } from "./webEvidenceView";
 
 /**
  * The discovery funnel and what was left out, with why.
@@ -45,7 +46,7 @@ export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicS
       {alsoSurfaced.length > 0 && (
         <details className="text-xs text-[color:var(--ib-ink-3)]" data-testid="discovery-also-surfaced">
           <summary className="cursor-pointer underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink-2)]">
-            Also surfaced ({alsoSurfaced.length}) — listing verified, not corroborated by a fetched source
+            Also surfaced ({alsoSurfaced.length}) — shown here, not in the shortlist
           </summary>
           <ul className="mt-2 space-y-1">
             {alsoSurfaced.map((record, i) => (
@@ -56,9 +57,8 @@ export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicS
                 <span className="font-mono">
                   ({record.identity.ticker} · {record.identity.exchange})
                 </span>{" "}
-                — {(record.v3_web?.admission?.codes ?? ["theme_evidence_missing"])
-                  .map(humanise)
-                  .join(", ")}
+                {surfaceMode(record) ? ` · ${surfaceMode(record)?.label}` : ""} —{" "}
+                {alsoSurfacedReason(record)}
               </li>
             ))}
           </ul>

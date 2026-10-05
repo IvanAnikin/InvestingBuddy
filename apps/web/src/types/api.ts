@@ -778,6 +778,48 @@ export interface DiscoveryAdmission {
   detail?: string | null;
   source_label?: string | null;
   eligibility?: string;
+  /** `web_search_results` ids that surfaced a corroborated recall lead. */
+  surfaced_by?: string[];
+}
+
+// One fetched passage that names a company (apps/api candidate_extract / discovery_stage
+// `_mention_entry`). `passage` is THIRD-PARTY text: shown only as a text node, clipped.
+export interface DiscoveryWebMention {
+  evidence_id?: string | null;
+  passage_ref?: string | null;
+  kind?: string | null;
+  method?: string | null;
+  source_class?: string | null;
+  url?: string | null;
+  domain?: string | null;
+  hosts?: string[];
+  /** Which of theme_relevance | catalysts | principal_downside this passage speaks to. */
+  dimensions?: string[];
+  theme_terms?: string[];
+  catalyst_terms?: string[];
+  risk_terms?: string[];
+  passage?: string | null;
+  injection_suspect?: boolean;
+  query_id?: string | null;
+  /** Not written by the producer today; read when present. */
+  published_at?: string | null;
+}
+
+export interface DiscoveryWebSighting {
+  query_id?: string | null;
+  result_id?: string | null;
+  fetch_attempt_id?: string | null;
+  provider?: string | null;
+  family?: string;
+  query_key?: string | null;
+  query_origin?: string | null;
+  template_version?: string | null;
+  rank?: number | null;
+  url?: string;
+  domain?: string;
+  source_class?: string | null;
+  document_version_id?: string | null;
+  published_at?: string | null;
 }
 
 export interface DiscoveryWebBlock {
@@ -787,7 +829,14 @@ export interface DiscoveryWebBlock {
   novel?: boolean;
   families?: string[];
   query_ids?: string[];
-  sightings?: { url?: string; domain?: string; source_class?: string | null; family?: string }[];
+  domains?: string[];
+  sightings?: DiscoveryWebSighting[];
+  mentions?: DiscoveryWebMention[];
+  // A curated / held / recalled company that a search ALSO surfaced.
+  corroborated_by_search?: {
+    sightings?: DiscoveryWebSighting[];
+    mentions?: DiscoveryWebMention[];
+  } | null;
 }
 
 export interface DiscoveryWebSummary {
@@ -988,6 +1037,10 @@ export interface DiscoveryRunJob {
   job_status: string;
   attempt: number;
   max_attempts: number;
+  // W8b — the stage the durable job last reported (`discovery_web_search`, …). The
+  // backend records it on the job row but does not serialise it on `DiscoveryRunRead.job`
+  // yet; the page maps it to a plain progress word when it is present.
+  stage?: string | null;
 }
 
 export interface DiscoveryRunListResponse {
@@ -1225,6 +1278,19 @@ export interface DiscoveryCouncilCandidateEntry {
   unverified_constraints?: string[];
   placement_note?: string | null;
   council_placement?: string | null;
+  // Open-web W6b — per-dimension assessments of a web-discovered candidate, each with its
+  // OWN evidence_confidence. Empty / absent for a candidate without a web block.
+  dimensions?: DiscoveryCouncilDimension[];
+}
+
+export interface DiscoveryCouncilDimension {
+  /** theme_relevance | growth_drivers | profitability_cash | business_quality | catalysts | resilience | principal_downside. */
+  dimension?: string | null;
+  /** About the BUSINESS on that dimension; empty when the pack could not speak to it. */
+  assessment?: string | null;
+  /** high | medium | low | not_established — how well-sourced the view is. */
+  evidence_confidence?: string | null;
+  citation_ids?: string[];
 }
 
 // One discovery-council agent's PERSISTED output, as stored under
