@@ -68,6 +68,9 @@ CODE_RECALL_NOT_CORROBORATED = "recall_not_corroborated"
 #: confirmed: ``eligible_unverified(identity)`` — shown, never admitted (a page's own text
 #: can never verify the listing of the company it names).
 CODE_NO_OFFICIAL_DIRECTORY = "no_official_directory"
+#: The venue HAS an official directory but it could not be read (an outage): "cannot check",
+#: which is not "not listed" and not "no directory" — the reason is kept in the code.
+CODE_DIRECTORY_UNAVAILABLE = "directory_unavailable"
 
 STATE_ADMITTED = "admitted"
 #: ``eligible_unverified(theme)``: identity verified, theme evidence missing.
@@ -123,10 +126,16 @@ def a3_host_excluded(domain: str | None) -> bool:
     return host.endswith(A3_EXCLUDED_SUFFIXES)
 
 
-def is_acceptable_source(source_class: str | None, domain: str | None) -> bool:
+def is_acceptable_source(
+    source_class: str | None, domain: str | None, hosts: Iterable[str] = ()
+) -> bool:
     """A source that may carry A3 / a THEME item: an acceptable class on a host anyone
-    cannot publish to."""
-    return source_class in A3_SOURCE_CLASSES and not a3_host_excluded(domain)
+    cannot publish to. ``hosts`` are the OTHER hosts the page is known by (the search
+    result's, the canonical claim): the class comes from the final URL, so every host the
+    page passed through is checked, not only one."""
+    return source_class in A3_SOURCE_CLASSES and not any(
+        a3_host_excluded(h) for h in (domain, *hosts)
+    )
 
 
 MODE_SEARCH = "search"
@@ -142,7 +151,9 @@ def is_a3_passage(entry: Mapping[str, Any]) -> bool:
     an acceptable source class, in a document that is not injection-suspect."""
     return bool(
         entry.get("theme_terms")
-        and is_acceptable_source(entry.get("source_class"), entry.get("domain"))
+        and is_acceptable_source(
+            entry.get("source_class"), entry.get("domain"), entry.get("hosts") or ()
+        )
         and entry.get("passage_ref")
         and not entry.get("injection_suspect")
     )
@@ -257,18 +268,20 @@ def decide(
     return AdmissionDecision(STATE_ADMITTED, rules, [], evidence_ids=evidence)
 
 
-def decide_unverifiable_venue(mentions: Sequence[Mapping[str, Any]] = ()) -> AdmissionDecision:
+def decide_unverifiable_venue(
+    mentions: Sequence[Mapping[str, Any]] = (), *, reason: str = CODE_NO_OFFICIAL_DIRECTORY
+) -> AdmissionDecision:
     """A search lead whose listing no OFFICIAL source (directory, exchange host, regulator,
     registry-verified issuer page) confirmed. Never admitted; shown in "also surfaced"."""
     evidence = a3_evidence_ids(mentions)
     rules: dict[str, dict[str, Any]] = {
         "A1": {"passed": True},
         "A2": {"passed": False, "code": CODE_IDENTITY_UNVERIFIED,
-               "reason": CODE_NO_OFFICIAL_DIRECTORY},
+               "reason": reason},
         "A3": {"passed": bool(evidence), "passages": len(evidence)},
     }
     return AdmissionDecision(
-        STATE_ALSO_SURFACED, rules, [CODE_IDENTITY_UNVERIFIED, CODE_NO_OFFICIAL_DIRECTORY],
+        STATE_ALSO_SURFACED, rules, [CODE_IDENTITY_UNVERIFIED, reason],
         evidence_ids=evidence,
         detail="eligible_unverified(identity): no official source confirms this listing",
     )
@@ -345,6 +358,7 @@ __all__ = [
     "A3_SOURCE_CLASSES",
     "ADMISSION_VERSION",
     "CODE_IDENTITY_UNVERIFIED",
+    "CODE_DIRECTORY_UNAVAILABLE",
     "CODE_NO_OFFICIAL_DIRECTORY",
     "CODE_NO_SEARCH_PROVENANCE",
     "CODE_RECALL_NOT_CORROBORATED",

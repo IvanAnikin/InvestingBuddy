@@ -249,6 +249,7 @@ class _Page:
     version_id: uuid.UUID | None
     suspect: bool
     mentions: list[tuple[ce.RawMention, str, str]] = field(default_factory=list)
+    other_hosts: tuple[str, ...] = ()
 
 
 class _Abort(Exception):
@@ -1314,7 +1315,17 @@ async def _fetch_phase(
         attempt = getattr(fetched, "attempt_id", None)
         page = _Page(
             url=fetched.canonical_url or fetched.final_url or item.url,
-            domain=host_of(item.url),
+            # The page actually READ is on the FINAL url's host (after redirects); the host
+            # the search returned and the page's own canonical claim are kept too, so an open
+            # wire or user-content host reached by redirect cannot hide behind a clean result.
+            domain=host_of(fetched.final_url or item.url),
+            other_hosts=tuple(
+                dict.fromkeys(
+                    h
+                    for h in (host_of(item.url), host_of(fetched.canonical_url))
+                    if h
+                )
+            ),
             candidate=scored.candidate,
             query_key=q.key,
             query_origin=q.origin,
@@ -1340,10 +1351,13 @@ async def _fetch_phase(
         if mentions:
             tally.pages_with_mentions += 1
         chunk_index = await _chunk_index(session, version_id) if mentions else []
-        for mention in mentions[:MAX_MENTIONS_PER_PAGE]:
+        kept = mentions[:MAX_MENTIONS_PER_PAGE]
+        # The substring scans over every chunk are CPU work proportional to the page: off the
+        # loop, like the extraction itself.
+        found = await asyncio.to_thread(lambda: [_find_chunk(chunk_index, m) for m in kept])
+        for mention, chunk_id in zip(kept, found, strict=True):
             ref = passage_ref(page.attempt_id, mention.passage)
-            evidence_id = _find_chunk(chunk_index, mention) or ref
-            page.mentions.append((mention, evidence_id, ref))
+            page.mentions.append((mention, chunk_id or ref, ref))
         pages.append(page)
     await session.flush()
 
@@ -1442,6 +1456,7 @@ def _mention_entry(
         "source_class": page.source_class,
         "url": page.url,
         "domain": page.domain,
+        "hosts": list(page.other_hosts),
         "dimensions": _dimensions(mention),
         "theme_terms": list(mention.theme_terms)[:6],
         "catalyst_terms": list(mention.catalyst_terms)[:6],

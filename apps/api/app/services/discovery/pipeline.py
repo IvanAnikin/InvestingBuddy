@@ -682,10 +682,20 @@ async def run_dynamic_stage(
             if not outcome.verified and outcome.rejection_reason == REJECT_NO_LISTING_EVIDENCE:
                 # No directory covers the venue and no OFFICIAL page confirmed the listing:
                 # eligible_unverified(identity). Shown, never admitted, never rejected.
+                # The reason is kept: a venue with a directory we could not READ is an
+                # outage ("cannot check"), not "no directory".
+                from app.services.discovery.directories import DIRECTORY_FOR_VENUE
+
+                has_directory = (outcome.exchange in DIRECTORY_FOR_VENUE) or (
+                    outcome.exchange == "LSE"
+                )
                 _attach_admission(
                     outcome.lead,
                     adm.decide_unverifiable_venue(
-                        _a3_mentions(outcome.lead, outcome.name)).to_dict(),
+                        _a3_mentions(outcome.lead, outcome.name),
+                        reason=(adm.CODE_DIRECTORY_UNAVAILABLE if has_directory
+                                else adm.CODE_NO_OFFICIAL_DIRECTORY),
+                    ).to_dict(),
                 )
                 unverifiable.append(outcome)
                 continue

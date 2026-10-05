@@ -116,10 +116,15 @@ class Net:
     """The ``open_web_fetch`` stand-in. Writes a real attempt row per fetch."""
 
     def __init__(
-        self, pages: dict[str, bytes] | None = None, not_retrievable: dict[str, str] | None = None
+        self,
+        pages: dict[str, bytes] | None = None,
+        not_retrievable: dict[str, str] | None = None,
+        redirects: dict[str, str] | None = None,
     ) -> None:
         self.pages = pages or {}
         self.not_retrievable = not_retrievable or {}
+        #: result url -> the FINAL url the fetch ends on (a redirect chain's end).
+        self.redirects = redirects or {}
         self.requested: list[str] = []
         self.discovery_run_ids: list[Any] = []
 
@@ -179,7 +184,7 @@ class Net:
             status=STATUS_FETCHED,
             origin=origin,
             requested_url=url,
-            final_url=url,
+            final_url=self.redirects.get(url, url),
             canonical_url=url,
             content=body,
             content_class="html",

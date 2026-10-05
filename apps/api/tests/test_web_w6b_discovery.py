@@ -1759,3 +1759,107 @@ class TestResumeSpendsNothingTwice:
         assert stage.web["state"] == "web_stage_failed"
         assert (await session.execute(text("select 1"))).scalar_one() == 1
         assert await _count(session, WebSearchQuery) == 0, "the savepoint released its rows"
+
+
+class TestVerificationFixes:
+    """Verification round: redirect hosts, directory outage reason, off-loop chunk scan."""
+
+    @pytest.mark.parametrize(
+        "final",
+        [
+            "https://www.einpresswire.com/article/9/alpha",
+            "https://someone.medium.com/alpha-gallium",
+            "https://cs.example.edu/~student/alpha",
+        ],
+    )
+    async def test_an_excluded_host_reached_by_redirect_cannot_carry_a3(
+        self, h: H, final: str
+    ) -> None:
+        start = "https://evil.example/alpha-gallium"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(start)]})
+        h.net.pages[start] = GALLIUM_ARTICLE
+        h.net.redirects[start] = final
+        stage = await h.stage()
+        assert all(r.identity.ticker != "ALG" for r in stage.candidates)
+        alg = next(r for r in stage.also_surfaced if r.identity.ticker == "ALG")
+        assert alg.web["admission"]["codes"] == ["theme_evidence_missing"]
+
+    async def test_the_final_host_is_the_recorded_domain_and_the_result_host_is_kept(
+        self, h: H
+    ) -> None:
+        start = "https://evil.example/alpha-gallium"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(start)]})
+        h.net.pages[start] = GALLIUM_ARTICLE
+        h.net.redirects[start] = "https://www.mining.com/web/alpha"
+        stage = await h.stage()
+        alg = next(r for r in _all(stage) if r.identity.ticker == "ALG")
+        mention = alg.web["mentions"][0]
+        assert mention["domain"] == "mining.com" and "evil.example" in mention["hosts"]
+
+    def test_either_host_excludes_a_passage(self) -> None:
+        clean = {
+            "evidence_id": "e1",
+            "passage_ref": "wp:a:1",
+            "source_class": "trade_publication",
+            "domain": "mining.com",
+            "theme_terms": ["gallium"],
+            "injection_suspect": False,
+        }
+        assert adm.is_a3_passage(clean)
+        assert not adm.is_a3_passage({**clean, "hosts": ["einpresswire.com"]})
+        assert not adm.is_a3_passage({**clean, "domain": "einpresswire.com"})
+
+    async def test_a_directory_outage_keeps_its_reason(self, h: H) -> None:
+        async def down(url: str, **kw: Any) -> Any:
+            from app.services.sources.document_fetcher import DocumentFetchResult
+
+            return DocumentFetchResult(requested_url=url, error="down", failure_code="timeout")
+
+        h.serve_obscure()
+        stage = await h.stage(fetcher=down)
+        assert all(r.identity.ticker != "ALG" for r in stage.candidates)
+        alg = next(r for r in stage.also_surfaced if r.identity.ticker == "ALG")
+        assert alg.web["admission"]["codes"] == ["identity_unverified", "directory_unavailable"]
+        assert alg.web["admission"]["rules"]["A2"]["reason"] == "directory_unavailable"
+
+    async def test_a_venue_with_no_directory_keeps_its_own_reason(self, h: H) -> None:
+        url = "https://www.fakeco.se/investors"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(url)]})
+        h.net.pages[url] = _fake_company_page()
+        stage = await h.stage()
+        fake = next(r for r in stage.also_surfaced if r.identity.ticker == "FAKE")
+        assert fake.web["admission"]["codes"] == ["identity_unverified", "no_official_directory"]
+
+    async def test_the_chunk_scan_runs_off_the_loop(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+        import time
+
+        from app.services.corpus.artifacts.backends.memory import InMemoryArtifactStore
+        from app.services.corpus.search.backends.memory import InMemorySearchBackend
+
+        real = ds._find_chunk
+
+        def slow(index: Any, mention: Any) -> Any:
+            time.sleep(0.4)
+            return real(index, mention)
+
+        monkeypatch.setattr(ds, "_find_chunk", slow)
+        h.serve_obscure()
+        ticks: list[float] = []
+
+        async def ticker() -> None:
+            while True:
+                ticks.append(time.perf_counter())
+                await asyncio.sleep(0.02)
+
+        task = asyncio.create_task(ticker())
+        await h.stage(
+            config=cfg(v3_web_corpus_ingest_enabled=True),
+            store=InMemoryArtifactStore(),
+            search_backend=InMemorySearchBackend(),
+        )
+        task.cancel()
+        gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
+        assert gaps and max(gaps) < 0.3, f"the loop stalled for {max(gaps):.2f}s"

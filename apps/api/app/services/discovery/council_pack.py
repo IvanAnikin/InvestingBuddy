@@ -170,7 +170,7 @@ def build_candidate_web_pack(
             if dim not in DIMENSIONS:
                 continue
             if dim == DIM_THEME and not is_acceptable_source(
-                entry.get("source_class"), entry.get("domain")
+                entry.get("source_class"), entry.get("domain"), entry.get("hosts") or ()
             ):
                 continue
             terms = (
@@ -240,7 +240,7 @@ def build_candidate_web_pack(
                     or []
                 )[:4],
                 "acceptable_source": is_acceptable_source(
-                    e.get("source_class"), e.get("domain")
+                    e.get("source_class"), e.get("domain"), e.get("hosts") or ()
                 ),
                 "excerpt": _excerpt(e.get("passage")),
             }
