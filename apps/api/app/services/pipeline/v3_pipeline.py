@@ -575,27 +575,24 @@ async def _run(
     # official documents ONLY — a third-party page can never feed the stage detector.
     # Gated, isolated (it never raises) and inert with the flag off: nothing is read.
     web_units = None
+    web_ctx = None
     if getattr(cfg, "v3_company_web_research_enabled", False):
         from app.services.web_research.stage import WebRunContext, ensure_web_context
 
-        web = await ensure_web_context(
-            session,
-            company,
-            WebRunContext(
-                mode=resolved_mode.value,
-                research_job_id=research_job_id,
-                agent_run_id=agent_run_id,
-                industry=classification.industry or classification.sector,
-                themes=[m.commodity.name for m in profile.commodities],
-                development_stage=bool(stage.is_development_stage),
-                search_backend=search_backend,
-                # `private_tokens` (rule G1: portfolio holdings, uploads) is NOT populated
-                # here: public company research carries none. It MUST be wired from the
-                # portfolio/upload context before this stage is used for personalised
-                # (V2) research, or the G1 query check is vacuous.
-            ),
-            cfg=cfg,
+        web_ctx = WebRunContext(
+            mode=resolved_mode.value,
+            research_job_id=research_job_id,
+            agent_run_id=agent_run_id,
+            industry=classification.industry or classification.sector,
+            themes=[m.commodity.name for m in profile.commodities],
+            development_stage=bool(stage.is_development_stage),
+            search_backend=search_backend,
+            # `private_tokens` (rule G1: portfolio holdings, uploads) is NOT populated
+            # here: public company research carries none. It MUST be wired from the
+            # portfolio/upload context before this stage is used for personalised
+            # (V2) research, or the G1 query check is vacuous.
         )
+        web = await ensure_web_context(session, company, web_ctx, cfg=cfg)
         if web.ran:
             outcome.web_context = web.summary
             web_units = web.units
@@ -780,6 +777,18 @@ async def _run(
     subject_name = clean_company_name(getattr(company, "name", None))
     subject_industry = classification.industry or classification.sector
 
+    # Open-web W7 — the web rung of the Director loop and the Red Team's search wave.
+    # ``None`` unless V3_WEB_FOLLOWUP_ENABLED AND the company web path can search and
+    # fetch; with it ``None`` every call below passes nothing new (byte-identical).
+    web_followup = None
+    if web_ctx is not None and getattr(cfg, "v3_web_followup_enabled", False):
+        from app.services.web_research.followup import WebFollowup
+
+        # No shared ceiling: the stage plans up to the mode's whole `max_web_searches`, so
+        # sharing it would leave the follow-up nothing. It has its own bounds (the
+        # "followup" profile per round, the per-mode round cap, the operator and daily caps).
+        web_followup = WebFollowup.create(session, company, web_ctx, cfg=cfg)
+
     class _RoleRoutedInvestigator:
         """One session per role, because a tool policy is per role.
 
@@ -889,6 +898,9 @@ async def _run(
                 primary_commodity=(
                     profile.commodities[0].commodity.name if profile.commodities else None
                 ),
+                candidate_fetcher=(
+                    web_followup.fetch_candidates if web_followup is not None else None
+                ),
             )
             result = await worker.investigate(
                 role_id=role_id,
@@ -935,6 +947,7 @@ async def _run(
         investigator=investigator,
         limits=limits,
         completion_rules=selection.completion_rules,
+        web_followup=web_followup,
     )
     outcome.loop = loop_result.to_dict()
     outcome.loop["fabricated_citations_discarded"] = len(investigator.fabricated)
@@ -955,7 +968,25 @@ async def _run(
 
     # 7. Red Team, one bounded round.
     citable = {eid for f in council.findings for eid in f.evidence_ids}
+    risk_evidence: list[Any] = []
+    if web_followup is not None:
+        # Open-web W7 (spec §7.4): the RISK family always runs in the challenge wave,
+        # whatever the thesis says (within the Director's wall time); what it (and the
+        # stage's wave 3) stored reaches the Red Team as labelled evidence.
+        #
+        # The RISK ids are deliberately NOT added to `citable`: the responder never sees
+        # that text, and the challenge outcome is decided by whether the response cites an
+        # id in `citable` — so citing the very page that raised the challenge (or any
+        # aggregator RISK page) would resolve it. Adverse evidence is evidence AGAINST a
+        # finding, never an answer to the challenge it raised.
+        await web_followup.challenge_wave(
+            wall_seconds=limits.max_wall_seconds - loop_result.elapsed_seconds
+        )
+        risk_evidence = await web_followup.risk_evidence()
     red = LLMRedTeam(client=model_routing.client_for(SLOT_RED_TEAM))
+    if web_followup is not None:
+        red.risk_evidence = risk_evidence
+        red.issuer_key = getattr(company, "id", None)
     responder = LLMResponder(
         client=model_routing.client_for(SLOT_RED_TEAM), citable_ids=frozenset(citable)
     )
@@ -964,6 +995,27 @@ async def _run(
     )
     outcome.challenges = challenge_result.to_dict()
     outcome.challenges["discarded_unknown_targets"] = len(red.discarded_unknown_targets)
+    if web_followup is not None:
+        outcome.challenges["risk_evidence_items"] = len(risk_evidence)
+        outcome.challenges["discarded_low_trust_basis"] = len(red.discarded_low_trust_basis)
+        outcome.challenges["ungrounded_challenges"] = red.ungrounded_challenges
+        followup_record = web_followup.to_dict()
+        # The run record: rounds, queries and WHY the follow-up stopped (additive keys).
+        outcome.web_context = {
+            **(outcome.web_context or {}),
+            "followup_rounds": followup_record["followup_rounds"],
+            "followup": {
+                "queries": followup_record["queries"],
+                "stopped_by": followup_record["stopped_by"],
+                "rounds": followup_record["rounds"],
+                "challenge": followup_record["challenge"],
+                "template_version": followup_record["template_version"],
+                "gaps_handled": followup_record["gaps_handled"],
+            },
+        }
+        from app.services.web_research.followup import combine_units
+
+        web_units = combine_units(web_units, web_followup.units)
 
     # 7b. Reconciliation — BEFORE the Chair and the report are assembled, so neither
     #     calls a field missing that a finding states, nor shows superseded guidance as
