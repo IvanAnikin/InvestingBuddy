@@ -630,6 +630,8 @@ async def run_investigation(
                 round_index=round_index,
                 limits=limits,
                 elapsed=clock() - started,
+                tasks_left=limits.max_tasks - tasks_run,
+                tool_calls_left=limits.max_tool_calls - tool_calls,
             )
 
         # Gap review. Only a CLOSABLE gap becomes a follow-up: an unclosable one would
@@ -722,7 +724,14 @@ async def run_investigation(
             improvement_stopped_by=improvement_stopped_by,
         )
         web_followup.stopped_by = stop_reason
-        web_summary = web_followup.to_dict()
+        web_summary = {
+            **web_followup.to_dict(),
+            # How much of what the web rounds targeted the findings actually closed: the
+            # honest denominator behind "answered".
+            "targeted_absence_gaps": len(web_state.targeted_absence),
+            "targeted_absence_closed": web_state.absence_closed,
+            "web_limit_hit": web_state.limit_hit,
+        }
 
     # Whatever remains open and unclosable is ACCEPTED — the run finished with it open
     # and says so, which is the honest outcome for a gap no source can close.
@@ -1359,10 +1368,14 @@ class _WebLoopState:
     """The loop's own bookkeeping for the web rung (open-web W7)."""
 
     rounds_run: int = 0
-    #: Gaps the web rounds targeted whose own text names a research field — the ones
-    #: ``answered`` is judged on. A gap track B cannot prove closed never makes a run
-    #: "answered".
+    #: Gaps the web rounds targeted whose own text names a research field. A gap track B
+    #: cannot prove closed never makes a run "answered".
     targeted_provable: set[str] = field(default_factory=set)
+    #: EVERY absence gap the web rounds targeted. ``answered`` requires all of them closed
+    #: by a finding: a targeted gap the findings cannot close keeps the run from saying so.
+    targeted_absence: set[str] = field(default_factory=set)
+    #: Of ``targeted_absence``, how many the findings close (set when the stop is settled).
+    absence_closed: int = 0
     last_saturated: bool = False
     #: Set when web-answerable gaps were left unspent: ``web_budget``, ``max_wall_seconds``
     #: or ``max_rounds`` (the last Director round is never a web round).
@@ -1388,6 +1401,8 @@ async def _web_rung(
     round_index: int,
     limits: ModeLimits,
     elapsed: float,
+    tasks_left: int = 1,
+    tool_calls_left: int = 1,
 ) -> set[str]:
     """Run one web round for the open gaps a web search could answer; never raises.
 
@@ -1408,17 +1423,30 @@ async def _web_rung(
         if round_index >= limits.max_rounds - 1:
             state.limit_hit = state.limit_hit or STOPPED_MAX_ROUNDS
             return set()
+        # A web round is paid for to be READ: with no task or tool call left for a
+        # specialist to read it, it is not started (and the unspent gaps are said).
+        if tasks_left <= 0:
+            state.limit_hit = state.limit_hit or STOPPED_MAX_TASKS
+            return set()
+        if tool_calls_left <= 0:
+            state.limit_hit = state.limit_hit or STOPPED_MAX_TOOL_CALLS
+            return set()
         if elapsed >= limits.max_wall_seconds:
             state.limit_hit = STOPPED_MAX_WALL_SECONDS
             return set()
         if web_followup.rounds_exhausted() or await web_followup.budget_refusal():
             state.limit_hit = STOPPED_WEB_BUDGET
             return set()
-        record = await web_followup.run_round(this_round, round_index=round_index)
+        record = await web_followup.run_round(
+            this_round,
+            round_index=round_index,
+            wall_seconds=max(0.0, limits.max_wall_seconds - elapsed),
+        )
     except Exception:  # noqa: BLE001 - the web rung must not end the run
         return set()
     state.rounds_run += 1
     state.targeted_provable.update(record.provable_gap_ids)
+    state.targeted_absence.update(getattr(record, "absence_gap_ids", ()) or ())
     if record.budget_stop and not record.executed:
         # The shared search ceiling refused every query: the gaps were not asked.
         state.limit_hit = STOPPED_WEB_BUDGET
@@ -1455,12 +1483,13 @@ async def _settle_web_stop(
         if completed:
             return STOPPED_COMPLETE, improvement_stopped_by or state.limit_hit
         return state.limit_hit, improvement_stopped_by
-    if state.targeted_provable:
+    if state.targeted_absence:
         try:
-            closed = await web_followup.answered(run, sorted(state.targeted_provable))
+            closed = set(await web_followup.answered(run, sorted(state.targeted_absence)))
         except Exception:  # noqa: BLE001 - doubt means "not answered"
             closed = set()
-        if state.targeted_provable <= set(closed):
+        state.absence_closed = len(closed & state.targeted_absence)
+        if state.targeted_provable and state.targeted_absence <= closed:
             return STOPPED_ANSWERED, improvement_stopped_by
     if stop_reason == STOPPED_NOTHING_LEFT and state.rounds_run and state.last_saturated:
         return STOPPED_SATURATION, improvement_stopped_by

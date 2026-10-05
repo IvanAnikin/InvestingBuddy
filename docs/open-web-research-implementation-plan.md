@@ -742,8 +742,9 @@ migration, no API. Decisions, each deliberate:
   web_rung=)`) and the specialist is handed the platform-built query (`QuestionContext.
   followup_queries`). A gap is followed up once (a contradiction exactly once). The last Director
   round is never a web round.
-- **Stop reasons** (new, closed vocabulary): `answered` (every targeted gap whose own text names a
-  research field is closed by a finding, by track B's pure `reconcile`), `saturation` (the last web
+- **Stop reasons** (new, closed vocabulary): `answered` (EVERY absence gap the web rounds targeted is
+  closed by a finding, by track B's pure `reconcile`; a contradiction is resolved by the disagreement
+  machinery and never counts; `web_followup.targeted_absence_gaps/closed` give the denominator), `saturation` (the last web
   round stored nothing relevant and nothing else is left), `web_budget` (a LIMIT: web rounds or
   budget spent with web-answerable gaps unspent). Round, task and wall limits bind as before; a
   completed run that left web improvement undone says which limit (`improvement_stopped_by`).
@@ -756,16 +757,26 @@ migration, no API. Decisions, each deliberate:
   finding closes a gap only partially (track B's rule). This is a deviation from the brief's "margin
   gap closed" acceptance: it is demonstrated with production capacity, and margin demonstrates the
   honest outcome.
-- **Own budget (W7-D2).** The stage plans up to the mode's whole `max_web_searches`, so the rung
-  does not share that ceiling: per round the `followup` profile (6 queries / 12 fetches / 3 PDFs),
-  web rounds per mode (1/2/3/4, further bounded by the Director's `max_rounds`; QUICK has one round
-  so no web round), the operator `V3_RUN_MAX_WEB_SEARCHES` and the daily cap. Worst case extra per
-  STANDARD run: 2 x 6 + 3 searches.
+- **Own budget inside a run-level ceiling (W7-D2, review round 1).** The stage plans up to the mode's
+  whole `max_web_searches`, so the rung does not share the Investigator's `ExternalSearchBudget`. Per
+  round it spends the `followup` profile (6 queries / 12 fetches / 3 PDFs), clamped on EVERY use to what
+  the run may still spend: the mode's stage profile plus the follow-up allowance (web rounds x profile +
+  3 challenge queries), with `V3_RUN_MAX_WEB_SEARCHES` capping the SUM when set. Usage is read from the
+  job's provenance rows (searches; fetches and bytes when a job id scopes them, else the instance's own),
+  so a fresh instance (an escalation round is a new job and a new ceiling, by design) cannot reset a
+  total. A round's wall limit is clamped to the Director's wall time left; the challenge wave is not
+  started with none left. Web rounds per mode: 1/2/3/4 (QUICK has one Director round, so no web round).
 - **Challenge wave (spec 7.4).** Neutral RISK queries the stage did not run (permit problem, project
   cancellation, financing risk, cost overrun, production issue, ...), one slot always a counter-thesis
   query (technology disadvantages, industry oversupply, commodity substitute). The Red Team receives
-  `risk_evidence` (class, origin display, document date, independence, a capped fenced excerpt) and the
-  responder may cite those ids. `assess_challenge_basis`: a single low-trust source (aggregator, unknown,
+  `risk_evidence` (class, origin display, document date, independence, a capped excerpt inside a
+  nonce-fenced block; injection-suspect pages and other companies' documents are excluded). RISK ids are
+  NEVER citable by the responder, and evidence a challenge rests on is stripped from a response before
+  the platform decides the outcome: citing the adverse page cannot resolve the challenge it raised. A
+  challenge that omits `risk_evidence_ids`, cites an unknown id, or quotes an excerpt without citing it
+  is labelled `[ungrounded web claim]` and counted; what a challenge rests on is appended to its stored
+  text (`[rests on: ...]`; the challenge row has no column and no migration was added).
+  `assess_challenge_basis` (the verified issuer never makes a page a "single reliable source"): a single low-trust source (aggregator, unknown,
   wire-hosted, unresolved) cannot carry a challenge, which is discarded and counted; a single reliable
   source carries it labelled `[single source]`; two independent origins carry it unlabelled.
 - **Candidate step.** With the flag on, the candidates a `search_web` call returns are fetched and
@@ -773,8 +784,12 @@ migration, no API. Decisions, each deliberate:
   question) and read back as `ev:c:` chunks filtered to those URLs. A candidate has no claim, so
   `fetch_public_source` (verify a claim) is not used for them.
 - **Escalation.** Web chunks already count through `indexed_chunks` / `searchable_documents` (company
-  scoped, current, indexed); verified `ev:x:` leads are a new decisive dimension (`verified_leads`).
-  Cost-NULL-blocks-escalation is untouched.
+  scoped, current, indexed). Verified `ev:x:` leads are a new OPTIONAL decisive dimension
+  (`verified_leads`): measured only with `V3_WEB_FOLLOWUP_ENABLED` on, compared only when BOTH snapshots
+  measured it (a baseline without the key is "not measured", never zero), omitted from every payload with
+  the flag off (snapshot and delta key sets are exactly the old ones), and counted only for a lead whose
+  stored document is current and classified above `aggregator`/`unknown_web`. Company-wide like the other
+  dimensions. Cost-NULL-blocks-escalation is untouched.
 - **Record.** `web_context.followup_rounds`, `web_context.followup` (queries, rounds, challenge,
   `stopped_by`), `outcome.loop.web_followup`, `outcome.challenges.risk_evidence_items`; follow-up spend
   is added to the `web_stage` consumption units.

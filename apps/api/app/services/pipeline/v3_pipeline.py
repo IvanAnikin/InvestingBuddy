@@ -959,11 +959,18 @@ async def _run(
     risk_evidence: list[Any] = []
     if web_followup is not None:
         # Open-web W7 (spec §7.4): the RISK family always runs in the challenge wave,
-        # whatever the thesis says; what it (and the stage's wave 3) stored reaches the
-        # Red Team as labelled evidence, and the responder may cite it.
-        await web_followup.challenge_wave()
+        # whatever the thesis says (within the Director's wall time); what it (and the
+        # stage's wave 3) stored reaches the Red Team as labelled evidence.
+        #
+        # The RISK ids are deliberately NOT added to `citable`: the responder never sees
+        # that text, and the challenge outcome is decided by whether the response cites an
+        # id in `citable` — so citing the very page that raised the challenge (or any
+        # aggregator RISK page) would resolve it. Adverse evidence is evidence AGAINST a
+        # finding, never an answer to the challenge it raised.
+        await web_followup.challenge_wave(
+            wall_seconds=limits.max_wall_seconds - loop_result.elapsed_seconds
+        )
         risk_evidence = await web_followup.risk_evidence()
-        citable |= {item.evidence_id for item in risk_evidence}
     red = LLMRedTeam(client=model_routing.client_for(SLOT_RED_TEAM))
     if web_followup is not None:
         red.risk_evidence = risk_evidence
@@ -979,6 +986,7 @@ async def _run(
     if web_followup is not None:
         outcome.challenges["risk_evidence_items"] = len(risk_evidence)
         outcome.challenges["discarded_low_trust_basis"] = len(red.discarded_low_trust_basis)
+        outcome.challenges["ungrounded_challenges"] = red.ungrounded_challenges
         followup_record = web_followup.to_dict()
         # The run record: rounds, queries and WHY the follow-up stopped (additive keys).
         outcome.web_context = {
@@ -993,7 +1001,9 @@ async def _run(
                 "gaps_handled": followup_record["gaps_handled"],
             },
         }
-        web_units = web_followup.units if web_units is None else web_units + web_followup.units
+        from app.services.web_research.followup import combine_units
+
+        web_units = combine_units(web_units, web_followup.units)
 
     # 7b. Reconciliation — BEFORE the Chair and the report are assembled, so neither
     #     calls a field missing that a finding states, nor shows superseded guidance as

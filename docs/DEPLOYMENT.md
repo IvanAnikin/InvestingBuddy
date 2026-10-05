@@ -2125,9 +2125,11 @@ replaces the allowlist for its own fetches only. New dependency: `charset-normal
 `services/pipeline/v3_pipeline.py` -> `services/web_research/followup.WebFollowup`). No migration.
 Needs `V3_COMPANY_WEB_RESEARCH_ENABLED`, `V3_WEB_SEARCH_ENABLED` (+ provider) and
 `V3_WEB_FETCH_ENABLED`; without them nothing is built. Cost: each web round is at most 6 searches /
-12 fetches / 3 PDFs; STANDARD allows 2 web rounds plus one challenge wave of 3 searches (the follow-up
-does NOT share the mode's `max_web_searches` ceiling, which the W5 stage already plans in full); it
-obeys `V3_RUN_MAX_WEB_SEARCHES` and the daily cap. QUICK (one Director round) runs no web round.
+12 fetches / 3 PDFs; STANDARD allows 2 web rounds plus one challenge wave of 3 searches. The follow-up
+does not draw on the Investigator's `max_web_searches` counter (the W5 stage already plans it in full),
+but a run-level ceiling (stage profile + follow-up allowance, read from the job's search/fetch rows)
+bounds the total, `V3_RUN_MAX_WEB_SEARCHES` caps the SUM of stage and follow-up when set, and the daily
+cap applies. A web round is clamped to the Director's remaining wall time. QUICK (one Director round) runs no web round.
 Rollback: set the flag to `false` (the Director, loop and Red Team input are then byte-identical).
 
 ## Open-web W5 — company research uses live web search

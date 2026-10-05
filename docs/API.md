@@ -3326,8 +3326,9 @@ No new route. With `V3_WEB_FOLLOWUP_ENABLED` on (and the W5 stage), additive key
 `v3_research.loop.web_followup`; `v3_research.challenges.risk_evidence_items` and
 `discarded_low_trust_basis`; and `…evidence_quality_and_gaps.web_research.followup_rounds` /
 `followup_stopped_by`. `loop.stopped_by` can now also be `answered`, `saturation` (completion
-states) or `web_budget` (a limit). `research-decisions` evidence deltas gain
-`verified_leads_added` (decisive).
+states) or `web_budget` (a limit). `challenges` also carries `ungrounded_challenges`. The
+`research-decisions` evidence-delta shape is unchanged (the optional `verified_leads` dimension lives
+only in the stored snapshot/delta JSON, and only with the flag on).
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 

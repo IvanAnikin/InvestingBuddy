@@ -68,10 +68,19 @@ class EvidenceSnapshot:
     #: ``searchable_documents`` (company-scoped, current, indexed); a verified lead whose
     #: document was not stored (ingestion off, refused) is acquisition too, and is counted
     #: here so a round that only added ``ev:x:`` evidence is not ``improved: false``.
-    verified_leads: int = 0
+    #:
+    #: ``None`` = NOT MEASURED (the follow-up flag was off when the snapshot was taken, or
+    #: the snapshot predates the dimension). A missing baseline is not a baseline of
+    #: zero — the same substitution that produced ``closable_gaps_closed: -14`` — so a
+    #: delta compares this dimension only when BOTH snapshots measured it, and a snapshot
+    #: that did not measure it serialises without the key (flag-off payloads unchanged).
+    verified_leads: int | None = None
 
     def to_dict(self) -> dict[str, int]:
-        return asdict(self)
+        out = asdict(self)
+        if out.get("verified_leads") is None:
+            out.pop("verified_leads", None)
+        return out
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any] | None) -> "EvidenceSnapshot":
@@ -99,9 +108,11 @@ class EvidenceSnapshot:
                     "open_closable_gaps",
                     "active_facts",
                     "verified_findings",
-                    "verified_leads",
                 )
-            }
+            },
+            verified_leads=(
+                int(raw["verified_leads"]) if raw.get("verified_leads") is not None else None
+            ),
         )
 
     @classmethod
@@ -123,16 +134,30 @@ class EvidenceSnapshot:
 
 
 async def snapshot_evidence(
-    session: AsyncSession, company_id: uuid.UUID
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    *,
+    include_verified_leads: bool | None = None,
 ) -> EvidenceSnapshot:
-    """Measure this company's evidence right now."""
+    """Measure this company's evidence right now.
+
+    ``include_verified_leads`` (open-web W7) measures the ``ev:x:`` dimension. ``None``
+    follows ``V3_WEB_FOLLOWUP_ENABLED``: with the flag off the snapshot, its payload and
+    every delta are exactly what they were.
+    """
+    if include_verified_leads is None:
+        from app.core.config import settings
+
+        include_verified_leads = bool(getattr(settings, "v3_web_followup_enabled", False))
     return EvidenceSnapshot(
         indexed_chunks=await _indexed_chunks(session, company_id),
         searchable_documents=await _searchable_documents(session, company_id),
         open_closable_gaps=await _open_closable_gaps(session, company_id),
         active_facts=await _active_facts(session, company_id),
         verified_findings=await _findings(session, company_id),
-        verified_leads=await _verified_leads(session, company_id),
+        verified_leads=(
+            await _verified_leads(session, company_id) if include_verified_leads else None
+        ),
     )
 
 
@@ -266,13 +291,32 @@ async def _active_facts(session: AsyncSession, company_id: uuid.UUID) -> int:
 
 
 async def _verified_leads(session: AsyncSession, company_id: uuid.UUID) -> int:
-    """Leads the platform verified against bytes it fetched itself (``ev:x:`` ids)."""
-    from app.models.research_lead import ResearchLeadRecord
+    """Leads the platform verified against bytes it fetched AND stored (``ev:x:`` ids).
 
-    stmt = select(func.count(ResearchLeadRecord.id)).where(
-        ResearchLeadRecord.company_id == company_id,
-        ResearchLeadRecord.status == "verified",
-        ResearchLeadRecord.promoted_evidence_id.is_not(None),
+    Only a lead whose document reached the corpus as a stored, CLASSIFIED version counts:
+    a claim "verified" against a host a page steered the model to (an unclassified or
+    aggregator page) is not acquisition, and a lead with no stored document is the thin
+    kind this dimension must not let buy another paid round. Company-wide like every other
+    dimension here; the delta is the difference between two snapshots of the same company.
+    """
+    from app.models.research_document import ResearchDocumentVersion
+    from app.models.research_lead import ResearchLeadRecord
+    from app.services.web_research.trust import WEAK_CLASSES
+
+    stmt = (
+        select(func.count(ResearchLeadRecord.id))
+        .join(
+            ResearchDocumentVersion,
+            ResearchDocumentVersion.id == ResearchLeadRecord.research_document_version_id,
+        )
+        .where(
+            ResearchLeadRecord.company_id == company_id,
+            ResearchLeadRecord.status == "verified",
+            ResearchLeadRecord.promoted_evidence_id.is_not(None),
+            ResearchDocumentVersion.is_current.is_(True),
+            ResearchDocumentVersion.source_class.is_not(None),
+            ResearchDocumentVersion.source_class.not_in(sorted(WEAK_CLASSES)),
+        )
     )
     return int((await session.execute(stmt)).scalar_one() or 0)
 
@@ -300,8 +344,10 @@ DECISIVE_DIMENSIONS: tuple[str, ...] = (
     "searchable_documents_added",
     "closable_gaps_closed",
     "facts_added",
-    "verified_leads_added",
 )
+#: Decisive ONLY when both snapshots measured them (open-web W7). Kept apart from
+#: ``DECISIVE_DIMENSIONS`` so a delta with the flag off has exactly the keys it had.
+OPTIONAL_DECISIVE_DIMENSIONS: tuple[str, ...] = ("verified_leads_added",)
 
 
 def measure_evidence_delta(
@@ -337,7 +383,8 @@ def measure_evidence_delta(
     gaps_opened = max(0, -gap_movement)
     facts = after.active_facts - before.active_facts
     findings = after.verified_findings - before.verified_findings
-    leads = after.verified_leads - before.verified_leads
+    measured_leads = before.verified_leads is not None and after.verified_leads is not None
+    leads = (after.verified_leads or 0) - (before.verified_leads or 0) if measured_leads else 0
 
     delta: dict[str, Any] = {
         "indexed_chunks_added": chunks,
@@ -346,7 +393,6 @@ def measure_evidence_delta(
         #: Newly discovered gaps. Reported, never counted against improvement.
         "closable_gaps_opened": gaps_opened,
         "facts_added": facts,
-        "verified_leads_added": leads,
         # Secondary. Present for the reader; absent from DECISIVE_DIMENSIONS.
         "verified_findings_added": findings,
         # This delta rests on a real before-snapshot. The controller writes
@@ -364,7 +410,7 @@ def measure_evidence_delta(
         reasons.append(f"{gaps_closed} closable research gap(s) closed")
     if facts > 0:
         reasons.append(f"{facts} new active, scoped fact(s)")
-    if leads > 0:
+    if measured_leads and leads > 0:
         reasons.append(f"{leads} new verified external source(s) (ev:x:)")
     if gaps_opened > 0:
         reasons.append(
@@ -372,7 +418,11 @@ def measure_evidence_delta(
             "result of having read something new, and not counted against improvement"
         )
 
-    improved = any(delta[d] > 0 for d in DECISIVE_DIMENSIONS)
+    if measured_leads:
+        delta["verified_leads_added"] = max(0, leads)
+    improved = any(delta[d] > 0 for d in DECISIVE_DIMENSIONS) or (
+        measured_leads and leads > 0
+    )
     if not improved:
         if findings > 0:
             # Worth saying out loud: the round produced model output and acquired
@@ -409,6 +459,7 @@ def unmeasurable_delta(reason: str) -> dict[str, Any]:
 
 __all__ = [
     "DECISIVE_DIMENSIONS",
+    "OPTIONAL_DECISIVE_DIMENSIONS",
     "EvidenceSnapshot",
     "measure_evidence_delta",
     "snapshot_evidence",

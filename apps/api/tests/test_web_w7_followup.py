@@ -761,6 +761,8 @@ class ScriptedInvestigator:
     answers_question: bool = True
     #: Open a (fresh) gap in EVERY round instead of only round 0.
     gap_every_round: bool = False
+    #: More gaps opened in round 0 on the same question.
+    extra_gaps: tuple[str, ...] = ()
     contexts: list[dict[str, Any]] = field(default_factory=list)
     rounds: list[int] = field(default_factory=list)
 
@@ -777,6 +779,11 @@ class ScriptedInvestigator:
                 gap_type=self.gap_type,
                 description=f"{self.gap_text}" + (f" (round {round_index})" if round_index else ""),
                 question_key=questions[0].key))
+        if round_index == 0:
+            for text in self.extra_gaps:
+                outcome.gaps.append(lp.GapDraft(
+                    gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE, description=text,
+                    question_key=questions[0].key))
         if round_index == 0 and self.answers_question:
             outcome.answered_question_keys = (questions[0].key,)
         if self.answer_in_round == round_index:
@@ -798,6 +805,8 @@ class FakeWebRung:
     handled: set[str] = field(default_factory=set)
     stopped_by: str | None = None
     calls: list[int] = field(default_factory=list)
+    walls: list[float | None] = field(default_factory=list)
+    provable: set[str] = field(default_factory=set)
     max_rounds: int = 99
 
     def select_gaps(self, gaps, *, question_texts=None, blocking_keys=()):  # noqa: ANN001, ANN201
@@ -811,12 +820,15 @@ class FakeWebRung:
     async def budget_refusal(self) -> str | None:
         return self.refusal
 
-    async def run_round(self, gaps, *, round_index):  # noqa: ANN001, ANN201
+    async def run_round(self, gaps, *, round_index, wall_seconds=None):  # noqa: ANN001, ANN201
         self.calls.append(round_index)
+        self.walls.append(wall_seconds)
         n = self.new_relevant[min(len(self.calls) - 1, len(self.new_relevant) - 1)]
         record = fu.FollowupRound(round_index, "gap")
         record.gap_ids = [g.gap_id for g in gaps]
         record.provable_gap_ids = [g.gap_id for g in gaps if g.provable]
+        record.absence_gap_ids = [g.gap_id for g in gaps if g.kind == fu.KIND_ABSENCE]
+        self.provable.update(record.provable_gap_ids)
         record.question_keys = sorted({g.question_key for g in gaps if g.question_key})
         record.executed = 1
         record.new_relevant = n
@@ -826,7 +838,10 @@ class FakeWebRung:
         return record
 
     async def answered(self, run, gap_ids):  # noqa: ANN001, ANN201
-        return set(gap_ids) if self.answered_ids is None else self.answered_ids
+        # A finding closes only a gap whose own text names a research field (track B).
+        if self.answered_ids is not None:
+            return set(self.answered_ids)
+        return {g for g in gap_ids if g in self.provable}
 
     def to_dict(self) -> dict[str, Any]:
         return {"followup_rounds": len(self.calls), "stopped_by": self.stopped_by}
@@ -975,3 +990,372 @@ class TestFlagOffIsTheLoopItWas:
 
         sig = inspect.signature(lp._follow_up_tasks)  # noqa: SLF001
         assert sig.parameters["force_keys"].default is None
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1: the loop's limits, "answered", the run-level ceiling, URLs
+# --------------------------------------------------------------------------- #
+
+
+class TestTheWebRungRespectsTheLoopsLimits:
+    async def test_no_web_round_is_paid_for_when_no_task_is_left_to_read_it(
+        self, session: Any
+    ) -> None:
+        web = FakeWebRung()
+        inv = ScriptedInvestigator(answers_question=False)
+        result = await _run_loop(session, inv, web, limits=_limits(max_tasks=1))
+        assert web.calls == [], "the search and fetch would have been paid for nothing"
+        assert inv.rounds == [0]
+        assert result.stopped_by == lp.STOPPED_MAX_TASKS and result.stopped_by_a_limit
+
+    async def test_with_tasks_to_spare_the_same_run_does_run_the_round(
+        self, session: Any
+    ) -> None:
+        web = FakeWebRung()
+        await _run_loop(
+            session, ScriptedInvestigator(answers_question=False), web,
+            limits=_limits(max_tasks=3),
+        )
+        assert web.calls == [0]
+
+    async def test_no_web_round_when_no_tool_call_is_left(self, session: Any) -> None:
+        web = FakeWebRung()
+        result = await _run_loop(
+            session, ScriptedInvestigator(answers_question=False), web,
+            limits=_limits(max_tool_calls=1),
+        )
+        assert web.calls == []
+        assert result.stopped_by == lp.STOPPED_MAX_TOOL_CALLS
+
+    async def test_a_completed_run_says_which_limit_cut_the_improvement(
+        self, session: Any
+    ) -> None:
+        web = FakeWebRung()
+        result = await _run_loop(
+            session, ScriptedInvestigator(), web, limits=_limits(max_tasks=1)
+        )
+        assert web.calls == []
+        assert result.stopped_by == lp.STOPPED_COMPLETE
+        assert result.improvement_stopped_by == lp.STOPPED_MAX_TASKS
+
+    async def test_the_round_is_given_the_wall_time_the_run_has_left(
+        self, session: Any
+    ) -> None:
+        ticks = iter([0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0])
+        web = FakeWebRung()
+        await _run_loop(
+            session, ScriptedInvestigator(answers_question=False), web,
+            limits=_limits(max_wall_seconds=500.0), clock=lambda: next(ticks),
+        )
+        assert web.walls and web.walls[0] is not None
+        assert 0 < web.walls[0] < 500.0, "narrowed by the time already spent"
+
+    async def test_a_round_started_with_no_wall_time_left_is_not_started(
+        self, session: Any
+    ) -> None:
+        ticks = iter(range(0, 10_000, 100))
+        web = FakeWebRung()
+        result = await _run_loop(
+            session, ScriptedInvestigator(answers_question=False), web,
+            limits=_limits(max_wall_seconds=150.0), clock=lambda: float(next(ticks)),
+        )
+        assert web.calls == [] and result.stopped_by == lp.STOPPED_MAX_WALL_SECONDS
+
+
+class TestAnsweredMeansEveryTargetedGapIsClosed:
+    async def test_one_closable_and_one_unprovable_gap_is_not_answered(
+        self, session: Any
+    ) -> None:
+        web = FakeWebRung()
+        inv = ScriptedInvestigator(
+            gap_text="Nameplate production capacity is not disclosed.",
+            extra_gaps=("Gross margin trend is not disclosed.",),
+            answer_in_round=1,
+        )
+        result = await _run_loop(session, inv, web)
+        assert result.stopped_by != lp.STOPPED_ANSWERED
+        record = result.web_followup
+        assert record["targeted_absence_gaps"] == 2 and record["targeted_absence_closed"] == 1
+
+    async def test_every_targeted_gap_closed_is_answered_and_counted(
+        self, session: Any
+    ) -> None:
+        web = FakeWebRung()
+        inv = ScriptedInvestigator(
+            gap_text="Nameplate production capacity is not disclosed.",
+            extra_gaps=("The cash runway is not disclosed.",),
+            answer_in_round=1,
+        )
+        result = await _run_loop(session, inv, web)
+        assert result.stopped_by == lp.STOPPED_ANSWERED
+        assert result.web_followup["targeted_absence_gaps"] == 2
+        assert result.web_followup["targeted_absence_closed"] == 2
+
+    async def test_a_contradiction_alone_never_makes_a_run_answered(
+        self, session: Any
+    ) -> None:
+        web = FakeWebRung(answered_ids={"anything"})
+        inv = ScriptedInvestigator(
+            gap_text="Two sources state different capital expenditure.",
+            gap_type=ledger.GAP_CONFLICTING_SOURCES, answers_question=False,
+        )
+        result = await _run_loop(session, inv, web)
+        assert result.stopped_by != lp.STOPPED_ANSWERED
+
+
+# --------------------------------------------------------------------------- #
+# The run-level ceiling, wall clamp and the candidate-URL pre-filter
+# --------------------------------------------------------------------------- #
+
+HOSTILE_URLS = [
+    "https://127.0.0.1/admin",
+    "https://169.254.169.254/latest/meta-data/",
+    "https://user:pw@evil.example/x",
+    "https://evil.example:8443/x",
+    "https://2130706433/",
+    "https://168.63.129.16/",
+    "https://100.64.0.1/",
+    "https://localhost/x",
+    "https://metadata.google.internal/x",
+    "https://[::1]/x",
+    "https://0x7f.1/x",
+    "http://www.power-technology.com/news/x",
+]
+
+
+class TestCandidateUrlPrefilter:
+    @pytest.mark.parametrize("url", HOSTILE_URLS)
+    def test_each_hostile_shape_is_refused_cheaply(self, url: str) -> None:
+        assert fu.candidate_url_allowed(url) is False
+
+    def test_an_ordinary_public_https_url_passes(self) -> None:
+        assert fu.candidate_url_allowed(CAPACITY_URL) is True
+
+    async def test_the_investigators_candidates_never_reach_the_fetcher(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        net = FakeNet(extra=PAGES)
+        followup = _followup(session, company, pool, _provider(), net=net)
+        candidates = [
+            {"rank": i, "url": url, "domain": "x.example", "title": "t"}
+            for i, url in enumerate(HOSTILE_URLS, start=1)
+        ]
+        result = await followup.fetch_candidates(
+            question_key="q1", candidates=candidates, round_index=1, max_fetches=10
+        )
+        assert net.requested == [], "not one hostile URL was handed to the network layer"
+        assert result.fetch_calls == 0 and result.ingested == 0
+        budget = followup._budgets[("candidates", 1)]  # noqa: SLF001
+        assert budget.fetches == 0 and budget.bytes_downloaded == 0
+
+    async def test_a_round_drops_hostile_search_results_before_selection(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        net = FakeNet(extra=PAGES)
+        provider = _provider(**{
+            "Voltgrid capacity expansion cost": _tavily(
+                "x", [(f"result {i}", url, "") for i, url in enumerate(HOSTILE_URLS)]),
+        })
+        followup = _followup(session, company, pool, provider, net=net)
+        record = await followup.run_round(
+            _gaps("Nameplate production capacity is not disclosed."), round_index=0
+        )
+        assert record.candidates >= 1 and net.requested == []
+        reasons = {r.disposition_reason for r in
+                   (await session.execute(select(WebSearchResult))).scalars().all()}
+        assert "unsafe_url" in reasons
+
+
+class TestTheRunLevelCeiling:
+    async def _stage_rows(self, session: Any, company: Any, n: int) -> None:
+        for i in range(n):
+            session.add(WebSearchQuery(
+                id=uuid.uuid4(), company_id=company.id, stage="company_web", family="catalyst",
+                origin="template", query_text=f"stage query {i}", request_hash=f"h{i}",
+                provider="fake", executed=True, network_call_count=1,
+            ))
+        await session.flush()
+
+    async def test_the_operator_cap_bounds_the_sum_of_stage_and_follow_up(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        await self._stage_rows(session, company, 2)
+        provider = _provider(**CAPACITY_QUERIES)
+        followup = _followup(
+            session, company, pool, provider, cfg=_wcfg(v3_run_max_web_searches=2)
+        )
+        assert (await followup._run_remaining()).searches == 0  # noqa: SLF001
+        assert await followup.budget_refusal() == "budget:max_queries"
+        record = await followup.run_round(
+            _gaps("Nameplate production capacity is not disclosed."), round_index=0
+        )
+        assert provider.requests == [] and record.executed == 0
+
+    async def test_the_cap_leaves_exactly_what_the_stage_did_not_use(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        await self._stage_rows(session, company, 1)
+        provider = _provider(**CAPACITY_QUERIES)
+        followup = _followup(
+            session, company, pool, provider, cfg=_wcfg(v3_run_max_web_searches=2)
+        )
+        record = await followup.run_round(
+            _gaps("Nameplate production capacity is not disclosed."), round_index=0
+        )
+        assert len(provider.requests) == 1 and record.executed == 1
+
+    async def test_a_fresh_instance_sees_what_an_earlier_one_spent(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        cfg = _wcfg(v3_run_max_web_searches=2)
+        first = _followup(session, company, pool, _provider(**CAPACITY_QUERIES), cfg=cfg)
+        await first.run_round(
+            _gaps("Nameplate production capacity is not disclosed."), round_index=0
+        )
+        second_provider = _provider(**CAPACITY_QUERIES)
+        second = _followup(session, company, pool, second_provider, cfg=cfg)
+        assert (await second._run_remaining()).searches == 0  # noqa: SLF001
+        await second.run_round(_gaps("Gross margin trend is not disclosed."), round_index=0)
+        assert second_provider.requests == [], "the reset of the instance is not a reset of the run"
+
+    async def test_the_challenge_wave_obeys_the_same_ceiling(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        await self._stage_rows(session, company, 2)
+        provider = _provider()
+        followup = _followup(
+            session, company, pool, provider, cfg=_wcfg(v3_run_max_web_searches=2)
+        )
+        wave = await followup.challenge_wave()
+        assert provider.requests == [] and wave.executed == 0
+
+    async def test_fetches_have_a_run_total_too(self, session: Any, pool: Any) -> None:
+        company = await _company(session)
+        net = FakeNet(extra=PAGES)
+        followup = _followup(session, company, pool, _provider(), net=net)
+        followup._spent_fetches = 10_000  # noqa: SLF001 - the run already fetched plenty
+        result = await followup.fetch_candidates(
+            question_key="q1", candidates=[{"rank": 1, "url": CAPACITY_URL,
+                                            "domain": "www.power-technology.com", "title": "t"}],
+            round_index=1,
+        )
+        assert net.requested == [] and result.fetch_calls == 0
+
+
+class TestWallClamp:
+    async def test_a_round_cannot_outlast_the_wall_time_it_was_given(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        followup = _followup(session, company, pool, _provider(**CAPACITY_QUERIES))
+        await followup.run_round(
+            _gaps("Nameplate production capacity is not disclosed."), round_index=0,
+            wall_seconds=7.0,
+        )
+        budget = followup._budgets[("gap", 0)]  # noqa: SLF001
+        profile = budget_mod.PROFILES["followup"].max_wall_seconds
+        assert budget.limits.max_wall_seconds <= 7.0 + budget.elapsed_seconds + 1e-6
+        assert budget.limits.max_wall_seconds < profile
+
+    async def test_the_challenge_wave_does_not_start_without_wall_time(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        provider = _provider()
+        followup = _followup(session, company, pool, provider)
+        wave = await followup.challenge_wave(wall_seconds=0.0)
+        assert wave.state == fu.STATE_WALL and provider.requests == []
+        assert wave.budget_stop == "max_wall_seconds"
+
+    async def test_a_generous_wall_does_not_shrink_the_profile(
+        self, session: Any, pool: Any
+    ) -> None:
+        company = await _company(session)
+        followup = _followup(session, company, pool, _provider(**CAPACITY_QUERIES))
+        await followup.run_round(
+            _gaps("Nameplate production capacity is not disclosed."), round_index=0,
+            wall_seconds=10_000.0,
+        )
+        budget = followup._budgets[("gap", 0)]  # noqa: SLF001
+        assert budget.limits.max_wall_seconds == budget_mod.PROFILES["followup"].max_wall_seconds
+
+
+class TestRiskEvidenceScope:
+    async def _wave(self, session: Any, pool: Any) -> Any:
+        from tests.test_web_w7_integration import _risk_provider
+
+        company = await _company(session)
+        followup = _followup(session, company, pool, _risk_provider())
+        await followup.challenge_wave()
+        return company, followup
+
+    async def test_a_page_flagged_as_an_injection_attempt_never_reaches_the_red_team(
+        self, session: Any, pool: Any
+    ) -> None:
+        company, followup = await self._wave(session, pool)
+        assert await followup.risk_evidence(), "control: evidence exists before the flag"
+        for version in (await session.execute(select(ResearchDocumentVersion))).scalars():
+            version.injection_suspect = True
+        await session.flush()
+        assert await followup.risk_evidence() == []
+
+    async def test_a_document_of_another_company_is_not_this_companys_risk_evidence(
+        self, session: Any, pool: Any
+    ) -> None:
+        from app.models.research_document import ResearchDocument, ResearchDocumentSubject
+
+        company, followup = await self._wave(session, pool)
+        assert await followup.risk_evidence(), "control"
+        other = Company(
+            id=uuid.uuid4(), ticker="OTHR", exchange="NASDAQ", name="Other Corp", status="new"
+        )
+        session.add(other)
+        await session.flush()
+        for doc in (await session.execute(select(ResearchDocument))).scalars():
+            doc.company_id = other.id
+        for subject in (await session.execute(select(ResearchDocumentSubject))).scalars():
+            await session.delete(subject)
+        await session.flush()
+        assert await followup.risk_evidence() == []
+
+
+class TestChallengeBasisIssuerExclusion:
+    def test_the_issuer_cannot_make_a_weak_page_a_single_reliable_source(self) -> None:
+        issuer = trust.SupportItem(
+            "ev:i", "company_press_release", f"issuer:{COMPANY}", date(2026, 9, 1), True
+        )
+        weak = _support("ev:w", "aggregator", "stockchatter.example")
+        verdict = fu.assess_challenge_basis([issuer, weak], COMPANY)
+        assert verdict.carries is False
+        assert verdict.reason == fu.REASON_LOW_TRUST
+
+
+class TestFollowUpSpendKeepsTheRunsCostHonest:
+    def test_follow_up_units_stand_alone_when_the_stage_wrote_none(self) -> None:
+        from app.services.consumption import ConsumptionUnits, PriceBook, derive_cost
+
+        followup = ConsumptionUnits(
+            web_search_calls=3, unreported=frozenset({"tavily_credits"}),
+            instrumented=frozenset({"web_search_calls"}),
+        )
+        merged = fu.combine_units(None, followup)
+        assert merged.web_search_calls == 3 and "tavily_credits" in merged.unreported
+        assert derive_cost(merged, PriceBook()).estimated_usd is None, (
+            "an unreported paid call keeps the run's cost unknown, never zero")
+
+    def test_the_stage_and_the_follow_up_add_up_and_unions_what_is_unreported(self) -> None:
+        from app.services.consumption import ConsumptionUnits
+
+        stage = ConsumptionUnits(web_search_calls=6, instrumented=frozenset({"web_search_calls"}))
+        followup = ConsumptionUnits(
+            web_search_calls=2, unreported=frozenset({"tavily_credits"}),
+            instrumented=frozenset({"web_search_calls"}),
+        )
+        merged = fu.combine_units(stage, followup)
+        assert merged.web_search_calls == 8 and "tavily_credits" in merged.unreported

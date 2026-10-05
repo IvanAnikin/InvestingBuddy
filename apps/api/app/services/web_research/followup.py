@@ -179,6 +179,7 @@ STATE_NO_NEW_QUERIES = "no_new_queries"
 STATE_BUDGET = "budget"
 STATE_UNAVAILABLE_WEB = "web_search_unavailable"
 STATE_FAILED = "web_followup_failed"
+STATE_WALL = "wall_time"
 
 
 
@@ -1042,6 +1043,9 @@ class FollowupRound:
     gap_ids: list[str] = field(default_factory=list)
     #: Gaps whose own text names a research field: the ones "answered" is judged on.
     provable_gap_ids: list[str] = field(default_factory=list)
+    #: Every targeted ABSENCE gap (a contradiction is resolved by the disagreement
+    #: machinery, not by a finding): ``answered`` requires ALL of them closed.
+    absence_gap_ids: list[str] = field(default_factory=list)
     question_keys: list[str] = field(default_factory=list)
     followup_queries: dict[str, list[str]] = field(default_factory=dict)
     version_ids: list[uuid.UUID] = field(default_factory=list)
@@ -1163,7 +1167,9 @@ def assess_challenge_basis(items: Sequence[Any], issuer_key: Any = None) -> Basi
     if state == trust.ISSUER_ONLY:
         return BasisVerdict(True, REASON_ISSUER_ADMISSION, state, trust.LABEL_COMPANY_SAYS)
     if state == trust.SINGLE_SOURCE and any(
-        trust.bears_independence(i, issuer_key) and i.source_class not in trust.WEAK_CLASSES
+        trust.bears_independence(i, issuer_key)
+        and not trust.is_verified_issuer(i.origin_key, issuer_key)
+        and i.source_class not in trust.WEAK_CLASSES
         for i in support
     ):
         return BasisVerdict(True, REASON_SINGLE_RELIABLE, state, trust.LABEL_SINGLE_SOURCE)
@@ -1173,6 +1179,13 @@ def assess_challenge_basis(items: Sequence[Any], issuer_key: Any = None) -> Basi
 # --------------------------------------------------------------------------- #
 # The loop's port, and the implementation
 # --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class RunRemaining:
+    searches: int
+    fetches: int
+    bytes: int
 
 
 class WebFollowup:
@@ -1217,9 +1230,14 @@ class WebFollowup:
         self.handled: set[str] = set()
         self._executed: set[str] | None = None
         self._budgets: dict[Any, WebResearchBudget] = {}
+        self._profiles: dict[Any, Any] = {}
         self._challenge: FollowupRound | None = None
         self._fetch_calls_by_question: dict[tuple[Any, str], int] = {}
         self._counted: dict[Any, tuple[int, int]] = {}
+        #: This instance's own fetch/byte totals (the fallback when no job id scopes the
+        #: ``web_fetch_attempts`` rows).
+        self._spent_fetches = 0
+        self._spent_bytes = 0
         self._started = datetime.now(timezone.utc)
 
     # -- construction ------------------------------------------------------- #
@@ -1290,14 +1308,92 @@ class WebFollowup:
     def company_id(self) -> Any:
         return getattr(self.company, "id", None)
 
-    async def _budget(self, key: Any) -> WebResearchBudget:
+    async def _budget(self, key: Any, *, wall_seconds: float | None = None) -> WebResearchBudget:
+        """The round's ``followup`` budget, CLAMPED to what the run may still spend.
+
+        The clamp is re-applied on every use: the run-level ceiling (``_run_remaining``)
+        counts everything this job's searches and fetches already used — the W5 stage's,
+        earlier rounds', the Investigator's — so no round, candidate step or challenge wave
+        can add to a total the operator capped. ``wall_seconds`` (the Director's time left)
+        narrows the round's own wall limit.
+        """
+        from dataclasses import replace
+
         budget = self._budgets.get(key)
         if budget is None:
             budget = await budget_for_run(
                 self.session, BUDGET_PROFILE, cfg=self.cfg, now=self.now, clock=self.deps.clock
             )
             self._budgets[key] = budget
+            self._profiles[key] = budget.limits
+        profile = self._profiles[key]
+        remaining = await self._run_remaining()
+        wall = profile.max_wall_seconds
+        if wall_seconds is not None:
+            wall = min(wall, max(0.0, float(wall_seconds)) + budget.elapsed_seconds)
+        budget.limits = replace(
+            profile,
+            max_queries=min(profile.max_queries, budget.queries_reserved + remaining.searches),
+            max_fetches=min(profile.max_fetches, budget.fetches + remaining.fetches),
+            max_bytes=min(profile.max_bytes, budget.bytes_downloaded + remaining.bytes),
+            max_wall_seconds=wall,
+        )
         return budget
+
+    async def _run_remaining(self) -> "RunRemaining":
+        """What the RUN may still spend on the web, searches / fetches / bytes.
+
+        The ceiling is the mode's company-stage profile plus the follow-up allowance
+        (web rounds x the profile + the challenge wave), and the operator's
+        ``V3_RUN_MAX_WEB_SEARCHES`` caps the SUM when set. Usage is read from the
+        provenance rows of this job (or, without a job id, this company's searches in the
+        cache horizon and this instance's own fetches), so a fresh instance sees what an
+        earlier one spent. Fail closed: a count that cannot be read leaves nothing.
+        """
+        from app.services.research_mode import web_profile_for
+        from app.services.web_research.budget import PROFILES, limits_for
+
+        stage = limits_for(web_profile_for(self.mode), self.cfg)
+        profile = PROFILES[BUDGET_PROFILE]
+        searches_cap = stage.max_queries + self.max_rounds * profile.max_queries + CHALLENGE_QUERIES
+        fetches_cap = stage.max_fetches + (self.max_rounds + 1) * profile.max_fetches
+        bytes_cap = stage.max_bytes + (self.max_rounds + 1) * profile.max_bytes
+        operator = int(getattr(self.cfg, "v3_run_max_web_searches", 0) or 0)
+        if operator > 0:
+            searches_cap = min(searches_cap, operator)
+        try:
+            searches, fetches, nbytes = await self._run_usage()
+        except Exception:  # noqa: BLE001 - doubt means nothing left
+            return RunRemaining(0, 0, 0)
+        return RunRemaining(
+            max(0, searches_cap - searches),
+            max(0, fetches_cap - fetches),
+            max(0, bytes_cap - nbytes),
+        )
+
+    async def _run_usage(self) -> tuple[int, int, int]:
+        from app.models.web_research import WebFetchAttempt as F
+        from app.models.web_research import WebSearchQuery as Q
+
+        job = self.run_ctx.research_job_id
+        stmt = sa.select(sa.func.coalesce(sa.func.sum(Q.network_call_count), 0))
+        if job is not None:
+            stmt = stmt.where(Q.research_job_id == job)
+        else:
+            stmt = stmt.where(
+                Q.company_id == self.company_id, Q.created_at >= self.now - timedelta(days=1)
+            )
+        searches = int((await self.session.scalar(stmt)) or 0)
+        if job is None:
+            return searches, self._spent_fetches, self._spent_bytes
+        row = (
+            await self.session.execute(
+                sa.select(sa.func.count(), sa.func.coalesce(sa.func.sum(F.bytes), 0)).where(
+                    F.research_job_id == job, F.status.in_(("fetched", "fetched_partial"))
+                )
+            )
+        ).one()
+        return searches, int(row[0] or 0), int(row[1] or 0)
 
     async def executed_queries(self) -> set[str]:
         """Queries already EXECUTED for this company in the cache horizon (the stage's,
@@ -1354,15 +1450,25 @@ class WebFollowup:
         budget = await self._budget(("gap", len(self.gap_rounds)))
         return budget.query_refusal()
 
-    async def run_round(self, gaps: Sequence[FollowupGap], *, round_index: int) -> FollowupRound:
-        """One web round for ``gaps``. **Never raises** (cancellation excepted)."""
+    async def run_round(
+        self,
+        gaps: Sequence[FollowupGap],
+        *,
+        round_index: int,
+        wall_seconds: float | None = None,
+    ) -> FollowupRound:
+        """One web round for ``gaps``. **Never raises** (cancellation excepted).
+
+        ``wall_seconds`` is the Director's wall time left: the round's own limit is
+        clamped to it, so a web round cannot run past the run's wall."""
         record = FollowupRound(round_index, "gap")
         record.gap_ids = [g.gap_id for g in gaps]
         record.provable_gap_ids = [g.gap_id for g in gaps if g.provable]
+        record.absence_gap_ids = [g.gap_id for g in gaps if g.kind == KIND_ABSENCE]
         record.question_keys = sorted({g.question_key for g in gaps if g.question_key})
         try:
             async with self.session.begin_nested():
-                await self._run_round(gaps, record)
+                await self._run_round(gaps, record, wall_seconds)
         except Exception as exc:  # noqa: BLE001 - the web rung never fails the run
             record.state = STATE_FAILED
             log_event(
@@ -1386,9 +1492,11 @@ class WebFollowup:
         )
         return record
 
-    async def _run_round(self, gaps: Sequence[FollowupGap], record: FollowupRound) -> None:
+    async def _run_round(
+        self, gaps: Sequence[FollowupGap], record: FollowupRound, wall_seconds: float | None
+    ) -> None:
         key = ("gap", len(self.gap_rounds))
-        budget = await self._budget(key)
+        budget = await self._budget(key, wall_seconds=wall_seconds)
         built = build_gap_queries(
             gaps,
             self.facts,
@@ -1415,7 +1523,7 @@ class WebFollowup:
                         by_question[gap.question_key].append(query.request.query)
         record.followup_queries = {k: v[:2] for k, v in by_question.items()}
 
-    async def challenge_wave(self) -> FollowupRound:
+    async def challenge_wave(self, *, wall_seconds: float | None = None) -> FollowupRound:
         """The Red Team's search (spec §7.4): RISK queries the W5 plan did not run.
 
         Always runs once when the follow-up is on, whatever the thesis says. **Never
@@ -1424,9 +1532,16 @@ class WebFollowup:
         if self._challenge is not None:
             return self._challenge
         record = FollowupRound(len(self.rounds), "challenge")
+        if wall_seconds is not None and wall_seconds <= 0:
+            # The Director's wall time is spent: the wave is not started, and says so.
+            record.state = STATE_WALL
+            record.budget_stop = "max_wall_seconds"
+            self._challenge = record
+            self.rounds.append(record)
+            return record
         try:
             async with self.session.begin_nested():
-                budget = await self._budget("challenge")
+                budget = await self._budget("challenge", wall_seconds=wall_seconds)
                 built = build_challenge_queries(
                     self.facts,
                     today=self.today,
@@ -1526,6 +1641,11 @@ class WebFollowup:
                     )
                 )
         record.candidates = len(candidates)
+        rows_pre = {r.id: r for r in rows.values()}
+        unsafe = [c for c in candidates if not candidate_url_allowed(c.item.url)]
+        for candidate in unsafe:
+            _disposition(rows_pre.get(candidate.result_id), DISPOSITION_SKIPPED, "unsafe_url")
+        candidates = [c for c in candidates if c not in unsafe]
         terms = tuple(dict.fromkeys(t for q in allowed for t in q.terms))
         selection = await self._select(candidates, family, terms, budget.limits.max_fetches)
         record.selected = len(selection.selected)
@@ -1727,6 +1847,8 @@ class WebFollowup:
             bytes_downloaded=max(0, budget.bytes_downloaded - done_bytes),
             instrumented=frozenset({"url_fetch_calls", "bytes_downloaded"}),
         )
+        self._spent_fetches += max(0, budget.fetches - done_fetches)
+        self._spent_bytes += max(0, budget.bytes_downloaded - done_bytes)
         self._counted[key] = (budget.fetches, budget.bytes_downloaded)
 
     # -- the Investigator's deterministic candidate step -------------------- #
@@ -1762,7 +1884,7 @@ class WebFollowup:
                 search_candidates = [
                     SearchCandidate(family=QueryFamily.GAP, item=item, query_key="investigator")
                     for item in items
-                    if item is not None
+                    if item is not None and candidate_url_allowed(item.url)
                 ]
                 selection = await self._select(
                     search_candidates, QueryFamily.GAP, tuple(terms), cap
@@ -1868,6 +1990,33 @@ def _disposition(row: Any, disposition: str, reason: str | None) -> None:
         return
     row.disposition = disposition[:30]
     row.disposition_reason = (reason or "")[:120] or None
+
+
+def combine_units(stage_units: Any, followup_units: Any) -> Any:
+    """The run's web units: the stage's plus the follow-up's, whichever exist.
+
+    Both are ``ConsumptionUnits``; their ``unreported`` sets union (a paid search whose
+    credit figure the vendor did not return keeps the run's cost NULL, never zero). When
+    the stage produced none (it died before writing units) the follow-up's are the whole
+    web spend and are returned as they are.
+    """
+    if stage_units is None:
+        return followup_units
+    return stage_units + followup_units
+
+
+def candidate_url_allowed(url: str | None) -> bool:
+    """A cheap, network-free pre-filter for a search-returned URL (W0 shape + host rules).
+
+    https only, port 443, no userinfo, parsers agree, and a public-looking host: no IP
+    literal in any encoding, no internal suffix, no single-label host. It is NOT the SSRF
+    boundary — ``open_web_fetch`` re-checks every hop and resolves DNS — it keeps an
+    obviously hostile result from ever reaching selection or consuming a fetch.
+    """
+    from app.services.sources.safe_web_fetcher import check_url_shape, is_safe_public_host
+
+    reason, host = check_url_shape(url)
+    return reason is None and is_safe_public_host(host)
 
 
 def _item_from_candidate(raw: Mapping[str, Any], index: int) -> SearchResultItem | None:
@@ -1993,8 +2142,27 @@ async def collect_risk_evidence(
     if not urls:
         return []
     terms = {t for template in RISK_TEMPLATES for term in template.terms for t in fold_tokens(term)}
+    from app.models.research_document import ResearchDocument as D
+    from app.models.research_document import ResearchDocumentSubject as Subject
+
+    # Scoped to THIS company (its own document, or one that names it as a subject), and
+    # never a page flagged as an injection attempt: such text must not reach the Red Team
+    # prompt, and a flagged page does not count as an independent origin.
     versions = (
-        await session.execute(sa.select(V.id, V.canonical_url).where(V.canonical_url.in_(urls)))
+        await session.execute(
+            sa.select(V.id, V.canonical_url)
+            .join(D, D.id == V.research_document_id)
+            .where(
+                V.canonical_url.in_(urls),
+                V.injection_suspect.is_not(True),
+                sa.or_(
+                    D.company_id == company_id,
+                    sa.exists().where(
+                        Subject.research_document_id == D.id, Subject.company_id == company_id
+                    ),
+                ),
+            )
+        )
     ).all()
     out_chunks: list[tuple[str, str]] = []
     for version_id, _url in versions:
@@ -2050,6 +2218,9 @@ __all__ = [
     "CHALLENGE_QUERIES",
     "CONTRADICTION_TOPIC",
     "CandidateFetchResult",
+    "RunRemaining",
+    "candidate_url_allowed",
+    "combine_units",
     "DocOutcome",
     "FOLLOWUP_GAP_TYPES",
     "FOLLOWUP_GLOSSARY_VERSION",
