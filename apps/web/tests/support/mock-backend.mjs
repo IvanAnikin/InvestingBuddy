@@ -26,6 +26,15 @@ import {
   W6B_THESIS,
   w6bCandidates,
 } from "./w6b-fixtures.mjs";
+import {
+  WR_EMPTY_ID,
+  WR_JOB_ID,
+  WR_RUN_ID,
+  WR_SCHEMA_MISSING_ID,
+  webResearchEmptyAudit,
+  webResearchJobAudit,
+  webResearchRunAudit,
+} from "./web-research-audit-fixtures.mjs";
 
 const PORT = Number(process.env.PORT ?? 8799);
 
@@ -3435,6 +3444,33 @@ const server = createServer((req, res) => {
       status: "ok",
       version: "e2e-mock",
       environment: "test",
+    });
+  }
+
+  // Open-web W8a — the admin web research audit (apps/api web_research_admin.py).
+  // 404 for an unknown job/run, 503 when migration 042 is missing.
+  const webAudit =
+    /^\/api\/v1\/admin\/web-research\/(jobs|discovery-runs)\/([^/]+)$/.exec(path);
+  if (webAudit) {
+    const [, scope, id] = webAudit;
+    const scopeName = scope === "jobs" ? "research_job" : "discovery_run";
+    if (id === WR_SCHEMA_MISSING_ID) {
+      return send(res, 503, {
+        detail:
+          "The web research provenance tables are not present in this environment. Migration 042 has not been applied here. This is a schema state, not a failure, and it is not answered with an empty audit.",
+      });
+    }
+    if (id === WR_EMPTY_ID) {
+      return send(res, 200, webResearchEmptyAudit(scopeName, id));
+    }
+    if (scope === "jobs" && id === WR_JOB_ID) {
+      return send(res, 200, webResearchJobAudit(id));
+    }
+    if (scope === "discovery-runs" && id === WR_RUN_ID) {
+      return send(res, 200, webResearchRunAudit(id));
+    }
+    return send(res, 404, {
+      detail: scope === "jobs" ? "Research job not found" : "Discovery run not found",
     });
   }
 

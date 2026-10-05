@@ -4,6 +4,7 @@ import type { CompanyList, HealthResponse, ReportList } from "@/types/api";
 import GlassCard from "@/components/ui/GlassCard";
 import StatusPill from "@/components/ui/StatusPill";
 import SafetyBanner from "@/components/ui/SafetyBanner";
+import WebResearchAuditLookup from "./web-research/WebResearchAuditLookup";
 
 export const dynamic = "force-dynamic";
 
@@ -204,6 +205,18 @@ export default async function AdminDashboard() {
           </div>
         </GlassCard>
       )}
+
+      {/* Open-web W8a — web research audit (admin only) */}
+      <GlassCard className="p-5" testId="admin-web-research-audit">
+        <p className="mb-1 text-sm font-semibold text-slate-200">
+          Web research audit
+        </p>
+        <p className="mb-3 text-xs text-slate-400">
+          Every search query, result and fetch attempt for one research job or
+          discovery run. Internal only.
+        </p>
+        <WebResearchAuditLookup />
+      </GlassCard>
 
       {/* Quick actions */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

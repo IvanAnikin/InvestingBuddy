@@ -1710,3 +1710,155 @@ export interface EscalateResponse {
   blocked_reason: string | null;
   blocked_detail: string | null;
 }
+
+// --- Open-web W1/W8a: the web research audit (admin only) -----------------
+//
+// Mirrors apps/api/app/schemas/web_research.py (`WebResearchAuditRead`). Titles,
+// snippets, query text and URLs are UNTRUSTED third-party text: render them as
+// plain text only, never as HTML or markdown, and never as evidence.
+
+export type WebResearchAuditScope = "research_job" | "discovery_run";
+
+export interface WebSearchResultRead {
+  id: string;
+  rank: number;
+  url: string;
+  canonical_url?: string | null;
+  domain?: string | null;
+  /** Untrusted. */
+  title?: string | null;
+  /** Untrusted. */
+  snippet?: string | null;
+  published_hint?: string | null;
+  language_hint?: string | null;
+  provider_score?: number | null;
+  disposition: string;
+  disposition_reason?: string | null;
+}
+
+/** Who enforced each requested search filter (`client` / `provider` / ...). */
+export interface WebSearchQueryFilters {
+  requested?: Record<string, unknown> | null;
+  enforced_by?: Record<string, string> | null;
+  client_filtered_count?: number | null;
+  date_unchecked_count?: number | null;
+  [key: string]: unknown;
+}
+
+export interface WebSearchQueryRead {
+  id: string;
+  created_at?: string | null;
+  stage?: string | null;
+  family: string;
+  origin: string;
+  template_version?: string | null;
+  /** `[withheld: <code>]` when the query was refused for carrying private data. */
+  query_text: string;
+  request_hash: string;
+  /** Absent (null) for a withheld query. */
+  filters?: WebSearchQueryFilters | null;
+  provider: string;
+  executed: boolean;
+  provider_request_id?: string | null;
+  http_status?: number | null;
+  network_call_count: number;
+  latency_ms?: number | null;
+  result_count: number;
+  from_cache: boolean;
+  /** The row whose network call this one re-serves (cache or in-batch duplicate). */
+  served_from_query_id?: string | null;
+  cost_units: Record<string, unknown>;
+  error_code?: string | null;
+  results: WebSearchResultRead[];
+}
+
+/** One redirect hop. The LAST hop may carry `meta` (validators, canonical, TDM...). */
+export interface WebRedirectHop {
+  url?: string;
+  status?: number;
+  meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface WebFetchAttemptRead {
+  id: string;
+  created_at?: string | null;
+  web_search_result_id?: string | null;
+  parent_attempt_id?: string | null;
+  origin: string;
+  requested_url: string;
+  final_url?: string | null;
+  canonical_url?: string | null;
+  redirect_chain: WebRedirectHop[];
+  policy_decision?: string | null;
+  robots_decision?: string | null;
+  tdm_decision?: string | null;
+  http_status?: number | null;
+  mime_served?: string | null;
+  mime_sniffed?: string | null;
+  bytes?: number | null;
+  truncated?: boolean | null;
+  content_hash?: string | null;
+  fetch_ms?: number | null;
+  status: string;
+  failure_code?: string | null;
+}
+
+/** Spec §22.1 fetch metrics. Rates are over `attempts`; 0.0 when there were none. */
+export interface WebFetchMetrics {
+  attempts: number;
+  fetched: number;
+  partial: number;
+  success_rate: number;
+  http_403: number;
+  http_403_rate: number;
+  paywall: number;
+  paywall_rate: number;
+  captcha: number;
+  robots: number;
+  robots_rate: number;
+  tdm_reserved: number;
+  tdm_rate: number;
+  policy_denied: number;
+  policy_deny_rate: number;
+  negative_cached: number;
+  budget_refused: number;
+  policy_file_requests: number;
+  retries: number;
+  redirects: number;
+  bytes: number;
+  js_required: number;
+  js_required_rate: number;
+  mime_mismatch: number;
+  by_status: Record<string, number>;
+  by_failure_code: Record<string, number>;
+}
+
+export interface WebResearchTotals {
+  queries: number;
+  executed: number;
+  from_cache: number;
+  not_executed: number;
+  network_call_count: number;
+  results: number;
+  fetch_attempts: number;
+  errors_by_code: Record<string, number>;
+  /**
+   * Summed per unit over executed network calls. A unit absent here was not
+   * reported by any call — absent is NOT zero, and this never prices anything.
+   */
+  cost_units: Record<string, number>;
+  fetch_metrics: WebFetchMetrics;
+}
+
+export interface WebResearchAudit {
+  scope: WebResearchAuditScope | string;
+  scope_id: string;
+  queries: WebSearchQueryRead[];
+  fetch_attempts: WebFetchAttemptRead[];
+  totals: WebResearchTotals;
+  /** True when the page stopped at its row limit; totals count only what is shown. */
+  queries_truncated: boolean;
+  fetch_attempts_truncated: boolean;
+  notice: string;
+}
