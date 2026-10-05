@@ -730,6 +730,57 @@ worker. The durable move is its own slice (W6a) so it can be reverted independen
 
 **Rollback:** `V3_WEB_FOLLOWUP_ENABLED=false`.
 
+**As built (W7).** Modules: `web_research/followup.py` (gap topics and GAP templates,
+`WebFollowup`, the challenge wave, risk evidence, `assess_challenge_basis`), the web rung in
+`director/loop.py`, the deterministic candidate step in `agents/investigator.py`, the risk-evidence
+input in `agents/red_team.py`, the `verified_leads` dimension in `escalation/evidence.py`. No
+migration, no API. Decisions, each deliberate:
+
+- **A rung, not a loop.** `run_investigation(..., web_followup=...)`: before the follow-ups of a
+  round are chosen, the open closable gaps whose field a web search could plausibly answer get one
+  web round; documents that arrive make the question's corpus re-read a rung (`_has_a_rung_left(
+  web_rung=)`) and the specialist is handed the platform-built query (`QuestionContext.
+  followup_queries`). A gap is followed up once (a contradiction exactly once). The last Director
+  round is never a web round.
+- **Stop reasons** (new, closed vocabulary): `answered` (every targeted gap whose own text names a
+  research field is closed by a finding, by track B's pure `reconcile`), `saturation` (the last web
+  round stored nothing relevant and nothing else is left), `web_budget` (a LIMIT: web rounds or
+  budget spent with web-answerable gaps unspent). Round, task and wall limits bind as before; a
+  completed run that left web improvement undone says which limit (`improvement_stopped_by`).
+- **PI-07.** Queries use only versioned templates, the verified company name, ticker/venue,
+  classification industry, subject-profile commodities, the year and a closed field label. A
+  gap's text selects a topic; none of it is copied.
+- **Fail closed on closure.** Margin, backlog and customer concentration are not in track B's
+  field vocabulary, so a finding about them can never be PROVEN to close a gap: the follow-up runs,
+  the document is read, the gap stays open and the run does not say `answered`. A third-party-only
+  finding closes a gap only partially (track B's rule). This is a deviation from the brief's "margin
+  gap closed" acceptance: it is demonstrated with production capacity, and margin demonstrates the
+  honest outcome.
+- **Own budget (W7-D2).** The stage plans up to the mode's whole `max_web_searches`, so the rung
+  does not share that ceiling: per round the `followup` profile (6 queries / 12 fetches / 3 PDFs),
+  web rounds per mode (1/2/3/4, further bounded by the Director's `max_rounds`; QUICK has one round
+  so no web round), the operator `V3_RUN_MAX_WEB_SEARCHES` and the daily cap. Worst case extra per
+  STANDARD run: 2 x 6 + 3 searches.
+- **Challenge wave (spec 7.4).** Neutral RISK queries the stage did not run (permit problem, project
+  cancellation, financing risk, cost overrun, production issue, ...), one slot always a counter-thesis
+  query (technology disadvantages, industry oversupply, commodity substitute). The Red Team receives
+  `risk_evidence` (class, origin display, document date, independence, a capped fenced excerpt) and the
+  responder may cite those ids. `assess_challenge_basis`: a single low-trust source (aggregator, unknown,
+  wire-hosted, unresolved) cannot carry a challenge, which is discarded and counted; a single reliable
+  source carries it labelled `[single source]`; two independent origins carry it unlabelled.
+- **Candidate step.** With the flag on, the candidates a `search_web` call returns are fetched and
+  ingested by the platform (`fetch_candidates`: https, not denylisted, not held, W5 scoring, 3 per
+  question) and read back as `ev:c:` chunks filtered to those URLs. A candidate has no claim, so
+  `fetch_public_source` (verify a claim) is not used for them.
+- **Escalation.** Web chunks already count through `indexed_chunks` / `searchable_documents` (company
+  scoped, current, indexed); verified `ev:x:` leads are a new decisive dimension (`verified_leads`).
+  Cost-NULL-blocks-escalation is untouched.
+- **Record.** `web_context.followup_rounds`, `web_context.followup` (queries, rounds, challenge,
+  `stopped_by`), `outcome.loop.web_followup`, `outcome.challenges.risk_evidence_items`; follow-up spend
+  is added to the `web_stage` consumption units.
+- **Deferred.** Playbook-declared follow-up templates (`services/playbooks/*`) and the Director
+  planner's own follow-up questions are not changed; the topic table lives in `followup.py`.
+
 **Complexity:** M (about 2–3 days).
 
 ---

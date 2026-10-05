@@ -298,7 +298,17 @@ def web_research_block(
         if isinstance(row, Mapping)
     ]
     fetch = context.get("fetch") or {}
+    # Open-web W7 — only when the follow-up loop was on, so every other report is unchanged.
+    followup = (
+        {
+            "followup_rounds": context.get("followup_rounds"),
+            "followup_stopped_by": (context.get("followup") or {}).get("stopped_by"),
+        }
+        if context.get("followup_rounds") is not None
+        else {}
+    )
     return {
+        **followup,
         "state": context.get("state"),
         "label": context.get("label"),
         "searches_run": queries.get("executed"),

@@ -90,6 +90,9 @@ MAX_EXTERNAL_VERIFICATIONS = 4
 #: question sentence alone matched the question's generic words ("what", "company",
 #: "latest"); the intents are the question's distinctive terms.
 MAX_CORPUS_INTENTS = 2
+#: Open-web W7: follow-up corpus queries read per question, and the evidence a fetched
+#: candidate set may add (the platform chooses what is fetched, never the model).
+MAX_FOLLOWUP_QUERIES = 2
 
 #: Hits per corpus query. Six was the live setting, and on SCCO's 10-K the passage
 #: carrying the year's headline revenue figure ranked seventh for the query that asked
@@ -277,6 +280,10 @@ class QuestionContext:
     corpus_intents_done: int = 0
     #: Rounds this question has already been worked in.
     rounds_attempted: int = 0
+    #: Open-web W7 — platform-built GAP queries (generic templates, never page text) whose
+    #: documents the web rung just stored for this question's open gaps. Empty with the
+    #: follow-up flag off.
+    followup_queries: tuple[str, ...] = ()
 
 
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
@@ -1386,6 +1393,11 @@ class LLMInvestigator:
     #: The commodity the company's own documents discuss most, for intents that name
     #: ``{commodity}`` on a question that is not per-commodity.
     primary_commodity: str | None = None
+    #: Open-web W7 — ``async (question_key, candidates, round_index, max_fetches, terms)
+    #: -> CandidateFetchResult`` (``WebFollowup.fetch_candidates``). When set, the
+    #: candidates a ``search_web`` call returns are fetched and ingested DETERMINISTICALLY
+    #: by the platform; ``None`` keeps the earlier behaviour (candidates are only listed).
+    candidate_fetcher: Any = None
 
     async def investigate(
         self,
@@ -1563,6 +1575,52 @@ class LLMInvestigator:
             )
         current = verdict()
 
+        # Rung 2a — open-web W7: the corpus again, by the platform-built GAP queries whose
+        # documents the web rung just stored. Runs even when the contract is met: the
+        # question's OPEN gap names a field its first answer did not state.
+        if context.followup_queries and role.can_use(TOOL_SEARCH_COMPANY_CORPUS) and used < budget:
+            queries = [
+                keyword_query(q) for q in context.followup_queries[:MAX_FOLLOWUP_QUERIES]
+            ]
+            found = 0
+            for query in queries:
+                if used >= budget or not query:
+                    break
+                result = await self.session.call(
+                    TOOL_SEARCH_COMPANY_CORPUS,
+                    {
+                        "query": query,
+                        "company_ids": [str(self.company_id)],
+                        "mode": "lexical",
+                        "top_k": 6,
+                        "exclude_suspect": True,
+                    },
+                    task_ref=f"{role_id}:{question.key}",
+                )
+                used += 1
+                if result.ok:
+                    known = {item.citation_id for item in evidence}
+                    fresh = [
+                        item
+                        for item in _harvest(
+                            TOOL_SEARCH_COMPANY_CORPUS,
+                            result.payload,
+                            result.contains_untrusted_content,
+                        )
+                        if item.citation_id not in known
+                    ]
+                    evidence.extend(fresh)
+                    found += len(fresh)
+            steps.append(
+                {
+                    "rung": "web_followup_corpus",
+                    "round": round_index,
+                    "queries": queries,
+                    "new_items": found,
+                }
+            )
+            current = verdict()
+
         # Rung 2 — the corpus again, by the question's distinctive terms.
         intents = list(getattr(question, "search_intents", ()) or ())
         start = context.corpus_intents_done if follow_up else intents_used
@@ -1713,6 +1771,13 @@ class LLMInvestigator:
             role_id, question, result.payload, budget - used
         )
         used += spent
+        if self.candidate_fetcher is not None and candidates and budget - used > 1:
+            stored, spent = await self._fetch_candidates(
+                role_id, question, candidates, arguments["query"], budget - used,
+                round_index, step,
+            )
+            verified.extend(stored)
+            used += spent
         step.update(
             {
                 "leads": len(leads),
@@ -1723,6 +1788,75 @@ class LLMInvestigator:
             }
         )
         return step, verified, used
+
+    async def _fetch_candidates(
+        self,
+        role_id: str,
+        question: PlannedQuestion,
+        candidates: "list[dict[str, Any]]",
+        query: str,
+        budget: int,
+        round_index: int,
+        step: "dict[str, Any]",
+    ) -> "tuple[list[_Evidence], int]":
+        """Open-web W7: the platform fetches and ingests the best candidates, then reads
+        them back as ordinary corpus evidence. Never raises.
+
+        WHICH candidates is the platform's choice (``WebFollowup.fetch_candidates``: https,
+        not denylisted, not held, ranked by host class / rank / date hint, capped per
+        question) — the model never names a URL to fetch. Nothing is minted here: the
+        evidence is the stored document's own chunks, filtered to the URLs just stored.
+        """
+        try:
+            fetched = await self.candidate_fetcher(
+                question_key=question.key,
+                candidates=candidates,
+                round_index=round_index,
+                max_fetches=min(MAX_EXTERNAL_VERIFICATIONS, max(0, budget - 1)),
+            )
+        except Exception:  # noqa: BLE001 - a failed step costs itself
+            return [], 0
+        used = int(getattr(fetched, "fetch_calls", 0) or 0)
+        urls = set(getattr(fetched, "canonical_urls", ()) or ())
+        step["candidate_fetch"] = {
+            "fetched": used,
+            "ingested": int(getattr(fetched, "ingested", 0) or 0),
+            "reused": int(getattr(fetched, "reused", 0) or 0),
+            "skipped": int(getattr(fetched, "skipped", 0) or 0),
+            "budget_stop": getattr(fetched, "budget_stop", None),
+        }
+        if not urls or budget - used < 1:
+            return [], used
+        result = await self.session.call(
+            TOOL_SEARCH_COMPANY_CORPUS,
+            {
+                "query": keyword_query(query) or query,
+                "company_ids": [str(self.company_id)],
+                "mode": "lexical",
+                "top_k": 8,
+                "exclude_suspect": True,
+            },
+            task_ref=f"{role_id}:{question.key}",
+        )
+        used += 1
+        if not result.ok or not isinstance(result.payload, dict):
+            return [], used
+        from app.services.web_research.canonical import canonical_url
+
+        items = [
+            item
+            for item in result.payload.get("items") or []
+            if isinstance(item, dict) and canonical_url(item.get("canonical_url")) in urls
+        ]
+        step["candidate_fetch"]["evidence_items"] = len(items)
+        return (
+            _harvest(
+                TOOL_SEARCH_COMPANY_CORPUS,
+                {**result.payload, "items": items},
+                result.contains_untrusted_content,
+            ),
+            used,
+        )
 
     async def _gather(
         self, role_id: str, role: Any, question: PlannedQuestion, budget: int

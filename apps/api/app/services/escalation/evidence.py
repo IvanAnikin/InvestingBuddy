@@ -14,6 +14,8 @@ So improvement is measured on **what the platform retrieved and resolved**:
 * searchable document versions
 * closable research gaps that closed
 * active, canonically-scoped extracted facts
+* verified external leads (``ev:x:`` — open-web W7): a document the platform fetched and
+  verified a claim against, whether or not the corpus also stored it
 
 and Findings are carried as **secondary telemetry only** — reported, never decisive.
 
@@ -61,6 +63,12 @@ class EvidenceSnapshot:
     #: SECONDARY. Reported so a reader can see it; never decisive — see the module
     #: docstring.
     verified_findings: int = 0
+    #: Open-web W7. Verified ``research_leads`` (``promoted_evidence_id`` set) for the
+    #: company. Web documents the corpus STORED are already in ``indexed_chunks`` /
+    #: ``searchable_documents`` (company-scoped, current, indexed); a verified lead whose
+    #: document was not stored (ingestion off, refused) is acquisition too, and is counted
+    #: here so a round that only added ``ev:x:`` evidence is not ``improved: false``.
+    verified_leads: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return asdict(self)
@@ -91,6 +99,7 @@ class EvidenceSnapshot:
                     "open_closable_gaps",
                     "active_facts",
                     "verified_findings",
+                    "verified_leads",
                 )
             }
         )
@@ -123,6 +132,7 @@ async def snapshot_evidence(
         open_closable_gaps=await _open_closable_gaps(session, company_id),
         active_facts=await _active_facts(session, company_id),
         verified_findings=await _findings(session, company_id),
+        verified_leads=await _verified_leads(session, company_id),
     )
 
 
@@ -255,6 +265,18 @@ async def _active_facts(session: AsyncSession, company_id: uuid.UUID) -> int:
     return int((await session.execute(stmt)).scalar_one() or 0)
 
 
+async def _verified_leads(session: AsyncSession, company_id: uuid.UUID) -> int:
+    """Leads the platform verified against bytes it fetched itself (``ev:x:`` ids)."""
+    from app.models.research_lead import ResearchLeadRecord
+
+    stmt = select(func.count(ResearchLeadRecord.id)).where(
+        ResearchLeadRecord.company_id == company_id,
+        ResearchLeadRecord.status == "verified",
+        ResearchLeadRecord.promoted_evidence_id.is_not(None),
+    )
+    return int((await session.execute(stmt)).scalar_one() or 0)
+
+
 async def _findings(session: AsyncSession, company_id: uuid.UUID) -> int:
     """Secondary telemetry. Reported, never decisive."""
     from app.models.ledger import ResearchFinding, ResearchRun
@@ -278,6 +300,7 @@ DECISIVE_DIMENSIONS: tuple[str, ...] = (
     "searchable_documents_added",
     "closable_gaps_closed",
     "facts_added",
+    "verified_leads_added",
 )
 
 
@@ -314,6 +337,7 @@ def measure_evidence_delta(
     gaps_opened = max(0, -gap_movement)
     facts = after.active_facts - before.active_facts
     findings = after.verified_findings - before.verified_findings
+    leads = after.verified_leads - before.verified_leads
 
     delta: dict[str, Any] = {
         "indexed_chunks_added": chunks,
@@ -322,6 +346,7 @@ def measure_evidence_delta(
         #: Newly discovered gaps. Reported, never counted against improvement.
         "closable_gaps_opened": gaps_opened,
         "facts_added": facts,
+        "verified_leads_added": leads,
         # Secondary. Present for the reader; absent from DECISIVE_DIMENSIONS.
         "verified_findings_added": findings,
         # This delta rests on a real before-snapshot. The controller writes
@@ -339,6 +364,8 @@ def measure_evidence_delta(
         reasons.append(f"{gaps_closed} closable research gap(s) closed")
     if facts > 0:
         reasons.append(f"{facts} new active, scoped fact(s)")
+    if leads > 0:
+        reasons.append(f"{leads} new verified external source(s) (ev:x:)")
     if gaps_opened > 0:
         reasons.append(
             f"{gaps_opened} new closable research gap(s) were discovered — a legitimate "

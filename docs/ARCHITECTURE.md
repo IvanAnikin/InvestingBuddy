@@ -910,6 +910,15 @@ stored web page can never steer a later run's queries. The stage is isolated (a 
 source class and corroboration in the professional report. `search_web` returns candidate URLs
 from the same provider; `fetch_public_source` remains the only function that mints `ev:x:` ids.
 
+## Open-web W7 — the web rung of the Director loop (V3, dark)
+
+`V3_WEB_FOLLOWUP_ENABLED` adds a web rung to `director/loop.run_investigation`: an open closable gap a
+web search could plausibly answer gets generic GAP queries (`web_research/followup.py`, versioned topic
+templates, never page text), fetched and ingested like the W5 stage, after which the specialist re-reads
+the corpus. New stop reasons `answered` and `saturation` (completion) and `web_budget` (limit). A RISK
+challenge wave feeds the Red Team labelled `risk_evidence`; a single low-trust source cannot carry a
+challenge. Final gap reconciliation (track B) reads the follow-up findings and never hides a real gap.
+
 ## Phase History
 
 | Phase | Status | What Changed |

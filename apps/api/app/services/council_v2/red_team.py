@@ -122,6 +122,9 @@ class Challenge:
     finding_id: uuid.UUID
     weakness_class: str
     text: str
+    #: Open-web W7 — the fetched RISK evidence ids the challenge rests on (empty when it
+    #: cites none). Recorded so "what did this challenge stand on" is answerable.
+    basis_evidence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.weakness_class not in WEAKNESS_CLASSES:

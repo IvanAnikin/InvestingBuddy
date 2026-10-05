@@ -3318,6 +3318,17 @@ gains additive fields (absent otherwise, so old reports are unchanged):
 
 `apps/web` does not render these blocks yet (W8b); they are readable in the report JSON only.
 
+## Open-web W7 — bounded follow-up research loop (no new endpoint)
+
+No new route. With `V3_WEB_FOLLOWUP_ENABLED` on (and the W5 stage), additive keys appear
+(absent otherwise): `source_summary_json.v3_research.web_context.followup_rounds` and
+`.followup` (`queries`, `rounds`, `challenge`, `stopped_by`, `template_version`);
+`v3_research.loop.web_followup`; `v3_research.challenges.risk_evidence_items` and
+`discarded_low_trust_basis`; and `…evidence_quality_and_gaps.web_research.followup_rounds` /
+`followup_stopped_by`. `loop.stopped_by` can now also be `answered`, `saturation` (completion
+states) or `web_budget` (a limit). `research-decisions` evidence deltas gain
+`verified_leads_added` (decisive).
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

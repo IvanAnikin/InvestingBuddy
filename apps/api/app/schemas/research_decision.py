@@ -33,6 +33,8 @@ class EvidenceDeltaRead(BaseModel):
     #: them.
     closable_gaps_opened: int = 0
     facts_added: int = 0
+    #: Open-web W7. Verified external (``ev:x:``) sources added; decisive.
+    verified_leads_added: int = 0
     #: Secondary telemetry. Shown, never used to decide anything.
     verified_findings_added: int = 0
     improved: bool = False
