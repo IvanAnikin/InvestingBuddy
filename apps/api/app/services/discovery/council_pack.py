@@ -36,10 +36,10 @@ from datetime import date
 from typing import Any
 
 from app.services.discovery.admission import (
-    A3_SOURCE_CLASSES,
     DIM_CATALYSTS,
     DIM_DOWNSIDE,
     DIM_THEME,
+    is_acceptable_source,
 )
 from app.services.web_research.packs import (
     DEFAULT_WEIGHTS,
@@ -105,8 +105,13 @@ COUNCIL_DIMENSIONS: tuple[str, ...] = (
 
 def _excerpt(text: str | None) -> str:
     from app.schemas.catalyst import neutralize_forbidden_terms
+    from app.services.web_research.text_safety import render_for_prompt
 
-    clipped = " ".join(str(text or "").split())[:EXCERPT_CHARS].rstrip()
+    # Third-party text reaches the Council prompt only RENDERED: the invisible characters a
+    # human cannot see but a model reads (zero-width, bidi overrides, tag characters) are
+    # removed first, then the text is clipped and neutralised of the forbidden vocabulary.
+    rendered = render_for_prompt(str(text or ""))
+    clipped = " ".join(rendered.split())[:EXCERPT_CHARS].rstrip()
     return str(neutralize_forbidden_terms(clipped) or "")
 
 
@@ -164,7 +169,9 @@ def build_candidate_web_pack(
         for dim in entry.get("dimensions") or []:
             if dim not in DIMENSIONS:
                 continue
-            if dim == DIM_THEME and entry.get("source_class") not in A3_SOURCE_CLASSES:
+            if dim == DIM_THEME and not is_acceptable_source(
+                entry.get("source_class"), entry.get("domain")
+            ):
                 continue
             terms = (
                 entry.get(
@@ -232,21 +239,33 @@ def build_candidate_web_pack(
                     )
                     or []
                 )[:4],
+                "acceptable_source": is_acceptable_source(
+                    e.get("source_class"), e.get("domain")
+                ),
                 "excerpt": _excerpt(e.get("passage")),
             }
             for i, (_p, e) in enumerate(picked)
         ]
         items.extend(local)
+        # Confidence rests on items from sources anyone cannot publish to; a dimension
+        # with only unacceptable-source items is "low", never higher.
+        trusted = [i for i in local if i["acceptable_source"]]
         dimension_block[dim] = {
             "item_ids": [i["local_id"] for i in local],
-            "evidence_confidence": evidence_confidence(local),
+            "evidence_confidence": (
+                evidence_confidence(trusted) if trusted else (CONF_LOW if local else CONF_NONE)
+            ),
         }
     dropped_count = sum(max(0, len(chosen_by_dim[d]) - quota[d]) for d in DIMENSIONS) + sum(
         dropped.values()
     )
 
-    theme_items = [i for i in items if i["dimension"] == DIM_THEME]
-    catalyst_items = [i for i in items if i["dimension"] == DIM_CATALYSTS]
+    # A passage from an unacceptable source (an aggregator, an open wire) may be SHOWN but
+    # never establishes a ranking input: page text must not steer priority.
+    theme_items = [i for i in items if i["dimension"] == DIM_THEME and i["acceptable_source"]]
+    catalyst_items = [
+        i for i in items if i["dimension"] == DIM_CATALYSTS and i["acceptable_source"]
+    ]
     growth = attrs.get("growth_status")
     size_state = status.get("size")
     return {

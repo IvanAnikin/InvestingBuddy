@@ -85,31 +85,62 @@ def _quarantine(
     )
 
 
+_LEVEL = {"not_established": 0, "low": 1, "medium": 2, "high": 3}
+_PACK_DIMENSIONS = {
+    "theme_relevance": "theme_relevance",
+    "catalysts": "catalysts",
+    "principal_downside": "principal_downside",
+}
+#: Dimensions the web items cannot support by themselves (third-party passages about a
+#: company are leads, not growth, profitability, quality or resilience evidence).
+_NON_WEB_CAP = "medium"
+
+
 def _clean_dimensions(
     note: Any, evidence_ids: set[str], issues: list[str], agent: str
 ) -> list[Any]:
-    """Open-web W6b: keep only known dimensions, valid confidence labels and real ids.
+    """Hold a candidate's dimension assessments to what the PACK can support.
 
-    An unknown dimension is dropped; an invalid confidence becomes ``not_established``
-    (never silently "high"); a citation id not in the pack is dropped. An assessment with
-    no valid id under a confidence above ``not_established`` is lowered to ``low``: a view
-    that cites nothing is not a well-sourced one.
+    * unknown dimensions are dropped;
+    * a citation id must be a run fact, the note's own candidate, or one of THAT
+      candidate's own web items — another candidate's item is dropped;
+    * the model's evidence confidence may never exceed the one the platform computed for the
+      dimension (``dimensions[dim].evidence_confidence``); a dimension the web items cannot
+      support is capped at ``medium``; an assessment citing nothing valid is ``low`` at best.
     """
+    pack = getattr(evidence_ids, "web_pack", {}) or {}
+    own = pack.get(note.candidate_ref or "", {})
+    own_items: set[str] = set(own.get("item_ids") or ())
+    computed: dict[str, str] = own.get("confidence") or {}
     out = []
     for dim in note.dimensions[:7]:
         if dim.dimension not in WEB_DIMENSIONS:
             issues.append(f"{agent}: dropped an unknown dimension '{dim.dimension[:40]}'.")
             continue
         valid, invalid = _split_citations(dim.citation_ids, evidence_ids)
-        if invalid:
-            issues.append(f"{agent}: dropped {len(invalid)} dimension citation id(s) not "
-                          "present in the evidence pack.")
+        belongs = [
+            i for i in valid
+            if i in own_items or i == note.candidate_ref or ("." not in i and i.startswith("R"))
+        ]
+        if invalid or len(belongs) != len(valid):
+            issues.append(
+                f"{agent}: dropped {len(dim.citation_ids) - len(belongs)} dimension citation "
+                "id(s) not present in this candidate's evidence."
+            )
         confidence = dim.evidence_confidence
         if confidence not in WEB_CONFIDENCE_LEVELS:
             confidence = "not_established"
-        if confidence in ("high", "medium") and not valid:
+        cap = (
+            computed.get(_PACK_DIMENSIONS[dim.dimension], "not_established")
+            if dim.dimension in _PACK_DIMENSIONS
+            else _NON_WEB_CAP
+        )
+        if _LEVEL.get(confidence, 0) > _LEVEL.get(cap, 0):
+            issues.append(f"{agent}: lowered a '{dim.dimension}' confidence to the pack's.")
+            confidence = cap
+        if confidence in ("high", "medium") and not belongs:
             confidence = "low"
-        out.append(dim.model_copy(update={"citation_ids": valid,
+        out.append(dim.model_copy(update={"citation_ids": belongs,
                                           "evidence_confidence": confidence}))
     return out
 

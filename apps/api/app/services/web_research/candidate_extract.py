@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 
 from app.services.web_research.entities import COMMON_WORDS, fold
 
@@ -40,6 +41,17 @@ EXTRACTOR_VERSION = "w6b.1"
 MAX_PARAGRAPHS = 600
 MAX_PARAGRAPH_CHARS = 2_500
 MAX_TABLE_ROWS = 400
+#: Hostile-size bounds (security review B2): no cell, row or page may make the scan cost
+#: more than a fixed amount, however large the document is.
+MAX_CELL_CHARS = 500
+MAX_ROW_CHARS = 2_500
+MAX_TOTAL_CHARS = 150_000
+#: A paragraph naming more listed companies than this is a LIST (a price table, a spam
+#: block): it is not evidence about any one of them.
+MAX_LISTED_PER_PARAGRAPH = 5
+#: From this many listed mentions in one paragraph a theme term must sit in the SAME clause.
+CLAUSE_MODE_MENTIONS = 3
+MAX_WINDOW_CHARS = 600
 MAX_MENTIONS_PER_PAGE = 80
 MAX_PASSAGE_CHARS = 420
 MAX_NAME_TOKENS = 6
@@ -126,7 +138,8 @@ _VENUE_ALT = "|".join(re.escape(v) for v in VENUE_WORDS)
 _TICKER = r"[A-Z0-9]{1,6}(?:\.[A-Z]{1,2})?"
 #: ``(ASX: PSA)``, ``AIM:PRE``, ``[TSXV: ABC]``, ``Nasdaq First North Growth Market: XYZ``.
 _TICKER_MENTION_RE = re.compile(
-    rf"(?:(?:\(|\[|,)\s*)?(?:the\s+)?(?P<venue>(?i:{_VENUE_ALT})(?:\s+Growth\s+Market)?)"
+    rf"(?:(?:\(|\[|,)\s*)?(?:the\s+)?(?<![A-Za-z0-9])"
+    rf"(?P<venue>(?i:{_VENUE_ALT})(?:\s+Growth\s+Market)?)"
     rf"\s*:\s*(?P<ticker>{_TICKER})(?![A-Za-z0-9])"
 )
 _ISIN_RE = re.compile(r"\bISIN\s*[:\-]?\s*(?P<isin>[A-Z]{2}[A-Z0-9]{9}\d)\b")
@@ -139,8 +152,8 @@ _LEGAL_FORMS = (
 _NAME_WITH_FORM_RE = re.compile(rf"(?P<name>(?:[A-Z][\w&'’.\-]*\s+){{1,5}}{_LEGAL_FORMS})(?![\w])")
 _VENUE_CONTEXT_RE = re.compile(
     rf"(?i:(?:listed|traded|trading|quoted)\s+(?:on|in)\s+(?:the\s+)?)"
-    rf"(?P<venue>(?i:{_VENUE_ALT}))\b"
-    rf"|(?P<venue2>(?i:{_VENUE_ALT}))[\s-]+(?i:listed)\b"
+    rf"(?<![A-Za-z0-9])(?P<venue>(?i:{_VENUE_ALT}))\b"
+    rf"|(?<![A-Za-z0-9])(?P<venue2>(?i:{_VENUE_ALT}))[\s-]+(?i:listed)\b"
 )
 
 _CONNECTORS = frozenset(
@@ -316,6 +329,7 @@ def valid_isin(value: str) -> bool:
 # Theme vocabulary (A3's "theme term from the intent vocabulary")
 # --------------------------------------------------------------------------- #
 
+#: Downside triggers: an EVENT, not a common word ("loss", "default" alone are not).
 _RISK_TERMS: tuple[str, ...] = (
     "delay",
     "delayed",
@@ -327,7 +341,6 @@ _RISK_TERMS: tuple[str, ...] = (
     "impairment",
     "suspended",
     "suspension",
-    "default",
     "insolvency",
     "write-down",
     "writedown",
@@ -340,35 +353,27 @@ _RISK_TERMS: tuple[str, ...] = (
     "recall",
     "cost overrun",
     "cost overruns",
-    "loss",
+    "net loss",
+    "event of default",
 )
+#: Catalyst triggers: a named EVENT. Generic words ("order", "capacity", "grant",
+#: "funding", "approval") are deliberately absent: they name nothing by themselves.
 _CATALYST_TERMS: tuple[str, ...] = (
+    "offtake agreement",
     "offtake",
-    "permit",
-    "permits",
+    "permit approved",
     "permitting",
-    "grant",
-    "funding",
-    "loan",
-    "contract",
-    "award",
-    "awarded",
-    "order",
-    "orders",
-    "backlog",
-    "commissioning",
-    "first production",
-    "ramp-up",
-    "approval",
-    "approved",
-    "acquisition",
-    "expansion",
-    "capacity",
-    "partnership",
-    "supply agreement",
-    "feasibility study",
     "final investment decision",
-    "financing",
+    "first production",
+    "commissioning",
+    "ramp-up",
+    "feasibility study",
+    "supply agreement",
+    "purchase order",
+    "contract award",
+    "awarded a contract",
+    "loan guarantee",
+    "grant funding",
 )
 
 
@@ -389,22 +394,29 @@ class ThemeVocabulary:
     A phrase matches when its stemmed tokens occur contiguously in the passage's stemmed
     tokens, so ``transformers`` matches ``transformer`` and ``rare earth`` matches ``Rare
     Earths``. CJK text has no spaces, so a phrase with no ASCII letter matches as a
-    substring.
+    substring. The phrases are compiled ONCE per vocabulary (not once per match).
     """
 
     phrases: tuple[str, ...] = ()
 
-    def _compiled(self) -> list[tuple[str, tuple[str, ...]]]:
-        return [(p, tuple(_tokens(p))) for p in self.phrases if p]
+    @cached_property
+    def _compiled(self) -> tuple[tuple[str, tuple[str, ...], bool], ...]:
+        out = []
+        for p in self.phrases:
+            if not p:
+                continue
+            out.append((p, tuple(_tokens(p)), bool(re.search(r"[a-z]", fold(p)))))
+        return tuple(out)
 
     def match(self, passage: str) -> tuple[str, ...]:
+        passage = passage[:MAX_WINDOW_CHARS * 4]
         passage_tokens = _tokens(passage)
         folded = fold(passage)
         found: list[str] = []
-        for phrase, tokens in self._compiled():
+        for phrase, tokens, ascii_phrase in self._compiled:
             if not tokens:
                 continue
-            if not re.search(r"[a-z]", fold(phrase)):
+            if not ascii_phrase:
                 if phrase in passage or phrase in folded:
                     found.append(phrase)
                 continue
@@ -415,6 +427,10 @@ class ThemeVocabulary:
             ):
                 found.append(phrase)
         return tuple(dict.fromkeys(found))
+
+
+_CATALYST_VOCAB = ThemeVocabulary(_CATALYST_TERMS)
+_RISK_VOCAB = ThemeVocabulary(_RISK_TERMS)
 
 
 def terms_in(passage: str, terms: Iterable[str]) -> tuple[str, ...]:
@@ -458,6 +474,8 @@ class ExtractionStats:
     mentions: int = 0
     name_only_dropped: int = 0
     rejected_names: int = 0
+    list_paragraphs: int = 0
+    chars_scanned: int = 0
     truncated: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -546,8 +564,8 @@ def _tag(
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     return (
         theme.match(passage),
-        terms_in(passage, _CATALYST_TERMS),
-        terms_in(passage, _RISK_TERMS),
+        _CATALYST_VOCAB.match(passage),
+        _RISK_VOCAB.match(passage),
     )
 
 
@@ -556,86 +574,107 @@ def _tag(
 # --------------------------------------------------------------------------- #
 
 
+_SENT_END = re.compile(r"(?<=[.!?;])\s+(?=[A-Z0-9(\[])")
+
+
+@dataclass
+class _Pending:
+    name: str
+    ticker: str | None
+    venue: str | None
+    isin: str | None
+    method: str
+    start: int  # where the NAME starts
+    end: int  # end of the identifier span
+
+
 def _paragraph_mentions(
     paragraph: str, theme: ThemeVocabulary, stats: ExtractionStats
 ) -> list[RawMention]:
+    """Mentions in one paragraph, each with the terms read from ITS OWN clause.
+
+    A theme term counts for a mention only when it sits in the mention's sentence (or,
+    when the paragraph names three or more listed companies, in the same clause — the text
+    between its neighbours), with every company NAME masked out (a company called "Zeta
+    Gallium" is not about gallium by its name). A paragraph naming more than
+    :data:`MAX_LISTED_PER_PARAGRAPH` companies is a list, and is evidence about none.
+    """
     text = paragraph[:MAX_PARAGRAPH_CHARS]
-    out: list[RawMention] = []
-    taken: list[tuple[int, int]] = []
-    passage_text: str | None = None
+    pending: list[_Pending] = []
 
-    def passage() -> str:
-        nonlocal passage_text
-        if passage_text is None:
-            passage_text = _passage(text)
-        return passage_text
-
-    def emit(
-        name: str | None,
-        ticker: str | None,
-        venue: str | None,
-        isin: str | None,
-        method: str,
-        span: tuple[int, int],
-    ) -> None:
+    def add(name: str | None, ticker: str | None, venue: str | None, isin: str | None,
+            method: str, span: tuple[int, int]) -> None:
+        if len(pending) >= MAX_MENTIONS_PER_PAGE:
+            return
         if not _name_ok(name, has_identifier=bool(ticker or isin)):
             stats.rejected_names += 1
             return
-        # The stored passage is the PARAGRAPH around the mention, clipped around the name
-        # so a long paragraph still shows it. The terms are read from the WHOLE paragraph:
-        # co-occurrence is paragraph-level (spec §6.2 A3).
-        # The company's OWN NAME is not evidence about it: "Zeta Gallium Limited" must not
-        # satisfy a gallium theme on the strength of its name. Terms are read with the name
-        # masked out.
-        whole_terms = _tag(_without(text, name), theme)
-        shown = passage()
-        if name and name not in shown:
-            at = text.find(name)
-            if at >= 0:
-                shown = _passage(text[max(0, at - 120) :], MAX_PASSAGE_CHARS)
-        out.append(
-            RawMention(
-                name=name or "",
-                ticker=ticker,
-                venue_raw=venue,
-                isin=isin,
-                method=method,
-                passage=shown,
-                passage_kind=PASSAGE_PARAGRAPH,
-                theme_terms=whole_terms[0],
-                catalyst_terms=whole_terms[1],
-                risk_terms=whole_terms[2],
-            )
+        assert name is not None
+        start = text.rfind(name, 0, span[0] + 1)
+        pending.append(
+            _Pending(name, ticker, venue, isin, method, start if start >= 0 else span[0], span[1])
         )
-        taken.append(span)
 
     for m in _TICKER_MENTION_RE.finditer(text):
-        emit(
-            name_before(text, m.start()),
-            m.group("ticker"),
-            _venue_text(m.group("venue")),
-            None,
-            METHOD_TICKER_VENUE,
-            m.span(),
-        )
+        add(name_before(text, m.start()), m.group("ticker"), _venue_text(m.group("venue")),
+            None, METHOD_TICKER_VENUE, m.span())
+        if len(pending) >= MAX_MENTIONS_PER_PAGE:
+            break
     for m in _ISIN_RE.finditer(text):
         isin = m.group("isin")
-        if not valid_isin(isin):
-            continue
-        emit(name_before(text, m.start()), None, None, isin, METHOD_ISIN, m.span())
-    if not out:
+        if valid_isin(isin):
+            add(name_before(text, m.start()), None, None, isin, METHOD_ISIN, m.span())
+    if not pending:
         # A legal-form name with the listing venue stated in the same paragraph.
         venue_match = _VENUE_CONTEXT_RE.search(text)
         if venue_match is not None:
             venue = venue_match.group("venue") or venue_match.group("venue2")
             for nm in _NAME_WITH_FORM_RE.finditer(text):
-                # The legal-form regex is the bound for this pattern.
                 name = nm.group("name").strip(" ,;")
                 words = name.split()
                 while words and words[0].lower() in _BAD_LEADING:
                     words.pop(0)
-                name = " ".join(words)
-                emit(name, None, venue, None, METHOD_NAME_VENUE_CONTEXT, nm.span())
+                add(" ".join(words), None, venue, None, METHOD_NAME_VENUE_CONTEXT, nm.span())
+                if len(pending) >= MAX_MENTIONS_PER_PAGE:
+                    break
+    if not pending:
+        return []
+
+    pending.sort(key=lambda p: p.start)
+    cuts = [0] + [m.end() for m in _SENT_END.finditer(text)] + [len(text)]
+    is_list = len({fold(p.name) for p in pending}) > MAX_LISTED_PER_PARAGRAPH
+    if is_list:
+        stats.list_paragraphs += 1
+    clause_mode = len(pending) >= CLAUSE_MODE_MENTIONS
+    names = [p.name for p in pending]
+    out: list[RawMention] = []
+    for i, p in enumerate(pending):
+        lo = max((c for c in cuts if c <= p.start), default=0)
+        hi = min((c for c in cuts if c >= p.end), default=len(text))
+        if clause_mode:
+            # The text after this mention up to the next one's name: never a neighbour's
+            # own clause.
+            # Only the FIRST mention may use the lead-in before it ("Gallium producers
+            # include Foo, ..."); every later one has only its own tail.
+            before = text[lo : p.start] if i == 0 else ""
+            after_to = pending[i + 1].start if i + 1 < len(pending) else hi
+            window = before + " " + text[p.end : min(hi, after_to)]
+        else:
+            window = text[lo:hi]
+        window = window[:MAX_WINDOW_CHARS]
+        for other in names:
+            window = _without(window, other)
+        theme_terms, catalyst_terms, risk_terms = (
+            ((), (), ()) if is_list else _tag(window, theme)
+        )
+        shown = _passage(text[lo:hi] if hi - lo >= 40 else text[max(0, p.start - 120) :])
+        out.append(
+            RawMention(
+                name=p.name, ticker=p.ticker, venue_raw=p.venue, isin=p.isin, method=p.method,
+                passage=shown, passage_kind=PASSAGE_PARAGRAPH, theme_terms=theme_terms,
+                catalyst_terms=catalyst_terms, risk_terms=risk_terms,
+            )
+        )
     return out
 
 
@@ -649,25 +688,39 @@ _VENUE_HEADER = re.compile(r"exchange|market|listing|venue|bourse|börse|boerse"
 
 
 def _row_text(cells: Sequence[str]) -> str:
-    return " | ".join(c.strip() for c in cells if c and c.strip())
+    return " | ".join(c.strip() for c in cells if c and c.strip())[:MAX_ROW_CHARS]
 
 
 def _table_mentions(
-    rows: Sequence[Sequence[str]], theme: ThemeVocabulary, stats: ExtractionStats
+    rows: Sequence[Sequence[str]],
+    theme: ThemeVocabulary,
+    stats: ExtractionStats,
+    *,
+    room: int = MAX_MENTIONS_PER_PAGE,
+    budget: list[int] | None = None,
 ) -> list[RawMention]:
     out: list[RawMention] = []
     if not rows:
         return out
-    header = [str(c or "") for c in rows[0]]
+    header = [str(c or "")[:MAX_CELL_CHARS] for c in rows[0]]
     name_col = next((i for i, c in enumerate(header) if _NAME_HEADER.search(c)), None)
     ticker_col = next((i for i, c in enumerate(header) if _TICKER_HEADER.search(c)), None)
     venue_col = next((i for i, c in enumerate(header) if _VENUE_HEADER.search(c)), None)
-    for row in rows[1:MAX_TABLE_ROWS]:
-        cells = [str(c or "").strip() for c in row]
+    # A table with no header row keeps its first row as DATA (a venue:ticker cell needs
+    # no header).
+    first = 1 if (name_col is not None or ticker_col is not None) else 0
+    for row in rows[first:MAX_TABLE_ROWS]:
+        if len(out) >= room or (budget is not None and budget[0] <= 0):
+            stats.truncated = True
+            break
+        # Every cell and the row are bounded BEFORE any pattern runs on them.
+        cells = [str(c or "").strip()[:MAX_CELL_CHARS] for c in row[:40]]
         if not any(cells):
             continue
         stats.table_rows += 1
         text = _row_text(cells)
+        if budget is not None:
+            budget[0] -= len(text)
         name: str | None = None
         ticker: str | None = None
         venue: str | None = None
@@ -739,27 +792,39 @@ def extract_mentions(
     tables: Sequence[Sequence[Sequence[str]]] = (),
     theme: ThemeVocabulary | None = None,
 ) -> tuple[list[RawMention], ExtractionStats]:
-    """Listed-company mentions in ``paragraphs`` and ``tables``. Bounded and deterministic."""
+    """Listed-company mentions in ``paragraphs`` and ``tables``.
+
+    Bounded in work, not just in output: at most :data:`MAX_TOTAL_CHARS` characters of a
+    page are scanned (each paragraph clipped to :data:`MAX_PARAGRAPH_CHARS`, each table cell
+    to :data:`MAX_CELL_CHARS`, each row to :data:`MAX_ROW_CHARS`), whatever the page size.
+    """
     vocabulary = theme or ThemeVocabulary()
     stats = ExtractionStats()
     found: list[RawMention] = []
+    budget = [MAX_TOTAL_CHARS]
     for paragraph in paragraphs[:MAX_PARAGRAPHS]:
         if not paragraph or not paragraph.strip():
             continue
-        stats.paragraphs += 1
-        found.extend(_paragraph_mentions(paragraph, vocabulary, stats))
-        if len(found) >= MAX_MENTIONS_PER_PAGE:
+        if budget[0] <= 0 or len(found) >= MAX_MENTIONS_PER_PAGE:
             stats.truncated = True
             break
+        clipped = paragraph[:MAX_PARAGRAPH_CHARS]
+        budget[0] -= len(clipped)
+        stats.paragraphs += 1
+        found.extend(_paragraph_mentions(clipped, vocabulary, stats))
     if len(paragraphs) > MAX_PARAGRAPHS:
         stats.truncated = True
     for rows in tables:
-        if len(found) >= MAX_MENTIONS_PER_PAGE:
+        if len(found) >= MAX_MENTIONS_PER_PAGE or budget[0] <= 0:
             stats.truncated = True
             break
-        found.extend(_table_mentions(rows, vocabulary, stats))
+        found.extend(
+            _table_mentions(rows, vocabulary, stats, room=MAX_MENTIONS_PER_PAGE - len(found),
+                            budget=budget)
+        )
     found = found[:MAX_MENTIONS_PER_PAGE]
     stats.mentions = len(found)
+    stats.chars_scanned = MAX_TOTAL_CHARS - max(budget[0], 0)
     return found, stats
 
 

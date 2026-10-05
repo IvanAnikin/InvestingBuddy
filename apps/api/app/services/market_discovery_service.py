@@ -1121,6 +1121,28 @@ def _eligibility_rank_key(candidate: DiscoveryCandidate) -> tuple:
     )
 
 
+def _expansion_loader(run: DiscoveryRun) -> Callable[[], Awaitable[list[str] | None]]:
+    """The model expansion persisted on the run (``universe_json["web_expansion"]``)."""
+
+    async def load() -> list[str] | None:
+        saved = (run.universe_json or {}).get("web_expansion")
+        return [str(q) for q in saved] if isinstance(saved, list) else None
+
+    return load
+
+
+def _expansion_saver(
+    db: AsyncSession, run: DiscoveryRun
+) -> Callable[[list[str]], Awaitable[None]]:
+    """Persist the expansion and COMMIT it before a single search is paid for."""
+
+    async def save(queries: list[str]) -> None:
+        run.universe_json = {**(run.universe_json or {}), "web_expansion": list(queries)}
+        await db.commit()
+
+    return save
+
+
 def _is_job_abort(exc: BaseException) -> bool:
     """True for the exceptions a durable job's checkpoint raises to stop its handler."""
     try:
@@ -1171,6 +1193,8 @@ async def _run_dynamic_discovery(
             web_deps=web_deps,
             commit=db.commit,
             plan_date=(_aware(run.created_at) or datetime.now(timezone.utc)).date(),
+            expansion_loader=_expansion_loader(run),
+            expansion_saver=_expansion_saver(db, run),
             # The durable job's checkpoint: the web stage reports its phases and a lost
             # lease or a cancellation raised by it STOPS the run (see below).
             progress=progress,

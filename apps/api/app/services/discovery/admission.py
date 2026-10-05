@@ -40,7 +40,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.web_research.classify import (
-    SC_ACADEMIC_PAPER,
     SC_COMPANY_PRESS_RELEASE,
     SC_COMPANY_WEB_PAGE,
     SC_EXCHANGE_ANNOUNCEMENT,
@@ -65,6 +64,10 @@ CODE_THEME_EVIDENCE_MISSING = "theme_evidence_missing"
 #: A model-recalled lead that, with live search available, no executed search plus fetched
 #: page corroborated: shown in "also surfaced", never in the quota.
 CODE_RECALL_NOT_CORROBORATED = "recall_not_corroborated"
+#: A search lead on a venue with no official directory, whose listing no official page
+#: confirmed: ``eligible_unverified(identity)`` — shown, never admitted (a page's own text
+#: can never verify the listing of the company it names).
+CODE_NO_OFFICIAL_DIRECTORY = "no_official_directory"
 
 STATE_ADMITTED = "admitted"
 #: ``eligible_unverified(theme)``: identity verified, theme evidence missing.
@@ -83,7 +86,6 @@ A3_SOURCE_CLASSES: frozenset[str] = frozenset(
         SC_STATISTICAL_AGENCY,
         SC_SPECIALIST_AGENCY,
         SC_STANDARDS_BODY,
-        SC_ACADEMIC_PAPER,
         SC_MAJOR_FINANCIAL_PRESS,
         # issuer material
         SC_ISSUER_FILING,
@@ -94,6 +96,38 @@ A3_SOURCE_CLASSES: frozenset[str] = frozenset(
         SC_COMPANY_WEB_PAGE,
     }
 )
+
+#: Hosts whose content ANYONE can publish: open press-release wires and user-content
+#: platforms. A passage there is not evidence about a company (a wire release is the
+#: issuer's words, but a stranger can post one), so it never carries A3 — whatever class the
+#: classifier gave the page (security review M3).
+A3_EXCLUDED_HOSTS: tuple[str, ...] = (
+    "globenewswire.com", "businesswire.com", "prnewswire.com", "prnewswire.co.uk",
+    "accesswire.com", "newsfilecorp.com", "cision.com", "mynewsdesk.com", "ots.at", "dgap.de",
+    "eqs-news.com", "newswire.ca", "einpresswire.com", "prlog.org", "openpr.com",
+    "medium.com", "substack.com", "blogspot.com", "wordpress.com", "wixsite.com", "github.io",
+    "tumblr.com", "quora.com", "reddit.com", "linkedin.com", "facebook.com", "x.com",
+    "twitter.com", "sites.google.com", "weebly.com", "notion.site", "pages.dev", "netlify.app",
+    "vercel.app", "stocktwits.com", "seekingalpha.com",
+)
+#: Student / personal pages on academic domains are not scholarship.
+A3_EXCLUDED_SUFFIXES: tuple[str, ...] = (".edu", ".edu.au", ".ac.uk", ".ac.jp", ".ac.at")
+
+
+def a3_host_excluded(domain: str | None) -> bool:
+    host = (domain or "").lower().strip(".").removeprefix("www.")
+    if not host:
+        return False
+    if any(host == h or host.endswith("." + h) for h in A3_EXCLUDED_HOSTS):
+        return True
+    return host.endswith(A3_EXCLUDED_SUFFIXES)
+
+
+def is_acceptable_source(source_class: str | None, domain: str | None) -> bool:
+    """A source that may carry A3 / a THEME item: an acceptable class on a host anyone
+    cannot publish to."""
+    return source_class in A3_SOURCE_CLASSES and not a3_host_excluded(domain)
+
 
 MODE_SEARCH = "search"
 MODE_MODEL_RECALL = "model_recall"
@@ -108,7 +142,7 @@ def is_a3_passage(entry: Mapping[str, Any]) -> bool:
     an acceptable source class, in a document that is not injection-suspect."""
     return bool(
         entry.get("theme_terms")
-        and entry.get("source_class") in A3_SOURCE_CLASSES
+        and is_acceptable_source(entry.get("source_class"), entry.get("domain"))
         and entry.get("passage_ref")
         and not entry.get("injection_suspect")
     )
@@ -223,6 +257,23 @@ def decide(
     return AdmissionDecision(STATE_ADMITTED, rules, [], evidence_ids=evidence)
 
 
+def decide_unverifiable_venue(mentions: Sequence[Mapping[str, Any]] = ()) -> AdmissionDecision:
+    """A search lead whose listing no OFFICIAL source (directory, exchange host, regulator,
+    registry-verified issuer page) confirmed. Never admitted; shown in "also surfaced"."""
+    evidence = a3_evidence_ids(mentions)
+    rules: dict[str, dict[str, Any]] = {
+        "A1": {"passed": True},
+        "A2": {"passed": False, "code": CODE_IDENTITY_UNVERIFIED,
+               "reason": CODE_NO_OFFICIAL_DIRECTORY},
+        "A3": {"passed": bool(evidence), "passages": len(evidence)},
+    }
+    return AdmissionDecision(
+        STATE_ALSO_SURFACED, rules, [CODE_IDENTITY_UNVERIFIED, CODE_NO_OFFICIAL_DIRECTORY],
+        evidence_ids=evidence,
+        detail="eligible_unverified(identity): no official source confirms this listing",
+    )
+
+
 def decide_recall(
     *,
     has_provenance: bool,
@@ -294,6 +345,7 @@ __all__ = [
     "A3_SOURCE_CLASSES",
     "ADMISSION_VERSION",
     "CODE_IDENTITY_UNVERIFIED",
+    "CODE_NO_OFFICIAL_DIRECTORY",
     "CODE_NO_SEARCH_PROVENANCE",
     "CODE_RECALL_NOT_CORROBORATED",
     "CODE_THEME_EVIDENCE_MISSING",
@@ -307,10 +359,14 @@ __all__ = [
     "STATE_LABELLED",
     "STATE_REJECTED",
     "AdmissionDecision",
+    "A3_EXCLUDED_HOSTS",
     "a3_evidence_ids",
+    "a3_host_excluded",
+    "is_acceptable_source",
     "apply_a4",
     "decide",
     "decide_recall",
+    "decide_unverifiable_venue",
     "is_a3_passage",
     "search_lead_has_provenance",
 ]

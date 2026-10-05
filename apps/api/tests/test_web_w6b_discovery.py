@@ -1229,3 +1229,533 @@ class TestA4AndV319Guards:
         zeta = _record(stage, "ZGL")
         out = zeta.to_dict()["provenance"]
         assert out["why"] is None and out.get("why_withheld")
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1
+# --------------------------------------------------------------------------- #
+
+
+def _fake_company_page(host_label: str = "fakeco") -> bytes:
+    return page(
+        "Fakeco AB: gallium recovery",
+        [
+            f"Fakeco AB (STO: FAKE) is a gallium recovery company and says it is listed on "
+            f"Nasdaq Stockholm under the ticker FAKE; see {host_label}.se/investors.",
+            "Gallium prices have doubled and buyers are qualifying new producers, a trade "
+            "publication reported, as lead times for new capacity remain long.",
+        ],
+    )
+
+
+class TestAFabricatedCompanyIsNeverAdmitted:
+    """Security B1. A page on a domain that spells the company's name, naming a ticker on a
+    venue with NO official directory, must not mint an admitted candidate."""
+
+    @pytest.mark.parametrize("host", ["fakeco.se", "fakeco.org", "fakeco.pl", "fakeco.com"])
+    async def test_a_name_squatting_domain_cannot_self_verify_a_listing(
+        self, h: H, host: str
+    ) -> None:
+        url = f"https://www.{host}/investors"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(url, "Fakeco")]})
+        h.net.pages[url] = _fake_company_page(host.split(".")[0])
+        stage = await h.stage()
+        assert all(r.identity.ticker != "FAKE" for r in stage.candidates)
+        assert all(r.lead.ticker != "FAKE" for r in stage.rejected), "shown, not rejected"
+        fake = next(r for r in stage.also_surfaced if r.identity.ticker == "FAKE")
+        assert fake.identity.status == "rejected"
+        assert fake.eligibility.status == "eligible_unverified"
+        assert fake.web["admission"]["state"] == "also_surfaced"
+        assert fake.web["admission"]["codes"] == ["identity_unverified", "no_official_directory"]
+        assert fake.identity.lead.evidence_url is None, "a page the search found is never offered"
+
+    async def test_the_page_is_not_even_fetched_for_identity(self, h: H) -> None:
+        fetched: list[str] = []
+
+        async def fetcher(url: str, **kw: Any) -> Any:
+            fetched.append(url)
+            return await directory_fetcher(url, **kw)
+
+        url = "https://www.fakeco.se/investors"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(url)]})
+        h.net.pages[url] = _fake_company_page()
+        await h.stage(fetcher=fetcher)
+        assert not any("fakeco" in u for u in fetched)
+
+    def test_only_official_pages_are_offered_as_identity_evidence(self) -> None:
+        sightings = [
+            {"url": "https://www.fakeco.se/investors"},
+            {"url": "https://www.tdworld.com/a"},
+        ]
+        assert ds._identity_evidence_url("Fakeco AB", "FAKE", "STO", sightings) is None
+        official = [*sightings, {"url": "https://www.sec.gov/Archives/x"}]
+        assert ds._identity_evidence_url("Fakeco AB", "FAKE", "STO", official) == (
+            "https://www.sec.gov/Archives/x"
+        )
+        exch = [{"url": "https://www.euronext.com/en/markets/x"}]
+        assert ds._identity_evidence_url("Foo SA", "FOO", "PA", exch) == exch[0]["url"]
+
+    def test_a_name_matching_domain_is_never_upgraded_to_issuer_material(self) -> None:
+        from app.services.discovery import pipeline as pl
+        from app.services.discovery.leads import CompanyLead
+
+        lead = CompanyLead(
+            name="Fakeco AB",
+            ticker="FAKE",
+            exchange_raw="STO",
+            country=None,
+            listing_source_url=None,
+            evidence_url=None,
+            why=None,
+            source="external_search",
+            discovery_mode="search",
+            web={
+                "mentions": [
+                    {
+                        "url": "https://www.fakeco.se/x",
+                        "domain": "fakeco.se",
+                        "source_class": "unknown_web",
+                        "theme_terms": ["gallium"],
+                        "passage_ref": "wp:a:1",
+                    }
+                ]
+            },
+        )
+        (entry,) = pl._a3_mentions(lead, "Fakeco AB")
+        assert entry["source_class"] == "unknown_web"
+        assert not adm.is_a3_passage(entry)
+
+    async def test_a_registry_verified_issuer_page_still_counts(self, monkeypatch: Any) -> None:
+        from types import SimpleNamespace
+
+        from app.services.discovery import pipeline as pl
+        from app.services.discovery.leads import CompanyLead
+        from app.services.sources import verified_issuer_sources as vis
+
+        verified = SimpleNamespace(
+            official_website_domain="lynas.com",
+            allowed_domains=(),
+            document_domains=(),
+            investor_relations_url=None,
+        )
+        monkeypatch.setattr(vis, "get_verified_issuer_source", lambda t, e: verified)
+        lead = CompanyLead(
+            name="Lynas",
+            ticker="LYC",
+            exchange_raw="ASX",
+            country=None,
+            listing_source_url=None,
+            evidence_url=None,
+            why=None,
+            source="external_search",
+            web={"mentions": [{"url": "https://www.lynas.com/x", "source_class": "unknown_web"}]},
+        )
+        (entry,) = pl._a3_mentions(lead, "Lynas")
+        assert entry["source_class"] == "company_web_page"
+
+
+class TestThePageCannotWidenTheEvidence:
+    async def test_an_open_wire_release_cannot_carry_a3(self, h: H) -> None:
+        url = "https://www.einpresswire.com/article/1/alpha-gallium"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(url)]})
+        h.net.pages[url] = GALLIUM_ARTICLE
+        stage = await h.stage()
+        assert all(r.identity.ticker != "ALG" for r in stage.candidates)
+        alg = next(r for r in stage.also_surfaced if r.identity.ticker == "ALG")
+        assert alg.web["admission"]["codes"] == ["theme_evidence_missing"]
+
+    async def test_a_stuffed_paragraph_admits_nobody(self, h: H) -> None:
+        names = " ".join(
+            f"{n} Gallium Limited (ASX: {t}) is a gallium name."
+            for n, t in (
+                ("Alpha", "ALG"),
+                ("Beta", "BGM"),
+                ("Zeta", "ZGL"),
+                ("Apex", "APX"),
+                ("Gamma", "GGL"),
+                ("Delta", "DGL"),
+            )
+        )
+        url = "https://www.mining.com/web/stuffed"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(url)]})
+        h.net.pages[url] = page("Stuffed", [names])
+        stage = await h.stage()
+        assert stage.candidates == []
+
+    async def test_a_price_list_does_not_admit_the_listed_names(self, h: H) -> None:
+        url = "https://www.mining.com/web/prices"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(url)]})
+        h.net.pages[url] = page(
+            "Market wrap",
+            [
+                "Share prices today: Alpha Gallium Limited (ASX: ALG) +2%, Beta Germanium "
+                "Limited (ASX: BGM) -1%, Zeta Gallium Limited (ASX: ZGL) 5%. Related: gallium "
+                "stocks to watch this quarter as export curbs bite across the sector."
+            ],
+        )
+        stage = await h.stage()
+        assert stage.candidates == []
+
+    async def test_a_corroboration_about_another_listing_is_not_attached(self, h: H) -> None:
+        """A registry lead ALG on the ASX; a page about 'Alpha Gallium Limited (AIM: ALG)' is
+        a different listing that shares the normalised name — not corroboration."""
+        item = {
+            "ticker": "ALG",
+            "exchange": "AU",
+            "company_name": "Alpha Gallium Limited",
+            "country": "Australia",
+            "industry": "Metals & Mining",
+            "theme": "mining_materials",
+            "universe_source": "curated_theme_registry",
+            "source_tier": "T3_curated_reference_list",
+        }
+        url = "https://www.mining.com/web/aim"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(url)]})
+        h.net.pages[url] = page(
+            "AIM gallium",
+            [
+                "Alpha Gallium Limited (AIM: ALG) is building a gallium recovery plant, a trade "
+                "publication reported, and gallium buyers are qualifying new producers."
+            ],
+        )
+        stage = await h.stage(run_universe={"items": [item]})
+        alg = _record(stage, "ALG")
+        assert alg.identity.lead.source == "curated_registry"
+        assert "corroborated_by_search" not in alg.web
+        assert alg.web["admission"]["evidence_ids"] == []
+
+    def test_a_recalled_lead_binds_to_the_listing_not_the_name(self) -> None:
+        from app.services.discovery.leads import CompanyLead
+        from app.services.web_research import candidate_extract as ce
+
+        lead = CompanyLead(
+            name="Zeta Gallium Limited",
+            ticker="ZGL",
+            exchange_raw="ASX",
+            country=None,
+            listing_source_url=None,
+            evidence_url=None,
+            why=None,
+            source="external_search",
+        )
+
+        def m(venue: str, ticker: str | None) -> Any:
+            return ce.RawMention(
+                "Zeta Gallium Limited", ticker, venue, None, "ticker_venue", "p", "paragraph"
+            )
+
+        assert ds._same_company(lead, m("ASX", "ZGL"))
+        assert not ds._same_company(lead, m("AIM", "ZGL")), "same ticker, another venue"
+        assert not ds._same_company(lead, m("ASX", "ZZZ")), "same name, another ticker"
+        assert ds._same_company(lead, m("ASX", None)), "a name-only mention has no ticker"
+
+
+class TestTheEventLoopIsNotBlocked:
+    async def test_mention_extraction_runs_off_the_loop(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+        import time
+
+        from app.services.web_research import candidate_extract as ce
+
+        h.serve_obscure()
+        real = ce.extract_mentions
+
+        def slow(*a: Any, **k: Any) -> Any:
+            time.sleep(0.6)
+            return real(*a, **k)
+
+        monkeypatch.setattr(ce, "extract_mentions", slow)
+        ticks: list[float] = []
+
+        async def ticker() -> None:
+            while True:
+                ticks.append(time.perf_counter())
+                await asyncio.sleep(0.02)
+
+        task = asyncio.create_task(ticker())
+        await h.stage()
+        task.cancel()
+        gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
+        assert gaps and max(gaps) < 0.4, f"the loop stalled for {max(gaps):.2f}s"
+
+    async def test_the_chunk_index_is_loaded_once_per_page_not_per_mention(
+        self, h: H, session: Any, pool: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.corpus.artifacts.backends.memory import InMemoryArtifactStore
+        from app.services.corpus.search.backends.memory import InMemorySearchBackend
+
+        calls: list[Any] = []
+        real = ds._chunk_index
+
+        async def spy(session_: Any, version_id: Any) -> Any:
+            calls.append(version_id)
+            return await real(session_, version_id)
+
+        monkeypatch.setattr(ds, "_chunk_index", spy)
+        h.serve_obscure()
+        stage = await h.stage(
+            config=cfg(v3_web_corpus_ingest_enabled=True),
+            store=InMemoryArtifactStore(),
+            search_backend=InMemorySearchBackend(),
+        )
+        mentions = sum(len(x.web["mentions"]) for x in _all(stage) if x.web)
+        assert mentions >= 2 and len(calls) == 1
+
+    def test_a_chunk_that_only_names_the_company_is_not_the_passage(self) -> None:
+        from app.services.web_research import candidate_extract as ce
+
+        mention = ce.RawMention(
+            "Alpha Gallium Limited",
+            "ALG",
+            "ASX",
+            None,
+            "ticker_venue",
+            "Alpha Gallium Limited is building a gallium plant.",
+            "paragraph",
+        )
+        assert ds._find_chunk([("c1", "alpha gallium limited appointed a chair")], mention) is None
+        hit_ = ds._find_chunk(
+            [("c1", "x"), ("c2", "alpha gallium limited is building a gallium plant. more")],
+            mention,
+        )
+        assert hit_ == "c2"
+
+
+class TestVerificationSlots:
+    def test_recalled_leads_keep_a_share_of_the_verification_bound(self) -> None:
+        from app.services.discovery import pipeline as pl
+        from app.services.discovery.leads import CompanyLead
+
+        def lead(i: int, mode: str) -> CompanyLead:
+            return CompanyLead(
+                name=f"Co{i}",
+                ticker=f"T{i}",
+                exchange_raw="ASX",
+                country=None,
+                listing_source_url=None,
+                evidence_url=None,
+                why=None,
+                source="external_search",
+                discovery_mode=mode,
+            )
+
+        web = [lead(i, "search") for i in range(30)]
+        recall = [lead(100 + i, "model_recall") for i in range(2)]
+        order = pl._verification_order([*web, *recall], 8)
+        assert {x.name for x in order[:8]} >= {"Co100", "Co101"}
+        assert sum(1 for x in order[:8] if x.discovery_mode == "search") == 6
+        assert [x.name for x in order[:6]] == [f"Co{i}" for i in range(6)], "web order kept"
+
+    def test_with_no_recall_the_web_leads_take_every_slot(self) -> None:
+        from app.services.discovery import pipeline as pl
+        from app.services.discovery.leads import CompanyLead
+
+        web = [
+            CompanyLead(
+                name=f"C{i}",
+                ticker=f"T{i}",
+                exchange_raw="ASX",
+                country=None,
+                listing_source_url=None,
+                evidence_url=None,
+                why=None,
+                source="external_search",
+                discovery_mode="search",
+            )
+            for i in range(10)
+        ]
+        assert pl._verification_order(web, 4)[:4] == web[:4]
+
+
+class TestSuffixSubNames:
+    def _outcome(self, name: str, listed: str) -> Any:
+        from app.services.discovery.identity import IdentityOutcome
+        from app.services.discovery.leads import CompanyLead
+
+        lead = CompanyLead(
+            name=name,
+            ticker="LYC",
+            exchange_raw="ASX",
+            country=None,
+            listing_source_url=None,
+            evidence_url=None,
+            why=None,
+            source="external_search",
+            discovery_mode="search",
+        )
+        return IdentityOutcome(
+            lead=lead,
+            status="verified",
+            ticker="LYC",
+            exchange="AU",
+            name=name,
+            directory_listing={"name": listed},
+        )
+
+    def test_a_headline_prefix_does_not_lose_the_company(self) -> None:
+        from app.services.discovery.pipeline import _strict_name_guard
+
+        out = _strict_name_guard(
+            self._outcome("Rare Earth Miner Lynas", "LYNAS RARE EARTHS LIMITED")
+        )
+        assert out.verified and out.lead.name == "LYNAS RARE EARTHS LIMITED"
+
+    def test_a_shared_leading_word_is_still_a_collision(self) -> None:
+        from app.services.discovery.pipeline import _strict_name_guard
+
+        out = _strict_name_guard(self._outcome("Apex Metals Ltd", "APEX FISHERIES LIMITED"))
+        assert not out.verified and out.rejection_reason == "name_mismatch_with_listing"
+
+    def test_an_unrelated_suffix_does_not_pass(self) -> None:
+        from app.services.discovery.pipeline import _strict_name_guard
+
+        out = _strict_name_guard(
+            self._outcome("Big Mining Giant Corp", "LYNAS RARE EARTHS LIMITED")
+        )
+        assert not out.verified
+
+
+class TestResumeSpendsNothingTwice:
+    """Review H2/M5."""
+
+    def _facts(self) -> Any:
+        return None
+
+    class Transport:
+        model = "m"
+
+        def __init__(self, answers: list[list[str]]) -> None:
+            self.answers = answers
+            self.calls = 0
+
+        async def complete(self, **_kw: Any) -> DeepSeekResponse:
+            out = self.answers[min(self.calls, len(self.answers) - 1)]
+            self.calls += 1
+            return DeepSeekResponse(
+                text=json.dumps({"queries": out}),
+                prompt_tokens=10,
+                completion_tokens=5,
+                finish_reason="stop",
+            )
+
+    async def _stage(self, h: H, transport: Any, store: dict[str, Any] | None = None) -> Any:
+        async def load() -> Any:
+            return None if store is None else store.get("expansion")
+
+        async def save(queries: list[str]) -> None:
+            if store is not None:
+                store["expansion"] = list(queries)
+
+        return await ds.run_discovery_web_stage(
+            h.session,
+            h.intent,
+            ds.DiscoveryWebContext(
+                run_id=h.run_id,
+                plan_date=TODAY,
+                expansion_loader=load if store is not None else None,
+                expansion_saver=save if store is not None else None,
+            ),
+            cfg=cfg(),
+            deps=h.deps(llm_transport=transport),
+        )
+
+    async def test_a_retry_after_a_recycle_reuses_the_persisted_expansion(self, h: H) -> None:
+        store: dict[str, Any] = {}
+        first = self.Transport([["gallium recovery from bauxite residue"]])
+        await self._stage(h, first, store)
+        paid = [r.query for r in h.provider.requests]
+        assert store["expansion"] == ["gallium recovery from bauxite residue"]
+        # A "new process": the in-memory cache is gone and the model would now answer
+        # DIFFERENTLY (temperature 0.2).
+        dp.clear_expansion_cache()
+        second = self.Transport([["gallium tailings reprocessing plant"]])
+        out = await self._stage(h, second, store)
+        assert second.calls == 0, "the model is not asked again"
+        assert [r.query for r in h.provider.requests] == paid, "no new search is paid for"
+        assert out.summary["queries"]["reused_on_resume"] == len(paid)
+
+    async def test_the_recorded_expansion_rows_stand_in_when_nothing_was_persisted(
+        self, h: H
+    ) -> None:
+        await self._stage(h, self.Transport([["gallium recovery from bauxite residue"]]), None)
+        paid = [r.query for r in h.provider.requests]
+        assert any("bauxite" in q for q in paid)
+        dp.clear_expansion_cache()
+        again = self.Transport([["something else entirely about gallium"]])
+        await self._stage(h, again, None)
+        assert again.calls == 0
+        assert [r.query for r in h.provider.requests] == paid
+
+    async def test_without_the_fix_a_new_proposal_would_spend_again(self, h: H) -> None:
+        """MUTATION GUARD: a different run has no record, so the model IS asked."""
+        await self._stage(h, self.Transport([["gallium recovery from bauxite residue"]]), None)
+        dp.clear_expansion_cache()
+        other = self.Transport([["gallium tailings reprocessing plant"]])
+        h.run_id = uuid.uuid4()
+        await self._stage(h, other, None)
+        assert other.calls == 1
+
+    async def test_orphan_rows_count_against_the_ceiling(self, h: H, session: Any) -> None:
+        """An earlier attempt's query this attempt no longer plans still spent a call."""
+        orphan = WebSearchQuery(
+            id=uuid.uuid4(),
+            discovery_run_id=h.run_id,
+            stage="discovery_web",
+            family="entity",
+            origin="llm_expansion",
+            query_text="an orphaned expansion query",
+            request_hash="0" * 64,
+            provider="fake_web_search",
+            executed=True,
+            provider_request_id="x",
+            http_status=200,
+            network_call_count=1,
+            result_count=0,
+        )
+        session.add(orphan)
+        await session.flush()
+        h.serve_obscure()
+        stage = await h.stage()
+        issued = len(h.provider.requests)
+        assert stage.web["budget"]["queries_reserved"] == issued + 1
+
+    async def test_the_fetch_ceiling_carries_across_attempts(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dataclasses import replace
+
+        from app.services.web_research import budget as bud
+
+        monkeypatch.setitem(
+            bud.PROFILES,
+            "discovery_standard",
+            replace(bud.PROFILES["discovery_standard"], max_fetches=1),
+        )
+        a, b = ART, ART + "-2"
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(a), hit(b)]})
+        h.net.pages[a] = GALLIUM_ARTICLE
+        h.net.pages[b] = GALLIUM_ARTICLE
+        await h.stage()
+        assert len(h.net.requested) == 1
+        again = await h.stage()
+        assert len(h.net.requested) == 1, "the retry may not fetch another page"
+        assert again.web["budget"]["fetches"] >= 1
+
+    async def test_a_failure_in_the_search_phase_leaves_the_transaction_usable(
+        self, h: H, session: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sqlalchemy import text
+
+        real = ds._search_batch
+
+        async def boom(sess: Any, *a: Any, **k: Any) -> Any:
+            await real(sess, *a, **k)
+            raise RuntimeError("the search phase failed after writing rows")
+
+        monkeypatch.setattr(ds, "_search_batch", boom)
+        stage = await h.stage()
+        assert stage.web["state"] == "web_stage_failed"
+        assert (await session.execute(text("select 1"))).scalar_one() == 1
+        assert await _count(session, WebSearchQuery) == 0, "the savepoint released its rows"

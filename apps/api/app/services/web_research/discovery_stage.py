@@ -44,6 +44,7 @@ Logs carry counts, codes and states — never a query, a URL or page text.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -151,6 +152,11 @@ class DiscoveryWebContext:
     #: CREATION date, so a retry after midnight UTC plans the SAME queries and reuses the
     #: recorded rows instead of paying for them again.
     plan_date: date | None = None
+    #: The model expansion is persisted on the RUN before any search is paid for, and
+    #: reloaded on a retry: a different proposal after a recycle would change the request
+    #: hashes and spend the expansion share of the ceiling a second time.
+    expansion_loader: Callable[[], Awaitable[list[str] | None]] | None = None
+    expansion_saver: Callable[[list[str]], Awaitable[None]] | None = None
 
 
 @dataclass
@@ -421,9 +427,6 @@ async def _search_batch(
             continue
         pairs.append((q, await _outcome_from_row(session, row, q.request)))
         tally.reused += 1
-        if row.network_call_count and box.budget is not None:
-            # The run's per-run query ceiling carries across attempts.
-            box.budget.queries_reserved += int(row.network_call_count)
     if todo:
         persist = (
             _persist_factory(session)
@@ -446,6 +449,38 @@ async def _search_batch(
     order = {id(q): i for i, q in enumerate(queries)}
     pairs.sort(key=lambda p: order[id(p[0])])
     return pairs
+
+
+async def _prime_budget(session: Any, budget: WebResearchBudget, run_id: uuid.UUID | None) -> None:
+    """Carry what EARLIER attempts of this run already spent into this attempt's budget.
+
+    Every ``web_search_queries`` row the run holds counts against the query ceiling —
+    orphans too (a query an earlier attempt planned and this one no longer does, e.g. a
+    different model expansion) — and every fetch an earlier attempt completed counts against
+    the fetch and byte ceilings. Without this a crash-and-retry loop could spend the
+    ceiling again on each attempt.
+    """
+    if run_id is None:
+        return
+    from app.models.web_research import WebFetchAttempt as F
+    from app.models.web_research import WebSearchQuery as Q
+    from app.services.web_research.fetch import STATUS_FETCHED, STATUS_PARTIAL
+
+    calls = await session.scalar(
+        sa.select(sa.func.coalesce(sa.func.sum(Q.network_call_count), 0)).where(
+            Q.discovery_run_id == run_id, Q.stage == STAGE_NAME
+        )
+    )
+    budget.queries_reserved = max(budget.queries_reserved, int(calls or 0))
+    fetched = (
+        await session.execute(
+            sa.select(sa.func.count(), sa.func.coalesce(sa.func.sum(F.bytes), 0)).where(
+                F.discovery_run_id == run_id, F.status.in_((STATUS_FETCHED, STATUS_PARTIAL))
+            )
+        )
+    ).one()
+    budget.fetches = max(budget.fetches, int(fetched[0] or 0))
+    budget.bytes_downloaded = max(budget.bytes_downloaded, int(fetched[1] or 0))
 
 
 def _persist_factory(session: Any) -> Callable[[], Any] | None:
@@ -702,6 +737,7 @@ async def _execute(
     now = deps.now or datetime.now(timezone.utc)
     today = deps.today or ctx.plan_date or now.date()
     budget = await budget_for_run(session, profile, cfg=cfg, now=now, clock=deps.clock)
+    await _prime_budget(session, budget, ctx.run_id)
     box.budget = budget
     limits = budget.limits
     private = frozenset(ctx.private_tokens)
@@ -715,7 +751,7 @@ async def _execute(
     if not plan.queries:
         summary["reason"] = "intent_names_nothing_a_search_can_be_built_from"
         return STATE_PLAN_EMPTY, [], frozenset()
-    expansion = await _expansion(cfg, deps, facts, plan, limits, private)
+    expansion = await _resolve_expansion(session, ctx, cfg, deps, facts, plan, limits, private)
     if expansion is not None:
         box.units = box.units + expansion.units
         if expansion.queries:
@@ -739,37 +775,13 @@ async def _execute(
         budget=budget,
         budget_profile=profile,
     )
-    pairs = await _search_batch(
-        session,
-        plan.queries,
-        ctx=ctx,
-        search_ctx=search_ctx,
-        provider=provider,
-        cfg=cfg,
-        deps=deps,
-        now=now,
-        tally=tally,
-        box=box,
-    )
-    saturated = [
-        q
-        for q, o in pairs
-        if o.execution.executed and dp.is_saturated(_domains_of(o), ctx.known_domains)
-    ]
-    if saturated and ctx.known_domains:
-        followups = dp.build_followups(
-            plan,
-            saturated,
-            ctx.known_domains,
-            limit=max(0, limits.max_queries - len(plan.queries)),
-            result_domains={q.key: _domains_of(o) for q, o in pairs},
-        )
-        tally.saturated = [q.key for q in saturated]
-        tally.followups = len(followups)
-        tally.excluded_domains = len(followups[0].request.exclude_domains) if followups else 0
-        extra = await _search_batch(
+    # In a SAVEPOINT: an error in the search phase releases only its own writes, so the
+    # run's transaction stays usable (the provenance rows of PAID calls are committed by the
+    # independent session on PostgreSQL either way).
+    async with session.begin_nested():
+        pairs = await _search_batch(
             session,
-            followups,
+            plan.queries,
             ctx=ctx,
             search_ctx=search_ctx,
             provider=provider,
@@ -779,8 +791,36 @@ async def _execute(
             tally=tally,
             box=box,
         )
-        pairs.extend(extra)
-        tally.planned += len(followups)
+        saturated = [
+            q
+            for q, o in pairs
+            if o.execution.executed and dp.is_saturated(_domains_of(o), ctx.known_domains)
+        ]
+        if saturated and ctx.known_domains:
+            followups = dp.build_followups(
+                plan,
+                saturated,
+                ctx.known_domains,
+                limit=max(0, limits.max_queries - len(plan.queries)),
+                result_domains={q.key: _domains_of(o) for q, o in pairs},
+            )
+            tally.saturated = [q.key for q in saturated]
+            tally.followups = len(followups)
+            tally.excluded_domains = len(followups[0].request.exclude_domains) if followups else 0
+            extra = await _search_batch(
+                session,
+                followups,
+                ctx=ctx,
+                search_ctx=search_ctx,
+                provider=provider,
+                cfg=cfg,
+                deps=deps,
+                now=now,
+                tally=tally,
+                box=box,
+            )
+            pairs.extend(extra)
+            tally.planned += len(followups)
     _count(pairs, tally)
     if ctx.commit is not None:
         await ctx.commit()
@@ -956,6 +996,59 @@ async def _result_rows(session: Any, query_ids: Sequence[uuid.UUID]) -> dict[tup
     return {(r.query_id, int(r.rank)): r for r in rows}
 
 
+async def _resolve_expansion(
+    session: Any,
+    ctx: DiscoveryWebContext,
+    cfg: Any,
+    deps: DiscoveryWebDeps,
+    facts: dp.DiscoveryFacts,
+    plan: dp.DiscoveryPlan,
+    limits: Any,
+    private: frozenset[str],
+) -> Any:
+    """The run's model expansion: persisted, else recorded, else asked once and persisted.
+
+    On a retry the SAME queries come back, from the run's own record, and the model is not
+    called again (it answers at temperature 0.2, so a second answer differs). Order:
+    (1) the proposal persisted on the run; (2) the expansion-origin query rows the run
+    already holds (a crash between the proposal and its persistence); (3) the model.
+    """
+    from app.models.web_research import WebSearchQuery as Q
+    from app.services.web_research.planner import ExpansionResult
+
+    if limits.max_expansion_queries <= 0 or limits.max_llm_tokens <= 0:
+        return None
+    reused: list[str] | None = None
+    source = None
+    if ctx.expansion_loader is not None:
+        reused = await ctx.expansion_loader()
+        source = "persisted" if reused is not None else None
+    if reused is None and ctx.run_id is not None:
+        rows = (
+            await session.execute(
+                sa.select(Q.query_text)
+                .where(
+                    Q.discovery_run_id == ctx.run_id,
+                    Q.stage == STAGE_NAME,
+                    Q.origin == dp.ORIGIN_LLM_EXPANSION,
+                )
+                .order_by(Q.created_at, Q.id)
+            )
+        ).scalars().all()
+        if rows:
+            reused = list(dict.fromkeys(str(r) for r in rows))
+            source = "recorded"
+    if reused is not None:
+        result = ExpansionResult(queries=tuple(reused[: limits.max_expansion_queries]))
+        result.from_cache = True
+        result.model = source
+        return result
+    result = await _expansion(cfg, deps, facts, plan, limits, private)
+    if result is not None and result.error is None and ctx.expansion_saver is not None:
+        await ctx.expansion_saver(list(result.queries))
+    return result
+
+
 async def _expansion(
     cfg: Any,
     deps: DiscoveryWebDeps,
@@ -992,23 +1085,37 @@ async def _expansion(
 
 
 def _blocks_and_tables(extraction: Any) -> tuple[list[str], list[list[list[str]]]]:
+    """Paragraphs and tables of an extraction, as BOUNDED copies (the page may be huge)."""
     body = getattr(extraction, "extraction", None)
-    blocks = [str(getattr(b, "text", "") or "") for b in (getattr(body, "blocks", None) or [])]
+    cap = ce.MAX_PARAGRAPH_CHARS
+    blocks = [
+        str(getattr(b, "text", "") or "")[:cap]
+        for b in (getattr(body, "blocks", None) or [])[: ce.MAX_PARAGRAPHS]
+    ]
     tables = [
-        [[str(c or "") for c in row] for row in (getattr(t, "rows", None) or [])]
-        for t in (getattr(body, "tables", None) or [])
+        [
+            [str(c or "")[: ce.MAX_CELL_CHARS] for c in row[:40]]
+            for row in (getattr(t, "rows", None) or [])[: ce.MAX_TABLE_ROWS]
+        ]
+        for t in (getattr(body, "tables", None) or [])[:50]
     ]
     if not any(b.strip() for b in blocks):
-        blocks = ce.paragraphs_of(getattr(extraction, "main_text", ""))
+        main = str(getattr(extraction, "main_text", "") or "")[: ce.MAX_TOTAL_CHARS]
+        blocks = ce.paragraphs_of(main)[: ce.MAX_PARAGRAPHS]
     return blocks, tables
 
 
-async def _chunk_evidence_id(
-    session: Any, version_id: uuid.UUID | None, mention: ce.RawMention
-) -> str | None:
-    """The corpus chunk holding the passage, when the page was stored (``ev:c:`` id)."""
+_MAX_CHUNKS_INDEXED = 2000
+_MAX_CHUNK_CHARS = 20_000
+
+
+async def _chunk_index(
+    session: Any, version_id: uuid.UUID | None
+) -> list[tuple[str, str]]:
+    """``(chunk id, folded text)`` of a stored page, loaded and folded ONCE per page (a
+    mention used to reload and re-fold every chunk — 40 mentions x 400 kB was ~7 s)."""
     if version_id is None:
-        return None
+        return []
     from app.models.research_chunk import ResearchDocumentChunk as C
 
     rows = (
@@ -1016,18 +1123,23 @@ async def _chunk_evidence_id(
             sa.select(C.chunk_id, C.text)
             .where(C.research_document_version_id == version_id)
             .order_by(C.ordinal)
-            .limit(2000)
+            .limit(_MAX_CHUNKS_INDEXED)
         )
     ).all()
+    return await asyncio.to_thread(
+        lambda: [(str(cid)[:120], fold(str(text or "")[:_MAX_CHUNK_CHARS])) for cid, text in rows]
+    )
+
+
+def _find_chunk(index: Sequence[tuple[str, str]], mention: ce.RawMention) -> str | None:
+    """The chunk that holds THIS PASSAGE — or None. Never a chunk that merely names the
+    company: the evidence id must point at the passage that carries the theme term."""
     needle = fold(mention.passage)[:60]
-    name = fold(mention.name)
-    for chunk_id, text in rows:
-        folded = fold(str(text or ""))
-        if needle and needle in folded:
-            return str(chunk_id)[:120]
-    for chunk_id, text in rows:
-        if name and name in fold(str(text or "")):
-            return str(chunk_id)[:120]
+    if not needle:
+        return None
+    for chunk_id, folded in index:
+        if needle in folded:
+            return chunk_id
     return None
 
 
@@ -1219,15 +1331,18 @@ async def _fetch_phase(
             tally.pages_suspect += 1
             continue
         paragraphs, tables = _blocks_and_tables(extraction)
-        mentions, stats = ce.extract_mentions(paragraphs, tables, vocab)
+        # Off the event loop: the work is bounded (extract_mentions caps it), and a worker
+        # that shares the API's process must keep answering while a page is read.
+        mentions, stats = await asyncio.to_thread(ce.extract_mentions, paragraphs, tables, vocab)
         tally.mentions += len(mentions)
         tally.name_only_dropped += stats.name_only_dropped
         tally.rejected_names += stats.rejected_names
         if mentions:
             tally.pages_with_mentions += 1
+        chunk_index = await _chunk_index(session, version_id) if mentions else []
         for mention in mentions[:MAX_MENTIONS_PER_PAGE]:
             ref = passage_ref(page.attempt_id, mention.passage)
-            evidence_id = await _chunk_evidence_id(session, version_id, mention) or ref
+            evidence_id = _find_chunk(chunk_index, mention) or ref
             page.mentions.append((mention, evidence_id, ref))
         pages.append(page)
     await session.flush()
@@ -1250,6 +1365,33 @@ class _Acc:
     domains: set[str] = field(default_factory=set)
     pages: set[str] = field(default_factory=set)
     first_query_text: str | None = None
+
+
+def _identity_evidence_url(
+    name: str, ticker: str | None, venue_raw: str | None, sightings: Sequence[dict[str, Any]]
+) -> str | None:
+    """The one page identity verification may read for a venue with no directory.
+
+    ONLY an official page: a sighting on an exchange or regulator host, else the platform's
+    own verified-issuer registry entry. A page the search returned on some other host — a
+    domain that merely spells the company's name included — never verifies the listing of
+    the company it names, so it is not offered (security review B1).
+    """
+    from app.services.discovery.identity import (
+        SOURCE_EXCHANGE,
+        SOURCE_REGULATOR,
+        normalise_venue,
+        publisher_kind,
+    )
+    from app.services.sources.verified_issuer_sources import get_verified_issuer_source
+
+    for sighting in sightings:
+        if publisher_kind(sighting.get("url"), name) in (SOURCE_EXCHANGE, SOURCE_REGULATOR):
+            return str(sighting["url"])
+    verified = get_verified_issuer_source(ticker, normalise_venue(venue_raw) or venue_raw)
+    if verified is not None and verified.investor_relations_url:
+        return str(verified.investor_relations_url)
+    return None
 
 
 def _dimensions(m: ce.RawMention) -> list[str]:
@@ -1418,7 +1560,7 @@ async def _build_leads(
                 exchange_raw=venue_raw,
                 country=None,
                 listing_source_url=None,
-                evidence_url=(sightings[0]["url"] if sightings else None),
+                evidence_url=_identity_evidence_url(acc.name, ticker, venue_raw, sightings),
                 why=None,
                 source="external_search",
                 discovery_query=None,
@@ -1459,16 +1601,18 @@ class RecallCorroboration:
 
 
 def _same_company(lead: CompanyLead, mention: ce.RawMention) -> bool:
+    """A passage belongs to a recalled lead only if it is about THAT LISTING: the same
+    ``venue:ticker`` when both sides have one; the same normalised name only when a side
+    has no ticker to compare (a passage about another listing that shares the name is not
+    corroboration)."""
     from app.services.discovery.identity import normalise_venue, normalised_name
 
+    if mention.ticker and lead.ticker:
+        return mention.ticker.upper() == lead.ticker.upper() and (
+            normalise_venue(mention.venue_raw) or ""
+        ) == (normalise_venue(lead.exchange_raw) or "")
     mine = normalised_name(mention.name)
-    if mine and mine == normalised_name(lead.name):
-        return True
-    if mention.ticker and lead.ticker and mention.ticker.upper() == lead.ticker.upper():
-        return (normalise_venue(mention.venue_raw) or "") == (
-            normalise_venue(lead.exchange_raw) or ""
-        )
-    return False
+    return bool(mine) and mine == normalised_name(lead.name)
 
 
 async def corroborate_recall_leads(
@@ -1516,8 +1660,6 @@ async def _corroborate(
     out: RecallCorroboration,
 ) -> RecallCorroboration:
     from app.integrations.search import web_search_provider_from_settings
-    from app.models.web_research import WebSearchQuery as Q
-
     provider = (
         web_search_provider_from_settings(cfg) if deps.provider is _UNSET else deps.provider
     )
@@ -1529,14 +1671,7 @@ async def _corroborate(
     now = deps.now or datetime.now(timezone.utc)
     today = deps.today or ctx.plan_date or now.date()
     budget = await budget_for_run(session, profile, cfg=cfg, now=now, clock=deps.clock)
-    if ctx.run_id is not None:
-        # The run's query ceiling is ONE ceiling: calls this run already made count.
-        used = await session.scalar(
-            sa.select(sa.func.coalesce(sa.func.sum(Q.network_call_count), 0)).where(
-                Q.discovery_run_id == ctx.run_id, Q.stage == STAGE_NAME
-            )
-        )
-        budget.queries_reserved += int(used or 0)
+    await _prime_budget(session, budget, ctx.run_id)
     noun = (facts.nouns() or [("", "")])[0]
     subject = dp.noun_text(*noun) if noun[1] else ""
     planned: list[tuple[CompanyLead, dp.PlannedQuery]] = []
@@ -1560,10 +1695,11 @@ async def _corroborate(
         discovery_run_id=ctx.run_id, stage=STAGE_NAME, private_tokens=ctx.private_tokens,
         budget=budget, budget_profile=profile,
     )
-    pairs = await _search_batch(
-        session, [q for _l, q in planned], ctx=ctx, search_ctx=search_ctx, provider=provider,
-        cfg=cfg, deps=deps, now=now, tally=tally, box=box,
-    )
+    async with session.begin_nested():
+        pairs = await _search_batch(
+            session, [q for _l, q in planned], ctx=ctx, search_ctx=search_ctx,
+            provider=provider, cfg=cfg, deps=deps, now=now, tally=tally, box=box,
+        )
     out.units = box.units
     out.attempted = len(pairs)
     if ctx.commit is not None:

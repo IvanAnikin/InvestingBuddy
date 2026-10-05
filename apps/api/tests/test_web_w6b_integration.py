@@ -7,6 +7,7 @@ the stage ingests and ``search_theme_corpus`` reads back, and the additive API f
 
 from __future__ import annotations
 
+import json
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -636,3 +637,72 @@ class TestNoPageToQueryPath:
         second = await once(uuid.uuid4())
         assert first == second
         assert not any(marker in q.lower() for q in [*first, *second])
+
+
+class TestTheExpansionSurvivesARecycle:
+    """Review H2: the model's proposal is persisted on the run BEFORE a search is paid for."""
+
+    class Transport:
+        model = "m"
+
+        def __init__(self, queries: list[str]) -> None:
+            self.queries = queries
+            self.calls = 0
+
+        async def complete(self, **_kw: Any) -> Any:
+            from app.integrations.deepseek.transport import DeepSeekResponse
+
+            self.calls += 1
+            return DeepSeekResponse(
+                text=json.dumps({"queries": self.queries}),
+                prompt_tokens=1,
+                completion_tokens=1,
+                finish_reason="stop",
+            )
+
+    async def test_the_second_attempt_reuses_the_persisted_proposal(
+        self, session: Any, pool: Any
+    ) -> None:
+        from app.services.discovery import directories
+        from app.services.jobs.worker import JobCancelled
+        from app.services.web_research import discovery_planner as dp
+
+        provider = FakeWebSearchProvider()
+        net = Net({ART: GALLIUM_ARTICLE})
+        run = await thesis_run(session)
+        serve(provider, plan_for(mds_intent(run)), {"entity_listed.0": [hit(ART)]})
+        first = self.Transport(["gallium recovery from bauxite residue"])
+
+        async def cancel_at_fetch(stage: str | None = None) -> None:
+            if stage == "discovery_web_fetch":
+                raise JobCancelled("recycled")
+
+        with pytest.raises(JobCancelled):
+            await mds.process_run(
+                session,
+                run,
+                extractor=_fake_extractor(),
+                discovery_fetcher=directory_fetcher,
+                discovery_web_deps=web_deps(pool, net, provider, llm_transport=first),
+                owned_by_lease=True,
+                progress=cancel_at_fetch,
+            )
+        assert first.calls == 1
+        assert run.universe_json["web_expansion"] == ["gallium recovery from bauxite residue"]
+        paid = [r.query for r in provider.requests]
+        assert any("bauxite" in q for q in paid)
+        # A new process: no in-memory cache, and the model would answer differently now.
+        dp.clear_expansion_cache()
+        directories.reset_cache()
+        second = self.Transport(["a completely different gallium query"])
+        run = await mds.process_run(
+            session,
+            run,
+            extractor=_fake_extractor(),
+            discovery_fetcher=directory_fetcher,
+            discovery_web_deps=web_deps(pool, net, provider, llm_transport=second),
+            owned_by_lease=True,
+        )
+        assert second.calls == 0
+        assert [r.query for r in provider.requests] == paid, "not one search paid for twice"
+        assert run.universe_json["dynamic"]["status"] == "completed"

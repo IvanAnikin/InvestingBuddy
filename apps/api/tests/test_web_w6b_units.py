@@ -452,7 +452,175 @@ class TestACompanysNameIsNotThemeEvidence:
         assert m[0].theme_terms == ("gallium",)
 
     def test_a_table_row_masks_the_name_cell_too(self) -> None:
-        table = [["Company", "Exchange", "Ticker", "Focus"],
-                 ["Zeta Gallium Ltd", "ASX", "ZGL", "royalty"]]
+        table = [
+            ["Company", "Exchange", "Ticker", "Focus"],
+            ["Zeta Gallium Ltd", "ASX", "ZGL", "royalty"],
+        ]
         m, _ = extract([], [table])
         assert m[0].theme_terms == ()
+
+
+class TestMentionLocalEvidence:
+    """Security / code review: A3 is read from the mention's OWN clause."""
+
+    def test_a_price_list_does_not_make_every_listed_name_theme_evidence(self) -> None:
+        m, _ = extract(
+            [
+                "Share prices today: Foo Retail (ASX: FOO) +2%, Bar Bank (ASX: BAR) -1%, "
+                "Baz Mining (ASX: BAZ) 5%. Related: rare earth stocks to watch."
+            ]
+        )
+        assert {x.ticker for x in m} == {"FOO", "BAR", "BAZ"}
+        assert all(x.theme_terms == () for x in m)
+
+    def test_with_three_names_a_term_must_sit_in_the_same_clause(self) -> None:
+        m, _ = extract(
+            [
+                "Foo Ltd (ASX: FOO) mines gallium, Bar Ltd (ASX: BAR) mines copper and "
+                "Baz Ltd (ASX: BAZ) mines tin."
+            ]
+        )
+        by = {x.ticker: x.theme_terms for x in m}
+        assert by["FOO"] == ("gallium",)
+        assert by["BAR"] == () and by["BAZ"] == ()
+
+    def test_a_paragraph_that_lists_many_companies_is_evidence_about_none(self) -> None:
+        names = " ".join(f"Co{c} Ltd (ASX: C{c}X) mines gallium." for c in "ABCDEFG")
+        m, st = extract([names])
+        assert len(m) == 7 and all(x.theme_terms == () for x in m)
+        assert st.list_paragraphs == 1
+
+    def test_a_sentence_boundary_ends_the_window(self) -> None:
+        m, _ = extract(["Foo Ltd (ASX: FOO) appointed a chair. Gallium prices rose sharply."])
+        assert m[0].theme_terms == ()
+
+    def test_another_companys_name_is_not_theme_evidence_either(self) -> None:
+        m, _ = extract(["Foo Ltd (ASX: FOO) partnered with Zeta Gallium Ltd (ASX: ZGL)."])
+        assert all(x.theme_terms == () for x in m)
+
+    def test_generic_words_are_not_catalyst_or_downside_triggers(self) -> None:
+        m, _ = extract(
+            [
+                "Foo Ltd (ASX: FOO) said orders, capacity, funding and a grant were discussed "
+                "after a loss and a default of nothing."
+            ]
+        )
+        assert m[0].catalyst_terms == () and m[0].risk_terms == ()
+
+    def test_event_phrases_are_triggers(self) -> None:
+        m, _ = extract(
+            [
+                "Foo Ltd (ASX: FOO) signed an offtake agreement and a final investment decision "
+                "followed a going concern warning."
+            ]
+        )
+        assert {"offtake agreement", "final investment decision"} <= set(m[0].catalyst_terms)
+        assert "going concern" in m[0].risk_terms
+
+
+class TestBoundaries:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "See the Exhibit: ABC for details.",
+            "The claim: XYZ is false.",
+            "Pulse: ABC rose",
+            "Sunbit: ABC",
+        ],
+    )
+    def test_a_venue_word_inside_another_word_is_not_a_venue(self, text: str) -> None:
+        assert extract([text])[0] == []
+
+    def test_a_real_venue_after_a_bracket_still_matches(self) -> None:
+        m, _ = extract(["Foo Ltd (ASX: FOO) and Bar Ltd, AIM: BAR gallium."])
+        assert {x.ticker for x in m} == {"FOO", "BAR"}
+
+    def test_a_table_without_a_header_row_keeps_its_first_row(self) -> None:
+        m, _ = extract([], [[["Alpha Gallium plc", "AIM: ALG"], ["Beta Ltd", "AIM: BET"]]])
+        assert [x.ticker for x in m] == ["ALG", "BET"]
+
+
+class TestHostileSize:
+    """Security B2 / code review B1: work, not just output, is bounded. Before the caps these
+    took 13-96 s on the event loop; every bound below is generous and still two orders of
+    magnitude under that."""
+
+    LIMIT = 3.0
+
+    def timed(self, paragraphs: list[str], tables: list | None = None):  # noqa: ANN202
+        import time
+
+        started = time.perf_counter()
+        found, stats = extract(paragraphs, tables or [])
+        return time.perf_counter() - started, found, stats
+
+    def test_a_400k_paragraph(self) -> None:
+        elapsed, _f, st = self.timed(["Foo Ltd (ASX: FOO) mines gallium. " * 12_000])
+        assert elapsed < self.LIMIT and st.chars_scanned <= ce.MAX_TOTAL_CHARS
+
+    def test_a_400k_paragraph_of_ticker_spam(self) -> None:
+        elapsed, found, _ = self.timed(["(ASX: AB) " * 40_000])
+        assert elapsed < self.LIMIT and len(found) <= ce.MAX_MENTIONS_PER_PAGE
+
+    def test_a_3mb_table_cell(self) -> None:
+        table = [["Company", "Ticker", "Exchange"], ["Foo " * 750_000, "FOO", "ASX"]]
+        elapsed, found, _ = self.timed([], [table])
+        assert elapsed < self.LIMIT
+        assert all(len(x.passage) <= ce.MAX_PASSAGE_CHARS for x in found)
+
+    def test_a_1mb_venue_ticker_cell(self) -> None:
+        table = [["Name", "Listing"], ["Foo Ltd", "ASX: " + "A" * 1_000_000]]
+        elapsed, _f, _ = self.timed([], [table])
+        assert elapsed < self.LIMIT
+
+    def test_a_400_row_table_of_big_rows(self) -> None:
+        rows = [["Company", "Exchange", "Ticker", "Focus"]] + [
+            [f"Co{i} Ltd", "ASX", f"C{i:03d}", "gallium " * 20_000] for i in range(400)
+        ]
+        elapsed, found, st = self.timed([], [rows])
+        assert elapsed < self.LIMIT and len(found) <= ce.MAX_MENTIONS_PER_PAGE
+        assert st.chars_scanned <= ce.MAX_TOTAL_CHARS
+
+    def test_many_paragraphs_stop_at_the_page_budget(self) -> None:
+        elapsed, _f, st = self.timed(["x " * 1_200] * 600)
+        assert elapsed < self.LIMIT and st.truncated
+
+    def test_the_table_loop_stops_at_the_mention_cap(self) -> None:
+        rows = [["Company", "Exchange", "Ticker"]] + [
+            [f"Co{i} Ltd", "ASX", f"C{i:03d}"] for i in range(400)
+        ]
+        _e, found, st = self.timed([], [rows, rows, rows])
+        assert len(found) == ce.MAX_MENTIONS_PER_PAGE and st.truncated
+
+    def test_the_vocabulary_is_compiled_once(self) -> None:
+        vocab = ce.ThemeVocabulary(("gallium", "rare earth"))
+        first = vocab._compiled
+        vocab.match("gallium here")
+        assert vocab._compiled is first
+
+
+class TestA3HostsAnyoneCanPublishTo:
+    @pytest.mark.parametrize(
+        "domain",
+        [
+            "einpresswire.com",
+            "www.accesswire.com",
+            "newsfilecorp.com",
+            "mynewsdesk.com",
+            "ots.at",
+            "medium.com",
+            "someone.substack.com",
+            "x.blogspot.com",
+            "cs.example.edu",
+            "uni.ac.uk",
+        ],
+    )
+    def test_excluded_whatever_the_class(self, domain: str) -> None:
+        for cls in ("company_press_release", "trade_publication", "company_web_page"):
+            assert not adm.is_a3_passage(mention(source_class=cls, domain=domain))
+
+    def test_academic_class_is_not_in_the_spec_list(self) -> None:
+        assert not adm.is_a3_passage(mention(source_class="academic_paper", domain="arxiv.org"))
+
+    def test_a_trade_publication_still_carries_it(self) -> None:
+        assert adm.is_a3_passage(mention(source_class="trade_publication", domain="tdworld.com"))

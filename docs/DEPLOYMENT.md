@@ -680,6 +680,23 @@ lose them. A retry resumes from the last committed ticker.
   queries the run already recorded (keyed by run id and request hash); the run's query
   ceiling carries across attempts, so a recycle cannot double-spend searches. The pages are
   fetched again (bounded by the budget).
+- **Identity is official-only for search leads (review round 1, B1).** A search lead is
+  admitted only after the listing is confirmed by the exchange's directory, an exchange or
+  regulator page, or a `verified_issuer_sources` entry. A page's own text, or a domain that
+  merely spells the company's name, never verifies it. On a venue with no directory
+  (Frankfurt, Stockholm, HK, JSE ...) such a lead is `eligible_unverified(identity)` in
+  "also surfaced" (codes `identity_unverified`, `no_official_directory`), never a candidate.
+- **A3 is mention-local and not publishable-by-anyone (review round 1).** A theme term must
+  sit in the mention's own sentence (the same clause when a paragraph names 3+ listed
+  companies); a paragraph naming more than 5 listed companies is evidence about none; open
+  press-release wires, user-content hosts and `.edu` pages never carry it; a company's own
+  name is not a theme term. Extraction is bounded in work (cell 500 / row 2,500 / page 150k
+  characters) and runs off the event loop.
+- **Resume spends nothing twice.** The model expansion is persisted on the run
+  (`universe_json.web_expansion`) before any search is paid for; a retry reloads it (or
+  rebuilds it from the run's recorded expansion rows) and the model is not asked again. Every
+  query row the run holds - orphans included - and every fetch an earlier attempt completed
+  count against this attempt's ceilings.
 - **No page-to-query path (PI-07):** the query set is built from the intent's closed
   vocabularies and the glossary only; the model expansion sees the same facts and may not name
   a company. Nothing the corpus holds (theme chunks included) is read by the planner, and a

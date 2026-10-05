@@ -260,6 +260,19 @@ class CandidateEvidence(BaseModel):
         return data  # type: ignore[no-any-return]
 
 
+class EvidenceIds(set):  # type: ignore[type-arg]
+    """The citable ids of a pack, plus what each web candidate's block allows.
+
+    A ``set`` subclass so every existing ``id in evidence_ids`` check is unchanged;
+    ``web_pack`` maps a candidate id to its own item ids and the evidence confidence the
+    PLATFORM computed per dimension (the model may not raise it).
+    """
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self.web_pack: dict[str, dict[str, Any]] = {}
+
+
 class DiscoveryEvidencePack(BaseModel):
     """The complete, bounded input the discovery council analyses."""
 
@@ -280,13 +293,23 @@ class DiscoveryEvidencePack(BaseModel):
     def candidate_count(self) -> int:
         return len(self.candidates)
 
-    def evidence_ids(self) -> set[str]:
-        ids = {f.id for f in self.run_facts} | {c.id for c in self.candidates}
-        # A web item is cited by its own id (``C3.2``), which belongs to ITS candidate.
+    def evidence_ids(self) -> "EvidenceIds":
+        ids = EvidenceIds({f.id for f in self.run_facts} | {c.id for c in self.candidates})
+        # A web item is cited by its own id (``C3.2``), which belongs to ITS candidate. The
+        # per-candidate item ids and the pack's own computed evidence confidence travel
+        # WITH the ids, so the citation checker can hold a model to them.
         for c in self.candidates:
-            for item in (c.web_discovery or {}).get("items") or []:
-                if item.get("id"):
-                    ids.add(str(item["id"]))
+            block = c.web_discovery or {}
+            items = {str(i["id"]) for i in block.get("items") or [] if i.get("id")}
+            ids.update(items)
+            if block:
+                ids.web_pack[c.id] = {
+                    "item_ids": items,
+                    "confidence": {
+                        str(name): str(dim.get("evidence_confidence"))
+                        for name, dim in (block.get("dimensions") or {}).items()
+                    },
+                }
         return ids
 
     def candidate_ids(self) -> set[str]:

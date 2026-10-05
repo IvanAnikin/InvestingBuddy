@@ -104,7 +104,7 @@ export const ZGL_DEMOTED = record({
 export const ZGL_RECORD = record({
   ticker: "ZGL", exchange: "AU", name: "Zeta Gallium Limited", country: "Australia",
   source: "external_search", mode: "model_recall", why: null,
-  web: { schema: "discovery_web_lead/1", discovery_mode: "external_search",
+  web: { schema: "discovery_web_lead/1", discovery_mode: "model_recall",
          admission: { version: "w6b.1", state: "labelled", codes: [], evidence_ids: [],
                       source_label: "external_search" } },
   eligibility: { status: "eligible_unverified", reasons: ["geography: not verified"],

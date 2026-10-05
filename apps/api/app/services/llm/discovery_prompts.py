@@ -236,7 +236,7 @@ WEB_JSON_ADDENDUM = (
     '"citation_ids": ["C1.1"]}]'
 )
 
-_WEB_MARKER = '"web_discovery"'
+_WEB_MARKER = '"web_discovery":{'
 
 
 def pack_has_web_discovery(evidence_pack_json: str | None) -> bool:

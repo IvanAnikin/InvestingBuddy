@@ -29,6 +29,7 @@ from app.services.discovery.identity import (
     IDENTITY_REJECTED,
     REJECT_BUDGET,
     REJECT_DUPLICATE,
+    REJECT_NO_LISTING_EVIDENCE,
     IdentityOutcome,
     dedup_key,
     normalise_venue,
@@ -440,6 +441,8 @@ async def run_dynamic_stage(
     progress: Any = None,
     commit: Any = None,
     plan_date: Any = None,
+    expansion_loader: Any = None,
+    expansion_saver: Any = None,
 ) -> StageResult:
     """The whole stage. Never raises for a single lead's failure.
 
@@ -472,7 +475,9 @@ async def run_dynamic_stage(
         web_result = await run_discovery_web_stage(
             session, intent,
             DiscoveryWebContext(run_id=run_id, known_domains=known_domains,
-                                known_keys=known_keys, commit=commit, plan_date=plan_date),
+                                known_keys=known_keys, commit=commit, plan_date=plan_date,
+                                expansion_loader=expansion_loader,
+                                expansion_saver=expansion_saver),
             cfg=cfg, deps=web_deps, progress=progress,
         )
         stage.web = dict(web_result.summary)
@@ -581,9 +586,15 @@ async def run_dynamic_stage(
                 # The search surfaced a company a registry / held / earlier lead already
                 # names. That lead keeps its true label; the search provenance is attached
                 # as corroboration (and its passages are A3 context), not as a rejection.
-                for ident in (key, name_key):
-                    if ident:
-                        corroboration.setdefault(ident, lead.web)
+                # Bound to the LISTING: a page about a different venue:ticker that happens to
+                # share the normalised name is not corroboration of this company.
+                earlier_key = dedup_key(
+                    earlier.ticker, normalise_venue(earlier.exchange_raw) or earlier.exchange_raw
+                )
+                if key is None or earlier_key is None or key == earlier_key:
+                    for ident in (key, name_key):
+                        if ident:
+                            corroboration.setdefault(ident, lead.web)
                 continue
             stage.rejected.append(
                 IdentityOutcome(lead=lead, status=IDENTITY_REJECTED, ticker=lead.ticker,
@@ -632,6 +643,7 @@ async def run_dynamic_stage(
             return await verify_identity(lead, cfg=cfg, fetcher=fetcher,
                                          directory_fetcher=fetcher)
 
+    to_verify = _verification_order(to_verify, limit)
     verified_external = await asyncio.gather(*(_verify(lead) for lead in to_verify[:limit]))
 
     # V3.19.10 — curated and held companies are looked up in their exchange's own
@@ -661,11 +673,22 @@ async def run_dynamic_stage(
                             name=lead.name, rejection_reason=REJECT_BUDGET,
                             detail=f"beyond the {limit}-verification bound")
         )
+    unverifiable: list[IdentityOutcome] = []
     for outcome in verified_external:
         if web_on and outcome.lead.discovery_mode == "search":
             from app.services.discovery import admission as adm
 
             outcome = _strict_name_guard(outcome)
+            if not outcome.verified and outcome.rejection_reason == REJECT_NO_LISTING_EVIDENCE:
+                # No directory covers the venue and no OFFICIAL page confirmed the listing:
+                # eligible_unverified(identity). Shown, never admitted, never rejected.
+                _attach_admission(
+                    outcome.lead,
+                    adm.decide_unverifiable_venue(
+                        _a3_mentions(outcome.lead, outcome.name)).to_dict(),
+                )
+                unverifiable.append(outcome)
+                continue
             decision = adm.decide(
                 discovery_mode="search", has_provenance=True,
                 identity_verified=outcome.verified,
@@ -740,6 +763,9 @@ async def run_dynamic_stage(
                                               fx_fetcher=fetcher, session=session)
         records.append(_make_record(identity, results, eligibility, screening, corroboration,
                                     web_on))
+
+    for outcome in unverifiable:
+        also_surfaced.append(_unverifiable_record(outcome, corroboration))
 
     # 6. Decide. Eligibility is final; the quota is never filled with excluded names.
     cap = _bounded(max_candidates, DEFAULT_MAX_CANDIDATES, 50)
@@ -821,6 +847,35 @@ def _known_names(
     return tuple(dict.fromkeys(domains)), frozenset(keys)
 
 
+def _unverifiable_record(
+    outcome: IdentityOutcome, corroboration: dict[str, dict[str, Any]]
+) -> CandidateRecord:
+    """``eligible_unverified(identity)``: shown in "also surfaced", never a candidate."""
+    eligibility = cons.Eligibility(
+        cons.ELIGIBLE_UNVERIFIED,
+        ["identity: the listing is not confirmed by an official source for this venue"],
+        0, 0, ["listing"], [],
+    )
+    results = [cons.verify_listing(outcome.identity_record())]
+    web = dict(outcome.lead.web or {})
+    web["mentions"] = _a3_mentions(outcome.lead, outcome.name)
+    return CandidateRecord(
+        outcome, results, eligibility, None, _provenance(outcome), None, web=web
+    )
+
+
+def _verification_order(leads: list[CompanyLead], limit: int) -> list[CompanyLead]:
+    """Web leads first, but never ALL the slots: at least a quarter of the verification bound
+    is kept for recalled leads (a flood of web leads must not starve them into
+    ``verification_budget_exhausted``). Order within each group is the discovery order."""
+    other = [x for x in leads if x.discovery_mode != "search"]
+    web = [x for x in leads if x.discovery_mode == "search"]
+    reserve = min(len(other), max(1, limit // 4)) if other else 0
+    chosen_web = web[: max(0, limit - reserve)]
+    # the chosen web leads, then the reserved (recalled) ones, then any leftover web leads
+    return [*chosen_web, *other, *web[len(chosen_web) :]]
+
+
 def _strict_name_guard(outcome: IdentityOutcome) -> IdentityOutcome:
     """A name collision on a real ticker, caught for WEB leads.
 
@@ -839,6 +894,15 @@ def _strict_name_guard(outcome: IdentityOutcome) -> IdentityOutcome:
     ours, theirs = normalised_name(outcome.lead.name), normalised_name(str(listing.get("name")))
     if _names_agree(_expand(ours), _expand(theirs), ticker_matched=False):
         return outcome
+    # A headline puts words before the name ("Rare Earth Miner Lynas (ASX: LYC)"): try the
+    # TRAILING sub-names, longest first. The match is still strict on the sub-name itself,
+    # so a different company cannot pass by sharing a word.
+    words = ours.split()
+    for size in range(len(words) - 1, 0, -1):
+        sub = " ".join(words[-size:])
+        if len(sub) >= 4 and _names_agree(_expand(sub), _expand(theirs), ticker_matched=False):
+            outcome.lead.name = str(listing.get("name") or sub)
+            return outcome
     return IdentityOutcome(
         lead=outcome.lead, status=IDENTITY_REJECTED, ticker=outcome.ticker,
         exchange=outcome.exchange, name=outcome.name,
@@ -852,19 +916,33 @@ def _attach_admission(lead: CompanyLead, decision: dict[str, Any]) -> None:
 
 
 def _a3_mentions(lead: CompanyLead, name: str | None) -> list[dict[str, Any]]:
-    """The lead's mention passages, with the issuer's OWN pages counted as issuer material.
+    """The lead's mention passages, with a REGISTRY-verified issuer's own pages counted as
+    issuer material.
 
     The classifier cannot know an unfamiliar issuer's domain, so a page on it reads as
-    ``unknown_web``. Once identity is verified, ``publisher_kind`` can say the page IS the
-    issuer's (by registrable-label equality, never similarity) — and issuer material is an
-    acceptable A3 source class.
+    ``unknown_web`` and cannot carry A3. Only the platform's own verified-issuer registry
+    (``verified_issuer_sources``) may say a domain IS the issuer's; a domain that merely
+    looks like the company's name (``fakeco.se``) never is — anyone can register one.
     """
-    from app.services.discovery.identity import SOURCE_ISSUER, publisher_kind
+    from urllib.parse import urlsplit
 
+    from app.services.sources.verified_issuer_sources import get_verified_issuer_source
+
+    verified = get_verified_issuer_source(
+        lead.ticker, normalise_venue(lead.exchange_raw) or lead.exchange_raw
+    )
+    hosts: tuple[str, ...] = ()
+    if verified is not None:
+        hosts = tuple(
+            d.lower().removeprefix("www.")
+            for d in (verified.official_website_domain, *verified.allowed_domains)
+            if d
+        )
     out: list[dict[str, Any]] = []
     for mention in (lead.web or {}).get("mentions") or []:
         entry = dict(mention)
-        if publisher_kind(entry.get("url"), name or lead.name) == SOURCE_ISSUER:
+        host = (urlsplit(entry.get("url") or "").hostname or "").lower().removeprefix("www.")
+        if hosts and any(host == h or host.endswith("." + h) for h in hosts):
             entry["source_class"] = "company_web_page"
         out.append(entry)
     return out
