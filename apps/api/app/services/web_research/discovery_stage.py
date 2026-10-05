@@ -1271,6 +1271,45 @@ def _better_name(a: str, b: str) -> str:
     return a if rank(a) >= rank(b) else b
 
 
+def _sighting_of(page: _Page) -> dict[str, Any]:
+    return {
+        "query_id": str(page.candidate.query_id) if page.candidate.query_id else None,
+        "result_id": str(page.candidate.result_id) if page.candidate.result_id else None,
+        "fetch_attempt_id": page.attempt_id,
+        "provider": page.provider,
+        "family": page.candidate.family.value,
+        "query_key": page.query_key,
+        "query_origin": page.query_origin,
+        "template_version": page.template_version,
+        "rank": page.candidate.item.rank,
+        "url": page.url,
+        "domain": page.domain,
+        "source_class": page.source_class,
+        "document_version_id": str(page.version_id) if page.version_id else None,
+    }
+
+
+def _mention_entry(
+    page: _Page, mention: ce.RawMention, evidence_id: str, ref: str, sighting: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "evidence_id": evidence_id,
+        "passage_ref": ref,
+        "kind": mention.passage_kind,
+        "method": mention.method,
+        "source_class": page.source_class,
+        "url": page.url,
+        "domain": page.domain,
+        "dimensions": _dimensions(mention),
+        "theme_terms": list(mention.theme_terms)[:6],
+        "catalyst_terms": list(mention.catalyst_terms)[:6],
+        "risk_terms": list(mention.risk_terms)[:6],
+        "passage": mention.passage,
+        "injection_suspect": page.suspect,
+        "query_id": sighting["query_id"],
+    }
+
+
 async def _build_leads(
     session: Any,
     pages: Sequence[_Page],
@@ -1286,21 +1325,7 @@ async def _build_leads(
 
     accs: dict[str, _Acc] = {}
     for page in pages:
-        sighting = {
-            "query_id": str(page.candidate.query_id) if page.candidate.query_id else None,
-            "result_id": str(page.candidate.result_id) if page.candidate.result_id else None,
-            "fetch_attempt_id": page.attempt_id,
-            "provider": page.provider,
-            "family": page.candidate.family.value,
-            "query_key": page.query_key,
-            "query_origin": page.query_origin,
-            "template_version": page.template_version,
-            "rank": page.candidate.item.rank,
-            "url": page.url,
-            "domain": page.domain,
-            "source_class": page.source_class,
-            "document_version_id": str(page.version_id) if page.version_id else None,
-        }
+        sighting = _sighting_of(page)
         for mention, evidence_id, ref in page.mentions:
             acc = accs.get(mention.key)
             if acc is None:
@@ -1314,24 +1339,7 @@ async def _build_leads(
                 acc.pages.add(page.url)
                 acc.sightings.append(sighting)
             acc.domains.add(page.domain)
-            acc.mentions.append(
-                {
-                    "evidence_id": evidence_id,
-                    "passage_ref": ref,
-                    "kind": mention.passage_kind,
-                    "method": mention.method,
-                    "source_class": page.source_class,
-                    "url": page.url,
-                    "domain": page.domain,
-                    "dimensions": _dimensions(mention),
-                    "theme_terms": list(mention.theme_terms)[:6],
-                    "catalyst_terms": list(mention.catalyst_terms)[:6],
-                    "risk_terms": list(mention.risk_terms)[:6],
-                    "passage": mention.passage,
-                    "injection_suspect": page.suspect,
-                    "query_id": sighting["query_id"],
-                }
-            )
+            acc.mentions.append(_mention_entry(page, mention, evidence_id, ref, sighting))
 
     # An ISIN-only or name+venue mention joins the ticker-keyed lead of the same company.
     by_name = {normalised_name(a.name): a for a in accs.values() if a.ticker}
@@ -1429,6 +1437,203 @@ async def _build_leads(
 
 
 # --------------------------------------------------------------------------- #
+# Recall corroboration (owner rule: an LLM naming a company admits nothing)
+# --------------------------------------------------------------------------- #
+
+MAX_RECALL_VERIFICATIONS = 6
+RESULTS_FETCHED_PER_RECALL = 3
+ORIGIN_RECALL_VERIFICATION = "recall_verification"
+
+
+@dataclass
+class RecallCorroboration:
+    """What the targeted verification searches found, per recalled lead."""
+
+    #: ``web_search_queries.id`` of every EXECUTED verification query.
+    executed_query_ids: frozenset[str] = frozenset()
+    #: lead_id -> the lead's search provenance (``discovery_web_lead/1`` shape).
+    by_lead: dict[str, dict[str, Any]] = field(default_factory=dict)
+    attempted: int = 0
+    notes: list[str] = field(default_factory=list)
+    units: ConsumptionUnits = field(default_factory=ConsumptionUnits)
+
+
+def _same_company(lead: CompanyLead, mention: ce.RawMention) -> bool:
+    from app.services.discovery.identity import normalise_venue, normalised_name
+
+    mine = normalised_name(mention.name)
+    if mine and mine == normalised_name(lead.name):
+        return True
+    if mention.ticker and lead.ticker and mention.ticker.upper() == lead.ticker.upper():
+        return (normalise_venue(mention.venue_raw) or "") == (
+            normalise_venue(lead.exchange_raw) or ""
+        )
+    return False
+
+
+async def corroborate_recall_leads(
+    session: Any,
+    intent: Any,
+    leads: Sequence[CompanyLead],
+    ctx: DiscoveryWebContext,
+    *,
+    cfg: Any,
+    deps: DiscoveryWebDeps | None = None,
+    progress: ProgressHook | None = None,
+) -> RecallCorroboration:
+    """Targeted verification searches for recalled (model-named) leads. **Never raises**
+    (a ``progress`` abort excepted).
+
+    A recalled company may be a final candidate only if an EXECUTED search surfaced it and a
+    FETCHED page names it. Each lead (at most :data:`MAX_RECALL_VERIFICATIONS`) gets one
+    budgeted query through the normal search path (``origin="recall_verification"``; the
+    run's query ceiling and the daily cap apply, and a recorded query is reused on resume).
+    The pages it returns are fetched and mined like any other, and only mentions of THAT
+    company are kept: the model's name steers which page is read, never what the page says.
+    """
+    deps = deps or DiscoveryWebDeps()
+    out = RecallCorroboration()
+    todo = [lead for lead in leads if lead.name][:MAX_RECALL_VERIFICATIONS]
+    if not todo or not stage_enabled(cfg):
+        return out
+    try:
+        return await _corroborate(session, intent, todo, ctx, cfg, deps, progress, out)
+    except _Abort as abort:
+        raise abort.original from None
+    except Exception as exc:  # noqa: BLE001 - uncorroborated leads are demoted, never lost
+        out.notes.append(f"recall verification raised {type(exc).__name__} and was isolated")
+        return out
+
+
+async def _corroborate(
+    session: Any,
+    intent: Any,
+    leads: Sequence[CompanyLead],
+    ctx: DiscoveryWebContext,
+    cfg: Any,
+    deps: DiscoveryWebDeps,
+    progress: ProgressHook | None,
+    out: RecallCorroboration,
+) -> RecallCorroboration:
+    from app.integrations.search import web_search_provider_from_settings
+    from app.models.web_research import WebSearchQuery as Q
+
+    provider = (
+        web_search_provider_from_settings(cfg) if deps.provider is _UNSET else deps.provider
+    )
+    if provider is None or not bool(getattr(cfg, "v3_web_search_enabled", False)):
+        return out
+    facts = dp.facts_from_intent(intent)
+    depth = _depth(cfg)
+    profile = f"discovery_{depth}"
+    now = deps.now or datetime.now(timezone.utc)
+    today = deps.today or ctx.plan_date or now.date()
+    budget = await budget_for_run(session, profile, cfg=cfg, now=now, clock=deps.clock)
+    if ctx.run_id is not None:
+        # The run's query ceiling is ONE ceiling: calls this run already made count.
+        used = await session.scalar(
+            sa.select(sa.func.coalesce(sa.func.sum(Q.network_call_count), 0)).where(
+                Q.discovery_run_id == ctx.run_id, Q.stage == STAGE_NAME
+            )
+        )
+        budget.queries_reserved += int(used or 0)
+    noun = (facts.nouns() or [("", "")])[0]
+    subject = dp.noun_text(*noun) if noun[1] else ""
+    planned: list[tuple[CompanyLead, dp.PlannedQuery]] = []
+    for index, lead in enumerate(leads):
+        request, refusal = dp._make_request(
+            f"{lead.name} {subject}".strip(), None, family=QueryFamily.ENTITY, today=today,
+            private_tokens=ctx.private_tokens, origin=ORIGIN_RECALL_VERIFICATION,
+            version=f"{dp.DISCOVERY_TEMPLATE_VERSION}:recall_verify",
+        )
+        if request is None:
+            out.notes.append(f"a verification query was refused ({refusal})")
+            continue
+        planned.append((lead, dp.PlannedQuery(request, QueryFamily.ENTITY,
+                                              f"recall_verify.{index}", 1, 2000 + index,
+                                              dp.FAMILY_TERMS[QueryFamily.ENTITY])))
+    if not planned:
+        return out
+    await _progress(progress, PROGRESS_SEARCH)
+    tally, box = _Tally(), _Box(budget=budget)
+    search_ctx = SearchContext(
+        discovery_run_id=ctx.run_id, stage=STAGE_NAME, private_tokens=ctx.private_tokens,
+        budget=budget, budget_profile=profile,
+    )
+    pairs = await _search_batch(
+        session, [q for _l, q in planned], ctx=ctx, search_ctx=search_ctx, provider=provider,
+        cfg=cfg, deps=deps, now=now, tally=tally, box=box,
+    )
+    out.units = box.units
+    out.attempted = len(pairs)
+    if ctx.commit is not None:
+        await ctx.commit()
+    out.executed_query_ids = frozenset(
+        str(o.query_id) for _q, o in pairs if o.execution.executed
+    )
+    rows = await _result_rows(session, [o.query_id for _q, o in pairs if o.execution.executed])
+    candidates: list[SearchCandidate] = []
+    meta: dict[uuid.UUID, tuple[dp.PlannedQuery, QueryOutcome]] = {}
+    for q, outcome in pairs:
+        if not outcome.execution.executed:
+            continue
+        meta[outcome.query_id] = (q, outcome)
+        for item in outcome.results[:RESULTS_FETCHED_PER_RECALL]:
+            row = rows.get((outcome.query_id, item.rank))
+            candidates.append(SearchCandidate(
+                family=q.family, item=item, query_key=q.key, query_id=outcome.query_id,
+                result_id=getattr(row, "id", None)))
+    selection = select_discovery_results(
+        candidates, today=today, known_domains=ctx.known_domains,
+        terms_by_family={QueryFamily.ENTITY: dp.FAMILY_TERMS[QueryFamily.ENTITY]},
+        total=RESULTS_FETCHED_PER_RECALL * len(planned), mode=depth,
+    )
+    rows_by_id = {r.id: r for r in rows.values()}
+    for scored in selection.selected:
+        _disposition(rows_by_id.get(scored.candidate.result_id), "selected", None)
+    for candidate, reason in selection.skipped:
+        _disposition(rows_by_id.get(candidate.result_id), "skipped", reason)
+    await session.flush()
+    await _progress(progress, PROGRESS_FETCH)
+    pages: list[_Page] = []
+    async with session.begin_nested():
+        await _fetch_phase(
+            session, ctx, selection, meta, rows_by_id, theme_vocabulary(facts), facts, pages,
+            budget=budget, cfg=cfg, deps=deps, tally=tally, summary={},
+            theme_key=theme_key_for_run(ctx.run_id), provider_name=getattr(provider, "name", None),
+            progress=progress, depth=depth,
+        )
+    out.units = out.units + _units_of(tally, budget, ConsumptionUnits())
+    if ctx.commit is not None:
+        await ctx.commit()
+    for lead, _q in planned:
+        sightings: list[dict[str, Any]] = []
+        mentions: list[dict[str, Any]] = []
+        for page in pages:
+            sighting = _sighting_of(page)
+            hit_here = False
+            for mention, evidence_id, ref in page.mentions:
+                if _same_company(lead, mention):
+                    mentions.append(_mention_entry(page, mention, evidence_id, ref, sighting))
+                    hit_here = True
+            if hit_here:
+                sightings.append(sighting)
+        if sightings:
+            out.by_lead[lead.lead_id] = {
+                "schema": LEAD_SCHEMA,
+                "extractor_version": ce.EXTRACTOR_VERSION,
+                "discovery_mode": "model_recall",
+                "corroborated_by": ORIGIN_RECALL_VERIFICATION,
+                "provider": getattr(provider, "name", None),
+                "sightings": sightings[:MAX_SIGHTINGS_PER_LEAD],
+                "mentions": mentions[:MAX_MENTIONS_PER_LEAD],
+                "query_ids": sorted({s["query_id"] for s in sightings if s["query_id"]}),
+                "surfaced_by": sorted({s["result_id"] for s in sightings if s["result_id"]}),
+            }
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Theme key of a candidate's run (so ``search_theme_corpus`` works for its research)
 # --------------------------------------------------------------------------- #
 
@@ -1469,6 +1674,8 @@ __all__ = [
     "DiscoveryWebContext",
     "DiscoveryWebDeps",
     "DiscoveryWebResult",
+    "RecallCorroboration",
+    "corroborate_recall_leads",
     "passage_ref",
     "run_discovery_web_stage",
     "select_discovery_results",

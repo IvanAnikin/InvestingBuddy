@@ -2203,6 +2203,18 @@ changes are additive:
   the aggregated bucket entries may carry per-dimension assessments with their own
   `evidence_confidence` and item ids (`C2.1`).
 
+**Recall must be corroborated (owner rule).** While live search ran (`ok` / degraded), a
+`model_recall` lead is a FINAL candidate only if an executed search surfaced it (a targeted,
+budgeted `recall_verification` query whose fetched page names the company - A1), its listing
+verified officially (A2) and a fetched theme passage ties it to the theme (A3). Otherwise it
+is demoted to `dynamic.also_surfaced` with admission codes `recall_not_corroborated` + the
+failed rule, visible and never filling the quota. A corroborated recall lead keeps
+`discovery_mode="model_recall"` and gains `v3_web` sightings / evidence ids / `surfaced_by`
+result ids. A company a search found independently stays a `search` lead
+(`also_named_by_recall`). With search unavailable or disabled, V3.19 behaviour is unchanged
+(recall labelled `model_recall`, official verification only). A company's own name is never
+theme evidence.
+
 `discovery_mode="search"` exists ONLY for a lead whose provenance names an executed
 `web_search_queries` row and a fetched page; a model naming a company admits nothing.
 

@@ -440,3 +440,19 @@ class TestAdmissionRules:
         assert out["codes"][:2] == ["excluded", "size: large cap"]
         kept = adm.apply_a4(d, status="eligible_unverified", reasons=[])
         assert kept["state"] == "admitted" and kept["rules"]["A4"]["passed"]
+
+
+class TestACompanysNameIsNotThemeEvidence:
+    def test_a_theme_word_inside_the_name_does_not_count(self) -> None:
+        m, _ = extract(["Zeta Gallium Limited (ASX: ZGL) appointed a new chair on Monday."])
+        assert m[0].theme_terms == ()
+
+    def test_a_theme_word_outside_the_name_still_counts(self) -> None:
+        m, _ = extract(["Zeta Gallium Limited (ASX: ZGL) is studying gallium recovery."])
+        assert m[0].theme_terms == ("gallium",)
+
+    def test_a_table_row_masks_the_name_cell_too(self) -> None:
+        table = [["Company", "Exchange", "Ticker", "Focus"],
+                 ["Zeta Gallium Ltd", "ASX", "ZGL", "royalty"]]
+        m, _ = extract([], [table])
+        assert m[0].theme_terms == ()

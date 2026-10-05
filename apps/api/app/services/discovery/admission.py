@@ -62,6 +62,9 @@ ADMISSION_VERSION = "w6b.1"
 CODE_NO_SEARCH_PROVENANCE = "no_search_provenance"
 CODE_IDENTITY_UNVERIFIED = "identity_unverified"
 CODE_THEME_EVIDENCE_MISSING = "theme_evidence_missing"
+#: A model-recalled lead that, with live search available, no executed search plus fetched
+#: page corroborated: shown in "also surfaced", never in the quota.
+CODE_RECALL_NOT_CORROBORATED = "recall_not_corroborated"
 
 STATE_ADMITTED = "admitted"
 #: ``eligible_unverified(theme)``: identity verified, theme evidence missing.
@@ -127,6 +130,8 @@ class AdmissionDecision:
     evidence_ids: list[str] = field(default_factory=list)
     detail: str | None = None
     source_label: str | None = None
+    #: ``web_search_results`` ids that surfaced a corroborated recall lead.
+    surfaced_by: list[str] = field(default_factory=list)
 
     @property
     def admitted(self) -> bool:
@@ -141,6 +146,7 @@ class AdmissionDecision:
             "evidence_ids": list(self.evidence_ids),
             "detail": self.detail,
             "source_label": self.source_label,
+            **({"surfaced_by": list(self.surfaced_by)} if self.surfaced_by else {}),
         }
 
 
@@ -217,6 +223,54 @@ def decide(
     return AdmissionDecision(STATE_ADMITTED, rules, [], evidence_ids=evidence)
 
 
+def decide_recall(
+    *,
+    has_provenance: bool,
+    identity_verified: bool,
+    identity_reason: str | None = None,
+    mentions: Sequence[Mapping[str, Any]] = (),
+    surfaced_by: Sequence[str] = (),
+) -> AdmissionDecision:
+    """A1–A3 for a model-recalled lead WHILE live web search is available.
+
+    The product rule: a final candidate must not exist only because an LLM named it. A recall
+    lead is admitted only if an executed search surfaced it (A1), its listing verified
+    officially (A2) and a fetched passage ties it to the theme (A3). Otherwise it is demoted
+    to ``also_surfaced`` with ``recall_not_corroborated`` plus the rule that failed — never
+    silently dropped, never filling the quota. A failed A2 is a rejection, as in V3.19.
+    The lead KEEPS ``discovery_mode="model_recall"`` as its origin; ``surfaced_by`` lists the
+    search results that corroborate it.
+    """
+    evidence = a3_evidence_ids(mentions)
+    rules: dict[str, dict[str, Any]] = {"A1": {"passed": has_provenance}}
+    if not identity_verified:
+        rules["A2"] = {"passed": False, "code": CODE_IDENTITY_UNVERIFIED,
+                       "reason": identity_reason}
+        codes = [CODE_IDENTITY_UNVERIFIED] + ([identity_reason] if identity_reason else [])
+        return AdmissionDecision(STATE_REJECTED, rules, codes, source_label=MODE_MODEL_RECALL,
+                                 detail="the listing was not confirmed by an official source")
+    rules["A2"] = {"passed": True}
+    rules["A3"] = {"passed": bool(evidence), "passages": len(evidence)}
+    failed: list[str] = []
+    if not has_provenance:
+        rules["A1"]["code"] = CODE_NO_SEARCH_PROVENANCE
+        failed.append(CODE_NO_SEARCH_PROVENANCE)
+    if not evidence:
+        rules["A3"]["code"] = CODE_THEME_EVIDENCE_MISSING
+        failed.append(CODE_THEME_EVIDENCE_MISSING)
+    if failed:
+        return AdmissionDecision(
+            STATE_ALSO_SURFACED, rules, [CODE_RECALL_NOT_CORROBORATED, *failed],
+            source_label=MODE_MODEL_RECALL,
+            detail="named by a model; no executed search and fetched page corroborate it",
+        )
+    out = AdmissionDecision(STATE_ADMITTED, rules, [], evidence_ids=evidence,
+                            source_label=MODE_MODEL_RECALL,
+                            detail="named by a model and corroborated by an executed search")
+    out.surfaced_by = list(surfaced_by)
+    return out
+
+
 def apply_a4(decision: Mapping[str, Any], *, status: str, reasons: Sequence[str]) -> dict[str, Any]:
     """Add rule A4 (the existing hard constraints) to a persisted decision.
 
@@ -241,6 +295,7 @@ __all__ = [
     "ADMISSION_VERSION",
     "CODE_IDENTITY_UNVERIFIED",
     "CODE_NO_SEARCH_PROVENANCE",
+    "CODE_RECALL_NOT_CORROBORATED",
     "CODE_THEME_EVIDENCE_MISSING",
     "DIM_CATALYSTS",
     "DIM_DOWNSIDE",
@@ -255,6 +310,7 @@ __all__ = [
     "a3_evidence_ids",
     "apply_a4",
     "decide",
+    "decide_recall",
     "is_a3_passage",
     "search_lead_has_provenance",
 ]

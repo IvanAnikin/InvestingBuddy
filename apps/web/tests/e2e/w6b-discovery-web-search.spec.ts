@@ -35,15 +35,17 @@ test.describe("W6b — candidates found by live web search", () => {
     await expect(admission).toContainText("fetched source ties it to the theme");
   });
 
-  test("a model suggestion is never labelled as a search result", async ({ page }) => {
+  test("a model-named company search did not corroborate is not a candidate", async ({
+    page,
+  }) => {
     await run(page, FOUND);
-    const card = page.getByTestId("candidate-card").filter({ hasText: "Zeta Gallium" });
-    const mode = card.getByTestId("candidate-discovery-mode");
-    await expect(mode).toContainText("Model suggestion");
-    await expect(mode).toContainText("verified on the exchange list");
-    await expect(mode).toHaveAttribute("data-mode", "model_recall");
-    await expect(mode).not.toContainText("web search");
-    await expect(card.getByTestId("candidate-admission")).toHaveCount(0);
+    await expect(
+      page.getByTestId("candidate-card").filter({ hasText: "Zeta Gallium" }),
+    ).toHaveCount(0);
+    const also = page.getByTestId("discovery-also-surfaced");
+    await also.locator("summary").click();
+    const item = also.getByTestId("discovery-also-surfaced-item").filter({ hasText: "Zeta Gallium" });
+    await expect(item).toContainText("Recall not corroborated");
   });
 
   test("a healthy run shows no unavailability banner", async ({ page }) => {
@@ -56,14 +58,12 @@ test.describe("W6b — candidates found by live web search", () => {
   }) => {
     await run(page, FOUND);
     const also = page.getByTestId("discovery-also-surfaced");
-    await expect(also.locator("summary")).toContainText("Also surfaced (1)");
+    await expect(also.locator("summary")).toContainText("Also surfaced (2)");
     await also.locator("summary").click();
-    await expect(also.getByTestId("discovery-also-surfaced-item")).toContainText(
-      "Beta Germanium",
-    );
-    await expect(also.getByTestId("discovery-also-surfaced-item")).toContainText(
-      "Theme evidence missing",
-    );
+    const beta = also
+      .getByTestId("discovery-also-surfaced-item")
+      .filter({ hasText: "Beta Germanium" });
+    await expect(beta).toContainText("Theme evidence missing");
     // It is not a candidate card.
     await expect(
       page.getByTestId("candidate-card").filter({ hasText: "Beta Germanium" }),

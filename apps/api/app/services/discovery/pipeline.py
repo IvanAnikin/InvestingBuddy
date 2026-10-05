@@ -45,6 +45,8 @@ HARD_MAX_VERIFIED = 40
 DEFAULT_MAX_VERIFIED = 30
 DEFAULT_MAX_CANDIDATES = 10
 _HELD_COMPANY_SCAN = 500
+#: Web-search states in which live search ran (so recall must be corroborated).
+_LIVE_SEARCH_STATES = ("ok", "web_search_degraded")
 
 
 @dataclass
@@ -487,6 +489,46 @@ async def run_dynamic_stage(
         units = []
     if web_result is not None and web_result.ran:
         units.append(web_result.units)
+    recall_live = web_result is not None and web_result.state in _LIVE_SEARCH_STATES
+    recall_corroborated: dict[str, dict[str, Any]] = {}
+    recall_executed: frozenset[str] = frozenset()
+    if recall_live:
+        # Owner rule: with live search available, a model-named company is a FINAL candidate
+        # only if an executed search + a fetched page also surface it (A1), its listing is
+        # verified (A2) and a fetched passage ties it to the theme (A3). Targeted, budgeted
+        # verification searches look for the recalled names no search found by itself.
+        from app.services.web_research.discovery_stage import (
+            DiscoveryWebContext,
+            corroborate_recall_leads,
+        )
+
+        known_names = {normalised_name(x.name) for x in [*leads, *web_leads]}
+        known_keys_now = {
+            dedup_key(x.ticker, normalise_venue(x.exchange_raw) or x.exchange_raw)
+            for x in [*leads, *web_leads]
+        }
+        to_check = [
+            x for x in external_leads
+            if x.discovery_mode == "model_recall"
+            and normalised_name(x.name) not in known_names
+            and dedup_key(x.ticker, normalise_venue(x.exchange_raw) or x.exchange_raw)
+            not in known_keys_now
+        ]
+        found_by = await corroborate_recall_leads(
+            session, intent, to_check,
+            DiscoveryWebContext(run_id=run_id, known_domains=known_domains, commit=commit,
+                                plan_date=plan_date),
+            cfg=cfg, deps=web_deps, progress=progress,
+        )
+        recall_corroborated = found_by.by_lead
+        recall_executed = found_by.executed_query_ids
+        units.append(found_by.units)
+        stage.web = {**(stage.web or {}), "recall_verification": {
+            "attempted": found_by.attempted, "corroborated": len(found_by.by_lead),
+            "notes": found_by.notes[:4]}}
+        for x in to_check:
+            if x.lead_id in recall_corroborated:
+                x.web = recall_corroborated[x.lead_id]
     raw_count = len(leads) + len(web_leads) + len(external_leads)
 
     # 2. Dedup — cheap, before any fetch. A lead matching a HELD company inherits its
@@ -502,7 +544,10 @@ async def run_dynamic_stage(
     web_on = web_result is not None
     to_verify: list[CompanyLead] = []
     identities: list[IdentityOutcome] = []
-    executed_query_ids = web_result.executed_query_ids if web_result is not None else frozenset()
+    executed_query_ids = (
+        (web_result.executed_query_ids if web_result is not None else frozenset())
+        | recall_executed
+    )
     for lead in [*leads, *web_leads, *external_leads]:
         venue = normalise_venue(lead.exchange_raw) or (lead.exchange_raw or None)
         key = dedup_key(lead.ticker, venue)
@@ -526,6 +571,12 @@ async def run_dynamic_stage(
                 continue
         if (key and key in seen_keys) or (name_key and name_key in seen_names):
             earlier = (first_by_key.get(key) if key else None) or first_by_name.get(name_key)
+            if (lead.discovery_mode == "model_recall" and earlier is not None
+                    and earlier.discovery_mode == "search"):
+                # A search found it independently, so the search lead stands (a truer label
+                # than the model's); the recall is recorded on it, not rejected as a duplicate.
+                earlier.web = {**(earlier.web or {}), "also_named_by_recall": True}
+                continue
             if lead.discovery_mode == "search" and earlier is not None and lead.web:
                 # The search surfaced a company a registry / held / earlier lead already
                 # names. That lead keeps its true label; the search provenance is attached
@@ -622,6 +673,18 @@ async def run_dynamic_stage(
                 mentions=_a3_mentions(outcome.lead, outcome.name),
             )
             _attach_admission(outcome.lead, decision.to_dict())
+        elif recall_live and outcome.lead.discovery_mode == "model_recall":
+            from app.services.discovery import admission as adm
+
+            recall_decision = adm.decide_recall(
+                has_provenance=adm.search_lead_has_provenance(outcome.lead.web,
+                                                              executed_query_ids),
+                identity_verified=outcome.verified,
+                identity_reason=outcome.rejection_reason,
+                mentions=_a3_mentions(outcome.lead, outcome.name),
+                surfaced_by=((outcome.lead.web or {}).get("surfaced_by") or []),
+            )
+            _attach_admission(outcome.lead, recall_decision.to_dict())
         (identities if outcome.verified else stage.rejected).append(outcome)
     if web_on:
         # Leads beyond the verification bound were never verified: record why.
@@ -819,8 +882,10 @@ def _web_block(
     from app.services.discovery import admission as adm
 
     lead = identity.lead
-    if lead.discovery_mode == "search" and lead.web:
+    has_admission = bool(((lead.web or {}).get("admission") or {}).get("state"))
+    if lead.web and (lead.discovery_mode == "search" or has_admission):
         found = dict(lead.web)
+        found.setdefault("discovery_mode", lead.discovery_mode)
         # Evidence ids use the passages as A3 saw them (issuer pages upgraded).
         found["mentions"] = _a3_mentions(lead, identity.name)
         found["admission"] = adm.apply_a4(
@@ -897,6 +962,9 @@ def _admission_summary(
         if admission:
             for code in admission.get("codes") or []:
                 codes[str(code)] = codes.get(str(code), 0) + 1
+    for r in also:
+        for code in ((r.web or {}).get("admission") or {}).get("codes") or []:
+            codes[f"also_surfaced:{code}"] = codes.get(f"also_surfaced:{code}", 0) + 1
     novel = sum(
         1 for r in records
         if r.identity.lead.discovery_mode == "search" and (r.web or {}).get("novel")

@@ -45,7 +45,7 @@ export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicS
       {alsoSurfaced.length > 0 && (
         <details className="text-xs text-[color:var(--ib-ink-3)]" data-testid="discovery-also-surfaced">
           <summary className="cursor-pointer underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink-2)]">
-            Also surfaced ({alsoSurfaced.length}) — listing verified, theme evidence missing
+            Also surfaced ({alsoSurfaced.length}) — listing verified, not corroborated by a fetched source
           </summary>
           <ul className="mt-2 space-y-1">
             {alsoSurfaced.map((record, i) => (

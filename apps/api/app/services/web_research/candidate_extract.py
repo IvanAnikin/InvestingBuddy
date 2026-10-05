@@ -536,6 +536,11 @@ def _passage(text: str, limit: int = MAX_PASSAGE_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _without(text: str, name: str | None) -> str:
+    """``text`` with every occurrence of the company's name replaced by a space."""
+    return text.replace(name, " ") if name else text
+
+
 def _tag(
     passage: str, theme: ThemeVocabulary
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
@@ -579,7 +584,10 @@ def _paragraph_mentions(
         # The stored passage is the PARAGRAPH around the mention, clipped around the name
         # so a long paragraph still shows it. The terms are read from the WHOLE paragraph:
         # co-occurrence is paragraph-level (spec §6.2 A3).
-        whole_terms = _tag(text, theme)
+        # The company's OWN NAME is not evidence about it: "Zeta Gallium Limited" must not
+        # satisfy a gallium theme on the strength of its name. Terms are read with the name
+        # masked out.
+        whole_terms = _tag(_without(text, name), theme)
         shown = passage()
         if name and name not in shown:
             at = text.find(name)
@@ -703,7 +711,7 @@ def _table_mentions(
         if not _name_ok(name, has_identifier=True):
             stats.rejected_names += 1
             continue
-        t, c, r = _tag(text, theme)
+        t, c, r = _tag(_without(text, name), theme)
         out.append(
             RawMention(
                 name=(name or "").strip(),

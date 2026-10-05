@@ -90,6 +90,17 @@ export const ALG_RECORD = record({
   },
 });
 
+// Live search ran and did not corroborate the recalled name: demoted to "also surfaced".
+export const ZGL_DEMOTED = record({
+  ticker: "ZGL", exchange: "AU", name: "Zeta Gallium Limited", country: "Australia",
+  source: "external_search", mode: "model_recall",
+  web: { schema: "discovery_web_lead/1", discovery_mode: "model_recall",
+         admission: { version: "w6b.1", state: "also_surfaced",
+                      codes: ["recall_not_corroborated", "no_search_provenance",
+                               "theme_evidence_missing"], evidence_ids: [],
+                      source_label: "model_recall" } },
+});
+
 export const ZGL_RECORD = record({
   ticker: "ZGL", exchange: "AU", name: "Zeta Gallium Limited", country: "Australia",
   source: "external_search", mode: "model_recall", why: null,
@@ -112,8 +123,8 @@ export const W6B_STAGE = {
   schema: "discovery_dynamic_stage/1",
   status: "completed",
   external_discovery: "available",
-  funnel: { raw_leads: 4, verified_issuers: 3, met_hard_constraints: 2, returned: 2,
-            web_leads: 2, web_admitted: 1, web_also_surfaced: 1 },
+  funnel: { raw_leads: 4, verified_issuers: 3, met_hard_constraints: 1, returned: 1,
+            web_leads: 2, web_admitted: 1, web_also_surfaced: 2 },
   excluded: [],
   rejected_leads: [
     { name: "Apex Metals Ltd", ticker: "APX", exchange_raw: "ASX", source: "external_search",
@@ -125,10 +136,10 @@ export const W6B_STAGE = {
     version: 1, state: "ok", label: null, depth: "standard", provider: "fake_web_search",
     queries: { planned: 20, executed: 20, failed: 0, followups: 1,
                locales: [], by_family: { entity: 5, value_chain: 3, venue: 1, demand: 6, document: 5 } },
-    admission: { by_state: { admitted: 1, labelled: 1, also_surfaced: 1 },
+    admission: { by_state: { admitted: 1, also_surfaced: 2 },
                  rejected_codes: { identity_unverified: 1 }, novel_candidates: 1 },
   },
-  also_surfaced: [BGM_RECORD],
+  also_surfaced: [BGM_RECORD, ZGL_DEMOTED],
 };
 
 export const W6B_OUTAGE_STAGE = {
@@ -156,9 +167,6 @@ export const W6B_RUNS = {
       { id: "cccccccc-0000-0000-0000-00000000006b", ticker: "ALG", exchange: "AU",
         company_name: "Alpha Gallium Limited", rank: 1, record: ALG_RECORD,
         discovery_mode: "search", admission: ALG_RECORD.v3_web.admission },
-      { id: "cccccccc-0000-0000-0000-00000000006d", ticker: "ZGL", exchange: "AU",
-        company_name: "Zeta Gallium Limited", rank: 2, record: ZGL_RECORD,
-        discovery_mode: "model_recall", admission: ZGL_RECORD.v3_web.admission },
     ],
   },
   [W6B_OUTAGE_RUN_ID]: {

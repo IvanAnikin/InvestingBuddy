@@ -709,8 +709,8 @@ pipeline puts web leads after registry / held and before model recall; a lead la
 without an executed query row and a fetched page is rejected `no_search_provenance`.
 Decisions and deviations: a web lead's printed name must agree with the exchange's name under
 the STRICT rule (V3.19's ticker-matched rule accepts one shared word - "Apex Metals" vs "Apex
-Fisheries"); recall leads are not rejected for lacking A1 but are labelled `model_recall` and
-get no A3 evidence of their own; an issuer's own page counts as issuer material for A3 once its
+Fisheries"); with live search available a recall lead is final only if corroborated by an executed
+verification search + fetched theme passage (else `also_surfaced`, `recall_not_corroborated`); an issuer's own page counts as issuer material for A3 once its
 identity is verified; the LLM entity extractor and LLM translation fill-in are NOT built (the
 extractor is regex-only; the glossary is extended in reviewed diffs).
 

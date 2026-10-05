@@ -48,6 +48,7 @@ from tests.helpers.discovery_web import (
     Net,
     directory_fetcher,
     hit,
+    page,
     plan_for,
     serve,
 )
@@ -363,7 +364,8 @@ class TestWhatIsNotAdmitted:
         self, h: H
     ) -> None:
         """Zeta Gallium is on the ASX list and a model names it. No search surfaced it, so it
-        is a recall lead, labelled as one — never ``search``, never A1–A3 evidence."""
+        is a recall lead, labelled as one — never ``search``. With live search available it
+        is not a FINAL candidate (see ``TestRecallMustBeCorroborated``)."""
         recall = _Recall(
             [
                 {
@@ -379,8 +381,7 @@ class TestWhatIsNotAdmitted:
         zeta = _record(stage, "ZGL")
         assert zeta.identity.lead.discovery_mode == "model_recall"
         assert zeta.provenance["discovery_mode"] == "model_recall"
-        assert zeta.web["admission"]["state"] == "labelled"
-        assert zeta.web["admission"]["source_label"] == "external_search"
+        assert zeta.web["admission"]["state"] == "also_surfaced"
         assert "sightings" not in zeta.web
         # Nothing the stage produced is labelled search without a query row behind it.
         search_leads = [
@@ -845,6 +846,211 @@ class TestLongTailMeasures:
 # --------------------------------------------------------------------------- #
 # Resume: a retried job spends no search twice
 # --------------------------------------------------------------------------- #
+
+
+ZETA_URL = "https://www.northernminer.com/news/zeta-gallium"
+ZETA_PAGE = page(
+    "Zeta Gallium advances recovery study",
+    [
+        "Zeta Gallium Limited (ASX: ZGL) said it completed a scoping study for gallium "
+        "recovery from alumina refinery liquor and is seeking an offtake partner, according "
+        "to the company's announcement on Tuesday.",
+        "Gallium supply outside China remains tight and buyers are qualifying new producers, "
+        "analysts at the trade publication said, with lead times for new capacity long.",
+    ],
+)
+ZETA_NO_THEME = page(
+    "Zeta Gallium appoints a chair",
+    [
+        "Zeta Gallium Limited (ASX: ZGL) appointed a new independent chair on Monday, the "
+        "company said in a short statement to the exchange, and thanked the outgoing chair.",
+        "The board also reviewed its annual general meeting arrangements and the weather in "
+        "Perth was mild during the meeting.",
+    ],
+)
+OTHER_PAGE = page(
+    "Gallium hopefuls",
+    [
+        "Alpha Gallium Limited (ASX: ALG) is building a gallium recovery plant and has "
+        "signed a term sheet with a buyer, the company said, as gallium prices stay high.",
+    ],
+)
+ZETA = {
+    "legal_name": "Zeta Gallium Limited",
+    "ticker": "ZGL",
+    "exchange": "ASX",
+    "country": "Australia",
+}
+
+
+def verification_query(name: str = "Zeta Gallium Limited") -> str:
+    return f"{name} gallium"
+
+
+def serve_verification(
+    h: H, results: list[dict[str, Any]], name: str = "Zeta Gallium Limited"
+) -> None:
+    from app.integrations.search.fake import fixture_key
+    from tests.helpers.discovery_web import tavily
+
+    h.provider.fixtures[fixture_key(verification_query(name))] = tavily(results, "synthetic-recall")
+
+
+def _all(stage: Any) -> list[Any]:
+    return [*stage.candidates, *stage.excluded, *stage.also_surfaced]
+
+
+class TestRecallMustBeCorroborated:
+    """Owner rule: a final candidate must not exist only because an LLM named it. With live
+    search available, a model_recall lead is final only if A1 (an executed search surfaced
+    it, a fetched page names it), A2 (official listing) and A3 (a fetched theme passage)
+    all hold; otherwise it is demoted to also_surfaced with ``recall_not_corroborated``."""
+
+    async def test_a_recall_only_lead_is_demoted_when_search_is_ok(self, h: H) -> None:
+        h.serve_obscure()
+        stage = await h.stage(recall=_Recall([ZETA]))
+        assert stage.web["state"] == "ok"
+        assert all(r.identity.ticker != "ZGL" for r in stage.candidates), "never fills the quota"
+        zeta = next(r for r in stage.also_surfaced if r.identity.ticker == "ZGL")
+        admission = zeta.web["admission"]
+        assert admission["state"] == "also_surfaced"
+        assert admission["codes"][0] == "recall_not_corroborated"
+        assert set(admission["codes"][1:]) == {"no_search_provenance", "theme_evidence_missing"}
+        assert zeta.provenance["discovery_mode"] == "model_recall"
+        assert zeta.web["discovery_mode"] == "model_recall"
+        assert stage.funnel["web_also_surfaced"] == 2  # BGM and the uncorroborated ZGL
+        assert stage.web["recall_verification"] == {"attempted": 1, "corroborated": 0, "notes": []}
+        payload = stage.to_dict()["also_surfaced"]
+        assert any(x["identity"]["ticker"] == "ZGL" for x in payload), "visible, not dropped"
+
+    async def test_a_verification_search_is_a_budgeted_recorded_query(
+        self, h: H, session: Any
+    ) -> None:
+        h.serve_obscure()
+        await h.stage(recall=_Recall([ZETA]))
+        rows = (
+            (
+                await session.execute(
+                    select(WebSearchQuery).where(WebSearchQuery.origin == "recall_verification")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1 and rows[0].executed and rows[0].discovery_run_id == h.run_id
+        assert rows[0].query_text == verification_query()
+
+    async def test_a_corroborated_recall_lead_is_admitted_and_keeps_its_origin(self, h: H) -> None:
+        h.serve_obscure()
+        serve_verification(h, [hit(ZETA_URL, "Zeta Gallium")])
+        h.net.pages[ZETA_URL] = ZETA_PAGE
+        stage = await h.stage(recall=_Recall([ZETA]))
+        zeta = next(r for r in stage.candidates if r.identity.ticker == "ZGL")
+        assert zeta.provenance["discovery_mode"] == "model_recall", "origin kept"
+        assert zeta.web["discovery_mode"] == "model_recall"
+        admission = zeta.web["admission"]
+        assert admission["state"] == "admitted" and admission["codes"] == []
+        assert all(admission["rules"][r]["passed"] for r in ("A1", "A2", "A3", "A4"))
+        assert admission["evidence_ids"] and admission["surfaced_by"]
+        sighting = zeta.web["sightings"][0]
+        assert sighting["query_origin"] == "recall_verification"
+        assert sighting["fetch_attempt_id"] and sighting["url"] == ZETA_URL
+        assert stage.web["recall_verification"]["corroborated"] == 1
+
+    async def test_a_recall_lead_whose_page_has_no_theme_passage_is_demoted(self, h: H) -> None:
+        h.serve_obscure()
+        serve_verification(h, [hit(ZETA_URL, "Zeta Gallium")])
+        h.net.pages[ZETA_URL] = ZETA_NO_THEME
+        stage = await h.stage(recall=_Recall([ZETA]))
+        assert all(r.identity.ticker != "ZGL" for r in stage.candidates)
+        zeta = next(r for r in stage.also_surfaced if r.identity.ticker == "ZGL")
+        assert zeta.web["admission"]["codes"] == [
+            "recall_not_corroborated",
+            "theme_evidence_missing",
+        ]
+        assert zeta.web["admission"]["rules"]["A1"]["passed"] is True
+
+    async def test_a_page_naming_a_different_company_corroborates_nothing(self, h: H) -> None:
+        """MUTATION GUARD: the model's name steers which page is read, never what it says."""
+        h.serve_obscure()
+        other = "https://www.northernminer.com/news/other"
+        serve_verification(h, [hit(other, "Other")])
+        h.net.pages[other] = OTHER_PAGE
+        stage = await h.stage(recall=_Recall([ZETA]))
+        zeta = next(r for r in stage.also_surfaced if r.identity.ticker == "ZGL")
+        assert "sightings" not in zeta.web
+        assert zeta.web["admission"]["codes"][0] == "recall_not_corroborated"
+        assert stage.web["recall_verification"]["corroborated"] == 0
+
+    async def test_an_unverifiable_recall_lead_is_still_rejected_as_in_v319(self, h: H) -> None:
+        ghost = {"legal_name": "Phantom Gallium Limited", "ticker": "PHG", "exchange": "ASX"}
+        h.serve_obscure()
+        stage = await h.stage(recall=_Recall([ghost]))
+        rejected = next(r for r in stage.rejected if r.lead.ticker == "PHG")
+        assert rejected.rejection_reason == "not_in_exchange_directory"
+        assert rejected.lead.web["admission"]["state"] == "rejected"
+
+    async def test_a_recall_lead_a_search_found_independently_stays_a_search_lead(
+        self, h: H
+    ) -> None:
+        h.serve_obscure()
+        alg = {"legal_name": "Alpha Gallium Limited", "ticker": "ALG", "exchange": "ASX"}
+        stage = await h.stage(recall=_Recall([alg]))
+        record = next(r for r in stage.candidates if r.identity.ticker == "ALG")
+        assert record.provenance["discovery_mode"] == "search"
+        assert record.web["also_named_by_recall"] is True
+        assert not any(
+            x.lead.ticker == "ALG" and x.rejection_reason == "duplicate" for x in stage.rejected
+        )
+
+    async def test_the_run_query_ceiling_also_bounds_verification_searches(self, h: H) -> None:
+        h.serve_obscure()
+        second = {"legal_name": "Beta Germanium Limited", "ticker": "BGM", "exchange": "ASX"}
+        await h.stage(config=cfg(v3_run_max_web_searches=5), recall=_Recall([ZETA, second]))
+        assert len(h.provider.requests) <= 5
+
+    async def test_a_retry_reuses_the_recorded_verification_query(self, h: H) -> None:
+        h.serve_obscure()
+        serve_verification(h, [hit(ZETA_URL, "Zeta Gallium")])
+        h.net.pages[ZETA_URL] = ZETA_PAGE
+        await h.stage(recall=_Recall([ZETA]))
+        paid = len(h.provider.requests)
+        again = await h.stage(recall=_Recall([ZETA]))
+        assert len(h.provider.requests) == paid
+        assert any(r.identity.ticker == "ZGL" for r in again.candidates)
+
+    async def test_search_unavailable_leaves_v319_recall_labelled_not_gated(self, h: H) -> None:
+        h.provider.mode = MODE_OUTAGE
+        stage = await h.stage(recall=_Recall([ZETA]))
+        zeta = _record(stage, "ZGL")
+        assert zeta in stage.candidates
+        assert zeta.web["admission"]["state"] == "labelled"
+        assert "recall_verification" not in stage.web
+        assert not any(r.origin == "recall_verification" for r in h.provider.requests)
+
+    async def test_search_disabled_is_also_unchanged(self, h: H) -> None:
+        stage = await h.stage(config=cfg(v3_web_search_enabled=False), recall=_Recall([ZETA]))
+        zeta = _record(stage, "ZGL")
+        assert zeta in stage.candidates and zeta.web["admission"]["state"] == "labelled"
+
+    async def test_a_registry_lead_is_not_gated_and_gets_a3_evidence_when_search_found_it(
+        self, h: H
+    ) -> None:
+        item = {
+            "ticker": "ALG",
+            "exchange": "AU",
+            "company_name": "Alpha Gallium Limited",
+            "country": "Australia",
+            "industry": "Metals & Mining",
+            "theme": "mining_materials",
+            "universe_source": "curated_theme_registry",
+            "source_tier": "T3_curated_reference_list",
+        }
+        h.serve_obscure()
+        stage = await h.stage(run_universe={"items": [item]})
+        alg = _record(stage, "ALG")
+        assert alg in stage.candidates and alg.web["admission"]["state"] == "labelled"
+        assert alg.web["admission"]["evidence_ids"]
 
 
 class TestResume:
