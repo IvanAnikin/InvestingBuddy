@@ -5,7 +5,9 @@ import type {
   DisclosureView,
   EvidenceChannelView,
 } from "@/components/research/reportView";
+import type { WebSourceEntry } from "@/components/research/webEvidence";
 import type { ReportPrimaryDocumentsResponse } from "@/types/api";
+import { WebSourcesList } from "./WebEvidenceParts";
 
 /**
  * Source transparency, at the weight it should carry in a reading flow.
@@ -23,6 +25,7 @@ export default function EvidenceDisclosure({
   channels,
   reportId,
   sourceNotes = [],
+  webSources = [],
 }: {
   primaryDocuments: ReportPrimaryDocumentsResponse | null;
   disclosures: DisclosureView[];
@@ -36,6 +39,12 @@ export default function EvidenceDisclosure({
    * text stays, unedited, so nothing is rewritten away.
    */
   sourceNotes?: string[];
+  /**
+   * Open-web W8b: the open-web documents a finding or event rests on, each with publisher,
+   * date, kind of source and corroboration (and an https link where the producer has one).
+   * Empty on every report written before open-web research.
+   */
+  webSources?: WebSourceEntry[];
 }) {
   const documents = (primaryDocuments?.documents ?? []).filter(
     (d) => d.status !== "discovered",
@@ -58,6 +67,9 @@ export default function EvidenceDisclosure({
   }
   if (appendix.primaryReferenceCount > 0) {
     counts.push(`${appendix.primaryReferenceCount} located reference(s)`);
+  }
+  if (webSources.length > 0) {
+    counts.push(`${webSources.length} web source${webSources.length === 1 ? "" : "s"}`);
   }
 
   return (
@@ -93,6 +105,8 @@ export default function EvidenceDisclosure({
             reportId={reportId}
             variant="bare"
           />
+
+          <WebSourcesList sources={webSources} />
 
           {sourceNotes.length > 0 && (
             <div

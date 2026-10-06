@@ -4,6 +4,7 @@ import {
   type ExternalLead,
   type V3Research,
 } from "@/components/research/v3Research";
+import { RiskEvidenceNote } from "./WebEvidenceParts";
 
 /**
  * What the V3 research pipeline did, shown to the person reading the report.
@@ -355,6 +356,7 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
             {challenges.withdrawnFindings === 1 ? " was" : "s were"} withdrawn and{" "}
             {challenges.confidenceLowered} had confidence lowered.
           </p>
+          <RiskEvidenceNote risk={challenges.riskEvidence} />
         </div>
       )}
 

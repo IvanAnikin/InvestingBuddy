@@ -137,6 +137,10 @@ class CompanyLead:
     registry_item: dict[str, Any] | None = None
     #: How the lead was produced: ``model_recall`` (no retrieval) or ``search``.
     discovery_mode: str | None = None
+    #: Open-web W6b: the lead's search provenance (``discovery_web_lead/1`` — sightings,
+    #: mention passages, evidence ids). Set ONLY by the web stage, and only for a lead a
+    #: fetched page named; ``None`` for every other source.
+    web: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)

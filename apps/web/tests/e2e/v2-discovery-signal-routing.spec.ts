@@ -140,6 +140,7 @@ function placement(over: Partial<CouncilPriorityEntry>): CouncilPriorityEntry {
     strongestDimension: null,
     unverifiedConstraints: [],
     placementNote: null,
+    dimensions: [],
     supporting: [],
     concerns: [],
     ...over,

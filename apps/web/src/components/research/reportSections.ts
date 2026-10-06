@@ -28,6 +28,7 @@ import type {
   LlmCouncilAgent,
   LlmCouncilMetadata,
 } from "@/types/api";
+import { readCatalystWebEvidence, type CatalystWebItem } from "./webEvidence";
 import {
   extractFinalReportContent,
   noteText,
@@ -570,6 +571,9 @@ export interface CatalystsView {
   interpretation: string | null;
   interpretationFindings: CouncilAgentDetail["findings"];
   note: string | null;
+  /** Open-web W5: dated events the company web search stored (additive; empty on every
+      report written before it). */
+  webEvidence: CatalystWebItem[];
 }
 
 export function buildCatalysts(
@@ -596,6 +600,7 @@ export function buildCatalysts(
     interpretation: agent?.summary ?? null,
     interpretationFindings: agent?.findings ?? [],
     note: noteText(section?.["note"]),
+    webEvidence: readCatalystWebEvidence(section),
   };
 }
 

@@ -819,6 +819,7 @@ async def process_run(
     extractor: SignalExtractor | None = None,
     discovery_provider: Any = None,
     discovery_fetcher: Any = None,
+    discovery_web_deps: Any = None,
     owned_by_lease: bool = False,
     progress: ProgressHook | None = None,
     durable_job_id: uuid.UUID | None = None,
@@ -908,6 +909,8 @@ async def process_run(
                 provider=discovery_provider,
                 fetcher=discovery_fetcher,
                 durable_job_id=durable_job_id,
+                web_deps=discovery_web_deps,
+                progress=progress,
             )
         dynamic_ran = intent is not None
         universe = _run_universe(run)
@@ -1118,6 +1121,37 @@ def _eligibility_rank_key(candidate: DiscoveryCandidate) -> tuple:
     )
 
 
+def _expansion_loader(run: DiscoveryRun) -> Callable[[], Awaitable[list[str] | None]]:
+    """The model expansion persisted on the run (``universe_json["web_expansion"]``)."""
+
+    async def load() -> list[str] | None:
+        saved = (run.universe_json or {}).get("web_expansion")
+        return [str(q) for q in saved] if isinstance(saved, list) else None
+
+    return load
+
+
+def _expansion_saver(
+    db: AsyncSession, run: DiscoveryRun
+) -> Callable[[list[str]], Awaitable[None]]:
+    """Persist the expansion and COMMIT it before a single search is paid for."""
+
+    async def save(queries: list[str]) -> None:
+        run.universe_json = {**(run.universe_json or {}), "web_expansion": list(queries)}
+        await db.commit()
+
+    return save
+
+
+def _is_job_abort(exc: BaseException) -> bool:
+    """True for the exceptions a durable job's checkpoint raises to stop its handler."""
+    try:
+        from app.services.jobs.worker import JobCancelled, LeaseLostError
+    except Exception:  # noqa: BLE001 - no durable worker module, no durable abort
+        return False
+    return isinstance(exc, (JobCancelled, LeaseLostError))
+
+
 async def _run_dynamic_discovery(
     db: AsyncSession,
     run: DiscoveryRun,
@@ -1126,6 +1160,8 @@ async def _run_dynamic_discovery(
     provider: Any = None,
     fetcher: Any = None,
     durable_job_id: uuid.UUID | None = None,
+    web_deps: Any = None,
+    progress: ProgressHook | None = None,
 ) -> None:
     """Run the dynamic stage and replace the run's universe with its shortlist.
 
@@ -1151,8 +1187,25 @@ async def _run_dynamic_discovery(
             provider=provider,
             fetcher=fetcher,
             max_candidates=(run.config_json or {}).get("max_candidates"),
+            # Open-web W6b: the run id keys the web stage's provenance rows (and its
+            # resume); ``commit`` lets it persist them before the fetch phase.
+            run_id=run.id,
+            web_deps=web_deps,
+            commit=db.commit,
+            plan_date=(_aware(run.created_at) or datetime.now(timezone.utc)).date(),
+            expansion_loader=_expansion_loader(run),
+            expansion_saver=_expansion_saver(db, run),
+            # The durable job's checkpoint: the web stage reports its phases and a lost
+            # lease or a cancellation raised by it STOPS the run (see below).
+            progress=progress,
         )
     except Exception as exc:  # noqa: BLE001 - the run continues on the curated universe
+        if _is_job_abort(exc):
+            # A lost lease or a cancellation is the job's decision, not a stage failure:
+            # carrying on with the curated universe would run a scan nobody owns. The
+            # stage record stays ``running``, so the retry re-enters it and reuses the
+            # searches this attempt already recorded.
+            raise
         logger.exception("dynamic_discovery_failed run=%s", run.id)
         failed = dict(run.universe_json or {})
         failed[STAGE_KEY] = {"status": "failed", "error": type(exc).__name__,
@@ -2150,7 +2203,7 @@ def _run_to_evidence_dict(run: DiscoveryRun) -> dict[str, Any]:
     }
     intent = (run.parsed_thesis_json or {}).get("discovery_intent") or {}
     stage = (run.universe_json or {}).get("dynamic") or {}
-    return {
+    data = {
         "run_id": str(run.id),
         "mode": run.mode,
         "status": run.status,
@@ -2171,6 +2224,32 @@ def _run_to_evidence_dict(run: DiscoveryRun) -> dict[str, Any]:
         "error_count": run.error_count,
         "warnings": list(run.warnings or []),
     }
+    web = stage.get("web")
+    if isinstance(web, dict) and web:
+        # Open-web W6b: the run's web-search state, as one cited run fact. Absent with the
+        # flag off, so the pack is byte-identical to V3.19.
+        data["discovery_web"] = {k: web.get(k) for k in ("state", "label", "queries",
+                                                         "admission")}
+    return data
+
+
+def _web_evidence(v319: dict[str, Any]) -> dict[str, Any]:
+    """``web_discovery`` for the Council pack from ``v319.v3_web``; ``{}`` without one."""
+    v3_web = v319.get("v3_web") if isinstance(v319, dict) else None
+    if not v3_web:
+        return {}
+    from app.services.discovery.council_pack import build_candidate_web_pack
+
+    block = build_candidate_web_pack(
+        v3_web,
+        verified_attributes=v319.get("verified_attributes") or {},
+        constraint_status={
+            str(r.get("key")): str(r.get("status"))
+            for r in v319.get("constraint_results") or []
+            if isinstance(r, dict) and r.get("status") != "not_requested"
+        },
+    )
+    return {"web_discovery": block} if block else {}
 
 
 def _candidate_to_evidence_dict(
@@ -2201,6 +2280,9 @@ def _candidate_to_evidence_dict(
             k: (v319.get("provenance") or {}).get(k)
             for k in ("discovery_source", "identity_status")
         } if v319 else {},
+        # Open-web W6b: ONLY when the candidate carries a web block (flag on), so the pack
+        # of a flag-off run is byte-identical to V3.19.
+        **_web_evidence(v319),
         "candidate_id": str(c.id),
         "ticker": c.ticker,
         "exchange": c.exchange,

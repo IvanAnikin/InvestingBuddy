@@ -696,6 +696,24 @@ worker. The durable move is its own slice (W6a) so it can be reverted independen
 
 **Complexity:** XL (about 6–7 days, as two slices: W6a durable, W6b search).
 
+**W6b as built (`feature/web-w6b-discovery-search`).** New: `web_research/discovery_planner.py`
+(families ENTITY / VALUE_CHAIN / VENUE / LOCAL_LANG / DEMAND / DOCUMENT from the intent's closed
+vocabularies, project / permit / offtake / financing / capacity / regulation / counter-thesis
+templates, saturation follow-ups, bounded cached expansion that may not name a company),
+`locales.py` (venue->locale, region/country->locales, versioned glossary: de fr it es da sv no fi
+pl cs ja zh), `candidate_extract.py` (deterministic mention extraction from paragraphs and table
+rows), `discovery_stage.py` (search with resume, round-robin selection that ranks a known name's
+own site down, fetch + W3 extraction, theme documents), `discovery/admission.py` (A1-A4 with
+persisted codes), `discovery/council_pack.py` (<= 6 items per candidate, `priority_basis`). The
+pipeline puts web leads after registry / held and before model recall; a lead labelled `search`
+without an executed query row and a fetched page is rejected `no_search_provenance`.
+Decisions and deviations: a web lead's printed name must agree with the exchange's name under
+the STRICT rule (V3.19's ticker-matched rule accepts one shared word - "Apex Metals" vs "Apex
+Fisheries"); with live search available a recall lead is final only if corroborated by an executed
+verification search + fetched theme passage (else `also_surfaced`, `recall_not_corroborated`); an issuer's own page counts as issuer material for A3 once its
+identity is verified; the LLM entity extractor and LLM translation fill-in are NOT built (the
+extractor is regex-only; the glossary is extended in reviewed diffs).
+
 ---
 
 ## W7: Bounded follow-up research loop
@@ -729,6 +747,72 @@ worker. The durable move is its own slice (W6a) so it can be reverted independen
 `mode.rounds`.
 
 **Rollback:** `V3_WEB_FOLLOWUP_ENABLED=false`.
+
+**As built (W7).** Modules: `web_research/followup.py` (gap topics and GAP templates,
+`WebFollowup`, the challenge wave, risk evidence, `assess_challenge_basis`), the web rung in
+`director/loop.py`, the deterministic candidate step in `agents/investigator.py`, the risk-evidence
+input in `agents/red_team.py`, the `verified_leads` dimension in `escalation/evidence.py`. No
+migration, no API. Decisions, each deliberate:
+
+- **A rung, not a loop.** `run_investigation(..., web_followup=...)`: before the follow-ups of a
+  round are chosen, the open closable gaps whose field a web search could plausibly answer get one
+  web round; documents that arrive make the question's corpus re-read a rung (`_has_a_rung_left(
+  web_rung=)`) and the specialist is handed the platform-built query (`QuestionContext.
+  followup_queries`). A gap is followed up once (a contradiction exactly once). The last Director
+  round is never a web round.
+- **Stop reasons** (new, closed vocabulary): `answered` (EVERY absence gap the web rounds targeted is
+  closed by a finding, by track B's pure `reconcile`; a contradiction is resolved by the disagreement
+  machinery and never counts; `web_followup.targeted_absence_gaps/closed` give the denominator), `saturation` (the last web
+  round stored nothing relevant and nothing else is left), `web_budget` (a LIMIT: web rounds or
+  budget spent with web-answerable gaps unspent). Round, task and wall limits bind as before; a
+  completed run that left web improvement undone says which limit (`improvement_stopped_by`).
+- **PI-07.** Queries use only versioned templates, the verified company name, ticker/venue,
+  classification industry, subject-profile commodities, the year and a closed field label. A
+  gap's text selects a topic; none of it is copied.
+- **Fail closed on closure.** Margin, backlog and customer concentration are not in track B's
+  field vocabulary, so a finding about them can never be PROVEN to close a gap: the follow-up runs,
+  the document is read, the gap stays open and the run does not say `answered`. A third-party-only
+  finding closes a gap only partially (track B's rule). This is a deviation from the brief's "margin
+  gap closed" acceptance: it is demonstrated with production capacity, and margin demonstrates the
+  honest outcome.
+- **Own budget inside a run-level ceiling (W7-D2, review round 1).** The stage plans up to the mode's
+  whole `max_web_searches`, so the rung does not share the Investigator's `ExternalSearchBudget`. Per
+  round it spends the `followup` profile (6 queries / 12 fetches / 3 PDFs), clamped on EVERY use to what
+  the run may still spend: the mode's stage profile plus the follow-up allowance (web rounds x profile +
+  3 challenge queries), with `V3_RUN_MAX_WEB_SEARCHES` capping the SUM when set. Usage is read from the
+  job's provenance rows (searches; fetches and bytes when a job id scopes them, else the instance's own),
+  so a fresh instance (an escalation round is a new job and a new ceiling, by design) cannot reset a
+  total. A round's wall limit is clamped to the Director's wall time left; the challenge wave is not
+  started with none left. Web rounds per mode: 1/2/3/4 (QUICK has one Director round, so no web round).
+- **Challenge wave (spec 7.4).** Neutral RISK queries the stage did not run (permit problem, project
+  cancellation, financing risk, cost overrun, production issue, ...), one slot always a counter-thesis
+  query (technology disadvantages, industry oversupply, commodity substitute). The Red Team receives
+  `risk_evidence` (class, origin display, document date, independence, a capped excerpt inside a
+  nonce-fenced block; injection-suspect pages and other companies' documents are excluded). RISK ids are
+  NEVER citable by the responder, and evidence a challenge rests on is stripped from a response before
+  the platform decides the outcome: citing the adverse page cannot resolve the challenge it raised. A
+  challenge that omits `risk_evidence_ids`, cites an unknown id, or quotes an excerpt without citing it
+  is labelled `[ungrounded web claim]` and counted; what a challenge rests on is appended to its stored
+  text (`[rests on: ...]`; the challenge row has no column and no migration was added).
+  `assess_challenge_basis` (the verified issuer never makes a page a "single reliable source"): a single low-trust source (aggregator, unknown,
+  wire-hosted, unresolved) cannot carry a challenge, which is discarded and counted; a single reliable
+  source carries it labelled `[single source]`; two independent origins carry it unlabelled.
+- **Candidate step.** With the flag on, the candidates a `search_web` call returns are fetched and
+  ingested by the platform (`fetch_candidates`: https, not denylisted, not held, W5 scoring, 3 per
+  question) and read back as `ev:c:` chunks filtered to those URLs. A candidate has no claim, so
+  `fetch_public_source` (verify a claim) is not used for them.
+- **Escalation.** Web chunks already count through `indexed_chunks` / `searchable_documents` (company
+  scoped, current, indexed). Verified `ev:x:` leads are a new OPTIONAL decisive dimension
+  (`verified_leads`): measured only with `V3_WEB_FOLLOWUP_ENABLED` on, compared only when BOTH snapshots
+  measured it (a baseline without the key is "not measured", never zero), omitted from every payload with
+  the flag off (snapshot and delta key sets are exactly the old ones), and counted only for a lead whose
+  stored document is current and classified above `aggregator`/`unknown_web`. Company-wide like the other
+  dimensions. Cost-NULL-blocks-escalation is untouched.
+- **Record.** `web_context.followup_rounds`, `web_context.followup` (queries, rounds, challenge,
+  `stopped_by`), `outcome.loop.web_followup`, `outcome.challenges.risk_evidence_items`; follow-up spend
+  is added to the `web_stage` consumption units.
+- **Deferred.** Playbook-declared follow-up templates (`services/playbooks/*`) and the Director
+  planner's own follow-up questions are not changed; the topic table lives in `followup.py`.
 
 **Complexity:** M (about 2–3 days).
 
@@ -769,6 +853,48 @@ worker. The durable move is its own slice (W6a) so it can be reverted independen
 **Rollback:** Revert.
 
 **Complexity:** M (about 3 days).
+
+**W8b as built (`feature/web-w8b-investor-ux`, web only).** The investor-facing half of W8; the
+admin audit page is W8a.
+
+- *Discovery card* (`CandidateWebEvidence.tsx`, `webEvidenceView.ts`; shown only for a candidate
+  with a `v3_web` block): why it surfaced (mode label *Found via web search* / *Suggested by
+  model, verified on exchange* / *Curated* / *Held*, source host, one cited excerpt), thesis fit
+  (admission rule A3), catalyst signal, strongest evidence (up to three items, one per publisher,
+  admitted passages first), main downside (the council's words first), what is unknown, and the
+  evidence-confidence chip. Evidence confidence is the council's own per-dimension
+  `dimensions[].evidence_confidence` and is kept apart from *What the priority rests on*
+  (thesis fit, growth from verified facts, catalyst relevance, size fit). Admission is worded in
+  plain language, including *eligible but unverified (theme | listing)* and the model-suggestion
+  demotion; "Also surfaced" says why each company is not in the shortlist.
+- *Company report* (`webEvidence.ts`, `report/WebEvidenceParts.tsx`): `web_evidence` blocks in the
+  four sections with publisher, class, date, corroboration and the W4 label chips; a *Current
+  developments* strip in the growth and catalysts section (from the V2 section's
+  `web_catalyst_evidence`, which the backend writes into the report's embedded JSON, not into
+  `source_summary_json`); the evidence drawer's *Web sources* list; *Web research* in the
+  evidence-quality section with *Sources found but not accessible* and the follow-up summary
+  (rounds; stopped: answered, no further new sources, or budget reached); the red team's
+  risk-evidence counts. Every block renders nothing when its data is absent, so older reports
+  are unchanged.
+- *Never shown to an investor:* search queries, query keys, the search vendor, cost units, result
+  or fetch-attempt ids. Third-party text is a React text node only; a link is rendered only for an
+  https URL (`rel="noopener noreferrer nofollow"`); a passage with recommendation vocabulary is
+  withheld; invisible and bidi characters are stripped.
+- *Key pins.* `apps/web/tests/fixtures/w8b-web-evidence.json` is the producers' shape;
+  `apps/api/tests/test_web_w8b_fixture_keys.py` runs the real writers (`web_evidence_block`,
+  `web_research_block`, `_attach_web_catalysts`, `AdmissionDecision`, `_mention_entry`,
+  `_sighting_of`, `DimensionAssessment`) and compares key sets; it also checks that the web's
+  vocabularies (source classes, W4 labels, access reasons, admission codes, progress stages)
+  cover the backend's.
+- *Known gaps the UI cannot close alone (additive backend fields wanted):* the discovery mention
+  and sighting records carry no published date (the card says "date not stated"); the
+  not-accessible rows carry no date; `priority_basis` exists only in the Council's input pack and
+  is not persisted, so the card derives *What the priority rests on* from persisted facts;
+  `DiscoveryRunRead.job` does not expose the job's stage, so the progress words render only when a
+  `job.stage` is supplied; `challenges.risk_evidence_items` (W7) is a count, not a list of
+  sources.
+- *Tests.* `apps/web/tests/e2e/w8b-web-evidence.spec.ts` on its own ports
+  (`playwright.w8b.config.ts`: dev server 3600, mock backend 9299).
 
 ---
 

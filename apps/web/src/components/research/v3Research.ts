@@ -26,6 +26,17 @@
  * denominator of the survival rate — but they are never presented as sources.
  */
 
+import {
+  readRiskEvidenceSummary,
+  readWebContext,
+  readWebEvidenceBlock,
+  readWebResearchQuality,
+  type RiskEvidenceSummary,
+  type WebContext,
+  type WebEvidenceBlock,
+  type WebResearchQuality,
+} from "./webEvidence";
+
 /** One statement the ledger holds, with the ids that make it citable. */
 export type V3Finding = {
   findingId: string | null;
@@ -125,6 +136,9 @@ export type V3Challenges = {
   disagreementsCreated: number;
   /** Challenges aimed at a finding that is not in this run's ledger. */
   discardedUnknownTargets: number;
+  /** Open-web W7: what the Red Team's web risk search contributed (counts). Null when
+      the follow-up loop did not run, so every earlier report is unchanged. */
+  riskEvidence: RiskEvidenceSummary | null;
   skippedUnchallengeable: { findingId: string | null; reason: string | null }[];
 };
 
@@ -341,6 +355,10 @@ export type DomainSection = SectionHead & {
   commodityTable: CommodityRow[];
   /** competitive_position only. */
   peerTable: PeerRow[];
+  /** Open-web W5: the findings here that rest on web documents (competitive_position,
+      industry_and_market, growth_and_catalysts, risks_and_counter_thesis). Null on every
+      report written before open-web research. */
+  webEvidence: WebEvidenceBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -368,6 +386,9 @@ export type EvidenceSection = SectionHead & {
   businessRiskLabels: string[];
   explanation: string | null;
   domainCost: { domain: string; counts: Record<string, number> }[];
+  /** Open-web W5: what the web stage did, including the sources it found but could not
+      read. Null on every report written before open-web research. */
+  webResearch: WebResearchQuality | null;
 };
 
 export type ProfessionalSection =
@@ -438,6 +459,8 @@ export type V3Research = {
   /** Item 21 — the issuer's own statements as the run found them. Null on reports
       written before this existed. */
   financialStatements: V3FinancialStatements | null;
+  /** Open-web W5/W7: the company web stage's run record. Null unless the stage ran. */
+  webContext: WebContext | null;
 };
 
 /**
@@ -668,6 +691,7 @@ function readChallenges(v: unknown): V3Challenges | null {
     confidenceLowered: num(v.confidence_lowered) ?? 0,
     disagreementsCreated: num(v.disagreements_created) ?? 0,
     discardedUnknownTargets: num(v.discarded_unknown_targets) ?? 0,
+    riskEvidence: readRiskEvidenceSummary(v),
     skippedUnchallengeable: records(v.skipped_unchallengeable).map((s) => ({
       findingId: str(s.finding_id),
       reason: str(s.reason),
@@ -920,6 +944,7 @@ function readDomainSection(
     peerTable: records(r.peer_table)
       .map(readPeerRow)
       .filter((row): row is PeerRow => row !== null),
+    webEvidence: readWebEvidenceBlock(r.web_evidence),
   };
 }
 
@@ -960,6 +985,7 @@ function readEvidenceSection(
     domainCost: Object.entries(isRecord(r.domain_cost) ? r.domain_cost : {})
       .map(([domain, raw]) => ({ domain, counts: counts(raw) }))
       .filter((d) => Object.keys(d.counts).length > 0),
+    webResearch: readWebResearchQuality(r.web_research),
   };
 }
 
@@ -1111,6 +1137,7 @@ export function readV3Research(sourceSummary: unknown): V3Research | null {
     professionalResearch,
     gapReconciliation: readGapReconciliation(raw.gap_reconciliation),
     financialStatements: readStatementsPayload(raw.financial_statements_state),
+    webContext: readWebContext(raw.web_context),
   };
 }
 

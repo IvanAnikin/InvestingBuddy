@@ -122,6 +122,9 @@ class Challenge:
     finding_id: uuid.UUID
     weakness_class: str
     text: str
+    #: Open-web W7 — the fetched RISK evidence ids the challenge rests on (empty when it
+    #: cites none). Recorded so "what did this challenge stand on" is answerable.
+    basis_evidence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.weakness_class not in WEAKNESS_CLASSES:
@@ -260,10 +263,13 @@ async def run_challenge_round(
         except Exception:  # noqa: BLE001 - a responder failure is an unresolved challenge
             response = None
 
+        # Evidence the CHALLENGE ITSELF rests on (open-web W7: the adverse RISK pages) is
+        # never an answer to it, whoever supplied the response. Empty with the flag off.
+        basis = set(challenge.basis_evidence_ids)
         evidence = tuple(
             str(v).strip()
             for v in (response.evidence_ids if response else ())
-            if str(v).strip()
+            if str(v).strip() and str(v).strip() not in basis
         )
         # THE PLATFORM DECIDES. A response with no evidence cannot resolve anything,
         # whatever it claims about itself.

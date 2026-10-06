@@ -8,6 +8,7 @@
  */
 import type {
   CandidateEligibility,
+  DiscoveryWebSummary,
   ConstraintResult,
   DiscoveryCandidate,
   DiscoveryCandidateRecord,
@@ -249,6 +250,20 @@ export function provenanceLine(record: DiscoveryCandidateRecord | null): string 
         ? "listing on record"
         : "listing not verified";
   return `${source} · ${identity}`;
+}
+
+// ─── Open-web W6b: the run-level web-search banner (the per-candidate mode and
+// admission wording lives in webEvidenceView.ts) ───
+
+/**
+ * The banner for a run whose live web search did not fully run. `null` when it ran in
+ * full (or was never tried), so a healthy run shows nothing extra.
+ */
+export function webSearchBanner(
+  web: DiscoveryWebSummary | null | undefined,
+): { text: string; state: string } | null {
+  if (!web || !web.label) return null;
+  return { text: web.label, state: web.state };
 }
 
 // ─── Research freshness ─────────────────────────────────────────────────────

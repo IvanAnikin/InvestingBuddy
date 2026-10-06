@@ -34,6 +34,26 @@ consume a whole round to fail again, so it is *accepted* instead: the run finish
 open and says so. That is the difference between a bounded loop and a loop that happens to
 have a counter.
 
+THE WEB RUNG (open-web W7)
+=========================
+With a ``web_followup`` supplied (``V3_WEB_FOLLOWUP_ENABLED``), a closable gap whose field
+a web search could plausibly answer gets one more rung: a targeted web round (generic GAP
+queries, fetched and ingested like the W5 stage) *before* the specialist re-reads the
+corpus. It adds three stop reasons and no new loop:
+
+``answered``
+    every gap the web rounds targeted whose own text names a research field is now closed
+    by a finding, by track B's own rules (a pure read — the final reconciliation persists);
+``saturation``
+    the last web round stored no new document relevant to its topic and nothing else is
+    left to try;
+``web_budget``
+    a LIMIT: the web rounds or the web budget ran out with web-answerable gaps unspent.
+
+The round limit, wall time and task limit still bind exactly as before, and the last
+Director round is never a web round (nothing could read what it fetched). With no
+``web_followup`` none of this runs and the loop is the loop it was.
+
 NO INVESTIGATION HAPPENS HERE
 =============================
 ``Investigator`` is a Protocol the caller supplies. The loop owns the *control flow* — the
@@ -64,6 +84,11 @@ STOPPED_MAX_ROUNDS = "max_rounds"
 STOPPED_MAX_TASKS = "max_tasks"
 STOPPED_MAX_TOOL_CALLS = "max_tool_calls"
 STOPPED_MAX_WALL_SECONDS = "max_wall_seconds"
+#: Open-web W7. ``answered`` and ``saturation`` are completion states (the web rung's
+#: work finished); ``web_budget`` is a limit (web-answerable gaps were left unspent).
+STOPPED_ANSWERED = "answered"
+STOPPED_SATURATION = "saturation"
+STOPPED_WEB_BUDGET = "web_budget"
 
 LOOP_STOP_REASONS: frozenset[str] = frozenset(
     {
@@ -73,6 +98,9 @@ LOOP_STOP_REASONS: frozenset[str] = frozenset(
         STOPPED_MAX_TASKS,
         STOPPED_MAX_TOOL_CALLS,
         STOPPED_MAX_WALL_SECONDS,
+        STOPPED_ANSWERED,
+        STOPPED_SATURATION,
+        STOPPED_WEB_BUDGET,
     }
 )
 
@@ -83,6 +111,7 @@ LIMIT_STOP_REASONS: frozenset[str] = frozenset(
         STOPPED_MAX_TASKS,
         STOPPED_MAX_TOOL_CALLS,
         STOPPED_MAX_WALL_SECONDS,
+        STOPPED_WEB_BUDGET,
     }
 )
 
@@ -207,6 +236,9 @@ class LoopResult:
     evidence_by_question: dict[str, list[Any]] = field(default_factory=dict)
     #: V3.18.7 — statements not written because another finding already says them.
     restatements_referenced: int = 0
+    #: Open-web W7 — what the web rung did (rounds, queries, ``stopped_by``). ``None``
+    #: when no web rung was supplied, and then absent from ``to_dict`` (byte-identical).
+    web_followup: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.improvement_stopped_by not in LIMIT_STOP_REASONS | {None}:
@@ -233,7 +265,7 @@ class LoopResult:
         return not self.stopped_by_a_limit and self.council_may_convene
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "stopped_by": self.stopped_by,
             "stopped_by_a_limit": self.stopped_by_a_limit,
             "is_complete_analysis": self.is_complete_analysis,
@@ -250,6 +282,9 @@ class LoopResult:
             "improvement_stopped_by": self.improvement_stopped_by,
             "restatements_referenced": self.restatements_referenced,
         }
+        if self.web_followup is not None:
+            payload["web_followup"] = self.web_followup
+        return payload
 
 
 def corpus_intents_in(steps: "Sequence[Mapping[str, Any]]") -> int:
@@ -278,8 +313,14 @@ async def run_investigation(
     limits: ModeLimits | None = None,
     completion_rules: "Sequence[str]" = (),
     now: Any = None,
+    web_followup: Any = None,
 ) -> LoopResult:
-    """Execute the plan within its bounds. Never raises; always names its reason."""
+    """Execute the plan within its bounds. Never raises; always names its reason.
+
+    ``web_followup`` (open-web W7, ``web_research.followup.WebFollowup`` or anything with
+    its port) adds the web rung described in the module docstring; ``None`` is the loop
+    exactly as it was.
+    """
     limits = limits or plan.limits
     clock = now or time.monotonic
     started = clock()
@@ -314,6 +355,7 @@ async def run_investigation(
 
     ownership = OwnershipIndex()
     restatements = 0
+    web_state = _WebLoopState() if web_followup is not None else None
 
     for round_index in range(limits.max_rounds):
         if not pending:
@@ -374,6 +416,11 @@ async def run_investigation(
                             key: _domain_of(questions_by_key.get(key), role_id)
                             for key in question_keys
                         },
+                        followup_queries=(
+                            web_state.take_queries(question_keys)
+                            if web_state is not None
+                            else None
+                        ),
                     )
                 outcome = await investigator.investigate(**kwargs)
             except Exception as exc:  # noqa: BLE001 - one role must not end the run
@@ -569,6 +616,24 @@ async def run_investigation(
         if not completed and _rules_satisfied(summary, completion_rules):
             completed = True
 
+        # Open-web W7 — the web rung runs BEFORE the follow-ups are chosen, because what it
+        # returns decides whether a question has a rung left. It may only add: a gap it
+        # cannot ask the web about is reviewed exactly as before.
+        fresh_keys: set[str] = set()
+        if web_state is not None:
+            fresh_keys = await _web_rung(
+                session,
+                run,
+                web_followup,
+                web_state,
+                questions_by_key=questions_by_key,
+                round_index=round_index,
+                limits=limits,
+                elapsed=clock() - started,
+                tasks_left=limits.max_tasks - tasks_run,
+                tool_calls_left=limits.max_tool_calls - tool_calls,
+            )
+
         # Gap review. Only a CLOSABLE gap becomes a follow-up: an unclosable one would
         # consume a whole round to fail again.
         follow_ups, gap_keys = await _follow_up_tasks(
@@ -576,6 +641,7 @@ async def run_investigation(
             run,
             plan,
             answered_keys=answered,
+            force_keys=fresh_keys,
             improvable_keys=_improvable(
                 questions_by_key, evidence_so_far, searches_so_far, can_improve
             ),
@@ -589,6 +655,7 @@ async def run_investigation(
                         corpus_so_far.get(key, 0),
                         searches_so_far.get(key, 0),
                         can_improve(key),
+                        web_rung=key in fresh_keys,
                     )
                 )
                 if _accepts(investigator.investigate, "question_context")
@@ -645,6 +712,27 @@ async def run_investigation(
     if stop_reason is None:
         stop_reason = STOPPED_NOTHING_LEFT
 
+    web_summary: dict[str, Any] | None = None
+    if web_state is not None:
+        stop_reason, improvement_stopped_by = await _settle_web_stop(
+            session,
+            run,
+            web_followup,
+            web_state,
+            stop_reason=stop_reason,
+            completed=completed,
+            improvement_stopped_by=improvement_stopped_by,
+        )
+        web_followup.stopped_by = stop_reason
+        web_summary = {
+            **web_followup.to_dict(),
+            # How much of what the web rounds targeted the findings actually closed: the
+            # honest denominator behind "answered".
+            "targeted_absence_gaps": len(web_state.targeted_absence),
+            "targeted_absence_closed": web_state.absence_closed,
+            "web_limit_hit": web_state.limit_hit,
+        }
+
     # Whatever remains open and unclosable is ACCEPTED — the run finished with it open
     # and says so, which is the honest outcome for a gap no source can close.
     accepted = 0
@@ -684,6 +772,7 @@ async def run_investigation(
         evidence_by_question={
             key: list(pool.values()) for key, pool in evidence_so_far.items()
         },
+        web_followup=web_summary,
     )
     await ledger.close_run(
         session,
@@ -1068,6 +1157,7 @@ async def _follow_up_tasks(
     answered_keys: "set[str]",
     improvable_keys: "set[str] | None" = None,
     retry_ok: Any = None,
+    force_keys: "set[str] | None" = None,
 ) -> tuple[list[tuple[str, list[str]]], set[str]]:
     """A closable gap becomes a follow-up task for a role that can address it.
 
@@ -1096,9 +1186,12 @@ async def _follow_up_tasks(
             keys.append(question_key)
 
     gap_keys: set[str] = set()
+    forced = force_keys or set()
     for gap in gaps:
         question_key = gap.question_key
-        if not question_key or question_key in answered_keys:
+        # A question the web rung just fed is re-read even when an earlier round marked
+        # it answered: its OPEN gap names a field the first answer did not state.
+        if not question_key or (question_key in answered_keys and question_key not in forced):
             continue
         if retry_ok is not None and not retry_ok(question_key):
             # Nothing left that the earlier rounds did not already try.
@@ -1185,6 +1278,7 @@ def _question_context(
     attempted: "dict[str, int] | None" = None,
     ownership: Any = None,
     domains: "dict[str, str | None] | None" = None,
+    followup_queries: "dict[str, tuple[str, ...]] | None" = None,
 ) -> dict[str, Any]:
     from app.services.agents.investigator import QuestionContext
 
@@ -1204,6 +1298,11 @@ def _question_context(
             established_elsewhere=established,
             corpus_intents_done=(corpus_so_far or {}).get(key, 0),
             rounds_attempted=(attempted or {}).get(key, 0),
+            **(
+                {"followup_queries": tuple((followup_queries or {})[key])}
+                if followup_queries and key in followup_queries
+                else {}
+            ),
         )
     return out
 
@@ -1213,13 +1312,19 @@ def _has_a_rung_left(
     corpus_done: int,
     searches_done: int,
     can_search: bool,
+    web_rung: bool = False,
 ) -> bool:
     """Would another round try anything the last ones did not?
 
     A repeat skips the deterministic platform tools, so it can only run the corpus
     intents not yet run, or a web search the contract, the role and the budget allow.
     With neither, re-queuing the question spends a task to fail identically.
+
+    ``web_rung`` (open-web W7): the web rung just stored documents relevant to one of this
+    question's open gaps, so re-reading the corpus is a rung the last rounds did not take.
     """
+    if web_rung:
+        return True
     intents = len(getattr(question, "search_intents", ()) or ())
     if corpus_done < intents:
         return True
@@ -1258,15 +1363,151 @@ def _improvable(
     return out
 
 
+@dataclass
+class _WebLoopState:
+    """The loop's own bookkeeping for the web rung (open-web W7)."""
+
+    rounds_run: int = 0
+    #: Gaps the web rounds targeted whose own text names a research field. A gap track B
+    #: cannot prove closed never makes a run "answered".
+    targeted_provable: set[str] = field(default_factory=set)
+    #: EVERY absence gap the web rounds targeted. ``answered`` requires all of them closed
+    #: by a finding: a targeted gap the findings cannot close keeps the run from saying so.
+    targeted_absence: set[str] = field(default_factory=set)
+    #: Of ``targeted_absence``, how many the findings close (set when the stop is settled).
+    absence_closed: int = 0
+    last_saturated: bool = False
+    #: Set when web-answerable gaps were left unspent: ``web_budget``, ``max_wall_seconds``
+    #: or ``max_rounds`` (the last Director round is never a web round).
+    limit_hit: str | None = None
+    followup_queries: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def take_queries(self, question_keys: "Sequence[str]") -> dict[str, tuple[str, ...]]:
+        """The follow-up queries for these questions, handed over ONCE."""
+        return {
+            key: self.followup_queries.pop(key)
+            for key in list(question_keys)
+            if key in self.followup_queries
+        }
+
+
+async def _web_rung(
+    session: Any,
+    run: Any,
+    web_followup: Any,
+    state: _WebLoopState,
+    *,
+    questions_by_key: dict[str, Any],
+    round_index: int,
+    limits: ModeLimits,
+    elapsed: float,
+    tasks_left: int = 1,
+    tool_calls_left: int = 1,
+) -> set[str]:
+    """Run one web round for the open gaps a web search could answer; never raises.
+
+    Returns the question keys the round fed with new, relevant documents (their
+    specialist re-reads the corpus next round). Everything else it learns goes on
+    ``state``. A round runs only when a Director round remains to read what it fetched,
+    wall time and the web budget allow it, and a gap has not been followed up before.
+    """
+    try:
+        gaps = await ledger.open_gaps(session, run, closable_only=True, limit=100)
+        this_round, _pending = web_followup.select_gaps(
+            gaps,
+            question_texts={k: getattr(q, "text", "") for k, q in questions_by_key.items()},
+            blocking_keys={k for k, q in questions_by_key.items() if getattr(q, "blocking", False)},
+        )
+        if not this_round:
+            return set()
+        if round_index >= limits.max_rounds - 1:
+            state.limit_hit = state.limit_hit or STOPPED_MAX_ROUNDS
+            return set()
+        # A web round is paid for to be READ: with no task or tool call left for a
+        # specialist to read it, it is not started (and the unspent gaps are said).
+        if tasks_left <= 0:
+            state.limit_hit = state.limit_hit or STOPPED_MAX_TASKS
+            return set()
+        if tool_calls_left <= 0:
+            state.limit_hit = state.limit_hit or STOPPED_MAX_TOOL_CALLS
+            return set()
+        if elapsed >= limits.max_wall_seconds:
+            state.limit_hit = STOPPED_MAX_WALL_SECONDS
+            return set()
+        if web_followup.rounds_exhausted() or await web_followup.budget_refusal():
+            state.limit_hit = STOPPED_WEB_BUDGET
+            return set()
+        record = await web_followup.run_round(
+            this_round,
+            round_index=round_index,
+            wall_seconds=max(0.0, limits.max_wall_seconds - elapsed),
+        )
+    except Exception:  # noqa: BLE001 - the web rung must not end the run
+        return set()
+    state.rounds_run += 1
+    state.targeted_provable.update(record.provable_gap_ids)
+    state.targeted_absence.update(getattr(record, "absence_gap_ids", ()) or ())
+    if record.budget_stop and not record.executed:
+        # The shared search ceiling refused every query: the gaps were not asked.
+        state.limit_hit = STOPPED_WEB_BUDGET
+        return set()
+    if record.new_relevant > 0:
+        state.last_saturated = False
+        state.followup_queries.update(
+            {k: tuple(v) for k, v in record.followup_queries.items()}
+        )
+        return set(record.question_keys)
+    state.last_saturated = True
+    return set()
+
+
+async def _settle_web_stop(
+    session: Any,
+    run: Any,
+    web_followup: Any,
+    state: _WebLoopState,
+    *,
+    stop_reason: str,
+    completed: bool,
+    improvement_stopped_by: str | None,
+) -> tuple[str, str | None]:
+    """Name WHY a run that ended on a completion state ended, once a web rung was present.
+
+    Only ``completion_rules_satisfied`` and ``no_closable_gaps`` are rewritten; a limit
+    that already stopped the run is the stronger statement and stays.
+    """
+    if stop_reason not in (STOPPED_COMPLETE, STOPPED_NOTHING_LEFT):
+        return stop_reason, improvement_stopped_by
+    if state.limit_hit is not None:
+        # Web-answerable gaps were left unspent: a limit, said so, never "nothing left".
+        if completed:
+            return STOPPED_COMPLETE, improvement_stopped_by or state.limit_hit
+        return state.limit_hit, improvement_stopped_by
+    if state.targeted_absence:
+        try:
+            closed = set(await web_followup.answered(run, sorted(state.targeted_absence)))
+        except Exception:  # noqa: BLE001 - doubt means "not answered"
+            closed = set()
+        state.absence_closed = len(closed & state.targeted_absence)
+        if state.targeted_provable and state.targeted_absence <= closed:
+            return STOPPED_ANSWERED, improvement_stopped_by
+    if stop_reason == STOPPED_NOTHING_LEFT and state.rounds_run and state.last_saturated:
+        return STOPPED_SATURATION, improvement_stopped_by
+    return stop_reason, improvement_stopped_by
+
+
 __all__ = [
     "LIMIT_STOP_REASONS",
     "LOOP_STOP_REASONS",
+    "STOPPED_ANSWERED",
     "STOPPED_COMPLETE",
     "STOPPED_MAX_ROUNDS",
     "STOPPED_MAX_TASKS",
     "STOPPED_MAX_TOOL_CALLS",
     "STOPPED_MAX_WALL_SECONDS",
     "STOPPED_NOTHING_LEFT",
+    "STOPPED_SATURATION",
+    "STOPPED_WEB_BUDGET",
     "FindingDraft",
     "GapDraft",
     "Investigator",

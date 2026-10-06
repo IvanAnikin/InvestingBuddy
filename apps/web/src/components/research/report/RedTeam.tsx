@@ -1,5 +1,7 @@
 import Surface from "@/components/product/Surface";
 import type { CouncilAgentDetail } from "@/components/research/reportSections";
+import { splitLeadingLabel } from "@/components/research/webEvidence";
+import { StatementLabelChip } from "./WebEvidenceParts";
 
 /**
  * The case against the case.
@@ -52,7 +54,10 @@ export default function RedTeam({
             What the positive reading may be overlooking
           </p>
           <ul className="mt-2 space-y-2">
-            {redTeam.findings.slice(0, 6).map((f, i) => (
+            {redTeam.findings.slice(0, 6).map((f, i) => {
+              // A challenge resting on one web source carries a "[single source]" label.
+              const claim = splitLeadingLabel(f.claim);
+              return (
               <li
                 key={i}
                 className="flex gap-3 text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
@@ -62,7 +67,12 @@ export default function RedTeam({
                   className="mt-2.5 h-px w-3 shrink-0 bg-rose-400/60"
                 />
                 <span className="ib-breakable">
-                  {f.claim}
+                  {claim.label && (
+                    <>
+                      <StatementLabelChip label={claim.label} />{" "}
+                    </>
+                  )}
+                  {claim.text}
                   {f.confidence && (
                     <span className="ml-2 text-xs text-[color:var(--ib-ink-3)]">
                       ({f.confidence} confidence)
@@ -70,7 +80,8 @@ export default function RedTeam({
                   )}
                 </span>
               </li>
-            ))}
+              );
+            })}
           </ul>
         </div>
       )}
