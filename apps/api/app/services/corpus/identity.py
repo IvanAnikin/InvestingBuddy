@@ -46,6 +46,7 @@ from app.services.sources.document_discovery import (
     DOC_KIND_OTHER,
     DOC_KIND_PRESENTATION,
     DOC_KIND_RESULTS_RELEASE,
+    WEB_DOCUMENT_KINDS,
 )
 from app.services.sources.redaction import canonicalize_source_url
 
@@ -59,6 +60,10 @@ DOCUMENT_TYPES: frozenset[str] = frozenset(
         DOC_KIND_RESULTS_RELEASE,
         DOC_KIND_PRESENTATION,
         DOC_KIND_OTHER,
+        # Open-web W3: a web document keeps its kind. Web documents are always keyed by
+        # address (title-only period policy), so a kind here never forms a
+        # ``<kind>:<period>`` key that could merge two different articles.
+        *WEB_DOCUMENT_KINDS,
     }
 )
 

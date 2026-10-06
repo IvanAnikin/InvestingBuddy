@@ -39,7 +39,11 @@ from app.models.research_derivation import (
     ResearchDocumentSection,
     ResearchDocumentTable,
 )
-from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+from app.models.research_document import (
+    ResearchDocument,
+    ResearchDocumentSubject,
+    ResearchDocumentVersion,
+)
 from app.models.research_job import ResearchJob
 from app.models.research_lead import ResearchLeadRecord
 from app.models.research_run_consumption import ResearchRunConsumption
@@ -81,6 +85,7 @@ __all__ = [
     "ResearchDocumentPage",
     "ResearchDocumentSection",
     "ResearchDocumentTable",
+    "ResearchDocumentSubject",
     "ResearchDocumentVersion",
     "ResearchChallenge",
     "ResearchDelta",

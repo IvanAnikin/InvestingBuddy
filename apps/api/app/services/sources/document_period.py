@@ -109,6 +109,8 @@ _ORDINAL_WORDS: tuple[tuple[str, str, int], ...] = (
 #: so an unrelated year elsewhere on the page can never date the document.
 _PERIOD_END_WINDOW = 120
 _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+_MONTH_IN_WINDOW_RE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b")
 
 
 @dataclass(frozen=True)
@@ -138,6 +140,37 @@ class DocumentPeriod:
 
 
 UNKNOWN_DOCUMENT_PERIOD = DocumentPeriod()
+
+#: Review round 2, H1 — titles that say a document covers PART of a year even when no
+#: period can be read from them ("Interim Results", "Half-year Report", "Appendix 4D
+#: and Half Year Financial Report", "Quarterly Activities and Cashflow Report"). An
+#: "interim dividend" is not an interim report.
+_PART_YEAR_TITLE_RE = re.compile(
+    r"\bhalf[- ]?year(?:ly)?\b|\binterim\b(?!\s+dividend)|\bappendix\s+(?:4d|4c|5b)\b"
+    r"|\bquarter(?:ly)?\b|\b(?:three|six|nine|3|6|9)[- ]months?\b|\b(?:H[12]|Q[1-4])\b",
+    re.IGNORECASE,
+)
+
+
+#: A title that states a FULL year: an annual report or full-year results. Wins over
+#: an incidental part-year word ("Annual Report 2025 including fourth quarter review").
+_ANNUAL_TITLE_RE = re.compile(
+    r"\bannual\s+(?:financial\s+)?(?:report|accounts|results)\b|\bfull[- ]year\s+results\b"
+    r"|\b(?:final|preliminary)\s+(?:final\s+)?(?:results|report)\b|\bappendix\s+4e\b"
+    r"|\bannual\s+report\s+and\s+accounts\b",
+    re.IGNORECASE,
+)
+
+
+def title_states_annual(title: str | None) -> bool:
+    """True when a document's own title says it covers a full year."""
+    return bool(title and _ANNUAL_TITLE_RE.search(title))
+
+
+def title_states_part_year(title: str | None) -> bool:
+    """True when a document's own title says it covers part of a year (and does not
+    also say it is an annual report or full-year results)."""
+    return bool(title and _PART_YEAR_TITLE_RE.search(title) and not title_states_annual(title))
 
 
 def _expand_year(raw: str) -> int | None:
@@ -214,6 +247,13 @@ def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
         year = _expand_year(year_match.group(1))
         if year is None:
             continue
+        if period_type == PERIOD_TYPE_HALF:
+            # Review round 2, H2 — "half year ended 31 December 2025" is the first half
+            # of a JUNE fiscal year, not calendar H1 2025. A half that ends in another
+            # month than its calendar half's names no half this model can state.
+            end_month = _MONTH_IN_WINDOW_RE.search(window[: year_match.start()])
+            if end_month is not None and end_month.group(1) != ("jun" if ordinal == 1 else "dec"):
+                continue
         kind = "q" if period_type == PERIOD_TYPE_QUARTER else "h"
         period = _period_of(kind, ordinal, year)
         if period is not None:
@@ -296,6 +336,8 @@ def document_period_of(
 
 
 __all__ = [
+    "title_states_annual",
+    "title_states_part_year",
     "BASIS_FISCAL_LABEL",
     "BASIS_PERIOD_END_PHRASE",
     "BASIS_PERIOD_LABEL",

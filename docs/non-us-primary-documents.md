@@ -96,7 +96,7 @@ authority are required, or both connectors must be switched off.**
 - Headlines and titles are external wording: neutralised before storage (the report
   safety gate matches rating words as substrings — "share buy-back").
 - Flags: `V3_UK_NSM_DISCLOSURES_ENABLED`, `V3_ASX_ANNOUNCEMENTS_ENABLED` (both off by
-  default), `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5), `V3_DISCLOSURE_LOOKBACK_DAYS` (540).
+  default), `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5), `V3_DISCLOSURE_LOOKBACK_DAYS` (560).
   Acquisition also requires the existing corpus and primary-document persistence flags.
 - Known limit: indexing (and so READY) needs the PostgreSQL search backend, as in
   production; extraction of a large PDF can hit the extractor's own time budget on a
@@ -207,3 +207,116 @@ authority are required, or both connectors must be switched off.**
   document (otherwise `identity_unverified`, never a wrong issuer); an NSM amendment
   published at a NEW address is a new document, and the superseded one stays current
   until it ages out.
+
+## Statements from acquired reports, and an honest "not reported" (item 21)
+
+The V2 report — which owns `financial_snapshot.reporting_periods` — is assembled BEFORE
+the V3 run acquires an issuer's NSM / ASX reports, and it never read the persisted
+`ExtractedFact` rows those reports produce. So an LSE / ASX report said **"Latest annual:
+Not reported"** while the issuer's annual report sat in the research corpus.
+
+**The statements view.** Right after `ensure_core_disclosures`, the V3 run reads the
+company's active, validated statement facts through `company_documents_clause` (an
+`ExtractedDocument` is shared by content hash) and builds
+`v3_research.financial_statements_state`
+(`app/services/pipeline/issuer_financials.py`). Slots are chosen by the SAME functions
+that fill the V2 snapshot (`_high_confidence_facts_for`, `_current_period_facts_for`):
+high confidence only, a segment or subsidiary fact never fills a Group slot, an interim
+figure never takes an annual slot. Two documents that state one Group figure differently
+for one period fill no slot and are listed under `conflicts`.
+
+**Four states, never merged** (`annual` and `current_period`):
+
+| State | Meaning | Page text |
+|---|---|---|
+| `facts_extracted` | a validated Group statement figure exists for the period | `FY2025` |
+| `report_acquired_facts_not_extracted` | the report is in the corpus; no validated Group figure came out of it | "FY2025 annual report acquired (2025-09-30) — figures not yet extracted" |
+| `not_acquired` | nothing acquired — says nothing about the issuer (`not_acquired_by_platform`) | "No annual report acquired" |
+| `not_reported_by_issuer` | the official listing reaches back ≥ 18 months (`listing_oldest`) and lists no annual report or full-year results (`annual_documents_listed = 0`) | "Issuer has not reported an annual report in the last 18 months" |
+
+The page (`reportView.withIssuerStatements`) prefers C > B > A: the V2 snapshot's own
+figures when it has a period, else the V3 view's figures, else the V3 state's sentence.
+"Not reported" is no longer printed anywhere; a report written before this reads "Not in
+this report".
+
+**Statement reading (pipeline version 19).** A bracketed cell `(3,265)` is a negative
+number (it was no number at all); `3,265,409` is a number; loss and outflow captions set
+the sign ("Loss for the year", "Net cash used in operating activities"), a combined
+caption ("(Loss)/profit", "(used in)/from") keeps the printed sign; liabilities printed in
+brackets are the amount owed. New lines: current liabilities, total liabilities, investing
+and financing cash flow, capital expenditure (payments for PP&E only), administrative
+expenses, exploration **expensed** / **capitalised** / **paid (treatment not stated)** —
+three different statements, a bare "Exploration and evaluation expenditure" is none of
+them — development expenditure, borrowings (never total debt) and issued capital. "Total
+non-current assets" no longer collides with current assets, "Total equity and
+liabilities" is not equity, "Interest / Other / Finance revenue" is not revenue, the
+OPENING cash balance is not cash, and a prose figure's period ignores a "(2024: £1.9m)"
+comparative aside. Spend lines are stored as the positive amount spent, cash-flow
+subtotals and net income are signed. The new lines are V3-only
+(`STATEMENT_DETAIL_FIELDS`): the V2 snapshot's slots are unchanged.
+
+**Review round 1.** A combined caption ("Net income (loss)", "Net income/(loss)",
+"Profit/(loss)") keeps the printed sign — only a pure loss caption states a loss; "Net
+current assets / liabilities" are not current assets / liabilities; "Cash and cash
+equivalents at 1 July" is an opening balance; "development of intangible assets" and
+other non-mine development is not `development_expenditure`; a balance sheet's current
+and non-current "Borrowings" lines (either side of "Total current liabilities") are
+summed explicitly, and a lone one is a part, kept as text. A bracketed cell is always
+negative, including a small one ("(12)" → −12). `V3_DISCLOSURE_LOOKBACK_DAYS` is 560 so
+the 18-month "not reported by the issuer" state is reachable; the listing's window and
+document count are recorded, and an ASX "Annual Financial Report" / NSM "Annual
+Financial Report" filing counts as annual evidence. State B's `knowledge_state` is
+`report_acquired_facts_not_extracted`. Known limit: an explorer whose "Revenue from
+continuing operations" is mostly interest income still has a revenue fact; it defeats
+the stage detector's P1 unless it is under 10% of operating costs.
+
+**Review round 2 (adversarial probe).** When a period, scale, sign or statement type is
+ambiguous nothing is validated:
+- **Part-year documents.** A title that says part of a year ("Interim Results", "Half-year
+  Report", "Appendix 4D…", quarterly) makes every bare-dated column non-annual and keeps
+  any annual-period figure in it as text. A column header that is part-year without
+  saying which part ("Unaudited 30 June", "Nine months to", "Year to date") gets no
+  period. A balance sheet comparing two different dates is not annual. "Six months to
+  30 June 2025" is H1 2025.
+- **December halves.** "Half-year ended 31 December 2025" (column or title) is H1 of a
+  June fiscal year: with the year-end unknown it gets no period, never "H1 2025".
+- **Scale.** An "m" / "bn" needs a currency symbol or digit beside it; "from", "term" and
+  "Platinum" no longer make a whole-dollar table "million". "$A'000" is AUD thousands.
+- **Statement lines.** "Capitalised exploration and evaluation expenditure" on a balance
+  sheet is the ASSET, not spend; runway adds capitalised exploration only from the
+  capital-expenditure line's own table. "Net loss / profit before tax" is not net income.
+  A row that brackets any value keeps its printed signs ("Loss for the year (3,265)
+  1,200" is a 1,200 profit in 2024). "Revenue and other income" and product sales
+  captions ("Gold sales") are revenue only without a separate revenue line, and say so.
+- **Prose.** A profit and a loss for net income in one excerpt emit neither; a year after
+  the value ("… £1.2m in 2024") is its period.
+- **"Not reported by issuer"** additionally needs a COMPLETE listing: every ASX year page
+  in the window read and no refused NSM / ASX row (`listing_complete`).
+
+**Review round 3.** The listing's own classification (interim report, or a results
+release that is not the full-year results) reaches validation on both the live and the
+cached path (`IssuerContext.part_year_document`), whatever the title says; for an ASX
+issuer (`IssuerContext.venue = "AU"`, where June fiscal years are common) a December-dated
+column is a full year only with an annual title or "year ended" in the header. A title
+that states an annual report or full-year results is annual even if it also mentions a
+quarter or half. In prose, a year after ANOTHER money value later in the sentence ("Net
+loss narrowed to £3.2m from £4.0m in 2024") is that value's, not this one's. A table's
+scale comes from its header / units rows only, never from a data cell ("within 12m",
+"Shares (millions)"). The stage detector counts a mining reporting-code statement only
+when it is about the issuer or its own project (we / our / the Company / the Project /
+the issuer's name) and never in a supplier, partner, customer, feedstock or third-party
+sentence; it needs two such sentences, or one plus a mining industry classification.
+
+**Cash runway.** `cash_runway_quarters` (calculation definition v1) = cash ÷
+(−(operating cash flow − |capex|) ÷ quarters in the period). Refused unless the three
+inputs share one period, scope and currency, unless the period is a year, half or quarter,
+and unless the net flow is an outflow (`not_a_cash_burn`). Labelled derived, never an
+issuer figure. In the statements view, capitalised exploration and mine development
+stated for the same period / scope / currency / scale are ADDED to the capital spend
+(`capital_spend_includes`); exploration payments of unstated treatment make the burn
+unstatable and the runway is refused. The definition's own interpretation says what it
+excludes. No EBITDA is ever derived.
+
+Known limits: a whole-currency statement ("US$" headers, no '000) states no scale, so its
+money facts stay excerpt-only (state B, honestly); an issuer's annual period taken from a
+headline ("Annual Report 2025" → FY2025) is only a label in the B sentence, never a slot.

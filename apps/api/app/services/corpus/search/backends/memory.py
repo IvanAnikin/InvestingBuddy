@@ -251,7 +251,7 @@ class InMemorySearchBackend:
         semantic: float | None,
         query: CorpusQuery,
     ) -> CorpusHit:
-        chunk = self._chunks[chunk_id]
+        chunk = query.filters.view(self._chunks[chunk_id]) or self._chunks[chunk_id]
         wanted = set(tokenize(query.text))
         present = set(self._tokens.get(chunk_id, ()))
         return CorpusHit(

@@ -51,11 +51,25 @@ _TOPLINE_FIELDS = frozenset(
         "recurring_operating_profit",
         "operating_margin",
         "recurring_operating_margin",
+        # Item 21 — cost lines of a statement of profit or loss.
+        "administrative_expenses",
+        "exploration_expensed",
     }
 )
 _EARNINGS_FIELDS = frozenset({"net_income"})
 _CASH_FIELDS = frozenset(
-    {"operating_cash_flow", "free_cash_flow", "operating_free_cash_flow"}
+    {
+        "operating_cash_flow",
+        "free_cash_flow",
+        "operating_free_cash_flow",
+        # Item 21 — the rest of a cash-flow statement.
+        "investing_cash_flow",
+        "financing_cash_flow",
+        "capital_expenditure",
+        "exploration_capitalised",
+        "exploration_payments",
+        "development_expenditure",
+    }
 )
 _POSITION_FIELDS = frozenset(
     {
@@ -70,6 +84,10 @@ _POSITION_FIELDS = frozenset(
         "long_term_debt",
         "total_current_assets",
         "total_non_current_assets",
+        # Item 21.
+        "total_current_liabilities",
+        "borrowings",
+        "issued_capital",
     }
 )
 

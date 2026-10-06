@@ -188,8 +188,41 @@ def screen(findings: Sequence[FindingView]) -> tuple[list[FindingView], int]:
     """
     from app.services import safety_terms
 
-    kept = [f for f in findings if not safety_terms.scan_value(f.statement, path="finding")]
+    kept = [
+        f for f in findings
+        if not safety_terms.scan_value(f.statement, path="finding")
+        and not _unattributed_study_economics(f)
+    ]
     return kept, len(findings) - len(kept)
+
+
+#: A named study: "the 2025 Definitive Feasibility Study", "PFS (March 2024)".
+_NAMED_STUDY_RE = re.compile(
+    r"\b(?:scoping|pre-?feasibility|definitive\s+feasibility|bankable\s+feasibility|"
+    r"feasibility|optimi[sz]ation|expansion)\s+study\b|(?-i:\b(?:PFS|DFS|BFS)\b)",
+    re.IGNORECASE,
+)
+_STUDY_DATE_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def _unattributed_study_economics(finding: FindingView) -> bool:
+    """Review L4 — an NPV or IRR is the ISSUER'S study figure or it is not reported.
+
+    A finding stating one must name the study and its date ("the 2025 Definitive
+    Feasibility Study"); otherwise it reads as this platform valuing the project, and it
+    is withheld. A finding under the overlay's ``study_economics`` question is also held
+    to the editor's stricter valuation / trading word list.
+    """
+    from app.services.research_fields import fields_mentioned
+
+    text = finding.statement or ""
+    states = set(fields_mentioned(text))
+    if states & {"metric:npv", "metric:irr"} and not (
+        _NAMED_STUDY_RE.search(text) and _STUDY_DATE_RE.search(text)
+    ):
+        return True
+    return finding.question_key == "study_economics" and bool(
+        _EDITOR_FORBIDDEN_RE.search(text))
 
 
 def _finding_dict(finding: FindingView, label: str) -> dict[str, Any]:

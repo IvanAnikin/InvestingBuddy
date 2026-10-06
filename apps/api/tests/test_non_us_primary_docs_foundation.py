@@ -234,10 +234,20 @@ class TestProvenanceAndPeriod:
     async def test_the_official_title_still_states_a_real_period(self, session):
         from app.models.research_document import ResearchDocumentVersion
 
+        # Track C review round 2, H2: a half ending 31 DECEMBER is H1 of a June fiscal
+        # year, so the real-period case is a June half; a December half names none.
+        await _persist(session, title=("Example Plc - Unaudited Interim results for the "
+                                       "six months ended 30 June 2025"))
+        version = (await session.execute(select(ResearchDocumentVersion))).scalar_one()
+        assert version.period_type == "half" and "2025" in (version.period_key or "")
+
+    async def test_a_december_half_title_names_no_calendar_half(self, session):
+        from app.models.research_document import ResearchDocumentVersion
+
         await _persist(session, title=("Pensana Plc - Unaudited Interim results for the "
                                        "six months ended 31 December 2025"))
         version = (await session.execute(select(ResearchDocumentVersion))).scalar_one()
-        assert version.period_type == "half" and "2025" in (version.period_key or "")
+        assert version.period_key is None
 
     async def test_the_default_transport_is_unchanged(self, session):
         from app.models.extracted_document import ExtractedDocument
