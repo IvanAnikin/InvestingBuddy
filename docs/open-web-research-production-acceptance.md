@@ -147,6 +147,15 @@ Two further generic defects, both in the shared field vocabulary (`research_fiel
    2029" (September) are one milestone with two dates, but neither wording named a tracked field, so
    `supersessions` was 0 and both read as current.
 
+*Independent review (NO-GO on the first version) found it over-closed:* a historical rate, a peer's
+target, market demand, plant feed, exports/sales and emissions-reduction rates all became "stated
+capacity", and "initial production in 2019 delivered 5kt" became a 2019 target that could be
+superseded by a 2029 one. Corrected before merge: a planned-rate pattern needs a planning word, a
+short comma-free window that cannot cross offtake/demand/feed/sales/peer/market/actual wording, and
+a clause not about peers or the market; "output tonnage" / "tonnage, capacity" now identify what a
+*gap* asks for and can never make a *finding* state capacity; "initial/first production" is not a
+target cue when the clause reports what happened. Each case is a regression test.
+
 Fix: planned-output tonnage / rate wording names `metric:production_capacity`; "initial production",
 "start of extraction/mining" and "extraction targeted/aimed…" name `milestone:first_production`;
 "initial production" is a target cue (but not a *former* target); the clause splitter no longer

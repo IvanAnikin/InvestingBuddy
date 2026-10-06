@@ -63,6 +63,10 @@ class ResearchField:
     label: str
     #: Regexes over LOWER-CASED text, each bounded by ``\b``.
     patterns: tuple[str, ...]
+    #: Regexes that identify what a GAP asks for but never let a finding STATE the field:
+    #: "no output tonnage" names capacity as a question, "output tonnage reached 4,000 tpa"
+    #: is an actual, not a plan.
+    mention_patterns: tuple[str, ...] = ()
     #: What an affirmative statement of this field must also contain.
     needs: str | None = None
     #: Validated fact labels (``extracted_facts.label``) that state this field.
@@ -117,6 +121,18 @@ _PERIOD_CAPEX = (
 #: A tonnage RATE ("1,850t/yr", "20,000 tonnes per annum", "73 ktpa"). Defined before
 #: ``FIELDS`` because a planned-output pattern below embeds it; ``_CAPACITY_RE`` (further
 #: down) is the broader quantity test that also covers power, ounces and units.
+#: Words that make a nearby tonnage rate somebody else's, or not a plan: offtake and sales
+#: volumes, demand, feed to a plant, reductions, an actual. A planned-rate pattern may not
+#: read across any of them, nor across a comma, full stop or semicolon.
+_NOT_THE_PLAN = (
+    r"(?:(?!\b(?:offtake|off-take|demand|consumption|sales|sells?|exports?|imports?|feed|"
+    r"treat|process|processing|reduction|emissions|peers?|competitors?|rivals?|industry|"
+    r"global|market|world|which|was|were|but|produced|reached|achieved)\b)[^.;,])"
+)
+#: The clause is about somebody else's output or the market's: not this company's plan.
+_ABOUT_THE_COMPANY = (
+    r"^(?!.*\b(?:peers?|competitors?|rivals?|industry|global|market|world|analysts?)\b)"
+)
 _RATE_TONNAGE = (
     r"\d[\d,]*(?:\.\d+)?\s*(?:k|m|million\s+|thousand\s+)?\s*(?:"
     r"tpa|tpy|t/y(?:r)?|t/a|mtpa|ktpa|mtpy|mt/y|"
@@ -163,15 +179,26 @@ FIELDS: tuple[ResearchField, ...] = (
             r"\bcapacity\s+(?:of|to\s+produce|to\s+process)\b",
             r"\b(?:design|nameplate|plant|annual)\s+throughput\b",
             r"\b(?:will|to|would|designed\s+to|expected\s+to)\s+produce\b",
-            # How the investigator and the issuers actually word it: "planned annual output
-            # tonnage", "production tonnage, capacity or utilisation", "targeting ca.
-            # 1,850t/yr". A tonnage RATE after a planning cue is a stated capacity.
+            # How the investigator and the issuers actually word a PLAN. Each requires a
+            # planning word, a short window that cannot cross a comma or another subject,
+            # and a clause that is not about peers or the market — "Peer X is targeting
+            # 20,000 tpa", "demand is forecast at 90,000 tpa" and "designed to treat feed of
+            # 500,000 tpa" are not this company's capacity.
+            r"\b(?:planned|expected|targeted?|nameplate|designed?|initial)\s+"
+            r"(?:annual\s+|average\s+)?(?:output|production)\s+(?:tonnage|volumes?|rates?)\b",
+            r"(?s)" + _ABOUT_THE_COMPANY + r".*?\b(?:planned|expected|targeted?|nameplate|"
+            r"designed?)\s+(?:annual\s+|average\s+)?(?:output|production)\b"
+            + _NOT_THE_PLAN + r"{0,20}?" + _RATE_TONNAGE,
+            r"(?s)" + _ABOUT_THE_COMPANY + r".*?\b(?:designed|nameplate|planned)\s+(?:for|at|of)\s+"
+            r"(?:(?:ca|c|approx)\.\s*)?" + _RATE_TONNAGE,
+            r"(?s)" + _ABOUT_THE_COMPANY + r".*?\b(?:targeting|targeted|aims?\s+to\s+"
+            r"(?:produce|reach)|aimed\s+at)\b" + _NOT_THE_PLAN + r"{0,30}?"
+            r"(?:(?:ca|c|approx)\.\s*)?" + _RATE_TONNAGE,
+        ),
+        mention_patterns=(
+            # What a gap asks for. Never a statement: "output tonnage reached 4,000 tpa".
             r"\b(?:output|production)\s+tonnage\b",
             r"\btonnage,?\s+(?:or\s+|and\s+)?(?:\w+\s+)?capacity\b",
-            r"\b(?:planned|expected|targeted?|projected|forecast|nameplate|design|initial)\s+"
-            r"(?:annual\s+|average\s+)?(?:output|production)\s+(?:tonnage|volumes?|rates?)\b",
-            r"\b(?:planned|expected|targeted?|targeting|aims?\s+to|aimed|projected|forecast|"
-            r"nameplate|designed?)\b[^.;]{0,60}?(?:(?:ca|c|approx)\.\s*)?" + _RATE_TONNAGE,
         ),
         needs=NEEDS_CAPACITY,
         metric_aliases=("capacity", "production_capacity", "capacity_overbuild"),
@@ -313,6 +340,9 @@ CAPEX_SUBTYPES: tuple[str, ...] = (
 _COMPILED: dict[str, tuple[re.Pattern[str], ...]] = {
     f.key: tuple(re.compile(p) for p in f.patterns) for f in FIELDS
 }
+_COMPILED_MENTION: dict[str, tuple[re.Pattern[str], ...]] = {
+    f.key: tuple(re.compile(p) for p in f.mention_patterns) for f in FIELDS
+}
 _SUBTYPE_CUES: dict[str, tuple[re.Pattern[str], ...]] = {
     "metric:capex_sustaining": tuple(re.compile(p) for p in _SUSTAINING_CAPEX),
     "metric:capex_project": tuple(re.compile(p) for p in _PROJECT_CAPEX),
@@ -404,8 +434,11 @@ _TARGET_CUE = (
     # "initial production H1 2029".
     # Not when it is a FORMER target ("initial production was originally planned for
     # 2024"): the guard in ``target_years`` reads the words before the cue it matched.
+    # And not when the clause reports what HAPPENED ("initial production in 2019 delivered
+    # 5kt", "first production in 2019 was followed by a shutdown"): history is not a target.
     r"(?:initial|first)\s+(?:commercial\s+)?production"
-    r"(?!\s+(?:was|were|had|originally|previously|initially))"
+    r"(?![^.;]{0,40}\b(?:achieved|commenced|delivered|began|begun|reached|followed|produced|"
+    r"was|were|had|has|originally|previously|initially)\b)"
 )
 _TARGET_YEAR_RE = re.compile(
     r"\b(?:" + _TARGET_CUE + r")\b[^.;]{0,45}?"
@@ -558,13 +591,19 @@ def _capex_subtype(low: str) -> str | None:
     return None
 
 
-def _clause_fields(low: str) -> list[str]:
-    """Families named in a clause, plus the capex sub-type when the clause says one."""
+def _clause_fields(low: str, *, mention: bool = False) -> list[str]:
+    """Families named in a clause, plus the capex sub-type when the clause says one.
+
+    ``mention=True`` is the reading for a GAP, which also counts a field's mention-only
+    wording ("no output tonnage"); a finding never does.
+    """
     out: list[str] = []
     for f in FIELDS:
         if f.family is not None:
             continue
-        if _matches(_COMPILED[f.key], low):
+        if _matches(_COMPILED[f.key], low) or (
+            mention and _matches(_COMPILED_MENTION[f.key], low)
+        ):
             out.append(f.key)
     if CAPEX_FAMILY in out:
         sub = _capex_subtype(low)
@@ -595,7 +634,7 @@ def fields_mentioned(text: str | None) -> tuple[str, ...]:
     low = (text or "").lower().replace("_", " ")
     out: list[str] = []
     for clause in [low, *clauses(low)]:
-        for key in _clause_fields(clause):
+        for key in _clause_fields(clause, mention=True):
             if key not in out:
                 out.append(key)
     return tuple(out)

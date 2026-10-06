@@ -66,6 +66,28 @@ class TestFirstProductionWording:
         supersessions, _ = gr.supersede([april, september])
         assert [(s.older_id, s.newer_id) for s in supersessions] == [("a", "b")]
 
+    @pytest.mark.parametrize(
+        ("text", "years"),
+        [
+            ("Initial production in 2019 delivered 5kt.", set()),
+            ("Initial production achieved in 2019 and expected to ramp by 2027.", {"2027"}),
+            ("First production in 2019 was followed by a shutdown, with restart scheduled "
+             "for 2027.", {"2027"}),
+        ],
+    )
+    def test_a_year_that_is_history_is_not_a_target(self, text: str, years: set[str]) -> None:
+        assert set(rf.target_years(text)) == years
+
+    def test_an_achieved_finding_is_not_superseded_by_a_later_target(self) -> None:
+        achieved = _finding(
+            "a", "Initial production in 2019 delivered 5kt.", published_at=date(2020, 1, 1),
+        )
+        target = _finding(
+            "b", "Full construction 2028, initial production H1 2029.",
+            published_at=date(2026, 9, 10),
+        )
+        assert gr.supersede([achieved, target]) == ([], [])
+
     def test_a_withdrawn_target_still_states_nothing(self) -> None:
         assert rf.fields_stated(
             "Initial production H1 2029 has been withdrawn pending the funding decision."
@@ -119,6 +141,44 @@ class TestPlannedOutputWording:
         (verdict,) = gr.reconcile([gap], [finding])
         assert verdict.status == ledger.RECONCILED_STILL_OPEN
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # an actual, however it is worded
+            "The mine, which is expected to be closed, produced 4,000 tpa in 2021.",
+            "Output tonnage reached 4,000 tpa in 2022.",
+            "Production tonnage, capacity and utilisation: 4,000 tpa achieved in 2022.",
+            # somebody else's output, or the market's
+            "Peer Arafura is targeting 20,000 tpa of NdPr.",
+            "Nameplate of the competitor is 50,000 tpa.",
+            "Company A is expected to be rivalled by Company B at 20,000 tpa.",
+            "Industry demand is forecast to reach 90,000 tpa by 2030.",
+            "Chinese consumption is projected at 120,000 tonnes per annum.",
+            "Analysts forecast production of 4,000 tpa for FY2023.",
+            # a rate that is not this company's production capacity
+            "The processing plant is designed to treat feed of 500,000 tpa.",
+            "Planned exports of 10,000 tpa to Japan.",
+            "Expected sales of 4,000 tpa to Umicore.",
+            "Targeted reduction of 5,000 tpa of emissions.",
+            "Signed an offtake for 5,000 tpa, targeting first sales in 2027.",
+        ],
+    )
+    def test_a_rate_that_is_not_this_companys_plan_states_no_capacity(self, text: str) -> None:
+        assert "metric:production_capacity" not in rf.fields_stated(text), text
+
+    def test_a_gap_wording_never_lets_a_finding_state_the_field(self) -> None:
+        # "output tonnage" and "tonnage, capacity" identify what a GAP asks for only.
+        assert "metric:production_capacity" in rf.fields_mentioned("No output tonnage.")
+        assert "metric:production_capacity" not in rf.fields_stated(
+            "Output tonnage reached 4,000 tpa in 2022."
+        )
+
+    def test_a_peer_rate_does_not_close_the_companys_capacity_gap(self) -> None:
+        gap = _gap("No planned production capacity figure for the Foo project.")
+        peer = _finding("f1", "Peer Arafura is targeting 20,000 tpa of NdPr.")
+        (verdict,) = gr.reconcile([gap], [peer])
+        assert verdict.status == ledger.RECONCILED_STILL_OPEN
+
     def test_an_actual_past_output_is_not_a_plan(self) -> None:
         # No planning cue, so nothing here names the capacity field by the new route.
         assert "metric:production_capacity" not in rf.fields_stated(
@@ -144,6 +204,13 @@ class TestClauseSplitterAbbreviations:
 
     def test_a_sentence_still_ends_at_a_full_stop(self) -> None:
         assert len(rf._raw_clauses("Revenue rose. Capex fell; cash was flat.")) == 3  # noqa: SLF001
+
+    def test_a_denial_stays_scoped_to_its_own_sentence(self) -> None:
+        # "No capex disclosed." after "…targeting ca. 1,850t/yr" must not swallow the rate.
+        text = "The plant is targeting ca. 1,850t/yr of oxide. No capex figure is disclosed."
+        assert len(rf._raw_clauses(text)) == 2  # noqa: SLF001
+        assert "metric:production_capacity" in rf.fields_stated(text)
+        assert "metric:capex" not in rf.fields_stated(text)
 
     def test_a_semicolon_and_a_contrast_still_split(self) -> None:
         assert len(rf._raw_clauses("Cash rose; debt fell but capex rose.")) == 3  # noqa: SLF001
