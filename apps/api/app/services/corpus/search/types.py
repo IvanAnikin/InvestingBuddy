@@ -105,6 +105,27 @@ class CorpusChunk:
     #: Whether governance permits this text to enter an index at all. A chunk with
     #: ``False`` may be stored and cited but never retrieved by search.
     indexable: bool = True
+    # -- open-web W3: the version/document fields the web filters read. None / empty
+    #    on every non-web chunk. ----------------------------------------------------
+    source_class: str | None = None
+    use_constraint: str | None = None
+    injection_suspect: bool = False
+    subject_scope: str | None = None
+    #: Themes the document serves (``relation='theme'`` subject rows).
+    theme_keys: tuple[str, ...] = ()
+    #: Companies the WHOLE document is attributed to through a STRONG subject row
+    #: (``primary``, or matched by identifier / official domain).
+    subject_company_ids: tuple[uuid.UUID, ...] = ()
+    #: Companies for which THIS chunk is the evidence chunk of a weaker mention row
+    #: (name in context, brand). Only this chunk is admitted for them (review F2).
+    mention_company_ids: tuple[uuid.UUID, ...] = ()
+    #: ``(company_id, scope_key)`` — the scope a subject row gives a company in this
+    #: document (``segment:…`` / ``brand:…`` for a brand mention).
+    subject_scope_keys: tuple[tuple[uuid.UUID, str], ...] = ()
+    #: Set on a HIT admitted only through a subject row, never through the chunk's own
+    #: company. Such a hit is never that company's own Group evidence: its scope is the
+    #: subject row's (``segment``) or ``mention`` (see ``CorpusFilters.view``).
+    via_subject: bool = False
     #: Present only when a semantic leg is configured. ``None`` is the normal case
     #: and a hybrid search degrades to its lexical leg rather than failing.
     embedding: tuple[float, ...] | None = None
@@ -129,8 +150,32 @@ class CorpusFilters:
     scope_types: tuple[str, ...] = ()
     scope_keys: tuple[str, ...] = ()
     languages: tuple[str, ...] = ()
+    #: ``published_from`` is also the open-web ``since`` filter (spec §12.3).
     published_from: date | None = None
     published_to: date | None = None
+    # -- open-web W3 (spec §12.3) ------------------------------------------------
+    #: Spec §13.1 source classes (``government_publication`` …). A chunk with no
+    #: class (every non-web chunk) never matches a non-empty constraint.
+    source_classes: tuple[str, ...] = ()
+    #: ``company | theme | industry | macro`` of the chunk's document.
+    subject_scopes: tuple[str, ...] = ()
+    #: Themes (``relation='theme'`` subject rows). Naming one scopes the query as a
+    #: company list does (see ``is_entity_scoped``).
+    theme_keys: tuple[str, ...] = ()
+    #: Spec §20.1 ``use_constraint`` values to admit.
+    use_constraints: tuple[str, ...] = ()
+    #: Drop chunks of documents flagged ``injection_suspect``.
+    exclude_injection_suspect: bool = False
+    #: Also admit chunks of documents that name one of these companies as a SUBJECT
+    #: (an article about three companies is stored once). Additive to ``company_ids``.
+    #: A STRONG subject row (primary, exact identifier, official domain) admits the
+    #: whole document; a weaker mention admits only its evidence chunk. Either way the
+    #: hit is marked ``via_subject`` with a non-Group scope (review F2).
+    subject_company_ids: tuple[uuid.UUID, ...] = ()
+    #: With ``published_from`` / ``published_to``: also admit chunks with NO publication
+    #: date. Off by default, so an undated document is excluded by a date window — the
+    #: caller decides explicitly (review F9).
+    include_undated: bool = False
     #: Governance, on by default: a chunk whose policy forbids indexing is never
     #: returned. Turning it off is not a supported operation — the field exists so
     #: the intent is visible in the type, not so it can be flipped.
@@ -138,7 +183,7 @@ class CorpusFilters:
 
     @property
     def is_entity_scoped(self) -> bool:
-        return bool(self.company_ids)
+        return bool(self.company_ids or self.subject_company_ids or self.theme_keys)
 
     def matches(self, chunk: CorpusChunk) -> bool:
         """Whether ``chunk`` satisfies every constraint. Pure; used by every backend.
@@ -147,10 +192,35 @@ class CorpusFilters:
         implemented in one backend and forgotten in another — the failure mode
         where switching backends quietly changes what "FY2025 only" means.
         """
+        return self.view(chunk) is not None
+
+    def view(self, chunk: CorpusChunk) -> CorpusChunk | None:
+        """The chunk as THIS query may see it, or ``None`` when it does not match.
+
+        A chunk admitted only through ``subject_company_ids`` comes back marked
+        ``via_subject`` with the subject row's scope — ``segment:…`` / ``brand:…`` for a
+        brand mention, otherwise ``scope_type='mention'`` — so it can never fill the
+        company's Group slot (review F2). Scope filters apply to that view.
+        """
         if self.indexable_only and not chunk.indexable:
-            return False
-        if self.company_ids and chunk.company_id not in self.company_ids:
-            return False
+            return None
+        if self.company_ids or self.subject_company_ids:
+            own = bool(self.company_ids) and chunk.company_id in self.company_ids
+            if not own:
+                wanted = set(self.subject_company_ids)
+                named = sorted(
+                    (wanted & set(chunk.subject_company_ids))
+                    | (wanted & set(chunk.mention_company_ids)),
+                    key=str,
+                )
+                if not named:
+                    return None
+                chunk = subject_view(chunk, named[0])
+        if not self._passes(chunk):
+            return None
+        return chunk
+
+    def _passes(self, chunk: CorpusChunk) -> bool:
         if self.document_types and chunk.document_type not in self.document_types:
             return False
         if self.source_tiers and chunk.source_tier not in self.source_tiers:
@@ -168,12 +238,44 @@ class CorpusFilters:
         if self.languages and chunk.language not in self.languages:
             return False
         if self.published_from is not None:
-            if chunk.published_at is None or chunk.published_at < self.published_from:
+            if chunk.published_at is None:
+                if not self.include_undated:
+                    return False
+            elif chunk.published_at < self.published_from:
                 return False
         if self.published_to is not None:
-            if chunk.published_at is None or chunk.published_at > self.published_to:
+            if chunk.published_at is None:
+                if not self.include_undated:
+                    return False
+            elif chunk.published_at > self.published_to:
                 return False
+        if self.source_classes and chunk.source_class not in self.source_classes:
+            return False
+        if self.subject_scopes and chunk.subject_scope not in self.subject_scopes:
+            return False
+        if self.theme_keys and not set(self.theme_keys) & set(chunk.theme_keys):
+            return False
+        if self.use_constraints and chunk.use_constraint not in self.use_constraints:
+            return False
+        if self.exclude_injection_suspect and chunk.injection_suspect:
+            return False
         return True
+
+
+SCOPE_TYPE_MENTION = "mention"
+
+
+def subject_view(chunk: CorpusChunk, company_id: uuid.UUID) -> CorpusChunk:
+    """``chunk`` seen as evidence ABOUT ``company_id`` via a subject row (review F2)."""
+    from dataclasses import replace
+
+    scope_key = dict(chunk.subject_scope_keys).get(company_id)
+    if scope_key:
+        _kind, _sep, name = scope_key.partition(":")
+        return replace(chunk, via_subject=True, scope_type="segment",
+                       scope_name=name or scope_key, scope_key=scope_key)
+    return replace(chunk, via_subject=True, scope_type=SCOPE_TYPE_MENTION,
+                   scope_name=None, scope_key=f"{SCOPE_TYPE_MENTION}:{company_id}")
 
 
 @dataclass(frozen=True)
@@ -276,6 +378,7 @@ class SearchBackend(Protocol):
 __all__ = [
     "DEFAULT_TOP_K",
     "MAX_TOP_K",
+    "SCOPE_TYPE_MENTION",
     "REQUESTABLE_MODES",
     "SEARCH_MODES",
     "CorpusChunk",
@@ -287,4 +390,5 @@ __all__ = [
     "SearchMode",
     "UnscopedRetrievalError",
     "VectorOnlyRetrievalError",
+    "subject_view",
 ]

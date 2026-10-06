@@ -43,6 +43,12 @@ SCOPE_TYPE_GROUP = "group"
 SCOPE_TYPE_SEGMENT = "segment"
 #: Persisted as SQL NULL. Never coerced to ``group`` at write time.
 SCOPE_TYPE_UNKNOWN: str | None = None
+#: Open-web W3 (review F2/#8). A corpus hit admitted only through a document-subject row
+#: ("this article MENTIONS the company") carries this scope type: it is neither the
+#: Group nor UNKNOWN. It is NOT a valid persisted FactScope type; it is read back as a
+#: named, non-Group segment so it can never fill a Group slot (and never degrades to
+#: UNKNOWN, whose Group-slot convention it must not inherit).
+SCOPE_TYPE_MENTION = "mention"
 
 VALID_SCOPE_TYPES: frozenset[str] = frozenset({SCOPE_TYPE_GROUP, SCOPE_TYPE_SEGMENT})
 
@@ -272,6 +278,9 @@ def scope_from_columns(
         if name is None:
             return UNKNOWN_SCOPE
         return FactScope(scope_type=SCOPE_TYPE_SEGMENT, scope_name=name)
+    if scope_type == SCOPE_TYPE_MENTION:
+        # Fail closed: a mention is a non-Group, non-unknown scope.
+        return FactScope(scope_type=SCOPE_TYPE_SEGMENT, scope_name=SCOPE_TYPE_MENTION)
     # Legacy row (pre-018) that only ever had the free-text label available, or
     # an unknown/NULL type: fall back to interpreting whatever name is present.
     return parse_scope(scope_name)

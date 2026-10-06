@@ -78,6 +78,14 @@ LANGUAGE_NAMES: dict[str, str] = {
     "no": "Norwegian",
     "nb": "Norwegian",
     "fi": "Finnish",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "ru": "Russian",
+    "el": "Greek",
+    "ar": "Arabic",
+    "he": "Hebrew",
+    "th": "Thai",
 }
 
 
@@ -129,6 +137,53 @@ def detect_language_with_confidence(
     return "en", False
 
 
+def script_language(text: str, *, scan_chars: int = _SCAN_CHARS) -> str | None:
+    """A language from the WRITING SYSTEM alone, or None — open-web W3.
+
+    The stopword heuristic above only knows Latin-script languages, so a Japanese or
+    Russian page would be labelled English by default. Script is a strong, cheap
+    signal for exactly those: kana means Japanese, Hangul Korean, Han without kana
+    Chinese, Cyrillic Russian (the common case; a label, never a gate), Greek, Arabic,
+    Hebrew, Thai. Latin script says nothing here and returns None. Additive: no
+    existing caller uses it.
+    """
+    counts: dict[str, int] = {}
+    letters = 0
+    for ch in (text or "")[:scan_chars]:
+        code = ord(ch)
+        if not ch.isalpha():
+            continue
+        letters += 1
+        if 0x3040 <= code <= 0x30FF:
+            key = "ja"
+        elif 0xAC00 <= code <= 0xD7AF or 0x1100 <= code <= 0x11FF:
+            key = "ko"
+        elif 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF:
+            key = "han"
+        elif 0x0400 <= code <= 0x04FF:
+            key = "ru"
+        elif 0x0370 <= code <= 0x03FF:
+            key = "el"
+        elif 0x0600 <= code <= 0x06FF:
+            key = "ar"
+        elif 0x0590 <= code <= 0x05FF:
+            key = "he"
+        elif 0x0E00 <= code <= 0x0E7F:
+            key = "th"
+        else:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    if not letters:
+        return None
+    if counts.get("ja", 0) >= 5:
+        return "ja"  # kana beside kanji is Japanese, never Chinese
+    non_latin = sum(counts.values())
+    if non_latin < max(5, letters // 3):
+        return None
+    best = max(counts, key=lambda k: counts[k])
+    return "zh" if best == "han" else best
+
+
 def detect_language(text: str, *, hint: str | None = None) -> str:
     """Return a 2-letter language code for ``text`` (default ``"en"``).
 
@@ -151,5 +206,6 @@ def language_name(code: str | None) -> str:
 __all__ = [
     "detect_language",
     "language_name",
+    "script_language",
     "LANGUAGE_NAMES",
 ]

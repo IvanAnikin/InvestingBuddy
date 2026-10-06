@@ -50,10 +50,28 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Float, bindparam, func, literal_column, select, text, update
+from sqlalchemy import (
+    Float,
+    and_,
+    bindparam,
+    false,
+    func,
+    literal_column,
+    or_,
+    select,
+    text,
+    true,
+    update,
+)
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.research_chunk import ResearchDocumentChunk
+from app.models.research_document import (
+    STRONG_SUBJECT_CONFIDENCES,
+    ResearchDocument,
+    ResearchDocumentSubject,
+    ResearchDocumentVersion,
+)
 from app.services.corpus.search.backends.memory import tokenize
 from app.services.corpus.search.embeddings import cosine
 from app.services.corpus.search.fusion import (
@@ -62,12 +80,14 @@ from app.services.corpus.search.fusion import (
     reciprocal_rank_fusion,
 )
 from app.services.corpus.search.types import (
+    SCOPE_TYPE_MENTION,
     CorpusChunk,
     CorpusFilters,
     CorpusHit,
     CorpusQuery,
     IndexResult,
     SearchMode,
+    subject_view,
 )
 
 #: The text-search configuration. ``'simple'`` on purpose — see ADR-053 and
@@ -126,8 +146,31 @@ def _filter_clauses(filters: CorpusFilters) -> list[Any]:
     clauses: list[Any] = []
     if filters.indexable_only:
         clauses.append(C.indexable.is_(True))
-    if filters.company_ids:
-        clauses.append(C.company_id.in_(list(filters.company_ids)))
+    scope_clauses: list[Any] = []
+    if filters.scope_types:
+        scope_clauses.append(C.scope_type.in_(list(filters.scope_types)))
+    if filters.scope_keys:
+        scope_clauses.append(C.scope_key.in_(list(filters.scope_keys)))
+    if filters.subject_company_ids:
+        # Open-web W3: the company's own chunks (own scope), OR chunks admitted through
+        # a subject row — the whole document for a STRONG row, only the evidence chunk
+        # for a weaker mention — whose scope is the subject's (review F2). Mirrors
+        # ``CorpusFilters.view``.
+        own = (
+            and_(C.company_id.in_(list(filters.company_ids)), *scope_clauses)
+            if filters.company_ids
+            else false()
+        )
+        not_own = (
+            or_(C.company_id.is_(None), C.company_id.not_in(list(filters.company_ids)))
+            if filters.company_ids
+            else true()
+        )
+        clauses.append(or_(own, and_(not_own, *_subject_branch(filters))))
+    else:
+        if filters.company_ids:
+            clauses.append(C.company_id.in_(list(filters.company_ids)))
+        clauses.extend(scope_clauses)
     if filters.document_types:
         clauses.append(C.document_type.in_(list(filters.document_types)))
     if filters.source_tiers:
@@ -138,19 +181,98 @@ def _filter_clauses(filters: CorpusFilters) -> list[Any]:
         clauses.append(C.period_key.in_(list(filters.period_keys)))
     if filters.period_types:
         clauses.append(C.period_type.in_(list(filters.period_types)))
-    if filters.scope_types:
-        clauses.append(C.scope_type.in_(list(filters.scope_types)))
-    if filters.scope_keys:
-        clauses.append(C.scope_key.in_(list(filters.scope_keys)))
     if filters.languages:
         clauses.append(C.language.in_(list(filters.languages)))
     if filters.published_from is not None:
-        clauses.append(C.published_at.is_not(None))
-        clauses.append(C.published_at >= filters.published_from)
+        after = C.published_at >= filters.published_from
+        clauses.append(or_(C.published_at.is_(None), after) if filters.include_undated
+                       else and_(C.published_at.is_not(None), after))
     if filters.published_to is not None:
-        clauses.append(C.published_at.is_not(None))
-        clauses.append(C.published_at <= filters.published_to)
+        before = C.published_at <= filters.published_to
+        clauses.append(or_(C.published_at.is_(None), before) if filters.include_undated
+                       else and_(C.published_at.is_not(None), before))
+    # Open-web W3 (spec §12.3). These live on the version / document rather than on the
+    # chunk, so each is a subquery on the chunk's version — still inside the same
+    # statement as the ORDER BY and the LIMIT, never a post-filter.
+    V = ResearchDocumentVersion
+    version_conditions: list[Any] = []
+    if filters.source_classes:
+        version_conditions.append(V.source_class.in_(list(filters.source_classes)))
+    if filters.use_constraints:
+        version_conditions.append(V.use_constraint.in_(list(filters.use_constraints)))
+    if filters.exclude_injection_suspect:
+        version_conditions.append(
+            or_(V.injection_suspect.is_(None), V.injection_suspect.is_(False))
+        )
+    document_conditions: list[Any] = []
+    if filters.subject_scopes:
+        document_conditions.append(
+            ResearchDocument.subject_scope.in_(list(filters.subject_scopes))
+        )
+    if filters.theme_keys:
+        themed = select(ResearchDocumentSubject.research_document_id).where(
+            ResearchDocumentSubject.relation == "theme",
+            ResearchDocumentSubject.theme_key.in_(list(filters.theme_keys)),
+        )
+        document_conditions.append(ResearchDocument.id.in_(themed))
+    if version_conditions or document_conditions:
+        versions = select(V.id)
+        if document_conditions:
+            versions = versions.join(
+                ResearchDocument, ResearchDocument.id == V.research_document_id
+            ).where(*document_conditions)
+        if version_conditions:
+            versions = versions.where(*version_conditions)
+        clauses.append(C.research_document_version_id.in_(versions))
     return clauses
+
+
+def _subject_branch(filters: CorpusFilters) -> list[Any]:
+    """Predicates for a chunk admitted through ``subject_company_ids`` (review F2)."""
+    C = ResearchDocumentChunk
+    S = ResearchDocumentSubject
+    V = ResearchDocumentVersion
+    ids = list(filters.subject_company_ids)
+
+    def subject_rows(*conditions: Any) -> Any:
+        return (
+            select(S.id)
+            .join(V, V.research_document_id == S.research_document_id)
+            .where(V.id == C.research_document_version_id, S.company_id.in_(ids), *conditions)
+            .exists()
+        )
+
+    admitted = subject_rows(
+        or_(
+            S.relation == "primary",
+            S.confidence.in_(list(STRONG_SUBJECT_CONFIDENCES)),
+            S.evidence_chunk_id == C.chunk_id,
+        ),
+        S.relation != "theme",
+    )
+    out: list[Any] = [admitted]
+    scoped = subject_rows(S.scope_key.is_not(None))
+    if filters.scope_types:
+        options: list[Any] = []
+        if "segment" in filters.scope_types:
+            options.append(scoped)
+        if SCOPE_TYPE_MENTION in filters.scope_types:
+            options.append(~scoped)
+        out.append(or_(*options) if options else false())
+    if filters.scope_keys:
+        keys = list(filters.scope_keys)
+        options = [subject_rows(S.scope_key.in_(keys))]
+        mention_ids = []
+        for key in keys:
+            if key.startswith(f"{SCOPE_TYPE_MENTION}:"):
+                try:
+                    mention_ids.append(uuid.UUID(key.split(":", 1)[1]))
+                except ValueError:
+                    continue
+        if mention_ids:
+            options.append(and_(~scoped, subject_rows(S.company_id.in_(mention_ids))))
+        out.append(or_(*options))
+    return out
 
 
 def _row_to_corpus_chunk(
@@ -435,6 +557,9 @@ class PostgresSearchBackend:
             row.research_document_version_id
         )
         chunk = _row_to_corpus_chunk(row, canonical_url=canonical_url, title=title)
+        filters = query.filters
+        if filters.subject_company_ids and row.company_id not in set(filters.company_ids):
+            chunk = await self._subject_marked(chunk, filters)
         wanted = set(tokenize(query.text))
         present = set(tokenize(row.text))
         return CorpusHit(
@@ -444,6 +569,43 @@ class PostgresSearchBackend:
             semantic_score=semantic,
             matched_terms=tuple(sorted(wanted & present)),
         )
+
+    async def _subject_marked(self, chunk: CorpusChunk, filters: CorpusFilters) -> CorpusChunk:
+        """A hit admitted through a subject row, seen as ``CorpusFilters.view`` sees it."""
+        from dataclasses import replace
+
+        S = ResearchDocumentSubject
+        V = ResearchDocumentVersion
+        rows = (
+            await self._session.execute(
+                select(S.company_id, S.scope_key, S.relation, S.confidence,
+                       S.evidence_chunk_id)
+                .join(V, V.research_document_id == S.research_document_id)
+                .where(
+                    V.id == chunk.research_document_version_id,
+                    S.company_id.in_(list(filters.subject_company_ids)),
+                )
+            )
+        ).all()
+        admitted = sorted(
+            {
+                company
+                for company, _scope, relation, confidence, evidence in rows
+                if relation != "theme"
+                and (
+                    relation == "primary"
+                    or confidence in STRONG_SUBJECT_CONFIDENCES
+                    or evidence == chunk.chunk_id
+                )
+            },
+            key=str,
+        )
+        if not admitted:
+            return chunk
+        scoped = tuple(
+            dict.fromkeys((company, scope) for company, scope, *_ in rows if scope)
+        )
+        return subject_view(replace(chunk, subject_scope_keys=scoped), admitted[0])
 
     async def _version_lineage(
         self, version_id: uuid.UUID

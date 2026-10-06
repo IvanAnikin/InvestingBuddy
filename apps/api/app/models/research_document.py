@@ -82,6 +82,13 @@ class ResearchDocument(Base):
     #: display label.
     period_type: Mapped[str | None] = mapped_column(sa.String(20))
     language: Mapped[str | None] = mapped_column(sa.String(10))
+    #: Open-web W3 (migration 044). What the document is ABOUT when it is not one
+    #: company's: ``company`` | ``theme`` | ``industry`` | ``macro``. NULL on every
+    #: document written before W3 — which is "not recorded", not "company".
+    #: The themes a document serves are ROWS (``research_document_subjects`` with
+    #: ``relation='theme'``), never a column here: one document is found by many
+    #: themes (W3 review F3).
+    subject_scope: Mapped[str | None] = mapped_column(sa.String(20))
     first_seen_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -116,6 +123,17 @@ class ResearchDocument(Base):
         # "Which documents cover FY2025?" is the corpus's most common filter and it
         # must not become a sequential scan.
         sa.Index("ix_research_documents_period_key", "period_key"),
+        # Open-web W3 (migration 044). The unique index above never deduplicates a
+        # company-less document, because NULLs are distinct; a theme / industry
+        # document found by two runs would otherwise be stored twice. This partial
+        # index is the identity for exactly those rows.
+        sa.Index(
+            "ix_research_documents_companyless_key",
+            "document_key",
+            unique=True,
+            postgresql_where=sa.text("company_id IS NULL"),
+            sqlite_where=sa.text("company_id IS NULL"),
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -224,6 +242,40 @@ class ResearchDocumentVersion(Base):
     #: When this version stopped being current. NULL for the current one and for
     #: any version that was never current.
     superseded_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+    # ── Open-web W3 (migration 044). All NULL on every non-web version. ──────── #
+    #: The open-web fetch that produced these bytes — the way back to the query,
+    #: the search result, robots/TDM decisions and the redirect chain (spec §15).
+    web_fetch_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "web_fetch_attempts.id",
+            ondelete="SET NULL",
+            name="fk_research_document_versions_web_fetch_attempt_id",
+        ),
+        nullable=True,
+    )
+    #: Spec §20.1: ``public_domain`` | ``open_licence`` | ``private_use_permitted`` |
+    #: ``commercial_permitted`` | ``redistribution_prohibited`` | ``requires_licence``
+    #: | ``unknown`` (the open-web default).
+    use_constraint: Mapped[str | None] = mapped_column(sa.String(40))
+    #: Heuristic prompt-injection taint (threat model §3.3). A SIGNAL, never a
+    #: deletion: a suspect document is kept — it is evidence of an attack.
+    injection_suspect: Mapped[bool | None] = mapped_column(sa.Boolean)
+    #: 64-bit SimHash of the normalised main text, stored SIGNED (BIGINT). Hamming
+    #: distance <= 3 means the same text (spec §14.1).
+    simhash: Mapped[int | None] = mapped_column(sa.BigInteger)
+    #: Provisional origin for independence (W4 refines it): the publisher's
+    #: registrable domain.
+    origin_key: Mapped[str | None] = mapped_column(sa.String(255))
+    #: Where ``published_at`` came from: ``json_ld`` | ``meta`` | ``url`` | ``text``.
+    published_at_source: Mapped[str | None] = mapped_column(sa.String(20))
+    #: Spec §13.1 source class (``government_publication``, ``trade_publication`` …),
+    #: assigned deterministically from host rules and curated lists.
+    source_class: Mapped[str | None] = mapped_column(sa.String(40))
+    #: ``WEB_EXTRACTOR_VERSION`` of the open-web extraction that read these bytes —
+    #: separate from the V2 ``CURRENT_EXTRACTION_PIPELINE_VERSION``.
+    web_extractor_version: Mapped[int | None] = mapped_column(sa.Integer)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -258,10 +310,130 @@ class ResearchDocumentVersion(Base):
             "ix_research_document_versions_extracted_document_id",
             "extracted_document_id",
         ),
+        sa.Index(
+            "ix_research_document_versions_web_fetch_attempt_id",
+            "web_fetch_attempt_id",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<ResearchDocumentVersion {self.content_hash[:12]} current={self.is_current}>"
 
 
-__all__ = ["ResearchDocument", "ResearchDocumentVersion"]
+#: ``research_document_subjects.relation`` — closed.
+SUBJECT_RELATIONS: tuple[str, ...] = (
+    "primary", "mentioned", "competitor", "customer", "supplier", "theme",
+)
+#: The identity of a subject row. NULLs are coalesced so the unique index sees two
+#: "no company" rows as the same row (W3 review F10).
+SUBJECT_IDENTITY_SQL: tuple[str, ...] = (
+    "research_document_id",
+    "coalesce(company_id, '00000000-0000-0000-0000-000000000000')",
+    "coalesce(legal_entity_id, '00000000-0000-0000-0000-000000000000')",
+    "relation",
+    "coalesce(scope_key, '')",
+    "coalesce(theme_key, '')",
+)
+#: ``research_document_subjects.confidence`` (spec §16.1) — closed; NULL allowed for a
+#: primary subject assigned by the research run rather than matched in the text.
+SUBJECT_CONFIDENCES: tuple[str, ...] = (
+    "exact_identifier", "domain", "name_context", "name_only",
+)
+#: Confidences strong enough to attribute a WHOLE document to a company in retrieval;
+#: anything weaker admits only the mention's evidence chunk (W3 review F2).
+STRONG_SUBJECT_CONFIDENCES: tuple[str, ...] = ("exact_identifier", "domain")
+
+
+class ResearchDocumentSubject(Base):
+    """One company (or entity) a document is about or mentions — open-web W3.
+
+    A document has one ``company_id``; an article about three companies needs three
+    attributions, and a theme document has none. This table carries them without
+    duplicating the document or its chunks (spec §12.2). A brand mention resolves to
+    the PARENT with a ``segment:`` / ``brand:`` scope — never the group (spec §16.2).
+    """
+
+    __tablename__ = "research_document_subjects"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    research_document_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "research_documents.id",
+            ondelete="CASCADE",
+            name="fk_research_document_subjects_document_id",
+        ),
+        nullable=False,
+    )
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "companies.id",
+            ondelete="SET NULL",
+            name="fk_research_document_subjects_company_id_companies",
+        ),
+        nullable=True,
+    )
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "legal_entities.id",
+            ondelete="SET NULL",
+            name="fk_research_document_subjects_legal_entity_id",
+        ),
+        nullable=True,
+    )
+    relation: Mapped[str] = mapped_column(sa.String(20), nullable=False)
+    confidence: Mapped[str | None] = mapped_column(sa.String(30))
+    #: How the match was made: ``isin`` | ``lei`` | ``ticker_venue`` | ``issuer_domain``
+    #: | ``name_context`` | ``name_only`` | ``brand_alias`` | ``research_run``.
+    method: Mapped[str] = mapped_column(sa.String(40), nullable=False)
+    #: ``segment:<name>`` / ``brand:<name>`` for a brand mention; NULL otherwise.
+    #: Never ``group`` for a brand (spec §16.2).
+    scope_key: Mapped[str | None] = mapped_column(sa.String(220))
+    #: The ``chunk_id`` of the first chunk the mention occurs in, when known. For a
+    #: ``mentioned`` row this is the ONLY chunk retrieval admits for that company
+    #: (W3 review F2).
+    evidence_chunk_id: Mapped[str | None] = mapped_column(sa.String(120))
+    #: ``theme:<slug>`` for a ``relation='theme'`` row; NULL otherwise.
+    theme_key: Mapped[str | None] = mapped_column(sa.String(120))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "relation IN ('primary', 'mentioned', 'competitor', 'customer', 'supplier', "
+            "'theme')",
+            name="ck_research_document_subjects_relation",
+        ),
+        sa.CheckConstraint(
+            "(relation = 'theme') = (theme_key IS NOT NULL)",
+            name="ck_research_document_subjects_theme_key",
+        ),
+        sa.CheckConstraint(
+            "confidence IS NULL OR confidence IN "
+            "('exact_identifier', 'domain', 'name_context', 'name_only')",
+            name="ck_research_document_subjects_confidence",
+        ),
+        sa.Index("ix_research_document_subjects_document_id", "research_document_id"),
+        sa.Index("ix_research_document_subjects_company_id", "company_id"),
+        sa.Index("ix_research_document_subjects_theme_key", "theme_key"),
+        sa.Index(
+            "ux_research_document_subjects_identity",
+            *(sa.text(expr) if "(" in expr else expr for expr in SUBJECT_IDENTITY_SQL),
+            unique=True,
+        ),
+    )
+
+
+__all__ = [
+    "STRONG_SUBJECT_CONFIDENCES",
+    "SUBJECT_CONFIDENCES",
+    "SUBJECT_RELATIONS",
+    "ResearchDocument",
+    "ResearchDocumentSubject",
+    "ResearchDocumentVersion",
+]

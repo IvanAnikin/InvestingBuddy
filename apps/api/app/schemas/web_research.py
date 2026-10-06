@@ -65,6 +65,10 @@ class WebFetchAttemptRead(BaseModel):
     origin: str
     requested_url: str
     final_url: str | None = None
+    canonical_url: str | None = None
+    #: Hops as ``{"url", "status"}``; the LAST entry may carry ``"meta"`` (validators,
+    #: rel=canonical, charset, js_required, MIME mismatch, TDM signals — W2).
+    redirect_chain: list[dict[str, Any]] = Field(default_factory=list)
     policy_decision: str | None = None
     robots_decision: str | None = None
     tdm_decision: str | None = None
@@ -79,6 +83,45 @@ class WebFetchAttemptRead(BaseModel):
     failure_code: str | None = None
 
 
+class WebFetchMetrics(BaseModel):
+    """Spec §22.1 fetch metrics for one run, derived from ``web_fetch_attempts`` rows.
+
+    ``attempts`` counts LOGICAL page fetches that were actually tried. Not in it: a
+    retried physical attempt (``retries``), a negative-cache hit (``negative_cached``),
+    a budget refusal (``budget_refused``) and robots.txt/TDMRep requests
+    (``policy_file_requests``). Rates are over ``attempts``; 0.0 when there were none.
+    """
+
+    attempts: int = 0
+    fetched: int = 0
+    partial: int = 0
+    success_rate: float = 0.0
+    http_403: int = 0
+    http_403_rate: float = 0.0
+    #: 402 + ``paywall_jsonld`` + ``login_wall`` + ``consent_wall``.
+    paywall: int = 0
+    paywall_rate: float = 0.0
+    captcha: int = 0
+    #: ``robots_disallowed`` + ``robots_unavailable``.
+    robots: int = 0
+    robots_rate: float = 0.0
+    tdm_reserved: int = 0
+    tdm_rate: float = 0.0
+    policy_denied: int = 0
+    policy_deny_rate: float = 0.0
+    negative_cached: int = 0
+    budget_refused: int = 0
+    policy_file_requests: int = 0
+    retries: int = 0
+    redirects: int = 0
+    bytes: int = 0
+    js_required: int = 0
+    js_required_rate: float = 0.0
+    mime_mismatch: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_failure_code: dict[str, int] = Field(default_factory=dict)
+
+
 class WebResearchTotals(BaseModel):
     queries: int = 0
     executed: int = 0
@@ -91,6 +134,7 @@ class WebResearchTotals(BaseModel):
     #: Summed per unit over executed network calls. A unit absent here was not reported
     #: by any call — absent is not zero, and this never prices anything.
     cost_units: dict[str, float] = Field(default_factory=dict)
+    fetch_metrics: WebFetchMetrics = Field(default_factory=WebFetchMetrics)
 
 
 class WebResearchAuditRead(BaseModel):
