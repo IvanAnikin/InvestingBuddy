@@ -1280,13 +1280,24 @@ const DRAFT_REPORT_ID = "00000000-0000-0000-0000-0000000000e9";
 
 // Distinct run ids per thesis, so a test can prove the run it is shown is the
 // run its own request created — not a leftover from a previous one.
+//
+// Every id is a real UUID: a run's page lives at /research/discover/<run id>
+// and anything that is not a UUID there is a 404.
 const THESIS_RUN_IDS = {
-  "European luxury goods companies": "77777777-0000-0000-0000-0000000001ux",
+  "European luxury goods companies": "77777777-0000-0000-0000-0000000001cc",
   "European defense suppliers benefiting from NATO spending":
     "77777777-0000-0000-0000-000000000def",
   [V319_THESIS]: V319_RUN_ID,
+  // Two plain runs for the run-address tests (discovery-run-routes.spec.ts):
+  // distinct theses so the page can be seen to show THE run its URL names.
+  "Route test A: Nordic grid equipment suppliers":
+    "77777777-0000-0000-0000-0000000000a1",
+  "Route test B: Alpine specialty chemicals":
+    "77777777-0000-0000-0000-0000000000b2",
   __default: "77777777-0000-0000-0000-000000000027",
 };
+// Any well-formed run id NOT in this map (e.g. 77777777-…-0000000000ff, used
+// by discovery-run-routes.spec.ts) is unknown: its GET answers 404.
 
 function mockPeriodsReport(id) {
   const base = mockCouncilReport(id);

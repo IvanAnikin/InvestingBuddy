@@ -75,6 +75,28 @@ test.describe("Research surfaces are responsive", () => {
     }
   }
 
+  test("a discovery run's copy-link control fits a 375px phone", async ({
+    page,
+  }) => {
+    const runId = "77777777-0000-0000-0000-0000000000a1";
+    await page.setViewportSize({ width: 375, height: 812 });
+    // No clipboard, so the fallback field (the widest state) is what renders.
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: () => Promise.reject(new Error("denied")) },
+      });
+    });
+    await page.goto(`/research/discover/${runId}`);
+    const copy = page.getByTestId("copy-run-link");
+    await expect(copy).toBeVisible();
+    expect(await horizontalOverflow(page)).toBe(false);
+
+    await copy.click();
+    await expect(page.getByTestId("copy-run-link-field")).toBeVisible();
+    expect(await horizontalOverflow(page)).toBe(false);
+  });
+
   test("the report library becomes a stacked list on a phone", async ({
     page,
   }) => {
