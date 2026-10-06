@@ -1,10 +1,10 @@
 # Open-web research — production deployment and acceptance record
 
-> **Status (2026-10-06): CODE DEPLOYED DARK — LIVE ACCEPTANCE NOT EXECUTED.**
-> The platform cannot make a real web search yet because `TAVILY_API_KEY` is not configured in
-> `ib-stg-api`. Every acceptance case below is therefore **NOT RUN**, and none is claimed.
-> This file is the honest record of what is deployed; it is updated, not replaced, when the
-> key arrives and the staged rollout in §5 is executed.
+> **Status (2026-10-06): LIVE ACCEPTANCE IN PROGRESS — NOT ACCEPTED.**
+> `TAVILY_API_KEY` is configured; search, fetch, corpus ingest and company web research are ON
+> in `ib-stg-api` (Discovery search, follow-up and durable Discovery are still OFF). Rainbow Rare
+> Earths run 1 exposed a retrieval defect (§7); the fix is in review. No acceptance case is
+> claimed passed. This file is the honest record and is updated as each case is run.
 
 Specification: [`open-web-research-spec.md`](open-web-research-spec.md) ·
 plan: [`open-web-research-implementation-plan.md`](open-web-research-implementation-plan.md) ·
@@ -87,3 +87,46 @@ long-tail discoveries exist yet; none are claimed.
 - Acceptance is unproven against the real provider; defects visible only live are still unknown.
 - FCA NSM and ASX sources remain private-use only (see project terms decision).
 - Admin web-research audit and investor UX are verified against fixtures, not live data.
+
+## 7. Live acceptance log
+
+### Rainbow Rare Earths — run 1 (job `54ef37ec`, report `6a6022fb`, deep) — NOT ACCEPTED
+
+Open-web path proven end to end: 33 queries, **33/33 executed** (Tavily HTTP 200, request ids,
+33.0 credits), 231 results, 154 fetch attempts (70 fetched, failures all explicit: 403, captcha,
+paywall, TDM reservation), 27 web documents → **840 chunks, all indexed**, 8 pages from the
+issuer's own site, council convened with 47 findings, current dated facts captured (Phalaborwa
+start 2028 / 16-year life / 35 Mt dunes, US$50m DFC funding, Neo MoU, Uberaba PFS commenced
+2026-09-07).
+
+**Fails criterion B:** the report still lists "no ownership percentage", "no planned production
+capacity", "no output tonnage" as open gaps, and no capex figure appears. The ingested issuer
+presentation states all of them (an 85% interest, ~1,850 t/yr of NdPr/Dy/Tb, US$295.5m capex), and
+an Uberaba economic assessment dated March 2026 (NPV US$916m, IRR 45%) was fetched.
+
+**Root cause (measured by replaying the investigator's own queries against the live corpus):**
+retrieval ranking, not ingestion. The chunks holding those figures ranked 12th–24th, and the
+investigator reads one search of 8 hits per question.
+1. The subject's own name in a company-scoped query is the loudest lexical term, so every chunk
+   that repeats it outranks the passage that answers. Dropping it moved the key chunks to ranks
+   7 / 5 / 4 (ownership / economics / capex).
+2. One document filled the page (5 of the first 8 hits were one filing). A cap of two chunks per
+   document plus a default page of 12 puts every key chunk inside the page (ranks 8 / 12 / 5 / 4 / 11).
+
+**Fix (retrieval-only, no schema change, no re-ingest):** `agent_tools/corpus_ranking.py` —
+single-company queries drop the subject's name (Unicode-aware; a one-word name only where it is
+written as a name; also recognised after a keyword reducer has dropped "of"/"Group"), the candidate
+pool is wider than the page, each document's best two chunks come first and the remainder is
+*demoted, not dropped* (a one-filing company such as SCCO still gets a full page), and the
+investigator's page is 12 hits at every corpus rung. The company filter and every access rule are
+unchanged. Tests: `tests/test_v3_corpus_search_ranking.py`.
+
+*Independent review caught two defects in the first version of this fix, both corrected before
+merge:* the investigator always names its own `top_k`, so changing only the tool's default changed
+nothing on the live path; and a hard per-document cap cut a one-filing company to two hits.
+
+**Recorded but not yet fixed:** 13 of the 27 web documents never name the company (357 of 840
+chunks; e.g. one government document of 224 chunks) yet are scoped to it with subject method
+`research_run`, so they compete in company-scoped searches; and the issuer's own site is classed
+`unknown_web` because no official domain is known for the company. Both are re-assessed after the
+re-run of the fix.

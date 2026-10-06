@@ -96,10 +96,13 @@ MAX_FOLLOWUP_QUERIES = 2
 
 #: Hits per corpus query. Six was the live setting, and on SCCO's 10-K the passage
 #: carrying the year's headline revenue figure ranked seventh for the query that asked
-#: for it: one place outside the window, and the question was recorded as a gap. A
-#: chunk is bounded (2,000 characters) and the writer's evidence budget bounds what
-#: reaches the prompt, so the cost of the extra hits is one wider SELECT.
-CORPUS_TOP_K = 8
+#: for it: one place outside the window, and the question was recorded as a gap. Eight
+#: then missed Rainbow Rare Earths' own presentation (an 85% interest, ~1,850 t/yr, a
+#: US$295.5m capex), which ranked 4th-12th once the subject's name was dropped from the
+#: query and a document capped at two chunks — so twelve. A chunk is bounded (2,000
+#: characters) and the writer's evidence budget bounds what reaches the prompt, so the
+#: cost of the extra hits is one wider SELECT.
+CORPUS_TOP_K = 12
 
 #: How much tool payload reaches the prompt. A model handed the whole corpus is a model
 #: paying for the whole corpus. Eight corpus chunks alone can reach 12,000 characters,
@@ -1592,7 +1595,7 @@ class LLMInvestigator:
                         "query": query,
                         "company_ids": [str(self.company_id)],
                         "mode": "lexical",
-                        "top_k": 6,
+                        "top_k": CORPUS_TOP_K,
                         "exclude_suspect": True,
                     },
                     task_ref=f"{role_id}:{question.key}",
@@ -1648,7 +1651,7 @@ class LLMInvestigator:
                         "query": query,
                         "company_ids": [str(self.company_id)],
                         "mode": "lexical",
-                        "top_k": 6,
+                        "top_k": CORPUS_TOP_K,
                     },
                     task_ref=f"{role_id}:{question.key}",
                 )
