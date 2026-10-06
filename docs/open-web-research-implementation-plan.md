@@ -236,6 +236,48 @@ hosts, which needs U2.
 
 **Rollback:** `V3_WEB_FETCH_ENABLED=false`. The allowlisted paths are unaffected.
 
+**As built (W2).** Modules: `web_research/fetch.py`, `robots.py` (RFC 9309 + TDM signals),
+`canonical.py`, `access.py`, `content.py` (sniffing, class caps, charset, `js_required`),
+`limiter.py`, `negative_cache.py`, `domain_policy.py` (the versioned denylist) and
+`user_urls.py`. Deviations from the plan, each deliberate:
+
+- The guard gained `FetchPolicy.OPEN_WEB` on `async_check_fetch_url` (allowlist off,
+  resolution + runtime check mandatory) rather than a parameter on `safe_fetch_document`:
+  that function gates on the SERVED content type before any byte is sniffed and exposes
+  no response headers, so `fetch.py` composes the same W0 primitives (shape check, guard,
+  mandatory pinned transport, `guarded_client_kwargs`, `read_bounded_body` with a new
+  `sniff_cap` hook) instead.
+- robots.txt and TDMRep are cached per **origin**, not per registrable domain: RFC 9309
+  scopes a robots.txt to its host. Pacing is per registrable domain as specified. An
+  unreachable robots.txt is cached for 15 minutes (about one run), not 24 h. They are
+  fetched with their OWN 20 s deadline (never the run's remainder), follow up to 5
+  redirects then fail closed, write their own attempt rows (`origin` `robots`/`tdm`), and
+  an outcome caused by the run's own deadline is never cached. Matching uses a
+  non-backtracking wildcard matcher with rule (2,000) and pattern (1,024) caps.
+- Page-level metadata with no dedicated column (ETag/Last-Modified, `rel=canonical`,
+  charset, `js_required`, MIME mismatch, TDM signals) rides on the last entry of
+  `redirect_chain_json` under `meta`, so no migration was needed (docs/DATABASE.md).
+- A TDM reservation or an access wall returns no bytes (`content=None`); the spec §20.3
+  `partial_preview` ingestion of a served preview is left to W3.
+- Also refused: a `consent_wall` reason, and a DNS failure is coded `dns_failure` (never
+  negative-cached).
+- Review round 1 hardening: the row is written once, outside the deadline; a
+  negative-cache hit never adds a strike; failures are keyed on the REQUESTED URL's
+  canonical form (never a page-declared canonical); redirects charge each new domain's
+  page cap; a sniffed PDF over the run's PDF cap is not read; HTML served as `text/html`
+  with an unlisted first tag is HTML; pacing never holds a global slot; walls need
+  interstitial markers / main-content password fields / a consent-only page (site-wide
+  challenge beacons, nav login boxes and cookie banners are not walls); only WHATWG
+  charset labels are honoured; plain `ref` is not a tracking parameter; denylist
+  `2026-09-30.2`.
+- Review round 2: no NUL/control/surrogate string reaches a row (URL →
+  `<unparseable-url>`, other text → U+FFFD); robots caps only ever cut toward STRICTER
+  (over-long Disallow truncated, Allows dropped first, >2,000 Disallows → `Disallow: /`);
+  each `X-Robots-Tag` header is scoped separately; Imperva's per-page resource script is
+  not a CAPTCHA; only the matched robots groups are normalised (ASCII fast path); a
+  robots/TDMRep request cut by the run deadline writes a `run_deadline` row. One
+  `AsyncSession` must not be shared by concurrent `open_web_fetch` calls.
+
 **Complexity:** L (about 3–4 days).
 
 ---
@@ -302,6 +344,53 @@ version.
 
 **Rollback:** `V3_WEB_CORPUS_INGEST_ENABLED=false`. Web versions stay stored but can be
 excluded by the retrieval filter.
+
+**As built (W3).** Modules: `web_research/extract.py` (trafilatura on our own lxml tree,
+hidden-content removal, metadata with date source, stdlib fallback, PDF two-pass),
+`pool.py` (spawned process pool, SIGKILL on timeout, separate warm-up), `classify.py`
+(source class → tier/access class, document kind, injection taint), `source_policy.py`
+(versioned `use_constraint` registry), `entities.py` (mentions + brand scope), `dedup.py`
+(SimHash, provisional `origin_key`), `ingest.py` (the write path, lead path,
+`ev:x:` resolver), `text_safety.py` (prompt rendering). Deviations, each deliberate:
+
+- **Migration 044, not 043** (043 is the report-reconciliation branch's); temporarily
+  `down_revision="042"`. It adds two version columns beyond the spec list:
+  `source_class` (the retrieval filter needs a stored class) and
+  `web_extractor_version`.
+- **The pipeline version is not bumped** (another branch takes 19); web versions carry
+  `WEB_EXTRACTOR_VERSION` instead, and `ExtractedDocument.pipeline_version` is the current
+  constant.
+- `ExtractedDocument` is created directly by `ingest.py` (not through
+  `persist_primary_document_artifacts`, whose flags and fact validation are V2's); the
+  corpus version then goes through the unchanged `ingest_extracted_document` bridge with
+  a view carrying THIS run's company.
+- Web documents are keyed by address (title-only period policy), never `<kind>:<period>`.
+- A verified lead's bytes come from `verify_lead`'s own fetch, which predates robots/TDM;
+  before storing them `ingest.py` asks `fetch.ingestion_clearance` (robots.txt + TDMRep,
+  cached per origin; needs `V3_WEB_FETCH_ENABLED`; its policy-file requests write
+  `robots`/`tdm` attempt rows as W2 does) and reads the page's TDM meta. Response
+  headers (`X-Robots-Tag: noai`) are not visible on that path.
+- Retrieval: `CorpusFilters` gained `source_classes`, `subject_scopes`, `theme_keys`,
+  `use_constraints`, `exclude_injection_suspect` and `subject_company_ids` (documents that
+  name the company as a subject); `published_from` is the "since" filter. PostgreSQL
+  applies them as subqueries inside the same statement.
+- **Review round 1** (fixes): host+path-prefix matching only for `host/path` source
+  rules; subject retrieval admits only strong rows' documents and weak rows' evidence
+  chunks, marked `via_subject` with a non-Group scope; themes as subject rows (044
+  amended in place: no `research_documents.theme_key`, `relation='theme'`, a coalescing
+  unique index); re-index on reuse; same-company non-web bytes linked; lead path
+  prepares (robots/TDMRep, header TDM, walls, extraction) OUTSIDE its savepoint under a
+  180 s bound; pool: process-wide gate, cancellation kills, `RLIMIT_AS`
+  (`V3_WEB_EXTRACTION_MEMORY_MB`, 768) and per-task `RLIMIT_CPU`, 25 tasks per worker,
+  scrubbed environment + empty cwd; analysis (SimHash, taint, mentions) in the worker;
+  `render_for_prompt` before `json.dumps`; stylesheet / colour-hidden text; PDF
+  near-white / sub-point text into the taint score; text-found dates kept out of the
+  period rules; PDF cover / `/CreationDate` dates; `include_undated`; licence signals
+  from `<head>` only; context needs sector words / ticker / venue / legal form.
+  Deferred to W4: down-ranking suspect documents and the "never sole support" rule.
+- Not done here: `partial_preview` ingestion (W2 hands no bytes for a walled page),
+  near-duplicate clustering and wire attribution (W4), a licence-id column, crawl-kind
+  scoring (W5), OCR for web PDFs (U6), a B1 memory measurement.
 
 **Complexity:** L (about 4–5 days).
 

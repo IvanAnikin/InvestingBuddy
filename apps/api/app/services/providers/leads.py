@@ -666,6 +666,14 @@ class LeadVerificationOutcome:
     #: How the claim was located: ``value_in_context`` | ``exact_text`` |
     #: ``document_passage``. ``None`` when not verified.
     verification_basis: str | None = None
+    #: Open-web W3 — the bytes the platform fetched, carried ONLY on a verified
+    #: outcome so the caller can put the same document into the corpus (dedup by
+    #: hash). Never in repr, never compared, never persisted on the lead row.
+    fetched_content: bytes | None = field(default=None, repr=False, compare=False)
+    fetched_truncated: bool = False
+    #: The rights/robots response headers of that fetch (``RIGHTS_HEADERS``), so the
+    #: corpus path can honour an HTTP-level TDM reservation (review S-M4).
+    fetched_headers: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.status not in LEAD_STATUSES:
@@ -1668,6 +1676,9 @@ async def verify_lead(
         consumption=consumption,
         matched_excerpt=_clip(excerpt, EXCERPT_MAX_CHARS + 2),
         verification_basis=basis,
+        fetched_content=result.content,
+        fetched_truncated=bool(getattr(result, "truncated", False)),
+        fetched_headers=dict(getattr(result, "headers", None) or {}),
     )
 
 
@@ -1878,6 +1889,8 @@ async def persist_lead(
     subject: str | None = None,
     promoted_evidence_id: str | None = None,
     now: datetime | None = None,
+    research_document_version_id: uuid.UUID | None = None,
+    web_search_result_id: uuid.UUID | None = None,
 ) -> Any:
     """Write one lead and its outcome. Rejections are written, not dropped.
 
@@ -1922,6 +1935,11 @@ async def persist_lead(
         matched_excerpt=_clip(getattr(outcome, "matched_excerpt", None), 800),
         claimed_metric=_clip(getattr(lead, "claimed_metric", None), 120),
         claimed_geography=_clip(getattr(lead, "claimed_geography", None), 80),
+        # Open-web W3 (migration 044): the stored corpus version of the verified bytes,
+        # and the search result the platform took the lead from — never a model's id.
+        research_document_version_id=research_document_version_id,
+        web_search_result_id=web_search_result_id
+        or getattr(lead, "web_search_result_id", None),
     )
     session.add(record)
     await session.flush()

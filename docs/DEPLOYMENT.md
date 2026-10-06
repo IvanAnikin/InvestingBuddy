@@ -1772,6 +1772,32 @@ Then re-run Bicep with `githubActionsPrincipalId=$SP_OBJECT_ID` to grant KV Secr
 
 ---
 
+## Open-web extraction pool (open-web W3) — memory sizing on B1
+
+Web HTML/PDF extraction runs in a spawned worker process (one per API or worker process
+that ingests web documents, `V3_WEB_EXTRACTION_WORKERS=1`). Each worker is capped by
+`RLIMIT_AS` = `V3_WEB_EXTRACTION_MEMORY_MB` (default 768 MB, enforced on Linux), a
+per-task `RLIMIT_CPU`, and is retired after 25 tasks; its environment is scrubbed and it
+runs in an empty temporary directory. On B1 (1.75 GB) keep one worker per process and
+budget up to 768 MB per ingesting process while a document is parsed. Dark unless
+`V3_WEB_CORPUS_INGEST_ENABLED=true`. The pool recycles its executor itself every 25 runs
+and warms the replacement before the next document's timeout starts.
+
+**Before enabling on App Service (Linux): run a smoke test.** `RLIMIT_AS` is enforced only
+on Linux, and the development machines (macOS) never exercise it. With the flag still off,
+call the extraction pool once from the deployed container with a normal HTML page and a
+normal PDF and confirm they extract: an `RLIMIT_AS` too tight for lxml / pdfplumber /
+trafilatura imports shows up as `extraction_crashed` on every document (warm-up fails),
+which is the signal to raise `V3_WEB_EXTRACTION_MEMORY_MB`.
+
+**Known residuals (hidden-text detection).** Only simple `.class` / `#id` selectors in
+`<style>` blocks are resolved; compound or descendant selectors, `color:white` with no
+stated background, and text hidden by an off-page transform are NOT removed from the
+extracted text (they still raise the injection-taint score when they carry instruction
+phrases). Pool workers inherit the parent's initial environment block at the OS level
+(it remains readable through `/proc/self/environ`); the pool scrubs `os.environ`, it is
+not a sandbox.
+
 ## Environment Variables
 
 Copy `.env.example` to `.env`. The defaults work for local Docker development.
@@ -2081,6 +2107,17 @@ with the SSH runbook above (`source antenv/bin/activate && python -m alembic upg
 
 Live smoke (after U1 only; spends real credits):
 `WEB_RESEARCH_LIVE=1 TAVILY_API_KEY=... python scripts/web-search-live-smoke.py [--persist]`.
+
+## Open-web W2 — the open-web fetch policy
+
+| Setting | Default | What it does |
+|---|---|---|
+| `V3_WEB_FETCH_ENABLED` | `false` | Master switch for fetching **non-allowlisted** hosts (`services/web_research/fetch.py`, its only consumer). Off → refusal `web_fetch_disabled`: no DNS, no socket, no `web_fetch_attempts` row. Allowlisted connector fetches are unaffected either way. |
+
+Turning it on needs decision **U2** and migration **042** applied first. It does **not**
+require touching `SOURCE_CONNECTOR_ALLOWLIST_ONLY` (leave it `true`): the open-web policy
+replaces the allowlist for its own fetches only. New dependency: `charset-normalizer`
+(already transitive; now pinned in `requirements.txt`). Rollback: set the flag to `false`.
 
 ## Security Limitations
 

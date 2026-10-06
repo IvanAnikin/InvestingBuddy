@@ -239,6 +239,9 @@ class ResearchLead:
     #: price") and for where. Metadata about the claim, never a verified fact.
     claimed_metric: str | None = None
     claimed_geography: str | None = None
+    #: Open-web W3: the ``web_search_results`` row this lead came from, set by the
+    #: PLATFORM when it built the lead from a search result. Never model-supplied.
+    web_search_result_id: uuid.UUID | None = None
 
     status: str = LEAD_PENDING
     rejection_reason: str | None = None

@@ -483,10 +483,47 @@ _PROVIDER_LABEL_KEYS: tuple[str, ...] = (
 )
 
 
+def _render_untrusted(value: Any) -> Any:
+    """Every STRING inside ``value`` in its prompt-safe form (W3 review S-M1).
+
+    Must run BEFORE ``json.dumps``: serialising first turns a Unicode tag, a bidi
+    override or a full-width fake marker into a ``\\uXXXX`` escape that nothing
+    downstream can strip or recognise. Iterative with no depth guard: a guard that
+    returned deep values unrendered would itself be the bypass. Dict keys are rendered
+    too (they are serialised into the same prompt).
+    """
+    from app.services.web_research.text_safety import render_for_prompt
+
+    def _render_leaf(node: Any) -> Any:
+        return render_for_prompt(node) if isinstance(node, str) else node
+
+    result: list[Any] = [None]
+    # Work items: (source node, setter that stores the rendered node where it belongs).
+    work: list[tuple[Any, Any]] = [(value, lambda rendered: result.__setitem__(0, rendered))]
+    while work:
+        node, put = work.pop()
+        if isinstance(node, dict):
+            rebuilt_dict: dict[Any, Any] = {}
+            put(rebuilt_dict)
+            for key, child in node.items():
+                rendered_key = _render_leaf(key)
+                work.append((child, lambda r, d=rebuilt_dict, k=rendered_key: d.__setitem__(k, r)))
+        elif isinstance(node, (list, tuple)):
+            rebuilt_list: list[Any] = [None] * len(node)
+            put(rebuilt_list)
+            for index, child in enumerate(node):
+                work.append((child, lambda r, lst=rebuilt_list, n=index: lst.__setitem__(n, r)))
+        else:
+            put(_render_leaf(node))
+    return result[0]
+
+
 def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence | None:
     citation = _citation_of(item)
     if not citation:
         return None
+    if untrusted:
+        item = _render_untrusted(item)
     if tool == TOOL_FETCH_PUBLIC_SOURCE:
         shown = {k: item.get(k) for k in _EXTERNAL_EVIDENCE_KEYS if item.get(k)}
         if "claim" in shown:
@@ -822,7 +859,16 @@ def _build_prompt(
             )
             if part
         )
-        text = _MARKER_RE.sub("[marker removed]", item.text)
+        # Open-web W3 (threat model §3.3): external text reaches the prompt without the
+        # characters a reader cannot see (Unicode tags, bidi overrides, zero-width);
+        # the stored chunk keeps them for audit. Applied BEFORE the marker neutraliser
+        # so a marker spelled with invisible characters is still caught.
+        raw_text = item.text
+        if item.untrusted:
+            from app.services.web_research.text_safety import render_for_prompt
+
+            raw_text = render_for_prompt(raw_text)
+        text = _MARKER_RE.sub("[marker removed]", raw_text)
         lines.append(
             f"[{item.citation_id}] ({item.kind}{' ' + stamp if stamp else ''}) {text}"
         )

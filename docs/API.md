@@ -3291,6 +3291,18 @@ case the totals count only what is shown. `enforced_by` values: `client`, `provi
 - `503` — migration 042 has not been applied in this environment (a missing table is not
   an empty audit).
 
+**W2 additions (additive).** Each `fetch_attempts[]` item also carries `canonical_url` and
+`redirect_chain` (hops; the last may hold `meta` — validators, `rel=canonical`, charset,
+`js_required`, MIME mismatch, TDM signals). `totals.fetch_metrics` holds the spec §22.1
+fetch metrics derived from the rows: logical `attempts`, `fetched`, `partial`,
+`success_rate`, `http_403(_rate)`, `paywall(_rate)` (402, JSON-LD, login and consent walls),
+`captcha`, `robots(_rate)`, `tdm_reserved`/`tdm_rate`, `policy_denied`/`policy_deny_rate`,
+`negative_cached`, `budget_refused`, `policy_file_requests`, `retries`, `redirects`, `bytes`,
+`js_required(_rate)`, `mime_mismatch`,
+`by_status`, `by_failure_code`. `attempts` (and every rate) counts only page fetches that
+were actually tried: negative-cache hits, budget refusals, retried physical attempts and
+robots.txt/TDMRep requests have their own counters.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

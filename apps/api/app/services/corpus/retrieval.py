@@ -102,6 +102,9 @@ class EvidenceReference:
     char_start: int | None
     char_end: int | None
     published_at: date | None
+    #: True when the hit was admitted only through a document-subject row (the article
+    #: MENTIONS the company); its scope is then ``segment``/``mention``, never Group.
+    via_subject: bool = False
 
     @property
     def is_table(self) -> bool:
@@ -200,6 +203,7 @@ def _reference_from_hit(hit: CorpusHit) -> EvidenceReference:
         char_start=chunk.char_start,
         char_end=chunk.char_end,
         published_at=chunk.published_at,
+        via_subject=bool(getattr(chunk, "via_subject", False)),
     )
 
 
