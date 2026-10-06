@@ -604,7 +604,7 @@ def test_a_re_asked_question_keeps_its_whole_definition() -> None:
 
     from app.services.director.planner import plan_research
 
-    cfg = SimpleNamespace(v3_agent_tools_enabled=True, v3_deepseek_search_enabled=True,
+    cfg = SimpleNamespace(v3_agent_tools_enabled=True, v3_company_web_research_enabled=True, v3_web_search_enabled=True, v3_web_search_provider="fake",
                           v3_filings_tool_enabled=True, v3_corpus_enabled=True)
     plan = asyncio.run(plan_research(
         subject="X:US", mode="deep", cfg=cfg,

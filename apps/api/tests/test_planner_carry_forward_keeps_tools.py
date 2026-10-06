@@ -47,7 +47,7 @@ def _cfg(**over: Any) -> Settings:
     base: dict[str, Any] = {
         "v3_pipeline_enabled": True,
         "v3_agent_tools_enabled": True,
-        "v3_deepseek_search_enabled": True,
+        "v3_company_web_research_enabled": True, "v3_web_search_enabled": True, "v3_web_search_provider": "fake",
         "deepseek_api_key": "not-a-real-key-for-planning-only",
         "azure_openai_api_key": "",
         "azure_openai_endpoint": "",
@@ -91,7 +91,7 @@ class TestItDoesNotReintroduceWhatTheRulePrevents:
     async def test_a_flag_that_is_off_grants_no_tools(self) -> None:
         """The eligibility rule exists so turning the flag ON does not re-route work.
         The mirror must hold: with it OFF, nothing acquires an external requirement."""
-        plan = await _plan(CARRY_FORWARD, v3_deepseek_search_enabled=False)
+        plan = await _plan(CARRY_FORWARD, v3_company_web_research_enabled=False)
         question = next((q for q in plan.questions if q.key == EXTERNAL), None)
         if question is not None:
             assert not (set(question.required_tools) & {"search_web", "fetch_public_source"})

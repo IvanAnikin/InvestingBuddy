@@ -55,7 +55,10 @@ def _cfg(**over: Any) -> Settings:
     base: dict[str, Any] = {
         "v3_pipeline_enabled": True,
         "v3_agent_tools_enabled": True,
-        "v3_deepseek_search_enabled": True,
+        # Open-web W5: the external tools register behind the web flags, not the DeepSeek one.
+        "v3_company_web_research_enabled": True,
+        "v3_web_search_enabled": True,
+        "v3_web_search_provider": "fake",
         "deepseek_api_key": "planning-only-not-a-real-key",
         "azure_openai_api_key": "",
         "azure_openai_endpoint": "",
@@ -131,7 +134,7 @@ class TestThreeConsecutiveRuns:
         canonical metadata; it does not force every run to reach the open web."""
         carried: tuple = ()
         for _run in (1, 2, 3):
-            plan = await _plan(carried, v3_deepseek_search_enabled=False)
+            plan = await _plan(carried, v3_company_web_research_enabled=False)
             question = next((q for q in plan.questions if q.key == EXTERNAL), None)
             if question is not None:
                 assert not (set(question.required_tools) & EXTERNAL_TOOLS)
@@ -175,7 +178,7 @@ class TestSilentDegradationIsReported:
         # restored and no external role is seated, yet the question still exists.
         plan = await _plan(
             ((EXTERNAL, "No citable evidence was retrieved."),),
-            v3_deepseek_search_enabled=False,
+            v3_company_web_research_enabled=False,
         )
         owner = _owner(plan, EXTERNAL)
         if owner is not None and owner != "external_research_analyst":

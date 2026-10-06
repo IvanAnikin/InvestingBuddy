@@ -3303,6 +3303,21 @@ fetch metrics derived from the rows: logical `attempts`, `fetched`, `partial`,
 were actually tried: negative-cache hits, budget refusals, retried physical attempts and
 robots.txt/TDMRep requests have their own counters.
 
+## Open-web W5 — company web research (no new endpoint)
+
+No new route. When `V3_COMPANY_WEB_RESEARCH_ENABLED` is on, the existing company-report payload
+gains additive fields (absent otherwise, so old reports are unchanged):
+
+- `source_summary_json.v3_research.web_context` — state (`ok`, `web_search_degraded`,
+  `web_search_unavailable`, `web_search_disabled`, `web_stage_failed`), counts by family, cost
+  units, dispositions, source classes, documents found but not accessible.
+- `source_summary_json.v3_research.professional_research.sections[*].web_evidence` (competitive
+  position, industry and market, growth and catalysts, risks) and
+  `…evidence_quality_and_gaps.web_research`.
+- `news_catalyst_discovery.web_catalyst_evidence` inside the report's JSON block.
+
+`apps/web` does not render these blocks yet (W8b); they are readable in the report JSON only.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

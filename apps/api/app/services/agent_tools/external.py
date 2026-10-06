@@ -12,10 +12,11 @@ WHY TWO TOOLS AND NOT ONE
 =========================
 Because they answer to different authorities, and merging them would hide that.
 
-``search_web`` reaches a **vendor**. Everything it returns is a claim: a URL the provider
-says it opened, a sentence the provider says is true. It mints **no citable id**, and the
-absence is the point — a model cannot cite a search result, because the platform has not
-seen the document yet.
+``search_web`` queries the **configured web search provider** (open-web W5; before W5 it
+asked a DeepSeek model to "search"). What it returns is a list of CANDIDATES: a URL, a
+title, a domain, a rank and a published hint, all of it untrusted third-party text. It
+carries no claim, mints **no citable id**, and the absence is the point — a model cannot
+cite a search result, because the platform has not seen the document yet.
 
 ``fetch_public_source`` reaches the **open web through InvestingBuddy's own fetcher** and
 puts one claim through ``verify_lead``. Only that path can mint an evidence id, and it
@@ -36,10 +37,16 @@ disagree.
 
 FLAGS
 =====
-Both tools are registered only when ``V3_DEEPSEEK_SEARCH_ENABLED`` is on. With it off
-they are not in the registry, so ``implemented_tools()`` reports them absent and the
-Director declares a question that needs one **unassignable at plan time** — a coverage
-fact rather than a mid-run mystery. A credential does not register them; a flag does.
+``search_web`` is registered only when the company web path is on AND a web search
+provider is selected (``routing.web_search_provider_for``: ``V3_COMPANY_WEB_RESEARCH_ENABLED``,
+``V3_WEB_SEARCH_ENABLED`` and ``V3_WEB_SEARCH_PROVIDER`` ≠ ``none``). ``fetch_public_source``
+needs no provider, so it is also registered under the legacy
+``V3_DEEPSEEK_SEARCH_ENABLED`` (no regression for an environment that has it on).
+With a tool unregistered, ``implemented_tools()`` reports it absent and the Director
+declares a question that needs it **unassignable at plan time** — a coverage fact rather
+than a mid-run mystery. A credential does not register them; a flag does.
+``V3_DEEPSEEK_SEARCH_ENABLED`` no longer registers ``search_web`` (W5, decision U12): it
+still gates the DeepSeek recall paths in Discovery, which are labelled ``model_recall``.
 """
 
 from __future__ import annotations
@@ -48,7 +55,6 @@ import asyncio
 import hashlib
 import uuid
 from collections.abc import Sequence
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from app.services.agent_tools.contracts import (
@@ -76,6 +82,9 @@ EXTERNAL_EVIDENCE_PREFIX = "ev:x:"
 #: a unit declared and not reported is stored as a zero that asserts it did not happen.
 SEARCH_WEB_UNITS: tuple[str, ...] = (
     "web_search_calls",
+    # Open-web W5: the provider bills in credits (Tavily), and a search that reached the
+    # vendor without a credit figure marks them ``unreported``.
+    "tavily_credits",
     "url_fetch_calls",
     "model_calls",
     "model_input_tokens",
@@ -137,162 +146,139 @@ def _validate_search_web(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _discovery_mode_of(result: Any) -> tuple[str, int]:
-    """``(discovery_mode, executed_search_queries)`` for one provider result.
+#: Candidates one ``search_web`` call returns, in rank order.
+MAX_CANDIDATES_RETURNED = 10
 
-    Spec §22.3 / W0: provenance is a NETWORK FACT. ``search`` requires at least one
-    SUCCESSFUL search query on record: the trace's query count minus its failed
-    queries, else the provider's ``executed_search_queries``. Anything else —
-    including a bare ``web_search_calls`` count, which cannot say whether any call
-    succeeded — is the model's recall and is labelled so. Nothing here can turn
-    recall into search: a provider label of ``search`` with zero successful queries
-    is still recall.
+#: The ``QueryFamily`` an Investigator search is recorded under: a follow-up on a
+#: question's gap (spec §4.2 ``GAP``).
+INVESTIGATOR_ORIGIN = "investigator"
+
+
+def _candidate_of(item: Any) -> dict[str, Any]:
+    """One search result as the Investigator sees it: a pointer, never a claim.
+
+    ``title`` is untrusted third-party text kept for display and for the model to choose
+    what to look at; there is no snippet, no ``claim`` and no id. Nothing here is
+    ``evidence_id``-shaped, so ``_citation_of`` in the investigator cannot read one.
     """
-    metadata = getattr(result, "raw_provider_metadata", None) or {}
-    trace = metadata.get("trace") or {}
-    if "query_call_count" in trace:
-        executed = int(trace.get("query_call_count") or 0) - int(
-            trace.get("failed_query_call_count") or 0
-        )
-    elif "executed_search_queries" in metadata:
-        executed = int(metadata.get("executed_search_queries") or 0)
-    else:
-        # No record of SUCCESSFUL queries: a bare `web_search_calls` count cannot say
-        # whether any of them succeeded, so it is not evidence of a search (review).
-        executed = 0
-    executed = max(0, executed)
-    mode = "search" if executed > 0 else "model_recall"
-    if metadata.get("discovery_mode") == "model_recall":
-        mode = "model_recall"
-    return mode, executed
+    published = getattr(item, "published_hint", None)
+    return {
+        "rank": int(item.rank),
+        "url": item.url,
+        "domain": item.domain,
+        "title": (item.title or "")[:200] or None,
+        "published_hint": published.isoformat() if published else None,
+        "untrusted": True,
+        "verified_by_investingbuddy": False,
+    }
 
 
 async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict[str, Any]:
-    """One external investigation. Returns CLAIMS, never evidence.
+    """One external search on the configured provider. Returns CANDIDATES, never evidence.
 
-    The provider is ASKED to search, open pages and report what it found. Whether it
-    actually searched is read from its trace, not assumed (spec §22.3): with zero
-    executed search queries every lead is labelled ``discovery_mode="model_recall"``
-    and the tool summary says ``web_search_unavailable``. What comes back is a list of
-    ``ResearchLead``-shaped claims, each carrying a URL the provider cites — and every
-    one of them is still a claim. The payload has no ``evidence_id``
-    anywhere in it, which is what stops the Investigator citing a search result: the
-    model may only cite ids the tools returned, and this tool returns none.
+    The query is cleaned by the W1 sanitiser, then goes through ``run_searches`` — the
+    one path that sends a query to a provider — so it is gated (operators, URLs, private
+    tokens, blocklist), governed, budgeted, cached, and written as a provenance row
+    exactly like the company web stage's searches. Whether anything was searched is read
+    from the NETWORK FACT in that row (spec §22.3): an unconfigured provider, an outage
+    or an exhausted budget is ``web_search_unavailable`` and a payload with no candidates;
+    nothing here substitutes a model's recall for it.
 
-    A lead whose URL is **not in the retrieval trace** is counted and **kept**. An
-    earlier draft dropped them, and a live run showed why that is wrong: the provider
-    found the right SEC exhibit through a *search result*, whose URLs this contract never
-    exposes, and the guard discarded the only good lead of the run. ``opened_urls`` is a
-    subset of what the provider legitimately saw, so absence from it is a quality signal
-    and not a verdict — the verdict belongs to our own fetch (ADR-056 §4).
+    The payload has no ``leads`` (an empty list, kept so older readers find the key), no
+    ``claim`` and no ``evidence_id``/``id`` anywhere in it. ``fetch_public_source``
+    remains the only function that may mint an evidence id.
     """
-    from app.services.agents.routing import research_provider_for
-
-    provider = research_provider_for(context.cfg)
-    if provider is None:
-        return {
-            "available": False,
-            "reason": (
-                "No external research provider is configured and enabled. This is a "
-                "statement about this platform's configuration, not about the web."
-            ),
-            "leads": [],
-            "candidates": [],
-        }
-
-    question = arguments["query"]
-    result = await provider.investigate(
-        question=question,
-        context=arguments.get("context"),
-        max_seconds=int(context.cfg.v3_external_search_timeout_seconds),
-        domains=arguments.get("domains") or None,
+    from app.services.agents.routing import web_search_provider_for
+    from app.services.providers.contracts import QueryFamily, SearchRequest
+    from app.services.web_research.planner import QUERY_TEMPLATE_VERSION
+    from app.services.web_research.queries import sanitise_query
+    from app.services.web_research.search import (
+        STATE_DISABLED,
+        SearchContext,
+        run_searches,
     )
+    from app.services.web_research.stage import persist_factory_for
 
-    metadata = result.raw_provider_metadata or {}
-    trace = metadata.get("trace") or {}
-    spent = result.consumption
-    discovery_mode, executed_queries = _discovery_mode_of(result)
-    leads = [
-        {
-            # Deliberately NOT "evidence_id" and NOT "id": `_citation_of` in the
-            # investigator looks for exactly those keys, and a claim must not be
-            # citable. `lead_ref` is an index into this payload, nothing more.
-            "lead_ref": index,
-            "claim": (lead.claim_text or "")[:MAX_CLAIM_CHARS],
-            "claimed_source_url": lead.claimed_source_url,
-            "claimed_value": lead.claimed_value,
-            "claimed_unit": lead.claimed_unit,
-            "claimed_currency": lead.claimed_currency,
-            "claimed_period": lead.claimed_period,
-            "claimed_scope": lead.claimed_scope,
-            "claimed_publisher": lead.claimed_publisher,
-            "claimed_metric": getattr(lead, "claimed_metric", None),
-            "claimed_geography": getattr(lead, "claimed_geography", None),
-            # How the provider came by this claim — never "search" without an
-            # executed search query (spec §22.3).
-            "discovery_mode": discovery_mode,
-            "verified_by_investingbuddy": False,
+    unavailable = {
+        "available": False,
+        "web_search": "web_search_unavailable",
+        "reason": (
+            "No web search provider is configured and enabled. This is a statement about "
+            "this platform's configuration, not about the web."
+        ),
+        "leads": [],
+        "candidates": [],
+    }
+    provider = web_search_provider_for(context.cfg)
+    if provider is None:
+        return unavailable
+
+    cleaned = sanitise_query(arguments["query"])
+    if not cleaned.ok:
+        return {
+            **unavailable,
+            "available": True,
+            "reason": f"the query was refused before it left the platform ({cleaned.refusal})",
+            "refusal": cleaned.refusal,
         }
-        for index, lead in enumerate(result.research_leads[:MAX_LEADS_RETURNED])
-    ]
-    if discovery_mode == "search":
+    request = SearchRequest(
+        query=cleaned.text,
+        family=QueryFamily.GAP,
+        max_results=MAX_CANDIDATES_RETURNED,
+        include_domains=tuple(arguments.get("domains") or ()),
+        origin=INVESTIGATOR_ORIGIN,
+        template_version=f"{QUERY_TEMPLATE_VERSION}:investigator",
+    )
+    run = await run_searches(
+        context.session,
+        [request],
+        SearchContext(
+            research_job_id=context.research_job_id,
+            company_id=context.company_id,
+            stage="investigator",
+            budget_profile="followup",
+        ),
+        provider=provider,
+        cfg=context.cfg,
+        persist_session_factory=persist_factory_for(context.session),
+    )
+    outcome = run.outcomes[0] if run.outcomes else None
+    executed = bool(outcome is not None and outcome.execution.executed)
+    candidates = (
+        [_candidate_of(item) for item in outcome.results[:MAX_CANDIDATES_RETURNED]]
+        if executed and outcome is not None
+        else []
+    )
+    if run.state == STATE_DISABLED:
+        return unavailable
+    if executed:
         summary = (
-            f"search_web: {len(leads)} claim(s) from {executed_queries} executed "
-            "search quer(ies); none verified yet"
+            f"search_web: {len(candidates)} candidate URL(s) from 1 executed search; "
+            "none retrieved or verified yet"
         )
     else:
+        code = outcome.execution.error_code if outcome is not None else None
         summary = (
-            "web_search_unavailable: the provider executed no search query; "
-            f"{len(leads)} claim(s) are model recall, none verified"
+            "web_search_unavailable: the provider executed no search"
+            + (f" ({code})" if code else "")
         )
     return {
         "available": True,
         "summary": summary,
-        "discovery_mode": discovery_mode,
-        "web_search": "executed" if discovery_mode == "search" else "web_search_unavailable",
-        "executed_search_queries": executed_queries,
-        "status": result.status,
-        "provider": result.provider,
-        "model": result.model,
-        "leads": leads,
-        # The pages the provider actually opened. Candidates for OUR fetcher, not
-        # sources — nothing here has been retrieved by this platform yet.
-        "candidates": list(trace.get("opened_urls") or []),
-        "queries_issued": list(trace.get("queries") or []),
-        # Named for what it is. It was `dropped_…` while an earlier draft dropped them;
-        # they are kept now, and a key that says "dropped" about kept leads is the kind
-        # of quiet inaccuracy a reader has no way to catch.
-        "leads_citing_unopened_pages_kept": metadata.get(
-            "leads_citing_unopened_pages", 0
-        ),
-        "answer_excerpt": (result.raw_provider_metadata or {}).get("answer_excerpt"),
-        "warnings": list(result.warnings or []),
-        # What this call actually cost, reported in the units the spec declares. A tool
-        # that declares units and reports none leaves the run's consumption record
-        # silently short by the most expensive call in it — and `cost_per_verified_
-        # finding`, the metric the whole provider strategy turns on, is computed from
-        # exactly these rows.
-        # V3.17.9.2 — `units_for` validates UNIT counts and knows nothing about
-        # vendors, so the provider's own attribution is carried across afterwards. Its
-        # tokens are billed by a named vendor at named rates; without this they arrive
-        # in `research_run_consumption` as an anonymous sum that can only be priced by
-        # guessing whose they were.
-        "consumption": replace(
-            units_for(
-                SEARCH_WEB_UNITS,
-                web_search_calls=spent.web_search_calls,
-                url_fetch_calls=spent.url_fetch_calls,
-                model_calls=spent.model_calls,
-                model_input_tokens=spent.model_input_tokens,
-                model_output_tokens=spent.model_output_tokens,
-                cached_tokens=spent.cached_tokens,
-            ),
-            by_vendor=tuple(getattr(spent, "by_vendor", ()) or ()),
-        ),
+        "discovery_mode": "search" if executed else "web_search_unavailable",
+        "web_search": "executed" if executed else "web_search_unavailable",
+        "executed_search_queries": 1 if executed else 0,
+        "state": run.state,
+        "provider": run.provider,
+        # Kept so a reader written for the claim-shaped payload finds an empty list, not
+        # a missing key. There are no claims here.
+        "leads": [],
+        "candidates": candidates,
+        "consumption": run.consumption,
         "note": (
-            "Every item here is a CLAIM from an external vendor. None of it is evidence "
-            "and none of it is citable. Use fetch_public_source to have InvestingBuddy "
-            "retrieve and verify a claim before relying on it."
+            "Every item here is a CANDIDATE URL from a search provider: untrusted, "
+            "unretrieved, not evidence and not citable. Use fetch_public_source to have "
+            "InvestingBuddy retrieve and verify a claim against a document."
         ),
     }
 
@@ -300,21 +286,17 @@ async def _search_web(context: "ToolContext", arguments: dict[str, Any]) -> dict
 SEARCH_WEB_SPEC = ToolSpec(
     name=TOOL_SEARCH_WEB,
     description=(
-        "Ask the configured external research provider a question. It is asked to search "
-        "the web and returns CLAIMS with the URLs it cites; `discovery_mode` says whether "
-        "a search actually ran (`search`) or the claims are the model's recall "
-        "(`model_recall`). Nothing it returns is evidence and nothing it returns is "
-        "citable — use fetch_public_source to verify a claim against a document "
-        "InvestingBuddy retrieves itself."
+        "Search the web through the configured search provider. Returns CANDIDATE URLs "
+        "(url, title, domain, rank, published hint) — untrusted pointers, not claims. "
+        "Nothing it returns is evidence and nothing it returns is citable; "
+        "fetch_public_source retrieves a document and verifies a claim against it."
     ),
     handler=_search_web,
     validate_arguments=_validate_search_web,
     # Declared, because `ToolSpend.would_exceed` reads THIS and not the consumption a
     # call reports afterwards — a budget is checked before the spend or it is a report.
-    # Zero here would make `ToolBudget(max_searches=…)` inert against the only two tools
-    # that spend money outside the platform, which is the one place it must not be.
-    # `fetches=1` too: this provider retrieves pages as part of searching.
-    cost=ToolCost(searches=1, fetches=1),
+    # `fetches=0` now: the provider returns URLs; the platform's own fetcher retrieves.
+    cost=ToolCost(searches=1),
     instrumented_units=SEARCH_WEB_UNITS,
     access_classes=("public_web",),
     may_contain_untrusted_content=True,
@@ -502,8 +484,10 @@ async def _fetch_public_source(
     # (dedup by content hash), so the `ev:x:` id resolves to a stored version. Its own
     # savepoint: a failed ingestion costs the link, never the verification.
     version_id = None
+    stored_lead: Any = None
     if session is not None and minted and getattr(outcome, "fetched_content", None):
-        version_id = await _ingest_verified(context, outcome, arguments["url"])
+        stored_lead = await _ingest_verified(context, outcome, arguments["url"])
+        version_id = stored_lead.version_id if stored_lead is not None else None
 
     if session is not None:
         try:
@@ -571,6 +555,12 @@ async def _fetch_public_source(
         # Whether the verified bytes are ALSO in the corpus. None is "verified, not
         # stored" (refused by TDM / a wall / the flag), never "missing evidence".
         record["corpus_version_id"] = str(version_id) if version_id else None
+        # Open-web W4 (review M5): the STORED version's class and origin, so the
+        # investigator ranks and counts the lead exactly as a later read of the version
+        # will — not by a different origin string. Absent when nothing was stored.
+        if stored_lead is not None:
+            record["origin_key"] = stored_lead.origin_key
+            record["stored_source_class"] = stored_lead.source_class
         record["claim"] = arguments["claim"]
         # The document's OWN words at the point verification matched. A finding built on
         # this lead reads the source, not the provider's paraphrase of it.
@@ -629,7 +619,7 @@ LEAD_INGEST_PREPARE_TIMEOUT_SECONDS = 180.0
 
 
 async def _ingest_verified(context: "ToolContext", outcome: Any, url: str) -> Any:
-    """The corpus version id of a verified lead's bytes, or ``None``. Never raises.
+    """The stored ``WebIngestResult`` of a verified lead's bytes, or ``None``. Never raises.
 
     Gated by ``V3_WEB_CORPUS_INGEST_ENABLED``. Two phases (W3 review F6): everything
     slow — robots/TDMRep, the pool, extraction — runs FIRST, outside any transaction and
@@ -676,7 +666,7 @@ async def _ingest_verified(context: "ToolContext", outcome: Any, url: str) -> An
             )
     except Exception:  # noqa: BLE001 - the verification stands without the corpus link
         return None
-    return ingested.version_id if ingested.stored else None
+    return ingested if ingested.stored else None
 
 
 FETCH_PUBLIC_SOURCE_SPEC = ToolSpec(
@@ -697,20 +687,34 @@ FETCH_PUBLIC_SOURCE_SPEC = ToolSpec(
 
 
 def external_tools_enabled(cfg: Any) -> bool:
-    """Whether the external tool surface exists at all for this process.
+    """Whether ``search_web`` exists for this process (kept under its old name).
 
-    One flag, read in one place. `V3_DEEPSEEK_SEARCH_ENABLED` gates the vendor call in
-    `DeepSeekSearchProvider`; this gates whether the *tool* is registered, which is what
-    decides whether the Director can plan a question that needs it. Both, because a
-    surface that exists and always refuses teaches an agent to keep asking.
+    The company web path is on AND a web search provider is selected
+    (``routing.web_search_provider_for``). ``V3_DEEPSEEK_SEARCH_ENABLED`` no longer counts
+    (W5, decision U12).
     """
-    return bool(getattr(cfg, "v3_deepseek_search_enabled", False))
+    from app.services.agents.routing import web_search_provider_for
+
+    return web_search_provider_for(cfg) is not None
+
+
+def fetch_public_source_enabled(cfg: Any) -> bool:
+    """Whether ``fetch_public_source`` exists for this process.
+
+    It needs NO search provider — it retrieves a URL the caller names and verifies a claim
+    against the bytes — so it must not vanish just because the new search flags are off.
+    It stays available under the legacy ``V3_DEEPSEEK_SEARCH_ENABLED`` as before W5 (that
+    flag registered both tools; it now registers only this one), and with the new web path.
+    """
+    return external_tools_enabled(cfg) or bool(
+        getattr(cfg, "v3_deepseek_search_enabled", False)
+    )
 
 
 def register_external_tools(
     registry: "ToolRegistry", *, cfg: Any = None
 ) -> "ToolRegistry":
-    """Register the external tools **only when the flag is on**.
+    """Register the external tools. The only tools whose presence is a spending decision.
 
     Absent, ``implemented_tools()`` does not list them and the Director marks a question
     that needs one unassignable at plan time. That is the fail-closed direction: a
@@ -718,19 +722,21 @@ def register_external_tools(
     """
     if cfg is None:
         from app.core.config import settings as cfg  # noqa: PLW0127
-    if not external_tools_enabled(cfg):
-        return registry
-    registry.register(SEARCH_WEB_SPEC)
-    registry.register(FETCH_PUBLIC_SOURCE_SPEC)
+    if external_tools_enabled(cfg):
+        registry.register(SEARCH_WEB_SPEC)
+    if fetch_public_source_enabled(cfg):
+        registry.register(FETCH_PUBLIC_SOURCE_SPEC)
     return registry
 
 
 __all__ = [
     "EXTERNAL_EVIDENCE_PREFIX",
     "FETCH_PUBLIC_SOURCE_SPEC",
+    "MAX_CANDIDATES_RETURNED",
     "MAX_LEADS_RETURNED",
     "SEARCH_WEB_SPEC",
     "external_evidence_id",
     "external_tools_enabled",
+    "fetch_public_source_enabled",
     "register_external_tools",
 ]

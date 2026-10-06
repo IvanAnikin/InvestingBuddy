@@ -1,0 +1,22 @@
+{
+  "_fixture_note": "synthetic recorded-shape fixture for W5 (Tavily response shape, 2026-10-04)",
+  "_fixture_query": "Electrical equipment value chain",
+  "query": "Electrical equipment value chain",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Transformer supply outlook: capacity, lead times and electrical steel",
+      "url": "https://www.nema.org/reports/transformer-supply-outlook",
+      "content": "Synthetic snippet: value chain, supply outlook.",
+      "score": 0.85,
+      "published_date": "Tue, 30 Jun 2026 08:00:00 GMT"
+    }
+  ],
+  "response_time": 0.9,
+  "usage": {
+    "credits": 1
+  },
+  "request_id": "synthetic-w5-004"
+}

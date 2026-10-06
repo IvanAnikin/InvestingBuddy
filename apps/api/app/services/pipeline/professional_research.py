@@ -160,6 +160,160 @@ class ReportInputs:
     findings_total: int | None = None
     #: Findings withheld by the safety screen before assembly.
     withheld_for_safety: int = 0
+    #: Open-web W5: evidence id → the stored support of every cited id that is a WEB
+    #: document (``trust.SupportItem.to_dict()``: class, origin, date). Empty unless the
+    #: company web stage ran, and then the report is unchanged but for the additive
+    #: ``web_evidence`` blocks below.
+    web_support: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: Open-web W5: the company web stage's summary (state, counts, not-accessible list).
+    web_context: Mapping[str, Any] | None = None
+
+
+
+# ── Open-web W5: web evidence by source class (spec §17.4) ───────────────────── #
+
+#: Sections whose findings may rest on web documents, and what a reader should see
+#: about them. ``financial_capacity`` and the key financials are deliberately absent:
+#: they are filings-only, and a web value there appears only as a flagged conflict.
+WEB_EVIDENCE_SECTIONS: tuple[str, ...] = (
+    "competitive_position",
+    "industry_and_market",
+    "growth_and_catalysts",
+    "risks_and_counter_thesis",
+)
+
+SOURCE_CLASS_LABELS: dict[str, str] = {
+    "issuer_filing": "Company filing",
+    "regulatory_filing": "Regulatory filing",
+    "exchange_announcement": "Exchange announcement",
+    "government_publication": "Government publication",
+    "regulator_publication": "Regulator publication",
+    "statistical_agency": "Statistical agency",
+    "specialist_agency": "Specialist agency",
+    "standards_body": "Standards body",
+    "academic_paper": "Academic paper",
+    "industry_association": "Industry association",
+    "company_press_release": "Company press release",
+    "investor_presentation": "Company investor presentation",
+    "company_web_page": "Company web page",
+    "major_financial_press": "Financial press",
+    "trade_publication": "Trade publication",
+    "local_press": "Local press",
+    "research_consultancy": "Research consultancy",
+    "aggregator": "Aggregator",
+    "unknown_web": "Unclassified web page",
+}
+
+_W4_LABEL_RE = re.compile(r"^\[([^\]]{1,120})\]")
+
+
+def _safe_text(value: Any, limit: int = 120) -> str | None:
+    """Third-party strings (a domain, an origin) pass the same neutralisation the V2
+    report applies to text it copies in: a host named ``sellmore.example`` must not
+    withhold the whole report."""
+    if value is None:
+        return None
+    from app.schemas.catalyst import neutralize_forbidden_terms
+
+    return neutralize_forbidden_terms(str(value)[:limit])
+
+
+def web_evidence_block(
+    findings: Sequence[Mapping[str, Any]], support: Mapping[str, Mapping[str, Any]]
+) -> dict[str, Any] | None:
+    """Per section: which shown findings rest on web documents, by source class.
+
+    Each item carries the finding's label, its stored W4 statement label (if any), the
+    §14.3 corroboration state over the origins of the web ids it cites, and the class,
+    origin and date of every such id. Nothing here reads page text.
+    """
+    from app.services.web_research import trust
+
+    items: list[dict[str, Any]] = []
+    by_class: dict[str, set[str]] = {}
+    for finding in findings:
+        cited = [support[e] for e in finding.get("evidence_ids") or () if e in support]
+        if not cited:
+            continue
+        origins = [c.get("origin_key") for c in cited]
+        label = _W4_LABEL_RE.match(str(finding.get("statement") or ""))
+        items.append(
+            {
+                "finding_label": finding.get("label"),
+                "statement_label": label.group(1) if label else None,
+                "corroboration": trust.corroboration_state(origins),
+                "origins": trust.summarise_origins(origins).describe(),
+                "sources": [
+                    {
+                        "evidence_id": c.get("evidence_id"),
+                        "source_class": c.get("source_class"),
+                        "source_class_label": SOURCE_CLASS_LABELS.get(
+                            str(c.get("source_class")), "Web document"
+                        ),
+                        "origin": _safe_text(trust.origin_display(c.get("origin_key"))),
+                        "published_at": c.get("published_at"),
+                    }
+                    for c in cited
+                ],
+            }
+        )
+        for c in cited:
+            by_class.setdefault(str(c.get("source_class") or "unknown_web"), set()).add(
+                str(c.get("evidence_id"))
+            )
+    if not items:
+        return None
+    return {
+        "items": items,
+        "by_source_class": {k: len(v) for k, v in sorted(by_class.items())},
+        "note": (
+            "Findings in this section that rest on open-web documents. A web source "
+            "is labelled by what it is; it never replaces a filing for a financial figure."
+        ),
+    }
+
+
+def web_research_block(
+    context: Mapping[str, Any],
+    sections_findings: Sequence[Mapping[str, Any]],
+    support: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """The evidence-quality view of the web stage: what ran, what was found but could
+    not be read (spec §17.4, §23.1), and how well-corroborated the web-backed findings
+    are."""
+    from app.services.web_research import trust
+
+    queries = context.get("queries") or {}
+    states: dict[str, int] = {}
+    for finding in sections_findings:
+        cited = [support[e] for e in finding.get("evidence_ids") or () if e in support]
+        if not cited:
+            continue
+        state = trust.corroboration_state([c.get("origin_key") for c in cited])
+        if state:
+            states[state] = states.get(state, 0) + 1
+    listed = [
+        {"domain": _safe_text(row.get("domain")), "reason": _safe_text(row.get("reason"), 60)}
+        for row in (context.get("not_retrievable") or [])
+        if isinstance(row, Mapping)
+    ]
+    fetch = context.get("fetch") or {}
+    return {
+        "state": context.get("state"),
+        "label": context.get("label"),
+        "searches_run": queries.get("executed"),
+        "searches_planned": queries.get("planned"),
+        "documents_stored": (context.get("ingest") or {}).get("ingested"),
+        "source_classes": dict(context.get("source_classes") or {}),
+        "sources_found_not_accessible": listed,
+        "sources_not_accessible_count": fetch.get("not_retrievable", len(listed)),
+        "web_backed_findings_by_corroboration": dict(sorted(states.items())),
+        "explanation": (
+            "Sources found but not accessible were discovered by search and could not be "
+            "read (access restriction, robots.txt or a rights reservation); they are a "
+            "limit of this research, not evidence about the company."
+        ),
+    }
 
 
 # ── Deterministic assembly ─────────────────────────────────────────────────── #
@@ -590,6 +744,12 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
             "thesis to test."
         )
 
+    if inputs.web_support:
+        for web_key in WEB_EVIDENCE_SECTIONS:
+            block = web_evidence_block(by_section[web_key], inputs.web_support)
+            if block is not None:
+                next(s for s in sections if s["key"] == web_key)["web_evidence"] = block
+
     industry = next(s for s in sections if s["key"] == "industry_and_market")
     industry["commodity_table"] = [dict(row) for row in inputs.commodity_rows]
     competitive = next(s for s in sections if s["key"] == "competitive_position")
@@ -677,6 +837,12 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         ),
         "domain_cost": dict(inputs.domain_cost),
     }
+    if inputs.web_context:
+        evidence["web_research"] = web_research_block(
+            inputs.web_context,
+            [f for section_findings in by_section.values() for f in section_findings],
+            inputs.web_support,
+        )
 
     synthesis = {
         "key": "executive_synthesis",

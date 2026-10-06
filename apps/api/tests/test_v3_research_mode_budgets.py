@@ -115,7 +115,13 @@ class TestBudget:
         wide = budget_for(
             ResearchMode.QUICK, Settings(v3_run_max_web_searches=10_000)
         )
-        assert wide.max_web_searches == limits_for(ResearchMode.QUICK).max_web_searches
+        # Flag off: the pre-W5 ceiling (4). Flag on: the raised one (6).
+        assert wide.max_web_searches == 4
+        wide_on = budget_for(
+            ResearchMode.QUICK,
+            Settings(v3_run_max_web_searches=10_000, v3_company_web_research_enabled=True),
+        )
+        assert wide_on.max_web_searches == limits_for(ResearchMode.QUICK).max_web_searches == 6
 
     def test_an_operator_may_set_the_monetary_ceiling(self) -> None:
         budget = budget_for(
