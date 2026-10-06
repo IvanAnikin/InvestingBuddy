@@ -43,6 +43,7 @@ so this module takes whatever backend it is handed and chooses nothing.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from typing import TYPE_CHECKING, Any
@@ -65,9 +66,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.agent_tools.registry import ToolRegistry
     from app.services.agent_tools.session import ToolContext
 
+logger = logging.getLogger(__name__)
+
 #: A bound on hits per call. A corpus search is the one tool whose result size an agent
 #: pays for in tokens, so the ceiling is the tool's and not the caller's.
-DEFAULT_TOP_K = 8
+#: The page an agent that names no ``top_k`` gets. The investigator always names one
+#: (``agents.investigator.CORPUS_TOP_K``), so this governs every other caller.
+DEFAULT_TOP_K = 12
 MAX_TOP_K = 25
 
 #: The modes an agent may request. ``SEMANTIC`` is absent because the retrieval service
@@ -260,6 +265,29 @@ def _hit_payload(result: Any) -> dict[str, Any]:
     }
 
 
+async def _company_names(session: Any, company_id: uuid.UUID) -> tuple[str, ...]:
+    """The name the company is registered under, for stripping from its own queries.
+
+    Best effort by design: failing to look the name up must degrade to the query as
+    written, never fail a search that would have worked. A plain column SELECT, not an
+    ORM ``get`` — nothing here can be an expired instance after a SAVEPOINT rollback.
+    """
+    if session is None:  # a backend-only context: no name to look up, so nothing to strip
+        return ()
+    from sqlalchemy import select
+
+    from app.models.company import Company
+
+    try:
+        name = (
+            await session.execute(select(Company.name).where(Company.id == company_id))
+        ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.warning("corpus search: subject name lookup failed; query left as written")
+        return ()
+    return (name,) if name else ()
+
+
 async def _search_company_corpus(
     context: "ToolContext", arguments: dict[str, Any]
 ) -> dict[str, Any]:
@@ -285,12 +313,25 @@ async def _search_company_corpus(
             "contains_untrusted_content": False,
         }
 
+    from app.services.agent_tools import corpus_ranking
+
+    query = arguments["query"]
+    name_stripped = False
+    company_ids = [uuid.UUID(c) for c in arguments["company_ids"]]
+    if len(company_ids) == 1 and not arguments["allow_cross_entity"]:
+        # The ``company_ids`` filter already says whose documents these are; the name in
+        # the query only makes every chunk that repeats it outrank the one that answers.
+        names = await _company_names(context.session, company_ids[0])
+        query, name_stripped = corpus_ranking.strip_subject_name(
+            query, corpus_ranking.name_variants(*names)
+        )
+
     results = await search_corpus(
         context.session,
         backend=backend,
         cfg=context.cfg,
-        query=arguments["query"],
-        company_ids=[uuid.UUID(c) for c in arguments["company_ids"]] or None,
+        query=query,
+        company_ids=company_ids or None,
         document_types=arguments["document_types"] or None,
         source_tiers=arguments["source_tiers"] or None,
         period_keys=arguments["period_keys"] or None,
@@ -300,11 +341,18 @@ async def _search_company_corpus(
         languages=arguments["languages"] or None,
         published_from=_published_from(arguments),
         published_to=arguments["published_to"],
-        top_k=arguments["top_k"],
+        top_k=corpus_ranking.pool_size(arguments["top_k"]),
         mode=REQUESTABLE_MODES[arguments["mode"]],
         allow_cross_entity=arguments["allow_cross_entity"],
         source_classes=arguments.get("source_classes") or None,
         exclude_injection_suspect=bool(arguments.get("exclude_suspect")),
+    )
+    # One filing must not crowd out the others: each document's best two chunks first, the
+    # rest demoted (not dropped, so a one-filing company still gets a full page).
+    results = corpus_ranking.diversify(
+        results,
+        lambda r: corpus_ranking.document_key(r.reference),
+        limit=arguments["top_k"],
     )
     items = [_hit_payload(result) for result in results]
     return {
@@ -313,8 +361,9 @@ async def _search_company_corpus(
         # One index query per call, REPORTED rather than defaulted.
         "consumption": units_for(SEARCH_INSTRUMENTED_UNITS, search_index_queries=1),
         "summary": (
-            f"{len(items)} hit(s) for {arguments['query']!r} "
-            f"({arguments['mode']}, top_k={arguments['top_k']})"
+            f"{len(items)} hit(s) for {query!r} "
+            f"({arguments['mode']}, top_k={arguments['top_k']}"
+            f"{', subject name omitted from the query' if name_stripped else ''})"
         ),
         # Every hit is text from a fetched document. Labelled, never sanitised: a
         # sanitiser is a filter an attacker iterates against.
