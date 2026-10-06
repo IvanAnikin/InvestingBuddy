@@ -2119,6 +2119,43 @@ require touching `SOURCE_CONNECTOR_ALLOWLIST_ONLY` (leave it `true`): the open-w
 replaces the allowlist for its own fetches only. New dependency: `charset-normalizer`
 (already transitive; now pinned in `requirements.txt`). Rollback: set the flag to `false`.
 
+## Open-web W5 — company research uses live web search
+
+`V3_COMPANY_WEB_RESEARCH_ENABLED` (default `false`; consumers: `services/web_research/stage.py`
+and the external-tool registration). No migration. To switch it on, in this order:
+`V3_WEB_SEARCH_ENABLED`, `V3_WEB_SEARCH_PROVIDER=tavily` + `TAVILY_API_KEY`,
+`V3_WEB_FETCH_ENABLED`, `V3_CORPUS_ENABLED` + `V3_WEB_CORPUS_INGEST_ENABLED`, and
+`V3_PRICE_VENDOR_RATES` with `"tavily": {"usd_per_credit": …}`; then the company flag.
+
+**Two behaviour changes to know before deploying (decision U12).**
+
+1. **`V3_DEEPSEEK_SEARCH_ENABLED` no longer registers `search_web`.** The Investigator's
+   `search_web` queries the configured search provider and returns candidate URLs only.
+   `fetch_public_source` (verify a named URL against a claim; needs no provider) stays
+   registered under the legacy flag, so an environment that has it on loses only the
+   DeepSeek-"search" rung. Discovery's DeepSeek recall paths are unchanged and stay labelled
+   `model_recall`. With no search provider selected, a question that needs `search_web` is
+   unassignable at plan time and the run says so.
+2. **Per-mode web-search ceilings rise 4/12/30 → 6/16/36 (MAX 60) — only for a run that has
+   the company web stage on.** With the flag off the budget recorded on the ledger run is the
+   old one. `V3_RUN_MAX_WEB_SEARCHES` still narrows every mode.
+
+**Cost and cap notes.** Searches are bounded per run by the mode profile
+(`web_research.budget.PROFILES`: queries, fetches, PDFs, bytes, per-domain, wall time) and per
+UTC day by `V3_WEB_SEARCH_MAX_QUERIES_PER_DAY` (failed calls count, cache serves do not). The
+Investigator's `search_web` shares the mode ceiling: what the stage spent (network calls) is
+subtracted. The platform's own fetcher is recorded (`url_fetch_calls`, `bytes_downloaded`) but
+is not a priced vendor unit: with a price book configured the run cost stays known unless a
+Tavily call returned no credit figure (then it is unknown, never zero).
+
+**Runtime.** The stage runs inside the durable job between the official-source steps and
+indexing, sequentially, and can hold the run's database transaction for up to the profile's
+wall time (2 / 6 / 12 / 20 minutes) of network I/O; a worker lease/heartbeat is separate. Its
+search provenance commits in its own short transaction on PostgreSQL (and falls back to the
+run's transaction if that fails), so paid calls are recorded even if the stage later fails.
+A failure is `web_stage_failed` and never fails the job. Rule G1 private tokens are not
+populated for public company research and must be wired before personalised (V2) use.
+
 ## Security Limitations
 
 ### Current state (Phase 12)

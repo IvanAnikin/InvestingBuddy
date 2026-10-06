@@ -113,6 +113,10 @@ class CorpusChunk:
     subject_scope: str | None = None
     #: Themes the document serves (``relation='theme'`` subject rows).
     theme_keys: tuple[str, ...] = ()
+    #: Open-web W4 (spec §14.2): who the text ORIGINALLY came from — the cluster /
+    #: wire / issuer / publisher-group origin. Two items are independent only when
+    #: their origin keys differ. None on every non-web chunk.
+    origin_key: str | None = None
     #: Companies the WHOLE document is attributed to through a STRONG subject row
     #: (``primary``, or matched by identifier / official domain).
     subject_company_ids: tuple[uuid.UUID, ...] = ()

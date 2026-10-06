@@ -178,7 +178,9 @@ def find_blocklisted(text: str) -> bool:
 
 
 def _clean_free_text(raw: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
-    text = _CONTROL_RE.sub(" ", raw or "")
+    # NFKC first (W5 review F3): a full-width ``ｓｉｔｅ：evil.com`` or ``filetype：env`` is the
+    # same operator to a search engine and must be stripped like the ASCII spelling.
+    text = _CONTROL_RE.sub(" ", unicodedata.normalize("NFKC", raw or ""))
     urls = tuple(m.group(0).rstrip(".,;:!?)]}") for m in _URL_RE.finditer(text))
     text = _URL_RE.sub(" ", text)
     operators = tuple(m.group(0) for m in _OPERATOR_RE.finditer(text))
@@ -245,9 +247,18 @@ def validate_outgoing_query(text: str, private_tokens: Collection[str] = ()) -> 
         return REFUSAL_OPERATOR
     if has_invisible_chars(text or ""):
         return REFUSAL_INVISIBLE_CHAR
-    if _URL_RE.search(text or ""):
+    # Judged on the NFKC form too (W5 review F3): a compatibility-form operator or URL
+    # reads as the real thing once the vendor normalises it.
+    normal = unicodedata.normalize("NFKC", text or "")
+    if _URL_RE.search(normal):
         return REFUSAL_URL_IN_QUERY
-    for match in _OPERATOR_RE.finditer(text or ""):
+    if normal != (text or "") and len(_OPERATOR_RE.findall(normal)) != len(
+        _OPERATOR_RE.findall(text or "")
+    ):
+        # An operator that only exists once normalised was never produced by the planner
+        # (which writes ASCII ``site:``/``filetype:``), even if its NFKC form looks valid.
+        return REFUSAL_OPERATOR
+    for match in _OPERATOR_RE.finditer(normal):
         if not _ALLOWED_OUTGOING_OPERATOR_RE.match(match.group(0)):
             return REFUSAL_OPERATOR
         if match.group(1).lower() == "site" and not _valid_site_domain(match.group(2)):

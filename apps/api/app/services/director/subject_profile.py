@@ -34,18 +34,14 @@ class SubjectProfile:
 
 async def build_subject_profile(session: Any, company: Any) -> SubjectProfile:
     """Never raises; an unreadable corpus is an empty profile with the reason."""
-    from sqlalchemy import select
-
-    from app.models.research_chunk import ResearchDocumentChunk
+    from app.services.corpus.official import official_chunk_texts
 
     profile = SubjectProfile()
     try:
+        # The company's OFFICIAL documents only: a stored web page must never move the
+        # commodities the web stage builds its queries from (W5 review F1).
         rows = (
-            await session.execute(
-                select(ResearchDocumentChunk.text)
-                .where(ResearchDocumentChunk.company_id == company.id)
-                .limit(MAX_CHUNKS)
-            )
+            await session.execute(official_chunk_texts(company.id, limit=MAX_CHUNKS))
         ).scalars().all()
     except Exception as exc:  # noqa: BLE001 - planning must not fail on a profile
         profile.note = f"corpus unreadable ({type(exc).__name__})"

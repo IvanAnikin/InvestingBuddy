@@ -25,7 +25,7 @@ from app.services.playbooks.industries import DEVELOPMENT_STAGE_RESOURCE
 from app.services.research_fields import FIELD_KEYS, fields_mentioned
 from app.services.safety_terms import scan_text
 
-CFG = SimpleNamespace(v3_agent_tools_enabled=True, v3_deepseek_search_enabled=True,
+CFG = SimpleNamespace(v3_agent_tools_enabled=True, v3_company_web_research_enabled=True, v3_web_search_enabled=True, v3_web_search_provider="fake",
                       v3_filings_tool_enabled=True, v3_corpus_enabled=True,
                       v3_commodity_sources_enabled=True)
 DEV = "development_stage_resource"

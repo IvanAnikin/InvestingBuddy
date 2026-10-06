@@ -367,20 +367,16 @@ async def detect_stage(
     The reads run in a SAVEPOINT: a database error inside them is rolled back to it
     rather than left aborting the run's transaction (review M1)."""
     try:
-        from sqlalchemy import select
-
-        from app.models.research_chunk import ResearchDocumentChunk
+        from app.services.corpus.official import official_chunk_texts
         from app.services.pipeline.issuer_financials import load_statement_facts
 
         async with session.begin_nested():
             facts = await load_statement_facts(session, getattr(company, "id", None))
             texts = list(
                 (
-                    await session.execute(
-                        select(ResearchDocumentChunk.text)
-                        .where(ResearchDocumentChunk.company_id == company.id)
-                        .limit(MAX_CHUNKS)
-                    )
+                    # OFFICIAL documents only (W5 review F1): a stored web page must not
+                    # move the stage signal that selects project-milestone queries.
+                    await session.execute(official_chunk_texts(company.id, limit=MAX_CHUNKS))
                 ).scalars().all()
             )
     except Exception as exc:  # noqa: BLE001 - a stage signal must not end the run

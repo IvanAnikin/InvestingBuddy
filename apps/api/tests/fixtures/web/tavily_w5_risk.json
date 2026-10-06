@@ -1,0 +1,28 @@
+{
+  "_fixture_note": "synthetic recorded-shape fixture for W5 (Tavily response shape, 2026-10-04)",
+  "_fixture_query": "Voltgrid delay",
+  "query": "Voltgrid delay",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Voltgrid delays commissioning of its Texas transformer line",
+      "url": "https://www.utilitydive.com/news/voltgrid-texas-delay",
+      "content": "Synthetic snippet: delay, postponed commissioning.",
+      "score": 0.88,
+      "published_date": "Thu, 20 Aug 2026 08:00:00 GMT"
+    },
+    {
+      "title": "Voltgrid delays commissioning (repost)",
+      "url": "https://www.utilitydive.com/news/voltgrid-texas-delay",
+      "content": "duplicate url",
+      "score": 0.5
+    }
+  ],
+  "response_time": 0.9,
+  "usage": {
+    "credits": 1
+  },
+  "request_id": "synthetic-w5-005"
+}

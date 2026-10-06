@@ -1,0 +1,22 @@
+{
+  "_fixture_note": "synthetic recorded-shape fixture for W5 (Tavily response shape, 2026-10-04)",
+  "_fixture_query": "Voltgrid investor presentation 2026",
+  "query": "Voltgrid investor presentation 2026",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Voltgrid investor presentation 2026",
+      "url": "https://www.voltgrid.example/investors/presentation-2026",
+      "content": "Synthetic snippet: investor presentation, capacity plan.",
+      "score": 0.9,
+      "published_date": "Sun, 01 Mar 2026 08:00:00 GMT"
+    }
+  ],
+  "response_time": 0.9,
+  "usage": {
+    "credits": 1
+  },
+  "request_id": "synthetic-w5-001"
+}

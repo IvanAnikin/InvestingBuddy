@@ -26,7 +26,7 @@ POSTGRES_URL = os.environ.get("V3_TEST_POSTGRES_URL", "")
 pytestmark = pytest.mark.skipif(
     not POSTGRES_URL, reason="set V3_TEST_POSTGRES_URL to a PostgreSQL at head"
 )
-CFG = SimpleNamespace(v3_agent_tools_enabled=True, v3_deepseek_search_enabled=True,
+CFG = SimpleNamespace(v3_agent_tools_enabled=True, v3_company_web_research_enabled=True, v3_web_search_enabled=True, v3_web_search_provider="fake",
                       v3_filings_tool_enabled=True, v3_corpus_enabled=True,
                       v3_commodity_sources_enabled=True)
 

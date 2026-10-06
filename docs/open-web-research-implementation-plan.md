@@ -439,6 +439,114 @@ existing reports once web documents exist.
 
 **Rollback:** Revert. Weights are versioned, and web items can be filtered out.
 
+**As built (W4).** Modules: `web_research/trust.py` (origin algorithm, issuer identity,
+publisher groups `PUBLISHER_GROUPS_VERSION`, corroboration states, claim types and
+§13.3 rules `TRUST_RULES_VERSION`, contradictions, §17.3 web facts),
+`web_research/packs.py` (`PACK_WEIGHTS_VERSION` weights, greedy deterministic selection),
+`web_research/dedup.py` (union-find clustering, earliest-published representative,
+`near_duplicate_rows`). Decisions, each deliberate:
+
+- **No migration.** The plan's data model holds: `simhash` / `origin_key` (044) carry
+  dedup and origin. The finding's label is a statement PREFIX (`[company says] …`,
+  `[company describes itself as …] …`, `[reported in the press; a filing figure differs] …`),
+  never stacked, and `claim_key` is computed from the unlabelled text. The structured
+  verdict (claim type, corroboration state, origins, classes, web fact) is written to the
+  question's `acquisition_log_json` as a `rung="trust"` step. A queryable column for the
+  corroboration state (for W8's UI) is a later migration decision.
+- **W4 is inert without web evidence.** The rules run only when a finding cites open-web
+  evidence (a web corpus chunk or a verified `ev:x:` lead); the pack re-ranks only when
+  web evidence is present; the origin cap applies to web origins only, so a filing's
+  chunks are never capped. Note: verified leads ARE web evidence, so a lead-backed
+  finding is now checked and labelled (e.g. one USGS figure → `single source estimate`).
+- **Ingest.** Origin = `trust.document_origin` (verified issuer domain / filing header →
+  claims from page text → registry group → registrable domain; see the review round below
+  for the verified-vs-claimed rule). A near-duplicate is LINKED to the stored document
+  (subjects row), never re-chunked, under the guards listed below. `content_origin` stays
+  the publisher's registrable domain.
+- **Contradictions.** At persistence, a non-guidance money field stated for the same
+  period and scope by a different origin with a different value (track B's
+  `compare_values`) records a `conflicting_sources` gap describing every side (class,
+  origin, date, value; display order regulator > issuer > press, newer first). For a
+  financial-statement field the filing side is canonical and the web finding is relabelled
+  "reported in the press; a filing figure differs" (value-free, see the review round);
+  otherwise there is no winner. Guidance
+  fields are excluded (temporal supersession is track B's).
+- **Claim keys reuse `research_fields`** (`fields_stated`, `field_clause`, `money_values`,
+  `SUPERSEDABLE_FIELDS`) — no parallel vocabulary. Financial-statement fields:
+  revenue, operating cash flow, net debt, cash, period capex.
+- **PI-09.** A web corpus hit reaches the prompt as a whitelist (`evidence_id`, `text`,
+  `source_class`, `origin_key`, date, period, scope, page, section): no title, citation
+  label or URL. Search snippets and titles never enter the corpus.
+- **Retrieval.** `search_corpus` forwards `source_classes`, `theme_keys`,
+  `subject_scopes`, `exclude_injection_suspect`; hits carry `source_class`, `origin_key`,
+  `injection_suspect`. `search_theme_corpus` is registered but held by no role (W6).
+**W4 review round 1 (fixes, branch `feature/web-w4-fix`).** Design rule: *an origin read
+from page text is a claim.* It may only reduce independence.
+
+- Origins are **verified** (verified issuer domain; filing/exchange host whose header
+  names the run's issuer; registry group; registrable domain) or **claimed**
+  (`claimed:<what the page says>@<publisher>`: wire attribution, "Source:", "About X" +
+  contact block, cross-domain canonical). A claim counts as the thing it claims
+  (`independence_key`); it never becomes `issuer:<id>`, never merges with a verified
+  origin, never counts as issuer voice. PR-wire / RNS / ASX hosts are never an origin
+  (`unknown:<url hash>` or a claim). Residual: a wire release naming the issuer is
+  "management says"-labelled for guidance, because no wire account is verified to an
+  issuer yet.
+- `issuer:<id>` is compared to the RUN's company in every rule (`is_verified_issuer`);
+  `ledger.record_finding(issuer_key=…)` defaults to `run.company_id`; no issuer key means
+  nothing is "mine".
+- Corroboration counts independence keys of NON-weak classes only (two scraper pages are
+  one weak source). Contradiction detection skips pairs by PUBLISHER, not by claimed
+  origin. Display (labels, prompt) shows only domains / registry groups / "the company".
+- Near-duplicate linking: exact bytes (W3) or SimHash <= 3 with identical numbers, same
+  company/theme scope, never to a lower-authority representative, min 40 tokens, band
+  prefilter (4 x 16-bit) in SQL; "earliest" is stored order (never a page date); stored
+  origins are never rewritten; a link keeps the stricter `use_constraint`.
+- Reconciliation reads the stored label (`trust.label_of_statement`): a finding labelled
+  "reported in the press…", self-described or anecdotal never closes a gap
+  (`web_context_only`). The relabel is value-free ("a filing figure differs"); the
+  filing's figure lives in the `conflicting_sources` gap. Readers strip labels
+  (`unlabelled_statement`).
+- Ledger contradiction scan: newest 50 findings that state the same money field, ONE
+  batched support lookup, at most 3 gaps per finding, in a SAVEPOINT that degrades to "no
+  contradiction" (nothing the caller holds is modified inside it).
+- Attribution regexes read fixed windows with per-line anchors (no quadratic scans);
+  `cluster_near_duplicates` is banded (5,000 members: 68 s -> < 1 s); packs: suspect
+  primaries are never forced, primary needs the run's issuer origin, the pack date comes
+  from the evidence (no clock); verified leads use the stored version's class/origin, an
+  unresolved lead is one shared non-independent origin; lead strings are rendered and
+  capped like chunks.
+**W4 verification round (principle: when in doubt, understate independence and never
+link).**
+
+- *Independence-bearing* (`trust.bears_independence`): the run's verified issuer (one
+  origin), or a page with a known non-weak class that is not an issuer-voice / filing
+  class, from a verified non-wire publisher. Wire / RNS / ASX / open-submission hosts
+  (and the opaque `unknown:` token that stands in for them), unresolved leads (no class),
+  weak classes and unverified claims never are. Corroboration needs two independence keys
+  AND two verified publishers, one not the issuer, computed order-independently.
+  Understated by design: a subsidiary's brand domain, a syndicated issuer release.
+- Only the VERIFIED issuer's page is "company says"; a page that claims the issuer's text
+  is one unverified source. A claimed origin on a wire host has the page as its
+  publisher, so two releases on one wire can still contradict.
+- Filing/exchange header authorship: the issuer's full name OPENS the first line, the
+  document was ingested for the run's company, and the header is not the issuer as the
+  object of an act ("Name of Issuer", "proposal / offer / bid for X").
+- Near-duplicate linking is `dedup.safe_to_link`: equal token sequences, or differences
+  confined to ordinary words (no digit, FY/H1/Q token, negation, direction/trend word,
+  re-ordering; at most 40 changed tokens). A PR-wire host ranks below an issuer's own
+  domain and the filing classes, and a document with a verified `issuer:<id>` origin links
+  only to a candidate with that same origin.
+- Primary pack items: a web item with no origin is not primary; platform evidence is
+  flagged. The contradiction scan also reads findings with no `claim_key` (classified
+  from their text, same bound).
+
+- Known limits: `resolve_support` cannot know `via_subject` for a PRIOR finding's items;
+  "(Reuters)" in a wire's own lead on a verified Reuters host is still a claim.
+
+- Not done here: event facts in a fact table (§17.3 is computed and logged, not stored as
+  rows — no table exists), Discovery's 6-item per-candidate pack (W6), a Hamming index.
+
 **Complexity:** L (about 4 days).
 
 ---
@@ -488,6 +596,51 @@ follows in W9.
 it adds runtime to every company job.
 
 **Rollback:** `V3_COMPANY_WEB_RESEARCH_ENABLED=false`.
+
+**As built (W5).** Modules: `web_research/planner.py` (`QUERY_TEMPLATE_VERSION`
+`w5.1`, versioned templates, venue→locale table and glossary, freshness windows, bounded
+cached model expansion), `selection.py` (§11.3 score, per-family quotas, recorded skip
+reasons), `crawl.py` (§11.1/§11.2), `stage.py` (`ensure_web_context`). Decisions, each
+deliberate:
+
+- **No migration.** Dispositions reuse `web_search_results.disposition` (`selected`,
+  `skipped:<reason>`, `ingested`, `reused`, `not_ingested:<reason>`, `not_retrievable:<reason>`,
+  `fetch_failed:<reason>`); the new unit `bytes_downloaded` lives in `consumption_json` and is
+  *listed only once instrumented* (`OPTIONAL_UNITS`), so every record written with the stage off is
+  byte-identical to before.
+- **Order.** Classification, subject profile and stage detection now run BEFORE the stage and
+  indexing (they read corpus rows, not the index), so the stage plans from them and a third-party
+  page can never feed the stage detector. With the flag off the pipeline output is unchanged
+  (checked by diffing `run_v3_research` outcomes against W4 for three companies; the only
+  differences are pre-existing run-to-run ones: open-question row order and a network error text).
+- **Flag semantics.** `V3_COMPANY_WEB_RESEARCH_ENABLED` (default off; consumers: the stage and tool
+  registration). `search_web`/`fetch_public_source` register only when it AND
+  `V3_WEB_SEARCH_ENABLED` AND a provider are set (`routing.web_search_provider_for`);
+  `V3_DEEPSEEK_SEARCH_ENABLED` registers nothing there any more but still gates the labelled
+  `model_recall` Discovery paths. `search_web` returns candidates only (no claim, no id) through
+  `run_searches`; `leads` is an empty list.
+- **Budgets.** Mode → profile (`research_mode.WEB_PROFILE_BY_MODE`); web-search counts 6/16/36/60;
+  `ResearchBudget.check` is called before each search wave and trims it. The Investigator's
+  `ExternalSearchBudget` is the mode ceiling minus the searches the stage executed.
+- **Isolation.** The stage runs in a SAVEPOINT inside `try`; failure is `web_stage_failed`.
+  On PostgreSQL search provenance is written in its own committed session so paid calls survive a
+  failed stage; fetches are sequential on one session (concurrency is the limiter's, per host).
+- **Report.** Additive `web_evidence` blocks on competitive_position, industry_and_market,
+  growth_and_catalysts and risks_and_counter_thesis (class, origin, date, W4 statement label,
+  §14.3 corroboration) and `web_research` on evidence_quality_and_gaps (searches run, sources found
+  but not accessible). The V2 `news_catalyst_discovery` section gains `web_catalyst_evidence` only
+  when catalyst documents were stored. Third-party strings are neutralised.
+- **Review round 1.** Subject profile and stage detector read official (non-web) chunks only
+  (`corpus/official.py`); URLs containing a gate term are dropped from catalyst evidence;
+  `fetch_public_source` stays registered under the legacy flag while `search_web` needs the new
+  ones; the raised mode ceilings apply only with the stage on; the Investigator's headroom is the
+  stage's network calls; provenance falls back to the caller's session (then NULL job/agent-run
+  link); RISK selection never lets the issuer's own page lead and keeps a URL under its
+  best-scoring family; the platform's own fetcher is not a priced vendor unit; NFKC-folded
+  operators, `sk-` keys and connection strings are refused; no expansion for an unconfigured
+  provider; the expansion cache key includes the limit.
+- **Deferred.** Expansion cache is in-process (not durable across restarts); the Director GAP
+  follow-up loop and an Investigator step that fetches `search_web` candidates are W7; no browser.
 
 **Complexity:** L–XL (about 5 days).
 

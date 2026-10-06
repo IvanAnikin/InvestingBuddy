@@ -72,6 +72,10 @@ UNIT_NAMES: tuple[str, ...] = (
     # calls, so the credit count is the unit its price applies to (spec §22.4).
     "tavily_credits",
     "url_fetch_calls",
+    # Open-web W5: bytes the platform's own open-web fetcher downloaded. Has no price
+    # class (the platform pays for its own bandwidth), so ``derive_cost`` ignores it;
+    # it is recorded to measure the web stage against its byte ceiling.
+    "bytes_downloaded",
     "provider_research_runs",
     "documents_downloaded",
     "pages_parsed",
@@ -80,6 +84,13 @@ UNIT_NAMES: tuple[str, ...] = (
     "browser_minutes",
     "elapsed_seconds",
 )
+
+
+#: Units added AFTER the record shape was first persisted (open-web W5). They are listed
+#: in a record only once a producer instruments them, so a record written by a run that
+#: never produces one — every run with the company web stage off — is byte-identical to
+#: what it was before the unit existed. Absent from a dict is still "not measured".
+OPTIONAL_UNITS: frozenset[str] = frozenset({"bytes_downloaded"})
 
 
 @dataclass(frozen=True)
@@ -189,6 +200,7 @@ class ConsumptionUnits:
     web_search_calls: int = 0
     tavily_credits: float = 0.0
     url_fetch_calls: int = 0
+    bytes_downloaded: int = 0
     provider_research_runs: int = 0
     documents_downloaded: int = 0
     pages_parsed: int = 0
@@ -236,13 +248,19 @@ class ConsumptionUnits:
         """Whether this record actually counted ``name``."""
         return name in self.instrumented
 
+    def _listed_units(self) -> tuple[str, ...]:
+        return tuple(
+            n for n in UNIT_NAMES if n not in OPTIONAL_UNITS or n in self.instrumented
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {name: getattr(self, name) for name in UNIT_NAMES}
+        listed = self._listed_units()
+        out: dict[str, Any] = {name: getattr(self, name) for name in listed}
         out["tokens_estimated"] = self.tokens_estimated
         out["instrumented"] = sorted(self.instrumented)
         # Named explicitly rather than left for a reader to subtract, because
         # the whole point is that these zeros mean nothing.
-        out["not_instrumented"] = sorted(set(UNIT_NAMES) - self.instrumented)
+        out["not_instrumented"] = sorted(set(listed) - self.instrumented)
         out["unreported"] = sorted(self.unreported)
         out["by_vendor"] = [v.to_dict() for v in self.by_vendor]
         return out
@@ -403,7 +421,10 @@ def derive_cost(units: ConsumptionUnits, prices: PriceBook) -> DerivedCost:
     divide, so guessing either one is a fabrication. ``None`` is the honest answer.
     """
     if prices.is_empty:
-        return DerivedCost(estimated_usd=None, unpriced_units=tuple(sorted(UNIT_NAMES)))
+        return DerivedCost(
+            estimated_usd=None,
+            unpriced_units=tuple(sorted(n for n in UNIT_NAMES if n not in OPTIONAL_UNITS)),
+        )
 
     total = 0.0
     priced_any = False
@@ -501,12 +522,15 @@ def derive_cost(units: ConsumptionUnits, prices: PriceBook) -> DerivedCost:
             prices.usd_per_thousand_web_searches,
             1_000,
         )
-    add(
-        "url_fetch_calls",
-        units.url_fetch_calls,
-        prices.usd_per_thousand_url_fetches,
-        1_000,
-    )
+    # The platform's OWN open-web fetcher bills nothing (W5 review C-M7). A record that
+    # carries ``bytes_downloaded`` was produced by it, so its fetch calls are free unless a
+    # price was configured — otherwise every run with the company web stage on would be
+    # "cost unknown" merely because the platform fetched a page. A record without that
+    # unit keeps the old rule (an unpriced fetch makes the cost unknown).
+    fetch_price = prices.usd_per_thousand_url_fetches
+    if fetch_price is None and units.measured("bytes_downloaded"):
+        fetch_price = 0.0
+    add("url_fetch_calls", units.url_fetch_calls, fetch_price, 1_000)
     add(
         "provider_research_runs",
         units.provider_research_runs,

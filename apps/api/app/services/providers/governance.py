@@ -46,6 +46,7 @@ time it receives something it should not have.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -304,6 +305,18 @@ _CREDENTIAL_MARKERS: tuple[str, ...] = (
 )
 
 
+_CREDENTIAL_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("sk-key", re.compile(r"(?<![a-z0-9])sk-[a-z0-9_\-]{16,}")),
+    (
+        "connection-string",
+        re.compile(
+            r"(?<![a-z0-9])(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|"
+            r"amqps?|mssql)(?:\+[a-z0-9]+)?://"
+        ),
+    ),
+)
+
+
 class CredentialInPayloadError(PermissionError):
     """A payload bound for a provider appears to carry a credential.
 
@@ -334,6 +347,12 @@ def assert_no_credentials(payload: str | None) -> None:
     for marker in _CREDENTIAL_MARKERS:
         if marker in text:
             raise CredentialInPayloadError(marker)
+    # Shapes a substring marker cannot express without false positives (W5 review F4):
+    # an ``sk-…`` API key (a bare "sk-" would match "risk-adjusted") and a database or
+    # broker connection string, which carries its password in the URL.
+    for label, pattern in _CREDENTIAL_PATTERNS:
+        if pattern.search(text):
+            raise CredentialInPayloadError(label)
 
 
 class ProviderNotPermittedError(PermissionError):
