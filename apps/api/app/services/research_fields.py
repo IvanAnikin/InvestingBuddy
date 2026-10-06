@@ -114,6 +114,15 @@ _PERIOD_CAPEX = (
     r"\b(?:year|half|half-year|quarter|six\s+months)\s+to\s+\d",
 )
 
+#: A tonnage RATE ("1,850t/yr", "20,000 tonnes per annum", "73 ktpa"). Defined before
+#: ``FIELDS`` because a planned-output pattern below embeds it; ``_CAPACITY_RE`` (further
+#: down) is the broader quantity test that also covers power, ounces and units.
+_RATE_TONNAGE = (
+    r"\d[\d,]*(?:\.\d+)?\s*(?:k|m|million\s+|thousand\s+)?\s*(?:"
+    r"tpa|tpy|t/y(?:r)?|t/a|mtpa|ktpa|mtpy|mt/y|"
+    r"(?:mt|kt|t|tonnes?|tons?)\s+(?:per|a|an)\s+(?:annum|year))\b"
+)
+
 FIELDS: tuple[ResearchField, ...] = (
     ResearchField(
         "metric:capex",
@@ -154,6 +163,15 @@ FIELDS: tuple[ResearchField, ...] = (
             r"\bcapacity\s+(?:of|to\s+produce|to\s+process)\b",
             r"\b(?:design|nameplate|plant|annual)\s+throughput\b",
             r"\b(?:will|to|would|designed\s+to|expected\s+to)\s+produce\b",
+            # How the investigator and the issuers actually word it: "planned annual output
+            # tonnage", "production tonnage, capacity or utilisation", "targeting ca.
+            # 1,850t/yr". A tonnage RATE after a planning cue is a stated capacity.
+            r"\b(?:output|production)\s+tonnage\b",
+            r"\btonnage,?\s+(?:or\s+|and\s+)?(?:\w+\s+)?capacity\b",
+            r"\b(?:planned|expected|targeted?|projected|forecast|nameplate|design|initial)\s+"
+            r"(?:annual\s+|average\s+)?(?:output|production)\s+(?:tonnage|volumes?|rates?)\b",
+            r"\b(?:planned|expected|targeted?|targeting|aims?\s+to|aimed|projected|forecast|"
+            r"nameplate|designed?)\b[^.;]{0,60}?(?:(?:ca|c|approx)\.\s*)?" + _RATE_TONNAGE,
         ),
         needs=NEEDS_CAPACITY,
         metric_aliases=("capacity", "production_capacity", "capacity_overbuild"),
@@ -171,6 +189,15 @@ FIELDS: tuple[ResearchField, ...] = (
             r"(?:commercial\s+)?production\b",
             r"\bproduction\s+(?:is\s+)?(?:expected|scheduled|planned|targeted|slated)\s+to\s+"
             r"(?:start|begin|commence)\b",
+            # A mine that "extracts" rather than "produces": the same milestone.
+            r"\binitial\s+(?:commercial\s+)?(?:production|output|extraction)\b",
+            r"\b(?:start|commencement|beginning)\s+of\s+(?:commercial\s+)?"
+            r"(?:extraction|mining)\b",
+            r"\b(?:start|begin|commence)\s+(?:extracting|mining)\b",
+            r"\b(?:extraction|mining)\s+(?:is\s+|are\s+)?(?:targeted|aimed|planned|expected|"
+            r"scheduled|slated)\s+(?:to\s+(?:start|begin|commence)|from|for|in)\b",
+            r"\b(?:extraction|mining)\b[^.;]{0,40}?\b(?:aimed|expected|planned|targeted|"
+            r"scheduled)\s+to\s+(?:start|begin|commence)\b",
         ),
         needs=NEEDS_TARGET_DATE,
         supersedable=True,
@@ -302,8 +329,11 @@ def family_of(field_key: str) -> str:
 # ── Text helpers ────────────────────────────────────────────────────────────── #
 
 #: A denial scopes to its CLAUSE. Same split the thesis grader uses.
+#: A full stop ends a clause unless it ends an ABBREVIATION: "targeting ca. 1,850t/yr" is one
+#: clause, not "targeting ca" and a fragment that names nothing.
 CLAUSE_SPLIT_RE = re.compile(
-    r"[;.]\s+|,\s+(?:but|although|though|while|whereas|yet)\s+|\s+but\s+|,\s+and\s+(?=the\s)"
+    r";\s+|(?<!\bca)(?<!\bapprox)(?<!\best)(?<!\bincl)(?<!\bvs)\.\s+|"
+    r",\s+(?:but|although|though|while|whereas|yet)\s+|\s+but\s+|,\s+and\s+(?=the\s)"
 )
 #: Anywhere in a clause, these make it a statement of absence, withdrawal, deferral or
 #: sensitivity — not of a value.
@@ -368,8 +398,14 @@ _IRR_RATE_RE = re.compile(
 )
 _TARGET_CUE = (
     r"expected|expects|scheduled|planned|plans|targeted|targeting|targets?|forecast|"
-    r"anticipated|anticipates|slated|due|on\s+track|guided|guidance|aims?|intends?|"
-    r"estimated|projected"
+    r"anticipated|anticipates|slated|due|on\s+track|guided|guidance|aims?|aimed|intends?|"
+    r"estimated|projected|"
+    # A milestone named directly before its date is itself a forward statement:
+    # "initial production H1 2029".
+    # Not when it is a FORMER target ("initial production was originally planned for
+    # 2024"): the guard in ``target_years`` reads the words before the cue it matched.
+    r"(?:initial|first)\s+(?:commercial\s+)?production"
+    r"(?!\s+(?:was|were|had|originally|previously|initially))"
 )
 _TARGET_YEAR_RE = re.compile(
     r"\b(?:" + _TARGET_CUE + r")\b[^.;]{0,45}?"

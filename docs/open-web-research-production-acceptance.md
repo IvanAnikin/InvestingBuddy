@@ -130,3 +130,24 @@ chunks; e.g. one government document of 224 chunks) yet are scoped to it with su
 `research_run`, so they compete in company-scoped searches; and the issuer's own site is classed
 `unknown_web` because no official domain is known for the company. Both are re-assessed after the
 re-run of the fix.
+
+### Rainbow Rare Earths — run 2 (job `628aa35e`, report `f6ab989f`, after #268) — PARTIAL
+
+The retrieval fix worked: the report now carries the issuer's current project facts that run 1
+lacked — Interim Economic Study (post-tax NPV10 US$611m, IRR 38%, US$326m capital), press-reported
+capex of US$325–350m with ~two-thirds debt, ~1,850 t/yr separated REO, an 85% interest in
+Phalaborwa and a 49% share of Uberaba, Phalaborwa "initial production H1 2029" and Uberaba "initial
+production late 2030". The ownership gap is gone.
+
+Two further generic defects, both in the shared field vocabulary (`research_fields.py`), remained:
+1. **Coexisting gap and finding:** "No planned annual output tonnage" stayed open (`field_unknown`)
+   while a finding stated "targeting ca. 1,850t/yr" — the gap's wording named no field, and "ca."
+   split the finding's clause.
+2. **No temporal supersession:** "extraction targeted from 2028" (April) and "initial production H1
+   2029" (September) are one milestone with two dates, but neither wording named a tracked field, so
+   `supersessions` was 0 and both read as current.
+
+Fix: planned-output tonnage / rate wording names `metric:production_capacity`; "initial production",
+"start of extraction/mining" and "extraction targeted/aimed…" name `milestone:first_production`;
+"initial production" is a target cue (but not a *former* target); the clause splitter no longer
+breaks after "ca.", "approx.", "est.", "incl.", "vs.". Tests: `tests/test_research_fields_planned_output.py`.
