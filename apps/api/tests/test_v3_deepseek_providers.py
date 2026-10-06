@@ -72,9 +72,9 @@ from app.services.providers.contracts import (
     STATUS_FAILED,
     STATUS_PARTIAL,
     BrowserProvider,
+    CandidateSearchProvider,
     ModelProvider,
     ResearchProvider,
-    SearchProvider,
 )
 
 #: The fragment the live API appends to every URL it reports.
@@ -123,7 +123,9 @@ class TestTheAdaptersFitTheInterfaces:
     def test_each_provider_satisfies_its_protocol(self) -> None:
         transport = FakeDeepSeekTransport()
         assert isinstance(DeepSeekModelProvider(transport=transport), ModelProvider)
-        assert isinstance(DeepSeekSearchProvider(transport=transport, enabled=True), SearchProvider)
+        assert isinstance(
+            DeepSeekSearchProvider(transport=transport, enabled=True), CandidateSearchProvider
+        )
         assert isinstance(
             DeepSeekResearchProvider(transport=transport), ResearchProvider
         )

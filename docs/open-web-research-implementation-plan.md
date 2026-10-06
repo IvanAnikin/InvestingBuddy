@@ -1,0 +1,667 @@
+# Open-Web Research: Implementation Plan
+
+**Status:** `PROPOSED — NOT STARTED`. Opened 2026-09-29 on `main` = `d29f1e1`, Alembic head
+**041**. **No phase starts until the user approves the [spec](open-web-research-spec.md) (U0).**
+
+**Companion documents:**
+- [spec](open-web-research-spec.md)
+- [search provider evaluation](open-web-search-provider-evaluation.md)
+- [threat model](open-web-research-threat-model.md)
+- [acceptance plan](open-web-research-acceptance-plan.md)
+
+Paths are relative to `apps/api/app/` unless they start with `apps/`, `docs/` or `infra/`.
+Every path listed under **Reuse** or **Modify** was confirmed to exist on 2026-09-29.
+Paths listed under **Add** are new.
+
+---
+
+## 0. How the work is sliced
+
+- **One PR per slice.** Every slice PR targets `main`, the branch V3.19 and the non-US
+  primary-documents work used. It is merged and deployed dark behind its flag before the next
+  slice starts. Docs-only slices are the exception.
+- **Migrations go first.** They are additive and nullable, and are applied before the code
+  that reads them is deployed. Applying them to the live database needs approval U9.
+- **Gates for every code slice** (identical to V3.19):
+  - `ruff check` is clean.
+  - `pytest` passes on SQLite **and** on PostgreSQL 16 at the current head
+    (`V3_TEST_POSTGRES_URL`). State `ENABLE_INTEGRATION_TESTS` next to the counts.
+  - `mypy app` is at or below the 71/10 baseline.
+  - Web slices also run `npm run typecheck`, `npm run lint`, `npm run build` and the relevant
+    Playwright specs.
+  - Before merge, an independent code review and a security/evidence review run as subagents.
+    Blocking, high and medium findings must be fixed.
+- **Normal CI never calls a live search API.** `FakeSearchProvider` and recorded fixtures are
+  the only providers the suite uses. Live checks are opt-in scripts (acceptance plan §6).
+- **Definition of done is production behaviour, read end to end.** Tests passing is not
+  enough. Every live defect found in the last two phases was found only by reading a report.
+
+### 0.1 Dependency graph
+
+```mermaid
+flowchart LR
+    W0[W0 fetch hardening + truthful labels] --> W1[W1 search contract, provenance, Tavily adapter]
+    W0 --> W2[W2 open-web fetch policy]
+    W1 --> W2
+    W2 --> W3[W3 extraction + web docs in corpus]
+    W3 --> W4[W4 trust, dedup, corroboration, packs]
+    W4 --> W5[W5 company web research]
+    W4 --> W6[W6 Discovery on durable worker + live search]
+    W5 --> W7[W7 Director follow-up loop]
+    W6 --> W7
+    W5 --> W8[W8 UX + admin audit]
+    W6 --> W8
+    W7 --> W9[W9 live acceptance campaign]
+    W8 --> W9
+    W9 --> W10[W10 optional: browser, Office docs, scholarly, 2nd provider, value-chain graph]
+```
+
+### 0.2 Decision points by phase
+
+| Phase | Needs before merge | Needs before live activation |
+|---|---|---|
+| W0 | none (a security fix to existing code; can ship even if the rest of the spec is not approved) | — (no new capability). U14 is the interim mitigation until W0 ships |
+| W1 | U0 | **U1** (Tavily key + spend caps), U9 (migration 042) |
+| W2 | — | **U2** (open-web fetch from App Service), **U3** (robots/TDM), **U8** (UA contact) |
+| W3 | — | U4 (raw-byte TTL), U6 (OCR, optional), U9 (migration 043) |
+| W5 | — | U11, U12 |
+| W6 | — | U10 |
+| W10 | per item | U5 (browser infrastructure), U13 (Exa) |
+
+---
+
+## W0: Fetch hardening and truthful search labels
+
+**Scope.** Fix what is already wrong, before anything widens.
+- Fix defects D1–D14 in [threat model §2.3](open-web-research-threat-model.md#23-defects-found-in-this-audit-current-to-fix-in-w0-before-any-widening):
+  CGNAT, WireServer, the full `169.254/16` range, `is_global`, encoded IPs, userinfo, port,
+  `trust_env`, decompression bound, total deadline, IDN, public-suffix list, the
+  substring-strip bug, the Python version assertion, and cookie persistence across redirect hops.
+- **Urgency.** Several defects are reachable today through `fetch_public_source` (threat model §2.3), so W0 does not wait for approval of the rest of the spec. Until it ships, the interim mitigation is U14 (turn off `V3_DEEPSEEK_SEARCH_ENABLED`).
+- Route `CompanyPressReleaseProvider._fetch` through `safe_fetch_document`.
+- Fix the robots agent token mismatch.
+- Define `v3_external_search_timeout_seconds` in Settings.
+- Make search provenance truthful. When `SearchTrace.query_call_count == 0`, `search_web`
+  leads are labelled `model_recall`, and the tool summary says `web_search_unavailable`
+  (spec §22.3).
+- Correct the DOC≠CODE docstrings:
+  - `discovery/leads.py:13-16`
+  - `providers/__init__.py:7-9`
+  - `governance.py:349`
+  - the comment at `config.py:~1215` that claims an 8 MB fetch cap.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `services/sources/safe_web_fetcher.py`, `services/sources/pinned_transport.py`, `services/sources/document_fetcher.py`, `services/sources/redaction.py`, `services/sources/live_fetchers.py` (`resolve_ip`), `integrations/providers/company_press_release_provider.py`, `services/traversal/issuer_site.py` (PSL, agent token), `services/agent_tools/external.py`, `integrations/deepseek/providers.py`, `core/config.py` |
+| Add | `services/sources/public_suffix.py` (a vendored PSL snapshot, no network at runtime) |
+
+**Data model.** None. **API.** None. **UI.** None.
+
+**Tests.**
+- New `tests/test_web_w0_fetch_hardening.py` covering SSRF-01…SSRF-25 (acceptance §2.1).
+- Regression runs of `test_phase32a_slice5b1_pinned_transport.py`,
+  `test_v3_issuer_site_traversal.py`, `test_v3_external_research_integration.py` and
+  `test_repeat_run_external_research.py`.
+- A press-release provider test with a redirect to a private IP.
+- A recall-labelling test that uses the recorded fixture `deepseek_responses_web_search.json`
+  with its search calls removed.
+
+**Acceptance.**
+- Every SSRF-* case fails before any socket to the target opens.
+- A production SEC, NSM or ASX refresh on a known issuer (Pensana) produces the same document
+  counts as before the change.
+- No recall lead is ever labelled `search`.
+
+**Deployment risk:** Low to medium. The stricter guard could refuse a legitimate issuer host,
+for example one behind a CDN on a non-443 port or on CGNAT-adjacent addressing. Mitigations:
+refusals are logged with a code, and the acceptance run on real issuers catches a regression.
+
+**Rollback:** Revert the PR. There is no data change.
+
+**Complexity:** M (about 1–2 days).
+
+---
+
+## W1: Search contract, provenance and the Tavily adapter (dark)
+
+**Scope.**
+- Build the `SearchRequest` / `SearchExecution` / `SearchResultItem` contract (spec §8.1),
+  extending the `SearchProvider` protocol.
+- Extend `FakeSearchProvider` with recorded fixtures.
+- Add the Tavily adapter (spec §8.2), including capability declarations and client-side
+  filter enforcement.
+- Add `web_research/queries.py` (sanitiser, operator allow-list, rule G1 private-token
+  guard) and `web_research/search.py` (fan-out, search cache, provenance rows, fail-closed
+  states).
+- Add `WebResearchBudget` and the daily cap.
+- Give `ProviderGovernance.assert_permitted` / `assert_no_credentials` their first runtime
+  call site, in the adapter.
+- Record consumption units (`web_search_calls`, `tavily_credits`) and add a price-book entry.
+- Add an admin read endpoint for search audit.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `services/providers/contracts.py`, `services/providers/fakes.py`, `services/providers/governance.py` (`tavily` row, PUBLIC_ONLY), `services/consumption.py` (units, price-book keys), `core/config.py` (flags from spec §26.2; `TAVILY_API_KEY` in `CREDENTIAL_SETTING_FIELDS`, `repr=False`), `main.py` (router) |
+| Add | `services/web_research/__init__.py`, `queries.py`, `search.py`, `budget.py`, `audit.py`; `integrations/search/__init__.py`, `integrations/search/tavily.py`; `models/web_research.py` (`WebSearchQuery`, `WebSearchResult`, `WebFetchAttempt`); `alembic/versions/042_add_web_search_provenance.py`; `api/v1/web_research_admin.py` (admin only, same guard as `research_decisions.py`); `tests/fixtures/web/tavily_*.json` |
+
+**Data model.** Migration **042**: `web_search_queries`, `web_search_results`,
+`web_fetch_attempts` (spec §26.3).
+
+**API.** `GET /api/v1/admin/web-research/jobs/{research_job_id}` and
+`GET /api/v1/admin/web-research/discovery-runs/{discovery_run_id}` (as built in W1; the two
+run kinds have different id spaces) return queries, results, dispositions, fetch attempts,
+totals and cost units. The search plan is added when the planner lands (W5/W6). Admin only
+and never a public route.
+
+**UI.** None.
+
+**Tests.**
+- Query sanitiser: QI-01…QI-06.
+- Normalization of results from each fixture.
+- Client-side filter enforcement and the `filters_enforced_by` record.
+- Fail-closed states:
+  - no key → `web_search_unavailable`, with 0 network calls;
+  - HTTP 401, 429 and 5xx, and timeout → `executed=false` plus an error code;
+  - a 200 with an unparseable body → `executed=false`.
+- Budget and daily cap, including that a failed call still counts.
+- Governance refusal when a payload contains a credential marker.
+- The key never appears in `repr`, logs or assertion diffs. Assertions compare
+  `is_configured` only, never the key value.
+- Migration 042 upgrade and downgrade on PostgreSQL 16.
+
+**Acceptance.**
+- With the flag on and `provider=fake`, a scripted run writes complete provenance rows.
+- **After U1 (live smoke, opt-in script):** 5 real Tavily queries. Each has `executed=true`,
+  a `provider_request_id`, `network_call_count=1` and cost units recorded, and the admin
+  endpoint shows them.
+
+**Deployment risk:** Low. The feature is dark, and the migration is additive.
+
+**Rollback:** Turn the flag off. The 042 downgrade drops only new tables.
+
+**Complexity:** M–L (about 3 days).
+
+---
+
+## W2: Open-web fetch policy
+
+**Scope.**
+- Add `FetchPolicy.OPEN_WEB` over the hardened guard (spec §9.2):
+  - robots.txt (RFC 9309, our own token) and TDM signal capture;
+  - the per-host `SlidingWindowLimiter`, wired for the first time;
+  - global and per-host semaphores;
+  - retries;
+  - canonicalisation with tracking-parameter removal and same-domain `rel=canonical`;
+  - charset detection;
+  - content sniffing;
+  - paywall, login and CAPTCHA detection → `discovered_not_retrievable`;
+  - a negative cache;
+  - `web_fetch_attempts` rows.
+- Add a user-supplied URL entry point (spec §21), used by later phases.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `services/sources/document_fetcher.py` (policy parameter), `services/sources/rate_limit.py`, `services/sources/cache.py` (wire the existing primitives) |
+| Add | `services/web_research/fetch.py`, `services/web_research/robots.py`, `services/web_research/canonical.py`, `services/web_research/access.py` (paywall/login/CAPTCHA detection) |
+| Dependency | `charset-normalizer` (already a transitive dependency of the HTTP stack; pin it explicitly) |
+
+**Data model.** Uses `web_fetch_attempts` from 042.
+
+**API.** None. **UI.** None.
+
+**Tests.**
+- Redirect cases SSRF-10…SSRF-15, re-run through the policy.
+- robots: disallow, allow, 4xx allow, 5xx fail-closed, crawl-delay.
+- A TDMRep header and a `.well-known` file.
+- Per-host pacing, using a fake clock.
+- Retry rules: 429 with `Retry-After`, 5xx, no retry on 403.
+- Tracking-parameter removal, and the same-domain canonical rule.
+- Charset: Latin-1, Windows-1252, Shift-JIS fixtures.
+- Paywall fixtures: HTTP 402, JSON-LD `isAccessibleForFree:false`, a login wall.
+- Decompression bomb: FILE-03.
+
+**Acceptance.**
+- Against 20 real public URLs (government, association, press, issuer), the dispositions are
+  correct and none is fetched in breach of robots.
+- The per-host interval is observed in timing logs.
+
+**Deployment risk:** Medium. This is the first time the platform fetches non-allowlisted
+hosts, which needs U2.
+
+**Rollback:** `V3_WEB_FETCH_ENABLED=false`. The allowlisted paths are unaffected.
+
+**Complexity:** L (about 3–4 days).
+
+---
+
+## W3: Extraction and web documents in the Research Corpus
+
+**Scope.**
+- Extract HTML main content with trafilatura (`bare_extraction` on our bytes), with the
+  existing stdlib extractor as fallback. Capture metadata: title, date plus the date's source,
+  author, OpenGraph/JSON-LD, language and `rel=canonical`. Strip visible-text-only elements
+  and Unicode for prompt rendering.
+- Route web PDFs through `extract_primary_document`, adding the two-pass large-document mode
+  (spec §10.2).
+- Run extraction in a bounded **process pool** with a kill timeout.
+- Score documents for injection suspicion.
+- Detect company mentions and resolve brand scope (spec §16.1–16.2).
+- Ingest web documents: `ExtractedDocument` → `ingest_extracted_document` →
+  `public_web` / `public_issuer` / `public_official` versions carrying `transport`,
+  `content_origin`, tier, `use_constraint` and taint, plus subjects and chunks.
+- `fetch_public_source` also ingests the documents it verifies, and links
+  `research_leads.research_document_version_id`.
+- Bump the extraction pipeline version.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `services/sources/primary_document_extractor.py` (large-document mode), `services/sources/live_fetchers.py` (process pool helper), `services/corpus/documents.py` (web write path; subject scope), `services/corpus/identity.py` (theme `document_key`), `services/corpus/policy.py` (`use_constraint`), `services/corpus/search/types.py` and `services/corpus/search/backends/postgres.py` (new filters), `services/providers/leads.py` / `services/agent_tools/external.py` (ingest on verify), `services/sources/document_discovery.py` (new kinds), `services/sources/language.py`, `services/entities/vocabulary.py` (`brand` alias), `services/sources/extraction_pipeline_version.py` (19) |
+| Add | `services/web_research/extract.py`, `classify.py` (document kind, taint), `entities.py`, `ingest.py`, `services/web_research/source_policy.py` (per-domain `use_constraint` registry, versioned); `alembic/versions/043_add_web_documents_to_corpus.py`; `tests/fixtures/web/*.html`, `*.pdf` |
+| Dependency | `trafilatura>=2.2` (Apache-2.0; brings `lxml`, `htmldate`, `justext`, `courlan`). Run a memory measurement on B1 before merge. |
+
+**Data model.** Migration **043** (spec §26.3).
+
+**API.** Corpus search gains filter parameters (internal).
+
+**UI.** None yet.
+
+**Tests.**
+- Extraction fixtures:
+  - a news article;
+  - a government page;
+  - an association page with a PDF link;
+  - a non-English page (German, French, Japanese);
+  - a JS-only shell page, which must produce `js_required` and no fake text;
+  - an injection page (PI-01…PI-06);
+  - hidden text;
+  - an SVG and an XML bomb (FILE-05).
+- The PDF whitepaper fixture ingested with page lineage.
+- A 300-page synthetic PDF: two-pass mode picks the right pages within the deadline.
+- Subject rows for a three-company article.
+- Cartier → Richemont `segment:` scope, never group.
+- A company-less theme document deduplicates under the partial index.
+- An `ev:x:` resolves to a version.
+- Migration 043 upgrade and downgrade on PostgreSQL 16.
+- Pipeline-version bump regression: V2 reuse restamps.
+
+**Acceptance.**
+- A real whitepaper PDF and a real trade article can be found by `search_company_corpus` /
+  `search_theme_corpus` with correct metadata.
+- No regression in NSM/ASX/SEC document counts.
+
+**Deployment risk:** Medium. It adds a dependency and memory on B1, and bumps the pipeline
+version.
+
+**Rollback:** `V3_WEB_CORPUS_INGEST_ENABLED=false`. Web versions stay stored but can be
+excluded by the retrieval filter.
+
+**Complexity:** L (about 4–5 days).
+
+---
+
+## W4: Trust, deduplication, corroboration and evidence packs
+
+**Scope.**
+- Source classes, with the class → tier mapping (spec §13.1).
+- Claim-type rules applied at finding persistence (spec §13.3), with labels.
+- SimHash near-duplicate detection.
+- The origin-key algorithm (spec §14.2) and corroboration states (spec §14.3).
+- Contradictions through the existing contradiction model.
+- Web facts: event facts and `web_reported_value` conflicts (spec §17.3).
+- Ranked evidence packs (spec §17.1).
+- A `search_theme_corpus` tool, plus new filters on `search_company_corpus`.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `services/sources/publisher_tiers.py` and `services/sources/taxonomy.py` (source classes), `services/agents/investigator.py` (pack scoring, labels, origin cap), `services/agent_tools/corpus_search.py`, `services/agent_tools/contracts.py` (new tool name), `services/agent_tools/builtin.py` (register), `services/ledger/*` (claim-type check on finding persist) |
+| Add | `services/web_research/dedup.py`, `services/web_research/trust.py`, `services/web_research/packs.py`; data files for trade press, associations and publisher groups (versioned) |
+
+**Data model.** Uses the 043 columns (`simhash`, `origin_key`).
+
+**API.** None. **UI.** None.
+
+**Tests.**
+- A duplicate syndicated article: five copies make one origin.
+- A wire attribution pattern.
+- A PR-wire host resolves to the issuer origin.
+- A same-owner publisher group.
+- An issuer-only superlative is labelled, not stated as fact.
+- A web revenue figure vs a filing figure: the filing is canonical and a conflict is
+  recorded (ACC-85).
+- Conflicting sources are retained.
+- Pack caps: 3 items per origin, at least one primary item.
+- A snippet never appears in a prompt (PI-09).
+
+**Acceptance.** On recorded fixtures for one issuer, packs are deterministic and labels are
+correct.
+
+**Deployment risk:** Medium. It changes the Investigator's pack composition, which affects
+existing reports once web documents exist.
+
+**Rollback:** Revert. Weights are versioned, and web items can be filtered out.
+
+**Complexity:** L (about 4 days).
+
+---
+
+## W5: Company research uses live multi-query web search
+
+**Scope.**
+- Add `ensure_web_context` to the V3 pipeline (spec §7.1), running wave 2 plus the `RISK`
+  family under mode budgets.
+- The planner's company families and templates (spec §4.2).
+- Deterministic result selection (spec §11.3).
+- Bounded crawling from seeds (spec §11.1), which generalises `traverse_issuer_site` instead
+  of duplicating it.
+- Re-point `search_web` to the configured `SearchProvider`, so it returns candidates rather
+  than claims.
+- The mode presets for web searches rise 4/12/30/60 → 6/16/36/60.
+- `ResearchBudget.check` gets its first caller.
+- Retire `V3_DEEPSEEK_SEARCH_ENABLED` (U12).
+- Report sections read web evidence (spec §17.4).
+- V2 `news_catalyst_discovery` can read catalyst evidence.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `services/pipeline/v3_pipeline.py` (new step after `ensure_core_disclosures`, around `:430-458`), `services/research_mode.py`, `services/consumption.py` (`ResearchBudget.check` caller), `services/agent_tools/external.py`, `services/agents/routing.py`, `services/agents/investigator.py` (external rung), `services/traversal/issuer_site.py` (generalised seeds), `services/pipeline/professional_research.py` (section evidence mapping), `services/final_report_generator.py` (catalyst section source) |
+| Add | `services/web_research/planner.py`, `services/web_research/selection.py`, `services/web_research/crawl.py`, `services/web_research/stage.py` (the `ensure_web_context` orchestration) |
+
+**Data model.** None new.
+
+**API.** None. **UI.** Report sections already render. The evidence drawer lands in W8.
+
+**Tests.**
+- The query plan for a fixture company is deterministic, including the template version.
+- The budget stops at each ceiling: queries, fetches, PDFs, bytes and wall time.
+- An exception in the web stage does not fail the job (P10).
+- Provider outage → `web_search_unavailable`, and research completes on official sources
+  (ACC-88).
+- `search_web` returns no citable fields.
+- The regression suite for SEC, NSM and ASX (acceptance §8).
+
+**Acceptance.** Recorded-fixture end to end: the company report cites at least one web
+`ev:c:` in catalysts and at least one in industry, with correct labels. Live acceptance
+follows in W9.
+
+**Deployment risk:** Medium to high. This is the first user-visible behaviour change, and
+it adds runtime to every company job.
+
+**Rollback:** `V3_COMPANY_WEB_RESEARCH_ENABLED=false`.
+
+**Complexity:** L–XL (about 5 days).
+
+---
+
+## W6: Discovery on the durable worker, with live search
+
+**Scope.**
+- Add a `discovery_research` durable job type (U10). The Discovery endpoints enqueue the job
+  instead of using `BackgroundTasks`.
+- Wave 1 families: `ENTITY`, `VALUE_CHAIN`, `VENUE`, `LOCAL_LANG`, `DEMAND`, `DOCUMENT`.
+- Bounded, cached LLM expansion (spec §4.3).
+- Per-venue locale table and glossary.
+- Saturation-aware follow-ups (spec §5.3).
+- Entity extraction from fetched pages.
+- A new `discovery_mode="search"` lead source feeding the existing `verify_identity`. The
+  `evidence_url` path serves venues without a directory.
+- Admission rules A1–A4 (spec §6.2), with persisted failure codes.
+- The Discovery Council pack (spec §17.1).
+- The fallback to V3.19 recall is labelled.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `services/discovery/pipeline.py` (lead source priority), `services/discovery/leads.py` (search source), `services/discovery/identity.py` (`evidence_url` from web), `services/discovery/constraints.py` (A3 status), `services/market_discovery_service.py` (enqueue), `api/v1/market_discovery.py`, `services/jobs/handlers.py`, `services/jobs/job_contract.py` (new job type), `services/llm/discovery_prompts.py` (pack contract) |
+| Add | `services/web_research/discovery_stage.py`, `services/web_research/locales.py` (venue → locale; versioned glossary) |
+
+**Data model.** Uses 042 and 043. The job type is a value in an existing column.
+
+**API.** The Discovery run response gains `web_search_state` and per-candidate
+`discovery_mode` / `admission` fields. These are additive.
+
+**UI.** The Discovery workbench polling already exists. Labels land in W8.
+
+**Tests.**
+- An obscure-company fixture: a company absent from `THEME_COMPANY_REGISTRY` is found by
+  search, identity-verified and admitted with A1–A3 evidence.
+- A snippet-only mention is not admitted.
+- A wrong-company page (a name collision) is rejected by the identity guard.
+- Saturation → `exclude_domains` is applied.
+- Local-language query generation.
+- Provider outage → labelled recall fallback, never `search`.
+- Durable job: lease, heartbeat and resume after a worker restart.
+- The V3.19 guards are unchanged: size hallucination and attribute leakage.
+
+**Acceptance.** Recorded fixtures A–F (acceptance §3) pass. Live acceptance follows in W9.
+
+**Deployment risk:** High. Discovery changes execution model and behaviour.
+
+**Rollback:** `V3_DISCOVERY_WEB_SEARCH_ENABLED=false` restores V3.19 behaviour on the durable
+worker. The durable move is its own slice (W6a) so it can be reverted independently.
+
+**Complexity:** XL (about 6–7 days, as two slices: W6a durable, W6b search).
+
+---
+
+## W7: Bounded follow-up research loop
+
+**Scope.**
+- A gap-type → `GAP` query template map (spec §7.3).
+- A web rung in the Director's `_has_a_rung_left`.
+- Saturation and "answered" stop reasons.
+- Contradictions become gaps.
+- Escalation counts verified `ev:x:` evidence and web chunks as improvement.
+- Council follow-up questions, where playbooks declare them, use the targeted profile.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `services/director/loop.py`, `services/director/planner.py`, `services/escalation/evidence.py`, `services/playbooks/*` (declarative follow-up templates) |
+| Add | `services/web_research/followup.py` |
+
+**Data model.** None. **API.** None. **UI.** None.
+
+**Tests.**
+- The loop stops on each reason: budget, rounds, wall time, saturation and answered.
+- No follow-up query contains page-derived tokens (PI-07).
+- A contradiction produces exactly one follow-up.
+- Escalation improvement counts `ev:x:`.
+
+**Acceptance.** A fixture in which a margin gap is closed by a follow-up document.
+
+**Deployment risk:** Medium, because of cost and runtime growth. Bounded by
+`mode.rounds`.
+
+**Rollback:** `V3_WEB_FOLLOWUP_ENABLED=false`.
+
+**Complexity:** M (about 2–3 days).
+
+---
+
+## W8: UX and the admin audit page
+
+**Scope.**
+- Progress states (spec §25.1).
+- Discovery card fields: why surfaced, mode label, evidence, confidence, sources.
+- Report evidence drawer: publisher, date, URL, class, corroboration, labels.
+- A "Sources found but not accessible" list.
+- The admin page `app/admin/web-research/[runId]`.
+- Provider health on the admin home.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Modify | `apps/web/src/components/research/discovery/CandidateCard.tsx`, `v319View.ts`, `candidateView.ts`, `RunLimitations.tsx`, `apps/web/src/components/research/report/EvidenceDisclosure.tsx`, `apps/web/src/components/research/EvidencePanel.tsx`, `apps/web/src/components/research/report/V3ResearchPanel.tsx`, `apps/web/src/app/admin/page.tsx` |
+| Add | `apps/web/src/app/admin/web-research/[runId]/page.tsx` and `WebResearchAudit.tsx` beside it (the pattern of `app/admin/reports/[id]/ReviewPanel.tsx`) |
+
+**Data model.** None.
+
+**API.** Uses the W1 admin endpoint, plus additive fields from W5 and W6.
+
+**Tests.**
+- Playwright: Discovery card labels, including the "unavailable" banner.
+- Playwright: report drawer.
+- Admin page renders a fixture run.
+- The rules from the SSR hydration and overflow traps memory: long URLs wrap, and there are
+  no host-locale dates.
+
+**Acceptance.** A manual QA checklist against a live W9 run.
+
+**Deployment risk:** Low.
+
+**Rollback:** Revert.
+
+**Complexity:** M (about 3 days).
+
+---
+
+## W9: Live acceptance campaign
+
+**Scope.** Run acceptance plan §6–§7 in production (`ib-stg`). There are six niche themes
+(A–F), each with Discovery, a Council and two full company reports, plus a source audit.
+The news, whitepaper, official-preference, malicious-page, SSRF and outage demonstrations
+also run here. Each defect found becomes its own corrective PR, following the V3.19 pattern.
+The phase ends with the acceptance report `docs/open-web-research-acceptance-report.md`.
+
+**Modules.**
+
+| Action | Files |
+|---|---|
+| Add | `scripts/web-research-acceptance.py` (repo root), which exits non-zero on an invariant breach, following the pattern of `scripts/v3-issuer-acceptance.py`; the report doc |
+
+**Deployment risk:** It exercises live spend within the U1 caps.
+
+**Rollback:** Flags off.
+
+**Complexity:** L (about 3–5 days, including correctives).
+
+---
+
+## W10: Optional extensions (each gated on evidence from W9)
+
+| Item | Trigger or prerequisite | Scope | Decision |
+|---|---|---|---|
+| W10a Browser fallback | ≥15 % of selected high-value URLs are `js_required` (spec §9.4) | Azure Container Apps Job running Playwright under threat model §7; `BrowserProvider` adapter; `infra/azure/modules/*` | **U5** (new Azure resource) |
+| W10b Office and CSV documents | Measured share of valuable DOCX/PPTX/XLSX results | python-docx, python-pptx, openpyxl + defusedxml; zip-bomb guard | — |
+| W10c Scholarly metadata | Technology themes show gaps | OpenAlex (key), Crossref (polite), arXiv (1 request per 3 s); metadata-only unless the licence is open | Key for OpenAlex (free tier) |
+| W10d Second search provider (Exa) | Written storage permission, plus a benchmark win on `cost_per_verified_useful_finding` | `integrations/search/exa.py`; benchmark run | **U13** + spend |
+| W10e Value-chain relationships | Discovery acceptance shows value-chain recall matters | Relationship vocabulary plus sourced `record_relationship` writes; GLEIF level-2 | No migration: `relationship_type` has no DB CHECK constraint (vocabulary enforced in code) |
+| W10f Egress isolation for all open-web fetches | Before any public or commercial launch | Move `web_research/fetch.py` execution into the isolated job | U5 |
+| W10g Multilingual retrieval | Measured non-English retrieval misses | Per-language `tsvector` configurations | Migration (index) |
+
+---
+
+## 1. File and module map
+
+### 1.1 Reuse unchanged (called, not edited)
+
+| Module | Why |
+|---|---|
+| `services/sources/pinned_transport.py` | DNS-rebinding defence (W0 edits only `trust_env` and deny ranges) |
+| `services/corpus/chunking.py`, `services/corpus/indexing.py`, `services/corpus/artifacts/*` | Chunks, index and content-addressed bytes |
+| `services/corpus/scope_resolution.py` | "Never promote to group" |
+| `services/discovery/identity.py` (logic), `directories.py`, `constraints.py`, `attribute_guard.py`, `freshness.py`, `intent.py` | Official identity and the requested-vs-verified contract |
+| `services/sources/ocr_provider.py` | Scanned PDFs |
+| `services/jobs/worker.py`, `job_store.py` | Durable execution |
+| `services/consumption_recorder.py` | Per-run accounting |
+| `services/entities/resolution.py`, `services/entities/relationships.py` | Resolution and sourced relationships |
+| `council_v2/*`, `agents/chair.py`, `agents/red_team.py` | They consume findings, and findings carry web ids transparently |
+| All SEC, NSM, ASX, Nordic and CONSOB connectors | **Untouched** (P10) |
+
+### 1.2 Modify
+
+`safe_web_fetcher.py`, `document_fetcher.py`, `redaction.py`, `live_fetchers.py`,
+`rate_limit.py`, `cache.py`, `primary_document_extractor.py`, `document_discovery.py`,
+`language.py`, `publisher_tiers.py`, `taxonomy.py`, `extraction_pipeline_version.py` (all
+under `services/sources/`); `services/providers/contracts.py`, `fakes.py`, `governance.py`,
+`leads.py`; `services/agent_tools/external.py`, `corpus_search.py`, `contracts.py`,
+`builtin.py`; `services/agents/investigator.py`, `routing.py`; `services/corpus/documents.py`,
+`identity.py`, `policy.py`, `search/types.py`, `search/backends/postgres.py`;
+`services/discovery/pipeline.py`, `leads.py`, `identity.py`, `constraints.py`;
+`services/market_discovery_service.py`; `services/director/loop.py`, `planner.py`;
+`services/escalation/evidence.py`; `services/pipeline/v3_pipeline.py`,
+`professional_research.py`; `services/research_mode.py`; `services/consumption.py`;
+`services/jobs/handlers.py`, `job_contract.py`; `services/traversal/issuer_site.py`;
+`services/entities/vocabulary.py`; `services/final_report_generator.py`;
+`integrations/providers/company_press_release_provider.py`;
+`integrations/deepseek/providers.py`; `api/v1/market_discovery.py`; `core/config.py`;
+`main.py`; `services/llm/discovery_prompts.py`.
+
+### 1.3 Add
+
+- `services/web_research/`:
+  - `planner.py`, `queries.py`, `search.py`, `selection.py`
+  - `fetch.py`, `robots.py`, `canonical.py`, `access.py`
+  - `extract.py`, `classify.py`, `entities.py`, `dedup.py`, `trust.py`
+  - `ingest.py`, `packs.py`, `budget.py`, `audit.py`
+  - `crawl.py`, `stage.py`, `discovery_stage.py`, `followup.py`
+  - `locales.py`, `source_policy.py`
+- `integrations/search/tavily.py`
+- `services/sources/public_suffix.py`
+- `models/web_research.py`
+- `api/v1/web_research_admin.py`
+- Alembic `042_add_web_search_provenance.py`, `043_add_web_documents_to_corpus.py`
+- Test fixtures under `tests/fixtures/web/`
+- Web: `apps/web/src/app/admin/web-research/[runId]/page.tsx`, `WebResearchAudit.tsx`
+- `scripts/web-research-acceptance.py`
+
+### 1.4 Deprecate
+
+| Item | Replacement | When |
+|---|---|---|
+| `V3_DEEPSEEK_SEARCH_ENABLED` and the DeepSeek `search_web` retrieval path | the configured `SearchProvider` | W5 (U12) |
+| `DeepSeekSearchProvider.search()` as a selectable search provider | kept only for the benchmark | W1 |
+| GDELT `ArtList` as the catalyst source for V2 `news_catalyst_discovery` | `CATALYST` family evidence | W5 (GDELT stays as a free fallback headline feed until measured redundant) |
+| The unguarded `CompanyPressReleaseProvider._fetch` | the guarded fetcher | W0 |
+| `THEME_COMPANY_REGISTRY` as the primary universe | kept as a labelled lead source only | W6 |
+
+---
+
+## 2. Rollout
+
+1. **Private use only.** There is no public or commercial assumption. The existing FCA and
+   ASX private-use restrictions are unchanged.
+2. **Deploy each slice dark.** Activate in this order, with a live read of production output
+   after each step:
+   - `V3_WEB_SEARCH_ENABLED` + `V3_WEB_SEARCH_PROVIDER=tavily`, audit-only, used by nothing
+     yet;
+   - `V3_WEB_FETCH_ENABLED`;
+   - `V3_WEB_CORPUS_INGEST_ENABLED`;
+   - `V3_COMPANY_WEB_RESEARCH_ENABLED`;
+   - `V3_DISCOVERY_WEB_SEARCH_ENABLED`;
+   - `V3_WEB_FOLLOWUP_ENABLED`.
+3. **App-setting changes follow the existing practice.** Restart and wait, then run
+   SHA-verified smoke checks. Never print a setting value.
+4. **Read-only first.** The first live runs use the admin audit page only, and are compared
+   against the recorded fixtures.
+
+## 3. Rollback
+
+- **Every capability has its own flag.** Turning a flag off restores the previous behaviour.
+  Web data already stored stays in place, and it can be excluded by retrieval filters.
+- **Migrations 042 and 043 have tested downgrades.** They drop only new tables and nullable
+  columns. The downgrade is **not** needed for a behavioural rollback.
+- **Official-source research is unaffected when every web flag is off.** This is asserted by
+  the acceptance plan §8 regression suite, which runs in every slice.
+
+## 4. Overall size
+
+About **35–45 engineering days** across W0–W9. W10 items are each 2–6 days.
+
+On the critical path, **only U1 (the search key) blocks live behaviour**. W0, and the code
+and fixture-tested parts of W1–W4, can proceed before it.

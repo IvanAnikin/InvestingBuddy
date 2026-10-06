@@ -49,7 +49,7 @@ import contextvars
 import json
 import re
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -60,6 +60,7 @@ from app.services.sources.redaction import canonicalize_source_url
 from app.services.sources.safe_web_fetcher import (
     ANNUAL_REPORT_KEYWORDS,
     is_safe_public_host,
+    normalize_link_url,
 )
 from app.services.sources.verified_issuer_sources import (
     host_of,
@@ -251,6 +252,34 @@ class DiscoveredDocument:
     is_document: bool = False
     identity: str = ""
     published_hint: str | None = None
+    #: The candidate as published (whitespace percent-encoded), passed only when it
+    #: differs from the canonical, secret-stripped ``url`` (W0 review S-M2 / D12).
+    #: Init-only, kept off the dataclass fields: never in repr/eq/asdict.
+    fetch_url: InitVar[str] = ""
+
+    def __post_init__(self, fetch_url: str) -> None:
+        object.__setattr__(self, "_fetch_url", fetch_url or "")
+
+    @property
+    def fetch_target(self) -> str:
+        """The URL to request: the unmodified candidate when canonicalising changed it."""
+        return getattr(self, "_fetch_url", "") or self.url
+
+
+class _CandidateUrl(str):
+    """A canonical candidate URL that remembers the URL as published (S-M2).
+
+    Candidate URLs travel through several helpers as plain strings (sets, lists,
+    ``(url, hint)`` pairs); a ``str`` subclass carries the raw form through all of them
+    unchanged, so ``_make_document`` can hand it to ``DiscoveredDocument.fetch_url``.
+    """
+
+    fetch_url: str
+
+    def __new__(cls, value: str, fetch_url: str = "") -> _CandidateUrl:
+        obj = super().__new__(cls, value)
+        obj.fetch_url = fetch_url if fetch_url and fetch_url != value else ""
+        return obj
 
 
 # --------------------------------------------------------------------------- #
@@ -692,7 +721,8 @@ def _normalize_candidate_url(
     if text.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
         return None
     try:
-        absolute = canonicalize_source_url(urljoin(base_url, text)) or ""
+        joined = urljoin(base_url, text)
+        absolute = canonicalize_source_url(joined) or ""
     except (ValueError, TypeError):
         return None
     if not absolute.startswith("https://") or len(absolute) > _MAX_URL_CHARS:
@@ -702,7 +732,9 @@ def _normalize_candidate_url(
         return None
     if not registrable_host_allowed(host, allowed_domains):
         return None
-    return absolute
+    # W0 review S-M2: the canonical form is what is STORED; the URL as published
+    # (secrets and all) is what is FETCHED — a stripped signed URL is a different URL.
+    return _CandidateUrl(absolute, normalize_link_url(joined) or "")
 
 
 def _is_candidate_document(url: str, title: str, keywords: tuple[str, ...]) -> bool:
@@ -719,7 +751,8 @@ def _make_document(
 ) -> DiscoveredDocument:
     clean_title = (title or _title_from_url(url)).strip()[:_MAX_TITLE_CHARS]
     return DiscoveredDocument(
-        url=url,
+        url=str(url),
+        fetch_url=getattr(url, "fetch_url", ""),
         title=clean_title,
         doc_kind=classify_document_kind(clean_title, url),
         strategy=strategy,

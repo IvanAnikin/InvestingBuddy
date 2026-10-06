@@ -237,6 +237,12 @@ class LLMChair:
                         "period_key": finding.period_key,
                         "scope_key": finding.scope_key,
                         "verification_status": finding.verification_status,
+                        # Migration 043 — a superseded finding is PRIOR guidance; the
+                        # newer one it names is current.
+                        "source_published_at": getattr(finding, "source_published_at", None),
+                        "superseded_by_finding_id": getattr(
+                            finding, "superseded_by_finding_id", None
+                        ),
                     },
                     default=str,
                 )
@@ -249,9 +255,21 @@ class LLMChair:
                     f"{(d.description or '')[:300]}"
                 )
         if council_input.gaps:
+            # Closed and superseded gaps never reach here (council_v2.inputs). A gap a
+            # finding PARTLY addresses says which finding, so the analysis does not call
+            # a field missing that a cited finding states.
             lines.append("\nGAPS — the analysis must be explicit about these:")
             for gap in council_input.gaps[:15]:
-                lines.append(f"  [{gap.gap_type}] {gap.description[:300]}")
+                line = f"  [{gap.gap_type}] {gap.description[:300]}"
+                if getattr(gap, "reconciliation_status", None) == "partially_closed":
+                    addressed = ", ".join(getattr(gap, "addressed_by_finding_ids", ())[:3])
+                    reasons = ", ".join(getattr(gap, "reconciliation_reasons", ())[:3])
+                    line += (
+                        f" (PARTIALLY ADDRESSED by finding {addressed or 'n/a'}"
+                        + (f"; {reasons}" if reasons else "")
+                        + ")"
+                    )
+                lines.append(line)
         return "\n".join(lines)
 
     async def _complete_json(self, system: str, user: str) -> dict[str, Any]:

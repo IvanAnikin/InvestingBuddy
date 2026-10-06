@@ -1020,6 +1020,50 @@ may be applied any time before the slices that map these columns are deployed. T
 order (ORM columns on a schema without them) fails every query on the table. Apply with
 the SSH runbook in `docs/DEPLOYMENT.md`; the deploy workflow never runs migrations.
 
+## Migration 042 — web search and fetch provenance (open-web W1)
+
+**Additive only**: three new tables, no existing column touched, no unique index. Every
+lineage FK (`research_jobs`, `discovery_runs`, `agent_runs`, `companies`) is nullable with
+`ON DELETE SET NULL`, so deleting a job never deletes its search audit. Downgrade drops
+exactly these three tables. Verified `041 → 042 → 041 → 042` on PostgreSQL 16
+(`tests/test_web_w1_search_postgres.py`). Spec: `docs/open-web-research-spec.md` §15.1,
+§22.3, §26.3.
+
+| Table | Columns | Why |
+|---|---|---|
+| `web_search_queries` | `research_job_id`, `discovery_run_id`, `agent_run_id`, `company_id`, `stage`, `family`, `origin`, `template_version`, `query_text`, `request_hash`, `filters_json`, `provider`, `executed`, `provider_request_id`, `http_status`, `network_call_count`, `latency_ms`, `result_count`, `cost_units_json`, `error_code`, `served_from_query_id` (self-FK, SET NULL), `created_at` | The network fact of every query issued **or refused**. `executed=true` only on a 2xx with a request id and a parsed result list. A query refused for a private token (rule G1) or a credential is stored as `[withheld: <code>]` with `request_hash = withheld:<code>` — never its text or a hash of it. `filters_json` = `{requested, enforced_by, client_filtered_count, date_unchecked_count}`. A cache serve or in-batch duplicate is `executed=true`, `network_call_count=0`, `provider_request_id=NULL` and points at the original through `served_from_query_id`. Every query, including refused ones, is checked for credentials and private tokens (text AND filters) first; other refused text is stored URL-secret-stripped and truncated to 400 characters. Result URLs are stored without credential-bearing parameters. |
+| `web_search_results` | `query_id` (CASCADE), `rank`, `url`, `canonical_url`, `domain`, `title`, `snippet`, `published_hint`, `language_hint`, `provider_score`, `disposition`, `disposition_reason`, `created_at` | One row per normalised result. Title/snippet are untrusted and NULL when the provider's `result_storage` forbids keeping them. `disposition` is `candidate` until W2 selection. |
+| `web_fetch_attempts` | `research_job_id`, `discovery_run_id`, `web_search_result_id`, `parent_attempt_id`, `origin`, `requested_url`, `final_url`, `canonical_url`, `redirect_chain_json`, `policy_decision`, `robots_decision`, `tdm_decision`, `http_status`, `mime_served`, `mime_sniffed`, `bytes`, `truncated`, `content_hash`, `fetch_ms`, `status`, `failure_code`, `created_at` | Open-web fetch audit. Schema only in W1; written from W2. |
+
+Indexes: `web_search_queries(research_job_id)`, `(discovery_run_id)`,
+`(request_hash, provider, created_at)` (the 24 h search cache), `web_search_results(query_id,
+rank)`, and the two lineage columns plus `web_search_result_id` on `web_fetch_attempts`.
+
+**Deploy order.** Nothing reads or writes these tables while `V3_WEB_SEARCH_ENABLED` is off
+(the default), so the W1 code is inert on a database without 042; the admin audit endpoint
+answers 503 naming the migration. Apply 042 before turning the flag on (decision U9).
+
+## Migration 043 — report reconciliation: gap closure and temporal supersession
+
+**Additive only**: four nullable columns, one self-referencing foreign key
+(`ON DELETE SET NULL`) and three CHECKs every existing row satisfies. No backfill. Verified
+`041 → 043 → 041 → 043` on PostgreSQL. (`down_revision` is `042`, the web-search
+provenance migration; the chain is `041 → 042 → 043`.)
+
+| Table | Columns | Why |
+|---|---|---|
+| `research_gaps` | `reconciliation_status`, `reconciliation_json` | The final reconciliation's verdict — `closed` / `partially_closed` / `superseded` / `still_open` — with the fields the gap is about and the findings, fact or document that addressed it. `ck_research_gaps_reconciled_closed_names_a_finding`: a gap is reconciled `closed` only when `closed_by_finding_id` is set (written through `ledger.close_gap`). |
+| `research_findings` | `source_published_at`, `superseded_by_finding_id` | When the cited source was published (newest cited date, only when every cited item is dated), and the newer finding that replaced this one as current guidance. `ck_research_findings_not_superseded_by_itself`. |
+
+`research_findings.claim_key` (041, previously never written) now carries the fields a
+finding states from the closed vocabulary in `services/research_fields.py`, plus the project
+it names: `metric:capex@foo`.
+
+**Deploy order.** The ORM maps these columns in the same PR. The V3 pipeline checks
+`schema_readiness.migration_043_readiness` before it writes and degrades with a named reason
+("migration 043 is not applied") rather than failing; `GET /company-research/schema-readiness`
+reports it under `migration_043`.
+
 ## `research_job_id` — the five lineage columns, and who writes them (V3.17.9)
 
 Five tables carry a `research_job_id` foreign key to `research_jobs.id`. Between them they

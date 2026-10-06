@@ -26,18 +26,51 @@ Future enhancement: honour robots.txt / <meta name="robots"> and use
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
+from typing import Any
 from urllib.parse import urljoin, urlparse
-
-import httpx
 
 from app.integrations.financial_data_provider import SourceTier
 from app.schemas.catalyst import NewsItem, PressReleaseStatus
 
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
+#: Feed media types admitted as TEXT for this fetch only (the guarded document
+#: fetcher's global allowlist is pdf/html/plain).
+_FEED_CONTENT_TYPES: tuple[str, ...] = (
+    "application/rss+xml",
+    "application/atom+xml",
+    "application/xml",
+    "text/xml",
+)
+#: A feed is a listing, not a document: 2 MB is far more than any real one.
+_MAX_FEED_BYTES = 2_000_000
+#: Whole-fetch budget for ONE candidate feed (up to seven are probed per issuer).
+_FEED_DEADLINE_SECONDS = 15.0
+
+_CHARSET_RE = re.compile(r"charset\s*=\s*[\"']?([A-Za-z0-9._:-]+)", re.IGNORECASE)
+_XML_ENCODING_RE = re.compile(
+    rb"^\s*<\?xml[^>]*encoding\s*=\s*[\"']([A-Za-z0-9._:-]+)[\"']", re.IGNORECASE
+)
+
+
+def _decode_feed(raw: bytes, content_type: str | None) -> str:
+    """Decode a feed with its declared charset (header, then XML prolog), else UTF-8."""
+    candidates: list[str] = []
+    match = _CHARSET_RE.search(content_type or "")
+    if match:
+        candidates.append(match.group(1))
+    prolog = _XML_ENCODING_RE.match(raw[:200])
+    if prolog:
+        candidates.append(prolog.group(1).decode("ascii", "replace"))
+    for charset in candidates:
+        try:
+            return raw.decode(charset)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", "replace")
 
 # Conservative set of common newsroom / IR feed paths.
 _FEED_PATHS: tuple[str, ...] = (
@@ -353,28 +386,69 @@ class CompanyPressReleaseProvider:
 
     provider_name = "company_press_release"
 
+    def __init__(self, *, resolver: Any = None, cfg: Any = None) -> None:
+        # Test seams only: a fake ``getaddrinfo``-shaped resolver and explicit
+        # Settings. Production uses real (off-loop) DNS and the global settings.
+        self._resolver = resolver
+        self._cfg = cfg
+
     async def _fetch(self, url: str) -> str | None:
-        try:
-            async with httpx.AsyncClient(
-                headers={"User-Agent": _USER_AGENT},
-                timeout=6.0,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(url)
-                if resp.status_code != 200:
-                    return None
-                ctype = resp.headers.get("content-type", "").lower()
-                feed_like_ctype = any(k in ctype for k in ("xml", "rss", "atom"))
-                head = resp.text[:200].lstrip()
-                feed_like_body = (
-                    head.startswith("<?xml") or "<rss" in head or "<feed" in head
-                )
-                if not feed_like_ctype and not feed_like_body:
-                    # Only accept feed-like responses; do not scrape HTML pages.
-                    return None
-                return resp.text
-        except Exception:
+        """Fetch one candidate feed through the guarded fetcher. Never raises.
+
+        W0 / D9: this was the only dynamic-URL fetcher outside the guard — raw httpx
+        with ``follow_redirects=True``, ``http`` allowed, no address check, the whole
+        body buffered. It now goes through ``safe_fetch_document``:
+
+        * HTTPS only — an ``http://`` candidate is UPGRADED, never fetched in the clear;
+        * the allowlist is the candidate's REGISTRABLE domain (Public Suffix List), so
+          ``www.issuer.com`` → ``news.issuer.com`` redirects work and a redirect to
+          another site is refused (W0 review M4);
+        * every hop is resolved, checked and pinned; the body is capped at 2 MB and
+          the whole fetch at ``_FEED_DEADLINE_SECONDS``;
+        * the body is decoded with the charset the response (or the XML prolog)
+          declares, falling back to UTF-8;
+        * refused outright on a runtime whose ``ipaddress`` is not trusted (D13): the
+          feed URL comes from company data, not from code.
+        """
+        from app.services.sources.document_fetcher import safe_fetch_document
+        from app.services.sources.public_suffix import aregistrable_domain
+        from app.services.sources.safe_web_fetcher import open_web_fetch_refusal
+
+        if open_web_fetch_refusal() is not None:
             return None
+        target = (url or "").strip()
+        if target.lower().startswith("http://"):
+            target = "https://" + target[len("http://") :]
+        host = (urlparse(target).hostname or "").lower()
+        if not host:
+            return None
+        domain = await aregistrable_domain(host) or host
+        kwargs: dict[str, Any] = {
+            "allowed_domains": (domain,),
+            "resolve_ip": True,
+            "extra_text_content_types": _FEED_CONTENT_TYPES,
+            "max_bytes": _MAX_FEED_BYTES,
+            "total_deadline_seconds": _FEED_DEADLINE_SECONDS,
+        }
+        if self._resolver is not None:
+            kwargs["resolver"] = self._resolver
+        if self._cfg is not None:
+            kwargs["cfg"] = self._cfg
+        try:
+            result = await safe_fetch_document(target, **kwargs)
+        except Exception:  # noqa: BLE001 - the guarded fetcher never raises; belt+braces
+            return None
+        if not result.ok or result.content is None or result.status_code != 200:
+            return None
+        text = _decode_feed(result.content, result.content_type)
+        ctype = (result.content_type or "").lower()
+        feed_like_ctype = any(k in ctype for k in ("xml", "rss", "atom"))
+        head = text[:200].lstrip()
+        feed_like_body = head.startswith("<?xml") or "<rss" in head or "<feed" in head
+        if not feed_like_ctype and not feed_like_body:
+            # Only accept feed-like responses; do not scrape HTML pages.
+            return None
+        return text
 
     async def get_press_releases(
         self,
