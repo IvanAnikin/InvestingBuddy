@@ -134,6 +134,7 @@ test.describe("reading the professional research payload", () => {
         "key",
         "lead",
         "platform_evidence_gaps",
+        "platform_evidence_gaps_reconciled",
         "questions_by_contract_status",
         "source_diversity",
         "title",
@@ -157,7 +158,9 @@ test.describe("reading the professional research payload", () => {
         "question_key",
         "references",
         "source_kinds",
+        "source_published_at",
         "statement",
+        "superseded_by_finding_id",
       ].sort(),
     );
     const industry = byKey.industry_and_market as {

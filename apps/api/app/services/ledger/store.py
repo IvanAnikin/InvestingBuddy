@@ -26,10 +26,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.models.ledger import (
     ResearchDisagreement,
@@ -108,6 +108,22 @@ GAP_OPEN = "open"
 GAP_CLOSED = "closed"
 GAP_ACCEPTED = "accepted"
 GAP_STATUSES: frozenset[str] = frozenset({GAP_OPEN, GAP_CLOSED, GAP_ACCEPTED})
+
+#: Migration 043 — what the final reconciliation decided about a gap.
+RECONCILED_CLOSED = "closed"
+RECONCILED_PARTIALLY_CLOSED = "partially_closed"
+RECONCILED_SUPERSEDED = "superseded"
+RECONCILED_STILL_OPEN = "still_open"
+RECONCILIATION_STATUSES: frozenset[str] = frozenset(
+    {
+        RECONCILED_CLOSED,
+        RECONCILED_PARTIALLY_CLOSED,
+        RECONCILED_SUPERSEDED,
+        RECONCILED_STILL_OPEN,
+    }
+)
+#: What a reader is no longer shown as an open gap.
+RECONCILED_HIDDEN: frozenset[str] = frozenset({RECONCILED_CLOSED, RECONCILED_SUPERSEDED})
 
 DISAGREEMENT_NATURES: frozenset[str] = frozenset(
     {"value", "period", "scope", "interpretation", "source_quality"}
@@ -331,6 +347,7 @@ async def record_finding(
     claim_key: str | None = None,
     references_finding_ids: Sequence[str] = (),
     source_kinds: Sequence[str] = (),
+    source_published_at: date | None = None,
 ) -> ResearchFinding:
     """Persist one finding. **The counts are derived here and nowhere else.**"""
     evidence = [str(value).strip() for value in evidence_ids if str(value).strip()]
@@ -371,6 +388,7 @@ async def record_finding(
         claim_key=_clip(claim_key, 240),
         references_finding_ids_json=[str(v) for v in references_finding_ids] or None,
         source_kinds_json=sorted({str(k) for k in source_kinds}) or None,
+        source_published_at=source_published_at,
     )
     session.add(finding)
     await session.flush()
@@ -506,6 +524,44 @@ async def close_gap(
     gap.closed_by_finding_id = finding.id
     await session.flush()
     return gap
+
+
+async def reconcile_gap(
+    session: Any,
+    gap: ResearchGap,
+    *,
+    status: str,
+    detail: dict[str, Any],
+    finding: ResearchFinding | None = None,
+) -> ResearchGap:
+    """Record the final reconciliation verdict on a gap. Migration 043.
+
+    ``closed`` goes through ``close_gap`` — the only writer of a closed gap — and so must
+    name the finding; the other verdicts leave the ledger status as it is.
+    """
+    if status not in RECONCILIATION_STATUSES:
+        raise ValueError(f"{status!r} is not a reconciliation status.")
+    if status == RECONCILED_CLOSED:
+        if finding is None:
+            raise ValueError(
+                "a gap is reconciled closed only by naming the finding that answered it."
+            )
+        await close_gap(session, gap, finding=finding)
+    gap.reconciliation_status = status
+    gap.reconciliation_json = dict(detail)
+    await session.flush()
+    return gap
+
+
+async def mark_superseded(
+    session: Any, older: ResearchFinding, *, by: ResearchFinding
+) -> ResearchFinding:
+    """``older`` is prior guidance; ``by`` is the current statement. Both are kept."""
+    if older.id == by.id:
+        raise ValueError("a finding cannot supersede itself.")
+    older.superseded_by_finding_id = by.id
+    await session.flush()
+    return older
 
 
 async def accept_gap(session: Any, gap: ResearchGap) -> ResearchGap:
@@ -671,12 +727,23 @@ async def summarise(session: Any, run: ResearchRun) -> LedgerSummary:
             ResearchGap,
             ResearchGap.research_run_id == run.id,
             ResearchGap.status == GAP_OPEN,
+            # The same population a reader is shown: a superseded gap is not listed as
+            # open, so it is not counted as open either.
+            or_(
+                ResearchGap.reconciliation_status.is_(None),
+                ResearchGap.reconciliation_status != RECONCILED_SUPERSEDED,
+            ),
         ),
         gaps_blocking_council=await _count(
             ResearchGap,
             ResearchGap.research_run_id == run.id,
             ResearchGap.status == GAP_OPEN,
             ResearchGap.blocks_council.is_(True),
+            # A gap the final reconciliation found superseded no longer blocks anything.
+            or_(
+                ResearchGap.reconciliation_status.is_(None),
+                ResearchGap.reconciliation_status != RECONCILED_SUPERSEDED,
+            ),
         ),
         disagreements_unresolved=await _count(
             ResearchDisagreement,
@@ -726,6 +793,12 @@ __all__ = [
     "ORIGIN_PRIOR_GAP",
     "ORIGIN_RED_TEAM",
     "PARTIALLY_RESOLVED",
+    "RECONCILED_CLOSED",
+    "RECONCILED_HIDDEN",
+    "RECONCILED_PARTIALLY_CLOSED",
+    "RECONCILED_STILL_OPEN",
+    "RECONCILED_SUPERSEDED",
+    "RECONCILIATION_STATUSES",
     "QUESTION_ANSWERED",
     "QUESTION_OPEN",
     "QUESTION_ORIGINS",
@@ -755,11 +828,13 @@ __all__ = [
     "close_gap",
     "close_run",
     "finish_task",
+    "mark_superseded",
     "open_gaps",
     "open_run",
     "record_disagreement",
     "record_finding",
     "record_gap",
     "record_hypothesis",
+    "reconcile_gap",
     "summarise",
 ]
