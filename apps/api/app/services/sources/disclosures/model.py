@@ -149,6 +149,9 @@ class DisclosureListing:
     #: Records the source returned that were refused (another issuer's LEI, a
     #: superseded version, an unusable link).
     refused: int = 0
+    #: Listing pages inside the window that could not be read (review round 2, H6): a
+    #: listing with a hole is not evidence that something is ABSENT from it.
+    pages_failed: int = 0
 
 
 @dataclass

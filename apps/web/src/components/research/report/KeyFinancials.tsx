@@ -5,10 +5,12 @@ import {
   sourceTierWord,
   type MetricDirection,
 } from "@/components/research/reportSections";
-import type {
-  FinancialDatapoint,
-  FinancialSnapshotView,
+import {
+  periodText,
+  type FinancialDatapoint,
+  type FinancialSnapshotView,
 } from "@/components/research/reportView";
+import { formatNumber } from "@/lib/format";
 
 /**
  * The numbers, grouped the way a reader reads them.
@@ -96,7 +98,7 @@ function Column({
         {kicker}
       </p>
       <p className="mt-0.5 text-base font-semibold tracking-tight text-[color:var(--ib-ink)]">
-        {period ?? "Not reported"}
+        {period ?? "Period not stated"}
       </p>
       {caution && (
         <p className="mt-1.5 text-xs font-medium text-amber-300/90">{caution}</p>
@@ -148,9 +150,23 @@ export default function KeyFinancials({
   directions?: Map<string, MetricDirection>;
 }) {
   const groups = groupFinancials(snapshot);
-  const { periods, latestClose, statementsNote, currentPeriodNote, fallbackNote } =
-    snapshot;
+  const {
+    periods,
+    latestClose,
+    statementsNote,
+    currentPeriodNote,
+    fallbackNote,
+    annualState,
+    currentState,
+    fromIssuerStatements,
+    derived,
+    revenueStatus,
+  } = snapshot;
   const hasAnything = groups.length > 0 || latestClose !== null;
+  // Item 21 — the one sentence that says why no annual figure is shown, when the report
+  // knows: acquired but not extracted, not acquired, or not filed by the issuer.
+  const annualSituation =
+    !periods?.latestAnnual && annualState ? annualState : null;
 
   return (
     <Surface
@@ -163,10 +179,25 @@ export default function KeyFinancials({
         Key financials
       </h2>
 
-      {!hasAnything && (
+      {!hasAnything && !annualSituation && (
         <p className="ib-breakable mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
           {fallbackNote ??
             "No financial statement figure was sourced for this company. That is a finding, not a gap in this view."}
+        </p>
+      )}
+
+      {annualSituation && (
+        <p
+          className="ib-breakable mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+          data-testid="annual-statement-state"
+          data-state={annualSituation.state}
+        >
+          {annualSituation.label}.
+          {annualSituation.reason ? (
+            <span className="block text-xs text-[color:var(--ib-ink-3)]">
+              {annualSituation.reason}
+            </span>
+          ) : null}
         </p>
       )}
 
@@ -180,19 +211,56 @@ export default function KeyFinancials({
         >
           {(
             [
-              ["Latest annual", periods.latestAnnual],
-              ["Latest interim", periods.latestInterim],
-              ["Latest quarter", periods.latestQuarter],
-            ] as [string, string | null][]
+              [
+                "Latest annual",
+                periodText(
+                  periods.latestAnnual,
+                  annualState ? { ...annualState, label: annualState.short } : null,
+                ),
+              ],
+              [
+                "Latest interim",
+                periodText(
+                  periods.latestInterim,
+                  !periods.latestCurrent && currentState
+                    ? { ...currentState, label: currentState.short }
+                    : null,
+                ),
+              ],
+              ["Latest quarter", periodText(periods.latestQuarter, null)],
+            ] as [string, string][]
           ).map(([label, value]) => (
             <div key={label}>
               <dt className="text-xs text-[color:var(--ib-ink-3)]">{label}</dt>
-              <dd className="text-sm text-[color:var(--ib-ink)]">
-                {value ?? "Not reported"}
-              </dd>
+              <dd className="text-sm text-[color:var(--ib-ink)]">{value}</dd>
             </div>
           ))}
         </dl>
+      )}
+
+      {revenueStatus && (
+        <p
+          className="ib-breakable mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+          data-testid="revenue-status"
+        >
+          {revenueStatus.label}
+          {revenueStatus.note ? (
+            <span className="block text-xs text-[color:var(--ib-ink-3)]">
+              {revenueStatus.note}
+            </span>
+          ) : null}
+        </p>
+      )}
+
+      {fromIssuerStatements && (
+        <p
+          className="mt-3 max-w-2xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
+          data-testid="issuer-statements-note"
+        >
+          Figures read from the issuer&apos;s own reports acquired for this
+          research, under the same Group-scope, period and confidence rules as
+          every other figure here. Nothing is converted, annualised or estimated.
+        </p>
       )}
 
       {groups.length > 0 && (
@@ -231,6 +299,44 @@ export default function KeyFinancials({
               </div>
             </section>
           ))}
+        </div>
+      )}
+
+      {derived.length > 0 && (
+        <div
+          className="mt-5 border-t border-[color:var(--ib-line)] pt-4"
+          data-testid="derived-metrics"
+        >
+          <p className="text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--ib-ink-3)]">
+            Derived by InvestingBuddy
+          </p>
+          <ul className="mt-2 space-y-1.5">
+            {derived.map((metric) => (
+              <li
+                key={`${metric.key}-${metric.basis ?? ""}`}
+                className="ib-breakable text-sm text-[color:var(--ib-ink-2)]"
+              >
+                {metric.computed && metric.value !== null ? (
+                  <>
+                    {metric.label}:{" "}
+                    <span className="font-mono text-[color:var(--ib-ink)]">
+                      {formatNumber(metric.value, { maximumFractionDigits: 1 })}{" "}
+                      quarter-equivalents
+                    </span>
+                    {metric.periodKey ? ` · ${metric.periodKey}` : ""}
+                    <span className="block text-[11px] text-[color:var(--ib-ink-3)]">
+                      {metric.interpretation}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    {metric.label}: not computed
+                    {metric.refusalDetail ? ` — ${metric.refusalDetail}` : ""}
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

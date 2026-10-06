@@ -315,7 +315,7 @@ async def list_uk_disclosures(
                                  detail="the NSM answered unreadably", requests=requests)
     documents, refused = parse_nsm_hits(
         payload, issuer,
-        lookback_days=int(getattr(cfg, "v3_disclosure_lookback_days", 540) or 540),
+        lookback_days=int(getattr(cfg, "v3_disclosure_lookback_days", 560) or 560),
         now=now or datetime.now(timezone.utc),
     )
     return DisclosureListing(

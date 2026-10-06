@@ -484,7 +484,10 @@ class TestAcquisitionChain:
         financing = next(v for v in versions if "Financing" in (v.title or ""))
         assert financing.period_key is None  # NOT 2028-Q1
         interim = next(v for v in versions if "six months ended" in (v.title or ""))
-        assert interim.period_type == "half"
+        # Track C review round 2, H2: "six months ended 31 DECEMBER 2025" is the first
+        # half of a June fiscal year, not calendar H1 2025. With the issuer's year-end
+        # unknown the half is not named at all — never mislabelled.
+        assert interim.period_key is None
 
     async def test_mutation_scope_is_never_rewritten_to_group(self, session):
         """The connector passes the extractor's scope through unchanged: a figure under a
@@ -814,10 +817,16 @@ class TestEvidenceIntegrityFixes:
         assert not document_period_for(title="Q1 FY2030 production target", url=None,
                                        extraction=None, title_only=True,
                                        published_at=_date(2026, 10, 28)).is_known
+        # Track C review round 2, H2: a half ending 31 DECEMBER is H1 of a June fiscal
+        # year, not calendar H1 2025 — with the year-end unknown it names no period.
         report = "Half Year Report for the six months ended 31 December 2025"
-        assert document_period_for(title=report, url=None, extraction=None,
+        assert not document_period_for(title=report, url=None, extraction=None,
+                                       title_only=True,
+                                       published_at=_date(2026, 2, 27)).is_known
+        june = "Interim Report for the six months ended 30 June 2025"
+        assert document_period_for(title=june, url=None, extraction=None,
                                    title_only=True,
-                                   published_at=_date(2026, 2, 27)).is_known
+                                   published_at=_date(2025, 9, 20)).is_known
 
     async def test_a_corrected_refiling_is_fetched_again(self, session):
         """MEDIUM (review): an NSM amendment keeps the address; the source's update time
@@ -1438,6 +1447,10 @@ class TestReuseRevalidationOfAnnouncements:
         from app.models.extracted_document import ExtractedFact
 
         ir = await self._doc(session, "company_ir")
+        # Track C review round 2, H1: a "Quarterly Activities Report" title is a
+        # part-year document whose annual-period figures are no longer promoted; the
+        # control is about the currency reading, so it uses a neutral title.
+        ir.title = "Company update"
         await self._revalidate(session, ir)
         facts = (await session.execute(select(ExtractedFact).where(
             ExtractedFact.extracted_document_id == ir.id))).scalars().all()
