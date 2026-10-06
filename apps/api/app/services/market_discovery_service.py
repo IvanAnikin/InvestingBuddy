@@ -794,6 +794,24 @@ def _log_candidate(
     )
 
 
+#: W6a — the stages a durable discovery job reports through ``progress``. They land
+#: in ``research_jobs.stage`` (String(50)), so they stay short and fixed.
+STAGE_DYNAMIC_DISCOVERY = "discovery_dynamic_stage"
+STAGE_SCANNING = "discovery_scanning"
+
+ProgressHook = Callable[[str | None], Awaitable[None]]
+
+
+async def _existing_candidates(
+    db: AsyncSession, run_id: uuid.UUID
+) -> list[DiscoveryCandidate]:
+    """Every candidate an EARLIER attempt of this run already committed."""
+    result = await db.execute(
+        select(DiscoveryCandidate).where(DiscoveryCandidate.discovery_run_id == run_id)
+    )
+    return list(result.scalars().all())
+
+
 async def process_run(
     db: AsyncSession,
     run: DiscoveryRun,
@@ -801,6 +819,9 @@ async def process_run(
     extractor: SignalExtractor | None = None,
     discovery_provider: Any = None,
     discovery_fetcher: Any = None,
+    owned_by_lease: bool = False,
+    progress: ProgressHook | None = None,
+    durable_job_id: uuid.UUID | None = None,
 ) -> DiscoveryRun:
     """
     Process an already-loaded discovery run to completion using ``db``.
@@ -812,6 +833,17 @@ async def process_run(
     Progress is committed after every ticker so a polling UI shows live counts.
     A per-ticker failure never fails the whole run. ``extractor`` is injectable
     for tests (defaults to the real signal extractor).
+
+    W6a — ``owned_by_lease=True`` is the durable worker's call. The caller holds
+    the job lease, which is the real proof that nobody else is processing this
+    run, so the 30-minute "already running" guard (a BackgroundTasks-era guess) is
+    bypassed: without that, a retry after a crash would be a silent no-op. The
+    durable call also RESUMES: the committed ``processed_count`` is a cursor into
+    the persisted universe, so the tickers before it are skipped and the counts
+    continue from the row, and a retry never duplicates a candidate.
+    ``progress`` (the job's checkpoint) is awaited between tickers and
+    OUTSIDE the per-ticker error handling, so a lost lease or a cancellation stops
+    the run instead of being recorded as one ticker's error.
     """
     if run.status in _TERMINAL_STATUSES:
         logger.info(
@@ -820,7 +852,7 @@ async def process_run(
             run.status,
         )
         return run
-    if run.status == "running":
+    if run.status == "running" and not owned_by_lease:
         started = _aware(run.started_at)
         if started is not None:
             age = datetime.now(timezone.utc) - started
@@ -844,6 +876,12 @@ async def process_run(
     universe = _run_universe(run)
     thesis_ctx = _thesis_context(run)
 
+    # W6a — a durable retry of a run whose scan had already started. The scan
+    # has committed to the universe it was given, so the dynamic stage must not
+    # be re-run underneath it (a stage that failed once and succeeds now would
+    # swap the universe the cursor below points into).
+    resuming_scan = owned_by_lease and int(run.processed_count or 0) > 0
+
     # ── Mark running and persist immediately so pollers see progress ──────
     run.status = "running"
     run.started_at = run.started_at or datetime.now(timezone.utc)
@@ -860,9 +898,16 @@ async def process_run(
 
         intent = intent_from_dict((run.parsed_thesis_json or {}).get("discovery_intent"))
         stage_state = ((run.universe_json or {}).get(STAGE_KEY) or {}).get("status")
-        if intent is not None and stage_state != "completed":
+        if intent is not None and stage_state != "completed" and not resuming_scan:
+            if progress is not None:
+                await progress(STAGE_DYNAMIC_DISCOVERY)
             await _run_dynamic_discovery(
-                db, run, intent, provider=discovery_provider, fetcher=discovery_fetcher
+                db,
+                run,
+                intent,
+                provider=discovery_provider,
+                fetcher=discovery_fetcher,
+                durable_job_id=durable_job_id,
             )
         dynamic_ran = intent is not None
         universe = _run_universe(run)
@@ -890,9 +935,39 @@ async def process_run(
     processed = 0
     created: list[DiscoveryCandidate] = []
 
-    for entry in universe:
+    # W6a — resume. Only on the durable path: the BackgroundTasks path never
+    # retries, and its behaviour stays exactly as it was.
+    #
+    # ``processed_count`` is an exact cursor into the PERSISTED universe: every
+    # ticker commits its candidate (or its extraction error) in the same
+    # transaction as the counters, and the universe order is read back from the
+    # row. So the first ``processed_count`` entries are done — including the ones
+    # whose extraction raised and left no candidate, which a ticker-set check
+    # would re-run and count twice.
+    resume_from = 0
+    if resuming_scan:
+        resume_from = min(int(run.processed_count or 0), len(universe))
+        created.extend(await _existing_candidates(db, run.id))
+        processed = resume_from
+        error_count = int(run.error_count or 0)
+        log_event(
+            logger,
+            "discovery_run_resumed",
+            run_id=run.id,
+            resumed_at=resume_from,
+            resumed_candidates=len(created),
+            universe_size=len(universe),
+        )
+
+    for index, entry in enumerate(universe):
+        if index < resume_from:
+            continue
         ticker = entry["ticker"]
         exchange = entry["exchange"]
+        if progress is not None:
+            # Deliberately outside the try below: LeaseLostError / JobCancelled
+            # must stop the run, not be recorded as this ticker's error.
+            await progress(STAGE_SCANNING)
         thesis_item = thesis_ctx.get(ticker)
         extract_kwargs: dict[str, Any] = {
             "ticker": ticker,
@@ -1050,6 +1125,7 @@ async def _run_dynamic_discovery(
     *,
     provider: Any = None,
     fetcher: Any = None,
+    durable_job_id: uuid.UUID | None = None,
 ) -> None:
     """Run the dynamic stage and replace the run's universe with its shortlist.
 
@@ -1119,6 +1195,7 @@ async def _run_dynamic_discovery(
             db,
             run_type="discovery_screening",
             units=stage.consumption,
+            research_job_id=durable_job_id,
             outcome="completed",
             extra={"discovery_run_id": str(run.id), "funnel": stage.funnel},
         )
