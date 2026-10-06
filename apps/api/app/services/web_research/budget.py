@@ -55,17 +55,21 @@ class WebBudgetLimits:
     #: Pages fetched from one registrable domain per run (spec §19.1 "Per-domain
     #: fetches"; W2). Robots.txt and TDMRep lookups do not count.
     max_per_domain: int = 8
+    #: LLM-proposed queries WITHIN ``max_queries`` (spec §19.1 "LLM expansion queries"; W5).
+    max_expansion_queries: int = 0
+    #: Extra model tokens the stage may spend on expansion (spec §19.1; W5).
+    max_llm_tokens: int = 0
 
 
 #: Spec §19.1, recommended initial values. Keyed by ``<entry point>_<depth>``.
 PROFILES: dict[str, WebBudgetLimits] = {
-    "discovery_standard": WebBudgetLimits(24, 200, 40, 8, 80 * _MB, 6 * 60, 8),
-    "discovery_deep": WebBudgetLimits(48, 400, 80, 15, 160 * _MB, 10 * 60, 8),
-    "company_quick": WebBudgetLimits(6, 40, 8, 2, 20 * _MB, 2 * 60, 4),
-    "company_standard": WebBudgetLimits(16, 120, 30, 6, 60 * _MB, 6 * 60, 8),
-    "company_deep": WebBudgetLimits(36, 300, 70, 12, 150 * _MB, 12 * 60, 10),
-    "company_max": WebBudgetLimits(60, 300, 100, 20, 150 * _MB, 20 * 60, 10),
-    "followup": WebBudgetLimits(6, 40, 12, 3, 30 * _MB, 3 * 60, 4),
+    "discovery_standard": WebBudgetLimits(24, 200, 40, 8, 80 * _MB, 6 * 60, 8, 6, 30_000),
+    "discovery_deep": WebBudgetLimits(48, 400, 80, 15, 160 * _MB, 10 * 60, 8, 10, 60_000),
+    "company_quick": WebBudgetLimits(6, 40, 8, 2, 20 * _MB, 2 * 60, 4, 0, 5_000),
+    "company_standard": WebBudgetLimits(16, 120, 30, 6, 60 * _MB, 6 * 60, 8, 3, 15_000),
+    "company_deep": WebBudgetLimits(36, 300, 70, 12, 150 * _MB, 12 * 60, 10, 6, 40_000),
+    "company_max": WebBudgetLimits(60, 300, 100, 20, 150 * _MB, 20 * 60, 10, 6, 40_000),
+    "followup": WebBudgetLimits(6, 40, 12, 3, 30 * _MB, 3 * 60, 4, 0, 10_000),
 }
 
 

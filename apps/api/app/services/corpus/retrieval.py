@@ -102,6 +102,10 @@ class EvidenceReference:
     char_start: int | None
     char_end: int | None
     published_at: date | None
+    # -- open-web W4 (spec §13.1, §14.2): None / False on every non-web span --------
+    source_class: str | None = None
+    origin_key: str | None = None
+    injection_suspect: bool = False
     #: True when the hit was admitted only through a document-subject row (the article
     #: MENTIONS the company); its scope is then ``segment``/``mention``, never Group.
     via_subject: bool = False
@@ -203,6 +207,9 @@ def _reference_from_hit(hit: CorpusHit) -> EvidenceReference:
         char_start=chunk.char_start,
         char_end=chunk.char_end,
         published_at=chunk.published_at,
+        source_class=chunk.source_class,
+        origin_key=chunk.origin_key,
+        injection_suspect=bool(chunk.injection_suspect),
         via_subject=bool(getattr(chunk, "via_subject", False)),
     )
 
@@ -232,6 +239,10 @@ async def search_corpus(
     mode: SearchMode = SearchMode.HYBRID,
     embedding: "Sequence[float] | None" = None,
     allow_cross_entity: bool = False,
+    source_classes: "Sequence[str] | None" = None,
+    theme_keys: "Sequence[str] | None" = None,
+    subject_scopes: "Sequence[str] | None" = None,
+    exclude_injection_suspect: bool = False,
 ) -> list[CorpusSearchResult]:
     """Search the corpus and return citable results.
 
@@ -264,6 +275,12 @@ async def search_corpus(
             languages=_tuple(languages),
             published_from=published_from,
             published_to=published_to,
+            # Open-web W4 (spec §17.2): the web filters the W3 contract already
+            # applies inside the search, now reachable from the agent tools.
+            source_classes=_tuple(source_classes),
+            theme_keys=_tuple(theme_keys),
+            subject_scopes=_tuple(subject_scopes),
+            exclude_injection_suspect=bool(exclude_injection_suspect),
         ),
         mode=mode,
         top_k=top_k,

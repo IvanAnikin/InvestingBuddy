@@ -1016,6 +1016,12 @@ class Settings(BaseSettings):
     v3_job_worker_in_process: bool = True
     # How long an idle worker waits before polling for work again.
     v3_job_poll_interval_seconds: float = 2.0
+    # W6a — run Discovery scans (POST /market-discovery/runs and /thesis-runs) as a
+    # ``discovery_research`` durable job instead of a FastAPI BackgroundTask, so a
+    # reload, a closed tab or an App Service recycle does not lose the run. Only
+    # consulted when ``v3_durable_jobs_enabled`` is also on. OFF by default.
+    # Consumer: ``api/v1/market_discovery.py`` via ``discovery_research_job.durable_enabled``.
+    v3_discovery_durable_enabled: bool = False
 
     # ── V3.0: run consumption telemetry and budgets ─────────────────────────
     # Persist one ``research_run_consumption`` row per research run. OFF by
@@ -1456,6 +1462,16 @@ class Settings(BaseSettings):
     # ``V3_ARTIFACT_RETENTION_DAYS`` as before; the global default is unchanged.
     # Consumer: ``services/web_research/ingest.py``. 0 = no TTL configured.
     v3_web_artifact_retention_days: int = 30
+
+    # ── Open-web research W5: company research uses live multi-query web search ──
+    # Master switch for the company web stage (``ensure_web_context``) and for the
+    # Investigator's ``search_web`` external rung on the configured search provider.
+    # The ONLY consumers are ``services/web_research/stage.py`` (the stage) and
+    # ``services/agent_tools/external.py`` (tool registration). Off (default): no
+    # query, no fetch, no row, and the pipeline behaves exactly as before. The stage
+    # still needs ``V3_WEB_SEARCH_ENABLED`` (+ a provider), ``V3_WEB_FETCH_ENABLED``
+    # and — to put documents in the corpus — ``V3_WEB_CORPUS_INGEST_ENABLED``.
+    v3_company_web_research_enabled: bool = False
 
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,

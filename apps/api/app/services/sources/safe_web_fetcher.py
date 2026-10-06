@@ -1151,6 +1151,7 @@ def extract_links(
     keywords: tuple[str, ...],
     max_links: int,
     fallback_keywords: tuple[str, ...] = (),
+    host_ok: Callable[[str], bool] | None = None,
 ) -> list[SafeLink]:
     """Extract bounded, allowlisted links whose text/href matches ``keywords``.
 
@@ -1158,15 +1159,20 @@ def extract_links(
     allowlisted host, de-dups by URL, and caps the count. If nothing matches the
     primary keywords, ``fallback_keywords`` are tried (e.g. sustainability report
     only when no annual report link exists).
+
+    ``host_ok`` (open-web W5) additionally admits a link whose host the caller's
+    predicate accepts — how the bounded open-web crawl lets a cross-domain link to an
+    OFFICIAL host through. It only ever WIDENS what the allowlist admits, never past
+    ``is_safe_public_host``, which is still checked first; ``None`` is the old behaviour.
     """
     parser = _parse_html(html)
     primary = _collect_links(
-        parser.anchors, base_url, allowed_domains, keywords, max_links
+        parser.anchors, base_url, allowed_domains, keywords, max_links, host_ok
     )
     if primary or not fallback_keywords:
         return primary
     return _collect_links(
-        parser.anchors, base_url, allowed_domains, fallback_keywords, max_links
+        parser.anchors, base_url, allowed_domains, fallback_keywords, max_links, host_ok
     )
 
 
@@ -1176,6 +1182,7 @@ def _collect_links(
     allowed_domains: tuple[str, ...],
     keywords: tuple[str, ...],
     max_links: int,
+    host_ok: Callable[[str], bool] | None = None,
 ) -> list[SafeLink]:
     out: list[SafeLink] = []
     seen: set[str] = set()
@@ -1193,8 +1200,9 @@ def _collect_links(
         if not absolute.startswith("https://"):
             continue
         host = host_of(absolute)
-        if not is_safe_public_host(host) or not registrable_host_allowed(
-            host, allowed_domains
+        if not is_safe_public_host(host) or not (
+            registrable_host_allowed(host, allowed_domains)
+            or (host is not None and host_ok is not None and host_ok(host))
         ):
             continue
         if absolute in seen:

@@ -14,7 +14,10 @@ result, a crawl, a user URL or a verified lead (``fetch_public_source``):
    document kind (``classify.py``);
 5. duplicate check by content hash — the same bytes already stored (by the web path, or
    for the same company by any path) are LINKED with subject rows and re-indexed, never
-   re-chunked;
+   re-chunked; then (W4) by SimHash — nearly the same text already stored is LINKED the
+   same way. The §14.2 origin (``trust.document_origin``: cluster, issuer, PR wire, wire
+   attribution, boilerplate, cross-domain canonical, publisher group, domain) is stored
+   as ``origin_key``;
 6. raw bytes → the artifact store under the version's access class, with the web TTL
    (``V3_WEB_ARTIFACT_RETENTION_DAYS``) when the constraint is ``unknown``;
 7. ``ExtractedDocument`` — SHARED by content hash, so its ``company_id`` is whoever
@@ -113,6 +116,11 @@ class WebIngestResult:
     extraction_confidence: str | None = None
     stopped_by: str | None = None
     published_at_source: str | None = None
+    #: Open-web W4: the §14.2 origin and the rule that decided it.
+    origin_key: str | None = None
+    origin_rule: str | None = None
+    #: Open-web W5: pages the extractor read (PDF page count; 0 for HTML/text).
+    pages: int = 0
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -137,6 +145,8 @@ class PreparedWebDocument:
     theme_key: str | None
     provider: str | None
     result: WebIngestResult
+    #: Open-web W4: the subject issuer (``trust.IssuerIdentity``) for the origin rules.
+    issuer: Any = None
     #: The raw bytes as already PUT in the artifact store (hash-addressed, idempotent),
     #: so ``store_web_document`` — which runs inside the caller's savepoint — does no
     #: network upload (review F6). None when the corpus is off or this is a duplicate.
@@ -276,6 +286,7 @@ async def prepare_web_document(
         extraction_confidence=extraction.confidence,
         stopped_by=extraction.stopped_by,
         published_at_source=meta.published_at_source,
+        pages=int(extraction.page_count or 0),
     )
     if not extraction.extracted:
         result.reason = extraction.failure_code or REASON_EXTRACTION
@@ -301,7 +312,14 @@ async def prepare_web_document(
         if company_id is None else None,
         provider=provider,
         result=result,
+        issuer=_issuer_of(company_id, candidates, issuer_domains),
     )
+
+
+def _issuer_of(company_id: Any, candidates: Any, issuer_domains: Any) -> Any:
+    from app.services.web_research.trust import issuer_from_candidates
+
+    return issuer_from_candidates(company_id, candidates, tuple(issuer_domains or ()))
 
 
 async def _put_artifact(
@@ -386,6 +404,53 @@ async def store_web_document(
         _log(result, prepared.url)
         return result
 
+    # Open-web W4 (spec §14.1–14.2): the origin algorithm, and a near-duplicate of a
+    # stored document is LINKED to it rather than chunked again.
+    from app.services.web_research.dedup import apply_stricter_use_constraint
+    from app.services.web_research.trust import OriginInput, document_origin
+
+    decision, duplicate = await document_origin(
+        session,
+        doc=OriginInput(
+            url=prepared.url,
+            text=extraction.main_text,
+            source_class=classification.source_class,
+            rel_canonical=getattr(prepared.fetched, "rel_canonical", None),
+            company_id=company_id,
+        ),
+        simhash=extraction.simhash,
+        text=extraction.main_text,
+        company_id=company_id,
+        theme_key=prepared.theme_key,
+        issuer=prepared.issuer,
+    )
+    result.origin_key = decision.origin_key
+    result.origin_rule = decision.rule
+    if duplicate is not None:
+        result.state = STATE_REUSED
+        result.version_id = duplicate.id
+        result.document_id = duplicate.research_document_id
+        result.extracted_document_id = duplicate.extracted_document_id
+        result.subjects_written = await write_subjects(
+            session,
+            document_id=duplicate.research_document_id,
+            version_id=duplicate.id,
+            company_id=company_id,
+            mentions=mentions,
+            theme_key=prepared.theme_key,
+        )
+        if result.subjects_written:
+            result.indexed = await _index(session, duplicate.id, cfg=cfg, backend=backend)
+        # Linking must not loosen a licence: keep the stricter use_constraint (review M7).
+        stricter = await apply_stricter_use_constraint(
+            session, duplicate, classification.use_constraint
+        )
+        if stricter:
+            result.notes.append(f"use_constraint tightened to {stricter} on link")
+        result.notes.append("near-duplicate of a stored document; linked, not re-chunked")
+        _log(result, prepared.url)
+        return result
+
     from app.services.corpus.artifacts.service import record_artifact
     from app.services.corpus.documents import (
         CorpusIngestResult,
@@ -453,7 +518,7 @@ async def store_web_document(
         period_policy=PERIOD_POLICY_TITLE_ONLY,
         failure_code=None,
     )
-    origin = origin_key_for(prepared.host)
+    origin = decision.origin_key
     web = WebVersionFields(
         web_fetch_attempt_id=getattr(fetched, "attempt_id", None),
         use_constraint=classification.use_constraint,
@@ -464,7 +529,8 @@ async def store_web_document(
         source_class=classification.source_class,
         web_extractor_version=WEB_EXTRACTOR_VERSION,
         subject_scope=prepared.scope,
-        content_origin=origin,
+        # The PUBLISHER (where the bytes were served); ``origin_key`` is who wrote them.
+        content_origin=origin_key_for(prepared.host),
         published_at=meta.published_at,
     )
     counts = CorpusIngestResult()

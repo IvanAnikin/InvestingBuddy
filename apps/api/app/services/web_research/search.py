@@ -153,6 +153,11 @@ class QueryOutcome:
     duplicate_of: "QueryOutcome | None" = None
     call_started: bool = False
     call_finished: bool = False
+    #: Everything the provider returned, and how many of those the run's result budget
+    #: admitted — set once, so rebuilding the provenance rows (a persistence fallback)
+    #: never admits twice.
+    all_results: list[SearchResultItem] | None = None
+    admitted: int | None = None
 
     @property
     def from_cache(self) -> bool:
@@ -432,8 +437,11 @@ def _rows(
     )
     rows: list[Any] = [row]
 
-    returned = outcome.results
-    admitted = budget.record_results(len(returned))
+    if outcome.all_results is None:
+        outcome.all_results = list(outcome.results)
+        outcome.admitted = budget.record_results(len(outcome.all_results))
+    returned = outcome.all_results
+    admitted = int(outcome.admitted or 0)
     outcome.results = returned[:admitted]
     if storage == RESULT_STORAGE_TRANSIENT:
         return rows
@@ -489,13 +497,63 @@ async def _persist_all(
             network_call_count=ex.network_call_count,
             request_hash="withheld" if outcome.withheld else outcome.request.request_hash()[:12],
         )
-    if persist_session_factory is None:
-        session.add_all(rows)
-        await session.flush()
+    if persist_session_factory is not None:
+        try:
+            async with persist_session_factory() as own:
+                own.add_all(rows)
+                await own.commit()
+            return
+        except Exception as exc:  # noqa: BLE001 - paid calls must still be recorded
+            # Typically a foreign key to an agent run / job / company the caller has not
+            # committed yet (W5 review C-M5). The calls were paid for: record them in the
+            # caller's own transaction instead of losing them and failing the stage.
+            log_event(
+                logger, "web_search_provenance_fallback", level=logging.WARNING,
+                error_type=type(exc).__name__,
+            )
+            rows = _all_rows(outcomes, context, budget, storage)
+    await _persist_in_caller(session, rows, outcomes, context, budget, storage)
+
+
+def _all_rows(
+    outcomes: Sequence[QueryOutcome], context: SearchContext, budget: WebResearchBudget,
+    storage: str,
+) -> list[Any]:
+    rows: list[Any] = []
+    for outcome in outcomes:
+        rows.extend(_rows(outcome, context, budget, storage))
+    return rows
+
+
+async def _persist_in_caller(
+    session: Any,
+    rows: list[Any],
+    outcomes: Sequence[QueryOutcome],
+    context: SearchContext,
+    budget: WebResearchBudget,
+    storage: str,
+) -> None:
+    """Add the rows to the caller's session; if a lineage FK still fails, write them with
+    the job/agent-run link NULL (both columns are nullable, ``SET NULL`` on delete)."""
+    try:
+        async with session.begin_nested():
+            session.add_all(rows)
+            await session.flush()
         return
-    async with persist_session_factory() as own:
-        own.add_all(rows)
-        await own.commit()
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            logger, "web_search_provenance_unlinked", level=logging.WARNING,
+            error_type=type(exc).__name__,
+        )
+    from dataclasses import replace
+
+    unlinked = replace(context, research_job_id=None, agent_run_id=None)
+    # ``_rows`` re-spends nothing: it only rebuilds ORM objects (result admission is
+    # recorded on the outcome the first time).
+    fresh = _all_rows(outcomes, unlinked, budget, storage)
+    async with session.begin_nested():
+        session.add_all(fresh)
+        await session.flush()
 
 
 def _consumption(provider: SearchProvider, outcomes: Sequence[QueryOutcome]) -> ConsumptionUnits:

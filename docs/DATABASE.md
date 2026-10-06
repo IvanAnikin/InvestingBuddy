@@ -1088,10 +1088,32 @@ has those characters replaced by U+FFFD. Every URL column holds the W0 stored fo
 the fragment removed); `canonical_url` additionally drops tracking parameters and may be a
 same-registrable-domain `rel=canonical`. Page text is never stored here.
 
+## Migration 043 — report reconciliation: gap closure and temporal supersession
+
+**Additive only**: four nullable columns, one self-referencing foreign key
+(`ON DELETE SET NULL`) and three CHECKs every existing row satisfies. No backfill. Verified
+`041 → 043 → 041 → 043` on PostgreSQL. `down_revision` is `042` (re-pointed from `041` when
+the report-reconciliation branch was merged with the open-web line).
+
+| Table | Columns | Why |
+|---|---|---|
+| `research_gaps` | `reconciliation_status`, `reconciliation_json` | The final reconciliation's verdict — `closed` / `partially_closed` / `superseded` / `still_open` — with the fields the gap is about and the findings, fact or document that addressed it. `ck_research_gaps_reconciled_closed_names_a_finding`: a gap is reconciled `closed` only when `closed_by_finding_id` is set (written through `ledger.close_gap`). |
+| `research_findings` | `source_published_at`, `superseded_by_finding_id` | When the cited source was published (newest cited date, only when every cited item is dated), and the newer finding that replaced this one as current guidance. `ck_research_findings_not_superseded_by_itself`. |
+
+`research_findings.claim_key` (041, previously never written) now carries the fields a
+finding states from the closed vocabulary in `services/research_fields.py`, plus the project
+it names: `metric:capex@foo`.
+
+**Deploy order.** The ORM maps these columns in the same PR. The V3 pipeline checks
+`schema_readiness.migration_043_readiness` before it writes and degrades with a named reason
+("migration 043 is not applied") rather than failing; `GET /company-research/schema-readiness`
+reports it under `migration_043`.
+
 ## Migration 044 — web documents in the Research Corpus (open-web W3)
 
 Numbered **044** because 043 belongs to the report-reconciliation branch; `down_revision`
-is `043` (chain `041 → 042 → 043 → 044`). **Additive only**: every new
+is **`043`** (re-pointed from `042` at the merge; the chain is `041 → 042 → 043 → 044`).
+ **Additive only**: every new
 column is nullable with no default and no backfill; no existing column is altered or
 dropped. Downgrade drops exactly what upgrade added. Verified `042 → 044 → 042 → 044` on
 PostgreSQL (`tests/test_web_w3_postgres.py`). Spec: `docs/open-web-research-spec.md` §12.2,

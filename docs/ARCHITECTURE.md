@@ -898,6 +898,19 @@ under the heading "Regulator structured financial facts (SEC XBRL)".
 
 ---
 
+## Open-web W5 — the company web stage (V3, dark)
+
+Company research optionally runs `ensure_web_context` after the official-source steps
+(`ensure_core_filings`, `ensure_core_disclosures`) and before corpus indexing: a deterministic
+query plan from verified facts (`web_research/planner.py`) → provider search with executed-only
+provenance → deterministic result selection → `open_web_fetch` → W3 ingest into the corpus →
+bounded crawl from the fetched pages and the verified issuer's IR pages. The subject profile and
+stage signals it plans from read the company's OFFICIAL documents only (`corpus/official.py`), so a
+stored web page can never steer a later run's queries. The stage is isolated (a failure is
+`web_stage_failed`), gated by `V3_COMPANY_WEB_RESEARCH_ENABLED`, and its evidence is labelled by
+source class and corroboration in the professional report. `search_web` returns candidate URLs
+from the same provider; `fetch_public_source` remains the only function that mints `ev:x:` ids.
+
 ## Phase History
 
 | Phase | Status | What Changed |

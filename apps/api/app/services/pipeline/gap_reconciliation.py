@@ -108,6 +108,7 @@ REASON_PROJECT_UNNAMED = "project_unnamed"
 REASON_PROJECT_STAGE_DIFFERS = "project_stage_differs"
 REASON_SUBTYPE_DIFFERS = "field_subtype_differs"
 REASON_THIRD_PARTY_ONLY = "third_party_only"
+REASON_WEB_CONTEXT_ONLY = "web_context_only"
 REASON_FIELD_INFERRED = "field_inferred_from_question"
 REASON_GAP_TYPE_NOT_ABSENCE = "gap_type_not_absence"
 REASON_RECENCY_UNCONFIRMED = "recency_unconfirmed"
@@ -161,10 +162,19 @@ class FindingFacts:
     superseded_by: str | None = None
     #: The reporting period the statement's own words name ("revenue for FY2024").
     stated_period: str | None = None
+    #: The open-web trust label the stored statement carries (``trust.label_of_statement``
+    #: — "reported in the press; not from a filing", "company describes itself as …").
+    #: The statement itself is read WITHOUT it: a label is not part of the claim, and the
+    #: relabel text must never be parsed as a figure (open-web W4 review H3).
+    trust_label: str | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> "FindingFacts":
-        statement = str(getattr(row, "statement", "") or "")
+        from app.services.web_research.trust import label_of_statement, unlabelled_statement
+
+        raw_statement = str(getattr(row, "statement", "") or "")
+        trust_label = label_of_statement(raw_statement)
+        statement = unlabelled_statement(raw_statement)
         fields, project = finding_fields(statement, getattr(row, "claim_key", None))
         superseded = getattr(row, "superseded_by_finding_id", None)
         return cls(
@@ -180,11 +190,21 @@ class FindingFacts:
             withdrawn=getattr(row, "verification_status", None) == "withdrawn",
             superseded_by=str(superseded) if superseded else None,
             stated_period=rf.statement_period(statement),
+            trust_label=trust_label,
         )
 
     @property
+    def is_context_only(self) -> bool:
+        """Stored with a label that says "context, not the answer" (a web value that is
+        not from a filing, an issuer's self-description, an anecdote): it can inform a
+        gap but never close it (spec §13.3 / §17.3)."""
+        from app.services.web_research.trust import is_non_closing_label
+
+        return is_non_closing_label(self.trust_label)
+
+    @property
     def is_primary(self) -> bool:
-        return bool(set(self.source_kinds) & PRIMARY_SOURCE_KINDS)
+        return not self.is_context_only and bool(set(self.source_kinds) & PRIMARY_SOURCE_KINDS)
 
     @property
     def effective_period(self) -> str | None:
@@ -202,6 +222,7 @@ class FindingFacts:
             "superseded_by_finding_id": self.superseded_by,
             # Bounded; lets a project named without an asset noun still be matched.
             "statement": self.statement[:300],
+            "trust_label": self.trust_label,
         }
 
 
@@ -704,6 +725,9 @@ def _assess(
     reasons.extend(_qualifier_reasons(finding, requirement, gap_text))
     if not finding.is_primary:
         reasons.append(REASON_THIRD_PARTY_ONLY)
+    if finding.is_context_only:
+        # Never a closing finding, whatever source kinds it cites (review H3).
+        reasons.append(REASON_WEB_CONTEXT_ONLY)
     return reasons
 
 

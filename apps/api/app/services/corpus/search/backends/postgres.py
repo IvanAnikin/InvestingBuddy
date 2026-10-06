@@ -47,6 +47,7 @@ regardless.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -276,9 +277,14 @@ def _subject_branch(filters: CorpusFilters) -> list[Any]:
 
 
 def _row_to_corpus_chunk(
-    row: ResearchDocumentChunk, *, canonical_url: str | None, title: str | None
+    row: ResearchDocumentChunk,
+    *,
+    canonical_url: str | None,
+    title: str | None,
+    web: "_WebLineage | None" = None,
 ) -> CorpusChunk:
     embedding = row.embedding_json
+    web = web or _WebLineage()
     return CorpusChunk(
         chunk_id=row.chunk_id,
         text=row.text,
@@ -304,8 +310,20 @@ def _row_to_corpus_chunk(
         language=row.language,
         published_at=row.published_at,
         indexable=row.indexable,
+        source_class=web.source_class,
+        injection_suspect=web.injection_suspect,
+        origin_key=web.origin_key,
         embedding=tuple(float(v) for v in embedding) if embedding else None,
     )
+
+
+@dataclass(frozen=True)
+class _WebLineage:
+    """The open-web version fields a hit carries (all None/False on non-web text)."""
+
+    source_class: str | None = None
+    origin_key: str | None = None
+    injection_suspect: bool = False
 
 
 class PostgresSearchBackend:
@@ -553,10 +571,10 @@ class PostgresSearchBackend:
         semantic: float | None,
         query: CorpusQuery,
     ) -> CorpusHit:
-        canonical_url, title = await self._version_lineage(
+        canonical_url, title, web = await self._version_lineage(
             row.research_document_version_id
         )
-        chunk = _row_to_corpus_chunk(row, canonical_url=canonical_url, title=title)
+        chunk = _row_to_corpus_chunk(row, canonical_url=canonical_url, title=title, web=web)
         filters = query.filters
         if filters.subject_company_ids and row.company_id not in set(filters.company_ids):
             chunk = await self._subject_marked(chunk, filters)
@@ -609,8 +627,12 @@ class PostgresSearchBackend:
 
     async def _version_lineage(
         self, version_id: uuid.UUID
-    ) -> "tuple[str | None, str | None]":
+    ) -> "tuple[str | None, str | None, _WebLineage]":
         """The canonical URL and title a citation needs, cached per search.
+
+        Open-web W4: plus the version's source class, origin key and injection taint,
+        which the evidence pack ranks and caps on (spec §17.1). NULL on every non-web
+        version.
 
         Cached because a top-10 result set is routinely ten chunks of one document, and
         ten identical lookups is the N+1 that makes a fast query look slow. The cache
@@ -619,18 +641,24 @@ class PostgresSearchBackend:
         cache = getattr(self, "_lineage_cache", None)
         if cache is None:
             cache = {}
-            self._lineage_cache: dict[uuid.UUID, tuple[str | None, str | None]] = cache
+            self._lineage_cache: dict[
+                uuid.UUID, tuple[str | None, str | None, _WebLineage]
+            ] = cache
         if version_id in cache:
             return cache[version_id]
         row = (
             await self._session.execute(
                 text(
-                    "SELECT canonical_url, title FROM research_document_versions "
-                    "WHERE id = :vid"
+                    "SELECT canonical_url, title, source_class, origin_key, "
+                    "injection_suspect FROM research_document_versions WHERE id = :vid"
                 ).bindparams(vid=version_id)
             )
         ).first()
-        value = (row[0], row[1]) if row else (None, None)
+        value = (
+            (row[0], row[1], _WebLineage(row[2], row[3], bool(row[4])))
+            if row
+            else (None, None, _WebLineage())
+        )
         cache[version_id] = value
         return value
 
