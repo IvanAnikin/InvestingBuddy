@@ -36,6 +36,7 @@ import {
 } from "@/components/research/reportSections";
 import { readServerVerification } from "@/components/research/numericConsistency";
 import { readV3Research } from "@/components/research/v3Research";
+import { collectWebSources } from "@/components/research/webEvidence";
 import {
   reconcileConcernTexts,
   reconcileMissingItems,
@@ -193,6 +194,14 @@ export default async function ResearchReportPage({
       findingLabels,
     ),
   };
+  // Open-web W5/W8b: dated events the company web search stored, and every web source a
+  // finding or event rests on. Both are empty for any report written before open-web
+  // research, which is what keeps those reports rendering exactly as they did.
+  const webDevelopments = investor.catalysts.webEvidence;
+  const webSources = collectWebSources(
+    (professional?.sections ?? []).flatMap((s) => (s.kind === "domain" ? [s] : [])),
+    webDevelopments,
+  );
   const reconciledMissing = reconcileMissingItems(
     view.missing.items,
     view.missing.total,
@@ -284,7 +293,7 @@ export default async function ResearchReportPage({
           than being forced through a renderer that would show empty sections. */}
       {!view.structured ? (
         <>
-          {professional && <ProfessionalResearchReport report={professional} />}
+          {professional && <ProfessionalResearchReport report={professional} webDevelopments={webDevelopments} />}
           <Surface className="p-6">
             <p className="text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
               {professional
@@ -335,7 +344,7 @@ export default async function ResearchReportPage({
 
           {/* 1. The research itself, first. */}
           {professional ? (
-            <ProfessionalResearchReport report={professional} />
+            <ProfessionalResearchReport report={professional} webDevelopments={webDevelopments} />
           ) : (
             <InvestmentSummary
               chair={investor.chair}
@@ -480,6 +489,7 @@ export default async function ResearchReportPage({
             appendix={view.appendix}
             channels={view.channels}
             reportId={report.id}
+            webSources={webSources}
             sourceNotes={[
               view.snapshot.currentPeriodNote,
               view.snapshot.statementsNote,

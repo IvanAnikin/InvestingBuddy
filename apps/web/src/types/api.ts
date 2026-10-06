@@ -758,6 +758,110 @@ export interface VerifiedAttributes {
   industry_exposure?: { matched?: string[]; exposure?: string; statement?: string };
 }
 
+// Open-web W6b — A1–A4 admission of a candidate (apps/api discovery/admission.py).
+// `labelled`: a curated / held / model-recall lead, not gated by A1 and shown with its
+// true source. `also_surfaced`: eligible_unverified(theme) — identity verified, no fetched
+// passage ties it to the theme; shown separately, never filling the shortlist.
+export type DiscoveryAdmissionState =
+  | "admitted"
+  | "also_surfaced"
+  | "rejected"
+  | "labelled"
+  | (string & {});
+
+export interface DiscoveryAdmission {
+  version?: string;
+  state: DiscoveryAdmissionState;
+  rules?: Record<string, { passed?: boolean; code?: string; applies?: boolean; reason?: string | null }>;
+  codes?: string[];
+  evidence_ids?: string[];
+  detail?: string | null;
+  source_label?: string | null;
+  eligibility?: string;
+  /** `web_search_results` ids that surfaced a corroborated recall lead. */
+  surfaced_by?: string[];
+}
+
+// One fetched passage that names a company (apps/api candidate_extract / discovery_stage
+// `_mention_entry`). `passage` is THIRD-PARTY text: shown only as a text node, clipped.
+export interface DiscoveryWebMention {
+  evidence_id?: string | null;
+  passage_ref?: string | null;
+  kind?: string | null;
+  method?: string | null;
+  source_class?: string | null;
+  url?: string | null;
+  domain?: string | null;
+  hosts?: string[];
+  /** Which of theme_relevance | catalysts | principal_downside this passage speaks to. */
+  dimensions?: string[];
+  theme_terms?: string[];
+  catalyst_terms?: string[];
+  risk_terms?: string[];
+  passage?: string | null;
+  injection_suspect?: boolean;
+  query_id?: string | null;
+  /** Not written by the producer today; read when present. */
+  published_at?: string | null;
+}
+
+export interface DiscoveryWebSighting {
+  query_id?: string | null;
+  result_id?: string | null;
+  fetch_attempt_id?: string | null;
+  provider?: string | null;
+  family?: string;
+  query_key?: string | null;
+  query_origin?: string | null;
+  template_version?: string | null;
+  rank?: number | null;
+  url?: string;
+  domain?: string;
+  source_class?: string | null;
+  document_version_id?: string | null;
+  published_at?: string | null;
+}
+
+export interface DiscoveryWebBlock {
+  schema?: string;
+  discovery_mode?: string | null;
+  admission?: DiscoveryAdmission | null;
+  novel?: boolean;
+  families?: string[];
+  query_ids?: string[];
+  domains?: string[];
+  sightings?: DiscoveryWebSighting[];
+  mentions?: DiscoveryWebMention[];
+  // A curated / held / recalled company that a search ALSO surfaced.
+  corroborated_by_search?: {
+    sightings?: DiscoveryWebSighting[];
+    mentions?: DiscoveryWebMention[];
+  } | null;
+}
+
+export interface DiscoveryWebSummary {
+  version?: number;
+  /** ok | web_search_degraded | web_search_unavailable | web_stage_failed | web_plan_empty */
+  state: string;
+  /** The banner text for a run whose live search did not fully run. */
+  label?: string | null;
+  depth?: string;
+  provider?: string | null;
+  queries?: {
+    planned: number;
+    executed: number;
+    failed?: number;
+    followups?: number;
+    locales?: string[];
+    by_family?: Record<string, number>;
+  };
+  admission?: {
+    by_state?: Record<string, number>;
+    rejected_codes?: Record<string, number>;
+    novel_candidates?: number;
+  };
+}
+
 export interface DiscoveryCandidateRecord {
   schema: "discovery_candidate/1";
   identity: {
@@ -770,6 +874,10 @@ export interface DiscoveryCandidateRecord {
   };
   provenance: {
     discovery_source: "external_search" | "curated_registry" | "platform_registry" | string;
+    // W6b — how the lead was produced: `search` (a real search + a fetched page) or
+    // `model_recall` (a model's suggestion, verified on the exchange's list); absent for a
+    // curated or held company.
+    discovery_mode?: "search" | "model_recall" | null;
     discovery_query?: string | null;
     source_url?: string | null;
     why?: string | null;
@@ -781,6 +889,7 @@ export interface DiscoveryCandidateRecord {
   failed_constraints: string[];
   eligibility: CandidateEligibility;
   screening: { status: string; business_description?: string | null };
+  v3_web?: DiscoveryWebBlock | null;
 }
 
 export interface DiscoveryDynamicStage {
@@ -795,9 +904,14 @@ export interface DiscoveryDynamicStage {
     exchange?: string | null;
     rejection_reason?: string | null;
     detail?: string | null;
+    discovery_mode?: string | null;
+    admission?: DiscoveryAdmission | null;
   }[];
   warnings?: string[];
   error?: string;
+  // W6b — present only for a run that used live web search.
+  web?: DiscoveryWebSummary | null;
+  also_surfaced?: DiscoveryCandidateRecord[];
 }
 
 export interface ResearchFreshness {
@@ -912,6 +1026,9 @@ export interface DiscoveryRun {
   // W6a — the durable job running this scan (null on the BackgroundTasks path).
   // The run's own `status` stays the one the page acts on.
   job?: DiscoveryRunJob | null;
+  // W6b — additive; null/absent for a run that never tried live web search.
+  web_search_state?: string | null;
+  web_search_label?: string | null;
   disclaimer: string;
 }
 
@@ -920,6 +1037,10 @@ export interface DiscoveryRunJob {
   job_status: string;
   attempt: number;
   max_attempts: number;
+  // W8b — the stage the durable job last reported (`discovery_web_search`, …). The
+  // backend records it on the job row but does not serialise it on `DiscoveryRunRead.job`
+  // yet; the page maps it to a plain progress word when it is present.
+  stage?: string | null;
 }
 
 export interface DiscoveryRunListResponse {
@@ -948,6 +1069,9 @@ export interface DiscoveryCandidate {
   thesis_match_json?: ({ v319?: DiscoveryCandidateRecord | null } & Record<string, unknown>) | null;
   // V3.19.6 — freshness of this company's prior research (absent: none exists).
   research_freshness?: ResearchFreshness | null;
+  // W6b — how the lead was produced and its A1–A4 admission (additive).
+  discovery_mode?: string | null;
+  admission?: DiscoveryAdmission | null;
   momentum_score: number | null;
   fundamentals_score: number | null;
   catalyst_score: number | null;
@@ -1154,6 +1278,19 @@ export interface DiscoveryCouncilCandidateEntry {
   unverified_constraints?: string[];
   placement_note?: string | null;
   council_placement?: string | null;
+  // Open-web W6b — per-dimension assessments of a web-discovered candidate, each with its
+  // OWN evidence_confidence. Empty / absent for a candidate without a web block.
+  dimensions?: DiscoveryCouncilDimension[];
+}
+
+export interface DiscoveryCouncilDimension {
+  /** theme_relevance | growth_drivers | profitability_cash | business_quality | catalysts | resilience | principal_downside. */
+  dimension?: string | null;
+  /** About the BUSINESS on that dimension; empty when the pack could not speak to it. */
+  assessment?: string | null;
+  /** high | medium | low | not_established — how well-sourced the view is. */
+  evidence_confidence?: string | null;
+  citation_ids?: string[];
 }
 
 // One discovery-council agent's PERSISTED output, as stored under
@@ -1638,4 +1775,156 @@ export interface EscalateResponse {
   refused_count: number;
   blocked_reason: string | null;
   blocked_detail: string | null;
+}
+
+// --- Open-web W1/W8a: the web research audit (admin only) -----------------
+//
+// Mirrors apps/api/app/schemas/web_research.py (`WebResearchAuditRead`). Titles,
+// snippets, query text and URLs are UNTRUSTED third-party text: render them as
+// plain text only, never as HTML or markdown, and never as evidence.
+
+export type WebResearchAuditScope = "research_job" | "discovery_run";
+
+export interface WebSearchResultRead {
+  id: string;
+  rank: number;
+  url: string;
+  canonical_url?: string | null;
+  domain?: string | null;
+  /** Untrusted. */
+  title?: string | null;
+  /** Untrusted. */
+  snippet?: string | null;
+  published_hint?: string | null;
+  language_hint?: string | null;
+  provider_score?: number | null;
+  disposition: string;
+  disposition_reason?: string | null;
+}
+
+/** Who enforced each requested search filter (`client` / `provider` / ...). */
+export interface WebSearchQueryFilters {
+  requested?: Record<string, unknown> | null;
+  enforced_by?: Record<string, string> | null;
+  client_filtered_count?: number | null;
+  date_unchecked_count?: number | null;
+  [key: string]: unknown;
+}
+
+export interface WebSearchQueryRead {
+  id: string;
+  created_at?: string | null;
+  stage?: string | null;
+  family: string;
+  origin: string;
+  template_version?: string | null;
+  /** `[withheld: <code>]` when the query was refused for carrying private data. */
+  query_text: string;
+  request_hash: string;
+  /** Absent (null) for a withheld query. */
+  filters?: WebSearchQueryFilters | null;
+  provider: string;
+  executed: boolean;
+  provider_request_id?: string | null;
+  http_status?: number | null;
+  network_call_count: number;
+  latency_ms?: number | null;
+  result_count: number;
+  from_cache: boolean;
+  /** The row whose network call this one re-serves (cache or in-batch duplicate). */
+  served_from_query_id?: string | null;
+  cost_units: Record<string, unknown>;
+  error_code?: string | null;
+  results: WebSearchResultRead[];
+}
+
+/** One redirect hop. The LAST hop may carry `meta` (validators, canonical, TDM...). */
+export interface WebRedirectHop {
+  url?: string;
+  status?: number;
+  meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface WebFetchAttemptRead {
+  id: string;
+  created_at?: string | null;
+  web_search_result_id?: string | null;
+  parent_attempt_id?: string | null;
+  origin: string;
+  requested_url: string;
+  final_url?: string | null;
+  canonical_url?: string | null;
+  redirect_chain: WebRedirectHop[];
+  policy_decision?: string | null;
+  robots_decision?: string | null;
+  tdm_decision?: string | null;
+  http_status?: number | null;
+  mime_served?: string | null;
+  mime_sniffed?: string | null;
+  bytes?: number | null;
+  truncated?: boolean | null;
+  content_hash?: string | null;
+  fetch_ms?: number | null;
+  status: string;
+  failure_code?: string | null;
+}
+
+/** Spec §22.1 fetch metrics. Rates are over `attempts`; 0.0 when there were none. */
+export interface WebFetchMetrics {
+  attempts: number;
+  fetched: number;
+  partial: number;
+  success_rate: number;
+  http_403: number;
+  http_403_rate: number;
+  paywall: number;
+  paywall_rate: number;
+  captcha: number;
+  robots: number;
+  robots_rate: number;
+  tdm_reserved: number;
+  tdm_rate: number;
+  policy_denied: number;
+  policy_deny_rate: number;
+  negative_cached: number;
+  budget_refused: number;
+  policy_file_requests: number;
+  retries: number;
+  redirects: number;
+  bytes: number;
+  js_required: number;
+  js_required_rate: number;
+  mime_mismatch: number;
+  by_status: Record<string, number>;
+  by_failure_code: Record<string, number>;
+}
+
+export interface WebResearchTotals {
+  queries: number;
+  executed: number;
+  from_cache: number;
+  not_executed: number;
+  network_call_count: number;
+  results: number;
+  fetch_attempts: number;
+  errors_by_code: Record<string, number>;
+  /**
+   * Summed per unit over executed network calls. A unit absent here was not
+   * reported by any call — absent is NOT zero, and this never prices anything.
+   */
+  cost_units: Record<string, number>;
+  fetch_metrics: WebFetchMetrics;
+}
+
+export interface WebResearchAudit {
+  scope: WebResearchAuditScope | string;
+  scope_id: string;
+  queries: WebSearchQueryRead[];
+  fetch_attempts: WebFetchAttemptRead[];
+  totals: WebResearchTotals;
+  /** True when the page stopped at its row limit; totals count only what is shown. */
+  queries_truncated: boolean;
+  fetch_attempts_truncated: boolean;
+  notice: string;
 }

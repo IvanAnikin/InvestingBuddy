@@ -24,7 +24,9 @@ import {
 } from "@/components/research/reportResolution";
 import type { DiscoveryCandidate } from "@/types/api";
 import CandidateConstraints from "./CandidateConstraints";
+import CandidateWebEvidence from "./CandidateWebEvidence";
 import { candidateRecord } from "./v319View";
+import { candidateWebView } from "./webEvidenceView";
 
 /**
  * One discovery candidate, in reading order.
@@ -134,6 +136,8 @@ export default function CandidateCard({
   const concerns = candidateConcerns(c, placement);
   const limitations = candidateResearchLimitations(c, placement);
   const readiness = researchReadiness(c);
+  // Open-web W8b: null unless a live web search surfaced (or corroborated) this candidate.
+  const webView = candidateWebView(candidateRecord(c), placement, concerns);
   const state = candidateResearchState(link);
   const openReportId =
     jobReportId ?? (state === "current_research" ? link.currentReportId : null);
@@ -191,6 +195,8 @@ export default function CandidateCard({
 
       {/* V3.19 — why it is here and what was VERIFIED about it, before any prose. */}
       <CandidateConstraints record={candidateRecord(c)} freshness={c.research_freshness} />
+
+      {webView && <CandidateWebEvidence view={webView} runId={c.discovery_run_id} />}
 
       {/* Why it surfaced, in the council's words. */}
       {council.hasReview && (

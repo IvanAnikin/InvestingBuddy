@@ -11,6 +11,7 @@ import ExcludedCandidates from "@/components/research/discovery/ExcludedCandidat
 import RunLimitations from "@/components/research/discovery/RunLimitations";
 import { splitWarningSubjects } from "@/components/research/discovery/candidateView";
 import { useDiscoveryCouncil } from "@/components/research/discovery/useDiscoveryCouncil";
+import { progressWords } from "@/components/research/discovery/webEvidenceView";
 import {
   buildResearchLinkState,
   NO_RESEARCH_LINK,
@@ -382,6 +383,16 @@ export default function DiscoveryRunView({
                 {run.candidate_count === 1 ? "" : "s"}
                 {run.error_count > 0 ? ` · ${run.error_count} error(s)` : ""}
               </p>
+              {/* Open-web W8b: the job's stage in plain words (never the raw stage name). */}
+              {!TERMINAL_RUN_STATUSES.has(run.status) && progressWords(run.job?.stage) && (
+                <p
+                  className="mt-1 text-xs text-[color:var(--ib-ink-2)]"
+                  role="status"
+                  data-testid="discovery-progress-stage"
+                >
+                  {progressWords(run.job?.stage)}…
+                </p>
+              )}
             </div>
             <Link
               href="/admin/discovery"

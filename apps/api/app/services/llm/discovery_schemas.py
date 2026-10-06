@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 # Reuse the 28A agent lifecycle statuses so the two councils cannot drift.
 from app.services.llm.schemas import (
@@ -60,6 +60,8 @@ __all__ = [
     "CandidateEvidence",
     "DiscoveryEvidencePack",
     "CandidateNote",
+    "DimensionAssessment",
+    "WEB_DIMENSIONS",
     "RunNote",
     "DiscoveryCouncilAgentOutput",
     "DiscoveryCouncilResult",
@@ -155,6 +157,16 @@ ALLOWED_COMPARISON_DIMENSIONS: frozenset[str] = frozenset(
 )
 
 
+#: Open-web W6b (spec §6.3): the dimensions the council assesses for a candidate a web
+#: search surfaced, each with its own evidence_confidence and ids. ``evidence_confidence``
+#: qualifies a view; it is never a ranking input.
+WEB_DIMENSIONS: tuple[str, ...] = (
+    "theme_relevance", "growth_drivers", "profitability_cash", "business_quality",
+    "catalysts", "resilience", "principal_downside",
+)
+WEB_CONFIDENCE_LEVELS: frozenset[str] = frozenset({"high", "medium", "low", "not_established"})
+
+
 # ---------------------------------------------------------------------------
 # Evidence pack
 # ---------------------------------------------------------------------------
@@ -233,6 +245,32 @@ class CandidateEvidence(BaseModel):
     human_review_required: bool = True
     is_public: bool = False
     warnings: list[str] = Field(default_factory=list)
+    #: Open-web W6b: the candidate's web evidence pack (<= 6 items across theme relevance,
+    #: catalysts and principal downside; ``priority_basis`` keeps thesis fit, economics,
+    #: catalyst relevance, size fit and evidence confidence APART). ``None`` — and then
+    #: OMITTED from the serialised pack, so a candidate without one is byte-identical to
+    #: V3.19.
+    web_discovery: dict[str, Any] | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_web_discovery(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if data.get("web_discovery") is None:
+            data.pop("web_discovery", None)
+        return data  # type: ignore[no-any-return]
+
+
+class EvidenceIds(set):  # type: ignore[type-arg]
+    """The citable ids of a pack, plus what each web candidate's block allows.
+
+    A ``set`` subclass so every existing ``id in evidence_ids`` check is unchanged;
+    ``web_pack`` maps a candidate id to its own item ids and the evidence confidence the
+    PLATFORM computed per dimension (the model may not raise it).
+    """
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self.web_pack: dict[str, dict[str, Any]] = {}
 
 
 class DiscoveryEvidencePack(BaseModel):
@@ -255,8 +293,24 @@ class DiscoveryEvidencePack(BaseModel):
     def candidate_count(self) -> int:
         return len(self.candidates)
 
-    def evidence_ids(self) -> set[str]:
-        return {f.id for f in self.run_facts} | {c.id for c in self.candidates}
+    def evidence_ids(self) -> "EvidenceIds":
+        ids = EvidenceIds({f.id for f in self.run_facts} | {c.id for c in self.candidates})
+        # A web item is cited by its own id (``C3.2``), which belongs to ITS candidate. The
+        # per-candidate item ids and the pack's own computed evidence confidence travel
+        # WITH the ids, so the citation checker can hold a model to them.
+        for c in self.candidates:
+            block = c.web_discovery or {}
+            items = {str(i["id"]) for i in block.get("items") or [] if i.get("id")}
+            ids.update(items)
+            if block:
+                ids.web_pack[c.id] = {
+                    "item_ids": items,
+                    "confidence": {
+                        str(name): str(dim.get("evidence_confidence"))
+                        for name, dim in (block.get("dimensions") or {}).items()
+                    },
+                }
+        return ids
 
     def candidate_ids(self) -> set[str]:
         return {c.id for c in self.candidates}
@@ -274,6 +328,20 @@ class DiscoveryEvidencePack(BaseModel):
 # ---------------------------------------------------------------------------
 # Council agent output
 # ---------------------------------------------------------------------------
+
+
+class DimensionAssessment(BaseModel):
+    """One dimension of a candidate (open-web W6b), with its OWN evidence confidence.
+
+    ``assessment`` describes the BUSINESS on that dimension; ``evidence_confidence`` says
+    how well the pack supports it. ``not_established`` with an empty assessment is the
+    honest answer when the pack cannot speak to the dimension.
+    """
+
+    dimension: str
+    assessment: str = ""
+    evidence_confidence: str = "not_established"
+    citation_ids: list[str] = Field(default_factory=list)
 
 
 class CandidateNote(BaseModel):
@@ -295,6 +363,8 @@ class CandidateNote(BaseModel):
     key_financial_signal: str = ""
     # Which of ALLOWED_COMPARISON_DIMENSIONS this candidate stands out on.
     strongest_dimension: str | None = None
+    # Open-web W6b: per-dimension assessments (empty unless the pack carried a web block).
+    dimensions: list[DimensionAssessment] = Field(default_factory=list)
 
 
 class RunNote(BaseModel):

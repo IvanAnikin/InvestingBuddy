@@ -663,6 +663,51 @@ lose them. A retry resumes from the last committed ticker.
 | H | Dead letter: force `V3_JOB_MAX_ATTEMPTS=1` and kill the process mid-scan | Within one sweep (≤5 minutes after worker start) the run is `failed` with "gave up after 1 attempts" |
 | I | Turn the flag off with a job still queued | The queued job still runs to completion |
 
+**W6b - Discovery uses live web search (`V3_DISCOVERY_WEB_SEARCH_ENABLED`, default
+`false`).** No migration (uses 042/043). Needs `V3_DYNAMIC_DISCOVERY_ENABLED`,
+`V3_WEB_SEARCH_ENABLED` with a provider (`V3_WEB_SEARCH_PROVIDER`, `TAVILY_API_KEY`),
+`V3_WEB_FETCH_ENABLED`, and - to keep theme documents for `search_theme_corpus` -
+`V3_WEB_CORPUS_INGEST_ENABLED` + `V3_CORPUS_ENABLED`. `V3_DISCOVERY_WEB_DEPTH`
+(`standard` = 24 queries, `deep` = 48) picks the budget profile; the platform daily cap
+`V3_WEB_SEARCH_MAX_QUERIES_PER_DAY` and `V3_RUN_MAX_WEB_SEARCHES` still bound it.
+- **Rollback:** `V3_DISCOVERY_WEB_SEARCH_ENABLED=false` restores V3.19 behaviour exactly (no
+  query, no fetch, no row, no response key).
+- **Search unavailable:** the run still completes from the curated registry, held companies
+  and model recall, every recall lead labelled `model_recall`, and the run carries
+  `web_search_state=web_search_unavailable` with the banner text. Nothing is ever labelled
+  `search` without an executed query row and a fetched page.
+- **Durable resume:** with W6a on, a retried job re-enters the web stage and REUSES the
+  queries the run already recorded (keyed by run id and request hash); the run's query
+  ceiling carries across attempts, so a recycle cannot double-spend searches. The pages are
+  fetched again (bounded by the budget).
+- **Identity is official-only for search leads (review round 1, B1).** A search lead is
+  admitted only after the listing is confirmed by the exchange's directory, an exchange or
+  regulator page, or a `verified_issuer_sources` entry. A page's own text, or a domain that
+  merely spells the company's name, never verifies it. On a venue with no directory
+  (Frankfurt, Stockholm, HK, JSE ...) such a lead is `eligible_unverified(identity)` in
+  "also surfaced" (codes `identity_unverified`, `no_official_directory`), never a candidate.
+- **A3 is mention-local and not publishable-by-anyone (review round 1).** A theme term must
+  sit in the mention's own sentence (the same clause when a paragraph names 3+ listed
+  companies); a paragraph naming more than 5 listed companies is evidence about none; open
+  press-release wires, user-content hosts and `.edu` pages never carry it; a company's own
+  name is not a theme term. Extraction is bounded in work (cell 500 / row 2,500 / page 150k
+  characters) and runs off the event loop.
+- **Resume spends nothing twice.** The model expansion is persisted on the run
+  (`universe_json.web_expansion`) before any search is paid for; a retry reloads it (or
+  rebuilds it from the run's recorded expansion rows) and the model is not asked again. Every
+  query row the run holds - orphans included - and every fetch an earlier attempt completed
+  count against this attempt's ceilings.
+- **No page-to-query path (PI-07):** the query set is built from the intent's closed
+  vocabularies and the glossary only; the model expansion sees the same facts and may not name
+  a company. Nothing the corpus holds (theme chunks included) is read by the planner, and a
+  regression test pins that a stored page changes no later query.
+- **Cost:** up to 24 (48 deep) provider calls and 40 (80) fetches per run, recorded as
+  `cost_units` on the run's `web` summary and on the `discovery_screening` consumption row.
+- **Staging check:** run a thesis whose answer is a small company the registry does not hold;
+  confirm `discovery_mode=search`, `admission.state=admitted`, and that the query/result/fetch
+  ids in `v3_web.sightings` resolve in `web_search_queries` / `web_search_results` /
+  `web_fetch_attempts` (all carry the run id).
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on
@@ -2171,6 +2216,19 @@ Turning it on needs decision **U2** and migration **042** applied first. It does
 require touching `SOURCE_CONNECTOR_ALLOWLIST_ONLY` (leave it `true`): the open-web policy
 replaces the allowlist for its own fetches only. New dependency: `charset-normalizer`
 (already transitive; now pinned in `requirements.txt`). Rollback: set the flag to `false`.
+
+## Open-web W7 — bounded follow-up research loop
+
+`V3_WEB_FOLLOWUP_ENABLED` (default `false`; consumer: the Director loop wiring in
+`services/pipeline/v3_pipeline.py` -> `services/web_research/followup.WebFollowup`). No migration.
+Needs `V3_COMPANY_WEB_RESEARCH_ENABLED`, `V3_WEB_SEARCH_ENABLED` (+ provider) and
+`V3_WEB_FETCH_ENABLED`; without them nothing is built. Cost: each web round is at most 6 searches /
+12 fetches / 3 PDFs; STANDARD allows 2 web rounds plus one challenge wave of 3 searches. The follow-up
+does not draw on the Investigator's `max_web_searches` counter (the W5 stage already plans it in full),
+but a run-level ceiling (stage profile + follow-up allowance, read from the job's search/fetch rows)
+bounds the total, `V3_RUN_MAX_WEB_SEARCHES` caps the SUM of stage and follow-up when set, and the daily
+cap applies. A web round is clamped to the Director's remaining wall time. QUICK (one Director round) runs no web round.
+Rollback: set the flag to `false` (the Director, loop and Red Team input are then byte-identical).
 
 ## Open-web W5 — company research uses live web search
 

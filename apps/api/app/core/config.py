@@ -1473,6 +1473,35 @@ class Settings(BaseSettings):
     # and — to put documents in the corpus — ``V3_WEB_CORPUS_INGEST_ENABLED``.
     v3_company_web_research_enabled: bool = False
 
+    # ── Open-web research W6b: Discovery uses live web search ───────────────────
+    # Wave 1 of the open-web Discovery flow (spec §4.4, §6): planned queries ->
+    # REAL search -> entity extraction from fetched pages -> official listing
+    # verification -> theme-relevance evidence -> admission (A1-A4). The ONLY consumer
+    # is ``services/discovery/pipeline.py`` (``run_dynamic_stage``). Off (default):
+    # Discovery is byte-identical to V3.19 (no query, no fetch, no row, no key). On, it
+    # still needs ``V3_DYNAMIC_DISCOVERY_ENABLED``, ``V3_WEB_SEARCH_ENABLED`` (+ a
+    # provider) and ``V3_WEB_FETCH_ENABLED``; with search unavailable the run falls back
+    # to V3.19 recall + directories, labelled ``model_recall`` — never ``search``.
+    v3_discovery_web_search_enabled: bool = False
+    # ``standard`` (24 queries) | ``deep`` (48), spec §19.1. Consumer:
+    # ``services/web_research/discovery_stage.py``. An unknown value means ``standard``.
+    v3_discovery_web_depth: str = "standard"
+
+    # ── Open-web research W7: the bounded follow-up research loop ────────────
+    # Adds a WEB rung to the Director's acquisition ladder: an open, closable gap whose
+    # field a web search could plausibly answer gets targeted GAP queries (generic
+    # wording, never an issuer name from a page), fetched and ingested like the W5
+    # stage, then re-read by the specialist; plus one RISK "challenge wave" feeding the
+    # Red Team with fetched evidence. Bounded by the mode's round limit, the "followup"
+    # web budget profile (<=6 queries, <=12 fetches, <=3 PDFs per round) and the run's
+    # operator/daily caps; stops on answered / saturation / budget / rounds / wall.
+    # The ONLY consumer is the Director loop wiring in ``services/pipeline/v3_pipeline.py``
+    # (it builds ``services/web_research/followup.WebFollowup`` and passes it to
+    # ``services/director/loop.run_investigation``). Needs V3_COMPANY_WEB_RESEARCH_ENABLED,
+    # V3_WEB_SEARCH_ENABLED (+ provider) and V3_WEB_FETCH_ENABLED. Off (default): the
+    # Director plans, loop and Red Team input are byte-identical to W6b.
+    v3_web_followup_enabled: bool = False
+
     # ── Real OCR: Azure Document Intelligence (Phase 32A Slice 5B.2) ─────────
     # Only ever consulted when ``primary_document_ocr_enabled`` (Slice 5,
     # default False) is also True. With the endpoint left empty (the default),

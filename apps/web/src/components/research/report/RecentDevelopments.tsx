@@ -3,6 +3,7 @@ import { sourceTierWord } from "@/components/research/reportSections";
 import type { CatalystsView } from "@/components/research/reportSections";
 import { dedupeEvents } from "@/components/research/reportSections";
 import type { DisclosureView } from "@/components/research/reportView";
+import { CurrentDevelopments } from "./WebEvidenceParts";
 
 /**
  * What has actually happened, and what the council made of it.
@@ -86,6 +87,7 @@ export default function RecentDevelopments({
   const hasAnything =
     events.length > 0 ||
     disclosures.length > 0 ||
+    catalysts.webEvidence.length > 0 ||
     Boolean(catalysts.interpretation);
   if (!hasAnything) return null;
 
@@ -191,8 +193,11 @@ export default function RecentDevelopments({
         </div>
       )}
 
+      <CurrentDevelopments items={catalysts.webEvidence} />
+
       {events.length === 0 &&
         disclosures.length === 0 &&
+        catalysts.webEvidence.length === 0 &&
         catalysts.coverageStatus && (
           <p className="mt-4 text-sm leading-relaxed text-[color:var(--ib-ink-3)]">
             No company event was retrieved for this window (coverage:{" "}

@@ -3180,6 +3180,13 @@ export default function DiscoveryPage() {
                 Run {selectedRun.id.slice(0, 8)} · {candidates.length} internal
                 research candidate(s)
               </p>
+              <Link
+                href={`/admin/web-research/discovery-runs/${selectedRun.id}`}
+                className="text-xs text-sky-400 hover:text-sky-300 hover:underline"
+                data-testid="discovery-web-research-audit-link"
+              >
+                Web research audit →
+              </Link>
             </div>
             <div className="flex items-center gap-2">
               <StatusPill label="Internal only" color="red" />

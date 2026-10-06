@@ -29,6 +29,7 @@ from app.services.discovery.identity import (
     IDENTITY_REJECTED,
     REJECT_BUDGET,
     REJECT_DUPLICATE,
+    REJECT_NO_LISTING_EVIDENCE,
     IdentityOutcome,
     dedup_key,
     normalise_venue,
@@ -45,6 +46,8 @@ HARD_MAX_VERIFIED = 40
 DEFAULT_MAX_VERIFIED = 30
 DEFAULT_MAX_CANDIDATES = 10
 _HELD_COMPANY_SCAN = 500
+#: Web-search states in which live search ran (so recall must be corroborated).
+_LIVE_SEARCH_STATES = ("ok", "web_search_degraded")
 
 
 @dataclass
@@ -57,6 +60,9 @@ class CandidateRecord:
     screening: ScreeningResult | None
     provenance: dict[str, Any]
     registry_item: dict[str, Any] | None = None
+    #: Open-web W6b: ``v3_web`` — search provenance + admission (A1–A4). ``None`` with the
+    #: web flag off, so the persisted ``v319`` payload is byte-identical to V3.19.
+    web: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         verified = cons.verified_attributes(self.results)
@@ -76,7 +82,7 @@ class CandidateRecord:
             if reason:
                 provenance["why"] = None
                 provenance["why_withheld"] = reason
-        return {
+        payload: dict[str, Any] = {
             "schema": "discovery_candidate/1",
             "identity": self.identity.identity_record(),
             "provenance": provenance,
@@ -89,6 +95,9 @@ class CandidateRecord:
             "eligibility": self.eligibility.to_dict(),
             "screening": self.screening.to_dict() if self.screening else {"status": "not_screened"},
         }
+        if self.web is not None:
+            payload["v3_web"] = self.web
+        return payload
 
 
 @dataclass
@@ -102,8 +111,20 @@ class StageResult:
     consumption: Any = None
     external_available: bool = False
     elapsed_seconds: float = 0.0
+    #: Open-web W6b: the run-level web summary (state, counts, families, cost units) and
+    #: the ``eligible_unverified(theme)`` leads shown as "also surfaced". ``None`` / empty
+    #: with the flag off.
+    web: dict[str, Any] | None = None
+    also_surfaced: list[CandidateRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        out = self._base_dict()
+        if self.web is not None:
+            out["web"] = self.web
+            out["also_surfaced"] = [c.to_dict() for c in self.also_surfaced][:40]
+        return out
+
+    def _base_dict(self) -> dict[str, Any]:
         return {
             "schema": "discovery_dynamic_stage/1",
             "status": "completed",
@@ -122,6 +143,9 @@ class StageResult:
                     "why": _safe_text(r.lead.why, 200),
                     "rejection_reason": r.rejection_reason,
                     "detail": r.detail,
+                    **({"discovery_mode": r.lead.discovery_mode,
+                        "admission": (r.lead.web or {}).get("admission")}
+                       if r.lead.web else {}),
                 }
                 for r in self.rejected
             ][:120],
@@ -412,8 +436,21 @@ async def run_dynamic_stage(
     fetcher: Any = None,
     max_candidates: int | None = None,
     external: bool = True,
+    run_id: Any = None,
+    web_deps: Any = None,
+    progress: Any = None,
+    commit: Any = None,
+    plan_date: Any = None,
+    expansion_loader: Any = None,
+    expansion_saver: Any = None,
 ) -> StageResult:
-    """The whole stage. Never raises for a single lead's failure."""
+    """The whole stage. Never raises for a single lead's failure.
+
+    Open-web W6b: with ``V3_DISCOVERY_WEB_SEARCH_ENABLED`` on (and ``external``), wave 1 of
+    the open-web flow adds a ``discovery_mode="search"`` lead source AFTER the curated and
+    held leads and BEFORE model recall, and admission rules A1–A4 gate those leads. With
+    the flag off every line below behaves exactly as in V3.19.
+    """
     started = time.monotonic()
     stage = StageResult()
     if provider is None and external:
@@ -421,10 +458,30 @@ async def run_dynamic_stage(
 
         provider = research_provider_for(cfg)
 
-    # 1. Leads, in priority order: curated registry, held companies, external search.
+    # 1. Leads, in priority order: curated registry, held companies, web search (W6b),
+    #    then model recall.
     held = await _held_companies(session)
     registry = _registry_leads(run_universe)
     leads: list[CompanyLead] = [*registry, *_held_leads(held, intent)]
+    web_result: Any = None
+    web_leads: list[CompanyLead] = []
+    if external and _web_enabled(cfg):
+        from app.services.web_research.discovery_stage import (
+            DiscoveryWebContext,
+            run_discovery_web_stage,
+        )
+
+        known_domains, known_keys = _known_names(leads, held)
+        web_result = await run_discovery_web_stage(
+            session, intent,
+            DiscoveryWebContext(run_id=run_id, known_domains=known_domains,
+                                known_keys=known_keys, commit=commit, plan_date=plan_date,
+                                expansion_loader=expansion_loader,
+                                expansion_saver=expansion_saver),
+            cfg=cfg, deps=web_deps, progress=progress,
+        )
+        stage.web = dict(web_result.summary)
+        web_leads = list(web_result.leads)
     external_leads: list[CompanyLead] = []
     if external:
         found = await discover_leads(intent, cfg=cfg, provider=provider)
@@ -435,20 +492,110 @@ async def run_dynamic_stage(
         units = list(found.consumption)
     else:
         units = []
-    raw_count = len(leads) + len(external_leads)
+    if web_result is not None and web_result.ran:
+        units.append(web_result.units)
+    recall_live = web_result is not None and web_result.state in _LIVE_SEARCH_STATES
+    recall_corroborated: dict[str, dict[str, Any]] = {}
+    recall_executed: frozenset[str] = frozenset()
+    if recall_live:
+        # Owner rule: with live search available, a model-named company is a FINAL candidate
+        # only if an executed search + a fetched page also surface it (A1), its listing is
+        # verified (A2) and a fetched passage ties it to the theme (A3). Targeted, budgeted
+        # verification searches look for the recalled names no search found by itself.
+        from app.services.web_research.discovery_stage import (
+            DiscoveryWebContext,
+            corroborate_recall_leads,
+        )
+
+        known_names = {normalised_name(x.name) for x in [*leads, *web_leads]}
+        known_keys_now = {
+            dedup_key(x.ticker, normalise_venue(x.exchange_raw) or x.exchange_raw)
+            for x in [*leads, *web_leads]
+        }
+        to_check = [
+            x for x in external_leads
+            if x.discovery_mode == "model_recall"
+            and normalised_name(x.name) not in known_names
+            and dedup_key(x.ticker, normalise_venue(x.exchange_raw) or x.exchange_raw)
+            not in known_keys_now
+        ]
+        found_by = await corroborate_recall_leads(
+            session, intent, to_check,
+            DiscoveryWebContext(run_id=run_id, known_domains=known_domains, commit=commit,
+                                plan_date=plan_date),
+            cfg=cfg, deps=web_deps, progress=progress,
+        )
+        recall_corroborated = found_by.by_lead
+        recall_executed = found_by.executed_query_ids
+        units.append(found_by.units)
+        stage.web = {**(stage.web or {}), "recall_verification": {
+            "attempted": found_by.attempted, "corroborated": len(found_by.by_lead),
+            "notes": found_by.notes[:4]}}
+        for x in to_check:
+            if x.lead_id in recall_corroborated:
+                x.web = recall_corroborated[x.lead_id]
+    raw_count = len(leads) + len(web_leads) + len(external_leads)
 
     # 2. Dedup — cheap, before any fetch. A lead matching a HELD company inherits its
     #    identity (reference data on record) and is not re-verified.
     held_by_key = {dedup_key(c.ticker, c.exchange): c for c in held}
     seen_keys: set[str] = set()
     seen_names: set[str] = set()
+    first_by_key: dict[str, CompanyLead] = {}
+    first_by_name: dict[str, CompanyLead] = {}
+    #: dedup key / normalised name -> the search provenance that corroborates an EARLIER
+    #: (registry / held) lead. The lead keeps its true label; the passages are context.
+    corroboration: dict[str, dict[str, Any]] = {}
+    web_on = web_result is not None
     to_verify: list[CompanyLead] = []
     identities: list[IdentityOutcome] = []
-    for lead in [*leads, *external_leads]:
+    executed_query_ids = (
+        (web_result.executed_query_ids if web_result is not None else frozenset())
+        | recall_executed
+    )
+    for lead in [*leads, *web_leads, *external_leads]:
         venue = normalise_venue(lead.exchange_raw) or (lead.exchange_raw or None)
         key = dedup_key(lead.ticker, venue)
         name_key = normalised_name(lead.name)
+        if lead.discovery_mode == "search":
+            # A1, BEFORE any verification is spent: a lead labelled ``search`` must show an
+            # EXECUTED query row and a FETCHED page. The label is a claim about the
+            # network, and the network is checked.
+            from app.services.discovery import admission as adm
+
+            if not adm.search_lead_has_provenance(lead.web, executed_query_ids):
+                a1_decision = adm.decide(discovery_mode="search", has_provenance=False,
+                                         identity_verified=False)
+                _attach_admission(lead, a1_decision.to_dict())
+                stage.rejected.append(
+                    IdentityOutcome(lead=lead, status=IDENTITY_REJECTED, ticker=lead.ticker,
+                                    exchange=venue, name=lead.name,
+                                    rejection_reason=adm.CODE_NO_SEARCH_PROVENANCE,
+                                    detail=a1_decision.detail or "")
+                )
+                continue
         if (key and key in seen_keys) or (name_key and name_key in seen_names):
+            earlier = (first_by_key.get(key) if key else None) or first_by_name.get(name_key)
+            if (lead.discovery_mode == "model_recall" and earlier is not None
+                    and earlier.discovery_mode == "search"):
+                # A search found it independently, so the search lead stands (a truer label
+                # than the model's); the recall is recorded on it, not rejected as a duplicate.
+                earlier.web = {**(earlier.web or {}), "also_named_by_recall": True}
+                continue
+            if lead.discovery_mode == "search" and earlier is not None and lead.web:
+                # The search surfaced a company a registry / held / earlier lead already
+                # names. That lead keeps its true label; the search provenance is attached
+                # as corroboration (and its passages are A3 context), not as a rejection.
+                # Bound to the LISTING: a page about a different venue:ticker that happens to
+                # share the normalised name is not corroboration of this company.
+                earlier_key = dedup_key(
+                    earlier.ticker, normalise_venue(earlier.exchange_raw) or earlier.exchange_raw
+                )
+                if key is None or earlier_key is None or key == earlier_key:
+                    for ident in (key, name_key):
+                        if ident:
+                            corroboration.setdefault(ident, lead.web)
+                continue
             stage.rejected.append(
                 IdentityOutcome(lead=lead, status=IDENTITY_REJECTED, ticker=lead.ticker,
                                 exchange=venue, name=lead.name,
@@ -458,8 +605,10 @@ async def run_dynamic_stage(
             continue
         if key:
             seen_keys.add(key)
+            first_by_key[key] = lead
         if name_key:
             seen_names.add(name_key)
+            first_by_name[name_key] = lead
         # A HELD company is inherited only on the same listing (venue + ticker). A name
         # match alone is not an identity: the lead is verified like any other.
         held_match = held_by_key.get(key) if key else None
@@ -494,6 +643,7 @@ async def run_dynamic_stage(
             return await verify_identity(lead, cfg=cfg, fetcher=fetcher,
                                          directory_fetcher=fetcher)
 
+    to_verify = _verification_order(to_verify, limit)
     verified_external = await asyncio.gather(*(_verify(lead) for lead in to_verify[:limit]))
 
     # V3.19.10 — curated and held companies are looked up in their exchange's own
@@ -523,14 +673,72 @@ async def run_dynamic_stage(
                             name=lead.name, rejection_reason=REJECT_BUDGET,
                             detail=f"beyond the {limit}-verification bound")
         )
+    unverifiable: list[IdentityOutcome] = []
     for outcome in verified_external:
+        if web_on and outcome.lead.discovery_mode == "search":
+            from app.services.discovery import admission as adm
+
+            outcome = _strict_name_guard(outcome)
+            if not outcome.verified and outcome.rejection_reason == REJECT_NO_LISTING_EVIDENCE:
+                # No directory covers the venue and no OFFICIAL page confirmed the listing:
+                # eligible_unverified(identity). Shown, never admitted, never rejected.
+                # The reason is kept: a venue with a directory we could not READ is an
+                # outage ("cannot check"), not "no directory".
+                from app.services.discovery.directories import DIRECTORY_FOR_VENUE
+
+                has_directory = (outcome.exchange in DIRECTORY_FOR_VENUE) or (
+                    outcome.exchange == "LSE"
+                )
+                _attach_admission(
+                    outcome.lead,
+                    adm.decide_unverifiable_venue(
+                        _a3_mentions(outcome.lead, outcome.name),
+                        reason=(adm.CODE_DIRECTORY_UNAVAILABLE if has_directory
+                                else adm.CODE_NO_OFFICIAL_DIRECTORY),
+                    ).to_dict(),
+                )
+                unverifiable.append(outcome)
+                continue
+            decision = adm.decide(
+                discovery_mode="search", has_provenance=True,
+                identity_verified=outcome.verified,
+                identity_reason=outcome.rejection_reason,
+                mentions=_a3_mentions(outcome.lead, outcome.name),
+            )
+            _attach_admission(outcome.lead, decision.to_dict())
+        elif recall_live and outcome.lead.discovery_mode == "model_recall":
+            from app.services.discovery import admission as adm
+
+            recall_decision = adm.decide_recall(
+                has_provenance=adm.search_lead_has_provenance(outcome.lead.web,
+                                                              executed_query_ids),
+                identity_verified=outcome.verified,
+                identity_reason=outcome.rejection_reason,
+                mentions=_a3_mentions(outcome.lead, outcome.name),
+                surfaced_by=((outcome.lead.web or {}).get("surfaced_by") or []),
+            )
+            _attach_admission(outcome.lead, recall_decision.to_dict())
         (identities if outcome.verified else stage.rejected).append(outcome)
+    if web_on:
+        # Leads beyond the verification bound were never verified: record why.
+        for lead in to_verify[limit:]:
+            if lead.discovery_mode == "search":
+                _attach_admission(lead, {"state": "rejected", "codes": [REJECT_BUDGET]})
 
     # 4. Cheap geography pre-filter: a verified listing clearly outside the requested
     #    geography (and a claimed country outside it too) is excluded without screening.
     to_screen: list[IdentityOutcome] = []
     records: list[CandidateRecord] = []
+    also_surfaced: list[CandidateRecord] = []
     for identity in identities:
+        if web_on and _admission_state(identity) == "also_surfaced":
+            # A3 missing: ``eligible_unverified(theme)``. No screening is spent on it, and
+            # it can never fill the quota; a hard-constraint failure still excludes it.
+            results, eligibility = await evaluate(identity, None, intent, cfg=cfg,
+                                                  fx_fetcher=fetcher)
+            record = _make_record(identity, results, eligibility, None, corroboration, web_on)
+            (records if eligibility.status == cons.EXCLUDED else also_surfaced).append(record)
+            continue
         geo = cons.verify_geography(
             intent.geography, listing_country=identity.listing_country,
             listing_source=identity.listing_source,
@@ -547,8 +755,8 @@ async def run_dynamic_stage(
         ):
             results, eligibility = await evaluate(identity, None, intent, cfg=cfg,
                                                   fx_fetcher=fetcher)
-            records.append(CandidateRecord(identity, results, eligibility, None,
-                                           _provenance(identity), identity.lead.registry_item))
+            records.append(_make_record(identity, results, eligibility, None, corroboration,
+                                        web_on))
             continue
         to_screen.append(identity)
 
@@ -563,8 +771,11 @@ async def run_dynamic_stage(
         screening = screened.get(f"{identity.exchange}:{identity.ticker}")
         results, eligibility = await evaluate(identity, screening, intent, cfg=cfg,
                                               fx_fetcher=fetcher, session=session)
-        records.append(CandidateRecord(identity, results, eligibility, screening,
-                                       _provenance(identity), identity.lead.registry_item))
+        records.append(_make_record(identity, results, eligibility, screening, corroboration,
+                                    web_on))
+
+    for outcome in unverifiable:
+        also_surfaced.append(_unverifiable_record(outcome, corroboration))
 
     # 6. Decide. Eligibility is final; the quota is never filled with excluded names.
     cap = _bounded(max_candidates, DEFAULT_MAX_CANDIDATES, 50)
@@ -589,6 +800,15 @@ async def run_dynamic_stage(
         ),
         "returned": len(stage.candidates),
     }
+    if web_on:
+        stage.also_surfaced = also_surfaced
+        stage.funnel.update(
+            web_leads=len(web_leads),
+            web_admitted=sum(1 for r in records if _record_state(r) == "admitted"),
+            web_also_surfaced=len(also_surfaced),
+        )
+        stage.web = {**(stage.web or {}),
+                     "admission": _admission_summary(records, also_surfaced, stage.rejected)}
     if units:
         from app.services.consumption import ConsumptionUnits
 
@@ -598,6 +818,248 @@ async def run_dynamic_stage(
         stage.consumption = total
     stage.elapsed_seconds = time.monotonic() - started
     return stage
+
+
+# --------------------------------------------------------------------------- #
+# Open-web W6b helpers
+# --------------------------------------------------------------------------- #
+
+
+def _web_enabled(cfg: Any) -> bool:
+    return bool(getattr(cfg, "v3_discovery_web_search_enabled", False))
+
+
+def _known_names(
+    leads: list[CompanyLead], held: list[Any]
+) -> tuple[tuple[str, ...], frozenset[str]]:
+    """IR / site domains and ``venue:ticker`` keys of the names this run already knows.
+
+    Saturation (spec §5.3) and the novelty metric compare against these: a curated-registry
+    or held name's own site is "known", and a candidate found elsewhere is "novel".
+    """
+    from app.services.sources.verified_issuer_sources import get_verified_issuer_source
+
+    domains: list[str] = []
+    keys: set[str] = set()
+    pairs = [(lead.ticker, lead.exchange_raw) for lead in leads]
+    pairs += [(c.ticker, c.exchange) for c in held]
+    for ticker, exchange in pairs:
+        venue = normalise_venue(exchange) or exchange
+        key = dedup_key(ticker, venue)
+        if key:
+            keys.add(key)
+        verified = get_verified_issuer_source(ticker, exchange)
+        if verified is not None:
+            for d in (verified.official_website_domain, *verified.allowed_domains,
+                      *verified.document_domains):
+                if d:
+                    domains.append(d.lower().removeprefix("www."))
+    return tuple(dict.fromkeys(domains)), frozenset(keys)
+
+
+def _unverifiable_record(
+    outcome: IdentityOutcome, corroboration: dict[str, dict[str, Any]]
+) -> CandidateRecord:
+    """``eligible_unverified(identity)``: shown in "also surfaced", never a candidate."""
+    eligibility = cons.Eligibility(
+        cons.ELIGIBLE_UNVERIFIED,
+        ["identity: the listing is not confirmed by an official source for this venue"],
+        0, 0, ["listing"], [],
+    )
+    results = [cons.verify_listing(outcome.identity_record())]
+    web = dict(outcome.lead.web or {})
+    web["mentions"] = _a3_mentions(outcome.lead, outcome.name)
+    return CandidateRecord(
+        outcome, results, eligibility, None, _provenance(outcome), None, web=web
+    )
+
+
+def _verification_order(leads: list[CompanyLead], limit: int) -> list[CompanyLead]:
+    """Web leads first, but never ALL the slots: at least a quarter of the verification bound
+    is kept for recalled leads (a flood of web leads must not starve them into
+    ``verification_budget_exhausted``). Order within each group is the discovery order."""
+    other = [x for x in leads if x.discovery_mode != "search"]
+    web = [x for x in leads if x.discovery_mode == "search"]
+    reserve = min(len(other), max(1, limit // 4)) if other else 0
+    chosen_web = web[: max(0, limit - reserve)]
+    # the chosen web leads, then the reserved (recalled) ones, then any leftover web leads
+    return [*chosen_web, *other, *web[len(chosen_web) :]]
+
+
+def _strict_name_guard(outcome: IdentityOutcome) -> IdentityOutcome:
+    """A name collision on a real ticker, caught for WEB leads.
+
+    The directory lookup accepts a listing when the ticker matched and the names share one
+    distinctive word (an exchange abbreviates: "AIR LIQUIDE" for "L'Air Liquide"). That is
+    right for a lead a model recalled; it is too lenient for a name read off a web page
+    (the page's "Apex Metals" must not become the directory's "Apex Fisheries"). For a
+    search lead verified through a directory the printed name must also agree under the
+    STRICT rule — equal, or one the other plus generic trailing words.
+    """
+    listing = outcome.directory_listing
+    if not outcome.verified or not listing:
+        return outcome
+    from app.services.discovery.directories import _expand, _names_agree
+
+    ours, theirs = normalised_name(outcome.lead.name), normalised_name(str(listing.get("name")))
+    if _names_agree(_expand(ours), _expand(theirs), ticker_matched=False):
+        return outcome
+    # A headline puts words before the name ("Rare Earth Miner Lynas (ASX: LYC)"): try the
+    # TRAILING sub-names, longest first. The match is still strict on the sub-name itself,
+    # so a different company cannot pass by sharing a word.
+    words = ours.split()
+    for size in range(len(words) - 1, 0, -1):
+        sub = " ".join(words[-size:])
+        if len(sub) >= 4 and _names_agree(_expand(sub), _expand(theirs), ticker_matched=False):
+            outcome.lead.name = str(listing.get("name") or sub)
+            return outcome
+    return IdentityOutcome(
+        lead=outcome.lead, status=IDENTITY_REJECTED, ticker=outcome.ticker,
+        exchange=outcome.exchange, name=outcome.name,
+        rejection_reason="name_mismatch_with_listing",
+        detail=f"the page's name does not match the exchange's name for {outcome.ticker}",
+    )
+
+
+def _attach_admission(lead: CompanyLead, decision: dict[str, Any]) -> None:
+    lead.web = {**(lead.web or {}), "admission": decision}
+
+
+def _a3_mentions(lead: CompanyLead, name: str | None) -> list[dict[str, Any]]:
+    """The lead's mention passages, with a REGISTRY-verified issuer's own pages counted as
+    issuer material.
+
+    The classifier cannot know an unfamiliar issuer's domain, so a page on it reads as
+    ``unknown_web`` and cannot carry A3. Only the platform's own verified-issuer registry
+    (``verified_issuer_sources``) may say a domain IS the issuer's; a domain that merely
+    looks like the company's name (``fakeco.se``) never is — anyone can register one.
+    """
+    from urllib.parse import urlsplit
+
+    from app.services.sources.verified_issuer_sources import get_verified_issuer_source
+
+    verified = get_verified_issuer_source(
+        lead.ticker, normalise_venue(lead.exchange_raw) or lead.exchange_raw
+    )
+    hosts: tuple[str, ...] = ()
+    if verified is not None:
+        hosts = tuple(
+            d.lower().removeprefix("www.")
+            for d in (verified.official_website_domain, *verified.allowed_domains)
+            if d
+        )
+    out: list[dict[str, Any]] = []
+    for mention in (lead.web or {}).get("mentions") or []:
+        entry = dict(mention)
+        host = (urlsplit(entry.get("url") or "").hostname or "").lower().removeprefix("www.")
+        if hosts and any(host == h or host.endswith("." + h) for h in hosts):
+            entry["source_class"] = "company_web_page"
+        out.append(entry)
+    return out
+
+
+def _admission_state(identity: IdentityOutcome) -> str | None:
+    return ((identity.lead.web or {}).get("admission") or {}).get("state")
+
+
+def _web_block(
+    identity: IdentityOutcome,
+    eligibility: cons.Eligibility,
+    corroboration: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    from app.services.discovery import admission as adm
+
+    lead = identity.lead
+    has_admission = bool(((lead.web or {}).get("admission") or {}).get("state"))
+    if lead.web and (lead.discovery_mode == "search" or has_admission):
+        found = dict(lead.web)
+        found.setdefault("discovery_mode", lead.discovery_mode)
+        # Evidence ids use the passages as A3 saw them (issuer pages upgraded).
+        found["mentions"] = _a3_mentions(lead, identity.name)
+        found["admission"] = adm.apply_a4(
+            dict(found.get("admission") or {}), status=eligibility.status,
+            reasons=eligibility.reasons,
+        )
+        return found
+    corr = (
+        corroboration.get(dedup_key(identity.ticker, identity.exchange) or "")
+        or corroboration.get(normalised_name(identity.name))
+        or lead.web
+    )
+    labelled = adm.decide(
+        discovery_mode=lead.discovery_mode,
+        has_provenance=False,
+        identity_verified=True,
+        mentions=_a3_mentions(
+            CompanyLead(name=identity.name or lead.name, ticker=lead.ticker,
+                        exchange_raw=lead.exchange_raw, country=None, listing_source_url=None,
+                        evidence_url=None, why=None, source=lead.source, web=corr),
+            identity.name,
+        ) if corr else [],
+        lead_source=lead.source,
+    )
+    block: dict[str, Any] = {
+        "schema": "discovery_web_lead/1",
+        "discovery_mode": lead.discovery_mode or lead.source,
+        "admission": adm.apply_a4(labelled.to_dict(), status=eligibility.status,
+                                  reasons=eligibility.reasons),
+    }
+    if corr:
+        block["corroborated_by_search"] = {
+            "sightings": (corr.get("sightings") or [])[:4],
+            "mentions": _a3_mentions(
+                CompanyLead(name=identity.name or lead.name, ticker=lead.ticker,
+                            exchange_raw=lead.exchange_raw, country=None,
+                            listing_source_url=None, evidence_url=None, why=None,
+                            source=lead.source, web=corr),
+                identity.name,
+            )[:6],
+        }
+    return block
+
+
+def _make_record(
+    identity: IdentityOutcome,
+    results: list[cons.ConstraintResult],
+    eligibility: cons.Eligibility,
+    screening: ScreeningResult | None,
+    corroboration: dict[str, dict[str, Any]],
+    web_on: bool,
+) -> CandidateRecord:
+    return CandidateRecord(
+        identity, results, eligibility, screening, _provenance(identity),
+        identity.lead.registry_item,
+        web=_web_block(identity, eligibility, corroboration) if web_on else None,
+    )
+
+
+def _record_state(record: CandidateRecord) -> str | None:
+    return ((record.web or {}).get("admission") or {}).get("state")
+
+
+def _admission_summary(
+    records: list[CandidateRecord], also: list[CandidateRecord], rejected: list[IdentityOutcome]
+) -> dict[str, Any]:
+    states: dict[str, int] = {}
+    for r in [*records, *also]:
+        state = _record_state(r) or "unknown"
+        states[state] = states.get(state, 0) + 1
+    codes: dict[str, int] = {}
+    for o in rejected:
+        admission = (o.lead.web or {}).get("admission")
+        if admission:
+            for code in admission.get("codes") or []:
+                codes[str(code)] = codes.get(str(code), 0) + 1
+    for r in also:
+        for code in ((r.web or {}).get("admission") or {}).get("codes") or []:
+            codes[f"also_surfaced:{code}"] = codes.get(f"also_surfaced:{code}", 0) + 1
+    novel = sum(
+        1 for r in records
+        if r.identity.lead.discovery_mode == "search" and (r.web or {}).get("novel")
+        and r.eligibility.status != cons.EXCLUDED
+    )
+    return {"by_state": states, "rejected_codes": dict(sorted(codes.items())),
+            "novel_candidates": novel}
 
 
 def _provenance(identity: IdentityOutcome) -> dict[str, Any]:

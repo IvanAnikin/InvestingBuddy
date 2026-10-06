@@ -15,7 +15,14 @@ import type {
   ProfessionalSectionStatus,
   SynthesisSection,
 } from "@/components/research/v3Research";
+import { splitLeadingLabel, type CatalystWebItem } from "@/components/research/webEvidence";
 import { formatNumber } from "@/lib/format";
+import {
+  CurrentDevelopments,
+  StatementLabelChip,
+  WebEvidenceList,
+  WebResearchSummary,
+} from "./WebEvidenceParts";
 
 /**
  * The professional research report — the V3 ledger, read as a report (V3.18.8).
@@ -318,6 +325,9 @@ function FindingItem({
   labelsById: Record<string, string>;
 }) {
   const sources = finding.sourceKinds.map(words).join(", ");
+  // Open-web W4: a leading "[single source]" / "[company says]" is the finding's trust
+  // label, shown as a chip rather than as bracketed text.
+  const statement = splitLeadingLabel(finding.statement);
   const meta = [
     // The owning domain, when it is not simply this section's own name.
     finding.domainLabel &&
@@ -349,7 +359,12 @@ function FindingItem({
         </span>
         <div className="min-w-0">
           <p className="ib-breakable text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
-            {finding.statement}
+            {statement.label && (
+              <>
+                <StatementLabelChip label={statement.label} />{" "}
+              </>
+            )}
+            {statement.text}
           </p>
           {/* Temporal supersession: the newest statement of the same guidance is
               current; an older one is kept and says it was superseded, and by what. */}
@@ -730,10 +745,12 @@ function DomainBody({
   section,
   anchored,
   labelsById,
+  webDevelopments,
 }: {
   section: DomainSection;
   anchored: Set<string>;
   labelsById: Record<string, string>;
+  webDevelopments: CatalystWebItem[];
 }) {
   return (
     <>
@@ -770,6 +787,16 @@ function DomainBody({
 
       {section.commodityTable.length > 0 && <CommodityTable rows={section.commodityTable} />}
       {section.peerTable.length > 0 && <PeerTable rows={section.peerTable} />}
+
+      {/* Open-web W5/W8b: which findings here rest on web documents, by source class,
+          with publisher, date, corroboration and the trust label. Absent on old reports. */}
+      {section.key === "growth_and_catalysts" && (
+        <CurrentDevelopments items={webDevelopments} />
+      )}
+      <WebEvidenceList
+        block={section.webEvidence}
+        renderRef={(label) => <FindingRef label={label} anchored={anchored} />}
+      />
 
       <OpenQuestionsBlock section={section} />
     </>
@@ -991,6 +1018,8 @@ function EvidenceBody({
         </section>
       </div>
 
+      <WebResearchSummary web={section.webResearch} />
+
       {section.explanation && (
         <p className="ib-breakable mt-4 max-w-3xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]">
           {section.explanation}
@@ -1058,8 +1087,12 @@ function SectionCard({
 
 export default function ProfessionalResearchReport({
   report,
+  webDevelopments = [],
 }: {
   report: ProfessionalResearch;
+  /** Open-web W5: dated events from the company web search, shown under the growth and
+      catalysts section. Empty (the default) leaves the report exactly as it was. */
+  webDevelopments?: CatalystWebItem[];
 }) {
   // Every label a finding on this page carries. A reference to any other label is
   // rendered as text, so no link on the page points at nothing.
@@ -1129,6 +1162,7 @@ export default function ProfessionalResearchReport({
               section={section}
               anchored={anchored}
               labelsById={report.findingLabels}
+              webDevelopments={webDevelopments}
             />
           )}
         </SectionCard>

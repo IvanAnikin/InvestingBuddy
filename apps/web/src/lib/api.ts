@@ -41,6 +41,7 @@ import type {
   EscalateResponse,
   ResearchDecision,
   ResearchDecisionList,
+  WebResearchAudit,
 } from "@/types/api";
 
 // All protected API calls are routed through the Next.js server-side proxy so
@@ -588,5 +589,32 @@ export async function escalateDiscoveryRun(
   return apiFetch<EscalateResponse>(
     `/api/v1/market-discovery/runs/${runId}/escalate`,
     { method: "POST" },
+  );
+}
+
+// --- Open-web W8a: the web research audit (admin read-only) ----------------
+
+/** The two audit scopes as URL segments, matching the backend routes. */
+export const WEB_RESEARCH_AUDIT_SCOPES = ["jobs", "discovery-runs"] as const;
+export type WebResearchAuditPathScope =
+  (typeof WEB_RESEARCH_AUDIT_SCOPES)[number];
+
+export function isWebResearchAuditPathScope(
+  value: string,
+): value is WebResearchAuditPathScope {
+  return (WEB_RESEARCH_AUDIT_SCOPES as readonly string[]).includes(value);
+}
+
+/**
+ * Every query, result and fetch attempt for one research job or discovery run.
+ * Throws `ApiError` with 404 (no such job/run) or 503 (migration 042 missing
+ * here — a schema state, not "no searches").
+ */
+export async function fetchWebResearchAudit(
+  scope: WebResearchAuditPathScope,
+  id: string,
+): Promise<WebResearchAudit> {
+  return apiFetch<WebResearchAudit>(
+    `/api/v1/admin/web-research/${scope}/${encodeURIComponent(id)}`,
   );
 }
