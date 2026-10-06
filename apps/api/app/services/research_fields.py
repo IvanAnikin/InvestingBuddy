@@ -532,9 +532,26 @@ def has_money(clause: str) -> bool:
     )
 
 
+#: "first production moved from 2028 to H1 2029": a stated CHANGE. Its target is the NEW
+#: date; the old one is the date it moved away from, not a second target.
+_CHANGE_RE = re.compile(
+    r"\b(?:moved|pushed|delayed|slipped|deferred|postponed|rescheduled|revised|put\s+back|"
+    r"brought\s+forward)\b[^.;]{0,40}?\bfrom\s+(?:(?:q[1-4]|h[12]|mid|early|late|end)\s+(?:of\s+)?)?"
+    r"(?P<old>(?:19|20)\d{2})\b[^.;]{0,40}?"
+    r"\bto\s+(?P<sub>\b(?:q[1-4]|h[12]|(?:first|second)\s+half|mid|early|late|end)\b[\s,-]*"
+    r"(?:of\s+)?)?(?P<new>(?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+
+
 def target_years(clause: str) -> frozenset[str]:
     """The TARGET of a milestone clause: the year after a target cue, with its half or
-    quarter ("h2 2027"). Incidental years ("following the 2026 DFS") are not targets."""
+    quarter ("h2 2027"). Incidental years ("following the 2026 DFS") are not targets.
+    A stated change ("moved from 2028 to H1 2029") targets only the new date."""
+    changed = _CHANGE_RE.search(clause or "")
+    if changed is not None:
+        sub = re.sub(r"[\s,-]*(?:of\s*)?$", "", (changed.group("sub") or "").strip().lower())
+        return frozenset({f"{sub} {changed.group('new')}".strip()})
     out: set[str] = set()
     for match in _TARGET_YEAR_RE.finditer(clause or ""):
         before = (clause or "")[: match.start()].lower()
@@ -745,6 +762,7 @@ _PROJECT_RE = re.compile(
 _PROJECT_STOPWORDS = frozenset(
     "the this that these those its our their each a an any all new existing current "
     "company group issuer first second main proposed planned flagship production "
+    "no not none another other every both either neither "
     "processing mining capex capital initial sustaining development construction "
     "commissioning nameplate design".split()
 )

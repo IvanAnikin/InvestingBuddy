@@ -160,3 +160,22 @@ Fix: planned-output tonnage / rate wording names `metric:production_capacity`; "
 "start of extraction/mining" and "extraction targeted/aimed…" name `milestone:first_production`;
 "initial production" is a target cue (but not a *former* target); the clause splitter no longer
 breaks after "ca.", "approx.", "est.", "incl.", "vs.". Tests: `tests/test_research_fields_planned_output.py`.
+
+### Rainbow Rare Earths — run 3 (job `63a610ea`, report `0946f29d`, after #268 + #269) — PARTIAL
+
+Current project facts present: Phalaborwa capex US$325–350m (press, ~two-thirds debt, US$50m DFC),
+Interim Economic Study (NPV10 US$611m, IRR 38%, US$326m capital), Uberaba EA 11 Mar 2026
+(NPV10 US$916m, IRR 45%), Neo MOU shares (40% NdPr oxide / 65% mixed heavy REC), 85% interest,
+~1,850 t/yr, and an explicit finding that first production "moved from 2028 to H1 2029".
+
+Remaining generic defects found by reading the reconciler's behaviour on the real statements:
+1. `supersessions`/`temporal_disagreements` were both 0: "moved from 2028 to H1 2029" extracted only
+   2028 (so it looked like a restatement), and "No Rainbow project is in construction" gave the
+   finding a project key `no rainbow`. Fix (this PR): a stated change targets only the new date;
+   sentence-initial "No/not/none…" is not a project name. By design a `secondary_web` statement of the
+   move is recorded as a `non_issuer_source` **disagreement**, not a supersession — only issuer-primary
+   sources order guidance.
+2. **Known limitation, not changed:** the gap "No planned annual output tonnage" stays open while a
+   finding states "project life ca.16 years, ca.1,850t/yr separated magnet REO". The finding has no
+   planning word, so it cannot be told from an actual rate; closing it would let an actual or a peer's
+   rate close a capacity gap (the review of #269 showed that is the worse error).
