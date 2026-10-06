@@ -1,7 +1,8 @@
 import Surface from "@/components/product/Surface";
-import type {
-  ExternalLead,
-  V3Research,
+import {
+  findingsHint,
+  type ExternalLead,
+  type V3Research,
 } from "@/components/research/v3Research";
 
 /**
@@ -54,6 +55,7 @@ function Stat({
 }
 
 const n = (v: number | null): string => (v === null ? "—" : String(v));
+
 
 function labelWords(raw: string | null): string {
   if (!raw) return "—";
@@ -219,12 +221,7 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
         <Stat
           label="Findings"
           value={n(council?.findingCount ?? v3.findings.length)}
-          hint={
-            council?.verifiedFindingCount !== null &&
-            council?.verifiedFindingCount !== undefined
-              ? `${council.verifiedFindingCount} verified`
-              : undefined
-          }
+          hint={findingsHint(council)}
         />
         <Stat label="Open gaps" value={n(consumption?.gapsOpen ?? v3.gaps.length)} />
         <Stat label="Rounds" value={n(v3.rounds)} hint={`${n(v3.tasksRun)} tasks`} />
@@ -511,7 +508,7 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
                 "This run is not priced: no price list is configured. Unpriced is not free.")
               : `Estimated cost $${consumption.estimatedCostUsd.toFixed(4)}` +
                 (consumption.costPerVerifiedUsefulFinding !== null
-                  ? ` · $${consumption.costPerVerifiedUsefulFinding.toFixed(4)} per verified useful finding.`
+                  ? ` · $${consumption.costPerVerifiedUsefulFinding.toFixed(4)} per useful finding.`
                   : ".")}
           </p>
         </details>
