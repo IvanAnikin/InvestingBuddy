@@ -46,10 +46,10 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
-#: A ceiling every backend applies before it writes anything. The fetch layer
-#: already caps a document far below this (``primary_document_max_download_bytes``
-#: is 8 MB); this exists so a *bug* upstream cannot push an unbounded blob into
-#: storage, not as a business rule.
+#: A ceiling every backend applies before it writes anything, so a *bug* upstream
+#: cannot push an unbounded blob into storage — not a business rule. The fetch
+#: layer's streaming cap is ``source_document_extraction_max_bytes`` (35 MB), just
+#: below this; ``primary_document_max_download_bytes`` (8 MB) is not a fetch cap.
 DEFAULT_MAX_ARTIFACT_BYTES = 32_000_000
 
 BACKEND_MEMORY = "memory"

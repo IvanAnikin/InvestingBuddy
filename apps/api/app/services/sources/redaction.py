@@ -15,7 +15,6 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.core.log_redaction import (
-    SENSITIVE_QUERY_SUBSTRINGS,
     redact_text,
     redact_url,
 )
@@ -29,13 +28,72 @@ __all__ = [
 ]
 
 
+#: Fragments that mark a query parameter NAME as credential-bearing in the STORED /
+#: LOGGED form of a URL. Deliberately aggressive (substring match): W0 review S-M3
+#: found that whole-word matching let ``authkey``, ``accesskey``, ``secretkey``,
+#: ``privatekey``, ``subscriptionkey``, ``sessionkey``, ``authorization``,
+#: ``authcode``, ``accesscode``, ``apisig`` and ``awsaccesskeyid`` into storage.
+#: Over-stripping a stored URL costs a parameter; under-stripping stores a secret.
+#: The URL actually FETCHED is never stripped (D12) — callers request
+#: ``SafeLink.fetch_target`` — so aggressiveness here cannot break a download.
+_SECRET_PARAM_FRAGMENTS = (
+    "token",
+    "key",
+    "secret",
+    "password",
+    "passwd",
+    "sig",
+    "auth",
+    "code",
+    "credential",
+    "session",
+)
+#: Ordinary parameters that merely CONTAIN a fragment (D12's examples and their
+#: kin). Compared after lower-casing and removing ``_``/``-``/``.``.
+_NOT_SECRET_PARAMS = frozenset(
+    {
+        "countrycode",
+        "sortkey",
+        "design",
+        "designer",
+        "author",
+        "authors",
+        "authorname",
+        "keyword",
+        "keywords",
+        "zipcode",
+        "postcode",
+        "postalcode",
+        "currencycode",
+        "languagecode",
+        "langcode",
+        "isocode",
+        "statecode",
+        "regioncode",
+        "sectorcode",
+        "industrycode",
+        "barcode",
+        "stockcode",
+        "tickercode",
+        "exchangecode",
+    }
+)
+_PARAM_SEPARATORS_RE = re.compile(r"[_\-.\s]+")
+
+
 def _is_secret_param(name: str) -> bool:
-    lowered = name.lower()
-    return any(token in lowered for token in SENSITIVE_QUERY_SUBSTRINGS)
+    """True when a query parameter NAME may carry a credential (stored form only)."""
+    compact = _PARAM_SEPARATORS_RE.sub("", (name or "").lower())
+    if not compact or compact in _NOT_SECRET_PARAMS:
+        return False
+    return any(fragment in compact for fragment in _SECRET_PARAM_FRAGMENTS)
 
 
 def strip_url_secrets(url: str | None) -> str | None:
     """Return ``url`` with every credential-bearing query parameter removed.
+
+    For the STORED / LOGGED form of a URL only. Never feed the result back into a
+    fetch: a URL without its signature is a different request (W0 / D12).
 
     Scheme, host and path are preserved. Unlike ``redact_url`` (which keeps the
     key and hides the value for log readability), this drops the whole parameter

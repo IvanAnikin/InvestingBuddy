@@ -54,13 +54,13 @@ from app.services.providers.contracts import (
     STATUS_PARTIAL,
     STATUS_TIMEOUT,
     BrowserProvider,
+    CandidateSearchProvider,
     CostEstimate,
     ModelProvider,
     QueryRecord,
     ResearchLead,
     ResearchProvider,
     ResearchProviderResult,
-    SearchProvider,
     SourceCandidate,
     reject_lead,
 )
@@ -629,7 +629,7 @@ class TestDegradationNamesItsReason:
 class TestFakes:
     def test_each_fake_satisfies_its_protocol(self) -> None:
         assert isinstance(FakeModelProvider(), ModelProvider)
-        assert isinstance(FakeSearchProvider(), SearchProvider)
+        assert isinstance(FakeSearchProvider(), CandidateSearchProvider)
         assert isinstance(FakeBrowserProvider(), BrowserProvider)
         assert isinstance(FakeResearchProvider(), ResearchProvider)
 

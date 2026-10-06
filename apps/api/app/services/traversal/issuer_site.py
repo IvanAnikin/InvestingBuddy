@@ -23,7 +23,8 @@ otherwise.
 
 SAME REGISTRABLE DOMAIN, AND THAT IS THE ALLOWLIST
 ==================================================
-The traversal's allowlist is the issuer's own registrable domain plus whatever the caller
+The traversal's allowlist is the issuer's own registrable domain (resolved against the
+Public Suffix List, so ``issuer.co.uk`` never widens to ``co.uk``) plus whatever the caller
 explicitly adds — which is how an off-domain CDN gets reached, since Pandora's documents
 live on one. Everything else the guarded fetcher already refuses: non-HTTPS, internal
 hosts, IP literals, a redirect that leaves the allowlist, and anything over the byte cap.
@@ -46,7 +47,9 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
+from app.services.sources.public_suffix import aregistrable_domain, registrable_domain
 from app.services.sources.safe_web_fetcher import (
+    USER_AGENT_PRODUCT_TOKEN,
     SafeLink,
     extract_links,
     host_of,
@@ -84,9 +87,11 @@ SKIP_ALREADY_SEEN = "already_seen"
 SKIP_FETCH_FAILED = "fetch_failed"
 SKIP_BLOCKED = "blocked"
 
-#: The user agent robots.txt is evaluated against. The same string the fetcher sends, so
-#: a site that names it in robots.txt gets the behaviour it asked for.
-ROBOTS_AGENT = "InvestingBuddyResearchBot"
+#: The user agent robots.txt is evaluated against: the product token the fetcher's
+#: User-Agent actually starts with, so a site that names it in robots.txt gets the
+#: behaviour it asked for. (W0: this was ``InvestingBuddyResearchBot`` while the fetcher
+#: sent ``InvestingBuddy-Research-Bot/1.0`` — a site naming the real token was ignored.)
+ROBOTS_AGENT = USER_AGENT_PRODUCT_TOKEN
 
 #: A page that returned a long body and almost no links is the JS-gated shape: the anchors
 #: are rendered client-side and a non-browser fetch cannot see them. Recorded, never
@@ -187,20 +192,18 @@ class TraversalResult:
 
 
 def registrable_domain_of(url: str) -> str | None:
-    """The issuer's own domain, used as the walk's allowlist.
+    """The issuer's own registrable domain, used as the walk's allowlist.
 
-    Naive last-two-labels, matching what ``registrable_host_allowed`` already does
-    elsewhere in this codebase. It is deliberately *not* a public-suffix list: adding one
-    is a dependency and a data file, and the failure direction here is safe — a
-    co.uk-style host resolves to a broader domain than it should, which the guarded
-    fetcher's other checks still bound, and the caller can always pass an explicit
-    allowlist instead.
+    W0 / D11: resolved against the Public Suffix List (bundled snapshot, no network;
+    see ``services/sources/public_suffix.py``). It used to take the last two labels,
+    so a start URL on ``www.issuer.co.uk`` allowlisted all of ``co.uk``. A host that
+    IS a public suffix (``co.uk`` itself, ``azurewebsites.net``) has no registrable
+    domain and returns None — nothing is walked.
     """
     host = host_of(url)
     if not host or not is_safe_public_host(host):
         return None
-    parts = host.split(".")
-    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+    return registrable_domain(host)
 
 
 async def _load_robots(
@@ -267,7 +270,13 @@ async def traverse_issuer_site(
         )
         return result
 
-    domain = registrable_domain_of(start_url)
+    # The Public Suffix List is parsed on first use: resolve it off the event loop.
+    start_host = host_of(start_url)
+    domain = (
+        await aregistrable_domain(start_host)
+        if start_host and is_safe_public_host(start_host)
+        else None
+    )
     if domain is None:
         result.stopped_by = STOPPED_EXHAUSTED
         result.skip(SKIP_UNSAFE_HOST)
@@ -282,7 +291,9 @@ async def traverse_issuer_site(
     )
     result.robots_consulted = robots is not None
 
-    frontier: deque[tuple[str, int]] = deque([(start_url, 0)])
+    # (stored url, url to request, depth). The request URL is the link exactly as
+    # published; the stored one is its secret-stripped form (W0 / D12).
+    frontier: deque[tuple[str, str, int]] = deque([(start_url, start_url, 0)])
     seen: set[str] = {start_url}
     documents: dict[str, SafeLink] = {}
 
@@ -293,16 +304,16 @@ async def traverse_issuer_site(
         if (clock() - started) >= bounds.max_seconds:
             result.stopped_by = STOPPED_MAX_SECONDS
             break
-        url, depth = frontier.popleft()
+        url, fetch_url, depth = frontier.popleft()
 
-        if robots is not None and not robots.can_fetch(ROBOTS_AGENT, url):
+        if robots is not None and not robots.can_fetch(ROBOTS_AGENT, fetch_url):
             # Skipped, never fetched-and-discarded. "We obeyed robots.txt" has to mean
             # the request did not happen.
             result.skip(SKIP_ROBOTS)
             continue
         try:
             page = await fetch(
-                url,
+                fetch_url,
                 allowed_domains=allowed,
                 keywords=keywords,
                 cfg=cfg,
@@ -357,7 +368,7 @@ async def traverse_issuer_site(
                 result.skip(SKIP_OFF_DOMAIN)
                 continue
             seen.add(link.url)
-            frontier.append((link.url, depth + 1))
+            frontier.append((link.url, link.fetch_target, depth + 1))
 
     result.frontier_remaining = len(frontier)
     result.document_links = list(documents.values())

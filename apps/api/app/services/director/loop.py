@@ -48,10 +48,12 @@ import inspect
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Protocol, runtime_checkable
 
 from app.services.director.planner import PlannedQuestion, ResearchPlan
 from app.services.ledger import store as ledger
+from app.services.research_fields import claim_key_for
 from app.services.research_mode import ModeLimits
 
 #: Why the loop stopped. Closed, and every member is either a limit or a completion
@@ -107,6 +109,9 @@ class FindingDraft:
     source_kinds: tuple[str, ...] = ()
     #: V3.18.7 — findings OTHER domains own that this one builds on, by id.
     references: tuple[str, ...] = ()
+    #: Migration 043 — publication date of the cited evidence (newest; None when any
+    #: cited item is undated). Inherited from the tools, never from the model's prose.
+    source_published_at: date | None = None
 
 
 @dataclass
@@ -437,6 +442,11 @@ async def run_investigation(
                             else None
                         ),
                         source_kinds=draft.source_kinds,
+                        # Migration 043 — WHAT it states (research_fields vocabulary),
+                        # so reconciliation can compare it with a gap under another
+                        # question, and WHEN its source said so.
+                        claim_key=claim_key_for(draft.statement),
+                        source_published_at=getattr(draft, "source_published_at", None),
                         references_finding_ids=[
                             ref for ref in draft.references if ref in known_ids
                         ],

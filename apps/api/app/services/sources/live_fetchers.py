@@ -234,9 +234,16 @@ async def live_document_extractor(
     and is re-checked against ``allowed_domains`` inside ``safe_fetch_document``.
     Bounded and SSRF-safe; never raises — every failure degrades to a bundle with
     honest ``source_gaps``.
+
+    W0 (D3/D6): ``resolve_ip=True`` — this was the one live document fetch that ran
+    without resolving, so an encoded-IP host or a name resolving internally was
+    caught by nothing, and the unpinned client could be routed by an environment
+    proxy. It now resolves, validates and pins like every other live fetch.
     """
     cfg = cfg or default_settings
-    fetched = await safe_fetch_document(url, allowed_domains=allowed_domains, cfg=cfg)
+    fetched = await safe_fetch_document(
+        url, allowed_domains=allowed_domains, cfg=cfg, resolve_ip=True
+    )
     bundle = PrimaryDocumentBundle(
         source_url=fetched.final_url or fetched.requested_url,
         document_type=fetched.document_type,
