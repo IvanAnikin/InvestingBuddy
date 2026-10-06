@@ -214,3 +214,61 @@ class TestClauseSplitterAbbreviations:
 
     def test_a_semicolon_and_a_contrast_still_split(self) -> None:
         assert len(rf._raw_clauses("Cash rose; debt fell but capex rose.")) == 3  # noqa: SLF001
+
+
+# --------------------------------------------------------------------------- #
+# a stated change, and a sentence-initial "No" that is not a project
+# --------------------------------------------------------------------------- #
+
+
+class TestStatedChange:
+    @pytest.mark.parametrize(
+        ("text", "years"),
+        [
+            ("Reported Phalaborwa first production moved from 2028 (project page) to H1 2029.",
+             {"h1 2029"}),
+            ("First production was pushed from 2026 to 2027.", {"2027"}),
+            ("Commissioning delayed from Q2 2026 to Q4 2026 by the grid connection.",
+             {"q4 2026"}),
+        ],
+    )
+    def test_a_stated_change_targets_only_the_new_date(self, text: str, years: set[str]) -> None:
+        assert set(rf.target_years(text)) == years
+
+    def test_a_web_page_stating_the_move_is_a_disagreement_never_a_supersession(self) -> None:
+        issuer = _finding(
+            "a", "Phalaborwa: first production expected 2028.",
+            source_kinds=("issuer_filing",), published_at=date(2026, 9, 25),
+        )
+        web = _finding(
+            "b", "Reported Phalaborwa first production moved from 2028 to H1 2029.",
+            source_kinds=("secondary_web",), published_at=date(2026, 9, 25),
+        )
+        supersessions, disagreements = gr.supersede([issuer, web])
+        assert supersessions == [], "a web page must not overwrite an issuer statement"
+        assert [(d.finding_a_id, d.finding_b_id, d.reason) for d in disagreements] == [
+            ("a", "b", "non_issuer_source")
+        ]
+
+    def test_an_issuer_statement_of_the_move_does_supersede(self) -> None:
+        old = _finding(
+            "a", "Phalaborwa: first production expected 2028.",
+            source_kinds=("issuer_filing",), published_at=date(2026, 3, 1),
+        )
+        new = _finding(
+            "b", "Phalaborwa first production moved from 2028 to H1 2029.",
+            source_kinds=("issuer_filing",), published_at=date(2026, 9, 10),
+        )
+        supersessions, _ = gr.supersede([old, new])
+        assert [(s.older_id, s.newer_id) for s in supersessions] == [("a", "b")]
+
+    def test_an_unchanged_date_is_not_a_change(self) -> None:
+        assert set(rf.target_years("First production is expected in 2028.")) == {"2028"}
+
+
+class TestProjectKey:
+    def test_a_sentence_initial_no_is_not_part_of_a_project_name(self) -> None:
+        assert rf.project_key("No Rainbow project is in construction") == "rainbow"
+
+    def test_a_named_project_is_unchanged(self) -> None:
+        assert rf.project_key("The Phalaborwa project reported a PFS.") == "phalaborwa"
