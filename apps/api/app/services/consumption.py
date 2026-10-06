@@ -68,6 +68,9 @@ UNIT_NAMES: tuple[str, ...] = (
     "cached_tokens",
     "model_calls",
     "web_search_calls",
+    # Open-web W1: Tavily bills in credits (1 per basic search, 2 per advanced), not
+    # calls, so the credit count is the unit its price applies to (spec §22.4).
+    "tavily_credits",
     "url_fetch_calls",
     "provider_research_runs",
     "documents_downloaded",
@@ -184,6 +187,7 @@ class ConsumptionUnits:
     cached_tokens: int = 0
     model_calls: int = 0
     web_search_calls: int = 0
+    tavily_credits: float = 0.0
     url_fetch_calls: int = 0
     provider_research_runs: int = 0
     documents_downloaded: int = 0
@@ -200,6 +204,12 @@ class ConsumptionUnits:
     #: NOT ZERO — it is unmeasured, and the difference decides whether a later
     #: comparison is meaningful.
     instrumented: frozenset[str] = frozenset()
+
+    #: Units that WERE incurred but whose amount the provider did not report (open-web
+    #: W1 review C3: a Tavily 2xx with no ``usage`` block, or a timeout after the request
+    #: left). The recorded number for such a unit is a floor, not a count, so any unit
+    #: here makes :func:`derive_cost` answer ``None``.
+    unreported: frozenset[str] = frozenset()
 
     #: The model tokens above, split by the vendor that billed them. V3.17.9.2.
     #: Empty means "not broken down", which is a DIFFERENT statement from "one vendor" —
@@ -218,6 +228,7 @@ class ConsumptionUnits:
             merged[name] = getattr(self, name) + getattr(other, name)
         merged["tokens_estimated"] = self.tokens_estimated or other.tokens_estimated
         merged["instrumented"] = self.instrumented | other.instrumented
+        merged["unreported"] = self.unreported | other.unreported
         merged["by_vendor"] = merge_vendor_usage(self.by_vendor, other.by_vendor)
         return ConsumptionUnits(**merged)
 
@@ -232,6 +243,7 @@ class ConsumptionUnits:
         # Named explicitly rather than left for a reader to subtract, because
         # the whole point is that these zeros mean nothing.
         out["not_instrumented"] = sorted(set(UNIT_NAMES) - self.instrumented)
+        out["unreported"] = sorted(self.unreported)
         out["by_vendor"] = [v.to_dict() for v in self.by_vendor]
         return out
 
@@ -240,7 +252,7 @@ class ConsumptionUnits:
         raw = raw or {}
         kwargs: dict[str, Any] = {}
         for f in fields(cls):
-            if f.name in ("instrumented", "by_vendor"):
+            if f.name in ("instrumented", "by_vendor", "unreported"):
                 continue
             if f.name in raw:
                 kwargs[f.name] = raw[f.name]
@@ -249,6 +261,7 @@ class ConsumptionUnits:
         return cls(
             **kwargs,
             instrumented=frozenset(str(x) for x in instrumented),
+            unreported=frozenset(str(x) for x in (raw.get("unreported") or [])),
             by_vendor=tuple(v for v in vendors if v is not None),
         )
 
@@ -309,6 +322,17 @@ class PriceBook:
     #: stays frozen and hashable. V3.17.9.2 — the flat ``usd_per_million_*`` fields
     #: above cannot express two vendors, and production runs two.
     vendor_rates: tuple[tuple[str, ModelPrice], ...] = ()
+    #: Per-vendor USD per search credit (open-web W1), from the same
+    #: ``V3_PRICE_VENDOR_RATES`` JSON: ``{"tavily": {"usd_per_credit": 0.008}}``.
+    credit_rates: tuple[tuple[str, float], ...] = ()
+
+    def credit_rate(self, vendor: str) -> float | None:
+        """USD per credit for this vendor, or ``None`` when unpriced. Exact-name match."""
+        wanted = (vendor or "").strip().lower()
+        for name, rate in self.credit_rates:
+            if name.strip().lower() == wanted:
+                return rate
+        return None
 
     def for_vendor(self, vendor: str) -> ModelPrice | None:
         """This vendor's rates, or ``None`` when none are configured for it.
@@ -328,9 +352,9 @@ class PriceBook:
         flat = all(
             getattr(self, f.name) is None
             for f in fields(self)
-            if f.name != "vendor_rates"
+            if f.name not in ("vendor_rates", "credit_rates")
         )
-        return flat and not self.vendor_rates
+        return flat and not self.vendor_rates and not self.credit_rates
 
 
 @dataclass(frozen=True)
@@ -457,12 +481,26 @@ def derive_cost(units: ConsumptionUnits, prices: PriceBook) -> DerivedCost:
             1_000_000,
         )
 
-    add(
-        "web_search_calls",
-        units.web_search_calls,
-        prices.usd_per_thousand_web_searches,
-        1_000,
-    )
+    # A unit the provider incurred but did not report cannot be priced: the recorded
+    # figure is a floor. Listed, so the whole estimate is None (review C3).
+    for unit in sorted(units.unreported):
+        unpriced.append(f"{unit}[unreported]")
+
+    # Tavily bills in CREDITS, not calls (spec §22.4). A record that measured credits
+    # is priced by them, and its calls are not billed a second time at the flat
+    # per-search rate. With no ``usd_per_credit`` configured the credits are UNPRICED
+    # and the whole cost is unknown — never zero. The web search provider is the only
+    # producer of credits, and DeepSeek search is not selectable as one (spec §8.2),
+    # so a record never mixes credit-billed and call-billed searches today.
+    if units.measured("tavily_credits"):
+        add("tavily_credits", units.tavily_credits, prices.credit_rate("tavily"), 1)
+    else:
+        add(
+            "web_search_calls",
+            units.web_search_calls,
+            prices.usd_per_thousand_web_searches,
+            1_000,
+        )
     add(
         "url_fetch_calls",
         units.url_fetch_calls,
@@ -657,6 +695,38 @@ def _vendor_rates_from_settings(cfg: Any) -> tuple[tuple[str, ModelPrice], ...]:
     return tuple(out)
 
 
+def _credit_rates_from_settings(cfg: Any) -> tuple[tuple[str, float], ...]:
+    """``usd_per_credit`` entries of ``V3_PRICE_VENDOR_RATES``. Never raises.
+
+    Same rules as the token rates: malformed JSON yields nothing (unknown, not wrong),
+    a zero rate is a real price, a negative one is ignored.
+    """
+    import json
+
+    raw = (getattr(cfg, "v3_price_vendor_rates", "") or "").strip()
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(parsed, dict):
+        return ()
+    out: list[tuple[str, float]] = []
+    for vendor, block in parsed.items():
+        if not isinstance(vendor, str) or not vendor.strip() or not isinstance(block, dict):
+            continue
+        if "usd_per_credit" not in block:
+            continue
+        try:
+            value = float(block["usd_per_credit"])
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            out.append((vendor.strip(), value))
+    return tuple(out)
+
+
 def price_book_from_settings(cfg: Any | None = None) -> PriceBook:
     """The configured price book. Empty unless the user has entered prices."""
     if cfg is None:
@@ -668,6 +738,7 @@ def price_book_from_settings(cfg: Any | None = None) -> PriceBook:
 
     return PriceBook(
         vendor_rates=_vendor_rates_from_settings(cfg),
+        credit_rates=_credit_rates_from_settings(cfg),
         usd_per_million_input_tokens=price("v3_price_per_million_input_tokens"),
         usd_per_million_output_tokens=price("v3_price_per_million_output_tokens"),
         usd_per_thousand_web_searches=price("v3_price_per_thousand_web_searches"),
@@ -683,8 +754,9 @@ def price_book_from_settings(cfg: Any | None = None) -> PriceBook:
 # ---------------------------------------------------------------------------
 
 #: The units the company-research path measures TODAY. Everything else in
-#: ``UNIT_NAMES`` has no producer yet — there is no SearchProvider, no browser,
-#: no per-page counter — and must be reported as unmeasured rather than zero.
+#: ``UNIT_NAMES`` has no producer on this path yet — no browser, no per-page counter,
+#: and the open-web search orchestrator (W1) returns its units to a caller the
+#: pipeline does not have until W5 — and must be reported as unmeasured, not zero.
 COUNCIL_INSTRUMENTED: frozenset[str] = frozenset(
     {
         "model_input_tokens",

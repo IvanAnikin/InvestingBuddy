@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "synthetic per Tavily docs 2026-09-29; replace with recorded response",
+  "_fixture_query": "grid equipment supplier investor presentation",
+  "query": "grid equipment supplier investor presentation",
+  "results": [
+    {
+      "title": "Investor presentation",
+      "url": "https://ir.grid-equipment.co.uk/presentations/latest.pdf",
+      "content": "Synthetic snippet: a link to an investor presentation document.",
+      "score": 0.77
+    }
+  ],
+  "response_time": 0.8,
+  "request_id": "synthetic-3f2b9c1e-0000-4000-8000-000000000004"
+}

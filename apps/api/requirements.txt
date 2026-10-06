@@ -24,6 +24,10 @@ pypdf>=4.0,<6
 # Pillow (Pillow gates the future OCR raster path via a pixel cap). No system
 # deps, no OCR binary (tesseract/pdf2image/pymupdf are intentionally NOT added).
 pdfplumber>=0.11,<0.12
+# W0 (open-web threat model D11): registrable-domain lookup for issuer traversal.
+# Pure-Python; ships a Public Suffix List snapshot in the wheel and makes NO network
+# call at runtime (refresh = upgrade the package).
+publicsuffixlist>=1.0.2,<2
 # Phase 32A Slice 5B.2: real Azure Document Intelligence OCR adapter for
 # scanned/image-only primary documents. Inert unless
 # PRIMARY_DOCUMENT_OCR_ENABLED=true AND an endpoint is configured — see

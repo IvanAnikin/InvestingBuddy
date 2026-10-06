@@ -609,6 +609,8 @@ async def fetch_filing_index(
         "follow_redirects": False,
         "timeout": _index_timeout_seconds(cfg),
         "cookies": None,
+        # W0 / D6: no environment proxy may reroute a guarded fetch.
+        "trust_env": False,
         "headers": {
             "User-Agent": SEC_USER_AGENT,
             "Accept": "application/json",

@@ -379,8 +379,19 @@ def test_check_fetch_url_resolve_ip_opt_in():
     def _must_not_be_called(host, port, *a, **k):  # noqa: ANN001, ANN002, ANN003
         raise AssertionError("resolver called with resolve_ip=False")
 
-    # Default (OFF): resolver is never invoked → byte-identical old behaviour.
-    assert check_fetch_url(url, (), cfg=cfg, resolver=_must_not_be_called) is None
+    # Default (OFF) is still opt-in for an ALLOWLISTED fetch: the resolver is never
+    # invoked when the allowlist bounds where the URL may point.
+    allowlisted = _cfg(source_connector_allowlist_only=True)
+    assert (
+        check_fetch_url(url, ("example.com",), cfg=allowlisted, resolver=_must_not_be_called)
+        is None
+    )
+    # W0 / D3 (open-web threat model): with the allowlist OFF, resolution is no longer
+    # optional — this used to return None without resolving, which let an encoded or
+    # internally-resolving host through. Now the resolver IS consulted and an internal
+    # answer blocks, even with resolve_ip=False.
+    forced = check_fetch_url(url, (), cfg=cfg, resolver=_resolver_for("127.0.0.1"))
+    assert forced is not None and "resolved ip" in forced
 
     # Opt-in ON with a public resolver → still allowed.
     assert (

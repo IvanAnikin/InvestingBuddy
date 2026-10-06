@@ -4,6 +4,11 @@ Seven categories exist in the strategy document because they change independentl
 Four are defined here — ``ModelProvider``, ``SearchProvider``, ``ResearchProvider`` and
 ``BrowserProvider`` — and the other three arrive with the sources that need them.
 
+Open-web W1 replaced ``SearchProvider`` with the web search contract (spec §8.1: a
+``SearchRequest`` in, a ``SearchExecution`` network fact and ``SearchResultItem`` objects out).
+The V3.4 query → candidates protocol survives as ``CandidateSearchProvider`` for the
+benchmark and the DeepSeek search leg, which is not a web search provider.
+
 WHY ABSTRACTION RATHER THAN A GOOD VENDOR
 =========================================
 Not because vendors are untrustworthy, but because the thing being protected is not the
@@ -39,11 +44,14 @@ and only those bytes can be cited.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from typing import Any, Protocol, runtime_checkable
+from enum import Enum
+from typing import Any, Final, Literal, Protocol, runtime_checkable
 
 from app.services.consumption import UNIT_NAMES, ConsumptionUnits
 
@@ -472,14 +480,291 @@ class ModelProvider(Protocol):
 
 
 @runtime_checkable
-class SearchProvider(Protocol):
-    """Query → ranked **source candidates**. Not bound to one model vendor."""
+class CandidateSearchProvider(Protocol):
+    """LEGACY: query → ranked **source candidates**, as V3.4 defined it.
+
+    Renamed from ``SearchProvider`` in open-web W1. It is kept for the provider benchmark,
+    the legacy ``FakeSearchProvider`` and ``DeepSeekSearchProvider``, whose ``search()`` is
+    retained for the benchmark only (spec §8.2). It is **not** a web search provider: it
+    reports no network fact, so nothing it returns can be labelled ``discovery_mode=
+    "search"``. The web search contract is :class:`SearchProvider` below.
+    """
 
     provider_id: str
 
     async def search(
         self, *, query: str, top_k: int = 10, domains: Sequence[str] | None = None
     ) -> SearchResponse:
+        ...  # pragma: no cover - protocol
+
+
+# ── The web search contract — open-web W1 (spec §8.1, §22.3) ─────────────── #
+
+
+class QueryFamily(str, Enum):
+    """Why a query was issued (spec §4.2). A closed vocabulary, stored on every row."""
+
+    ENTITY = "entity"
+    VALUE_CHAIN = "value_chain"
+    VENUE = "venue"
+    LOCAL_LANG = "local_lang"
+    DEMAND = "demand"
+    DOCUMENT = "document"
+    COMPANY_DOCS = "company_docs"
+    CATALYST = "catalyst"
+    COMPETITIVE = "competitive"
+    INDUSTRY = "industry"
+    RISK = "risk"
+    GAP = "gap"
+
+
+#: Who enforced one requested filter. ``client`` means InvestingBuddy checked every
+#: returned result itself (whether or not the vendor was also asked), which is the only
+#: guarantee a reader can rely on — ADR-055 recorded a vendor that accepted a domain
+#: filter and ignored it.
+FILTER_BY_PROVIDER: Final = "provider"
+FILTER_BY_CLIENT: Final = "client"
+FILTER_UNSUPPORTED: Final = "unsupported"
+#: The vendor takes the value as a ranking preference, not a filter (Tavily's
+#: ``country`` boosts results from that country; it does not exclude others).
+FILTER_PROVIDER_BOOST: Final = "provider_boost"
+FilterEnforcement = Literal["provider", "client", "unsupported", "provider_boost"]
+
+#: What the provider's terms let the platform keep from a response (provider
+#: evaluation §4). ``full``: URL, title and snippet. ``url_only``: no title/snippet.
+#: ``transient``: nothing is persisted.
+RESULT_STORAGE_FULL = "full"
+RESULT_STORAGE_URL_ONLY = "url_only"
+RESULT_STORAGE_TRANSIENT = "transient"
+RESULT_STORAGE_MODES: frozenset[str] = frozenset(
+    {RESULT_STORAGE_FULL, RESULT_STORAGE_URL_ONLY, RESULT_STORAGE_TRANSIENT}
+)
+
+#: Why a search did not execute. Closed so an admin page can aggregate on it.
+SEARCH_ERROR_TIMEOUT = "timeout"
+SEARCH_ERROR_HTTP_429 = "http_429"
+SEARCH_ERROR_HTTP_5XX = "http_5xx"
+SEARCH_ERROR_HTTP_4XX = "http_4xx"
+SEARCH_ERROR_HTTP_3XX = "http_3xx"
+SEARCH_ERROR_AUTH = "auth"
+SEARCH_ERROR_PARSE = "parse"
+SEARCH_ERROR_DISABLED = "disabled"
+SEARCH_ERROR_NO_KEY = "no_key"
+SEARCH_ERROR_TRANSPORT = "transport"
+SEARCH_ERROR_TOO_LARGE = "response_too_large"
+SEARCH_ERROR_HOST_NOT_ALLOWED = "host_not_allowed"
+SEARCH_ERROR_GOVERNANCE = "governance_refused"
+SEARCH_ERROR_CREDENTIAL = "credential_in_payload"
+SEARCH_ERROR_UNKNOWN_PROVIDER = "unknown_provider"
+SEARCH_ERROR_ADAPTER = "adapter_error"
+#: The vendor's plan or pay-as-you-go limit (Tavily 432/433) — not a transient 4xx.
+SEARCH_ERROR_QUOTA = "quota"
+#: The run was cancelled while the call was pending or in flight.
+SEARCH_ERROR_CANCELLED = "cancelled"
+#: A second identical request in one batch whose first copy did not execute.
+SEARCH_ERROR_DUPLICATE = "duplicate_in_batch"
+#: ``fake`` selected outside development/test.
+SEARCH_ERROR_FAKE_NOT_ALLOWED = "fake_not_allowed_in_env"
+
+
+@dataclass(frozen=True)
+class SearchCapabilities:
+    """What one adapter can do, declared rather than discovered at run time.
+
+    ``provider_filters`` names the filters the vendor ACCEPTS. Whether it honours them is
+    a separate question, answered per call in ``SearchExecution.filters_enforced_by``.
+    """
+
+    max_results: int = 10
+    provider_filters: frozenset[str] = frozenset()
+    max_include_domains: int = 0
+    max_exclude_domains: int = 0
+    result_storage: str = RESULT_STORAGE_TRANSIENT
+
+    def __post_init__(self) -> None:
+        if self.result_storage not in RESULT_STORAGE_MODES:
+            raise ValueError(f"{self.result_storage!r} is not a result storage mode.")
+
+
+@dataclass(frozen=True)
+class SearchRequest:
+    """One sanitised query plus its filters (spec §8.1).
+
+    ``query`` must already have passed ``web_research.queries.sanitise_query``; the
+    orchestrator re-validates it before anything leaves the process. ``origin`` and
+    ``template_version`` are provenance for the query row and are never sent anywhere.
+    """
+
+    query: str
+    family: QueryFamily
+    max_results: int = 10
+    page: int = 1
+    date_from: date | None = None
+    date_to: date | None = None
+    include_domains: tuple[str, ...] = ()
+    exclude_domains: tuple[str, ...] = ()
+    country: str | None = None
+    language: str | None = None
+    topic: Literal["general", "news"] = "general"
+    origin: str = "template"
+    template_version: str | None = None
+
+    def filters(self) -> dict[str, Any]:
+        """The requested filters, only those actually set. Stable key order."""
+        out: dict[str, Any] = {
+            "max_results": int(self.max_results),
+            "topic": self.topic,
+        }
+        if self.page != 1:
+            out["page"] = int(self.page)
+        if self.date_from is not None or self.date_to is not None:
+            out["date_range"] = {
+                "from": self.date_from.isoformat() if self.date_from else None,
+                "to": self.date_to.isoformat() if self.date_to else None,
+            }
+        if self.include_domains:
+            out["include_domains"] = sorted({d.lower() for d in self.include_domains})
+        if self.exclude_domains:
+            out["exclude_domains"] = sorted({d.lower() for d in self.exclude_domains})
+        if self.country:
+            out["country"] = self.country.upper()
+        if self.language:
+            out["language"] = self.language.lower()
+        return out
+
+    def request_hash(self) -> str:
+        """Normalised identity of what is asked, for the 24h search cache (spec §18).
+
+        Whitespace and case in the query do not change the question; the filters do.
+        ``origin``/``template_version`` are provenance, not part of the question.
+        """
+        normal = " ".join(self.query.split()).casefold()
+        blob = json.dumps(
+            {"q": normal, "family": self.family.value, "filters": self.filters()},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class SearchExecution:
+    """The network fact of one search (spec §22.3). Not a claim about the web.
+
+    ``executed`` is True **only** on a 2xx from the provider's search endpoint that
+    carried a provider request id and a parseable result list. ``network_call_count``
+    counts real HTTP calls to that endpoint — a refusal, a missing key and a cache serve
+    are all 0. Model recall can never produce one of these with ``executed=True``: the
+    constructor refuses an executed record with no network call behind it.
+    """
+
+    provider: str
+    executed: bool
+    provider_request_id: str | None
+    http_status: int | None
+    latency_ms: int
+    result_count: int
+    cost_units: Mapping[str, float] = field(default_factory=dict)
+    error_code: str | None = None
+    filters_enforced_by: Mapping[str, FilterEnforcement] = field(default_factory=dict)
+    network_call_count: int = 0
+    #: Results the client-side filters removed after the vendor returned them.
+    client_filtered_count: int = 0
+    #: Set only by the search cache: the id (a UUID) of the ``web_search_queries`` row
+    #: whose network call this execution re-serves. A cache serve made no call of its own.
+    cached_from: str | None = None
+    #: Results kept although a date window was requested, because they carried no
+    #: published date to check. Non-zero means the window was not client-enforced.
+    date_unchecked_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.cached_from is not None:
+            try:
+                uuid.UUID(str(self.cached_from))
+            except ValueError:
+                raise ValueError("cached_from must be the UUID of a query row") from None
+            if self.network_call_count != 0:
+                raise ValueError("a cache serve makes no network call of its own")
+        if self.executed:
+            if self.network_call_count < 1 and self.cached_from is None:
+                raise ValueError(
+                    "executed=True requires a real network call (or, for a cache "
+                    "serve, the row of the call it re-serves)"
+                )
+            if self.http_status is None or not 200 <= self.http_status < 300:
+                raise ValueError("executed=True requires a 2xx response")
+            if not self.provider_request_id:
+                raise ValueError("executed=True requires a provider request id")
+            if self.error_code is not None:
+                raise ValueError("an executed search carries no error code")
+        elif not self.error_code:
+            raise ValueError("a search that did not execute must say why (error_code)")
+
+    @classmethod
+    def not_executed(
+        cls,
+        provider: str,
+        error_code: str,
+        *,
+        http_status: int | None = None,
+        latency_ms: int = 0,
+        network_call_count: int = 0,
+        filters_enforced_by: Mapping[str, FilterEnforcement] | None = None,
+    ) -> "SearchExecution":
+        return cls(
+            provider=provider,
+            executed=False,
+            provider_request_id=None,
+            http_status=http_status,
+            latency_ms=latency_ms,
+            result_count=0,
+            cost_units={},
+            error_code=error_code,
+            filters_enforced_by=dict(filters_enforced_by or {}),
+            network_call_count=network_call_count,
+        )
+
+
+@dataclass(frozen=True)
+class SearchResultItem:
+    """One normalised search hit. A candidate URL, never evidence (spec §8.4).
+
+    ``title`` and ``snippet`` are **untrusted** third-party text: usable for selection
+    scoring, entity hints and admin display, never placed in a prompt and never cited.
+    ``published_hint`` is the provider's estimate and never authoritative.
+    """
+
+    rank: int
+    url: str
+    canonical_url: str
+    domain: str
+    title: str | None = None
+    snippet: str | None = None
+    published_hint: datetime | None = None
+    language_hint: str | None = None
+    provider_score: float | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def contains_untrusted_content(self) -> bool:
+        return bool(self.title or self.snippet)
+
+
+@runtime_checkable
+class SearchProvider(Protocol):
+    """The web search contract (spec §8.1). Query in; a network fact and results out.
+
+    Never raises for a provider failure: every failure is a ``SearchExecution`` with
+    ``executed=False`` and an ``error_code``. ``DeepSeekSearchProvider`` does not
+    implement this and is not selectable as a web search provider (spec §8.2).
+    """
+
+    name: str
+    capabilities: SearchCapabilities
+
+    async def search(
+        self, request: SearchRequest
+    ) -> tuple[SearchExecution, list[SearchResultItem]]:
         ...  # pragma: no cover - protocol
 
 
@@ -528,17 +813,31 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_PARTIAL",
     "STATUS_TIMEOUT",
+    "FILTER_BY_CLIENT",
+    "FILTER_BY_PROVIDER",
+    "FILTER_PROVIDER_BOOST",
+    "FILTER_UNSUPPORTED",
+    "RESULT_STORAGE_FULL",
+    "RESULT_STORAGE_MODES",
+    "RESULT_STORAGE_TRANSIENT",
+    "RESULT_STORAGE_URL_ONLY",
     "BrowserProvider",
     "BrowserResponse",
+    "CandidateSearchProvider",
     "CostEstimate",
     "ModelProvider",
     "ModelResponse",
+    "QueryFamily",
     "QueryRecord",
     "ResearchLead",
     "ResearchProvider",
     "ResearchProviderResult",
+    "SearchCapabilities",
+    "SearchExecution",
     "SearchProvider",
+    "SearchRequest",
     "SearchResponse",
+    "SearchResultItem",
     "SourceCandidate",
     "reject_lead",
 ]

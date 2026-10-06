@@ -151,8 +151,11 @@ refusals are logged with a code, and the acceptance run on real issuers catches 
 **Data model.** Migration **042**: `web_search_queries`, `web_search_results`,
 `web_fetch_attempts` (spec §26.3).
 
-**API.** `GET /api/v1/admin/web-research/runs/{run_id}` returns the plan, queries, results,
-dispositions and cost. It is admin only and is never a public route.
+**API.** `GET /api/v1/admin/web-research/jobs/{research_job_id}` and
+`GET /api/v1/admin/web-research/discovery-runs/{discovery_run_id}` (as built in W1; the two
+run kinds have different id spaces) return queries, results, dispositions, fetch attempts,
+totals and cost units. The search plan is added when the planner lands (W5/W6). Admin only
+and never a public route.
 
 **UI.** None.
 

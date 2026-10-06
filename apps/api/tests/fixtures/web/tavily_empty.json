@@ -1,0 +1,12 @@
+{
+  "_fixture_note": "synthetic per Tavily docs 2026-09-29; replace with recorded response",
+  "_fixture_query": "obscure niche component supplier with no web presence",
+  "query": "obscure niche component supplier with no web presence",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [],
+  "response_time": 0.44,
+  "usage": {"credits": 1},
+  "request_id": "synthetic-3f2b9c1e-0000-4000-8000-000000000003"
+}

@@ -46,6 +46,7 @@ from app.models.research_run_consumption import ResearchRunConsumption
 from app.models.research_tool_call import ResearchToolCall
 from app.models.scorecard import Scorecard
 from app.models.source import Citation, Source
+from app.models.web_research import WebFetchAttempt, WebSearchQuery, WebSearchResult
 
 __all__ = [
     "AgentRun",
@@ -101,4 +102,7 @@ __all__ = [
     "Source",
     "Watchlist",
     "WatchlistEntry",
+    "WebFetchAttempt",
+    "WebSearchQuery",
+    "WebSearchResult",
 ]

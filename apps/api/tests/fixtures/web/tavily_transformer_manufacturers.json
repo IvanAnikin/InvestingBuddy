@@ -1,0 +1,54 @@
+{
+  "_fixture_note": "synthetic per Tavily docs 2026-09-29; replace with recorded response",
+  "_fixture_query": "power transformer manufacturer listed company Europe",
+  "query": "power transformer manufacturer listed company Europe",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "title": "Grid transformer manufacturing - company overview",
+      "url": "https://www.transformer-maker.example/about?utm_source=search#top",
+      "content": "Synthetic snippet: an overview page describing a manufacturer of grid transformers.",
+      "score": 0.91,
+      "raw_content": null,
+      "published_date": "2026-06-02"
+    },
+    {
+      "title": "Investor relations - annual report",
+      "url": "https://ir.grid-equipment.co.uk/annual-report",
+      "content": "Synthetic snippet: investor relations landing page of a listed grid equipment company.",
+      "score": 0.84,
+      "raw_content": null
+    },
+    {
+      "title": "Industry blog on transformer lead times",
+      "url": "https://blog.aggregator.example/transformers",
+      "content": "Synthetic snippet: a third-party blog post about transformer supply.",
+      "score": 0.62,
+      "raw_content": null,
+      "published_date": "2019-03-01"
+    },
+    {
+      "title": "Entry with no URL",
+      "content": "Synthetic malformed entry: the url field is missing.",
+      "score": 0.5
+    },
+    {
+      "title": "Entry with an unusable scheme",
+      "url": "ftp://files.transformer-maker.example/brochure.pdf",
+      "content": "Synthetic malformed entry: not an http(s) URL.",
+      "score": 0.4
+    },
+    {
+      "title": "Exchange listing page",
+      "url": "https://listings.exchange.example/issuer/transformer-maker",
+      "content": "Synthetic snippet: an exchange listing page for the issuer.",
+      "score": 0.55,
+      "raw_content": null
+    }
+  ],
+  "response_time": 1.21,
+  "usage": {"credits": 1},
+  "request_id": "synthetic-3f2b9c1e-0000-4000-8000-000000000001"
+}
