@@ -44,6 +44,7 @@ fact rather than a mid-run mystery. A credential does not register them; a flag 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from collections.abc import Sequence
@@ -497,6 +498,13 @@ async def _fetch_public_source(
         else None
     )
 
+    # Open-web W3: a VERIFIED document joins the corpus through the one web write path
+    # (dedup by content hash), so the `ev:x:` id resolves to a stored version. Its own
+    # savepoint: a failed ingestion costs the link, never the verification.
+    version_id = None
+    if session is not None and minted and getattr(outcome, "fetched_content", None):
+        version_id = await _ingest_verified(context, outcome, arguments["url"])
+
     if session is not None:
         try:
             # A SAVEPOINT, because the bare `except` below is otherwise a trap: a
@@ -518,6 +526,7 @@ async def _fetch_public_source(
                     legal_entity_id=context.legal_entity_id,
                     subject=subject,
                     promoted_evidence_id=minted,
+                    research_document_version_id=version_id,
                 )
         except Exception:  # noqa: BLE001 - the decision stands even if the record fails
             pass
@@ -559,6 +568,9 @@ async def _fetch_public_source(
     record["source_tier"] = publisher_tier(outcome.fetched_url or arguments["url"])
     if minted:
         record["evidence_id"] = minted
+        # Whether the verified bytes are ALSO in the corpus. None is "verified, not
+        # stored" (refused by TDM / a wall / the flag), never "missing evidence".
+        record["corpus_version_id"] = str(version_id) if version_id else None
         record["claim"] = arguments["claim"]
         # The document's OWN words at the point verification matched. A finding built on
         # this lead reads the source, not the provider's paraphrase of it.
@@ -608,6 +620,63 @@ async def _fetch_public_source(
             url_fetch_calls=1 if outcome.fetch_attempted else 0,
         ),
     }
+
+
+#: Bound on preparing a verified lead's document for the corpus (robots/TDMRep check,
+#: pool warm-up and extraction). Generous next to the extraction kill timeout; the
+#: point is that it is bounded and runs OUTSIDE any database transaction.
+LEAD_INGEST_PREPARE_TIMEOUT_SECONDS = 180.0
+
+
+async def _ingest_verified(context: "ToolContext", outcome: Any, url: str) -> Any:
+    """The corpus version id of a verified lead's bytes, or ``None``. Never raises.
+
+    Gated by ``V3_WEB_CORPUS_INGEST_ENABLED``. Two phases (W3 review F6): everything
+    slow — robots/TDMRep, the pool, extraction — runs FIRST, outside any transaction and
+    under a tool-level timeout; only the writes run inside a SAVEPOINT on the research
+    transaction, so a failure there costs the corpus link and nothing else.
+    """
+    from app.services.web_research.ingest import (
+        PreparedLeadDocument,
+        ingest_enabled,
+        prepare_verified_lead_document,
+        store_verified_lead_document,
+    )
+
+    if not ingest_enabled(context.cfg) or context.company_id is None:
+        return None
+    try:
+        prepared = await asyncio.wait_for(
+            prepare_verified_lead_document(
+                content=outcome.fetched_content,
+                url=url,
+                fetched_url=outcome.fetched_url,
+                truncated=bool(getattr(outcome, "fetched_truncated", False)),
+                headers=dict(getattr(outcome, "fetched_headers", None) or {}),
+                cfg=context.cfg,
+                company_id=context.company_id,
+                research_job_id=context.research_job_id,
+                web_search_result_id=getattr(outcome.lead, "web_search_result_id", None),
+                provider="lead",
+            ),
+            timeout=LEAD_INGEST_PREPARE_TIMEOUT_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 - the verification stands without the corpus link
+        return None
+    if not isinstance(prepared, PreparedLeadDocument):
+        return None  # refused (TDM, wall, robots, …) or not extracted: nothing stored
+    session = context.session
+    try:
+        async with session.begin_nested():
+            ingested = await store_verified_lead_document(
+                session,
+                prepared,
+                cfg=context.cfg,
+                backend=getattr(context, "search_backend", None),
+            )
+    except Exception:  # noqa: BLE001 - the verification stands without the corpus link
+        return None
+    return ingested.version_id if ingested.stored else None
 
 
 FETCH_PUBLIC_SOURCE_SPEC = ToolSpec(

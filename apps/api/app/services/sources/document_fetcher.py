@@ -104,6 +104,15 @@ def classify_content_type(content_type: str | None, url: str | None = None) -> s
     return None
 
 
+#: Response headers that carry a rights / robots signal (open-web W3, review S-M4).
+RIGHTS_HEADERS: tuple[str, ...] = (
+    "x-robots-tag",
+    "tdm-reservation",
+    "tdm-policy",
+    "content-usage",
+)
+
+
 @dataclass
 class DocumentFetchResult:
     """Everything one bounded document fetch produced. Never carries a secret."""
@@ -126,6 +135,11 @@ class DocumentFetchResult:
     # True only when the connection was pinned to a pre-validated address. False
     # is an honest "not pinned", never a claim that pinning happened.
     pinned: bool = False
+    # Open-web W3 (review S-M4): the rights/robots response headers of the final hop
+    # (``RIGHTS_HEADERS`` only, lower-cased names, values capped), so a page fetched on
+    # this path can be checked for a TDM reservation before it is stored. Never cookies,
+    # never credentials.
+    headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def status_class(self) -> str | None:
@@ -297,6 +311,11 @@ async def safe_fetch_document(
 
                     content_type = resp.headers.get("content-type")
                     result.content_type = content_type
+                    result.headers = {
+                        name: str(resp.headers.get(name))[:512]
+                        for name in RIGHTS_HEADERS
+                        if resp.headers.get(name) is not None
+                    }
                     doc_type = classify_content_type(content_type, current)
                     ct_prefix = (content_type or "").split(";")[0].strip().lower()
                     if doc_type is None and ct_prefix in {

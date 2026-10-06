@@ -86,6 +86,8 @@ class _PlaybookAdapter:
         self._playbook = playbook
         self.playbook_id = playbook.playbook_id
         self.version = playbook.version
+        #: Item 20 — the planner lets an overlay supersede other playbooks' questions.
+        self.overlay = bool(getattr(playbook, "overlay", False))
 
     def mandatory_questions(self):  # noqa: ANN201
         return self._playbook.mandatory_questions()
@@ -137,6 +139,13 @@ class V3ResearchOutcome:
     #: Non-US issuers: which official disclosures (UK FCA NSM / ASX) were secured into
     #: the corpus before the questions were asked, and why any was not.
     core_disclosures: dict[str, Any] = field(default_factory=dict)
+    #: Item 21 — the issuer's own statements as this run found them: which slots its
+    #: acquired documents fill, and — when none — whether the report was acquired but not
+    #: extracted, not acquired, or (with the official listing as evidence) never filed.
+    financial_statements: dict[str, Any] = field(default_factory=dict)
+    #: Item 20 — the development-stage assessment (``classification.stage``) when it
+    #: found anything: the signals it gave playbook selection and the evidence for them.
+    stage: dict[str, Any] = field(default_factory=dict)
     #: Migration 043 — the final reconciliation: each gap closed / partially closed /
     #: superseded / still open, the temporal supersessions, and (once attached to a
     #: report) the labels on the V2 report's own gap statements.
@@ -181,6 +190,8 @@ class V3ResearchOutcome:
             "corpus_index": dict(self.corpus_index),
             "core_filings": dict(self.core_filings),
             "core_disclosures": dict(self.core_disclosures),
+            "financial_statements_state": dict(self.financial_statements),
+            "stage": dict(self.stage),
             "gap_reconciliation": dict(self.gap_reconciliation),
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "degraded": list(self.degraded),
@@ -193,6 +204,29 @@ class V3ResearchOutcome:
                 "council's verdict and the Red Team's challenges, with citable ids."
             ),
         }
+
+
+def _mark_pre_revenue(outcome: V3ResearchOutcome, stage: Any) -> None:
+    """Item 20 — for a development-stage company with no revenue slot, revenue is
+    "pre-revenue / not applicable yet": a stage, not a missing-evidence gap."""
+    statements = outcome.financial_statements
+    if not isinstance(statements, dict):
+        return
+    slots = statements.get("slots") or {}
+    if any(key.startswith("revenue_") for key in slots):
+        return
+    statements["revenue_status"] = {
+        "state": "pre_revenue",
+        "label": "Revenue: pre-revenue / not applicable yet",
+        "basis": [b for b in stage.basis if b.startswith("P1")],
+        "provenance": "derived",
+        "note": (
+            "The company's own annual statements show no or immaterial revenue in the "
+            "latest two years, and its documents describe a mining project under the "
+            "reporting codes. Revenue and margins are not applicable yet; this is a "
+            "stage, not a missing figure."
+        ),
+    }
 
 
 def _investigator_degraded_reasons(diagnostics: dict[str, Any]) -> list[str]:
@@ -467,6 +501,24 @@ async def _run(
                 f"corpus ({item.get('reason')})"
             )
 
+    # Item 21 — the statements those documents yielded, read the way the V2 snapshot
+    # reads its own facts. The V2 report was assembled before any of this was acquired,
+    # so without it an acquired annual report still rendered as "Not reported".
+    from app.services.pipeline.issuer_financials import financial_statements_for
+
+    try:
+        async with session.begin_nested():
+            outcome.financial_statements = await financial_statements_for(
+                session,
+                company,
+                core_disclosures=outcome.core_disclosures,
+                core_filings=outcome.core_filings,
+            )
+    except Exception as exc:  # noqa: BLE001 - a statements view must not end the run
+        outcome.degraded.append(
+            f"the issuer's statement figures could not be read ({type(exc).__name__})"
+        )
+
     if search_backend is not None:
         from app.services.corpus.indexing import ensure_company_indexed
 
@@ -506,9 +558,32 @@ async def _run(
     # reason, never the nearest-looking playbook.
     classification = await ensure_company_classification(session, company)
     outcome.classification = classification.to_dict()
+    # Item 20 — what the company's own documents say it produces, and whether they
+    # positively show a pre-revenue resource developer. Built BEFORE selection so the
+    # business-model signals the playbooks declare are finally given to selection. A
+    # company with no such proof gets no signal, and its selection is unchanged.
+    from app.services.classification.stage import detect_stage
+    from app.services.director.subject_profile import build_subject_profile
+
+    profile = await build_subject_profile(session, company)
+    outcome.subject_profile = profile.to_dict()
+    from app.services.playbooks.industries import MINING_MATERIALS
+
+    stage = await detect_stage(
+        session, company, subject_profile=profile,
+        # Classified in a mining INDUSTRY (never the broad "Materials" sector, which
+        # also holds chemicals and packaging).
+        mining_sector=bool(classification.industry) and MINING_MATERIALS.applies_to.matches(
+            industry=classification.industry),
+    )
+    if stage.signals or stage.basis:
+        outcome.stage = stage.to_dict()
+    if stage.is_development_stage:
+        _mark_pre_revenue(outcome, stage)
     selection = select_playbooks(
         sector=classification.matching_sector,
         industry=classification.industry,
+        signals=stage.signals,
     )
     if selection.is_empty:
         outcome.degraded.append(f"no playbook applied: {selection.reason}")
@@ -567,12 +642,9 @@ async def _run(
     )
     outcome.research_run_id = run.id
 
-    # 4. Plan. V3.18.4 — what the company produces, from its OWN documents, so a
-    #    per-commodity question is asked about the commodities this company sells.
-    from app.services.director.subject_profile import build_subject_profile
-
-    profile = await build_subject_profile(session, company)
-    outcome.subject_profile = profile.to_dict()
+    # 4. Plan. V3.18.4 — what the company produces, from its OWN documents (the
+    #    profile, built above for selection), so a per-commodity question is asked
+    #    about the commodities this company sells.
     # V3.18.8 — WHY this company is being researched. Each dimension the originating
     # thesis names becomes a question the research must answer with evidence; the run
     # records the thesis so the report can test it rather than decorate it.
@@ -618,6 +690,11 @@ async def _run(
     # where a reader sees it — not only in the planner's own record.
     for reason in plan.degraded:
         outcome.degraded.append(reason)
+    if plan.superseded:
+        # Item 20 — the producer questions an overlay superseded, on the record.
+        outcome.stage = {**outcome.stage, "superseded_questions": dict(plan.superseded)}
+    if plan.blocking_demoted:
+        outcome.stage = {**outcome.stage, "blocking_demoted": dict(plan.blocking_demoted)}
     await persist_plan(session, run, plan)
 
     # 5. Investigate, with real tools and a real model where one resolved.
@@ -898,6 +975,7 @@ async def _run(
             council_convened=bool(council.convened),
             editor_client=model_routing.client_for(SLOT_CHAIR),
             supersessions=(outcome.gap_reconciliation or {}).get("supersessions") or [],
+            stage=(outcome.stage or {}).get("stage"),
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -958,6 +1036,7 @@ async def _professional_report(
     council_convened: bool,
     editor_client: Any,
     supersessions: list[dict[str, Any]] | None = None,
+    stage: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1097,6 +1176,9 @@ async def _professional_report(
             "ticker": getattr(company, "ticker", None),
             "exchange": getattr(company, "exchange", None),
             "name": getattr(company, "name", None),
+            # Item 20 — only when the stage detector proved it, so every other
+            # company's subject is unchanged.
+            **({"stage": stage} if stage else {}),
         },
         questions=questions,
         findings=findings,

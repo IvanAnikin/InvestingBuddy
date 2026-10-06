@@ -623,13 +623,41 @@ were already on.
   consent; the ASX permits private and personal use. Before any public or commercial use,
   obtain FCA consent and ASX authority, or set both flags to `false`.
 - Tuning (defaults, not set in production): `V3_DISCLOSURE_CORE_MAX_DOCUMENTS` (5),
-  `V3_DISCLOSURE_LOOKBACK_DAYS` (540), `V3_DISCLOSURE_CORE_BUDGET_SECONDS` (300),
+  `V3_DISCLOSURE_LOOKBACK_DAYS` (560), `V3_DISCLOSURE_CORE_BUDGET_SECONDS` (300),
   `V3_DISCLOSURE_EXTRACTION_TIMEOUT_SECONDS` (150 — above the generic 60 s
   primary-document budget, and above the unread `primary_document_total_timeout_seconds`
   note in `config.py`).
 - No migration. Hosts contacted: `api.data.fca.org.uk`, `data.fca.org.uk`, `api.gleif.org`,
   `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
+
+#### Extraction pipeline version 19 — the re-read cost (item 21)
+
+Version 19 changes how already-extracted statement tables and prose are READ (bracketed
+negatives, caption-decided signs, new statement lines — see
+[non-us-primary-documents.md](non-us-primary-documents.md)). A version bump re-reads
+every held document whose facts an older pipeline derived, on BOTH paths:
+
+- **V3 disclosure acquisition** (`acquisition._read_by_an_older_pipeline`): each held NSM
+  / ASX core document of a company is fetched and extracted again on that company's next
+  research run. It is budgeted per run by `V3_DISCLOSURE_CORE_BUDGET_SECONDS` (300 s):
+  once spent, the remaining documents are answered from the database (still at the old
+  reading) and re-read on a later run. On B1, the first run per LSE / ASX company after
+  deploy will typically spend the whole budget on re-reads (an 80-page annual report
+  is ~60–150 s).
+- **V2 reuse path** (`extracted_document_service.load_reusable_documents` →
+  `_revalidate_document`): a reused document of ANY venue (EU / company-IR included) is
+  re-derived from its stored excerpts, or re-extracted when its facts are table-derived,
+  and its active facts superseded. This changes V2 inputs: the V2 snapshot's slots and
+  vocabulary are unchanged, but a bracketed "(1,234)" that used to be no number is now
+  −1,234, and loss / outflow captions set the sign, so a V2 report regenerated after the
+  deploy can show figures the previous one omitted.
+
+**Rollout plan (not automated in this slice):** run the research for the held LSE / ASX
+companies in batches of two (the B1 private-use rule) right after deploy so each pays its
+re-read once, outside interactive use; reports regenerated in that window are expected to
+gain statement figures. Rolling back to version 18 is safe — rows stamped 19 are simply
+re-read again by version 18.
 
 ### Deploy health-check hardening (Phase 19.2.1)
 
@@ -1744,6 +1772,32 @@ Then re-run Bicep with `githubActionsPrincipalId=$SP_OBJECT_ID` to grant KV Secr
 
 ---
 
+## Open-web extraction pool (open-web W3) — memory sizing on B1
+
+Web HTML/PDF extraction runs in a spawned worker process (one per API or worker process
+that ingests web documents, `V3_WEB_EXTRACTION_WORKERS=1`). Each worker is capped by
+`RLIMIT_AS` = `V3_WEB_EXTRACTION_MEMORY_MB` (default 768 MB, enforced on Linux), a
+per-task `RLIMIT_CPU`, and is retired after 25 tasks; its environment is scrubbed and it
+runs in an empty temporary directory. On B1 (1.75 GB) keep one worker per process and
+budget up to 768 MB per ingesting process while a document is parsed. Dark unless
+`V3_WEB_CORPUS_INGEST_ENABLED=true`. The pool recycles its executor itself every 25 runs
+and warms the replacement before the next document's timeout starts.
+
+**Before enabling on App Service (Linux): run a smoke test.** `RLIMIT_AS` is enforced only
+on Linux, and the development machines (macOS) never exercise it. With the flag still off,
+call the extraction pool once from the deployed container with a normal HTML page and a
+normal PDF and confirm they extract: an `RLIMIT_AS` too tight for lxml / pdfplumber /
+trafilatura imports shows up as `extraction_crashed` on every document (warm-up fails),
+which is the signal to raise `V3_WEB_EXTRACTION_MEMORY_MB`.
+
+**Known residuals (hidden-text detection).** Only simple `.class` / `#id` selectors in
+`<style>` blocks are resolved; compound or descendant selectors, `color:white` with no
+stated background, and text hidden by an off-page transform are NOT removed from the
+extracted text (they still raise the injection-taint score when they carry instruction
+phrases). Pool workers inherit the parent's initial environment block at the OS level
+(it remains readable through `/proc/self/environ`); the pool scrubs `os.environ`, it is
+not a sandbox.
+
 ## Environment Variables
 
 Copy `.env.example` to `.env`. The defaults work for local Docker development.
@@ -2053,6 +2107,17 @@ with the SSH runbook above (`source antenv/bin/activate && python -m alembic upg
 
 Live smoke (after U1 only; spends real credits):
 `WEB_RESEARCH_LIVE=1 TAVILY_API_KEY=... python scripts/web-search-live-smoke.py [--persist]`.
+
+## Open-web W2 — the open-web fetch policy
+
+| Setting | Default | What it does |
+|---|---|---|
+| `V3_WEB_FETCH_ENABLED` | `false` | Master switch for fetching **non-allowlisted** hosts (`services/web_research/fetch.py`, its only consumer). Off → refusal `web_fetch_disabled`: no DNS, no socket, no `web_fetch_attempts` row. Allowlisted connector fetches are unaffected either way. |
+
+Turning it on needs decision **U2** and migration **042** applied first. It does **not**
+require touching `SOURCE_CONNECTOR_ALLOWLIST_ONLY` (leave it `true`): the open-web policy
+replaces the allowlist for its own fetches only. New dependency: `charset-normalizer`
+(already transitive; now pinned in `requirements.txt`). Rollback: set the flag to `false`.
 
 ## Security Limitations
 

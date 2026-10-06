@@ -136,6 +136,30 @@ class ResearchLeadRecord(Base):
     promoted_evidence_id: Mapped[str | None] = mapped_column(sa.String(120))
     promoted_fact_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True))
 
+    # ── Open-web W3 (migration 044) ───────────────────────────────────────── #
+    #: The search result this lead came from, when the PLATFORM knows it (never a
+    #: model-supplied id).
+    web_search_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "web_search_results.id",
+            ondelete="SET NULL",
+            name="fk_research_leads_web_search_result_id",
+        ),
+        nullable=True,
+    )
+    #: The corpus version holding the bytes this lead was verified against, so an
+    #: ``ev:x:`` id resolves to a stored document (spec §12.2).
+    research_document_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "research_document_versions.id",
+            ondelete="SET NULL",
+            name="fk_research_leads_research_document_version_id",
+        ),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -174,6 +198,10 @@ class ResearchLeadRecord(Base):
         sa.Index("ix_research_leads_research_job_id", "research_job_id"),
         sa.Index("ix_research_leads_lead_key", "lead_key"),
         sa.Index("ix_research_leads_slot_key", "slot_key"),
+        sa.Index(
+            "ix_research_leads_research_document_version_id",
+            "research_document_version_id",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

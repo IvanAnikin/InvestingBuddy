@@ -76,9 +76,21 @@ from app.services.sources.primary_document_extractor import (
     _confidence_bucket,
 )
 from app.services.sources.primary_fact_parser import (
+    FIELD_ADMINISTRATIVE_EXPENSES,
+    FIELD_BORROWINGS,
+    FIELD_CAPITAL_EXPENDITURE,
     FIELD_CASH,
+    FIELD_CURRENT_ASSETS,
+    FIELD_CURRENT_LIABILITIES,
+    FIELD_DEVELOPMENT_EXPENDITURE,
     FIELD_EMPLOYEES,
+    FIELD_EXPLORATION_CAPITALISED,
+    FIELD_EXPLORATION_EXPENSED,
+    FIELD_EXPLORATION_PAYMENTS,
+    FIELD_FINANCING_CASH_FLOW,
     FIELD_FREE_CASH_FLOW,
+    FIELD_INVESTING_CASH_FLOW,
+    FIELD_ISSUED_CAPITAL,
     FIELD_NET_CASH,
     FIELD_NET_DEBT,
     FIELD_NET_INCOME,
@@ -92,6 +104,8 @@ from app.services.sources.primary_fact_parser import (
     FIELD_TOTAL_ASSETS,
     FIELD_TOTAL_DEBT,
     FIELD_TOTAL_EQUITY,
+    FIELD_TOTAL_LIABILITIES,
+    SPEND_FIELDS,
     PrimaryFact,
     _find_currency,
     _interim_marker_near,
@@ -117,12 +131,12 @@ UNIT_PERCENT = "percent"
 # Extra component labels needed for the cross-field arithmetic (subtotal) check.
 FIELD_SHORT_TERM_DEBT = "short_term_debt"
 FIELD_LONG_TERM_DEBT = "long_term_debt"
-FIELD_CURRENT_ASSETS = "total_current_assets"
 FIELD_NON_CURRENT_ASSETS = "total_non_current_assets"
 # Balance-sheet identity check (Phase 32A Slice 5B.2): assets == liabilities +
-# equity. Local to this file, same pattern as the debt/asset subtotal labels
-# above — a cross-check-only label, not surfaced as its own report field.
-FIELD_TOTAL_LIABILITIES = "total_liabilities"
+# equity. Item 21: ``total_current_assets`` and ``total_liabilities`` are now part of
+# the parser's own vocabulary (``primary_fact_parser.STATEMENT_DETAIL_FIELDS``) — the
+# issuer statements view shows them — and are re-exported here under the names this
+# module has always used.
 
 # Money labels require a KNOWN currency AND scale (the stricter bar). Percent
 # labels (margins) require only an explicit period. Count labels require only
@@ -147,6 +161,19 @@ _MONEY_LABELS: frozenset[str] = frozenset(
         FIELD_TOTAL_LIABILITIES,
         FIELD_TOTAL_EQUITY,
         FIELD_OPERATING_CASH_FLOW,
+        # Item 21 — UK / ASX statement lines.
+        FIELD_CURRENT_LIABILITIES,
+        FIELD_INVESTING_CASH_FLOW,
+        FIELD_FINANCING_CASH_FLOW,
+        FIELD_CAPITAL_EXPENDITURE,
+        FIELD_ADMINISTRATIVE_EXPENSES,
+        FIELD_EXPLORATION_EXPENSED,
+        FIELD_EXPLORATION_CAPITALISED,
+        FIELD_EXPLORATION_PAYMENTS,
+        FIELD_DEVELOPMENT_EXPENDITURE,
+        FIELD_BORROWINGS,
+        FIELD_ISSUED_CAPITAL,
+        "_revenue_secondary",
     }
 )
 # Phase 32A corrective (Problem A/B): a table row like "Operating margin | 20.0%"
@@ -157,28 +184,55 @@ _PERCENT_LABELS: frozenset[str] = frozenset(
 )
 _COUNT_LABELS: frozenset[str] = frozenset({FIELD_EMPLOYEES})
 
+#: Item 21 — "Net cash used in / (used in)/from / outflow from / generated from …
+#: {activity} activities". ``{activity}`` is filled per statement section.
+_NET_CASH_ACTIVITY = (
+    r"|net cash (?:flows?\s+)?(?:\(?\s*(?:used\s+in|used\s+by|applied\s+to|absorbed\s+by"
+    r"|outflows?|inflows?|generated|provided|received|from|by|in)\s*\)?[\s/]*){{1,4}}"
+    r"{activity} activities"
+)
+
 # Row-header label patterns → normalized label. Ordered most-specific first so a
 # component ("short-term debt", "total current assets") is never swallowed by a
 # broader subtotal pattern ("total debt", "total assets"), and a "recurring"
 # variant is never swallowed by its plain counterpart.
+#: Internal label of a secondary top-line caption; never persisted (see
+#: ``_resolve_secondary_revenue``).
+_FIELD_REVENUE_SECONDARY = "_revenue_secondary"
+
 _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"short[- ]term (?:debt|borrowings)", re.I), FIELD_SHORT_TERM_DEBT),
     (re.compile(r"long[- ]term (?:debt|borrowings)", re.I), FIELD_LONG_TERM_DEBT),
-    (re.compile(r"total current assets|current assets", re.I), FIELD_CURRENT_ASSETS),
+    # Item 21 — "Total NON-current assets" contains "current assets": without the
+    # guard both labels matched, the row was ambiguous, and neither ever became a fact.
+    (
+        # Review M3 — "NET current assets" is current assets LESS current liabilities.
+        re.compile(r"(?<!non-)(?<!non )(?<!non)(?<!net )\bcurrent assets", re.I),
+        FIELD_CURRENT_ASSETS,
+    ),
     (
         re.compile(r"total non[- ]current assets|non[- ]current assets", re.I),
         FIELD_NON_CURRENT_ASSETS,
+    ),
+    (
+        re.compile(r"(?<!non-)(?<!non )(?<!non)(?<!net )\bcurrent liabilities", re.I),
+        FIELD_CURRENT_LIABILITIES,
     ),
     # "Net interest-bearing debt (NIBD)" is the standard Nordic/European
     # phrasing of the same line item "net debt" names elsewhere.
     (re.compile(NET_DEBT_LABEL, re.I), FIELD_NET_DEBT),
     (re.compile(r"total (?:debt|borrowings)|gross debt", re.I), FIELD_TOTAL_DEBT),
     (re.compile(r"total assets", re.I), FIELD_TOTAL_ASSETS),
-    (re.compile(r"total liabilities", re.I), FIELD_TOTAL_LIABILITIES),
+    # "Total liabilities AND equity" is the balance-sheet total (= total assets), and
+    # "Total equity AND liabilities" the UK spelling of it: neither is liabilities nor
+    # equity. Before item 21 the UK form matched ``total_equity``, gave equity a second
+    # magnitude in the same table, and demoted the real equity line to excerpt-only.
+    (re.compile(r"total liabilities(?!\s+and\b)", re.I), FIELD_TOTAL_LIABILITIES),
     (
         re.compile(
-            r"total (?:shareholders|stockholders)[’']?\s*equity"
-            r"|shareholders[’']?\s*equity|total equity"
+            r"total (?:shareholders|stockholders)[’']?\s*equity(?!\s+and\s+liabilities)"
+            r"|shareholders[’']?\s*equity(?!\s+and\s+liabilities)"
+            r"|total equity(?!\s+and\s+liabilities)"
             # A table ROW-HEADER cell whose ENTIRE content is just "Equity"
             # (e.g. LVMH's "Financial highlights" table: a bare "Equity" row
             # alongside "Revenue", "Net financial debt", ...) is a safe,
@@ -205,12 +259,129 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"|cash flows? from operating activities"
             # V3.19.8 — "Net cash received from operating activities" (IFRS wording).
             r"|(?:net )?cash (?:flows? )?(?:received|generated|provided) (?:from|by) "
-            r"operating activities",
+            r"operating activities"
+            # Item 21 — the UK / ASX spellings: "Net cash used in operating
+            # activities", "Net cash (used in)/from operating activities", "Net cash
+            # outflow from operating activities". The sign is read from the caption
+            # (``_signed_value``), never assumed.
+            + _NET_CASH_ACTIVITY.format(activity="operating"),
             re.I,
         ),
         FIELD_OPERATING_CASH_FLOW,
     ),
-    (re.compile(r"cash and cash equivalents", re.I), FIELD_CASH),
+    (
+        re.compile(
+            r"cash flows? (?:from|used in) investing activities"
+            + _NET_CASH_ACTIVITY.format(activity="investing"),
+            re.I,
+        ),
+        FIELD_INVESTING_CASH_FLOW,
+    ),
+    (
+        re.compile(
+            r"cash flows? (?:from|used in) financing activities"
+            + _NET_CASH_ACTIVITY.format(activity="financing"),
+            re.I,
+        ),
+        FIELD_FINANCING_CASH_FLOW,
+    ),
+    (
+        re.compile(r"cash and cash equivalents|^\s*cash at bank and (?:in hand|on deposit)\s*$",
+                   re.I),
+        FIELD_CASH,
+    ),
+    # ── Item 21 — spend lines (stored as the positive amount spent) ─────────── #
+    (
+        re.compile(
+            r"(?:payments?\s+for|purchases?\s+of|acquisitions?\s+of|additions?\s+to)"
+            r"\s+(?:property,?\s+)?plant\s+(?:and|&)\s+equipment"
+            r"|^\s*capital\s+expenditure\s*$",
+            re.I,
+        ),
+        FIELD_CAPITAL_EXPENDITURE,
+    ),
+    (
+        re.compile(
+            # Never SG&A: "selling, general and administrative" includes selling costs.
+            r"^(?!.*\bselling\b).*?(?:"
+            r"(?:general\s+and\s+)?administrative\s+expenses?"
+            r"|administration\s+(?:costs|expenses?)"
+            r"|corporate\s+and\s+administration\s+(?:costs|expenses?))",
+            re.I | re.S,
+        ),
+        FIELD_ADMINISTRATIVE_EXPENSES,
+    ),
+    # Exploration: three DIFFERENT statements. A bare "Exploration and evaluation
+    # expenditure" caption is none of them — on an ASX balance sheet it is the
+    # capitalised ASSET, in a profit-and-loss statement the expense — so it is left
+    # unlabelled rather than guessed.
+    (
+        re.compile(
+            r"exploration(?:\s+and\s+evaluation)?\s+(?:expenditure|costs?)\s+"
+            r"(?:expensed|written\s+off|not\s+capitali[sz]ed)"
+            r"|exploration(?:\s+and\s+evaluation)?\s+expenses?\b"
+            r"|exploration\s+expensed",
+            re.I,
+        ),
+        FIELD_EXPLORATION_EXPENSED,
+    ),
+    (
+        re.compile(
+            # Review round 2, H4 — SPEND only: a cash-flow payment or an addition. A
+            # balance-sheet line "Capitalised exploration and evaluation expenditure
+            # 52,300" is the accumulated ASSET; read as spend it made a 0.7-quarter
+            # runway out of an 11-quarter one.
+            r"payments?\s+for\s+capitali[sz]ed\s+exploration"
+            r"|additions?\s+to\s+(?:capitali[sz]ed\s+)?exploration(?:\s+and\s+evaluation)?"
+            r"(?:\s+(?:assets?|expenditure))?",
+            re.I,
+        ),
+        FIELD_EXPLORATION_CAPITALISED,
+    ),
+    (
+        re.compile(
+            r"^(?!.*capitali[sz]ed)(?!.*expensed).*\bpayments?\s+for\s+exploration"
+            r"(?:\s+and\s+evaluation)?",
+            re.I | re.S,
+        ),
+        FIELD_EXPLORATION_PAYMENTS,
+    ),
+    (
+        re.compile(
+            # Review B1 — MINE development only. "Payments for development costs" /
+            # "development of intangible assets" is capitalised R&D or software at a
+            # biotech or a technology company, never a resource project.
+            r"^(?!.*\bintangible)(?:.*?)(?:"
+            r"payments?\s+for\s+mine\s+(?:development|properties|construction)"
+            r"|payments?\s+for\s+(?:the\s+)?development\s+of\s+(?:the\s+)?mine"
+            r"|additions?\s+to\s+mine\s+(?:development|properties)"
+            r"|mine\s+development\s+(?:expenditure|costs)\s+(?:paid|capitali[sz]ed))",
+            re.I | re.S,
+        ),
+        FIELD_DEVELOPMENT_EXPENDITURE,
+    ),
+    # ── Item 21 — balance-sheet lines ──────────────────────────────────────── #
+    (
+        # Whole-cell only: a "Borrowings" line, never "Proceeds from borrowings" (a
+        # flow) or "Repayment of borrowings". Not total debt — see FIELD_BORROWINGS.
+        re.compile(
+            r"^\s*(?:interest[- ]bearing\s+)?(?:loans\s+and\s+)?borrowings"
+            r"\s*(?:\d{1,2}(?:\([a-z]\))?)?\s*$",
+            re.I,
+        ),
+        FIELD_BORROWINGS,
+    ),
+    (
+        # Whole-cell only, so "Issue of share capital" (a movement in the year) is
+        # never read as the balance.
+        re.compile(
+            r"^\s*(?:total\s+)?(?:issued|share|called[- ]up(?:\s+share)?|ordinary\s+share)"
+            r"\s+capital\s*(?:\d{1,2}(?:\([a-z]\))?)?\s*$"
+            r"|^\s*contributed\s+equity\s*(?:\d{1,2}(?:\([a-z]\))?)?\s*$",
+            re.I,
+        ),
+        FIELD_ISSUED_CAPITAL,
+    ),
     (
         re.compile(
             r"net cash position|net cash(?!\s*(?:flow|inflow|outflow|generated|"
@@ -221,16 +392,32 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
-            r"net income|net profit"
+            # Review round 2, H7 — never a PRE-TAX line ("Net loss before tax", "Net
+            # profit before taxation"): a UK R&D-tax-credit company's post-tax result
+            # differs from it.
+            r"^(?!.*\bbefore\s+(?:income\s+)?tax)(?:.*?)(?:net income|net profit)"
             # "Profit for the year" is the bottom line; "profit for the year
             # FROM continuing/discontinued operations" is a different, higher
             # line of the same statement. A real income statement prints BOTH
             # (Richemont: 3 464 from continuing operations, 3 484 for the
             # year), so matching them to one label made a single table
             # contradict itself and demoted the genuine bottom line.
-            r"|profit(?:/\(loss\))? for the year(?!\s+from\b)"
-            r"|profit attributable",
-            re.I,
+            r"|profit(?:/\(loss\))? for the (?:financial )?(?:year|period|half[- ]year)"
+            r"(?!\s+from\b)"
+            r"|profit attributable"
+            # Item 21 — the LOSS captions a pre-revenue issuer prints. The value's sign
+            # is decided from the caption (``_signed_value``): under "Loss for the
+            # year" a printed 3,265 and a printed (3,265) are both a loss of 3,265.
+            # Never a comprehensive, operating or discontinued-operations loss, and
+            # never the non-controlling interests' share.
+            r"|^(?!.*non[- ]controlling)(?!.*comprehensive)(?!.*\boperating\s+loss).*(?:"
+            r"\(loss\)\s*/\s*profit for the (?:financial )?(?:year|period|half[- ]year)"
+            r"|(?<!operating )loss for the (?:financial )?(?:year|period|half[- ]year)"
+            r"|net loss(?!\s+(?:on|from|per|before)\b)"
+            r"|loss after (?:income )?tax(?:ation)?"
+            r"|loss attributable to (?:owners|members|equity holders|shareholders)"
+            r")(?!\s+from\b)",
+            re.I | re.S,
         ),
         FIELD_NET_INCOME,
     ),
@@ -268,8 +455,20 @@ _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Not "Deferred revenue" / "unearned revenue" / "revenue received in advance": a
     # balance-sheet liability (Pro Medicus: a deferred-tax table's "Deferred revenue"
     # row became validated Group revenue).
-    (re.compile(r"(?<!deferred\s)(?<!unearned\s)(?<!accrued\s)revenue(?!\s+received in advance)"
+    # Item 21 — nor "Interest revenue" / "Other revenue" / "Finance revenue": an ASX
+    # explorer's statement of profit or loss prints "Interest revenue" and nothing
+    # else, and that must never read as the company having revenue.
+    (re.compile(r"(?<!deferred\s)(?<!unearned\s)(?<!accrued\s)(?<!interest\s)"
+                r"(?<!other\s)(?<!finance\s)revenue(?!\s+received in advance)"
+                r"(?!\s+and\s+other\s+income)"
                 r"|net sales|total sales|turnover", re.I), FIELD_REVENUE),
+    # Review round 2 (medium) — a SECONDARY top line: "Revenue and other income"
+    # (interest and grants included) or a producer's product sales caption ("Gold
+    # sales", "Sale of concentrate", "Sales of nickel"). Read as revenue ONLY when the
+    # same table has no primary revenue row, and said so on the fact.
+    (re.compile(r"revenue\s+and\s+other\s+income"
+                r"|^(?!.*\b(?:cost|proceeds|gain|loss|profit|net|total)\b)\s*(?:[a-z]+\s+){1,2}sales\s*$"
+                r"|^\s*sales?\s+of\s+[a-z ]{2,30}$", re.I), _FIELD_REVENUE_SECONDARY),
     (
         # A HEADCOUNT row, never a money row that merely mentions employees — Pensana:
         # "Performance rights and options granted to directors, officers and employees
@@ -300,10 +499,15 @@ _SUBTOTAL_RULES: list[tuple[str, tuple[str, ...]]] = [
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}")
 # Accept singular OR plural scale words ("million"/"millions") + the abbreviations.
 _SCALE_RE = re.compile(
-    r"(?:€|£|\$)?\s*(millions?|billions?|thousands?|bn|mn|m)\b"
-    # A column header "$'000" / "£’000" / "€000" states THOUSANDS (Pro Medicus: a
-    # "$’000" table read "million" from elsewhere on the page).
-    r"|(?:€|£|\$)\s?[’']?(000)\b",
+    # A scale WORD, never the tail of another word.
+    r"(?<![A-Za-z])(?P<word>millions?|billions?|thousands?)\b"
+    # Review round 2, H3 — an abbreviation ("m", "bn", "mn") only directly after a
+    # currency symbol or a digit ("US$m", "£bn", "5.2m"). Without it the "m" ending
+    # "from", "term", "item" or "Platinum" made a whole-dollar table "million".
+    r"|(?:[€£$]|\d)\s?(?P<abbr>bn|mn|m)\b"
+    # A column header "$'000" / "£’000" / "€000" / "$A'000" states THOUSANDS (Pro
+    # Medicus: a "$’000" table read "million" from elsewhere on the page).
+    r"|(?:€|£|\$)\s?(?:[A-Za-z]{1,2}\s?)?[’']?(?P<thousands>000)\b",
     re.IGNORECASE,
 )
 
@@ -358,6 +562,12 @@ class IssuerContext(BaseModel):
     # dollars" is USD; otherwise the currency stays unknown and the money fact is not
     # validated. Default True keeps every existing (SEC / US) path unchanged.
     bare_dollar_is_usd: bool = True
+    # Track C review round 3, H2 — what the SOURCE says about the document and venue.
+    # ``part_year_document``: the listing classified it an interim / half-year report
+    # (whatever its title says). ``venue``: "AU" for an ASX issuer, where a June
+    # fiscal year is common and a December balance date is not evidence of a year.
+    part_year_document: bool = False
+    venue: str | None = None
 
     def is_known(self) -> bool:
         return bool(
@@ -479,6 +689,14 @@ _BALANCE_ROW_LABELS: frozenset[str] = frozenset(
 )
 
 
+_OPENING_BALANCE_RE = re.compile(
+    r"\b(?:beginning|opening|start)\b|brought\s+forward"
+    # Review L1 — "at 1 January" / "at 1 July 2024" is the opening balance date.
+    r"|\bat\s+1(?:st)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",
+    re.I,
+)
+
+
 def _match_label(text: str) -> str | None:
     """Return the single normalized label for a row-header cell, else None.
 
@@ -499,6 +717,12 @@ def _match_label(text: str) -> str | None:
             text, found.start(), found.end()
         ):
             continue
+        # Item 21 — "Cash and cash equivalents at the BEGINNING of the year" is the
+        # prior period's closing balance printed in this period's column: the same
+        # statement then carried two magnitudes for one (cash, period) and the real
+        # closing balance was demoted to excerpt-only.
+        if label == FIELD_CASH and _OPENING_BALANCE_RE.search(text):
+            continue
         matched.add(label)
     if len(matched) == 1:
         return next(iter(matched))
@@ -508,15 +732,66 @@ def _match_label(text: str) -> str | None:
 def _find_scale(text: str) -> str | None:
     """Return million/billion/thousand if a scale token is present, else None."""
     m = _SCALE_RE.search(text or "")
-    if m and m.group(2):
+    if m is None:
+        return None
+    if m.group("thousands"):
         return "thousand"
     # rstrip("s") normalizes a plural ("millions" → "million") for _scale_word.
-    return _scale_word(m.group(1).rstrip("s")) if m else None
+    return _scale_word((m.group("word") or m.group("abbr")).rstrip("s"))
+
+
+#: Review round 2, H1 — a column header that says it is part of a year without
+#: saying WHICH part ("Unaudited 30 June 2025", "Interim", "Nine months to …",
+#: "Year to date", "Current quarter"). No full year can be read from it.
+_PART_YEAR_HEADER_RE = re.compile(
+    r"\bunaudited\b|\binterim\b|\b(?:three|six|nine|3|6|9)[- ]months?\b|\byear[- ]to[- ]date\b"
+    r"|\bytd\b|\bcurrent\s+quarter\b|\bquarter\b",
+    re.I,
+)
+#: A header that positively states a FULL year.
+_FULL_YEAR_HEADER_RE = re.compile(
+    r"\byear\s+ended\b|\b12[- ]months?\b|\btwelve\s+months?\b|\bfull[- ]year\b"
+    r"|\bFY\s?(?:19|20)?\d{2}\b",
+    re.I,
+)
+_HEADER_MONTH_RE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\b", re.I)
+#: The month a half-year ENDS for the "H1"/"H2" label to be the calendar half.
+_HALF_END_MONTH = {"H1": "jun", "H2": "dec"}
+
+
+def _header_period(
+    text: str, *, part_year_document: bool, december_needs_annual_signal: bool = False,
+) -> tuple[str | None, bool]:
+    """``(period, untrusted)`` for one header cell that states a year."""
+    year = _YEAR_RE.search(text)
+    if year is None:
+        return None, False
+    marker = _interim_marker_near(text)
+    month = _HEADER_MONTH_RE.search(text)
+    if marker in _HALF_END_MONTH:
+        # "Half-year ended 31 December 2025" is H1 of a JUNE fiscal year, not H1 2025:
+        # with the fiscal year-end unknown the half cannot be named (review H2).
+        if month is not None and month.group(1).lower() != _HALF_END_MONTH[marker]:
+            return None, True
+        return f"{marker} {year.group(0)}", False
+    if marker is not None:
+        return f"{marker} {year.group(0)}", False
+    if _PART_YEAR_HEADER_RE.search(text):
+        return None, True
+    if part_year_document and not _FULL_YEAR_HEADER_RE.search(text):
+        return None, True
+    if (december_needs_annual_signal and month is not None
+            and month.group(1).lower() == "dec" and not _FULL_YEAR_HEADER_RE.search(text)):
+        return None, True
+    return year.group(0), False
 
 
 def _column_periods(
     table: ExtractedTable,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
+    part_year_document: bool = False,
+    december_needs_annual_signal: bool = False,
 ) -> dict[int, str]:
     """Map column index → period from the first row that has year tokens (the
     header). Later columns without a year are left unmapped.
@@ -547,18 +822,34 @@ def _column_periods(
     authority for annual figures, whereas a wrong annual figure presented as
     the canonical one is not recoverable downstream.
     """
+    part_year = part_year_document or document_period.is_interim
     for row in table.rows:
         found: dict[int, str] = {}
         untrusted = False
+        bare_months: set[str] = set()
+        bare_cols: list[int] = []
         for col, cell in enumerate(row):
             text = cell or ""
-            m = _YEAR_RE.search(text)
-            if m:
-                marker = _interim_marker_near(text)
-                if marker is None and document_period.is_interim:
-                    untrusted = True
-                    continue
-                found[col] = f"{marker} {m.group(0)}" if marker else m.group(0)
+            if not _YEAR_RE.search(text):
+                continue
+            period, refused = _header_period(
+                text, part_year_document=part_year,
+                december_needs_annual_signal=december_needs_annual_signal)
+            if refused or period is None:
+                untrusted = untrusted or refused
+                continue
+            found[col] = period
+            month = _HEADER_MONTH_RE.search(text)
+            if month is not None and _interim_marker_near(text) is None:
+                bare_months.add(month.group(1).lower())
+                bare_cols.append(col)
+        # Review H1 — a header comparing two different balance dates ("31 December
+        # 2025 | 30 June 2025") is an interim balance sheet against a year-end: no
+        # bare-dated column of it is a full year.
+        if len(bare_months) > 1:
+            for col in bare_cols:
+                found.pop(col, None)
+            untrusted = True
         if found:
             return found
         if untrusted:
@@ -611,7 +902,15 @@ def _table_currency_scale(
     """
     flat = " ".join(cell for row in table.rows for cell in row)
     currency = _resolve_dollar(_find_currency(flat), flat, issuer)
-    scale = _find_scale(flat)
+    # Track C review round 3 — the scale comes from the HEADER / units rows (those
+    # before the first row with a recognised line label), never from a data cell: a
+    # "Loans repayable within 12m" or "Shares (millions)" row does not scale the table.
+    header_rows: list[list[str]] = []
+    for row in table.rows:
+        if row and _match_label(row[0] or "") is not None:
+            break
+        header_rows.append(row)
+    scale = _find_scale(" ".join(cell for row in header_rows for cell in row))
 
     if currency is None or scale is None:
         for text in excerpts_by_page.get(table.page_number, []):
@@ -625,6 +924,28 @@ def _table_currency_scale(
     return currency, scale
 
 
+_MINUS_SIGNS = str.maketrans({"\u2212": "-", "\u2013": "-", "\u2014": "-"})
+
+
+def _cell_number(cell: str) -> float | None:
+    """One statement cell as a number, with its printed sign.
+
+    Item 21 — a UK or ASX statement prints a negative as ``(3,265)`` (and sometimes
+    with a typographic minus). Before this, ``_norm_number`` refused the parentheses,
+    so every loss, outflow and deficit in such a statement was silently NOT a number:
+    a loss-making issuer's statements yielded no net income and no operating cash flow
+    at all. A lone dash is a nil cell and stays ``None``.
+    """
+    text = (cell or "").strip().translate(_MINUS_SIGNS)
+    negative = False
+    if len(text) > 2 and text.startswith("(") and text.endswith(")"):
+        text, negative = text[1:-1].strip(), True
+    num = _norm_number(text)
+    if num is None:
+        return None
+    return -abs(num) if negative else num
+
+
 def _numeric_cells(row: list[str]) -> list[tuple[int, str, float]]:
     """Return ``(col, raw_text, numeric)`` for every parseable numeric cell in a
     row, skipping the leading label column (col 0)."""
@@ -632,10 +953,88 @@ def _numeric_cells(row: list[str]) -> list[tuple[int, str, float]]:
     for col, cell in enumerate(row):
         if col == 0:
             continue
-        num = _norm_number(cell)
+        num = _cell_number(cell)
         if num is not None:
             out.append((col, cell.strip(), num))
     return out
+
+
+#: Item 21 — the caption says which way the money moved; the printed sign may not.
+_OUTFLOW_WORDS_RE = re.compile(
+    r"\b(?:used|outflows?|applied|absorbed|spent)\b", re.I
+)
+_INFLOW_WORDS_RE = re.compile(
+    r"\b(?:generated|provided|received|inflows?)\b|(?<!outflow )(?<!outflows )\bfrom\b",
+    re.I,
+)
+_LOSS_WORD_RE = re.compile(r"\bloss\b", re.I)
+_PROFIT_WORD_RE = re.compile(r"\bprofit\b", re.I)
+#: Review H1 — a COMBINED caption names both directions: "Net income (loss)", "Net
+#: income/(loss) for the year", "Earnings (loss)", "(Loss)/profit". Under it the printed
+#: sign is the sign; only a pure LOSS caption ("Loss for the year") states a loss.
+_COMBINED_LOSS_CAPTION_RE = re.compile(
+    r"\(\s*loss\s*\)|\bloss\s*\)?\s*/|/\s*\(?\s*loss\b"
+    r"|\b(?:income|earnings|result|profit)s?\s*(?:or|and)\s*\(?\s*loss\b",
+    re.I,
+)
+_LIABILITY_BALANCES: frozenset[str] = frozenset(
+    {
+        FIELD_TOTAL_LIABILITIES,
+        FIELD_CURRENT_LIABILITIES,
+        FIELD_BORROWINGS,
+        FIELD_TOTAL_DEBT,
+        FIELD_SHORT_TERM_DEBT,
+        FIELD_LONG_TERM_DEBT,
+    }
+)
+_CASH_FLOW_SUBTOTALS: frozenset[str] = frozenset(
+    {FIELD_OPERATING_CASH_FLOW, FIELD_INVESTING_CASH_FLOW, FIELD_FINANCING_CASH_FLOW}
+)
+
+
+def _signed_value(
+    label: str, caption: str, value: float, *, row_has_brackets: bool = False
+) -> tuple[float, str | None]:
+    """The value under the platform's sign convention, and a note when it was changed.
+
+    See ``primary_fact_parser`` for the convention: cash-flow subtotals and net income
+    are signed (negative = outflow / loss); spend lines are the positive amount spent.
+
+    * A pure LOSS caption ("Loss for the year", "Net loss") states the size of a loss,
+      whether the document printed ``3,265`` or ``(3,265)``: net income is negative.
+      A combined caption ("(Loss)/profit for the year") keeps the printed sign.
+    * A pure OUTFLOW caption ("Net cash used in operating activities") is negative
+      whatever was printed; a combined one ("(used in)/from") keeps the printed sign.
+    * A spend line ("Payments for property, plant and equipment") is the amount spent.
+    """
+    if label in SPEND_FIELDS:
+        if value < 0:
+            return abs(value), "Spend line printed as an outflow; stored as the amount spent."
+        return value, None
+    if label in _LIABILITY_BALANCES:
+        # A UK "net assets" balance sheet prints liabilities in brackets; a liability
+        # balance is the amount owed, never a negative quantity. Without this the
+        # identity check (assets = liabilities + equity) failed on every such sheet.
+        if value < 0:
+            return abs(value), "Liability printed in brackets; stored as the amount owed."
+        return value, None
+    # Review round 2 (medium) — a row that prints ANY value in brackets uses brackets
+    # for the negative direction, so its unbracketed values are positive as printed:
+    # "Loss for the year (3,265) 1,200" is a FY2024 PROFIT of 1,200, not a loss.
+    if row_has_brackets and label in (FIELD_NET_INCOME, *_CASH_FLOW_SUBTOTALS):
+        return value, None
+    if label == FIELD_NET_INCOME:
+        if (_LOSS_WORD_RE.search(caption) and not _PROFIT_WORD_RE.search(caption)
+                and not _COMBINED_LOSS_CAPTION_RE.search(caption)):
+            if value > 0:
+                return -value, "Loss caption: stored as a negative net income."
+        return value, None
+    if label in _CASH_FLOW_SUBTOTALS:
+        if _OUTFLOW_WORDS_RE.search(caption) and not _INFLOW_WORDS_RE.search(caption):
+            if value > 0:
+                return -value, "Outflow caption: stored as a negative cash flow."
+        return value, None
+    return value, None
 
 
 def _numeric_cells_percent(row: list[str]) -> list[tuple[int, str, float]]:
@@ -742,6 +1141,8 @@ def _candidates_from_table(
     issuer: IssuerContext,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
     table_units_only: bool = False,
+    part_year_document: bool = False,
+    december_needs_annual_signal: bool = False,
 ) -> list[_Candidate]:
     """Turn one bounded table into per-cell candidates + run the subtotal check.
 
@@ -750,13 +1151,15 @@ def _candidates_from_table(
     interim statements are in whole US dollars ("US$" headers, net loss 3,265,409),
     and a "million" in the page's prose made "40,133" read as US$ 40,133 million.
     """
-    col_period = _column_periods(table, document_period)
+    col_period = _column_periods(table, document_period, part_year_document,
+                                 december_needs_annual_signal)
     currency, scale = _table_currency_scale(
         table, {} if table_units_only else excerpts_by_page, issuer
     )
     candidates: list[_Candidate] = []
 
-    for row in table.rows:
+    borrowings_rows: list[tuple[int, _Candidate]] = []
+    for row_index, row in enumerate(table.rows):
         if not row:
             continue
         label = _match_label(row[0])
@@ -784,7 +1187,7 @@ def _candidates_from_table(
                         label,
                         issuer.default_period,
                         t,
-                        n,
+                        _signed_value(label, row[0], n)[0],
                         table,
                         currency if is_money else None,
                         scale if is_money else None,
@@ -799,7 +1202,10 @@ def _candidates_from_table(
             col, t, n = nums[0]
             pairs.append((issuer.default_period, t, n, col))
 
-        for period, text, num, _col in pairs:
+        for period, text, raw_num, _col in pairs:
+            num, sign_note = _signed_value(
+                label, row[0], raw_num,
+                row_has_brackets=any(_is_bracketed(cell) for cell in row[1:]))
             status = VALIDATION_VALIDATED
             note = None
             if period is None:
@@ -826,10 +1232,104 @@ def _candidates_from_table(
                     note=note,
                 )
             )
+            if sign_note:
+                candidates[-1].notes.append(sign_note)
+            if label == FIELD_BORROWINGS:
+                borrowings_rows.append((row_index, candidates[-1]))
 
+    candidates = _combine_current_and_non_current_borrowings(
+        candidates, borrowings_rows, table)
+    candidates = _resolve_secondary_revenue(candidates)
     _apply_subtotal_check(candidates)
     _apply_balance_sheet_check(candidates)
     return candidates
+
+
+def _is_bracketed(cell: str) -> bool:
+    text = (cell or "").strip()
+    return len(text) > 2 and text.startswith("(") and text.endswith(")")
+
+
+def _resolve_secondary_revenue(candidates: list[_Candidate]) -> list[_Candidate]:
+    """A secondary top-line caption is revenue only when the table has no primary
+    revenue row; then it is said to be the combined / product line."""
+    secondary = [c for c in candidates if c.label == _FIELD_REVENUE_SECONDARY]
+    if not secondary:
+        return candidates
+    if any(c.label == FIELD_REVENUE for c in candidates):
+        return [c for c in candidates if c.label != _FIELD_REVENUE_SECONDARY]
+    for cand in secondary:
+        cand.label = FIELD_REVENUE
+        cand.notes.append(
+            "Read from a secondary top-line caption (revenue and other income, or a "
+            "product sales line); the table states no separate revenue line."
+        )
+    return candidates
+
+
+def _combine_current_and_non_current_borrowings(
+    candidates: list[_Candidate],
+    borrowings_rows: list[tuple[int, _Candidate]],
+    table: ExtractedTable,
+) -> list[_Candidate]:
+    """Review L3 — a balance sheet prints "Borrowings" twice: under current liabilities
+    and again under non-current. Read as one label, the two rows contradicted each
+    other and both were demoted. When EXACTLY two such rows sit on either side of the
+    table's "Total current liabilities" row, they are the current and the non-current
+    line, and their sum per period is stated explicitly — with both printed values in the
+    fact's text and a note saying it is a sum. Any other layout is left as it was."""
+    rows = sorted({index for index, _cand in borrowings_rows})
+    if len(rows) != 2:
+        return candidates
+    first, second = rows
+    if not any(
+        _match_label((table.rows[k] or [""])[0]) == FIELD_CURRENT_LIABILITIES
+        for k in range(first + 1, second)
+    ):
+        return candidates
+    by_period: dict[str | None, dict[int, _Candidate]] = {}
+    for index, cand in borrowings_rows:
+        by_period.setdefault(cand.period, {})[index] = cand
+    merged_away: set[int] = set()
+    out_extra: list[_Candidate] = []
+    for period, pair in by_period.items():
+        if period is not None and len(pair) == 1:
+            # Only one of the two lines states a value for this period: it is a part,
+            # never the total. Kept as text, not promoted.
+            lone = next(iter(pair.values()))
+            lone.status = VALIDATION_EXCERPT_ONLY
+            lone.notes.append(
+                "One of two 'Borrowings' lines (current / non-current) in this balance "
+                "sheet; not the total borrowings, retained as excerpt."
+            )
+            continue
+        if period is None or set(pair) != {first, second}:
+            continue
+        current, non_current = pair[first], pair[second]
+        if current.value_numeric is None or non_current.value_numeric is None:
+            continue
+        total = _Candidate(
+            label=FIELD_BORROWINGS, period=period,
+            value_numeric=current.value_numeric + non_current.value_numeric,
+            value_text=f"{current.value_text} + {non_current.value_text}",
+            unit=current.unit, currency=current.currency, scale=current.scale,
+            page_number=current.page_number, table_location=current.table_location,
+            method=current.method, base_confidence=current.base_confidence,
+            fully_qualified=current.fully_qualified and non_current.fully_qualified,
+            status=(VALIDATION_VALIDATED
+                    if VALIDATION_VALIDATED == current.status == non_current.status
+                    else VALIDATION_EXCERPT_ONLY),
+            scope=current.scope, from_reconstructed_table=current.from_reconstructed_table,
+        )
+        total.notes.append(
+            "Sum of the current and the non-current 'Borrowings' lines of this balance "
+            "sheet (both printed values are in the text)."
+        )
+        merged_away.update({id(current), id(non_current)})
+        out_extra.append(total)
+    if not merged_away:
+        return candidates
+    return [c for c in candidates if id(c) not in merged_away] + out_extra
 
 
 def _make_candidate(
@@ -1147,6 +1647,21 @@ def _refuse_annual_authority_of_interim_document(
                 f"A full-year figure restated inside a {document_period.label()} "
                 "report. Retained with its period, but not promoted: the "
                 "issuer's annual report is the authority for an annual figure."
+            )
+
+
+def _refuse_annual_authority_of_part_year_title(candidates: list[_Candidate]) -> None:
+    """A document whose TITLE says it covers part of a year, with no readable period:
+    every annual-period candidate in it is kept, never promoted (review round 2, H1)."""
+    for cand in candidates:
+        if parse_period(cand.period).period_type != PERIOD_TYPE_ANNUAL:
+            continue
+        if cand.status == VALIDATION_VALIDATED:
+            cand.status = VALIDATION_EXCERPT_ONLY
+            cand.notes.append(
+                "An annual period read inside a document whose title states it covers "
+                "part of a year. Retained, not promoted: the annual report is the "
+                "authority for an annual figure."
             )
 
 
@@ -1507,6 +2022,7 @@ def validate_extracted_facts(
     cfg: Settings | None = None,
     document_period: DocumentPeriod = UNKNOWN_DOCUMENT_PERIOD,
     title_only_period: bool = False,
+    document_title: str | None = None,
 ) -> list[ValidatedFact]:
     """Validate an extraction's tables into candidate structured facts.
 
@@ -1531,11 +2047,31 @@ def validate_extracted_facts(
     for ex in extraction.excerpts:
         excerpts_by_page.setdefault(ex.page_number, []).append(ex.text)
 
+    from app.services.sources.document_period import (
+        title_states_annual,
+        title_states_part_year,
+    )
+
+    # Review round 2, H1 — "Interim Results", "Half-year Report", "Appendix 4D…" state
+    # no period the detector can read, yet they are part-year documents: no bare-dated
+    # column in them is a full year, and nothing in them is an annual authority.
+    part_year_document = (
+        document_period.is_interim
+        or issuer.part_year_document
+        or title_states_part_year(document_title)
+    )
+    # Track C review round 3, H2 — an ASX issuer's fiscal year often ends in June, so a
+    # December-dated column is a full year only with a positive annual signal (an
+    # annual title, or "year ended" in the header itself).
+    december_needs_annual_signal = (
+        (issuer.venue or "").upper() == "AU" and not title_states_annual(document_title))
     candidates: list[_Candidate] = []
     for table in extraction.tables:
         candidates.extend(
             _candidates_from_table(table, excerpts_by_page, issuer, document_period,
-                                   table_units_only=title_only_period)
+                                   table_units_only=title_only_period,
+                                   part_year_document=part_year_document,
+                                   december_needs_annual_signal=december_needs_annual_signal)
         )
     # Phase 32A corrective (Problem A): prose excerpts are now ALSO a candidate
     # source, not just tables — see ``_candidates_from_excerpts``.
@@ -1544,6 +2080,8 @@ def validate_extracted_facts(
     )
     candidates, superseded = _supersede_prose_read_of_reconstructed_table(candidates)
     _refuse_annual_authority_of_interim_document(candidates, document_period)
+    if part_year_document and not document_period.is_interim:
+        _refuse_annual_authority_of_part_year_title(candidates)
 
     # Group by (label, period, scope) so the same figure from >1 method/source
     # is reconciled, while a Group-scoped and a segment-scoped candidate for

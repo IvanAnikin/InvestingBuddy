@@ -1,10 +1,11 @@
 """
 Rate-limit policy + a minimal in-process limiter — Phase 29A.
 
-Phase 29A does not make any live connector calls, so nothing here is wired into
-a network path yet. It exists so a connector can *declare* how politely it must
-consume its upstream (SEC EDGAR, GLEIF and friends are free but expect a low,
-identified request rate) and so future phases have a ready limiter.
+It exists so a connector can *declare* how politely it must consume its upstream
+(SEC EDGAR, GLEIF and friends are free but expect a low, identified request rate).
+``SlidingWindowLimiter`` is wired for the first time by open-web W2
+(``services/web_research/limiter.py``): one window per registrable domain paces
+open-web fetches to at most one request per second (longer under ``Crawl-delay``).
 
 ``RateLimitPolicy`` is a plain, serialisable description — it contains no
 secrets and is safe to expose in the registry/health API.
@@ -45,7 +46,10 @@ class SlidingWindowLimiter:
     """A tiny monotonic-clock sliding-window limiter (in-process, best-effort).
 
     Not distributed and not persisted — it only smooths bursts inside one worker.
-    ``allow()`` is non-blocking and returns whether a call may proceed now.
+    ``allow()`` is non-blocking and returns whether a call may proceed now;
+    ``wait_seconds()`` says how long until it would. An event exactly
+    ``per_seconds`` old has left the window, so "1 per second" admits a call at
+    t=0 and the next at t=1.0.
     """
 
     def __init__(self, max_events: int, per_seconds: float) -> None:
@@ -53,15 +57,26 @@ class SlidingWindowLimiter:
         self.per_seconds = max(0.001, per_seconds)
         self._events: deque[float] = deque()
 
+    def _expire(self, t: float) -> None:
+        cutoff = t - self.per_seconds
+        while self._events and self._events[0] <= cutoff:
+            self._events.popleft()
+
     def allow(self, now: float | None = None) -> bool:
         t = time.monotonic() if now is None else now
-        cutoff = t - self.per_seconds
-        while self._events and self._events[0] < cutoff:
-            self._events.popleft()
+        self._expire(t)
         if len(self._events) >= self.max_events:
             return False
         self._events.append(t)
         return True
+
+    def wait_seconds(self, now: float | None = None) -> float:
+        """Seconds until :meth:`allow` would admit a call (0.0 when it would now)."""
+        t = time.monotonic() if now is None else now
+        self._expire(t)
+        if len(self._events) < self.max_events:
+            return 0.0
+        return max(0.0, self._events[0] + self.per_seconds - t)
 
 
 __all__ = ["RateLimitPolicy", "SlidingWindowLimiter"]

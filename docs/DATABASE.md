@@ -1064,6 +1064,64 @@ it names: `metric:capex@foo`.
 ("migration 043 is not applied") rather than failing; `GET /company-research/schema-readiness`
 reports it under `migration_043`.
 
+### `web_fetch_attempts` as written by open-web W2 (no new migration)
+
+W2 (`services/web_research/fetch.py`) writes one row per **physical** attempt; the table
+from 042 is unchanged. Rows are written only while `V3_WEB_FETCH_ENABLED` is on (off →
+refusal `web_fetch_disabled`, no row, so 042 need not exist).
+
+| Column | W2 values |
+|---|---|
+| `origin` | `search` / `crawl` / `user` / `lead` for pages; `robots` / `tdm` for each robots.txt / TDMRep request (own rows, same run lineage) |
+| `status` | `fetched` · `fetched_partial` (body cut at its class cap — **never** a complete document) · `discovered_not_retrievable` · `refused` · `failed` · `retried` (a physical attempt that was retried; the next row is the same logical fetch) · `negative_cached` |
+| `policy_decision` | `allowed` · `denied` (URL shape, SSRF guard, domain denylist, redirect limit) · `budget_refused` · `negative_cached` |
+| `robots_decision` | `allowed` · `disallowed` · `no_robots` (robots.txt answered 4xx) · `unavailable` (5xx/429/unreachable → fail closed) |
+| `tdm_decision` | `tdm_not_reserved` · `tdm_reserved` · `tdm_unknown` (tdmrep.json unreachable) |
+| `failure_code` | e.g. `http_403`, `http_404`, `captcha`, `login_wall`, `consent_wall`, `paywall_jsonld`, `robots_disallowed`, `robots_unavailable`, `tdm_reserved`, `unsupported_type`, `decompression_bomb`, `blocked_host`, `blocked_private_ip`, `blocked_scheme`, `denylisted_domain`, `dns_failure`, `redirect_limit`, `policy_file_redirect_limit`, `connect_error`, `fetch_timeout`, `transport_error` (any unexpected internal error — coded, never raised), `run_deadline` (a robots.txt/TDMRep request cut off by the run's own deadline), `budget:<limit>` (incl. `budget:max_pdfs`, `budget:max_per_domain`) |
+| `mime_served` / `mime_sniffed` | the served media type and the type named by the magic bytes; the body is routed by the sniffed one |
+| `redirect_chain_json` | `[{"url", "status"}…]`, a refused hop as `{"url", "refused": <code>}`. The **last** entry may carry `"meta"`: `etag`, `last_modified` (W3 revalidation), `rel_canonical`, `rel_canonical_honoured`, `rel_canonical_reason`, `charset`, `charset_source`, `js_required`, `mime_mismatch`, `tdm_signals`, `filename_hint`, `upgraded_from_http`, `crawl_delay`, `denylist_version` |
+
+No string with NUL, another C0 control or a lone surrogate is ever written (PostgreSQL
+rejects them and the flush would poison the caller's session): such a URL is stored as
+`<unparseable-url>` and any other such string, in a column or in the chain/meta JSON,
+has those characters replaced by U+FFFD. Every URL column holds the W0 stored form (credential-like query parameters, userinfo and
+the fragment removed); `canonical_url` additionally drops tracking parameters and may be a
+same-registrable-domain `rel=canonical`. Page text is never stored here.
+
+## Migration 044 — web documents in the Research Corpus (open-web W3)
+
+Numbered **044** because 043 belongs to the report-reconciliation branch; `down_revision`
+is `043` (chain `041 → 042 → 043 → 044`). **Additive only**: every new
+column is nullable with no default and no backfill; no existing column is altered or
+dropped. Downgrade drops exactly what upgrade added. Verified `042 → 044 → 042 → 044` on
+PostgreSQL (`tests/test_web_w3_postgres.py`). Spec: `docs/open-web-research-spec.md` §12.2,
+§26.3 (listed there as "043").
+
+| Table | Added | Why |
+|---|---|---|
+| `research_documents` | `subject_scope` (`company` · `theme` · `industry` · `macro`) | A theme/industry document has no single company. NULL on every pre-W3 row ("not recorded", never "company"). Themes are subject ROWS, not a column: one document serves many themes. |
+| `research_documents` | partial **unique** index `ix_research_documents_companyless_key` on `document_key WHERE company_id IS NULL` | `(company_id, document_key)` never deduplicates a company-less row (NULLs are distinct). Upgrade first checks for existing duplicate company-less keys and stops with a message rather than a bare constraint error. |
+| `research_document_subjects` (new) | `research_document_id` (CASCADE), `company_id` (SET NULL), `legal_entity_id` (SET NULL), `relation` (`primary` · `mentioned` · `competitor` · `customer` · `supplier` · `theme`), `confidence` (`exact_identifier` · `domain` · `name_context` · `name_only`, or NULL for a run-assigned primary), `method`, `scope_key`, `evidence_chunk_id`, `theme_key` (set iff `relation='theme'`, CHECK), `created_at` | One article about three companies = one document, three rows. A brand mention carries `segment:<name>` / `brand:<name>`, never `group`. Unique index `ux_research_document_subjects_identity` on `(research_document_id, coalesce(company_id), coalesce(legal_entity_id), relation, coalesce(scope_key), coalesce(theme_key))`; writers insert `ON CONFLICT DO NOTHING`. Retrieval (`subject_company_ids`): a `primary` / `exact_identifier` / `domain` row admits the whole document, any weaker row only its `evidence_chunk_id`; such hits are `via_subject` with a `segment` or `mention` scope, never Group. |
+| `research_document_versions` | `web_fetch_attempt_id` (FK `web_fetch_attempts`, SET NULL), `use_constraint`, `injection_suspect`, `simhash` (BIGINT, signed 64-bit), `origin_key`, `published_at_source` (`json_ld` · `meta` · `url` · `text`) | Spec list. |
+| `research_document_versions` | `source_class`, `web_extractor_version` | **Beyond the spec list**: the §13.1 source class the retrieval filter reads (nothing else stores it), and `WEB_EXTRACTOR_VERSION` (web documents are stamped separately from `CURRENT_EXTRACTION_PIPELINE_VERSION`). |
+| `research_leads` | `web_search_result_id` (FK SET NULL), `research_document_version_id` (FK SET NULL) | An `ev:x:` id resolves to the stored version of the bytes it was verified against. |
+
+Indexes: `research_document_subjects(theme_key)`, `research_document_versions(web_fetch_attempt_id)`,
+`research_leads(research_document_version_id)`, `research_document_subjects(research_document_id)`,
+`(company_id)`, and the partial unique index above.
+
+**Web version values** (written only by `services/web_research/ingest.py`, only while
+`V3_WEB_CORPUS_INGEST_ENABLED` and `V3_CORPUS_ENABLED` are on): `transport =
+open_web:<provider|direct|lead>`, `content_origin` / `origin_key` = the publisher's
+registrable domain, `access_class` from the source class (`public_official` for
+government/regulator/specialist hosts, `public_issuer` for a verified issuer domain, else
+`public_web`), `source_tier` from the class table. The document is keyed by address
+(title-only period policy), so two different articles can never merge under a
+`<kind>:<period>` key. `ExtractedDocument.source_type = open_web`, shared by content hash.
+
+**Deploy order.** The W3 ORM maps these columns, so every read of the four tables needs
+044 in place: apply 044 **before** deploying the W3 code (decision U9), exactly as 041.
+
 ## `research_job_id` — the five lineage columns, and who writes them (V3.17.9)
 
 Five tables carry a `research_job_id` foreign key to `research_jobs.id`. Between them they

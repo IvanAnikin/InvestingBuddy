@@ -55,6 +55,7 @@ import unicodedata
 import zlib
 from collections.abc import Callable
 from dataclasses import InitVar, dataclass, field
+from enum import Enum
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
@@ -680,8 +681,31 @@ def check_url_shape(url: str | None) -> tuple[str | None, str | None]:
     return None, host
 
 
+class FetchPolicy(str, Enum):
+    """Which rule bounds WHERE a guarded fetch may go (open-web W2, spec §9.2).
+
+    * ``ALLOWLIST`` — the historical mode: the host must be inside the caller's
+      ``allowed_domains`` (unless the operator switched
+      ``source_connector_allowlist_only`` off, which is never done in production).
+    * ``OPEN_WEB`` — the allowlist is REPLACED by policy: any public host that passes
+      every other guard (shape, internal suffixes, IP literals, resolved-address
+      denylist), with resolution and pinning mandatory and the runtime check (D13)
+      always applied. The domain denylist and robots/TDM live one layer up, in
+      ``services/web_research/fetch.py`` — the only caller of this mode.
+
+    Every other check is identical in both modes: this switches the allowlist off, it
+    never switches a guard off.
+    """
+
+    ALLOWLIST = "allowlist"
+    OPEN_WEB = "open_web"
+
+
 def _static_fetch_reason(
-    url: str | None, allowed_domains: tuple[str, ...], cfg: Settings
+    url: str | None,
+    allowed_domains: tuple[str, ...],
+    cfg: Settings,
+    policy: FetchPolicy = FetchPolicy.ALLOWLIST,
 ) -> tuple[str | None, str | None]:
     """Every network-free check, returning ``(reason, normalised_host)``."""
     reason, host = check_url_shape(url)
@@ -689,11 +713,10 @@ def _static_fetch_reason(
         return reason, None
     if not is_safe_public_host(host):
         return f"unsafe/internal host: {host or 'none'}", None
-    if cfg.source_connector_allowlist_only and not registrable_host_allowed(
-        host, allowed_domains
-    ):
+    open_web = policy is FetchPolicy.OPEN_WEB or not cfg.source_connector_allowlist_only
+    if not open_web and not registrable_host_allowed(host, allowed_domains):
         return f"host not in allowlist: {host}", None
-    if not cfg.source_connector_allowlist_only:
+    if open_web:
         # D13: with no allowlist bounding it, every fetch is an open-web fetch.
         runtime_refusal = open_web_fetch_refusal()
         if runtime_refusal is not None:
@@ -701,9 +724,15 @@ def _static_fetch_reason(
     return None, host
 
 
-def _must_resolve(cfg: Settings, resolve_ip: bool) -> bool:
+def _must_resolve(
+    cfg: Settings, resolve_ip: bool, policy: FetchPolicy = FetchPolicy.ALLOWLIST
+) -> bool:
     """W0 / D3: a fetch the allowlist does not bound ALWAYS resolves and checks."""
-    return bool(resolve_ip) or not cfg.source_connector_allowlist_only
+    return (
+        bool(resolve_ip)
+        or policy is FetchPolicy.OPEN_WEB
+        or not cfg.source_connector_allowlist_only
+    )
 
 
 def check_fetch_url(
@@ -713,6 +742,7 @@ def check_fetch_url(
     cfg: Settings | None = None,
     resolve_ip: bool = False,
     resolver: Resolver = socket.getaddrinfo,
+    policy: FetchPolicy = FetchPolicy.ALLOWLIST,
 ) -> str | None:
     """Return None if ``url`` is safe to fetch, else a short reason string.
 
@@ -727,10 +757,10 @@ def check_fetch_url(
     ``resolver`` is injectable for tests.
     """
     cfg = cfg or default_settings
-    reason, host = _static_fetch_reason(url, allowed_domains, cfg)
+    reason, host = _static_fetch_reason(url, allowed_domains, cfg, policy)
     if reason:
         return reason
-    if _must_resolve(cfg, resolve_ip):
+    if _must_resolve(cfg, resolve_ip, policy):
         dns_reason = assert_resolved_ip_public(host, resolver=resolver)
         if dns_reason:
             return f"unsafe resolved ip ({dns_reason})"
@@ -744,6 +774,7 @@ async def async_check_fetch_url(
     cfg: Settings | None = None,
     resolve_ip: bool = False,
     resolver: Resolver = socket.getaddrinfo,
+    policy: FetchPolicy = FetchPolicy.ALLOWLIST,
 ) -> tuple[str | None, str | None]:
     """Async twin of :func:`check_fetch_url` returning ``(reason, pinned_ip)``.
 
@@ -756,12 +787,15 @@ async def async_check_fetch_url(
     An explicitly injected ``resolver`` is honoured (the Slice 5A test seam);
     left at the default the lookup goes through ``loop.getaddrinfo`` instead of
     blocking the worker on a synchronous ``socket.getaddrinfo``.
+
+    ``policy=FetchPolicy.OPEN_WEB`` (W2) replaces the allowlist with policy: the
+    allowlist is not consulted, and resolution plus the runtime check are mandatory.
     """
     cfg = cfg or default_settings
-    reason, host = _static_fetch_reason(url, allowed_domains, cfg)
+    reason, host = _static_fetch_reason(url, allowed_domains, cfg, policy)
     if reason:
         return reason, None
-    if not _must_resolve(cfg, resolve_ip):
+    if not _must_resolve(cfg, resolve_ip, policy):
         return None, None
 
     from app.services.sources.pinned_transport import resolve_and_validate
@@ -872,12 +906,17 @@ class BoundedBody:
     error: str | None = None
 
 
+#: How many decoded bytes a ``sniff_cap`` hook sees before it names the cap.
+SNIFF_PREFIX_BYTES = 1024
+
+
 async def read_bounded_body(
     resp: Any,
     *,
     max_bytes: int,
     deadline: float | None = None,
     max_ratio: int = MAX_DECOMPRESSION_RATIO,
+    sniff_cap: Callable[[bytes], int] | None = None,
 ) -> BoundedBody:
     """Read at most ``max_bytes`` DECODED bytes from a streaming response.
 
@@ -894,26 +933,58 @@ async def read_bounded_body(
       compression layer is refused rather than handed to a decoder we cannot bound.
     * A multi-member gzip body (concatenated members) is decoded member by member.
     * ``deadline`` (a ``loop.time()`` value) is checked on every chunk (D8).
+    * ``sniff_cap`` (open-web W2) is called ONCE with the first
+      ``SNIFF_PREFIX_BYTES`` decoded bytes (or the whole body, when shorter) and
+      returns the cap for the content class those bytes reveal — HTML, PDF and text
+      have different caps, and a refused type returns the prefix length so reading
+      stops there. The cap can only narrow ``max_bytes``. A body cut at the narrowed
+      cap is ``truncated`` like any other.
     """
     loop = asyncio.get_running_loop()
     headers = getattr(resp, "headers", None) or {}
     compressions = content_encodings(headers.get("content-encoding"))
     chunks: list[bytes] = []
     total = 0
+    cap = max_bytes
+    decided = sniff_cap is None
 
     def _late() -> bool:
         return deadline is not None and loop.time() > deadline
+
+    def _decide(final: bool = False) -> None:
+        nonlocal cap, decided
+        if decided or (total < SNIFF_PREFIX_BYTES and not final):
+            return
+        decided = True
+        assert sniff_cap is not None
+        prefix = b"".join(chunks)[:SNIFF_PREFIX_BYTES]
+        try:
+            narrowed = int(sniff_cap(prefix))
+        except Exception:  # noqa: BLE001 - a broken hook must not widen anything
+            narrowed = len(prefix)
+        cap = max(0, min(cap, narrowed))
+
+    def _cut() -> BoundedBody:
+        return BoundedBody(b"".join(chunks)[:cap], truncated=True)
 
     if not compressions:
         async for chunk in resp.aiter_bytes():
             if _late():
                 return BoundedBody(b"".join(chunks), error=BODY_DEADLINE_EXCEEDED)
-            remaining = max_bytes - total
-            if len(chunk) >= remaining:
+            remaining = cap - total
+            if decided and len(chunk) >= remaining:
                 chunks.append(chunk[:remaining])
                 return BoundedBody(b"".join(chunks), truncated=True)
+            if not decided and len(chunk) > remaining:
+                chunk = chunk[: remaining + 1]
             chunks.append(chunk)
             total += len(chunk)
+            _decide(final=total > cap)
+            if decided and total >= cap:
+                return _cut()
+        _decide(final=True)
+        if total > cap:
+            return _cut()
         return BoundedBody(b"".join(chunks))
 
     encoding = compressions[0]
@@ -940,10 +1011,10 @@ async def read_bounded_body(
                     break  # trailing bytes after a complete deflate stream
                 decoder = zlib.decompressobj(wbits)  # the next gzip member starts here
             ratio_ceiling = max(_RATIO_FLOOR_BYTES, received * max_ratio)
-            limit = min(max_bytes, ratio_ceiling)
+            limit = min(cap, ratio_ceiling)
             allowed = limit - total
             if allowed <= 0:
-                if ratio_ceiling < max_bytes:
+                if ratio_ceiling < cap:
                     return BoundedBody(error=BODY_DECOMPRESSION_RATIO)
                 return BoundedBody(b"".join(chunks), truncated=True)
             try:
@@ -959,17 +1030,24 @@ async def read_bounded_body(
                     return BoundedBody(b"".join(chunks))
                 return BoundedBody(b"".join(chunks), error=BODY_UNDECODABLE)
             if len(out) > allowed:
-                if ratio_ceiling < max_bytes:
+                if ratio_ceiling < cap:
                     return BoundedBody(error=BODY_DECOMPRESSION_RATIO)
                 chunks.append(out[:allowed])
                 return BoundedBody(b"".join(chunks), truncated=True)
             chunks.append(out)
             total += len(out)
+            was_decided = decided
+            _decide()
+            if decided and not was_decided and total > cap:
+                return _cut()
             if decoder.eof:
                 members_done += 1
                 buf = decoder.unused_data
             else:
                 buf = decoder.unconsumed_tail
+    _decide(final=True)
+    if total > cap:
+        return _cut()
     return BoundedBody(b"".join(chunks))
 
 
@@ -1262,6 +1340,7 @@ async def safe_fetch_page(
 
 
 __all__ = [
+    "FetchPolicy",
     "SafeLink",
     "SafeFetchResult",
     "Resolver",
@@ -1269,6 +1348,7 @@ __all__ = [
     "MAX_DECOMPRESSION_RATIO",
     "MAX_URL_LENGTH",
     "MIN_SAFE_PYTHON",
+    "SNIFF_PREFIX_BYTES",
     "USER_AGENT_PRODUCT_TOKEN",
     "check_url_shape",
     "content_encodings",
