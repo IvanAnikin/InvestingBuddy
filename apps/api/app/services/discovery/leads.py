@@ -10,10 +10,12 @@ researched.
 
 WHAT THIS DOES
 ==============
-Asks the configured external research provider — the same retrieval-backed DeepSeek
-``/responses`` search V3.12 made the Investigator's external rung — for listed companies
-that fit the Discovery Intent, a bounded number of times, and parses its answer into
-``CompanyLead``s.
+Asks the configured external research provider's MODEL — a plain JSON completion with
+**no web access** (``_ask``; since V3.19.10 this is model RECALL, not a search: the
+provider's builtin web search stopped issuing queries on 2026-09-26) — for listed
+companies that fit the Discovery Intent, a bounded number of times, and parses its answer
+into ``CompanyLead``s labelled ``discovery_mode="model_recall"``. Nothing here searches
+the web, and no lead from this module may ever be labelled ``search`` (spec §22.3).
 
 A lead is a CLAIM that a company exists, is listed, and fits. It is not a candidate:
 ``discovery.identity`` must verify the listing on a page the platform fetches itself before
@@ -374,7 +376,7 @@ async def _ask(provider: Any, query: LeadQuery, cfg: Any) -> dict[str, Any]:
     from app.services.providers.contracts import ConsumptionUnits
 
     transport = provider.transport
-    timeout = int(getattr(cfg, "v3_external_search_timeout_seconds", 0) or 180)
+    timeout = int(cfg.v3_external_search_timeout_seconds)
     response = await transport.complete(
         system=COMPANY_LEAD_SYSTEM_PROMPT
         + "\nAnswer from what you know; you have no web access in this call. Reply in json.",

@@ -3264,6 +3264,33 @@ to a Phase-9 screening draft on every candidate it touches.
 
 ---
 
+## Open-web W1 — web search audit (internal admin only)
+
+Read-only, and guarded exactly like `/api/v1/research-decisions`: backend Basic Auth on
+every route, and reachable from the browser only through the admin-allowlisted Next.js
+proxy (prefix `/api/v1/admin/web-research`).
+
+| Method | Path | Returns |
+|---|---|---|
+| `GET` | `/api/v1/admin/web-research/jobs/{research_job_id}` | `WebResearchAuditRead` for one research job |
+| `GET` | `/api/v1/admin/web-research/discovery-runs/{discovery_run_id}` | the same shape for one discovery run |
+
+`WebResearchAuditRead` = `{scope, scope_id, queries[], fetch_attempts[], totals, notice}`.
+Each query carries its network fact (`provider`, `executed`, `provider_request_id`,
+`http_status`, `network_call_count`, `latency_ms`, `result_count`, `from_cache`,
+`served_from_query_id`, `cost_units`, `error_code`), its filters (`requested`, `enforced_by`) and its `results[]`
+with rank, URL, domain, untrusted title/snippet and `disposition`. `totals` counts queries,
+executed, from-cache, not-executed, network calls, results, fetch attempts,
+`errors_by_code`, and sums `cost_units` over executed network calls (never priced here; an
+absent unit is unreported, not zero). `queries_truncated` / `fetch_attempts_truncated` are
+true when the page stopped at its row limit (500 queries / 1000 fetch attempts), in which
+case the totals count only what is shown. `enforced_by` values: `client`, `provider`,
+`provider_boost` (Tavily `country`: a ranking preference, not a filter), `unsupported`.
+
+- `404` — the job or discovery run does not exist.
+- `503` — migration 042 has not been applied in this environment (a missing table is not
+  an empty audit).
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

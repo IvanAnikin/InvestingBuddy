@@ -13,10 +13,23 @@ Safety properties (why this is not an SSRF surface):
     from an already-allowlisted page — and every URL is re-checked against the
     issuer's ``allowed_domains`` before a request is made. The API never accepts
     a URL.
-  * **HTTPS only.** ``http://`` and every other scheme is rejected.
+  * **HTTPS only, port 443 only, no userinfo** (W0 / D4, D5). Every other scheme is
+    rejected; so are URLs over 2048 characters, with whitespace, control characters
+    or backslashes, and URLs that ``urllib.parse`` and ``httpx.URL`` parse
+    differently (host, port or userinfo).
   * **Host allowlist.** The host must be inside the issuer's ``allowed_domains``.
-  * **No private / internal targets.** IP-literal hosts and localhost / .internal
-    / .local style names are rejected (belt-and-braces on top of the allowlist).
+  * **No private / internal targets.** The host is IDNA-normalised (D10); IP literals
+    in any encoding (decimal, hex, octal, short-form: D3), single-label hosts,
+    localhost / .internal / .local style names, Azure platform hosts and this
+    platform's own apps are rejected. Every RESOLVED address must be ``is_global``
+    and outside an explicit denylist (CGNAT, all of 169.254/16, Azure WireServer
+    ``168.63.129.16`` …: D1, D2, D13), with IPv4-mapped / 6to4 / Teredo / NAT64
+    addresses unwrapped and re-checked. A fetch not bounded by the allowlist always
+    resolves and pins.
+  * **Client hygiene** (D6, D7, D8, D14). ``trust_env=False``; no cookie jar and no
+    ``Cookie``/``Authorization`` on any hop; ``Accept-Encoding: identity`` with a
+    decoded-bytes and ratio cap for a server that compresses anyway; and one total
+    wall-clock deadline across every hop and the body.
   * **Redirects are guarded, not followed blindly.** A redirect to a host outside
     the allowlist, or a downgrade to http, aborts the fetch (honest "blocked"
     result); at most a few same-allowlist hops are followed.
@@ -24,23 +37,31 @@ Safety properties (why this is not an SSRF surface):
     larger than the cap is truncated, never fully buffered.
   * **Never raises.** Every failure (timeout, 4xx/5xx, blocked, parse error)
     degrades to a ``SafeFetchResult`` with ``error`` / ``blocked`` set.
-  * **Secret-free.** Nothing here logs prompts, bodies, or credentials; result
-    URLs are stripped of any query secrets by the caller's ``EvidenceItem``.
+  * **Secret-free.** Nothing here logs prompts, bodies, or credentials; stored
+    link URLs are stripped of query secrets, while the URL actually requested is
+    the link as published (``SafeLink.fetch_target``; D12).
 """
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
+import logging
+import os
+import re
 import socket
+import sys
+import unicodedata
+import zlib
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
-from app.services.sources.redaction import strip_url_secrets
+from app.services.sources.redaction import canonicalize_source_url
 from app.services.sources.verified_issuer_sources import (
     host_of,
     registrable_host_allowed,
@@ -51,21 +72,113 @@ _USER_AGENT = (
     "research@investingbuddy.example)"
 )
 
+#: The product token the User-Agent above starts with. robots.txt is evaluated against
+#: exactly this, so a site that names us gets the behaviour it asked for (W0: the
+#: traversal used to evaluate a DIFFERENT token than the one it sent).
+USER_AGENT_PRODUCT_TOKEN = "InvestingBuddy-Research-Bot"
+
 # Hostnames that must never be fetched even if (mis)configured into an allowlist.
-_INTERNAL_HOST_SUFFIXES = (".local", ".internal", ".localhost", ".lan", ".home.arpa")
+_INTERNAL_HOST_SUFFIXES = (
+    ".local",
+    ".internal",
+    ".localhost",
+    ".localdomain",
+    ".lan",
+    ".home.arpa",
+    # Azure platform hosts that hold this platform's own data or control planes
+    # (W0, threat model §2.4 check 3). Never a research source.
+    ".scm.azurewebsites.net",
+    ".vault.azure.net",
+    ".database.azure.com",
+    ".internal.cloudapp.net",
+)
+# Blob storage is NOT refused wholesale: issuers publish reports on their own
+# ``*.blob.core.windows.net`` accounts. Only THIS platform's artifact-store account
+# (``v3_artifact_store_account_url``) is refused — see ``_is_own_app_host``.
 _INTERNAL_HOST_EXACT = frozenset(
     {"localhost", "localhost.localdomain", "metadata", "metadata.google.internal"}
 )
+#: This platform's own App Service apps (``ib-stg-api``, ``ib-stg-web`` …). Fetching
+#: ourselves is never research and is exactly what an SSRF wants.
+_OWN_APP_HOST_PREFIX = "ib-"
+_OWN_APP_HOST_SUFFIX = ".azurewebsites.net"
 
 # Cloud instance-metadata endpoints — never a legitimate fetch target. The IPv4
 # address is inside link-local (169.254.0.0/16) so it is already rejected by the
-# is_link_local check below; it is enumerated here for explicitness + the IPv6
-# form, which is what the resolved-IP guard reports on.
+# denylist below; it is enumerated here for explicitness + the IPv6 form, which is
+# what the resolved-IP guard reports on.
 _METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
+
+#: Explicit address denylist (W0 / threat model §2.4 check 4). Applied ON TOP of
+#: ``is_global`` so a stdlib classification bug (CVE-2024-4032, D13) or a range the
+#: stdlib calls global (CGNAT is not global, but Azure WireServer ``168.63.129.16`` is)
+#: cannot open a path to an internal target.
+_DENY_V4_NETWORKS: tuple[ipaddress.IPv4Network, ...] = tuple(
+    ipaddress.IPv4Network(n)
+    for n in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",  # CGNAT (D1)
+        "127.0.0.0/8",
+        "169.254.0.0/16",  # link-local incl. IMDS + App Service identity (D2)
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "255.255.255.255/32",
+        "168.63.129.16/32",  # Azure WireServer / platform DNS — a PUBLIC address (D2)
+    )
+)
+_DENY_V6_NETWORKS: tuple[ipaddress.IPv6Network, ...] = tuple(
+    ipaddress.IPv6Network(n)
+    for n in (
+        "::/128",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+        "fec0::/10",
+        "ff00::/8",
+        "100::/64",
+        "2001:db8::/32",
+        "3fff::/20",
+        # Local-use NAT64 (RFC 8215): the embedded IPv4 position depends on the
+        # operator's prefix length, so it cannot be unwrapped reliably. Refused.
+        "64:ff9b:1::/48",
+        # IPv4-compatible (deprecated, RFC 4291) and SIIT/IPv4-translated (RFC 2765)
+        # forms: both carry an IPv4 address in the low 32 bits (``::a9fe:a9fe`` is
+        # 169.254.169.254; ``::ffff:0:7f00:1`` is 127.0.0.1). Never a real target.
+        "::/96",
+        "::ffff:0:0:0/96",
+    )
+)
+#: Well-known NAT64 prefix (RFC 6052): the low 32 bits are the IPv4 destination.
+_NAT64_WKP = ipaddress.IPv6Network("64:ff9b::/96")
+
+#: The oldest runtime whose ``ipaddress`` classification is trusted (CVE-2024-4032, D13).
+MIN_SAFE_PYTHON: tuple[int, int, int] = (3, 12, 4)
+
+#: URLs longer than this are refused before parsing continues (threat model §2.4 check 2).
+MAX_URL_LENGTH = 2048
+
+#: Decompressed bytes may be at most this multiple of the bytes received (D7) once the
+#: body is past ``_RATIO_FLOOR_BYTES`` — a real HTML page compresses ~5-10x, a PDF ~1-2x.
+MAX_DECOMPRESSION_RATIO = 100
+_RATIO_FLOOR_BYTES = 1_000_000
+
+_HOST_CHARS_RE = re.compile(r"^[a-z0-9._-]+$")
+_NUMERIC_LABEL_RE = re.compile(r"^(0x[0-9a-f]*|[0-9]+)$")
 
 # A resolver is any callable shaped like ``socket.getaddrinfo`` — injectable so
 # the DNS guard can be unit-tested without touching real DNS.
 Resolver = Callable[..., list[Any]]
+
+_log = logging.getLogger(__name__)
 
 # Link text keywords that mark an annual-report / financial-disclosure link.
 # Phase 32A Problem B: widened with generic (never issuer-specific) current-
@@ -160,6 +273,22 @@ class SafeLink:
     url: str
     text: str
     is_document: bool = False
+    #: The URL as the page linked it (whitespace percent-encoded), passed ONLY when it
+    #: differs from ``url`` (W0 / D12). ``url`` is the stored/logged form, canonical and
+    #: with credential-bearing query parameters stripped; stripping must never change
+    #: what is actually fetched, so a caller that requests the link uses
+    #: :attr:`fetch_target`. An init-only value kept on a private attribute, so it is
+    #: not a dataclass FIELD: it never appears in ``repr``, equality, ``asdict`` or
+    #: ``astuple`` — nothing that serialises a link can carry the raw URL out.
+    fetch_url: InitVar[str] = ""
+
+    def __post_init__(self, fetch_url: str) -> None:
+        object.__setattr__(self, "_fetch_url", fetch_url or "")
+
+    @property
+    def fetch_target(self) -> str:
+        """The URL to request: the unmodified link when stripping changed it."""
+        return getattr(self, "_fetch_url", "") or self.url
 
 
 @dataclass
@@ -191,45 +320,263 @@ class SafeFetchResult:
 # --------------------------------------------------------------------------- #
 
 
-def is_safe_public_host(host: str | None) -> bool:
-    """False for localhost / private / link-local / internal / IP-literal hosts."""
-    if not host:
+def python_runtime_is_safe(version_info: Any = None) -> bool:
+    """True when the running interpreter's ``ipaddress`` classification is trusted.
+
+    CVE-2024-4032 (D13): before 3.12.4 ``is_private`` / ``is_global`` were wrong for
+    several ranges. The explicit denylist below does not depend on them, but the
+    ``is_global`` requirement does, so an older runtime refuses open-web fetches.
+    """
+    raw = tuple(version_info if version_info is not None else sys.version_info)[:3]
+    try:
+        current = tuple(int(part) for part in raw)
+    except (TypeError, ValueError):
         return False
-    h = host.strip().lower().rstrip(".")
-    if not h or h in _INTERNAL_HOST_EXACT:
+    return current >= MIN_SAFE_PYTHON
+
+
+def open_web_fetch_refusal(version_info: Any = None) -> str | None:
+    """A coded refusal when open-web fetching must not run on this runtime, else None."""
+    if python_runtime_is_safe(version_info):
+        return None
+    return (
+        "python runtime below "
+        + ".".join(str(p) for p in MIN_SAFE_PYTHON)
+        + ": open-web fetch refused (CVE-2024-4032)"
+    )
+
+
+def log_python_runtime_check() -> bool:
+    """Log (never raise) whether this runtime may perform open-web fetches.
+
+    Called at startup. A too-old runtime does not crash the app: allowlisted fetches
+    keep working on the explicit denylist, and open-web fetches are refused by
+    :func:`open_web_fetch_refusal`.
+    """
+    safe = python_runtime_is_safe()
+    if not safe:
+        _log.warning(
+            "python_runtime_below_safe_minimum version=%s minimum=%s open_web_fetch=refused",
+            ".".join(str(p) for p in tuple(sys.version_info)[:3]),
+            ".".join(str(p) for p in MIN_SAFE_PYTHON),
+        )
+    return safe
+
+
+def _has_forbidden_char(text: str) -> bool:
+    """Whitespace, C0/DEL control characters and backslashes (threat model §2.4)."""
+    return any(
+        ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in text
+    )
+
+
+#: WHATWG URL parsing removes ASCII tab and newline anywhere and trims C0 controls
+#: and spaces at both ends; a browser following the same link does exactly this.
+_URL_TRIM = "".join(chr(i) for i in range(0x21))
+
+
+def normalize_link_url(url: str | None) -> str | None:
+    """A link or ``Location`` value as a browser would request it (W0 review B1).
+
+    Real issuer links contain raw spaces (``/investors/Annual Report 2024.pdf``) and
+    real servers send them in ``Location`` headers. The guard refuses whitespace in a
+    URL, so a link is normalised BEFORE it is checked: leading/trailing C0 controls and
+    spaces are trimmed, tab/CR/LF are removed, and any other whitespace in the PATH,
+    QUERY or FRAGMENT (space, NBSP, other Unicode spaces) is percent-encoded as UTF-8.
+
+    Whitespace or control characters in the scheme or AUTHORITY are left exactly as
+    they are, so :func:`check_url_shape` still refuses them; so are backslashes and
+    every other control character anywhere. Never raises.
+    """
+    if not url:
+        return url
+    text = url.strip(_URL_TRIM).replace("\t", "").replace("\n", "").replace("\r", "")
+    try:
+        parts = urlsplit(text)
+    except (ValueError, TypeError):
+        return text
+    rest = parts.path + parts.query + parts.fragment
+    if not any(ch.isspace() for ch in rest):
+        return text
+
+    def _enc(value: str) -> str:
+        return "".join(quote(ch, safe="") if ch.isspace() else ch for ch in value)
+
+    return urlunsplit(
+        (parts.scheme, parts.netloc, _enc(parts.path), _enc(parts.query), _enc(parts.fragment))
+    )
+
+
+def normalize_host(host: str | None) -> str | None:
+    """The host as lower-case A-labels (IDNA / UTS-46), or None when it cannot be.
+
+    Every host check runs on this form (D10), so a Unicode host and its punycode are
+    one host, not two. A trailing root dot is dropped. IP literals are returned as
+    text for the caller to classify (and refuse).
+    """
+    if not host:
+        return None
+    h = host.strip()
+    if not h or _has_forbidden_char(h):
+        return None
+    h = h.rstrip(".")
+    if not h:
+        return None
+    if h.isascii():
+        return h.lower()
+    try:
+        import idna  # httpx's own dependency: no new package
+
+        return str(idna.encode(h, uts46=True).decode("ascii")).lower()
+    except Exception:  # noqa: BLE001 - an unencodable host is not a host we fetch
+        try:
+            return h.encode("idna").decode("ascii").lower()
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def _label_scripts(label: str) -> set[str]:
+    scripts: set[str] = set()
+    for ch in label:
+        if not ch.isalpha():
+            continue
+        try:
+            scripts.add(unicodedata.name(ch).split(" ", 1)[0])
+        except ValueError:
+            scripts.add("UNKNOWN")
+    return scripts
+
+
+def mixed_script_host(host: str | None) -> bool:
+    """True when any label of ``host`` mixes writing systems (a homograph signal).
+
+    ``аpple.com`` with a Cyrillic ``а`` is the textbook case. This is a SIGNAL for
+    reputation scoring (W0 exposes it; later slices consume it), not a refusal: a
+    legitimate Japanese label mixes Kanji and Kana. A whole-script lookalike (every
+    letter Cyrillic) is not detected here.
+    """
+    normalized = normalize_host(host)
+    if not normalized:
+        return False
+    for label in normalized.split("."):
+        text = label
+        if label.startswith("xn--"):
+            try:
+                import idna
+
+                text = str(idna.decode(label))
+            except Exception:  # noqa: BLE001
+                try:
+                    text = label.encode("ascii").decode("idna")
+                except Exception:  # noqa: BLE001 - undecodable punycode is itself odd
+                    return True
+        if len(_label_scripts(text)) > 1:
+            return True
+    return False
+
+
+def _own_platform_hosts() -> set[str]:
+    """This deployment's own hosts: the App Service host and the artifact-store account."""
+    hosts: set[str] = set()
+    own = (os.environ.get("WEBSITE_HOSTNAME") or "").strip().lower().rstrip(".")
+    if own:
+        hosts.add(own)
+    account_url = str(getattr(default_settings, "v3_artifact_store_account_url", "") or "")
+    if account_url:
+        try:
+            account_host = (urlsplit(account_url).hostname or "").lower().rstrip(".")
+        except ValueError:
+            account_host = ""
+        if account_host:
+            hosts.add(account_host)
+    return hosts
+
+
+def _is_own_app_host(host: str) -> bool:
+    if host.endswith(_OWN_APP_HOST_SUFFIX) and host.startswith(_OWN_APP_HOST_PREFIX):
+        return True
+    return host in _own_platform_hosts()
+
+
+def is_safe_public_host(host: str | None) -> bool:
+    """False for localhost / private / internal / IP-literal / encoded-IP hosts.
+
+    W0 hardening (threat model §2.4 check 3): the host is IDNA-normalised first; IP
+    literals in any encoding are refused — including the forms a URL parser or
+    ``inet_aton`` reads as IPv4 (``2130706433``, ``0x7f000001``, ``0177.0.0.1``,
+    ``127.1``: D3); single-label hosts, empty labels and anything outside
+    ``[a-z0-9._-]`` are refused; so are Azure platform hosts and this platform's own
+    apps.
+    """
+    h = normalize_host(host)
+    if not h:
+        return False
+    try:
+        ipaddress.ip_address(h.strip("[]").split("%", 1)[0])
+    except ValueError:
+        pass
+    else:
+        return False
+    if len(h) > 253 or not _HOST_CHARS_RE.match(h):
+        return False
+    if h in _INTERNAL_HOST_EXACT:
         return False
     if any(h.endswith(sfx) for sfx in _INTERNAL_HOST_SUFFIXES):
         return False
-    # Reject IP-literal hosts outright (companies are reached by domain name);
-    # this closes the private/loopback/link-local/metadata-endpoint vectors.
-    stripped = h.strip("[]")
-    try:
-        ip = ipaddress.ip_address(stripped)
-    except ValueError:
-        ip = None
-    if ip is not None:
+    if _is_own_app_host(h):
+        return False
+    labels = h.split(".")
+    if len(labels) < 2 or any(not label for label in labels):
+        return False
+    # A host whose last label is numeric (decimal or 0x-hex) is parsed as IPv4 by the
+    # WHATWG URL standard and by inet_aton; no real TLD is numeric.
+    if _NUMERIC_LABEL_RE.match(labels[-1]) or all(
+        _NUMERIC_LABEL_RE.match(label) for label in labels
+    ):
         return False
     return True
 
 
-def _ip_is_public(ip_text: str) -> bool:
-    """True when ``ip_text`` is a routable, public unicast address.
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
+    """IPv4 addresses an IPv6 address carries: mapped, 6to4, Teredo and NAT64."""
+    out: list[ipaddress.IPv4Address] = []
+    if ip.ipv4_mapped is not None:
+        out.append(ip.ipv4_mapped)
+    if ip.sixtofour is not None:
+        out.append(ip.sixtofour)
+    if ip.teredo is not None:
+        out.extend(ip.teredo)
+    if ip in _NAT64_WKP:
+        out.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    return out
 
-    False for loopback / private / link-local / reserved / multicast /
-    unspecified addresses — i.e. every SSRF-relevant internal range.
+
+def _address_is_public(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv4Address):
+        return bool(ip.is_global) and not any(ip in net for net in _DENY_V4_NETWORKS)
+    if ip.ipv4_mapped is not None:
+        # ::ffff:a.b.c.d IS a.b.c.d; classify what it points at.
+        return _address_is_public(ip.ipv4_mapped)
+    if any(ip in net for net in _DENY_V6_NETWORKS):
+        return False
+    if not ip.is_global:
+        return False
+    return all(_address_is_public(v4) for v4 in _embedded_ipv4(ip))
+
+
+def _ip_is_public(ip_text: str) -> bool:
+    """True when ``ip_text`` is a globally routable address outside the denylist.
+
+    W0 (D1, D2, D13): requires ``is_global`` AND no hit in the explicit denylist, and
+    unwraps IPv4-mapped / 6to4 / Teredo / NAT64 addresses to re-check the embedded
+    IPv4 address. CGNAT (``100.64/10``) and Azure WireServer (``168.63.129.16``) are
+    therefore refused, which the old ``is_private``-based test let through.
     """
     try:
-        ip = ipaddress.ip_address(ip_text)
+        ip = ipaddress.ip_address(str(ip_text).split("%", 1)[0])
     except ValueError:
         return False
-    return not (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    return _address_is_public(ip)
 
 
 def assert_resolved_ip_public(
@@ -241,8 +588,8 @@ def assert_resolved_ip_public(
 
     Closes the DNS-rebinding / name-that-resolves-internal SSRF vector that a
     hostname allowlist alone cannot: it resolves ``host`` and rejects the target
-    if ANY resolved address is loopback / private / link-local / reserved /
-    multicast, or the cloud instance-metadata endpoint (``169.254.169.254``).
+    if ANY resolved address is not public (see :func:`_ip_is_public`), or is the
+    cloud instance-metadata endpoint (``169.254.169.254``).
     ``resolver`` is injectable (shaped like ``socket.getaddrinfo``) so this is
     unit-testable without real DNS. Never raises — a resolution error is itself a
     "block" reason.
@@ -281,6 +628,84 @@ def looks_like_pdf(raw: bytes) -> bool:
     return bool(raw) and raw[:5] == b"%PDF-"
 
 
+def check_url_shape(url: str | None) -> tuple[str | None, str | None]:
+    """Return ``(reason, normalised_host)`` for the URL's shape alone. Network-free.
+
+    Threat model §2.4 checks 1-3, before any host policy: length, forbidden
+    characters, ``https`` only, no userinfo (D4), port absent or 443 (D5), and parser
+    agreement — the URL is parsed by ``urllib.parse`` AND ``httpx.URL``, and any
+    disagreement about host, port or userinfo is a refusal (the classic
+    ``https://a.example\\@127.0.0.1/`` differential).
+    """
+    if not url or not isinstance(url, str):
+        return "empty url", None
+    if len(url) > MAX_URL_LENGTH:
+        return f"unsafe url: longer than {MAX_URL_LENGTH} characters", None
+    if _has_forbidden_char(url):
+        return "unsafe url: whitespace, control character or backslash", None
+    try:
+        parts = urlsplit(url)
+    except (ValueError, TypeError):
+        return "unparseable url", None
+    if parts.scheme != "https":
+        return f"non-https scheme: {parts.scheme or 'none'}", None
+    if "@" in parts.netloc or parts.username is not None or parts.password is not None:
+        return "unsafe url: userinfo is not allowed", None
+    try:
+        port = parts.port
+    except ValueError:
+        return "unsafe url: invalid port", None
+    if port not in (None, 443):
+        return f"unsafe url: port {port} is not allowed", None
+    host = normalize_host(parts.hostname)
+    if not host:
+        return f"unsafe/internal host: {parts.hostname or 'none'}", None
+    try:
+        import httpx
+    except Exception:  # noqa: BLE001 - no second parser available; the first stands
+        return None, host
+    try:
+        other = httpx.URL(url)
+    except Exception:  # noqa: BLE001 - one parser refusing is a disagreement
+        return "unparseable url", None
+    other_host = (other.raw_host or b"").decode("ascii", "replace").lower().rstrip(".")
+    other_port = None if other.port in (None, 443) else other.port
+    if (
+        other.scheme != "https"
+        or other.userinfo
+        or other_host.strip("[]") != host.strip("[]")
+        or other_port is not None
+    ):
+        return "unsafe url: parsers disagree on host, port or userinfo", None
+    return None, host
+
+
+def _static_fetch_reason(
+    url: str | None, allowed_domains: tuple[str, ...], cfg: Settings
+) -> tuple[str | None, str | None]:
+    """Every network-free check, returning ``(reason, normalised_host)``."""
+    reason, host = check_url_shape(url)
+    if reason:
+        return reason, None
+    if not is_safe_public_host(host):
+        return f"unsafe/internal host: {host or 'none'}", None
+    if cfg.source_connector_allowlist_only and not registrable_host_allowed(
+        host, allowed_domains
+    ):
+        return f"host not in allowlist: {host}", None
+    if not cfg.source_connector_allowlist_only:
+        # D13: with no allowlist bounding it, every fetch is an open-web fetch.
+        runtime_refusal = open_web_fetch_refusal()
+        if runtime_refusal is not None:
+            return runtime_refusal, None
+    return None, host
+
+
+def _must_resolve(cfg: Settings, resolve_ip: bool) -> bool:
+    """W0 / D3: a fetch the allowlist does not bound ALWAYS resolves and checks."""
+    return bool(resolve_ip) or not cfg.source_connector_allowlist_only
+
+
 def check_fetch_url(
     url: str | None,
     allowed_domains: tuple[str, ...],
@@ -291,33 +716,21 @@ def check_fetch_url(
 ) -> str | None:
     """Return None if ``url`` is safe to fetch, else a short reason string.
 
-    A URL is safe only when: it parses; scheme is https; host is a safe public
-    host; and host is inside ``allowed_domains``. When ``allowlist_only`` is off
-    (never in production), the allowlist check is skipped but every other guard
-    still applies.
+    A URL is safe only when: its shape passes :func:`check_url_shape`; its host
+    is a safe public host; and the host is inside ``allowed_domains``. When
+    ``allowlist_only`` is off (never in production), the allowlist check is skipped
+    but every other guard still applies — and the resolved-address check becomes
+    mandatory, because nothing else then bounds where the URL may point (W0 / D3).
 
     When ``resolve_ip`` is True the host is additionally DNS-resolved and every
-    resolved IP must be public (see :func:`assert_resolved_ip_public`) — this is
-    OPT-IN and defaults OFF so all existing callers are byte-for-byte unchanged.
+    resolved IP must be public (see :func:`assert_resolved_ip_public`).
     ``resolver`` is injectable for tests.
     """
     cfg = cfg or default_settings
-    if not url:
-        return "empty url"
-    try:
-        parts = urlsplit(url)
-    except (ValueError, TypeError):
-        return "unparseable url"
-    if parts.scheme != "https":
-        return f"non-https scheme: {parts.scheme or 'none'}"
-    host = (parts.hostname or "").lower()
-    if not is_safe_public_host(host):
-        return f"unsafe/internal host: {host or 'none'}"
-    if cfg.source_connector_allowlist_only and not registrable_host_allowed(
-        host, allowed_domains
-    ):
-        return f"host not in allowlist: {host}"
-    if resolve_ip:
+    reason, host = _static_fetch_reason(url, allowed_domains, cfg)
+    if reason:
+        return reason
+    if _must_resolve(cfg, resolve_ip):
         dns_reason = assert_resolved_ip_public(host, resolver=resolver)
         if dns_reason:
             return f"unsafe resolved ip ({dns_reason})"
@@ -337,27 +750,227 @@ async def async_check_fetch_url(
     Applies exactly the same guards, but resolves off the event loop and hands
     back the validated address so the caller can PIN the connection to it
     (Phase 32A Slice 5B.1 — closes the ADR-014 rebinding window). ``pinned_ip`` is
-    None whenever ``resolve_ip`` is False, which is the default, so a caller that
-    does not opt in behaves exactly as before.
+    None whenever resolution was not requested. W0: a fetch that is not bounded by
+    the allowlist (``source_connector_allowlist_only`` off) always resolves and pins.
 
     An explicitly injected ``resolver`` is honoured (the Slice 5A test seam);
     left at the default the lookup goes through ``loop.getaddrinfo`` instead of
     blocking the worker on a synchronous ``socket.getaddrinfo``.
     """
-    reason = check_fetch_url(url, allowed_domains, cfg=cfg)
+    cfg = cfg or default_settings
+    reason, host = _static_fetch_reason(url, allowed_domains, cfg)
     if reason:
         return reason, None
-    if not resolve_ip:
+    if not _must_resolve(cfg, resolve_ip):
         return None, None
 
     from app.services.sources.pinned_transport import resolve_and_validate
 
-    host = (urlsplit(url or "").hostname or "").lower()
     injected = None if resolver is socket.getaddrinfo else resolver
     ip, dns_reason = await resolve_and_validate(host, resolver=injected)
     if dns_reason:
         return f"unsafe resolved ip ({dns_reason})", None
     return None, ip
+
+
+# --------------------------------------------------------------------------- #
+# Guarded client + bounded body (W0: D6, D7, D8, D14)
+# --------------------------------------------------------------------------- #
+
+BODY_DEADLINE_EXCEEDED = "total deadline exceeded"
+BODY_DECOMPRESSION_RATIO = "decompression ratio exceeded"
+BODY_UNSUPPORTED_ENCODING = "unsupported content-encoding"
+BODY_UNDECODABLE = "undecodable content-encoding"
+
+
+def _no_cookie_jar() -> Any:
+    """A cookie jar whose policy accepts and returns nothing (D14).
+
+    httpx keeps one jar per client and one client serves every redirect hop, so a
+    ``Set-Cookie`` from hop 1 would otherwise be replayed to hop 2 — possibly a
+    different host.
+    """
+    from http.cookiejar import CookieJar, DefaultCookiePolicy
+
+    return CookieJar(policy=DefaultCookiePolicy(allowed_domains=[]))
+
+
+async def _strip_credential_headers(request: Any) -> None:
+    """Per-hop request hook: no ``Cookie`` and no ``Authorization``, ever."""
+    for name in ("cookie", "authorization", "proxy-authorization"):
+        try:
+            request.headers.pop(name, None)
+        except Exception:  # noqa: BLE001 - a header object without pop has none to strip
+            continue
+
+
+def guarded_client_kwargs(
+    *,
+    timeout: float,
+    headers: dict[str, str],
+    transport: Any | None = None,
+) -> dict[str, Any]:
+    """The ``httpx.AsyncClient`` kwargs every guarded fetch uses.
+
+    * ``follow_redirects=False`` — every hop is re-checked by the caller;
+    * ``trust_env=False`` — no environment proxy may reroute a fetch (D6);
+    * a no-op cookie jar and a per-hop hook stripping ``Cookie``/``Authorization`` (D14);
+    * ``Accept-Encoding: identity`` — the byte cap then measures what is held (D7).
+    """
+    kwargs: dict[str, Any] = {
+        "follow_redirects": False,
+        "timeout": timeout,
+        "trust_env": False,
+        "cookies": _no_cookie_jar(),
+        "event_hooks": {"request": [_strip_credential_headers], "response": []},
+        "headers": {**headers, "Accept-Encoding": "identity"},
+    }
+    if transport is not None:
+        kwargs["transport"] = transport
+    return kwargs
+
+
+def fetch_total_deadline_seconds(cfg: Settings, *, kind: str = "page") -> float:
+    """The whole-fetch wall-clock budget (D8): DNS + connect + every hop + the body.
+
+    ``kind="page"`` (pages, JSON listings, feeds) reads
+    ``source_fetch_total_deadline_seconds``; ``kind="document"`` reads the longer
+    ``source_document_total_deadline_seconds``, because a 35 MB annual report on a slow
+    issuer host legitimately takes longer than an IR landing page (W0 review M2).
+    """
+    if kind == "document":
+        value = cfg.source_document_total_deadline_seconds
+    else:
+        value = cfg.source_fetch_total_deadline_seconds
+    return max(0.05, float(value))
+
+
+#: Compression codings a response may declare. Only gzip/deflate are decoded here;
+#: the rest are refused (their decoders cannot be bounded the same way).
+_COMPRESSION_TOKENS = frozenset(
+    {"gzip", "x-gzip", "deflate", "br", "zstd", "compress", "x-compress"}
+)
+_DECODABLE_ENCODINGS = frozenset({"gzip", "x-gzip", "deflate"})
+
+
+def content_encodings(header: Any) -> list[str]:
+    """The COMPRESSION layers a ``Content-Encoding`` header declares, in order.
+
+    ``identity``, ``none``, empty tokens and unknown non-compression tokens are
+    dropped — they change nothing about the bytes (W0 review M1).
+    """
+    tokens = [t.strip().lower() for t in str(header or "").split(",")]
+    return [t for t in tokens if t in _COMPRESSION_TOKENS]
+
+
+@dataclass
+class BoundedBody:
+    """What :func:`read_bounded_body` read. ``error`` is a code, never provider text."""
+
+    content: bytes = b""
+    truncated: bool = False
+    error: str | None = None
+
+
+async def read_bounded_body(
+    resp: Any,
+    *,
+    max_bytes: int,
+    deadline: float | None = None,
+    max_ratio: int = MAX_DECOMPRESSION_RATIO,
+) -> BoundedBody:
+    """Read at most ``max_bytes`` DECODED bytes from a streaming response.
+
+    * The cap applies to decoded bytes and never overshoots: the last chunk is sliced
+      to what remains (D7).
+    * An encoded body (``gzip``/``deflate``, sent despite ``Accept-Encoding:
+      identity``) is decoded incrementally from the raw stream with a bounded output
+      per step, so one small compressed chunk cannot inflate past the cap in memory;
+      past ``_RATIO_FLOOR_BYTES`` the decoded:received ratio is capped at
+      ``max_ratio`` and a body over it is refused as a decompression bomb.
+    * ``Content-Encoding`` is a comma-separated list (W0 review M1): ``identity``,
+      ``none``, empty and unknown non-compression tokens are ignored. Exactly one
+      gzip/deflate layer is decoded; ``br``, ``zstd``, ``compress`` or more than one
+      compression layer is refused rather than handed to a decoder we cannot bound.
+    * A multi-member gzip body (concatenated members) is decoded member by member.
+    * ``deadline`` (a ``loop.time()`` value) is checked on every chunk (D8).
+    """
+    loop = asyncio.get_running_loop()
+    headers = getattr(resp, "headers", None) or {}
+    compressions = content_encodings(headers.get("content-encoding"))
+    chunks: list[bytes] = []
+    total = 0
+
+    def _late() -> bool:
+        return deadline is not None and loop.time() > deadline
+
+    if not compressions:
+        async for chunk in resp.aiter_bytes():
+            if _late():
+                return BoundedBody(b"".join(chunks), error=BODY_DEADLINE_EXCEEDED)
+            remaining = max_bytes - total
+            if len(chunk) >= remaining:
+                chunks.append(chunk[:remaining])
+                return BoundedBody(b"".join(chunks), truncated=True)
+            chunks.append(chunk)
+            total += len(chunk)
+        return BoundedBody(b"".join(chunks))
+
+    encoding = compressions[0]
+    if (
+        len(compressions) > 1
+        or encoding not in _DECODABLE_ENCODINGS
+        or not hasattr(resp, "aiter_raw")
+    ):
+        return BoundedBody(error=BODY_UNSUPPORTED_ENCODING)
+
+    wbits = 16 + zlib.MAX_WBITS if encoding != "deflate" else zlib.MAX_WBITS
+    decoder = zlib.decompressobj(wbits)
+    tried_raw_deflate = False
+    members_done = 0
+    received = 0
+    async for raw in resp.aiter_raw():
+        if _late():
+            return BoundedBody(b"".join(chunks), error=BODY_DEADLINE_EXCEEDED)
+        received += len(raw)
+        buf = raw
+        while buf:
+            if decoder.eof:
+                if encoding == "deflate":
+                    break  # trailing bytes after a complete deflate stream
+                decoder = zlib.decompressobj(wbits)  # the next gzip member starts here
+            ratio_ceiling = max(_RATIO_FLOOR_BYTES, received * max_ratio)
+            limit = min(max_bytes, ratio_ceiling)
+            allowed = limit - total
+            if allowed <= 0:
+                if ratio_ceiling < max_bytes:
+                    return BoundedBody(error=BODY_DECOMPRESSION_RATIO)
+                return BoundedBody(b"".join(chunks), truncated=True)
+            try:
+                out = decoder.decompress(buf, allowed + 1)
+            except zlib.error:
+                if encoding == "deflate" and total == 0 and not tried_raw_deflate:
+                    # Many servers send raw DEFLATE without the zlib wrapper.
+                    decoder = zlib.decompressobj(-zlib.MAX_WBITS)
+                    tried_raw_deflate = True
+                    continue
+                if members_done:
+                    # Padding after a complete member: the body itself is complete.
+                    return BoundedBody(b"".join(chunks))
+                return BoundedBody(b"".join(chunks), error=BODY_UNDECODABLE)
+            if len(out) > allowed:
+                if ratio_ceiling < max_bytes:
+                    return BoundedBody(error=BODY_DECOMPRESSION_RATIO)
+                chunks.append(out[:allowed])
+                return BoundedBody(b"".join(chunks), truncated=True)
+            chunks.append(out)
+            total += len(out)
+            if decoder.eof:
+                members_done += 1
+                buf = decoder.unused_data
+            else:
+                buf = decoder.unconsumed_tail
+    return BoundedBody(b"".join(chunks))
 
 
 def pinned_transport_for(
@@ -493,7 +1106,12 @@ def _collect_links(
             continue
         if not _link_matches(text, href, keywords):
             continue
-        absolute = strip_url_secrets(urljoin(base_url, href)) or ""
+        # W0 / D12: secrets are stripped from the STORED form only. The URL that
+        # is later requested is the link as published (whitespace percent-encoded,
+        # B1) — a stripped URL is a different resource (a signed CDN link without its
+        # signature, say). The stored form is canonical: no userinfo, no fragment.
+        raw = normalize_link_url(urljoin(base_url, href)) or ""
+        absolute = canonicalize_source_url(raw) or ""
         if not absolute.startswith("https://"):
             continue
         host = host_of(absolute)
@@ -505,7 +1123,14 @@ def _collect_links(
             continue
         seen.add(absolute)
         is_doc = absolute.lower().split("?")[0].endswith(_DOC_EXTENSIONS)
-        out.append(SafeLink(url=absolute, text=text[:200], is_document=is_doc))
+        out.append(
+            SafeLink(
+                url=absolute,
+                text=text[:200],
+                is_document=is_doc,
+                fetch_url=raw if raw != absolute else "",
+            )
+        )
         if len(out) >= max_links:
             break
     return out
@@ -528,16 +1153,29 @@ async def safe_fetch_page(
 ) -> SafeFetchResult:
     """Fetch one allowlisted HTTPS page (bounded, guarded, never raising).
 
-    ``resolve_ip`` is OPT-IN (default OFF): when True the target host's resolved
-    IPs are checked before the initial fetch AND after each redirect hop. Left OFF
-    every existing caller is byte-for-byte unchanged.
+    ``resolve_ip`` is OPT-IN (default OFF) for allowlisted fetches: when True the
+    target host's resolved IPs are checked before the initial fetch AND after each
+    redirect hop, and the connection is pinned. A fetch the allowlist does not bound
+    always resolves (W0 / D3).
+
+    W0 hardening: no environment proxy, no cookie carried between hops, identity
+    encoding with a decoded-bytes + ratio cap, and a total wall-clock deadline
+    (``source_fetch_total_deadline_seconds``) across every hop and the body.
     """
     cfg = cfg or default_settings
     result = SafeFetchResult(requested_url=url)
+    budget = fetch_total_deadline_seconds(cfg, kind="page")
+    # ONE absolute deadline for the whole fetch, the first DNS lookup included.
+    deadline = asyncio.get_running_loop().time() + budget
 
-    reason, pinned_ip = await async_check_fetch_url(
-        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
-    )
+    try:
+        async with asyncio.timeout_at(deadline):
+            reason, pinned_ip = await async_check_fetch_url(
+                url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+            )
+    except TimeoutError:
+        result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
+        return result
     if reason:
         result.blocked = True
         result.error = reason
@@ -555,66 +1193,69 @@ async def safe_fetch_page(
     # When an address was validated, connect ONLY to it: the name is never
     # resolved a second time, so it cannot rebind between check and connect.
     transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
-    client_kwargs: dict[str, Any] = {
-        "follow_redirects": False,
-        "timeout": timeout,
-        "headers": {"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"},
-    }
-    if transport is not None:
-        client_kwargs["transport"] = transport
+    client_kwargs = guarded_client_kwargs(
+        timeout=timeout,
+        headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"},
+        transport=transport,
+    )
     try:
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            for _hop in range(4):  # bounded redirect chain
-                async with client.stream("GET", current) as resp:
-                    result.status_code = resp.status_code
-                    result.final_url = current
-                    if resp.is_redirect:
-                        location = resp.headers.get("location", "")
-                        nxt = urljoin(current, location)
-                        block, next_ip = await async_check_fetch_url(
-                            nxt,
-                            allowed_domains,
-                            cfg=cfg,
-                            resolve_ip=resolve_ip,
-                            resolver=resolver,
-                        )
-                        if block:
-                            result.blocked = True
-                            result.error = f"redirect blocked ({block})"
+        async with asyncio.timeout_at(deadline):
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                for _hop in range(4):  # bounded redirect chain
+                    async with client.stream("GET", current) as resp:
+                        result.status_code = resp.status_code
+                        result.final_url = current
+                        if resp.is_redirect:
+                            location = resp.headers.get("location", "")
+                            # B1: a raw space in Location is encoded, not refused.
+                            nxt = normalize_link_url(urljoin(current, location)) or ""
+                            block, next_ip = await async_check_fetch_url(
+                                nxt,
+                                allowed_domains,
+                                cfg=cfg,
+                                resolve_ip=resolve_ip,
+                                resolver=resolver,
+                            )
+                            if block:
+                                result.blocked = True
+                                result.error = f"redirect blocked ({block})"
+                                return result
+                            # Re-pin: the new hop gets its own validated address;
+                            # the previous hop's pin is never reused for a new host.
+                            if transport is not None and next_ip:
+                                transport.pin(host_of(nxt), next_ip)
+                            current = nxt
+                            continue
+                        if resp.status_code >= 400:
+                            result.error = f"http {resp.status_code}"
                             return result
-                        # Re-pin: the new hop gets its own validated address; the
-                        # previous hop's pin is never reused for a new host.
-                        if transport is not None and next_ip:
-                            transport.pin(host_of(nxt), next_ip)
-                        current = nxt
-                        continue
-                    if resp.status_code >= 400:
-                        result.error = f"http {resp.status_code}"
+                        read = await read_bounded_body(
+                            resp, max_bytes=max_bytes, deadline=deadline
+                        )
+                        if read.error:
+                            result.blocked = read.error != BODY_DEADLINE_EXCEEDED
+                            result.error = f"fetch failed: {read.error}"
+                            return result
+                        body = read.content.decode("utf-8", "replace")
+                        result.body_html = body
+                        parser = _parse_html(body)
+                        result.title = parser.title
+                        result.meta_description = parser.meta_description
+                        result.links = extract_links(
+                            body,
+                            base_url=current,
+                            allowed_domains=allowed_domains,
+                            keywords=keywords,
+                            max_links=cfg.source_connector_max_links_per_page,
+                            fallback_keywords=fallback_keywords,
+                        )
                         return result
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in resp.aiter_bytes():
-                        chunks.append(chunk)
-                        total += len(chunk)
-                        if total >= max_bytes:
-                            break
-                    body = b"".join(chunks)[:max_bytes].decode("utf-8", "replace")
-                    result.body_html = body
-                    parser = _parse_html(body)
-                    result.title = parser.title
-                    result.meta_description = parser.meta_description
-                    result.links = extract_links(
-                        body,
-                        base_url=current,
-                        allowed_domains=allowed_domains,
-                        keywords=keywords,
-                        max_links=cfg.source_connector_max_links_per_page,
-                        fallback_keywords=fallback_keywords,
-                    )
-                    return result
-            result.blocked = True
-            result.error = "too many redirects"
-            return result
+                result.blocked = True
+                result.error = "too many redirects"
+                return result
+    except TimeoutError:
+        result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
+        return result
     except Exception as exc:  # noqa: BLE001 - fetch must never crash a run
         result.error = f"fetch failed: {type(exc).__name__}"
         return result
@@ -624,7 +1265,23 @@ __all__ = [
     "SafeLink",
     "SafeFetchResult",
     "Resolver",
+    "BoundedBody",
+    "MAX_DECOMPRESSION_RATIO",
+    "MAX_URL_LENGTH",
+    "MIN_SAFE_PYTHON",
+    "USER_AGENT_PRODUCT_TOKEN",
+    "check_url_shape",
+    "content_encodings",
+    "fetch_total_deadline_seconds",
+    "guarded_client_kwargs",
     "is_safe_public_host",
+    "log_python_runtime_check",
+    "mixed_script_host",
+    "normalize_host",
+    "normalize_link_url",
+    "open_web_fetch_refusal",
+    "python_runtime_is_safe",
+    "read_bounded_body",
     "assert_resolved_ip_public",
     "looks_like_pdf",
     "check_fetch_url",

@@ -294,6 +294,13 @@ _CREDENTIAL_MARKERS: tuple[str, ...] = (
     "access_token",
     "refresh_token",
     "aws_secret",
+    # Open-web W1 review (S2): EODHD's query parameter, bare token/signature params,
+    # the API-key header name, and Tavily's key prefix.
+    "api_token",
+    "token=",
+    "x-api-key",
+    "sig=",
+    "tvly-",
 )
 
 
@@ -344,15 +351,18 @@ class ProviderNotPermittedError(PermissionError):
 
 
 def default_governance(cfg: "Settings | None" = None) -> ProviderGovernance:
-    """The governance matrix as it stands while the open decisions are open.
+    """The governance matrix, with the decision each row rests on.
 
-    Every external provider is **public-only**, on the authority of the open decisions
-    themselves. Azure OpenAI is the incumbent and is the one provider already carrying
-    the platform's own content under the existing deployment, so it is recorded as
+    Azure OpenAI is the incumbent and is the one provider already carrying the
+    platform's own content under the existing deployment, so it is recorded as
     non-external — which is a statement about where it runs, not a licence to widen it.
+    DeepSeek is external and is **evaluated for every class, private ones included**
+    (ADR-049): that grants nothing on its own, because a private document's own rights
+    are the second gate and default to closed. Every DEFERRED provider (OpenAI, Exa,
+    Perplexity, Gemini, Claude) is public-only.
 
-    Nothing here is a decision. Each entry cites the decision that constrains it, and a
-    test asserts no external provider has been granted a private class.
+    Nothing here is a decision. Each entry cites the decision that constrains it, and
+    tests pin both the DeepSeek row and that the deferred rows stay public-only.
     """
     governance = ProviderGovernance()
     governance.register(
@@ -408,6 +418,36 @@ def default_governance(cfg: "Settings | None" = None) -> ProviderGovernance:
                 "may be sent is decided by that document's own rights, which default to "
                 "closed and require an auditable rationale to widen."
             ),
+        )
+    )
+    # Open-web W1: the dedicated web search provider (spec §8, §24). PUBLIC ONLY — a
+    # search provider receives sanitised public-context queries and nothing else (rule
+    # G1), and this row is what the search adapter's runtime check reads (rule G4).
+    governance.register(
+        ProviderPolicy(
+            provider_id="tavily",
+            allowed_access_classes=PUBLIC_ONLY,
+            authority=(
+                "Open-web research spec §8/§24 (proposed ADR-057, decision U1): the "
+                "web search provider receives public-context queries only (rule G1)"
+            ),
+            is_external=True,
+            note=(
+                "Dark until V3_WEB_SEARCH_ENABLED and a key are both set. Its terms let "
+                "it train on inputs, which is acceptable only because queries are "
+                "public-context by construction."
+            ),
+        )
+    )
+    # The web search test double. In-process, no network; registered so the fake runs
+    # through the same governance check as a real adapter instead of bypassing it.
+    governance.register(
+        ProviderPolicy(
+            provider_id="fake_web_search",
+            allowed_access_classes=PUBLIC_ONLY,
+            authority="Open-web research spec §8.2: the fake is the only provider CI uses",
+            is_external=False,
+            note="Serves recorded fixtures; opens no socket.",
         )
     )
     # Deferred and not activated, each for a recorded reason. Kept in the matrix so the

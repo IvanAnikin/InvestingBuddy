@@ -24,7 +24,13 @@ Safety properties (why this is not an SSRF surface):
   * **Bounded.** Timeout + max-bytes are config-capped; a document larger than
     the cap is truncated, never fully buffered.
   * **No cookies / auth headers / tokenized URLs persisted.** Nothing here sends
-    credentials, and the stored ``final_url`` is secret-stripped.
+    credentials: the client has a no-op cookie jar and every hop has ``Cookie`` and
+    ``Authorization`` stripped (W0 / D14). The stored ``final_url`` is
+    secret-stripped; the URL actually requested never is (D12).
+  * **No environment proxy, bounded decoding, total deadline** (W0 / D6-D8):
+    ``trust_env=False``; ``Accept-Encoding: identity`` with a decoded-bytes and
+    ratio cap for a server that compresses anyway; and one wall-clock budget
+    (``source_document_total_deadline_seconds``) across DNS, every hop and the body.
   * **Never raises.** Every failure degrades to a ``DocumentFetchResult`` with
     ``error`` / ``blocked`` set and an honest ``SourceGap``.
   * **Secret-free.** No prompts, bodies, or credentials are ever logged.
@@ -32,6 +38,7 @@ Safety properties (why this is not an SSRF surface):
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,6 +50,7 @@ from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.ingestion_status import (
     FAILURE_BLOCKED_REDIRECT,
     FAILURE_CLIENT_UNAVAILABLE,
+    FAILURE_FETCH_TIMEOUT,
     FAILURE_HTTP_CLIENT_ERROR,
     FAILURE_HTTP_SERVER_ERROR,
     FAILURE_REDIRECT_LIMIT,
@@ -55,10 +63,15 @@ from app.services.sources.ingestion_status import (
 from app.services.sources.redaction import strip_url_secrets
 from app.services.sources.safe_web_fetcher import (
     _USER_AGENT,
+    BODY_DEADLINE_EXCEEDED,
     Resolver,
     async_check_fetch_url,
+    fetch_total_deadline_seconds,
+    guarded_client_kwargs,
     host_of,
+    normalize_link_url,
     pinned_transport_for,
+    read_bounded_body,
 )
 
 # Document type buckets the extractor understands, keyed by content-type prefix.
@@ -141,6 +154,17 @@ class DocumentFetchResult:
         )
 
 
+def _deadline_exceeded(result: DocumentFetchResult) -> DocumentFetchResult:
+    """The total-deadline outcome (D8): coded ``fetch_timeout``, never ``unknown``."""
+    result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
+    result.failure_code = FAILURE_FETCH_TIMEOUT
+    result._gap(
+        "Annual-report document exceeded the total fetch deadline; document text is "
+        "not extracted."
+    )
+    return result
+
+
 async def safe_fetch_document(
     url: str,
     *,
@@ -149,6 +173,8 @@ async def safe_fetch_document(
     resolve_ip: bool = False,
     resolver: Resolver = socket.getaddrinfo,
     extra_text_content_types: tuple[str, ...] = (),
+    max_bytes: int | None = None,
+    total_deadline_seconds: float | None = None,
 ) -> DocumentFetchResult:
     """Fetch one allowlisted HTTPS document (bounded, guarded, never raising).
 
@@ -156,6 +182,11 @@ async def safe_fetch_document(
     one call only — a statistical publisher's CSV (``application/csv``, ``text/csv``) —
     classified as ``text``. The global allowlist is untouched, so no existing caller can
     start receiving a type it never asked for.
+
+    ``max_bytes`` narrows the byte cap for this one call (a press-release feed needs
+    far less than an annual report); it can never widen past the configured cap.
+    ``total_deadline_seconds`` likewise only NARROWS the document deadline
+    (``source_document_total_deadline_seconds``) for this call.
 
     Returns a ``DocumentFetchResult``. On any failure (blocked host, off-domain
     redirect, disallowed content type, timeout, http error) it degrades to a
@@ -169,10 +200,19 @@ async def safe_fetch_document(
     """
     cfg = cfg or default_settings
     result = DocumentFetchResult(requested_url=strip_url_secrets(url) or url)
+    budget = fetch_total_deadline_seconds(cfg, kind="document")
+    if total_deadline_seconds is not None:
+        budget = max(0.05, min(budget, float(total_deadline_seconds)))
+    # ONE absolute deadline for the whole fetch, the first DNS lookup included.
+    deadline = asyncio.get_running_loop().time() + budget
 
-    reason, pinned_ip = await async_check_fetch_url(
-        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
-    )
+    try:
+        async with asyncio.timeout_at(deadline):
+            reason, pinned_ip = await async_check_fetch_url(
+                url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+            )
+    except TimeoutError:
+        return _deadline_exceeded(result)
     if reason:
         result.blocked = True
         result.error = reason
@@ -192,33 +232,35 @@ async def safe_fetch_document(
         return result
 
     allowed_types = _parse_allowed_content_types(cfg)
-    max_bytes = max(1, cfg.source_document_extraction_max_bytes)
+    cap = max(1, cfg.source_document_extraction_max_bytes)
+    if max_bytes is not None:
+        cap = max(1, min(cap, int(max_bytes)))
     timeout = max(1, cfg.source_document_extraction_timeout_seconds)
     current = url
     # When an address was validated, connect ONLY to it (Slice 5B.1 pinning).
     transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
     result.pinned = transport is not None
-    client_kwargs: dict[str, Any] = {
-        "follow_redirects": False,
-        "timeout": timeout,
-        "cookies": None,
-        "headers": {
+    client_kwargs = guarded_client_kwargs(
+        timeout=timeout,
+        headers={
             "User-Agent": _USER_AGENT,
             "Accept": "application/pdf,text/html,text/plain,*/*",
         },
-    }
-    if transport is not None:
-        client_kwargs["transport"] = transport
+        transport=transport,
+    )
     try:
         # No cookies, no auth, no Referer — a plain, credential-free document GET.
-        async with httpx.AsyncClient(**client_kwargs) as client:
+        async with asyncio.timeout_at(deadline), httpx.AsyncClient(
+            **client_kwargs
+        ) as client:
             for _hop in range(4):  # bounded redirect chain
                 async with client.stream("GET", current) as resp:
                     result.status_code = resp.status_code
                     result.final_url = strip_url_secrets(current)
                     if resp.is_redirect:
                         location = resp.headers.get("location", "")
-                        nxt = urljoin(current, location)
+                        # B1: a raw space in Location is encoded, not refused.
+                        nxt = normalize_link_url(urljoin(current, location)) or ""
                         block, next_ip = await async_check_fetch_url(
                             nxt,
                             allowed_domains,
@@ -278,15 +320,21 @@ async def safe_fetch_document(
                         return result
                     result.document_type = doc_type
 
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in resp.aiter_bytes():
-                        chunks.append(chunk)
-                        total += len(chunk)
-                        if total >= max_bytes:
-                            result.truncated = True
-                            break
-                    result.content = b"".join(chunks)[:max_bytes]
+                    read = await read_bounded_body(resp, max_bytes=cap, deadline=deadline)
+                    if read.error:
+                        result.error = f"fetch failed: {read.error}"
+                        if read.error == BODY_DEADLINE_EXCEEDED:
+                            result.failure_code = FAILURE_FETCH_TIMEOUT
+                        else:
+                            result.blocked = True
+                            result.failure_code = FAILURE_RESPONSE_TOO_LARGE
+                        result._gap(
+                            "Annual-report document could not be safely read "
+                            f"({read.error}); document text is not extracted."
+                        )
+                        return result
+                    result.truncated = read.truncated
+                    result.content = read.content
                     if result.truncated:
                         result.warnings.append(
                             "Document exceeded the max-bytes cap and was truncated; "
@@ -298,6 +346,8 @@ async def safe_fetch_document(
             result.failure_code = FAILURE_REDIRECT_LIMIT
             result._gap("Annual-report document exceeded the redirect limit; not fetched.")
             return result
+    except TimeoutError:
+        return _deadline_exceeded(result)
     except Exception as exc:  # noqa: BLE001 - fetch must never crash a run
         result.error = f"fetch failed: {type(exc).__name__}"
         result.failure_code = failure_code_for_exception(exc)
@@ -341,9 +391,18 @@ async def safe_post_json(
 
     cfg = cfg or default_settings
     result = DocumentFetchResult(requested_url=strip_url_secrets(url) or url)
-    reason, pinned_ip = await async_check_fetch_url(
-        url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
-    )
+    # A listing, not a document: the page budget, one absolute deadline, DNS included.
+    deadline = asyncio.get_running_loop().time() + fetch_total_deadline_seconds(cfg)
+    try:
+        async with asyncio.timeout_at(deadline):
+            reason, pinned_ip = await async_check_fetch_url(
+                url, allowed_domains, cfg=cfg, resolve_ip=resolve_ip, resolver=resolver
+            )
+    except TimeoutError:
+        result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
+        result.failure_code = FAILURE_FETCH_TIMEOUT
+        result._gap("Search API exceeded the total fetch deadline.")
+        return result
     if reason:
         result.blocked = True
         result.error = reason
@@ -360,25 +419,22 @@ async def safe_post_json(
     timeout = max(1, cfg.source_document_extraction_timeout_seconds)
     transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
     result.pinned = transport is not None
-    client_kwargs: dict[str, Any] = {
-        "follow_redirects": False,
-        "timeout": timeout,
-        "cookies": None,
-        # No environment proxy: a proxy would bypass the pinned, validated address.
-        "trust_env": False,
-        "headers": {
+    # No environment proxy (a proxy would bypass the pinned, validated address), no
+    # cookie jar, no Authorization, and uncompressed only, so the byte cap measures
+    # what is actually held — see ``guarded_client_kwargs``.
+    client_kwargs = guarded_client_kwargs(
+        timeout=timeout,
+        headers={
             "User-Agent": _USER_AGENT,
             "Accept": "application/json",
             "Content-Type": "application/json",
-            # Uncompressed only, so the byte cap measures what is actually held — a
-            # small compressed chunk cannot expand past it before it is checked.
-            "Accept-Encoding": "identity",
         },
-    }
-    if transport is not None:
-        client_kwargs["transport"] = transport
+        transport=transport,
+    )
     try:
-        async with httpx.AsyncClient(**client_kwargs) as client:
+        async with asyncio.timeout_at(deadline), httpx.AsyncClient(
+            **client_kwargs
+        ) as client:
             async with client.stream(
                 "POST", url, content=_json.dumps(payload).encode("utf-8")
             ) as resp:
@@ -409,22 +465,32 @@ async def safe_post_json(
                     result._gap("Search API answered with something other than JSON.")
                     return result
                 result.document_type = "text"
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.aiter_bytes():
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > max_bytes:
-                        # A truncated JSON listing is unparseable and must not be read
-                        # as a shorter list — refuse it outright. Not "truncated": that
-                        # word means partial content IS present, and here none is.
-                        result.blocked = True
-                        result.error = "response exceeded the byte cap"
-                        result.failure_code = FAILURE_RESPONSE_TOO_LARGE
-                        result._gap("Search API response exceeded the byte cap; refused.")
-                        return result
-                result.content = b"".join(chunks)
+                # One byte past the cap is read so "exactly at the cap" and "over it"
+                # stay distinguishable.
+                read = await read_bounded_body(
+                    resp, max_bytes=max_bytes + 1, deadline=deadline
+                )
+                if read.error == BODY_DEADLINE_EXCEEDED:
+                    result.error = f"fetch failed: {read.error}"
+                    result.failure_code = FAILURE_FETCH_TIMEOUT
+                    result._gap("Search API exceeded the total fetch deadline.")
+                    return result
+                if read.error or read.truncated or len(read.content) > max_bytes:
+                    # A truncated JSON listing is unparseable and must not be read
+                    # as a shorter list — refuse it outright. Not "truncated": that
+                    # word means partial content IS present, and here none is.
+                    result.blocked = True
+                    result.error = "response exceeded the byte cap"
+                    result.failure_code = FAILURE_RESPONSE_TOO_LARGE
+                    result._gap("Search API response exceeded the byte cap; refused.")
+                    return result
+                result.content = read.content
                 return result
+    except TimeoutError:
+        result.error = f"fetch failed: {BODY_DEADLINE_EXCEEDED}"
+        result.failure_code = FAILURE_FETCH_TIMEOUT
+        result._gap("Search API exceeded the total fetch deadline.")
+        return result
     except Exception as exc:  # noqa: BLE001 - a query must never crash a run
         result.error = f"fetch failed: {type(exc).__name__}"
         result.failure_code = failure_code_for_exception(exc)
