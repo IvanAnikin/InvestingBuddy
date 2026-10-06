@@ -102,6 +102,12 @@ test.describe("toSafeInternalPath", () => {
     // /research sign-in silently landed on /admin.
     expect(toSafeInternalPath("/research")).toBe("/research");
     expect(toSafeInternalPath("/research/discover")).toBe("/research/discover");
+    // A discovery run's own address — what "Copy link" hands out.
+    expect(
+      toSafeInternalPath(
+        "/research/discover/77777777-0000-0000-0000-0000000000a1",
+      ),
+    ).toBe("/research/discover/77777777-0000-0000-0000-0000000000a1");
     expect(toSafeInternalPath("/research/company/PNDORA")).toBe(
       "/research/company/PNDORA",
     );
