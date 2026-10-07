@@ -1863,3 +1863,93 @@ class TestVerificationFixes:
         task.cancel()
         gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
         assert gaps and max(gaps) < 0.3, f"the loop stalled for {max(gaps):.2f}s"
+
+
+class TestCorroborationHasItsOwnAllowance:
+    """First live critical-minerals run: the main plan used 20 of 24 queries and 36 of 40
+    fetches, so only 4 of 6 verification queries could be issued and 4 fetches remained for
+    12 wanted pages — ``corroborated: 0``. Verification now has a bounded allowance of its
+    own, on top of the plan, and an operator's cap stays hard."""
+
+    @staticmethod
+    def _spent_budget():  # noqa: ANN205
+        from app.services.web_research.budget import PROFILES, WebResearchBudget
+
+        limits = PROFILES["discovery_standard"]
+        return WebResearchBudget(
+            limits=limits, daily_cap=300, queries_reserved=limits.max_queries - 4,
+            fetches=limits.max_fetches - 4,
+        )
+
+    def test_each_recalled_lead_gets_one_query_and_its_fetches(self) -> None:
+        from app.services.web_research import discovery_stage as ds
+
+        budget = self._spent_budget()
+        before_q, before_f = budget.limits.max_queries, budget.limits.max_fetches
+        ds._grant_corroboration_allowance(budget, 6, cfg())
+        assert budget.limits.max_queries == before_q + 6
+        assert budget.limits.max_fetches == before_f + 6 * ds.RESULTS_FETCHED_PER_RECALL
+        # Six verification queries and their pages now fit where only 4 / 4 did.
+        assert budget.limits.max_queries - budget.queries_reserved >= 6
+        assert budget.limits.max_fetches - budget.fetches >= 6 * ds.RESULTS_FETCHED_PER_RECALL
+
+    def test_no_leads_means_no_allowance(self) -> None:
+        from app.services.web_research import discovery_stage as ds
+
+        budget = self._spent_budget()
+        before = budget.limits
+        ds._grant_corroboration_allowance(budget, 0, cfg())
+        assert budget.limits == before
+
+    def test_an_operator_cap_is_never_exceeded(self) -> None:
+        from app.services.web_research import discovery_stage as ds
+        from app.services.web_research.budget import limits_for
+
+        config = cfg(v3_run_max_web_searches=5)
+        budget = self._spent_budget()
+        budget.limits = limits_for("discovery_standard", config)
+        assert budget.limits.max_queries == 5
+        ds._grant_corroboration_allowance(budget, 6, config)
+        assert budget.limits.max_queries == 5, "the operator's ceiling is hard"
+
+    def test_the_allowance_is_bounded_by_the_leads_checked(self) -> None:
+        from app.services.web_research import discovery_stage as ds
+
+        budget = self._spent_budget()
+        before = budget.limits.max_queries
+        ds._grant_corroboration_allowance(budget, ds.MAX_RECALL_VERIFICATIONS, cfg())
+        assert budget.limits.max_queries - before == ds.MAX_RECALL_VERIFICATIONS
+
+
+class TestMiningTradePressIsClassified:
+    """The first live critical-minerals run fetched mining trade pages that were all
+    ``unknown_web``, so rule A3 could never pass for a mining company. Established titles
+    are classified; promotion-heavy junior-stock sites and lookalike hosts are not."""
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "news.metal.com", "panorama-minero.com", "rareearthexchanges.com",
+            "mining-technology.com", "miningweekly.com", "mineweb.com", "miningmx.com",
+            "australianmining.com.au", "www.mining-technology.com",
+        ],
+    )
+    def test_an_established_mining_trade_title_is_a_trade_publication(self, host: str) -> None:
+        from app.services.web_research.classify import SC_TRADE_PUBLICATION, classify_source
+
+        assert classify_source(f"https://{host}/news/some-article").source_class == (
+            SC_TRADE_PUBLICATION
+        )
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "investingnews.com", "smallcaps.com.au", "greenstocksresearch.com",
+            # lookalikes: a suffix or a prefix is not the title
+            "miningweekly.com.evil.example", "evil-miningweekly.com", "news.metal.com.cn.example",
+        ],
+    )
+    def test_a_promotion_site_or_a_lookalike_is_not(self, host: str) -> None:
+        from app.services.web_research.classify import SC_TRADE_PUBLICATION, classify_source
+
+        assert classify_source(f"https://{host}/a").source_class != SC_TRADE_PUBLICATION

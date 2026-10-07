@@ -179,3 +179,26 @@ Remaining generic defects found by reading the reconciler's behaviour on the rea
    finding states "project life ca.16 years, ca.1,850t/yr separated magnet REO". The finding has no
    planning word, so it cannot be told from an actual rate; closing it would let an actual or a peer's
    rate close a capacity gap (the review of #269 showed that is the worse error).
+
+### Discovery — critical minerals, run 1 (`0bdd19bb`, durable job `6eec7042`) — NOT ACCEPTED (criterion A)
+
+Real web path proven: 24 Tavily queries executed (HTTP 200, request ids, 24.0 credits), 184 results,
+26 pages fetched / 24 ingested, 16 company mentions → 15 leads; durable job completed
+(`completed_with_warnings`, attempt 1). *An earlier run (`77adbbfd`) was orphaned because an app-setting
+restart landed after it was created; the in-process path cannot resume, which is what the durable job
+fixes — a sequencing mistake in the rollout, not a product defect.*
+
+**Fails A:** the 3 returned companies (PRE, RBW, ERA) all came from the curated registry;
+`web_admitted: 0`, `recall_verification: attempted 6, corroborated 0`. Measured causes:
+1. **Corroboration was starved.** It runs last on the run's own ceilings: the main plan used 20 of 24
+   queries and 36 of 40 fetches, so only 4 of 6 verification queries could be issued and 4 fetches
+   remained for ~12 wanted pages. Fix: a bounded allowance of its own (+1 query and +3 fetches per
+   recalled lead; an operator's `V3_RUN_MAX_WEB_SEARCHES` stays hard).
+2. **Rule A3 could never pass for a mining company.** A3 needs a passage from an acceptable source
+   class; every mining trade page fetched (news.metal.com, panorama-minero.com, rareearthexchanges.com …)
+   classified `unknown_web`. Fix: established mining trade titles added to the curated list
+   (`CURATED_LISTS_VERSION 2026-10-07.1`); promotion-heavy junior-stock sites and lookalike hosts are not.
+
+Evidence the gates work as designed: search found **Anson Resources (ASX: ASN)** via a neighbouring
+company's project page; A1 (search provenance), A2 (ASX directory listing) and A4 passed, A3 correctly
+failed (a competitor's own website is not independent evidence about Anson).
