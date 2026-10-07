@@ -540,14 +540,25 @@
             },
             "A3": {
               "passed": true,
-              "passages": 2
+              "passages": 2,
+              "status": "independent"
             },
             "A4": {
               "passed": true,
               "eligibility": "eligible"
             }
           },
-          "eligibility": "eligible"
+          "eligibility": "eligible",
+          "theme_evidence": {
+            "status": "independent",
+            "corroboration": "independently_corroborated",
+            "issuer_passages": 0,
+            "independent_passages": 1,
+            "independent_domains": [
+              "mining.com"
+            ]
+          },
+          "corroboration": "independently_corroborated"
         }
       },
       "admitted_recall": {
@@ -614,14 +625,25 @@
             },
             "A3": {
               "passed": true,
-              "passages": 1
+              "passages": 1,
+              "status": "independent"
             },
             "A4": {
               "passed": true,
               "eligibility": "eligible"
             }
           },
-          "eligibility": "eligible"
+          "eligibility": "eligible",
+          "theme_evidence": {
+            "status": "independent",
+            "corroboration": "independently_corroborated",
+            "issuer_passages": 0,
+            "independent_passages": 1,
+            "independent_domains": [
+              "mining.com"
+            ]
+          },
+          "corroboration": "independently_corroborated"
         }
       },
       "demoted_recall": {
