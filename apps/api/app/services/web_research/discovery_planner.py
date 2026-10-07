@@ -48,6 +48,7 @@ from typing import Any
 
 from app.services.providers.contracts import QueryFamily, SearchRequest
 from app.services.web_research import locales as loc
+from app.services.web_research.classify import trade_publication_hosts
 from app.services.web_research.planner import (
     DAYS_3Y,
     DAYS_5Y,
@@ -395,6 +396,8 @@ class DTemplate:
     terms: tuple[str, ...] = ()
     #: Theme keys this template is meaningless for (a "luxury goods shortage" query).
     skip_keys: tuple[str, ...] = ()
+    #: Restrict the provider to these hosts (the trade-press sweep).
+    include_domains: tuple[str, ...] = ()
 
 
 _SMALL = ("micro_cap", "small_cap", "mid_cap")
@@ -402,6 +405,18 @@ _NO_SHORTAGE = ("luxury_goods", "banks_fintech", "biotech_pharma")
 
 TEMPLATES: tuple[DTemplate, ...] = (
     # -- ENTITY ------------------------------------------------------------------
+    # The trade-press sweep. On the first live critical-minerals run the generic entity
+    # queries returned SEO "top miners" lists that rule A3 rightly refuses (one promotional
+    # page named six real ASX companies and admitted none). Restricting ONE entity query to the
+    # curated trade-press hosts asks for the kind of page A3 can accept.
+    DTemplate(
+        QueryFamily.ENTITY,
+        "entity_trade_press",
+        "{noun} listed companies {region}",
+        1,
+        terms=("listed", "companies"),
+        include_domains=trade_publication_hosts(),
+    ),
     DTemplate(
         QueryFamily.ENTITY,
         "entity_listed",
@@ -663,6 +678,7 @@ def _make_request(
     country: str | None = None,
     pdf: bool = False,
     topic: str = "general",
+    include_domains: tuple[str, ...] = (),
 ) -> tuple[SearchRequest | None, str | None]:
     clean = sanitise_query(text, filetype_pdf=pdf, private_tokens=private_tokens)
     if not clean.ok:
@@ -677,6 +693,7 @@ def _make_request(
             date_to=today,
             country=country,
             language=language,
+            include_domains=include_domains,
             topic="news" if topic == "news" else "general",  # type: ignore[arg-type]
             origin=origin,
             template_version=version[:40],
@@ -868,6 +885,7 @@ def build_discovery_plan(
                 version=f"{DISCOVERY_TEMPLATE_VERSION}:{key}",
                 pdf=template.pdf,
                 topic=template.topic,
+                include_domains=template.include_domains,
             )
             if request is None:
                 plan.refused.append((key, refusal or "refused"))

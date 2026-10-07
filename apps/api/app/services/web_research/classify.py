@@ -195,6 +195,16 @@ def _host(url: str | None) -> str:
     return host.removeprefix("www.")
 
 
+def trade_publication_hosts() -> tuple[str, ...]:
+    """The curated trade-press hosts (``host`` entries only, no ``host/path`` ones), sorted.
+
+    What a query may be RESTRICTED to when it wants results from sources the admission
+    rules accept — the list the classifier itself uses, so a restricted query cannot return
+    a page the classifier would not call a trade publication.
+    """
+    return tuple(sorted(h for h in _TRADE_PUBLICATIONS if "/" not in h))
+
+
 def _on(host: str, suffixes: tuple[str, ...]) -> bool:
     return any(host == s or host.endswith("." + s) for s in suffixes if "/" not in s)
 
