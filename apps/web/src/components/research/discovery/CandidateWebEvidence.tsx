@@ -105,7 +105,7 @@ function EvidenceLine({ item }: { item: EvidenceItemView }) {
         )}
         <span className="text-[color:var(--ib-ink-3)]">
           {" · "}
-          {item.sourceClassLabel}
+          {item.issuerOrigin ? "Company statement (verified official site)" : item.sourceClassLabel}
           {" · "}
           <When iso={item.publishedAt} />
           {item.supports.length > 0 ? ` · supports ${item.supports.join(", ")}` : ""}
@@ -162,6 +162,20 @@ export default function CandidateWebEvidence({
                 ? `: ${thesisFit.passages} fetched passage${thesisFit.passages === 1 ? "" : "s"} name it beside the theme`
                 : ""}
               {thesisFit.terms.length > 0 ? ` (${thesisFit.terms.join(", ")})` : ""}
+              {thesisFit.basis === "issuer" && (
+                <span
+                  className="mt-1 block text-xs text-[color:var(--ib-ink-3)]"
+                  data-testid="candidate-web-issuer-only"
+                >
+                  The company&apos;s own statement, on a website the platform verified as its own.
+                  Not independently corroborated.
+                </span>
+              )}
+              {thesisFit.basis === "independent" && (
+                <span className="mt-1 block text-xs text-[color:var(--ib-ink-3)]">
+                  Supported by a source independent of the company.
+                </span>
+              )}
             </>
           ) : (
             "Not established: no fetched page ties it to the theme yet"

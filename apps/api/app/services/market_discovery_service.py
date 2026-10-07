@@ -66,6 +66,8 @@ from app.services.discovery_signal_extractor import (
 from app.services.discovery_thesis_scoring import (
     INTERNAL_INTEREST_LABELS,
     compute_combined_internal_score,
+    compute_evidence_confidence,
+    compute_fit_score,
 )
 from app.services.exchange_registry import region_for_country
 from app.services.llm.discovery_council import maybe_run_discovery_council
@@ -264,6 +266,21 @@ def _build_candidate(
             # V3.19.4 — identity, provenance, constraint results, eligibility, screening.
             "v319": thesis_item.get("v319"),
             "missing_data_penalty": combined["missing_data_penalty"],
+            # Fit and evidence are SEPARATE dimensions: how well the company fits the
+            # request, and how well that is supported. Ranking uses fit first.
+            "fit_score": compute_fit_score(
+                thesis_relevance_score=thesis_relevance_score,
+                discovery_score=score.get("candidate_score"),
+                catalyst_score=score.get("catalyst_score"),
+            ),
+            "evidence_confidence": compute_evidence_confidence(
+                theme_evidence=(
+                    (((thesis_item.get("v319") or {}).get("v3_web") or {}).get("admission") or {})
+                    .get("theme_evidence")
+                ),
+                source_quality_score=score.get("source_quality_score"),
+                missing_data_penalty=combined["missing_data_penalty"],
+            ),
         }
 
     candidate_payload = {
@@ -1110,14 +1127,23 @@ def _eligibility_rank_key(candidate: DiscoveryCandidate) -> tuple:
     """Higher sorts first (the caller sorts descending)."""
     from app.services.discovery.constraints import ELIGIBILITY_ORDER
 
-    v319 = (candidate.thesis_match_json or {}).get("v319") or {}
+    match = candidate.thesis_match_json or {}
+    v319 = match.get("v319") or {}
     eligibility = v319.get("eligibility") or {}
     order = ELIGIBILITY_ORDER.get(str(eligibility.get("status")), 9)
+    combined = candidate.combined_internal_score or 0.0
+    # Fit first (in 5-point bands, so a few points of noise never reorder), then how well that
+    # fit is SUPPORTED, then the blended score. Evidence availability must not outrank fit:
+    # a strong niche company with only its own verified-issuer evidence ranks by its fit.
+    fit = match.get("fit_score")
+    evidence = (match.get("evidence_confidence") or {}).get("rank")
     return (
         -order,
         int(eligibility.get("hard_passes") or 0),
         int(eligibility.get("soft_passes") or 0),
-        candidate.combined_internal_score or 0.0,
+        round(float(fit if fit is not None else combined) / 5.0),
+        int(evidence or 0),
+        combined,
     )
 
 

@@ -199,6 +199,59 @@ def _interest_label(combined: float, discovery_insufficient: bool) -> str:
     return "insufficient_data"
 
 
+def compute_fit_score(
+    *,
+    thesis_relevance_score: float | None,
+    discovery_score: float | None,
+    catalyst_score: float | None,
+) -> float:
+    """How well the candidate fits the request — thesis, research relevance, catalysts —
+    WITHOUT any term for how much evidence happens to be available (0–100).
+
+    The same weights as :func:`compute_combined_internal_score`'s fit terms, renormalised.
+    A strong niche company whose evidence is thin must not rank below a weaker fit merely
+    because more is published about the weaker one.
+    """
+    thesis = float(thesis_relevance_score or 0.0)
+    discovery = float(discovery_score or 0.0)
+    catalyst = float(catalyst_score or 0.0)
+    return _round1(_clamp((0.45 * thesis + 0.35 * discovery + 0.10 * catalyst) / 0.90))
+
+
+#: Evidence-confidence ranks (higher = better supported); a TIEBREAKER after fit.
+_THEME_RANK = {"multiple": 3, "independent": 2, "verified_issuer": 1}
+
+
+def compute_evidence_confidence(
+    *,
+    theme_evidence: dict[str, Any] | None,
+    source_quality_score: float | None,
+    missing_data_penalty: float | None,
+) -> dict[str, Any]:
+    """How well the candidate's relevance is SUPPORTED — kept apart from how well it fits.
+
+    ``issuer_only`` theme evidence (the company's own verified-official-domain page) is real
+    evidence of what the company does, but it is the company's own account, so it ranks
+    below independently corroborated evidence; it is never treated as "no evidence".
+    """
+    status = str((theme_evidence or {}).get("status") or "")
+    corroboration = str((theme_evidence or {}).get("corroboration") or "")
+    rank = _THEME_RANK.get(status, 0)
+    quality = float(source_quality_score or 0.0)
+    gaps = float(missing_data_penalty or 0.0)
+    if rank == 0 and quality >= 60 and gaps <= 4.5:
+        rank = 1  # a curated / held company with solid sourced data, no web passage needed
+    label = {0: "low", 1: "medium", 2: "high", 3: "high"}[rank]
+    return {
+        "label": label,
+        "rank": rank,
+        "theme_evidence": status or None,
+        "corroboration": corroboration or None,
+        "source_quality_score": round(quality, 1),
+        "data_gap_penalty": round(gaps, 1),
+    }
+
+
 def compute_combined_internal_score(
     *,
     thesis_relevance_score: float | None,

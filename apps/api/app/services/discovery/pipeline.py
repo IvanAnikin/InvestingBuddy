@@ -673,6 +673,8 @@ async def run_dynamic_stage(
                             name=lead.name, rejection_reason=REJECT_BUDGET,
                             detail=f"beyond the {limit}-verification bound")
         )
+    if web_on:
+        await _attach_official_domains(verified_external, cfg=cfg, fetcher=fetcher, gate=gate)
     unverifiable: list[IdentityOutcome] = []
     for outcome in verified_external:
         if web_on and outcome.lead.discovery_mode == "search":
@@ -941,21 +943,82 @@ def _a3_mentions(lead: CompanyLead, name: str | None) -> list[dict[str, Any]]:
     verified = get_verified_issuer_source(
         lead.ticker, normalise_venue(lead.exchange_raw) or lead.exchange_raw
     )
-    hosts: tuple[str, ...] = ()
+    hosts: list[str] = []
     if verified is not None:
-        hosts = tuple(
+        hosts.extend(
             d.lower().removeprefix("www.")
             for d in (verified.official_website_domain, *verified.allowed_domains)
             if d
         )
+    # Domains the platform ESTABLISHED as the issuer's from an independent source
+    # (``official_domains``: exchange profile, regulator record, an exchange-published
+    # announcement's letterhead). Set only after the listing was verified.
+    for item in (lead.web or {}).get("official_domains") or []:
+        domain = str((item or {}).get("domain") or "").lower().removeprefix("www.")
+        if domain:
+            hosts.append(domain)
     out: list[dict[str, Any]] = []
     for mention in (lead.web or {}).get("mentions") or []:
         entry = dict(mention)
         host = (urlsplit(entry.get("url") or "").hostname or "").lower().removeprefix("www.")
         if hosts and any(host == h or host.endswith("." + h) for h in hosts):
+            # The ISSUER's own words: evidence of what the company says it does (A3), never
+            # independent corroboration of it.
             entry["source_class"] = "company_web_page"
+            entry["issuer_origin"] = True
         out.append(entry)
     return out
+
+
+#: At most this many issuers' official domains are looked up per run: each costs a few
+#: guarded fetches from the exchange or regulator, and only a lead that already passed
+#: search provenance and listing verification and whose theme passages sit on an
+#: unclassified page needs one.
+MAX_OFFICIAL_DOMAIN_LOOKUPS = 12
+
+
+def _needs_official_domain(outcome: IdentityOutcome) -> bool:
+    """A verified lead with a theme passage no acceptable source carries yet."""
+    from app.services.discovery import admission as adm
+
+    if not outcome.verified or outcome.lead.discovery_mode not in ("search", "model_recall"):
+        return False
+    mentions = (outcome.lead.web or {}).get("mentions") or []
+    themed = [m for m in mentions if m.get("theme_terms") and m.get("passage_ref")]
+    return bool(themed) and not any(adm.is_a3_passage(m) for m in themed)
+
+
+async def _attach_official_domains(
+    outcomes: list[IdentityOutcome], *, cfg: Any, fetcher: Any, gate: Any
+) -> None:
+    """Establish each qualifying lead's official domain from INDEPENDENT sources and record
+    it (with its basis) on the lead. Never raises; a lead whose domain cannot be established
+    simply keeps the evidence it had."""
+    from app.services.discovery.directories import find_listing
+    from app.services.discovery.official_domains import establish_official_domains
+
+    todo = [o for o in outcomes if _needs_official_domain(o)][:MAX_OFFICIAL_DOMAIN_LOOKUPS]
+
+    async def one(outcome: IdentityOutcome) -> None:
+        async with gate:
+            cik = None
+            if (outcome.exchange or "").upper() == "US":
+                row, _reason = await find_listing(
+                    name=outcome.name, ticker=outcome.ticker, venue="US", cfg=cfg,
+                    fetcher=fetcher,
+                )
+                cik = getattr(row, "cik", None)
+            found = await establish_official_domains(
+                ticker=outcome.ticker, venue=outcome.exchange, verified=outcome.verified,
+                cik=cik, cfg=cfg, fetcher=fetcher,
+            )
+        if found:
+            outcome.lead.web = {
+                **(outcome.lead.web or {}),
+                "official_domains": [d.to_dict() for d in found],
+            }
+
+    await asyncio.gather(*(one(o) for o in todo), return_exceptions=True)
 
 
 def _admission_state(identity: IdentityOutcome) -> str | None:

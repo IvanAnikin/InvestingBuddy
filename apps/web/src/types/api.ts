@@ -780,6 +780,23 @@ export interface DiscoveryAdmission {
   eligibility?: string;
   /** `web_search_results` ids that surfaced a corroborated recall lead. */
   surfaced_by?: string[];
+  /**
+   * What the lead's theme passages establish, kept apart from whether anything INDEPENDENT
+   * of the company supports them. `verified_issuer`: the company's own page on a domain the
+   * platform independently established as its own; never independent corroboration.
+   */
+  theme_evidence?: {
+    status?: "verified_issuer" | "independent" | "multiple" | "insufficient" | (string & {});
+    corroboration?:
+      | "issuer_only"
+      | "independently_corroborated"
+      | "unavailable"
+      | (string & {});
+    issuer_passages?: number;
+    independent_passages?: number;
+    independent_domains?: string[];
+  } | null;
+  corroboration?: string | null;
 }
 
 // One fetched passage that names a company (apps/api candidate_extract / discovery_stage
@@ -800,6 +817,8 @@ export interface DiscoveryWebMention {
   risk_terms?: string[];
   passage?: string | null;
   injection_suspect?: boolean;
+  /** The company's OWN words (a page on a domain the platform verified as the company's). */
+  issuer_origin?: boolean;
   query_id?: string | null;
   /** Not written by the producer today; read when present. */
   published_at?: string | null;
