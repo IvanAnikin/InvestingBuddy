@@ -210,6 +210,8 @@ export interface EvidenceItemView {
   excerpt: string | null;
   /** Which of theme / catalyst / downside this passage speaks to, in words. */
   supports: string[];
+  /** The company's own words: attribute them, never present them as independent. */
+  issuerOrigin: boolean;
 }
 
 const DIMENSION_SHORT: Record<string, string> = {
@@ -246,6 +248,7 @@ function viewOf(record: DiscoveryCandidateRecord, m: DiscoveryWebMention, i: num
     url: httpsUrl(m.url),
     excerpt: safeExcerpt(m.passage),
     supports: (m.dimensions ?? []).map((d) => DIMENSION_SHORT[d]).filter((d): d is string => Boolean(d)),
+    issuerOrigin: Boolean(m.issuer_origin),
   };
 }
 
@@ -297,7 +300,13 @@ export interface BasisRow {
 export interface CandidateWebView {
   why: WhyView;
   admission: AdmissionView | null;
-  thesisFit: { established: boolean; passages: number; terms: string[] };
+  thesisFit: {
+    established: boolean;
+    passages: number;
+    terms: string[];
+    /** `issuer`: only the company's own verified site; `independent`: a third party too. */
+    basis: "issuer" | "independent" | null;
+  };
   catalyst: { terms: string[]; publisher: string | null; excerpt: string | null } | null;
   evidence: EvidenceItemView[];
   downside: string[];
@@ -363,10 +372,18 @@ export function candidateWebView(
   const themeMentions = mentions.filter((m) => (m.theme_terms ?? []).length > 0);
   const passages =
     typeof a3?.passages === "number" ? a3.passages : (web.admission?.evidence_ids ?? []).length;
+  const corroboration = web.admission?.theme_evidence?.corroboration;
+  const themeStatus = web.admission?.theme_evidence?.status;
   const thesisFit = {
     established: Boolean(a3?.passed) || passages > 0,
     passages,
     terms: uniq(themeMentions.flatMap((m) => m.theme_terms ?? [])).slice(0, 5),
+    basis:
+      corroboration === "issuer_only" || themeStatus === "verified_issuer"
+        ? ("issuer" as const)
+        : corroboration === "independently_corroborated"
+          ? ("independent" as const)
+          : null,
   };
 
   // The catalyst signal: passages that name a catalyst beside the company.

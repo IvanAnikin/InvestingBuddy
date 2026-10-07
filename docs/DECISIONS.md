@@ -4063,3 +4063,65 @@ than a claim.
   and says so. That is a real limitation and it is recorded rather than closed.
 - `cost_per_verified_useful_finding` is now computable for a real path, and is reported as
   `None` until an operator supplies a price. An unknown cost is never labelled zero.
+
+## ADR-057: A Verified Official Issuer Source May Establish Discovery Theme Relevance — It Is Not Corroboration
+
+**Date:** 2026-10-07 · **Status:** Accepted · **Decided by:** owner (explicit approval) · implemented by agent
+**Amends:** open-web spec §6.2 rule A3 · **Preserves:** ADR-044, the fabricated-company safeguards (A1, A2)
+
+### Context
+
+The first live critical-minerals Discovery (five runs, five niches) admitted **no** company through
+web search. Search found real long-tail listed companies (Anson Resources, Ioneer, Lynas, Arafura,
+Iluka, Hastings, IGO, Mineral Resources), every one passing A1 (executed search + fetched page)
+and A2 (official exchange directory), and every one stopped at A3: the only pages that tied them
+to the thesis were their own websites, classed `unknown_web` because no issuer domain was verified.
+A3 demanded a third-party source, which conflates two different questions.
+
+### Decision
+
+**1. Separate the questions.** *Theme evidence*: does fetched evidence show the company
+takes part in the thesis? *Independent corroboration*: does evidence independent of the issuer
+support a material claim? A page the issuer wrote answers the first, and never the second.
+Each admission decision records `theme_evidence.status` (`verified_issuer` · `independent` ·
+`multiple` · `insufficient`) and `corroboration` (`issuer_only` · `independently_corroborated` ·
+`unavailable`), and the UI states "the company's own statement … not independently corroborated".
+
+**2. A verified official issuer domain may carry A3.** It must be *independently established*,
+by (a) the verified issuer registry, (b) a website the exchange or regulator itself publishes,
+or (c) the letterhead of a document the exchange published under the issuer's ticker.
+A domain is **never** trusted because its hostname resembles the company's name, the search
+provider labels it official, a model says so, or the page claims it. A venue with no such source
+yields none, so an issuer-only passage cannot carry A3 there and the company stays "also surfaced".
+
+**3. Entity safety is unchanged.** No official domain is established for a listing that A2 has
+not verified; a model-named company still needs an executed search and a fetched page; a snippet
+is never evidence.
+
+**4. Fit and evidence rank separately.** `fit_score` (thesis, research relevance, catalysts) orders
+candidates in 5-point bands; `evidence_confidence` is only a tiebreaker. Evidence availability
+must not outrank thesis relevance.
+
+**5. Attribution.** Issuer-origin excerpts are labelled "Company statement", and the Council is
+told to attribute them and never restate a market-size, share, "largest", "lowest-cost", superiority
+or forecast claim from them as established. Financial-statement facts stay primary/regulated.
+
+### Consequences
+
+- Official domains exist today for ASX (profile or announcement letterhead), US issuers (SEC
+  submissions, when populated) and the registry. LSE/AIM, Euronext, SIX and TSX have none yet;
+  their search-found companies remain "also surfaced". Adding a source is additive.
+- A governed, auditable relationship: every established domain stores its basis and source URL.
+
+### Review corrections (independent security review, before merge)
+
+The first implementation was reviewed and corrected before merge: (1) holder, takeover, bidder and
+director-form announcements lodged under a ticker are never read for a domain, and a domain needs two
+announcements or one that names the ticker itself; (2) registrable domains follow the public suffix
+list, so a tenant of a shared host (`myshopify.com`, `herokuapp.com`, `blogspot.com`…) is never "the
+issuer's" and a bare public suffix is no domain; (3) a bare domain in a letterhead must be lower-case
+with a label of at least three characters; (4) the PDF parse is bounded in time and concurrency; (5) an
+empty lookup is never cached and the cache is per day; (6) the strict name guard runs before any lookup;
+(7) the Council pack carries `issuer_origin` and `corroboration`, and a company's own pages count as ONE
+origin and never an authoritative one; (8) the absence-contradiction check compares the year and ignores
+guidance, forecast and "did not decline" clauses.

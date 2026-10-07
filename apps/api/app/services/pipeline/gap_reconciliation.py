@@ -332,6 +332,107 @@ class TemporalDisagreement:
         }
 
 
+# ── Contradicted absence ───────────────────────────────────────────────────── #
+
+#: The period class an ABSENCE claim is limited to ("no interim or quarterly revenue").
+_SUB_ANNUAL_RE = re.compile(
+    r"\b(?:interim|quarter(?:ly|s)?|sub[- ]annual|half[- ]year|six[- ]months?|three[- ]months?|"
+    r"h[12]|q[1-4])\b|(?:^|[^a-z])(?:q[1-4]|h[12])(?:[^a-z]|$)",
+    re.IGNORECASE,
+)
+_ANNUAL_RE = re.compile(r"\b(?:annual|full[- ]year|fy\s?\d{2,4}|year[- ]ended|fiscal year)\b",
+                        re.IGNORECASE)
+CONTRADICTED_ABSENCE = "absence_contradicted"
+#: A denial about the FUTURE or about a direction is no claim that a figure is absent:
+#: "no revenue guidance for FY2027", "revenue did not decline in 2025".
+_NOT_AN_ABSENCE_OF_A_FIGURE = re.compile(
+    r"\b(?:guid(?:ance|ed)|forecasts?|outlook|projections?|projected|estimates?|expects?|"
+    r"expected|targets?|targeted|did\s+not\s+(?:decline|fall|drop|rise|increase|grow|change)|"
+    r"not\s+(?:declin\w+|fall\w*|rise|grow\w*)|no\s+(?:decline|change|growth))\b",
+    re.IGNORECASE,
+)
+_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)|\bfy\s?(\d{2})\b", re.IGNORECASE)
+
+
+def _years_of(text: str, period_key: str | None = None) -> set[str]:
+    """Four-digit years a text (and its stored period) names; FY25 reads as 2025."""
+    found: set[str] = set()
+    for source in (text or "", rf.normalise_period(period_key) or ""):
+        for full, short in _YEAR.findall(source):
+            found.add(full or f"20{short}")
+    return found
+
+
+def _period_class(text: str, period_key: str | None = None) -> str | None:
+    """``sub_annual`` | ``annual`` | None, from the stored period when it has one."""
+    key = rf.normalise_period(period_key) or ""
+    if re.search(r"(?:^|[-\s])(?:Q[1-4]|H[12])\b", key):
+        return "sub_annual"
+    if key:
+        return "annual"
+    if _SUB_ANNUAL_RE.search(text or ""):
+        return "sub_annual"
+    if _ANNUAL_RE.search(text or ""):
+        return "annual"
+    return None
+
+
+def contradicted_absences(findings: Sequence[FindingFacts]) -> list[TemporalDisagreement]:
+    """Findings that DENY a field another finding of the same run STATES.
+
+    "No interim or quarterly Group revenue appears" and "Q2 2026 net sales were $4,289.0
+    million" cannot both stand. Neither is silently dropped: the pair is recorded as a
+    disagreement so a reader sees the conflict instead of two confident statements.
+
+    Deliberately narrow, so it never invents a conflict: the denial must be a NEGATED
+    clause that names the field; the stating finding must affirmatively state that field in
+    the same scope and project; and when the denial is limited to a period class (interim,
+    quarterly, annual) the stating finding must be of that class. A denial about one
+    segment, project or period never contradicts a statement about another.
+    """
+    out: list[TemporalDisagreement] = []
+    live = [f for f in findings if not f.withdrawn]
+    for absent in live:
+        for clause in rf._raw_clauses(absent.statement):  # noqa: SLF001 - same module family
+            low = clause.lower()
+            if not rf.is_negated(low, clause):
+                continue
+            if _NOT_AN_ABSENCE_OF_A_FIGURE.search(clause):
+                continue
+            denied = [k for k in rf.fields_mentioned(clause) if k in rf.FIELDS_BY_KEY]
+            if not denied:
+                continue
+            wanted = _period_class(clause)
+            denied_years = _years_of(clause)
+            for field_key in denied:
+                for stated in live:
+                    if stated.finding_id == absent.finding_id or field_key not in stated.fields:
+                        continue
+                    if (stated.scope_key or "") != (absent.scope_key or ""):
+                        continue
+                    if (stated.project or "") != (absent.project or ""):
+                        continue
+                    stated_class = _period_class(stated.statement, stated.effective_period)
+                    if wanted and stated_class != wanted:
+                        continue
+                    # A denial about one year does not contradict a statement about another.
+                    if denied_years and not (
+                        denied_years & _years_of(stated.statement, stated.effective_period)
+                    ):
+                        continue
+                    out.append(TemporalDisagreement(
+                        absent.finding_id, stated.finding_id, field_key, CONTRADICTED_ABSENCE
+                    ))
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[TemporalDisagreement] = []
+    for d in out:
+        marker = (d.finding_a_id, d.finding_b_id, d.field_key)
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(d)
+    return unique[:MAX_DISAGREEMENTS]
+
+
 # ── 19. Temporal supersession ──────────────────────────────────────────────── #
 
 SAME = "same"
@@ -1105,7 +1206,10 @@ async def reconcile_run(
     by_id = {str(row.id): row for row in finding_rows}
 
     # 19 — supersession first, so closure prefers current guidance.
-    supersessions, temporal = supersede([FindingFacts.from_row(r) for r in finding_rows])
+    row_facts = [FindingFacts.from_row(r) for r in finding_rows]
+    supersessions, temporal = supersede(row_facts)
+    # A finding that denies what another states is a disagreement too (never silently kept).
+    temporal = [*temporal, *contradicted_absences(row_facts)][:MAX_DISAGREEMENTS]
     # The column holds ONE pointer: the LATEST newer finding. The per-field map in the
     # returned record (``supersessions``) is authoritative — a finding can be prior
     # guidance for one field and current for another.
@@ -1133,9 +1237,15 @@ async def reconcile_run(
             session, run, finding_a=by_id[d.finding_a_id], finding_b=by_id[d.finding_b_id],
             nature="value",
             description=(
-                f"Two statements of {rf.label_of(d.field_key)} for the same scope and "
-                f"project differ and are not ordered in time "
-                f"({d.reason.replace('_', ' ')}). Neither is treated as current."
+                f"One finding says {rf.label_of(d.field_key)} is absent from the evidence; "
+                f"another finding in this run states it. Both cannot stand; neither is "
+                f"treated as settled."
+                if d.reason == CONTRADICTED_ABSENCE
+                else (
+                    f"Two statements of {rf.label_of(d.field_key)} for the same scope and "
+                    f"project differ and are not ordered in time "
+                    f"({d.reason.replace('_', ' ')}). Neither is treated as current."
+                )
             ),
         )
         recorded_disagreements += 1
