@@ -125,6 +125,9 @@ A3_EXCLUDED_HOSTS: tuple[str, ...] = (
     "tumblr.com", "quora.com", "reddit.com", "linkedin.com", "facebook.com", "x.com",
     "twitter.com", "sites.google.com", "weebly.com", "notion.site", "pages.dev", "netlify.app",
     "vercel.app", "stocktwits.com", "seekingalpha.com",
+    # Shared hosts: whoever rents a subdomain can publish anything on it.
+    "myshopify.com", "herokuapp.com", "web.app", "firebaseapp.com", "webflow.io", "gitlab.io",
+    "squarespace.com", "wixstudio.io", "carrd.co", "strikingly.com", "godaddysites.com",
 )
 #: Student / personal pages on academic domains are not scholarship.
 A3_EXCLUDED_SUFFIXES: tuple[str, ...] = (".edu", ".edu.au", ".ac.uk", ".ac.jp", ".ac.at")
@@ -214,7 +217,14 @@ def theme_evidence_summary(mentions: Iterable[Mapping[str, Any]]) -> dict[str, A
     passages = [m for m in mentions if is_a3_passage(m)]
     issuer = [m for m in passages if is_issuer_origin(m)]
     independent = [m for m in passages if not is_issuer_origin(m)]
-    domains = {str(m.get("domain") or "").lower() for m in independent if m.get("domain")}
+    from app.services.discovery.official_domains import registrable_domain
+
+    # Independent PUBLISHERS: subdomains of one site are one publisher.
+    domains = {
+        registrable_domain(str(m["domain"])) or str(m["domain"]).lower()
+        for m in independent
+        if m.get("domain")
+    }
     if not passages:
         status, corroboration = THEME_INSUFFICIENT, CORROBORATION_UNAVAILABLE
     elif len(domains) >= 2:

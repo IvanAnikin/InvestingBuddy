@@ -343,6 +343,24 @@ _SUB_ANNUAL_RE = re.compile(
 _ANNUAL_RE = re.compile(r"\b(?:annual|full[- ]year|fy\s?\d{2,4}|year[- ]ended|fiscal year)\b",
                         re.IGNORECASE)
 CONTRADICTED_ABSENCE = "absence_contradicted"
+#: A denial about the FUTURE or about a direction is no claim that a figure is absent:
+#: "no revenue guidance for FY2027", "revenue did not decline in 2025".
+_NOT_AN_ABSENCE_OF_A_FIGURE = re.compile(
+    r"\b(?:guid(?:ance|ed)|forecasts?|outlook|projections?|projected|estimates?|expects?|"
+    r"expected|targets?|targeted|did\s+not\s+(?:decline|fall|drop|rise|increase|grow|change)|"
+    r"not\s+(?:declin\w+|fall\w*|rise|grow\w*)|no\s+(?:decline|change|growth))\b",
+    re.IGNORECASE,
+)
+_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)|\bfy\s?(\d{2})\b", re.IGNORECASE)
+
+
+def _years_of(text: str, period_key: str | None = None) -> set[str]:
+    """Four-digit years a text (and its stored period) names; FY25 reads as 2025."""
+    found: set[str] = set()
+    for source in (text or "", rf.normalise_period(period_key) or ""):
+        for full, short in _YEAR.findall(source):
+            found.add(full or f"20{short}")
+    return found
 
 
 def _period_class(text: str, period_key: str | None = None) -> str | None:
@@ -379,10 +397,13 @@ def contradicted_absences(findings: Sequence[FindingFacts]) -> list[TemporalDisa
             low = clause.lower()
             if not rf.is_negated(low, clause):
                 continue
+            if _NOT_AN_ABSENCE_OF_A_FIGURE.search(clause):
+                continue
             denied = [k for k in rf.fields_mentioned(clause) if k in rf.FIELDS_BY_KEY]
             if not denied:
                 continue
             wanted = _period_class(clause)
+            denied_years = _years_of(clause)
             for field_key in denied:
                 for stated in live:
                     if stated.finding_id == absent.finding_id or field_key not in stated.fields:
@@ -393,6 +414,11 @@ def contradicted_absences(findings: Sequence[FindingFacts]) -> list[TemporalDisa
                         continue
                     stated_class = _period_class(stated.statement, stated.effective_period)
                     if wanted and stated_class != wanted:
+                        continue
+                    # A denial about one year does not contradict a statement about another.
+                    if denied_years and not (
+                        denied_years & _years_of(stated.statement, stated.effective_period)
+                    ):
                         continue
                     out.append(TemporalDisagreement(
                         absent.finding_id, stated.finding_id, field_key, CONTRADICTED_ABSENCE

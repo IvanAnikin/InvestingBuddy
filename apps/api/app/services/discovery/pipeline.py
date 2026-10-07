@@ -997,7 +997,12 @@ async def _attach_official_domains(
     from app.services.discovery.directories import find_listing
     from app.services.discovery.official_domains import establish_official_domains
 
-    todo = [o for o in outcomes if _needs_official_domain(o)][:MAX_OFFICIAL_DOMAIN_LOOKUPS]
+    # The strict name guard (search leads) runs BEFORE any spend: a lead it will demote to a
+    # name mismatch must not cost fetches or carry an official domain.
+    guarded = [
+        _strict_name_guard(o) if o.lead.discovery_mode == "search" else o for o in outcomes
+    ]
+    todo = [o for o in guarded if _needs_official_domain(o)][:MAX_OFFICIAL_DOMAIN_LOOKUPS]
 
     async def one(outcome: IdentityOutcome) -> None:
         async with gate:

@@ -85,3 +85,31 @@ class TestItNeverInventsAConflict:
         many = [finding(f"s{i}", Q2) for i in range(60)]
         out = gr.contradicted_absences([finding("a", ABSENT_SUB_ANNUAL), *many])
         assert len(out) <= gr.MAX_DISAGREEMENTS
+
+
+class TestWrongPeriodAndNotAFigureDenials:
+    """Review finding: the first version compared only the period CLASS, so these denials were
+    flagged against "FY2025 revenue was USD 13,420.0 million"."""
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize(
+        "denial",
+        [
+            "No revenue was reported for FY2024.",
+            "There is no revenue guidance for FY2027.",
+            "Revenue did not decline in 2025.",
+            "No revenue for the 2023 period appears in the evidence.",
+            "Management did not provide forecast revenue.",
+            "No quarterly revenue appears for Q1 2025.",
+            "Revenue is not guided for Q3 2027.",
+        ],
+    )
+    def test_a_denial_about_another_period_or_a_forecast_is_not_a_conflict(
+        self, denial: str
+    ) -> None:
+        assert pairs(finding("a", denial), finding("c", FY), finding("b", Q2)) == []
+
+    def test_a_denial_of_the_same_year_still_conflicts(self) -> None:
+        a = finding("a", "No revenue figure for FY2025 appears in the evidence.")
+        assert pairs(a, finding("c", FY)) == [("a", "c", "metric:revenue")]

@@ -4112,3 +4112,16 @@ or forecast claim from them as established. Financial-statement facts stay prima
   submissions, when populated) and the registry. LSE/AIM, Euronext, SIX and TSX have none yet;
   their search-found companies remain "also surfaced". Adding a source is additive.
 - A governed, auditable relationship: every established domain stores its basis and source URL.
+
+### Review corrections (independent security review, before merge)
+
+The first implementation was reviewed and corrected before merge: (1) holder, takeover, bidder and
+director-form announcements lodged under a ticker are never read for a domain, and a domain needs two
+announcements or one that names the ticker itself; (2) registrable domains follow the public suffix
+list, so a tenant of a shared host (`myshopify.com`, `herokuapp.com`, `blogspot.com`…) is never "the
+issuer's" and a bare public suffix is no domain; (3) a bare domain in a letterhead must be lower-case
+with a label of at least three characters; (4) the PDF parse is bounded in time and concurrency; (5) an
+empty lookup is never cached and the cache is per day; (6) the strict name guard runs before any lookup;
+(7) the Council pack carries `issuer_origin` and `corroboration`, and a company's own pages count as ONE
+origin and never an authoritative one; (8) the absence-contradiction check compares the year and ignores
+guidance, forecast and "did not decline" clauses.

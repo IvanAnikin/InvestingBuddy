@@ -124,8 +124,15 @@ def evidence_confidence(items: Sequence[Mapping[str, Any]]) -> str:
     """
     if not items:
         return CONF_NONE
-    origins = {str(i.get("domain") or "") for i in items}
-    authoritative = any(i.get("source_class") in _AUTHORITATIVE for i in items)
+    # The company's own pages (a verified official domain) are ONE origin however many there
+    # are, and never an authoritative one: what a company says about itself does not support
+    # itself.
+    issuer = [i for i in items if i.get("issuer_origin")]
+    independent = [i for i in items if not i.get("issuer_origin")]
+    origins = {str(i.get("domain") or "") for i in independent} | (
+        {"__issuer__"} if issuer else set()
+    )
+    authoritative = any(i.get("source_class") in _AUTHORITATIVE for i in independent)
     if len(origins) >= 2 and authoritative:
         return CONF_HIGH
     if len(origins) >= 2 or authoritative:
@@ -242,6 +249,8 @@ def build_candidate_web_pack(
                 "acceptable_source": is_acceptable_source(
                     e.get("source_class"), e.get("domain"), e.get("hosts") or ()
                 ),
+                # The company's own words on a domain the platform verified as its own.
+                "issuer_origin": bool(e.get("issuer_origin")),
                 "excerpt": _excerpt(e.get("passage")),
             }
             for i, (_p, e) in enumerate(picked)
@@ -274,6 +283,10 @@ def build_candidate_web_pack(
         "discovery_mode": v3_web.get("discovery_mode"),
         "admission_state": admission.get("state"),
         "admission_codes": list(admission.get("codes") or []),
+        # What the theme evidence is, and whether anything INDEPENDENT of the company
+        # supports it. ``issuer_only`` means the company's own account is all there is.
+        "theme_evidence": admission.get("theme_evidence"),
+        "corroboration": admission.get("corroboration"),
         "items": items,
         "dimensions": dimension_block,
         "priority_basis": {
@@ -294,6 +307,7 @@ def build_candidate_web_pack(
             "size_constraint_fit": {"state": size_state or "not_requested"},
             "evidence_confidence": {
                 "level": dimension_block[DIM_THEME]["evidence_confidence"],
+                "corroboration": admission.get("corroboration"),
                 "qualifies_the_others_never_ranks": True,
             },
         },

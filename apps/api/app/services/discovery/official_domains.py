@@ -50,7 +50,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Any
 
-from app.services.discovery.identity import EXCHANGE_HOSTS, registrable_domain
+from app.services.discovery.identity import EXCHANGE_HOSTS
 
 BASIS_REGISTRY = "verified_issuer_registry"
 BASIS_EXCHANGE_PROFILE = "exchange_profile"
@@ -98,10 +98,11 @@ _WWW_DOMAIN = re.compile(
 
 #: a bare domain token in the letterhead ("T. +61 8 9238 8300  igo.com.au"). Only common
 #: corporate suffixes, so a file name ("report.pdf") or a sentence end is never read as one.
+#: LOWER-CASE only and a label of at least three characters: "Ref.No", "Sydney.Au" and
+#: "x=1.com" are not websites.
 _BARE_DOMAIN = re.compile(
-    r"(?<![@\w./-])([a-z0-9][a-z0-9-]{1,}(?:\.[a-z0-9-]{2,})*\."
-    r"(?:com\.au|co\.uk|co\.nz|com|net|org|io|au|uk|ca|eu|de|fr|se|no|dk|fi|nl|ch|it|es))\b",
-    re.IGNORECASE,
+    r"(?<![@\w./=?&-])([a-z0-9][a-z0-9-]{2,}(?:\.[a-z0-9-]{2,})*\."
+    r"(?:com\.au|co\.uk|co\.nz|com|net|org|io|au|uk|ca|eu|de|fr|se|no|dk|fi|nl|ch|it|es))\b"
 )
 
 
@@ -119,9 +120,33 @@ class OfficialDomain:
         return asdict(self)
 
 
+def registrable_domain(host: str | None) -> str | None:
+    """The registrable domain by the PUBLIC SUFFIX LIST, or None.
+
+    A tenant of a shared host (``acme.myshopify.com``, ``x.blogspot.com``) is its OWN
+    registrable domain, never the shared host's; a bare public suffix (``com.au``, ``id.au``,
+    ``edu.au``) is no domain at all. (``identity.registrable_domain`` knows only a few
+    second-level labels and is not used here.)
+    """
+    from tld import get_tld
+
+    text = (host or "").strip().lower().strip(".")
+    if not text or "." not in text:
+        return None
+    try:
+        parsed = get_tld(f"https://{text}", fail_silently=True, as_object=True)
+    except Exception:  # noqa: BLE001 - an unparseable host names no domain
+        return None
+    if parsed is None or not parsed.fld or parsed.fld == parsed.tld:
+        return None
+    return str(parsed.fld)
+
+
 def _is_never_an_issuer(domain: str) -> bool:
+    from app.services.discovery.admission import a3_host_excluded
+
     d = domain.lower()
-    return any(d == bad or d.endswith("." + bad) for bad in _NEVER_AN_ISSUER)
+    return a3_host_excluded(d) or any(d == bad or d.endswith("." + bad) for bad in _NEVER_AN_ISSUER)
 
 
 def domains_in_letterhead(text: str | None) -> list[str]:
@@ -156,7 +181,7 @@ def domain_covers(official: str, host: str | None) -> bool:
 # Lookups
 # --------------------------------------------------------------------------- #
 
-_CACHE: dict[tuple[str, str, str], list[OfficialDomain]] = {}
+_CACHE: dict[tuple[str, str, str, str], list[OfficialDomain]] = {}
 
 
 def reset_cache() -> None:
@@ -206,6 +231,37 @@ def _file_size_kb(label: Any) -> int:
     return int(value * (1024 if (match.group(2) or "KB").upper() == "MB" else 1))
 
 
+#: Documents lodged under a ticker by SOMEBODY ELSE, or forms whose letterhead is not the
+#: issuer's own: substantial-holder notices (Forms 603/604/605), takeover and bidder documents,
+#: and director's-interest notices.
+_THIRD_PARTY_HEADLINE = re.compile(
+    r"substantial\s+(?:holder|holding)|becoming\s+a\s+substantial|ceasing\s+to\s+be\s+a\s+"
+    r"substantial|\bform\s*60[3-5]\b|\btakeover\b|\bbidder\b|director'?s?['’]?\s*interest|"
+    r"\bappendix\s*3[xyz]\b",
+    re.IGNORECASE,
+)
+
+
+def _third_party(item: dict[str, Any]) -> bool:
+    haystack = f"{item.get('headline') or ''} {item.get('announcementType') or ''}"
+    return bool(_THIRD_PARTY_HEADLINE.search(haystack))
+
+
+#: pypdf on a hostile file is CPU: bounded in concurrency and in time.
+_PDF_SLOTS = asyncio.Semaphore(3)
+PDF_PARSE_TIMEOUT_SECONDS = 15.0
+
+
+async def _pdf_text(content: bytes) -> str:
+    async with _PDF_SLOTS:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_pdf_first_page_text, content), PDF_PARSE_TIMEOUT_SECONDS
+            )
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - an unreadable PDF names no domain
+            return ""
+
+
 async def _asx(code: str, *, cfg: Any, fetcher: Any) -> list[OfficialDomain]:
     out: list[OfficialDomain] = []
     about = f"https://{ASX_API_HOST}/asx-research/1.0/companies/{code}/about"
@@ -233,11 +289,16 @@ async def _asx(code: str, *, cfg: Any, fetcher: Any) -> list[OfficialDomain]:
         ) or []
     except (ValueError, AttributeError):
         return out
-    small = sorted(
-        (i for i in items if isinstance(i, dict) and i.get("documentKey")),
-        key=lambda i: _file_size_kb(i.get("fileSize")),
-    )[:MAX_ANNOUNCEMENTS]
-    seen: dict[str, str] = {}
+    # Announcements the ISSUER wrote. A holder's notice, a bidder's document and a director's
+    # form are lodged UNDER the target's ticker but carry somebody else's letterhead.
+    own = [
+        i for i in items
+        if isinstance(i, dict) and i.get("documentKey") and not _third_party(i)
+    ]
+    small = sorted(own, key=lambda i: _file_size_kb(i.get("fileSize")))[:MAX_ANNOUNCEMENTS]
+    seen: dict[str, list[str]] = {}
+    self_referencing: set[str] = set()
+    ticker_ref = re.compile(rf"\bASX\s*(?:code)?\s*[:\-]?\s*{re.escape(code)}\b", re.IGNORECASE)
     for item in small:
         key = str(item["documentKey"])
         if not re.fullmatch(r"[A-Za-z0-9-]{6,60}", key):
@@ -246,19 +307,24 @@ async def _asx(code: str, *, cfg: Any, fetcher: Any) -> list[OfficialDomain]:
         doc = await _fetch(file_url, ASX_FILE_HOST, cfg=cfg, fetcher=fetcher)
         if doc is None:
             continue
-        text = await asyncio.to_thread(_pdf_first_page_text, doc.content)
+        text = await _pdf_text(doc.content)
         domains = domains_in_letterhead(text)
         if len(domains) > MAX_LETTERHEAD_DOMAINS:
             continue  # a letterhead naming several sites is ambiguous: take none of them
         for domain in domains:
-            seen.setdefault(domain, file_url)
-        if seen:
-            break  # one exchange-published letterhead is enough; do not spend more fetches
-    for domain, url in seen.items():
+            seen.setdefault(domain, []).append(file_url)
+            if ticker_ref.search(text):
+                self_referencing.add(domain)
+    for domain, urls in seen.items():
+        # A single letterhead is enough only when that same document also names the ticker
+        # as its own ("ASX: LYC"); otherwise the domain must repeat across announcements.
+        if len(set(urls)) < 2 and domain not in self_referencing:
+            continue
         out.append(OfficialDomain(
-            domain, BASIS_EXCHANGE_ANNOUNCEMENT, url,
-            "printed in the letterhead of an announcement the exchange published under "
-            f"the ticker {code}", _today(),
+            domain, BASIS_EXCHANGE_ANNOUNCEMENT, urls[0],
+            "printed in the letterhead of "
+            f"{len(set(urls))} announcement(s) the exchange published under the ticker {code}",
+            _today(),
         ))
     return out
 
@@ -305,7 +371,7 @@ async def establish_official_domains(
         return []
     from app.services.sources.verified_issuer_sources import get_verified_issuer_source
 
-    key = ((venue or "").upper(), (ticker or "").upper(), cik or "")
+    key = ((venue or "").upper(), (ticker or "").upper(), cik or "", _today())
     if key in _CACHE:
         return list(_CACHE[key])
     found: list[OfficialDomain] = []
@@ -329,7 +395,10 @@ async def establish_official_domains(
     for item in found:
         if not any(u.domain == item.domain for u in unique):
             unique.append(item)
-    _CACHE[key] = unique
+    # An empty answer is never remembered: a transient failure must not blind the lookup for
+    # the rest of the process, and a source that publishes later should be read then.
+    if unique:
+        _CACHE[key] = unique
     return list(unique)
 
 
