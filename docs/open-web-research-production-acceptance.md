@@ -317,3 +317,11 @@ platform never fetched those issuers' own pages: nothing in the search results w
 nothing asked for one. Fix: once an official domain is independently established, the platform reads that
 issuer's official page (same open-web policy, must stay on the official domain after redirects, ingested into
 the corpus so the passage is citable) and records its theme passages as issuer-origin evidence.
+
+### Discovery — critical minerals, run 6 (`f51e6edd`, after #277) — official pages refused by the fetch ceiling
+
+Official domains were established for five search leads (IGO `igo.com.au`, Anson `ansonresources.com`,
+Arafura `arultd.com`, Ioneer `ioneer.com`, Lynas `lynasrareearths.com`) and the reader tried each issuer's
+page — and every read was refused `budget:max_fetches`: the plan and the corroboration allowance had already
+spent past base + targets. The reader's allowance is now one page per target beyond what the run has already
+fetched (still bounded by the number of targets).
