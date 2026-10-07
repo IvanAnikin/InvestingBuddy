@@ -1144,6 +1144,35 @@ def _find_chunk(index: Sequence[tuple[str, str]], mention: ce.RawMention) -> str
     return None
 
 
+#: Past this share of the run's wall-clock budget, a PDF is no longer worth its extraction.
+PDF_WALL_SHARE = 0.5
+
+
+def _is_pdf_result(scored: Any) -> bool:
+    """A result that will probably be a PDF: a ``.pdf`` path, or one of the ``document`` family's
+    ``filetype:pdf`` queries (market reports, decks)."""
+    url = str(getattr(scored.candidate, "url", "") or "").lower().split("?")[0].split("#")[0]
+    return url.endswith(".pdf") or getattr(scored.candidate, "family", None) is QueryFamily.DOCUMENT
+
+
+def html_first(selected: Sequence[Any]) -> list[Any]:
+    """The selected results with web pages BEFORE PDFs, each group in its own selection order.
+
+    The stage's wall-clock budget is shared by fetching and extraction. On the second live
+    critical-minerals run a few slow PDF extractions (market-report PDFs, which rarely name a
+    listed company) spent the whole budget after 12 fetches and the entity and trade-press
+    pages that do name companies were never read.
+    """
+    return sorted(selected, key=_is_pdf_result)  # stable: False (a page) sorts first
+
+
+def pdf_not_worth_the_time(scored: Any, budget: WebResearchBudget) -> bool:
+    """A PDF is skipped once more than :data:`PDF_WALL_SHARE` of the wall budget is spent."""
+    return _is_pdf_result(scored) and budget.elapsed_seconds > (
+        PDF_WALL_SHARE * budget.limits.max_wall_seconds
+    )
+
+
 async def _fetch_phase(
     session: Any,
     ctx: DiscoveryWebContext,
@@ -1183,7 +1212,8 @@ async def _fetch_phase(
     terms = tuple(dp.theme_terms(facts))
     ingest_on = ingest_mod.ingest_enabled(cfg)
     stopped = False
-    for scored in selection.selected:
+    pdf_deferred = 0
+    for scored in html_first(selection.selected):
         row = rows_by_id.get(scored.candidate.result_id)
         refusal = budget.fetch_refusal()
         if refusal is not None or stopped:
@@ -1191,6 +1221,14 @@ async def _fetch_phase(
             if refusal and not stopped:
                 tally.notes.append(f"fetching stopped: {refusal}")
             stopped = True
+            continue
+        if pdf_not_worth_the_time(scored, budget):
+            _disposition(row, "skipped", "pdf_after_half_the_wall_budget")
+            pdf_deferred += 1
+            if pdf_deferred == 1:
+                tally.notes.append(
+                    "PDFs were skipped: more than half the wall-clock budget was already spent"
+                )
             continue
         await _progress(progress, PROGRESS_FETCH)
         tally.fetch_attempted += 1

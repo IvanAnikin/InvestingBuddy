@@ -2023,3 +2023,51 @@ class TestVerificationQueriesAreNotDateFiltered:
         checks = [r for r in h.provider.requests if r.origin == "recall_verification"]
         assert checks, "a verification query was issued"
         assert all(r.date_from is None and r.date_to is None for r in checks)
+
+
+class TestPagesBeforePdfs:
+    """Second live critical-minerals run: three slow PDF extractions spent the 360 s budget after
+    12 fetches, so the entity and trade-press pages that name companies were never read."""
+
+    @staticmethod
+    def _scored(url: str, family: Any = None) -> Any:
+        from app.services.web_research.discovery_stage import SearchCandidate
+
+        item = SimpleNamespace(url=url, canonical_url=url, rank=1)
+        cand = SearchCandidate(
+            family=family or QueryFamily.ENTITY, item=item, query_key="k",
+            query_id=uuid.uuid4(), result_id=uuid.uuid4(),
+        )
+        return SimpleNamespace(candidate=cand)
+
+    def test_pages_come_first_and_each_group_keeps_its_order(self) -> None:
+        from app.services.web_research import discovery_stage as ds
+
+        a = self._scored("https://a.example/report.pdf")
+        b = self._scored("https://b.example/news")
+        c = self._scored("https://c.example/page", family=QueryFamily.DOCUMENT)
+        d = self._scored("https://d.example/other")
+        assert [x.candidate.url for x in ds.html_first([a, b, c, d])] == [
+            "https://b.example/news", "https://d.example/other",
+            "https://a.example/report.pdf", "https://c.example/page",
+        ]
+
+    def test_a_pdf_with_a_query_string_is_still_a_pdf(self) -> None:
+        from app.services.web_research import discovery_stage as ds
+
+        assert ds._is_pdf_result(self._scored("https://x.example/a.PDF?download=1#p2"))
+        assert not ds._is_pdf_result(self._scored("https://x.example/pdf-guide"))
+
+    def test_a_pdf_is_skipped_past_half_the_wall_budget_and_a_page_never_is(self) -> None:
+        from app.services.web_research import discovery_stage as ds
+        from app.services.web_research.budget import PROFILES, WebResearchBudget
+
+        clock = {"t": 0.0}
+        budget = WebResearchBudget(
+            limits=PROFILES["discovery_standard"], daily_cap=300, clock=lambda: clock["t"]
+        )
+        pdf, page = self._scored("https://x.example/a.pdf"), self._scored("https://x.example/p")
+        assert not ds.pdf_not_worth_the_time(pdf, budget)
+        clock["t"] = budget.limits.max_wall_seconds * 0.6
+        assert ds.pdf_not_worth_the_time(pdf, budget)
+        assert not ds.pdf_not_worth_the_time(page, budget)
