@@ -1853,6 +1853,192 @@ async def _corroborate(
 
 
 # --------------------------------------------------------------------------- #
+# The issuer's own official page (owner decision 2026-10-07, ADR-057)
+# --------------------------------------------------------------------------- #
+
+MAX_OFFICIAL_PASSAGES = 3
+OFFICIAL_PASSAGE_MIN_CHARS = 40
+METHOD_OFFICIAL_PAGE = "official_domain_page"
+
+
+@dataclass
+class OfficialPages:
+    """What reading the issuers' OFFICIAL pages found, per lead."""
+
+    #: lead_id -> mention-shaped passages from the issuer's own page (theme only).
+    by_lead: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    attempted: int = 0
+    read: int = 0
+    notes: list[str] = field(default_factory=list)
+    units: ConsumptionUnits = field(default_factory=ConsumptionUnits)
+
+
+async def read_official_pages(
+    session: Any,
+    intent: Any,
+    targets: Sequence[tuple[str, str]],
+    ctx: DiscoveryWebContext,
+    *,
+    cfg: Any,
+    deps: DiscoveryWebDeps | None = None,
+    progress: ProgressHook | None = None,
+) -> OfficialPages:
+    """Read each target's OFFICIAL page and return its theme passages. **Never raises**.
+
+    ``targets`` are ``(lead_id, official_domain)`` pairs whose domain the platform has
+    INDEPENDENTLY established as that issuer's (``official_domains``): the page is the
+    company's own words, so a paragraph carrying a theme term ties the verified issuer to the
+    thesis. The page is fetched under the same open-web policy as any other (robots, TDM,
+    paywall and redirect rules), must STAY on the official domain after redirects, and is
+    ingested into the corpus so its passage is citable. Nothing here establishes a domain:
+    that already happened, from an independent source, before this is called.
+    """
+    deps = deps or DiscoveryWebDeps()
+    out = OfficialPages()
+    if not targets or not stage_enabled(cfg) or not bool(
+        getattr(cfg, "v3_web_fetch_enabled", False)
+    ):
+        return out
+    try:
+        return await _read_official(session, intent, targets, ctx, cfg, deps, progress, out)
+    except _Abort as abort:
+        raise abort.original from None
+    except Exception as exc:  # noqa: BLE001 - an unread page leaves the lead where it was
+        out.notes.append(f"reading official pages raised {type(exc).__name__} and was isolated")
+        return out
+
+
+async def _read_official(
+    session: Any,
+    intent: Any,
+    targets: Sequence[tuple[str, str]],
+    ctx: DiscoveryWebContext,
+    cfg: Any,
+    deps: DiscoveryWebDeps,
+    progress: ProgressHook | None,
+    out: OfficialPages,
+) -> OfficialPages:
+    from types import SimpleNamespace
+
+    from app.services.discovery.official_domains import domain_covers
+    from app.services.web_research import fetch as fetch_mod
+    from app.services.web_research import ingest as ingest_mod
+    from app.services.web_research.classify import classify_source
+    from app.services.web_research.extract import extract_web_document
+
+    facts = dp.facts_from_intent(intent)
+    vocab = theme_vocabulary(facts)
+    terms = tuple(dp.theme_terms(facts))
+    depth = _depth(cfg)
+    now = deps.now or datetime.now(timezone.utc)
+    budget = await budget_for_run(session, f"discovery_{depth}", cfg=cfg, now=now, clock=deps.clock)
+    await _prime_budget(session, budget, ctx.run_id)
+    # One page per target, on top of the plan (bounded by the number of targets).
+    budget.limits = replace(budget.limits, max_fetches=budget.limits.max_fetches + len(targets))
+    fetch_fn: FetchFn = deps.fetch or fetch_mod.open_web_fetch
+    fetch_ctx = fetch_mod.WebFetchContext(discovery_run_id=ctx.run_id)
+    ingest_on = ingest_mod.ingest_enabled(cfg)
+    theme_key = theme_key_for_run(ctx.run_id)
+    await _progress(progress, PROGRESS_FETCH)
+    for lead_id, domain in targets:
+        if budget.fetch_refusal() is not None:
+            out.notes.append("official pages: " + str(budget.fetch_refusal()))
+            break
+        out.attempted += 1
+        url = f"https://{domain}/"
+        try:
+            fetched = await fetch_fn(
+                session, url, context=fetch_ctx, budget=budget,
+                origin=fetch_mod.ORIGIN_LEAD, **dict(deps.fetch_kwargs),
+            )
+        except Exception:  # noqa: BLE001 - one unreadable site costs that lead only
+            continue
+        final = fetched.final_url or fetched.requested_url or url
+        # A redirect to another site is not the issuer's page: the official domain must COVER
+        # the host the bytes actually came from.
+        if not fetched.ok or not domain_covers(domain, host_of(final)):
+            continue
+        extraction = None
+        source_class: str | None = None
+        version_id: uuid.UUID | None = None
+        try:
+            if ingest_on:
+                prepared = await ingest_mod.prepare_web_document(
+                    fetched, cfg=cfg, provider=None, subject_scope="theme", theme_key=theme_key,
+                    candidates=(), issuer_domains=(domain,), query_terms=terms, depth=depth,
+                    pool=deps.pool, store=deps.store, now=deps.now,
+                )
+                if isinstance(prepared, ingest_mod.WebIngestResult):
+                    continue
+                extraction = prepared.extraction
+                source_class = prepared.classification.source_class
+                try:
+                    async with session.begin_nested():
+                        stored = await ingest_mod.store_web_document(
+                            session, prepared, cfg=cfg, store=deps.store,
+                            backend=ctx.search_backend or deps.search_backend, now=deps.now,
+                        )
+                    if stored.stored:
+                        version_id = stored.version_id
+                except Exception:  # noqa: BLE001 - the passage is still usable, just uncited
+                    version_id = None
+            else:
+                extraction = await extract_web_document(
+                    raw=fetched.content, content_class=fetched.content_class, cfg=cfg,
+                    url=final, charset=fetched.charset,
+                    js_required=bool(getattr(fetched, "js_required", False)),
+                    query_terms=terms, depth=depth, pool=deps.pool, candidates=(),
+                )
+                if not extraction.extracted:
+                    continue
+                source_class = classify_source(final, issuer_domains=(domain,)).source_class
+        except Exception:  # noqa: BLE001 - a page that fails costs itself
+            continue
+        if extraction is None or extraction.injection_suspect:
+            continue  # hostile text names nothing and carries nothing
+        out.read += 1
+        blocks, _tables = _blocks_and_tables(extraction)
+        scored: list[tuple[int, int, str]] = []
+        for position, block in enumerate(blocks):
+            text = " ".join(block.split())
+            found = vocab.match(text) if len(text) >= OFFICIAL_PASSAGE_MIN_CHARS else ()
+            if found:
+                scored.append((-len(found), position, text))
+        scored.sort()
+        chunk_index = await _chunk_index(session, version_id) if scored else []
+        attempt = getattr(fetched, "attempt_id", None)
+        attempt_id = str(attempt) if attempt else None
+        entries: list[dict[str, Any]] = []
+        for _neg, _pos, text in scored[:MAX_OFFICIAL_PASSAGES]:
+            passage = text[: ce.MAX_PASSAGE_CHARS]
+            ref = passage_ref(attempt_id, passage)
+            chunk_id = _find_chunk(chunk_index, SimpleNamespace(passage=passage))
+            entries.append({
+                "evidence_id": chunk_id or ref,
+                "passage_ref": ref,
+                "kind": "paragraph",
+                "method": METHOD_OFFICIAL_PAGE,
+                "source_class": source_class,
+                "url": fetched.canonical_url or final,
+                "domain": host_of(final),
+                "hosts": [],
+                "dimensions": ["theme_relevance"],
+                "theme_terms": list(vocab.match(passage))[:6],
+                "catalyst_terms": [],
+                "risk_terms": [],
+                "passage": passage,
+                "injection_suspect": False,
+                "query_id": None,
+                "fetch_attempt_id": attempt_id,
+            })
+        if entries:
+            out.by_lead[lead_id] = entries
+    if ctx.commit is not None:
+        await ctx.commit()
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Theme key of a candidate's run (so ``search_theme_corpus`` works for its research)
 # --------------------------------------------------------------------------- #
 
@@ -1894,7 +2080,9 @@ __all__ = [
     "DiscoveryWebDeps",
     "DiscoveryWebResult",
     "RecallCorroboration",
+    "OfficialPages",
     "corroborate_recall_leads",
+    "read_official_pages",
     "passage_ref",
     "run_discovery_web_stage",
     "select_discovery_results",

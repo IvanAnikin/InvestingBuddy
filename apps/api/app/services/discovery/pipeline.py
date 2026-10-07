@@ -674,7 +674,15 @@ async def run_dynamic_stage(
                             detail=f"beyond the {limit}-verification bound")
         )
     if web_on:
-        await _attach_official_domains(verified_external, cfg=cfg, fetcher=fetcher, gate=gate)
+        from app.services.web_research.discovery_stage import DiscoveryWebContext as _Ctx
+
+        await _attach_official_domains(
+            verified_external, cfg=cfg, fetcher=fetcher, gate=gate, session=session,
+            intent=intent,
+            ctx=_Ctx(run_id=run_id, known_domains=known_domains, commit=commit,
+                     plan_date=plan_date),
+            web_deps=web_deps, progress=progress, executed_query_ids=executed_query_ids,
+        )
     unverifiable: list[IdentityOutcome] = []
     for outcome in verified_external:
         if web_on and outcome.lead.discovery_mode == "search":
@@ -971,29 +979,46 @@ def _a3_mentions(lead: CompanyLead, name: str | None) -> list[dict[str, Any]]:
 
 
 #: At most this many issuers' official domains are looked up per run: each costs a few
-#: guarded fetches from the exchange or regulator, and only a lead that already passed
-#: search provenance and listing verification and whose theme passages sit on an
-#: unclassified page needs one.
+#: guarded fetches from the exchange or regulator and one page fetch.
 MAX_OFFICIAL_DOMAIN_LOOKUPS = 12
+#: Mentions a lead carries after its official page's passages are added.
+MAX_OFFICIAL_MENTIONS = 12
 
 
-def _needs_official_domain(outcome: IdentityOutcome) -> bool:
-    """A verified lead with a theme passage no acceptable source carries yet."""
+def _needs_official_domain(outcome: IdentityOutcome, *, provenance: bool = True) -> bool:
+    """A verified lead that search surfaced (A1) and that no acceptable source yet ties to the
+    theme: its own official page may."""
     from app.services.discovery import admission as adm
 
     if not outcome.verified or outcome.lead.discovery_mode not in ("search", "model_recall"):
         return False
+    if not provenance:
+        return False
     mentions = (outcome.lead.web or {}).get("mentions") or []
-    themed = [m for m in mentions if m.get("theme_terms") and m.get("passage_ref")]
-    return bool(themed) and not any(adm.is_a3_passage(m) for m in themed)
+    return not any(adm.is_a3_passage(m) for m in mentions)
 
 
 async def _attach_official_domains(
-    outcomes: list[IdentityOutcome], *, cfg: Any, fetcher: Any, gate: Any
+    outcomes: list[IdentityOutcome],
+    *,
+    cfg: Any,
+    fetcher: Any,
+    gate: Any,
+    session: Any = None,
+    intent: Any = None,
+    ctx: Any = None,
+    web_deps: Any = None,
+    progress: Any = None,
+    executed_query_ids: Any = (),
 ) -> None:
-    """Establish each qualifying lead's official domain from INDEPENDENT sources and record
-    it (with its basis) on the lead. Never raises; a lead whose domain cannot be established
-    simply keeps the evidence it had."""
+    """Establish each qualifying lead's official domain from INDEPENDENT sources, then READ
+    that official page and record its theme passages. Never raises; a lead whose domain
+    cannot be established, or whose page cannot be read, keeps the evidence it had.
+
+    The page's passages are the company's own words on a domain the platform verified as the
+    company's: they may satisfy A3 (theme evidence) and are never independent corroboration.
+    """
+    from app.services.discovery import admission as adm
     from app.services.discovery.directories import find_listing
     from app.services.discovery.official_domains import establish_official_domains
 
@@ -1002,7 +1027,16 @@ async def _attach_official_domains(
     guarded = [
         _strict_name_guard(o) if o.lead.discovery_mode == "search" else o for o in outcomes
     ]
-    todo = [o for o in guarded if _needs_official_domain(o)][:MAX_OFFICIAL_DOMAIN_LOOKUPS]
+    todo = [
+        o for o in guarded
+        if _needs_official_domain(
+            o,
+            provenance=(
+                o.lead.discovery_mode == "search"
+                and adm.search_lead_has_provenance(o.lead.web, executed_query_ids)
+            ) or o.lead.discovery_mode == "model_recall",
+        )
+    ][:MAX_OFFICIAL_DOMAIN_LOOKUPS]
 
     async def one(outcome: IdentityOutcome) -> None:
         async with gate:
@@ -1024,6 +1058,32 @@ async def _attach_official_domains(
             }
 
     await asyncio.gather(*(one(o) for o in todo), return_exceptions=True)
+
+    # Read each established official page, one at a time (a shared session).
+    if session is None or ctx is None:
+        return
+    targets: list[tuple[str, str]] = []
+    by_id: dict[str, IdentityOutcome] = {}
+    for o in todo:
+        domains = (o.lead.web or {}).get("official_domains") or []
+        if domains:
+            targets.append((o.lead.lead_id, str(domains[0]["domain"])))
+            by_id[o.lead.lead_id] = o
+    if not targets:
+        return
+    from app.services.web_research.discovery_stage import read_official_pages
+
+    pages = await read_official_pages(
+        session, intent, targets, ctx, cfg=cfg, deps=web_deps, progress=progress
+    )
+    for lead_id, entries in pages.by_lead.items():
+        outcome = by_id.get(lead_id)
+        if outcome is None:
+            continue
+        web = dict(outcome.lead.web or {})
+        web["mentions"] = [*(web.get("mentions") or []), *entries][:MAX_OFFICIAL_MENTIONS]
+        web["official_page_read"] = True
+        outcome.lead.web = web
 
 
 def _admission_state(identity: IdentityOutcome) -> str | None:

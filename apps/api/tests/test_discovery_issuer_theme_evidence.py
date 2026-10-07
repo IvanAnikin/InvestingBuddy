@@ -353,9 +353,12 @@ class TestPipelineHooks:
         assert not pl._needs_official_domain(IdentityOutcome(lead=ld, status=IDENTITY_REJECTED))
         trade = lead(mention("mining.com", source_class="trade_publication"))
         assert not pl._needs_official_domain(IdentityOutcome(lead=trade, status=IDENTITY_VERIFIED))
+        # A lead with only a passage that names no theme term still needs the issuer's page.
         no_theme = lead(mention("lynasrareearths.com", theme=False))
+        assert pl._needs_official_domain(IdentityOutcome(lead=no_theme, status=IDENTITY_VERIFIED))
+        # ... but never without search provenance (A1).
         assert not pl._needs_official_domain(
-            IdentityOutcome(lead=no_theme, status=IDENTITY_VERIFIED)
+            IdentityOutcome(lead=ld, status=IDENTITY_VERIFIED), provenance=False
         )
 
     def test_an_official_domain_makes_its_pages_issuer_origin_only_there(self) -> None:

@@ -2071,3 +2071,100 @@ class TestPagesBeforePdfs:
         clock["t"] = budget.limits.max_wall_seconds * 0.6
         assert ds.pdf_not_worth_the_time(pdf, budget)
         assert not ds.pdf_not_worth_the_time(page, budget)
+
+
+OFFICIAL = "https://zeta-gallium.example/"
+OFFICIAL_PAGE = page(
+    "Zeta Gallium Limited",
+    [
+        "Zeta Gallium recovers gallium from alumina refinery liquor at its pilot plant and is "
+        "building a commercial gallium recovery facility.",
+        "Our head office is in Perth.",
+    ],
+)
+
+
+def _establish(monkeypatch: pytest.MonkeyPatch, domain: str | None) -> None:
+    """Stand in for the independent source (exchange profile / letterhead) the production code
+    reads: the platform has — or has not — established this issuer's official domain."""
+    from app.services.discovery import official_domains as od
+
+    async def fake(**kwargs: Any) -> list[Any]:
+        assert kwargs["verified"] is True, "no lookup for an unverified listing"
+        if not domain:
+            return []
+        return [od.OfficialDomain(domain, od.BASIS_EXCHANGE_ANNOUNCEMENT, "https://x/f/1",
+                                  "test", "2026-10-07")]
+
+    monkeypatch.setattr(od, "establish_official_domains", fake)
+
+
+class TestAnOfficialIssuerPageEstablishesTheme:
+    """Owner decision 2026-10-07: the issuer's own page on an independently established domain
+    may carry A3 — as THEME evidence, never as independent corroboration."""
+
+    async def _stage(self, h: H, monkeypatch: pytest.MonkeyPatch, domain: str | None) -> Any:
+        h.serve_obscure()
+        serve_verification(h, [hit(ZETA_URL, "Zeta Gallium")])
+        h.net.pages[ZETA_URL] = ZETA_NO_THEME  # names it, says nothing about gallium
+        h.net.pages[OFFICIAL] = OFFICIAL_PAGE
+        _establish(monkeypatch, domain)
+        return await h.stage(recall=_Recall([ZETA]))
+
+    async def test_the_official_page_admits_with_issuer_only_corroboration(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stage = await self._stage(h, monkeypatch, "zeta-gallium.example")
+        zeta = next(r for r in stage.candidates if r.identity.ticker == "ZGL")
+        admission = zeta.web["admission"]
+        assert admission["state"] == "admitted"
+        assert admission["theme_evidence"]["status"] == "verified_issuer"
+        assert admission["corroboration"] == "issuer_only"
+        assert admission["theme_evidence"]["independent_passages"] == 0
+        assert OFFICIAL in h.net.requested
+        issuer = [m for m in zeta.web["mentions"] if m.get("issuer_origin")]
+        assert issuer and issuer[0]["method"] == "official_domain_page"
+        assert issuer[0]["domain"] == "zeta-gallium.example"
+        assert "gallium" in " ".join(issuer[0]["theme_terms"]).lower()
+        assert zeta.web["official_domains"][0]["domain"] == "zeta-gallium.example"
+        # the origin and the A1 provenance are unchanged: still a corroborated recall lead
+        assert zeta.provenance["discovery_mode"] == "model_recall"
+        assert admission["rules"]["A1"]["passed"] is True
+
+    async def test_with_no_established_domain_the_page_is_never_read(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stage = await self._stage(h, monkeypatch, None)
+        assert all(r.identity.ticker != "ZGL" for r in stage.candidates)
+        zeta = next(r for r in stage.also_surfaced if r.identity.ticker == "ZGL")
+        assert "theme_evidence_missing" in zeta.web["admission"]["codes"]
+        assert OFFICIAL not in h.net.requested
+
+    async def test_a_redirect_to_another_site_is_not_the_issuers_page(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h.net.redirects[OFFICIAL] = "https://evil.example/landing"
+        h.net.pages["https://evil.example/landing"] = OFFICIAL_PAGE
+        stage = await self._stage(h, monkeypatch, "zeta-gallium.example")
+        assert all(r.identity.ticker != "ZGL" for r in stage.candidates)
+        zeta = next(r for r in stage.also_surfaced if r.identity.ticker == "ZGL")
+        assert not any(m.get("issuer_origin") for m in zeta.web.get("mentions") or [])
+
+    async def test_an_official_page_with_no_theme_passage_proves_nothing(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h.serve_obscure()
+        serve_verification(h, [hit(ZETA_URL, "Zeta Gallium")])
+        h.net.pages[ZETA_URL] = ZETA_NO_THEME
+        h.net.pages[OFFICIAL] = page("Zeta", ["Our head office is in Perth, Western Australia."])
+        _establish(monkeypatch, "zeta-gallium.example")
+        stage = await h.stage(recall=_Recall([ZETA]))
+        assert all(r.identity.ticker != "ZGL" for r in stage.candidates)
+
+    async def test_a_page_the_issuer_cannot_be_read_from_leaves_the_lead_where_it_was(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h.net.not_retrievable[OFFICIAL] = "http_403"
+        stage = await self._stage(h, monkeypatch, "zeta-gallium.example")
+        assert all(r.identity.ticker != "ZGL" for r in stage.candidates)
+        assert any(r.identity.ticker == "ZGL" for r in stage.also_surfaced)
