@@ -50,7 +50,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -1664,6 +1664,31 @@ async def corroborate_recall_leads(
         return out
 
 
+def _grant_corroboration_allowance(budget: WebResearchBudget, leads: int, cfg: Any) -> None:
+    """Room for the verification searches ON TOP of the main plan.
+
+    Recall corroboration is the only step that can admit a model-named company, and it runs
+    LAST on the run's own ceilings. On the first live critical-minerals run the main plan
+    used 20 of 24 queries and 36 of 40 fetches, so only 4 of 6 verification queries could be
+    issued and 4 fetches remained for 12 wanted pages: ``corroborated: 0``, and every recalled
+    company was demoted for want of a budget, not for want of evidence. The allowance is one
+    query per recalled lead and ``RESULTS_FETCHED_PER_RECALL`` fetches per lead — bounded, and
+    never past an operator's ``V3_RUN_MAX_WEB_SEARCHES`` (which stays a hard ceiling) or the
+    platform's daily cap (which the budget checks on every call).
+    """
+    if leads <= 0:
+        return
+    queries = budget.limits.max_queries + leads
+    operator_cap = int(getattr(cfg, "v3_run_max_web_searches", 0) or 0)
+    if operator_cap > 0:
+        queries = min(queries, max(operator_cap, 0))
+    budget.limits = replace(
+        budget.limits,
+        max_queries=max(budget.limits.max_queries, queries),
+        max_fetches=budget.limits.max_fetches + RESULTS_FETCHED_PER_RECALL * leads,
+    )
+
+
 async def _corroborate(
     session: Any,
     intent: Any,
@@ -1687,6 +1712,7 @@ async def _corroborate(
     today = deps.today or ctx.plan_date or now.date()
     budget = await budget_for_run(session, profile, cfg=cfg, now=now, clock=deps.clock)
     await _prime_budget(session, budget, ctx.run_id)
+    _grant_corroboration_allowance(budget, len(leads), cfg)
     noun = (facts.nouns() or [("", "")])[0]
     subject = dp.noun_text(*noun) if noun[1] else ""
     planned: list[tuple[CompanyLead, dp.PlannedQuery]] = []

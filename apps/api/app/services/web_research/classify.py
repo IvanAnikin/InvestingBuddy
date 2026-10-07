@@ -64,7 +64,7 @@ from app.services.sources.taxonomy import (
 from app.services.web_research.source_policy import use_constraint_for
 from app.services.web_research.text_safety import has_tag_characters, invisible_char_count
 
-CURATED_LISTS_VERSION = "2026-09-30.1"
+CURATED_LISTS_VERSION = "2026-10-07.1"
 
 # ── Source classes (spec §13.1) ─────────────────────────────────────────── #
 
@@ -156,6 +156,13 @@ _TRADE_PUBLICATIONS: tuple[str, ...] = (
     "power-technology.com", "tdworld.com", "electrive.com", "semiengineering.com",
     "eetimes.com", "fiercepharma.com", "fiercebiotech.com", "chemanager-online.com",
     "rechargenews.com", "renewableenergyworld.com", "offshore-energy.biz",
+    # Mining and critical-minerals trade press that the first live critical-minerals Discovery
+    # run fetched and could not use: all were ``unknown_web``, so rule A3 (a passage from an
+    # acceptable class) could never pass for a mining company. Established titles only —
+    # promotion-heavy junior-stock sites stay ``unknown_web``.
+    "mining-technology.com", "miningweekly.com", "mineweb.com", "miningmx.com",
+    "australianmining.com.au", "news.metal.com", "panorama-minero.com",
+    "rareearthexchanges.com",
 )
 _RESEARCH_CONSULTANCIES: tuple[str, ...] = (
     "mckinsey.com", "bcg.com", "bain.com", "deloitte.com", "pwc.com", "ey.com",
