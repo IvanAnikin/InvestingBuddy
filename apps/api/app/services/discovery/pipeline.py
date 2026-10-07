@@ -960,16 +960,23 @@ def _a3_mentions(lead: CompanyLead, name: str | None) -> list[dict[str, Any]]:
         )
     # Domains the platform ESTABLISHED as the issuer's from an independent source
     # (``official_domains``: exchange profile, regulator record, an exchange-published
-    # announcement's letterhead). Set only after the listing was verified.
+    # announcement's letterhead). Set only after the listing was verified. Only the issuer's
+    # OWN voice counts: the domain, its www and its investor-relations hosts — never a
+    # forum, community, blog or support subdomain that others write on.
+    established: list[str] = []
     for item in (lead.web or {}).get("official_domains") or []:
         domain = str((item or {}).get("domain") or "").lower().removeprefix("www.")
         if domain:
-            hosts.append(domain)
+            established.append(domain)
+    from app.services.discovery.official_domains import is_issuer_voice
+
     out: list[dict[str, Any]] = []
     for mention in (lead.web or {}).get("mentions") or []:
         entry = dict(mention)
         host = (urlsplit(entry.get("url") or "").hostname or "").lower().removeprefix("www.")
-        if hosts and any(host == h or host.endswith("." + h) for h in hosts):
+        if (hosts and any(host == h or host.endswith("." + h) for h in hosts)) or any(
+            is_issuer_voice(d, host) for d in established
+        ):
             # The ISSUER's own words: evidence of what the company says it does (A3), never
             # independent corroboration of it.
             entry["source_class"] = "company_web_page"
@@ -1062,12 +1069,15 @@ async def _attach_official_domains(
     # Read each established official page, one at a time (a shared session).
     if session is None or ctx is None:
         return
-    targets: list[tuple[str, str]] = []
+    targets: list[tuple[str, str, str, str]] = []
     by_id: dict[str, IdentityOutcome] = {}
     for o in todo:
         domains = (o.lead.web or {}).get("official_domains") or []
         if domains:
-            targets.append((o.lead.lead_id, str(domains[0]["domain"])))
+            targets.append((
+                o.lead.lead_id, str(domains[0]["domain"]), o.name or o.lead.name or "",
+                o.ticker or "",
+            ))
             by_id[o.lead.lead_id] = o
     if not targets:
         return
@@ -1076,13 +1086,18 @@ async def _attach_official_domains(
     pages = await read_official_pages(
         session, intent, targets, ctx, cfg=cfg, deps=web_deps, progress=progress
     )
-    for lead_id, entries in pages.by_lead.items():
+    for lead_id, status in pages.status.items():
         outcome = by_id.get(lead_id)
         if outcome is None:
             continue
         web = dict(outcome.lead.web or {})
-        web["mentions"] = [*(web.get("mentions") or []), *entries][:MAX_OFFICIAL_MENTIONS]
-        web["official_page_read"] = True
+        entries = pages.by_lead.get(lead_id) or []
+        # The issuer's passages first: they are the ones A3 may rest on, and a cap must not
+        # drop them in favour of older passages.
+        web["mentions"] = [*entries, *(web.get("mentions") or [])][:MAX_OFFICIAL_MENTIONS]
+        # EVERY attempt leaves a trace, so a reader can follow query → entity → listing →
+        # official domain → fetched page → passage, and see where it stopped.
+        web["official_page"] = {**status, "passages": len(entries)}
         outcome.lead.web = web
 
 

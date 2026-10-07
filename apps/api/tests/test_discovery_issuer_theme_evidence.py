@@ -370,6 +370,12 @@ class TestPipelineHooks:
         entries = pl._a3_mentions(ld, ld.name)
         assert [bool(e.get("issuer_origin")) for e in entries] == [True, False]
 
+    def test_a_forum_subdomain_of_an_official_domain_is_not_issuer_origin(self) -> None:
+        forum = mention("forum.lynasrareearths.com", url="https://forum.lynasrareearths.com/t/1")
+        ir = mention("ir.lynasrareearths.com", url="https://ir.lynasrareearths.com/")
+        ld = lead(forum, ir, official=["lynasrareearths.com"])
+        assert [bool(e.get("issuer_origin")) for e in pl._a3_mentions(ld, ld.name)] == [False, True]
+
 
 # --------------------------------------------------------------------------- #
 # Ranking: fit and evidence are separate; evidence never outranks fit
