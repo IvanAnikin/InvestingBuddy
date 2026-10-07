@@ -1953,3 +1953,44 @@ class TestMiningTradePressIsClassified:
         from app.services.web_research.classify import SC_TRADE_PUBLICATION, classify_source
 
         assert classify_source(f"https://{host}/a").source_class != SC_TRADE_PUBLICATION
+
+
+class TestTheTradePressSweep:
+    """One entity query is restricted to the curated trade-press hosts, so search returns the
+    kind of page rule A3 accepts rather than SEO "top miners" lists."""
+
+    def test_the_plan_carries_one_restricted_entity_query(self) -> None:
+        from app.services.web_research.classify import trade_publication_hosts
+
+        plan = plan_for(build_intent("rare earth and graphite mining companies in Australia"))
+        restricted = [q for q in plan.queries if q.request.include_domains]
+        assert restricted, "the sweep must be in the up-front plan"
+        for q in restricted:
+            assert q.family is QueryFamily.ENTITY
+            assert q.request.include_domains == trade_publication_hosts()
+        # An unrestricted entity query is still planned: the sweep adds to the plan, it
+        # does not replace the open-web query.
+        assert any(
+            q.family is QueryFamily.ENTITY and not q.request.include_domains for q in plan.queries
+        )
+
+    def test_the_restriction_is_exactly_the_classifiers_trade_list(self) -> None:
+        from app.services.web_research import discovery_planner as dp
+        from app.services.web_research.classify import (
+            SC_TRADE_PUBLICATION,
+            classify_source,
+            trade_publication_hosts,
+        )
+
+        sweep = next(t for t in dp.TEMPLATES if t.key == "entity_trade_press")
+        assert sweep.include_domains == trade_publication_hosts()
+        assert sweep.include_domains and all("/" not in h for h in sweep.include_domains)
+        for host in sweep.include_domains:
+            assert classify_source(f"https://{host}/x").source_class == SC_TRADE_PUBLICATION, host
+
+    def test_the_plain_entity_query_still_comes_first(self) -> None:
+        from app.services.web_research import discovery_planner as dp
+
+        by_key = {t.key: t for t in dp.TEMPLATES if t.family is QueryFamily.ENTITY}
+        assert by_key["entity_listed"].priority < by_key["entity_trade_press"].priority
+        assert by_key["entity_trade_press"].include_domains and not by_key["entity_listed"].include_domains

@@ -202,3 +202,17 @@ fixes — a sequencing mistake in the rollout, not a product defect.*
 Evidence the gates work as designed: search found **Anson Resources (ASX: ASN)** via a neighbouring
 company's project page; A1 (search provenance), A2 (ASX directory listing) and A4 passed, A3 correctly
 failed (a competitor's own website is not independent evidence about Anson).
+
+### Discovery — critical minerals, run 2 (`b2ad234a`, after #271) — NOT ACCEPTED (criterion A)
+
+All 6 verification queries now ran (`no_search_provenance` 11 → 6). Search found real ASX names —
+**Lynas Rare Earths, Arafura Rare Earths, Iluka Resources, Hastings Technology Metals, IGO, Mineral
+Resources** — with A1 (search provenance) and A2 (ASX directory) passing and a theme term in each stored
+passage, but **all six came from one page on farmonaut.com**, an SEO "top ASX miners" list on a
+satellite-imagery vendor's blog, correctly classed `unknown_web`. Rule A3 therefore (correctly) refused
+to admit six companies on one promotional list; `web_admitted` stayed 0 and the 3 returned companies
+were again the curated registry's.
+
+**Cause:** search yield, not the gate. The generic entity queries return SEO lists. **Fix (this PR):**
+one entity query is restricted (`include_domains`) to the classifier's own curated trade-press list, so
+results are pages A3 can accept. The restriction is exactly `trade_publication_hosts()`.
