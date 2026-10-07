@@ -295,3 +295,12 @@ were the curated registry's. Criterion A is therefore not met, and is not claime
   (automation); `77adbbfd` was orphaned by a settings restart.
 - **Tests:** integration gate 9,708 passed / 41 skipped / 0 failed (before the live correctives); corrective
   suites 949, 646, 654, 328, 1,427 and 111 passed; every merged PR's CI green on its exact head.
+
+### Discovery — critical minerals, run 4 (`0146d2ce`, after #275's A3 change) — web stage starved
+
+With the corrected A3 deployed, run 4 found **no web leads at all** (`web_leads: 0`): the stage's
+wall-clock budget (360 s) was spent after only 12 fetch attempts — three slow PDF extractions (market-report
+PDFs from the `document` queries, which rarely name a listed company) consumed it, so the entity and
+trade-press pages that name companies were never read ("fetching stopped: budget:max_wall_seconds").
+Generic fix: fetch web pages before PDFs (each group in its own selection order) and skip further PDFs once
+half the wall budget is spent.
