@@ -1,10 +1,11 @@
 # Open-web research — production deployment and acceptance record
 
-> **Status (2026-10-06): LIVE ACCEPTANCE IN PROGRESS — NOT ACCEPTED.**
-> `TAVILY_API_KEY` is configured; search, fetch, corpus ingest and company web research are ON
-> in `ib-stg-api` (Discovery search, follow-up and durable Discovery are still OFF). Rainbow Rare
-> Earths run 1 exposed a retrieval defect (§7); the fix is in review. No acceptance case is
-> claimed passed. This file is the honest record and is updated as each case is run.
+> **Status (2026-10-07): COMPANY RESEARCH VALIDATED LIVE; DISCOVERY ADMISSION BY SEARCH NOT MET.**
+> The open-web path runs in production end to end (Tavily → fetch → extract → corpus → retrieval →
+> council findings with citations) and passes the company-research, regression, whitepaper and
+> recent-news cases. Discovery performs real web search and surfaces genuine long-tail companies, but
+> **no company has been admitted to a shortlist by search** (criteria A and D). The remaining cause is a
+> trust-policy choice for the owner (see §9), not an unfixed defect. Section 8 is the verdict table.
 
 Specification: [`open-web-research-spec.md`](open-web-research-spec.md) ·
 plan: [`open-web-research-implementation-plan.md`](open-web-research-implementation-plan.md) ·
@@ -241,3 +242,56 @@ job completes). Search surfaces genuine long-tail names that no hard-coded list 
 Ioneer, Lynas, Arafura, Iluka, Hastings, IGO, Mineral Resources), shown as *also surfaced* with the
 exact rule that stopped each. **No company has yet been admitted to a shortlist by search**: the shortlists
 were the curated registry's. Criterion A is therefore not met, and is not claimed.
+
+## 8. Final verdicts (live evidence only)
+
+| Case | Verdict | Evidence |
+|---|---|---|
+| A critical-minerals Discovery, search-admitted shortlist | **NOT MET** | 3 runs; `web_admitted: 0`; shortlists were the curated registry's (PRE, RBW, ERA). Real long-tail names surfaced and shown as *also surfaced* with the rule that stopped each (Anson Resources, Ioneer, Lynas, Arafura, Iluka, Hastings, IGO, Mineral Resources). |
+| B Rainbow Rare Earths | **PASS with limits** (run 3 `63a610ea`) | Phalaborwa capex US$325–350m (press) with debt/equity split, Interim Economic Study (NPV10 US$611m, IRR 38%, US$326m capital), Uberaba EA 11 Mar 2026 (NPV10 US$916m, IRR 45%), 85% Phalaborwa / 49% Uberaba, ~1,850 t/yr, first production moved 2028 → H1 2029 (recorded). **Limit:** "No planned annual output tonnage" gap stays open while a finding states ~1,850 t/yr without a planning word — deliberately not closed (over-closure is the worse error). |
+| B Pensana | **PASS** (run 3 `d696dbdd`) | 6 Aug 2026 "Update on Cascade financing" (US$165m; US$15m received), Longonjo 22% built / ~US$135m of ~US$250m committed, production 2027, Stage 1 20,000 t/yr → Stage 2 40,000 t/yr, Saltend refinery scrapped. Older guidance is single-valued in the evidence, so no supersession arises. |
+| B EcoGraf | **PASS** (run 3 `30dc4423`) | 30 Sep 2026 SPP close, KfW IPEX mandate (up to US$105m), EIB grant, offtake 40,000 tpa incl. ThyssenKrupp, Mitsubishi Chemical MOU, SML 733/2025; honest state "FY2026 annual report acquired — figures not yet extracted". |
+| C Southern Copper | **PASS** (`ba5782f7`) | FY2025 Group revenue US$13,420.0m from SEC, OCF/capex/FCF consistent, cash conversion 109.3% = 4,752.1 ÷ 4,348.2, cash not presented as liquidity. Limit: one finding says "no interim revenue" while another cites Q2 2026 net sales. |
+| C Cleveland-Cliffs | **PASS** (`cee90510`) | SEC FY2025 canonical; H1 2026 net income (363) captured from the 10-Q as interim with "not comparable, never annualised"; cash US$57m vs "cash plus ABL liquidity US$3.3bn" kept apart; steel ASP and "+US$240m on pricing" stated factually, no "pricing power" claim. |
+| D additional niches | **NOT MET** (grid `44371d41`, automation `8ca9e615`) | Same pattern: curated shortlists, recalled leads uncorroborated. Medical-imaging, ASX and UK small-cap niches were not run: the cause is shared and unchanged. |
+| E whitepaper / PDF path | **PASS** | Pensana finding `4742893c` cites a corporate-presentation PDF (p.3) reached by a `company_docs` search (request id present) → `application/pdf` 200 → extraction → corpus chunk → finding `ev:c:`; SCCO 10-K PDF (573 chunks), CLF annual report PDF (399), a University of Texas PDF via `competitive`. |
+| F recent news | **PASS** | Finding `27e3ef08` rests on the issuer's 6 Aug 2026 release (found by a `risk` search, fetched from `news.cision.com`, class `company_press_release`, dated 2026-08-06); also rareearthexchanges.com 2026-06-08 and a BBC article 2025-10-16. |
+| G provider outage | **PARTIAL** | Real Tavily returns HTTP 401 to the production adapter (`executed=False`, `error_code='auth'`, one counted call, no results); the orchestrator test asserts `web_search_unavailable`, the "Live web search unavailable" label, recalled leads staying `model_recall`, no fetch. A production outage was NOT induced: that needed overwriting the live credential, which the safety classifier denied. |
+| W7 follow-up + red-team wave | **PASS** (Rainbow `045abb7e`) | 6 gap queries, 9 pages fetched / 8 ingested, 1 challenge resolved, 4 risk-evidence items; report grew to 62 findings. A mid-run restart was recovered by the durable job (attempt 2). |
+
+## 9. Owner decisions and known limitations
+
+1. **Issuer-domain trust (decides A and D).** A company's own page cannot corroborate it (the mention
+   extractor only recognises a company *as listed*, and the issuer's site is `unknown_web` without a
+   verified domain). Admitting search-found companies at the rate the brief expects needs a rule for
+   trusting an issuer domain, e.g. registrable label equals the directory-verified name. That widens what
+   a page can claim about a real company, so it was not made unilaterally.
+2. `V3_DEEPSEEK_SEARCH_ENABLED` is still ON: the replacement is not fully accepted, so it was not retired.
+3. App-setting changes restart the app 5–8 minutes later; confirm the process start time, not `/health`.
+4. FCA NSM and ASX sources remain private-use only.
+
+## 10. Production record
+
+- **Migration head:** 044 (single head; no migration after #264). **Deployed API/web SHA:** `742047c` (main).
+- **Flags ON:** `V3_WEB_SEARCH_ENABLED`, `V3_WEB_SEARCH_PROVIDER=tavily`, `V3_WEB_FETCH_ENABLED`,
+  `V3_WEB_CORPUS_INGEST_ENABLED`, `V3_COMPANY_WEB_RESEARCH_ENABLED`, `V3_DISCOVERY_DURABLE_ENABLED`,
+  `V3_DISCOVERY_WEB_SEARCH_ENABLED`, `V3_WEB_FOLLOWUP_ENABLED` (with `V3_DURABLE_JOBS_ENABLED`).
+  `TAVILY_API_KEY` is configured (value never read back).
+- **Tavily:** 531 query rows (529 executed), **301 real network calls = 301 credits** (the rest served from
+  the same-day cache), 3,824 results; 140 calls on 2026-10-06 and 161 on 2026-10-07 against the 300/day cap.
+  Dollar cost is read from the Tavily dashboard (not derivable from the credit count here).
+- **Fetch/ingest:** 2,295 fetch attempts (1,156 fetched; failures all explicit: 403, captcha, paywall, robots,
+  TDM), 368 web documents, 11,280 chunks.
+- **Implementation PRs (merge SHA):** #257 `faac37c`, #263 `80f4971`, #260 `417f090`, #261 `99953af`,
+  #264 `255e5d4`, #265 `2445fa7`, #262 `0039bf7`, #258 `4ba3950`, #266 `9730abd`.
+- **Corrective PRs found by live acceptance:** #268 `94af591` (corpus search: subject-name stripping,
+  document diversity, page of 12), #269 `1a1b7ea` (planned-output / first-production wording, abbreviation-safe
+  clauses; review caught over-closure), #270 `2ecc450` (stated change targets the new date; "No" is not a
+  project), #271 `57579bd` (bounded corroboration allowance; mining trade press), #272 `927a23b`
+  (trade-press-restricted entity query), #273 `742047c` (verification queries not date-filtered).
+- **Live run ids:** company jobs Rainbow `54ef37ec`, `628aa35e`, `63a610ea`, `045abb7e`; Pensana `b3f01000`,
+  `0e8cb05e`, `d696dbdd`; EcoGraf `0311645d`, `ef3d284f`, `30dc4423`; SCCO `ba5782f7`; CLF `cee90510`.
+  Discovery runs `0bdd19bb`, `b2ad234a`, `29a088cd` (critical minerals), `44371d41` (grid), `8ca9e615`
+  (automation); `77adbbfd` was orphaned by a settings restart.
+- **Tests:** integration gate 9,708 passed / 41 skipped / 0 failed (before the live correctives); corrective
+  suites 949, 646, 654, 328, 1,427 and 111 passed; every merged PR's CI green on its exact head.
