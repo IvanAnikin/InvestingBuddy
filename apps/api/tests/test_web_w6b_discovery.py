@@ -2269,3 +2269,50 @@ class TestIssuerVoiceHosts:
         from app.services.discovery.official_domains import is_issuer_voice
 
         assert is_issuer_voice("lynasrareearths.com", host) is ok
+
+
+class TestTheOfficialPageAllowanceIsRelativeToWhatTheRunSpent:
+    async def test_a_run_that_already_fetched_past_its_ceiling_can_still_read_the_pages(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Live run 6: five official pages were each refused ``budget:max_fetches`` because the
+        plan and the corroboration allowance had already spent past base + targets."""
+        real = ds.budget_for_run
+
+        async def spent(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+            b = await real(*a, **k)
+            b.fetches = b.limits.max_fetches + 18  # already well past the base ceiling
+            return b
+
+        monkeypatch.setattr(ds, "budget_for_run", spent)
+        h.net.pages[OFFICIAL] = OFFICIAL_PAGE
+        out = await ds.read_official_pages(
+            h.session, h.intent, [("lead-1", "zeta-gallium.example", "Zeta Gallium Limited", "ZGL")],
+            ds.DiscoveryWebContext(run_id=h.run_id), cfg=cfg(), deps=h.deps(),
+        )
+        assert out.status["lead-1"]["read"] is True, out.status
+        assert out.by_lead["lead-1"], "the issuer's passage is returned"
+        assert OFFICIAL in h.net.requested
+
+    async def test_it_is_still_bounded_by_the_number_of_targets(
+        self, h: H, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = ds.budget_for_run
+        seen: dict[str, int] = {}
+
+        async def spent(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+            b = await real(*a, **k)
+            b.fetches = 7
+            seen["before"] = b.fetches
+            return b
+
+        monkeypatch.setattr(ds, "budget_for_run", spent)
+        urls = [f"https://s{i}.example/" for i in range(3)]
+        for u in urls:
+            h.net.pages[u] = OFFICIAL_PAGE
+        targets = [(f"l{i}", f"s{i}.example", "Zeta Gallium Limited", "ZGL") for i in range(3)]
+        await ds.read_official_pages(
+            h.session, h.intent, targets, ds.DiscoveryWebContext(run_id=h.run_id),
+            cfg=cfg(), deps=h.deps(),
+        )
+        assert len([u for u in h.net.requested if u in urls]) == 3, "one page per target, no more"

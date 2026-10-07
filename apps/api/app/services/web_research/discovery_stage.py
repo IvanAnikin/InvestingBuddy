@@ -1956,10 +1956,13 @@ async def _read_official(
     now = deps.now or datetime.now(timezone.utc)
     budget = await budget_for_run(session, f"discovery_{depth}", cfg=cfg, now=now, clock=deps.clock)
     await _prime_budget(session, budget, ctx.run_id)
-    # One page per target on top of the plan, and a wall clock of its own.
+    # ONE page per target beyond what this run has ALREADY fetched (the plan's pages and the
+    # corroboration allowance's included), and a wall clock of its own. Relative to the
+    # run's actual use, not to the base ceiling: on the live run every read was refused
+    # ``budget:max_fetches`` because earlier stages had already spent past base + targets.
     budget.limits = replace(
         budget.limits,
-        max_fetches=budget.limits.max_fetches + len(targets),
+        max_fetches=max(budget.limits.max_fetches, budget.fetches) + len(targets),
         max_wall_seconds=OFFICIAL_PAGES_WALL_SECONDS,
     )
     fetch_ctx = fetch_mod.WebFetchContext(discovery_run_id=ctx.run_id)
