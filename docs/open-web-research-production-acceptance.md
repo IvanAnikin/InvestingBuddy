@@ -216,3 +216,28 @@ were again the curated registry's.
 **Cause:** search yield, not the gate. The generic entity queries return SEO lists. **Fix (this PR):**
 one entity query is restricted (`include_domains`) to the classifier's own curated trade-press list, so
 results are pages A3 can accept. The restriction is exactly `trade_publication_hosts()`.
+
+### Discovery — runs 3 and the grid niche (`29a088cd`, `44371d41`, after #272) — NOT ACCEPTED (criterion A)
+
+The trade-press query worked mechanically (`trade_publication` pages 0 → 2) but `web_admitted` is
+still 0 in both runs, and `recall_verification` is `attempted 6, corroborated 0` in every run. Tracing
+the grid niche's verification queries found two further causes:
+
+1. **Date-filtered name checks (fixed here).** The six verification queries inherited the planner's
+   3-year date window, so three of them ("Prysmian S.p.A. …", "ABB Ltd …", "Eaton Corporation plc …")
+   returned nothing: a company's own pages are undated and the filter drops them.
+2. **A design limit, not a defect — OWNER DECISION NEEDED.** The mention extractor recognises a
+   company only *as a listed company* (a name beside a ticker, venue or ISIN, or a legal-form name with
+   the venue in the same paragraph). A company's own page (nexans.com, siemens-energy.com — both were
+   fetched and ingested) never prints its own ticker, so it can never corroborate itself; and the
+   issuer's own site is `unknown_web` because no issuer domain is verified for a recalled lead, so rule
+   A3 refuses it. Letting an issuer-own-site page count would need a rule for trusting an issuer domain
+   (e.g. registrable label equals the directory-verified name). That widens what a page can claim about a
+   real company and is a trust-policy choice, so it has **not** been made here.
+
+**Where Discovery stands:** the real-web machinery works end to end (Tavily executed, pages fetched and
+ingested, mentions extracted, identities verified against the ASX/LSE/Euronext directories, durable
+job completes). Search surfaces genuine long-tail names that no hard-coded list holds (Anson Resources,
+Ioneer, Lynas, Arafura, Iluka, Hastings, IGO, Mineral Resources), shown as *also surfaced* with the
+exact rule that stopped each. **No company has yet been admitted to a shortlist by search**: the shortlists
+were the curated registry's. Criterion A is therefore not met, and is not claimed.

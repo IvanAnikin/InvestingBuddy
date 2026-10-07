@@ -679,6 +679,7 @@ def _make_request(
     pdf: bool = False,
     topic: str = "general",
     include_domains: tuple[str, ...] = (),
+    windowed: bool = True,
 ) -> tuple[SearchRequest | None, str | None]:
     clean = sanitise_query(text, filetype_pdf=pdf, private_tokens=private_tokens)
     if not clean.ok:
@@ -689,8 +690,8 @@ def _make_request(
             query=clean.text,
             family=family,
             max_results=RESULTS_PER_QUERY,
-            date_from=today - timedelta(days=days),
-            date_to=today,
+            date_from=today - timedelta(days=days) if windowed else None,
+            date_to=today if windowed else None,
             country=country,
             language=language,
             include_domains=include_domains,

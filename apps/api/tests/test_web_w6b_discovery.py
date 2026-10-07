@@ -1994,3 +1994,32 @@ class TestTheTradePressSweep:
         by_key = {t.key: t for t in dp.TEMPLATES if t.family is QueryFamily.ENTITY}
         assert by_key["entity_listed"].priority < by_key["entity_trade_press"].priority
         assert by_key["entity_trade_press"].include_domains and not by_key["entity_listed"].include_domains
+
+
+class TestVerificationQueriesAreNotDateFiltered:
+    """A name check must not carry the planner's freshness window: a company's own pages are
+    undated, and a date filter drops them (three of six verification queries came back empty
+    on the first live runs)."""
+
+    def test_a_planner_request_is_windowed_and_a_verification_request_is_not(self) -> None:
+        from datetime import date
+
+        from app.services.web_research import discovery_planner as dp
+
+        windowed, _ = dp._make_request(
+            "nexans grid", None, family=QueryFamily.ENTITY, today=date(2026, 10, 7),
+            private_tokens=(), origin="template", version="w6b.1:x",
+        )
+        bare, _ = dp._make_request(
+            "nexans grid", None, family=QueryFamily.ENTITY, today=date(2026, 10, 7),
+            private_tokens=(), origin="recall_verification", version="w6b.1:x", windowed=False,
+        )
+        assert windowed is not None and windowed.date_from is not None and windowed.date_to
+        assert bare is not None and bare.date_from is None and bare.date_to is None
+
+    async def test_the_recall_verification_search_sends_no_date_window(self, h: H) -> None:
+        h.serve_obscure()
+        await h.stage(recall=_Recall([ZETA]))
+        checks = [r for r in h.provider.requests if r.origin == "recall_verification"]
+        assert checks, "a verification query was issued"
+        assert all(r.date_from is None and r.date_to is None for r in checks)
