@@ -1721,6 +1721,10 @@ async def _corroborate(
             f"{lead.name} {subject}".strip(), None, family=QueryFamily.ENTITY, today=today,
             private_tokens=ctx.private_tokens, origin=ORIGIN_RECALL_VERIFICATION,
             version=f"{dp.DISCOVERY_TEMPLATE_VERSION}:recall_verify",
+            # A NAME check, not a freshness query: a company's own pages carry no
+            # publication date, and a date filter drops them. Three of six verification
+            # queries returned nothing on the first live runs ("Prysmian S.p.A. …").
+            windowed=False,
         )
         if request is None:
             out.notes.append(f"a verification query was refused ({refusal})")
