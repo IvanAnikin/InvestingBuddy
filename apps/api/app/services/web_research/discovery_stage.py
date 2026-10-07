@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -1853,6 +1854,274 @@ async def _corroborate(
 
 
 # --------------------------------------------------------------------------- #
+# The issuer's own official page (owner decision 2026-10-07, ADR-057)
+# --------------------------------------------------------------------------- #
+
+MAX_OFFICIAL_PASSAGES = 3
+OFFICIAL_PASSAGE_MIN_CHARS = 40
+METHOD_OFFICIAL_PAGE = "official_domain_page"
+#: The whole official-page read is bounded on its own clock: the stage's wall budget is a
+#: fresh one per budget object, so the cap is stated here rather than inherited.
+OFFICIAL_PAGES_WALL_SECONDS = 120.0
+#: "we", "our", "the Company", "the Group": the page speaking about ITSELF.
+_FIRST_PERSON = re.compile(r"\b(?:we|our|us|the\s+company|the\s+group)\b", re.IGNORECASE)
+
+
+@dataclass
+class OfficialPages:
+    """What reading the issuers' OFFICIAL pages found, per lead."""
+
+    #: lead_id -> mention-shaped passages from the issuer's own page (theme only).
+    by_lead: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: lead_id -> what happened to that lead's page read, for EVERY attempt.
+    status: dict[str, dict[str, Any]] = field(default_factory=dict)
+    attempted: int = 0
+    read: int = 0
+    notes: list[str] = field(default_factory=list)
+    units: ConsumptionUnits = field(default_factory=ConsumptionUnits)
+
+
+def passage_ties_company_to_theme(
+    text: str, themes: Sequence[str], *, name_tokens: Sequence[str], ticker: str | None
+) -> bool:
+    """A paragraph of the issuer's OWN page that ties THE COMPANY to the theme.
+
+    A theme term alone is not enough — "Rare earth elements are used in magnets…" on a
+    company page is an industry explainer. The paragraph must also speak as or about the
+    company: a distinctive token of its verified name, its ticker, or a first-person marker.
+    (Two theme terms are NOT enough: an industry explainer can name several.)
+    """
+    if not themes:
+        return False
+    folded = fold(text)
+    if any(tok and tok in folded for tok in name_tokens):
+        return True
+    if ticker and re.search(rf"\b{re.escape(ticker)}\b", text):
+        return True
+    return bool(_FIRST_PERSON.search(text))
+
+
+async def read_official_pages(
+    session: Any,
+    intent: Any,
+    targets: Sequence[tuple[str, str, str, str]],
+    ctx: DiscoveryWebContext,
+    *,
+    cfg: Any,
+    deps: DiscoveryWebDeps | None = None,
+    progress: ProgressHook | None = None,
+) -> OfficialPages:
+    """Read each target's OFFICIAL page and return its theme passages. **Never raises**.
+
+    ``targets`` are ``(lead_id, official_domain, company_name, ticker)`` whose domain the
+    platform has INDEPENDENTLY established as that issuer's (``official_domains``): the page
+    is the company's own words, so a paragraph that ties the company to a theme term ties the
+    verified issuer to the thesis. The page is fetched under the same open-web policy as any
+    other (robots, TDM, paywall and redirect rules), must END on the issuer's own voice
+    (the domain, its www or an investor-relations host) after redirects, and is ingested into
+    the corpus so its passage is citable. Each target runs in its own savepoint. Nothing here
+    establishes a domain: that already happened, from an independent source.
+    """
+    deps = deps or DiscoveryWebDeps()
+    out = OfficialPages()
+    if not targets or not stage_enabled(cfg) or not bool(
+        getattr(cfg, "v3_web_fetch_enabled", False)
+    ):
+        return out
+    try:
+        return await _read_official(session, intent, targets, ctx, cfg, deps, progress, out)
+    except _Abort as abort:
+        raise abort.original from None
+    except Exception as exc:  # noqa: BLE001 - an unread page leaves the lead where it was
+        out.notes.append(f"reading official pages raised {type(exc).__name__} and was isolated")
+        return out
+
+
+async def _read_official(
+    session: Any,
+    intent: Any,
+    targets: Sequence[tuple[str, str, str, str]],
+    ctx: DiscoveryWebContext,
+    cfg: Any,
+    deps: DiscoveryWebDeps,
+    progress: ProgressHook | None,
+    out: OfficialPages,
+) -> OfficialPages:
+    from app.services.web_research import fetch as fetch_mod
+
+    facts = dp.facts_from_intent(intent)
+    vocab = theme_vocabulary(facts)
+    terms = tuple(dp.theme_terms(facts))
+    depth = _depth(cfg)
+    now = deps.now or datetime.now(timezone.utc)
+    budget = await budget_for_run(session, f"discovery_{depth}", cfg=cfg, now=now, clock=deps.clock)
+    await _prime_budget(session, budget, ctx.run_id)
+    # One page per target on top of the plan, and a wall clock of its own.
+    budget.limits = replace(
+        budget.limits,
+        max_fetches=budget.limits.max_fetches + len(targets),
+        max_wall_seconds=OFFICIAL_PAGES_WALL_SECONDS,
+    )
+    fetch_ctx = fetch_mod.WebFetchContext(discovery_run_id=ctx.run_id)
+    await _progress(progress, PROGRESS_FETCH)
+    for lead_id, domain, name, ticker in targets:
+        refusal = budget.fetch_refusal()
+        if refusal is not None:
+            out.notes.append(f"official pages: {refusal}")
+            out.status[lead_id] = {"read": False, "reason": refusal}
+            continue
+        out.attempted += 1
+        try:
+            async with session.begin_nested():
+                entries, status = await _read_one(
+                    session, fetch_ctx, budget, domain, name, ticker, vocab, terms, depth,
+                    cfg, deps, ctx,
+                )
+        except Exception as exc:  # noqa: BLE001 - one site costs that lead only
+            out.status[lead_id] = {"read": False, "reason": type(exc).__name__[:60]}
+            continue
+        out.status[lead_id] = status
+        if status.get("read"):
+            out.read += 1
+        if entries:
+            out.by_lead[lead_id] = entries
+    if ctx.commit is not None:
+        await ctx.commit()
+    return out
+
+
+async def _read_one(
+    session: Any,
+    fetch_ctx: Any,
+    budget: WebResearchBudget,
+    domain: str,
+    name: str,
+    ticker: str,
+    vocab: ce.ThemeVocabulary,
+    terms: tuple[str, ...],
+    depth: str,
+    cfg: Any,
+    deps: DiscoveryWebDeps,
+    ctx: DiscoveryWebContext,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """One issuer's official page → (passages, status)."""
+    from types import SimpleNamespace
+
+    from app.services.discovery.identity import name_tokens
+    from app.services.discovery.official_domains import is_issuer_voice
+    from app.services.web_research import fetch as fetch_mod
+    from app.services.web_research import ingest as ingest_mod
+    from app.services.web_research.classify import classify_source
+    from app.services.web_research.extract import extract_web_document
+
+    fetch_fn: FetchFn = deps.fetch or fetch_mod.open_web_fetch
+    ingest_on = ingest_mod.ingest_enabled(cfg)
+    url = f"https://{domain}/"
+    status: dict[str, Any] = {"read": False, "url": url, "domain": domain}
+    fetched = await fetch_fn(
+        session, url, context=fetch_ctx, budget=budget, origin=fetch_mod.ORIGIN_LEAD,
+        **dict(deps.fetch_kwargs),
+    )
+    final = fetched.final_url or fetched.requested_url or url
+    attempt = getattr(fetched, "attempt_id", None)
+    attempt_id = str(attempt) if attempt else None
+    status["fetch_attempt_id"] = attempt_id
+    if not fetched.ok:
+        status["reason"] = fetched.failure_code or str(fetched.status)
+        return [], status
+    # The bytes must come from the issuer's OWN voice, not a redirect target and not a
+    # forum/blog/community subdomain of its domain.
+    if not is_issuer_voice(domain, host_of(final)):
+        status["reason"] = "redirected_off_the_issuers_voice"
+        return [], status
+    if ingest_on:
+        prepared = await ingest_mod.prepare_web_document(
+            fetched, cfg=cfg, provider=None, subject_scope="theme",
+            theme_key=theme_key_for_run(ctx.run_id), candidates=(), issuer_domains=(domain,),
+            query_terms=terms, depth=depth, pool=deps.pool, store=deps.store, now=deps.now,
+        )
+        if isinstance(prepared, ingest_mod.WebIngestResult):
+            status["reason"] = prepared.reason or "not_ingested"
+            return [], status
+        extraction = prepared.extraction
+        source_class = prepared.classification.source_class
+        stored = await ingest_mod.store_web_document(
+            session, prepared, cfg=cfg, store=deps.store,
+            backend=ctx.search_backend or deps.search_backend, now=deps.now,
+        )
+        version_id = stored.version_id if stored.stored else None
+    else:
+        extraction = await extract_web_document(
+            raw=fetched.content, content_class=fetched.content_class, cfg=cfg, url=final,
+            charset=fetched.charset, js_required=bool(getattr(fetched, "js_required", False)),
+            query_terms=terms, depth=depth, pool=deps.pool, candidates=(),
+        )
+        if not extraction.extracted:
+            status["reason"] = extraction.failure_code or "extraction_failed"
+            return [], status
+        source_class = classify_source(final, issuer_domains=(domain,)).source_class
+        version_id = None
+    if extraction.injection_suspect:
+        status["reason"] = "injection_suspect"
+        return [], status
+    status["read"] = True
+    blocks, _tables = _blocks_and_tables(extraction)
+    # Only DISTINCTIVE name words tie a passage to the company: "gallium" in "Zeta Gallium
+    # Limited" is the theme itself, and "rare"/"earths"/"mining" are generic. Matching those
+    # would let any industry sentence on the page qualify.
+    from app.services.discovery.identity import _GENERIC_TOKENS  # noqa: PLC2701
+
+    theme_words = {w for phrase in vocab.phrases for w in fold(phrase).split()}
+    tokens = [
+        t for t in name_tokens(name)
+        if t not in _GENERIC_TOKENS and t not in theme_words
+        and not any(t.startswith(w) or w.startswith(t) for w in theme_words if len(w) >= 4)
+    ]
+    scored: list[tuple[int, int, str, tuple[str, ...]]] = []
+    for position, block in enumerate(blocks):
+        text = " ".join(block.split())
+        if len(text) < OFFICIAL_PASSAGE_MIN_CHARS:
+            continue
+        found = vocab.match(text)
+        if found and passage_ties_company_to_theme(
+            text, found, name_tokens=tokens, ticker=ticker or None
+        ):
+            scored.append((-len(found), position, text, found))
+    scored.sort(key=lambda row: (row[0], row[1]))
+    chunk_index = await _chunk_index(session, version_id) if scored else []
+    entries: list[dict[str, Any]] = []
+    for _neg, _pos, text, found in scored:
+        if len(entries) >= MAX_OFFICIAL_PASSAGES:
+            break
+        passage = text[: ce.MAX_PASSAGE_CHARS]
+        ref = passage_ref(attempt_id, passage)
+        chunk_id = _find_chunk(chunk_index, SimpleNamespace(passage=passage))
+        if ingest_on and not chunk_id:
+            continue  # a passage that resolves to no stored chunk cannot be cited
+        entries.append({
+            "evidence_id": chunk_id or ref,
+            "passage_ref": ref,
+            "kind": "paragraph",
+            "method": METHOD_OFFICIAL_PAGE,
+            "source_class": source_class,
+            "url": final,
+            "domain": host_of(final),
+            "hosts": [],
+            "dimensions": ["theme_relevance"],
+            "theme_terms": list(found)[:6],
+            "catalyst_terms": [],
+            "risk_terms": [],
+            "passage": passage,
+            "injection_suspect": False,
+            "query_id": None,
+            "fetch_attempt_id": attempt_id,
+        })
+    if not entries:
+        status["reason"] = "no_passage_ties_the_company_to_the_theme"
+    return entries, status
+
+
+# --------------------------------------------------------------------------- #
 # Theme key of a candidate's run (so ``search_theme_corpus`` works for its research)
 # --------------------------------------------------------------------------- #
 
@@ -1894,7 +2163,9 @@ __all__ = [
     "DiscoveryWebDeps",
     "DiscoveryWebResult",
     "RecallCorroboration",
+    "OfficialPages",
     "corroborate_recall_leads",
+    "read_official_pages",
     "passage_ref",
     "run_discovery_web_stage",
     "select_discovery_results",

@@ -177,6 +177,21 @@ def domain_covers(official: str, host: str | None) -> bool:
     return bool(h and d) and (h == d or h.endswith("." + d))
 
 
+#: Hosts of an official domain that speak for the ISSUER: the apex, ``www`` and the investor
+#: relations sites. A ``forum.``, ``community.``, ``blog.`` or ``support.`` subdomain can carry
+#: other people's words, so it is not the company's voice.
+_ISSUER_VOICE_LABELS = ("www", "ir", "investor", "investors", "investorrelations")
+
+
+def is_issuer_voice(official: str, host: str | None) -> bool:
+    """``host`` is the official domain itself, its ``www``, or an investor-relations host."""
+    h = (host or "").lower().strip(".")
+    d = official.lower().strip(".").removeprefix("www.")
+    if not h or not d:
+        return False
+    return h == d or any(h == f"{label}.{d}" for label in _ISSUER_VOICE_LABELS)
+
+
 # --------------------------------------------------------------------------- #
 # Lookups
 # --------------------------------------------------------------------------- #
@@ -410,6 +425,7 @@ __all__ = [
     "OfficialDomain",
     "domain_covers",
     "domains_in_letterhead",
+    "is_issuer_voice",
     "establish_official_domains",
     "reset_cache",
 ]

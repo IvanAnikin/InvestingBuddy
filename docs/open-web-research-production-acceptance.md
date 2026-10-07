@@ -304,3 +304,16 @@ PDFs from the `document` queries, which rarely name a listed company) consumed i
 trade-press pages that name companies were never read ("fetching stopped: budget:max_wall_seconds").
 Generic fix: fetch web pages before PDFs (each group in its own selection order) and skip further PDFs once
 half the wall budget is spent.
+
+### Discovery — critical minerals, run 5 (`8fc0ec31`, after #276) — the issuer's own page was never read
+
+The web stage now reads 26+ pages and surfaces many real search leads (42), all passing A1 and A2: Mineral
+Resources, IGO, Arafura, Argosy Minerals, Core Lithium, Delta Lithium, Hastings, Iluka, Lynas, Altair
+Minerals, Andean Silver. **One was admitted on independent evidence** (Lithium Argentina, theme `independent`,
+corroboration `independently_corroborated`) and then correctly **excluded by the geography constraint**
+(Canada). Official domains were established for IGO (`igo.com.au`), Arafura (`arultd.com`) and Lynas
+(`lynasrareearths.com`) from exchange announcement letterheads — and they still failed A3, because the
+platform never fetched those issuers' own pages: nothing in the search results was an issuer page, and
+nothing asked for one. Fix: once an official domain is independently established, the platform reads that
+issuer's official page (same open-web policy, must stay on the official domain after redirects, ingested into
+the corpus so the passage is citable) and records its theme passages as issuer-origin evidence.
