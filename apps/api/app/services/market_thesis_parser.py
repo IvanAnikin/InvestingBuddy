@@ -118,6 +118,24 @@ _THEME_TABLE: dict[str, dict[str, Any]] = {
         "sectors": ["Industrials", "Technology"],
         "industries": ["Robotics & Automation"],
     },
+    "healthcare_technology": {
+        "phrases": [
+            "medical imaging",
+            "diagnostic imaging",
+            "radiology",
+            "healthcare software",
+            "health software",
+            "healthcare technology",
+            "health information technology",
+            "digital health",
+            "medtech",
+            "medical technology",
+            "medical devices",
+            "clinical software",
+        ],
+        "sectors": ["Healthcare"],
+        "industries": ["Medical Devices", "Health Information Technology"],
+    },
     "biotech_pharma": {
         "phrases": [
             "biotech",
@@ -267,6 +285,13 @@ _THEME_DISPLAY: dict[str, dict[str, Any]] = {
         "examples": [
             "Japanese industrial robotics companies",
             "Factory automation suppliers",
+        ],
+    },
+    "healthcare_technology": {
+        "label": "Medical imaging / healthcare technology",
+        "examples": [
+            "Medical imaging and healthcare software companies",
+            "European medical technology suppliers",
         ],
     },
     "biotech_pharma": {

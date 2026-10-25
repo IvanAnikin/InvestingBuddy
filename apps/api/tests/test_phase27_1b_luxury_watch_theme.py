@@ -696,6 +696,7 @@ def test_34_parser_supported_themes_include_luxury_and_the_originals() -> None:
         "grid_electrification",
         "robotics_automation",
         "biotech_pharma",
+        "healthcare_technology",
         "banks_fintech",
         "mining_materials",
         "ai_infrastructure",

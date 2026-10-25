@@ -82,6 +82,7 @@ _THEME_WORDS: dict[str, str] = {
     "grid_electrification": "power grid and electrification equipment",
     "robotics_automation": "robotics and industrial automation",
     "biotech_pharma": "biotechnology and pharmaceuticals",
+    "healthcare_technology": "medical imaging and healthcare technology",
     "banks_fintech": "banks and fintech",
     "ai_infrastructure": "AI infrastructure and data centres",
 }

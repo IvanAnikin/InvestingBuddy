@@ -550,6 +550,7 @@ _THEME_WORDS_RE: dict[str, str] = {
     "luxury_goods": r"luxury|watch(?:es)?|jewell?ery",
     "robotics_automation": r"robotics?|automation",
     "biotech_pharma": r"biotech\w*|pharma\w*",
+    "healthcare_technology": r"medical|medtech|healthcare|radiology|imaging",
     "banks_fintech": r"banks?|fintech|payments?",
 }
 
