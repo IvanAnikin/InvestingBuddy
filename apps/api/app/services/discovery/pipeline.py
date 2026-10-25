@@ -1034,7 +1034,7 @@ async def _attach_official_domains(
     guarded = [
         _strict_name_guard(o) if o.lead.discovery_mode == "search" else o for o in outcomes
     ]
-    todo = [
+    qualifying = [
         o for o in guarded
         if _needs_official_domain(
             o,
@@ -1043,7 +1043,17 @@ async def _attach_official_domains(
                 and adm.search_lead_has_provenance(o.lead.web, executed_query_ids)
             ) or o.lead.discovery_mode == "model_recall",
         )
-    ][:MAX_OFFICIAL_DOMAIN_LOOKUPS]
+    ]
+    # Search-found leads are the ones that can be ADMITTED: they take the lookup budget first,
+    # so a model-recalled name (which can never be admitted on this path) cannot starve them.
+    qualifying.sort(key=lambda o: o.lead.discovery_mode != "search")
+    todo = qualifying[:MAX_OFFICIAL_DOMAIN_LOOKUPS]
+    # A lead that qualified but was not looked up says so, instead of silently carrying nothing.
+    for o in qualifying[MAX_OFFICIAL_DOMAIN_LOOKUPS:]:
+        o.lead.web = {
+            **(o.lead.web or {}),
+            "official_page": {"read": False, "reason": "lookup_cap", "passages": 0},
+        }
 
     async def one(outcome: IdentityOutcome) -> None:
         async with gate:
@@ -1079,6 +1089,12 @@ async def _attach_official_domains(
                 o.ticker or "",
             ))
             by_id[o.lead.lead_id] = o
+    for o in todo:
+        if o.lead.lead_id not in by_id:
+            o.lead.web = {
+                **(o.lead.web or {}),
+                "official_page": {"read": False, "reason": "domain_not_established", "passages": 0},
+            }
     if not targets:
         return
     from app.services.web_research.discovery_stage import read_official_pages

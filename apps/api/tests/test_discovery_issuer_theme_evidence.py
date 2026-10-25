@@ -619,6 +619,43 @@ class TestTheNameGuardRunsBeforeAnySpend:
         assert calls == []
 
 
+class TestTheLookupBudgetGoesToSearchLeadsFirst:
+    @pytest.mark.asyncio
+    async def test_recall_leads_cannot_starve_search_leads_and_every_skip_is_traced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dataclasses import replace
+
+        from app.services.discovery.identity import IDENTITY_VERIFIED, IdentityOutcome
+
+        looked_up: list[str] = []
+
+        async def spy(**kwargs: Any) -> list[Any]:
+            looked_up.append(kwargs["ticker"])
+            return []
+
+        monkeypatch.setattr(od, "establish_official_domains", spy)
+        monkeypatch.setattr(pl, "_strict_name_guard", lambda o: o)
+        monkeypatch.setattr(adm, "search_lead_has_provenance", lambda *_a, **_k: True)
+        monkeypatch.setattr(pl, "MAX_OFFICIAL_DOMAIN_LOOKUPS", 3)
+
+        def outcome(ticker: str, mode: str) -> IdentityOutcome:
+            base = lead()
+            ld = replace(base, ticker=ticker, discovery_mode=mode, web={"mentions": []})
+            return IdentityOutcome(
+                lead=ld, status=IDENTITY_VERIFIED, ticker=ticker, exchange="AU", name=ticker
+            )
+
+        outs = [outcome("R1", "model_recall"), outcome("R2", "model_recall"),
+                outcome("S1", "search"), outcome("S2", "search"), outcome("S3", "search"),
+                outcome("S4", "search")]
+        await pl._attach_official_domains(outs, cfg=None, fetcher=None, gate=_Gate())
+        assert sorted(looked_up) == ["S1", "S2", "S3"], "search leads take the budget first"
+        by = {o.ticker: (o.lead.web or {}).get("official_page") for o in outs}
+        assert by["S4"]["reason"] == "lookup_cap" and by["R1"]["reason"] == "lookup_cap"
+        assert by["R2"]["reason"] == "lookup_cap"
+
+
 class _Gate:
     async def __aenter__(self) -> None:
         return None
