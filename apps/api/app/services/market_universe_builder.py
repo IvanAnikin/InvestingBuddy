@@ -126,6 +126,12 @@ THEME_COMPANY_REGISTRY: dict[str, list[dict[str, str]]] = {
         _entry("6506", "Yaskawa Electric Corp.", "TSE", "Japan", "Industrials", "Robotics & Automation"),
         _entry("6861", "Keyence Corp.", "TSE", "Japan", "Technology", "Robotics & Automation"),
     ],
+    "healthcare_technology": [
+        _entry("GEHC", "GE HealthCare Technologies Inc.", "US", "United States", "Healthcare", "Medical Devices"),
+        _entry("VEEV", "Veeva Systems Inc.", "US", "United States", "Healthcare", "Health Information Technology"),
+        _entry("SHL", "Siemens Healthineers AG", "XETRA", "Germany", "Healthcare", "Medical Devices"),
+        _entry("PME", "Pro Medicus Limited", "AU", "Australia", "Healthcare", "Health Information Technology"),
+    ],
     "biotech_pharma": [
         _entry("VRTX", "Vertex Pharmaceuticals Inc.", "US", "United States", "Healthcare", "Biotechnology"),
         _entry("REGN", "Regeneron Pharmaceuticals Inc.", "US", "United States", "Healthcare", "Biotechnology"),

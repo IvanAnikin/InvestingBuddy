@@ -37,6 +37,7 @@ const THEME_LABEL: Record<string, string> = {
   grid_electrification: "Grid & electrification",
   robotics_automation: "Robotics & automation",
   biotech_pharma: "Biotech & pharma",
+  healthcare_technology: "Medical imaging & healthcare tech",
   banks_fintech: "Banks & fintech",
   ai_infrastructure: "AI infrastructure",
 };

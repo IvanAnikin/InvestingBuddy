@@ -104,6 +104,7 @@ THEME_NOUNS: dict[str, str] = {
     "grid_electrification": "grid electrification equipment",
     "robotics_automation": "industrial robotics automation",
     "biotech_pharma": "biotechnology",
+    "healthcare_technology": "medical imaging and healthcare software",
     "banks_fintech": "fintech",
     "ai_infrastructure": "AI data centre infrastructure",
 }
@@ -133,6 +134,11 @@ VALUE_CHAIN_TERMS: dict[str, tuple[str, ...]] = {
     ),
     "luxury_goods": ("leather goods", "watch components", "fine jewellery", "fragrance"),
     "robotics_automation": ("servo drive", "harmonic reducer", "machine vision", "robot arm"),
+    "healthcare_technology": (
+        "picture archiving communication system",
+        "radiology software",
+        "diagnostic imaging equipment",
+    ),
     "biotech_pharma": (
         "contract manufacturing organisation",
         "active pharmaceutical ingredient",
@@ -304,6 +310,12 @@ THEME_KEYWORDS: dict[str, tuple[str, ...]] = {
         "electrification",
     ),
     "robotics_automation": ("robot", "robotics", "cobot", "industrial automation", "servo"),
+    "healthcare_technology": (
+        "medical imaging",
+        "radiology",
+        "healthcare software",
+        "medical device",
+    ),
     "biotech_pharma": (
         "biotech",
         "pharmaceutical",
@@ -401,7 +413,7 @@ class DTemplate:
 
 
 _SMALL = ("micro_cap", "small_cap", "mid_cap")
-_NO_SHORTAGE = ("luxury_goods", "banks_fintech", "biotech_pharma")
+_NO_SHORTAGE = ("luxury_goods", "banks_fintech", "biotech_pharma", "healthcare_technology")
 
 TEMPLATES: tuple[DTemplate, ...] = (
     # -- ENTITY ------------------------------------------------------------------
