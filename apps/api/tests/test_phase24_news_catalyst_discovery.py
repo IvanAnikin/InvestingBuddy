@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -92,7 +93,9 @@ def _submissions(forms_items):
     }
 
 
-_RECENT = "2026-07-01"
+# Relative to today: a fixed date silently aged out of the 120-day lookback and failed CI.
+_RECENT = (date.today() - timedelta(days=14)).isoformat()
+_OLDER_10K = (date.today() - timedelta(days=45)).isoformat()
 
 
 def _sec_events(company_name="Apple Inc."):
@@ -100,7 +103,7 @@ def _sec_events(company_name="Apple Inc."):
         [
             ("8-K", _RECENT, "2.02,9.01"),
             ("8-K", _RECENT, "5.02"),
-            ("10-K", "2026-06-15", ""),
+            ("10-K", _OLDER_10K, ""),
         ]
     )
     return parse_recent_filings(
