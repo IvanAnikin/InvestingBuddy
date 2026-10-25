@@ -58,13 +58,13 @@ produce explicit `web_search_unavailable` states.
 
 | Case | Status |
 |---|---|
-| A critical-minerals niche Discovery (query → Tavily execution → ranked result → fetched source → thematic evidence → official listing verification → admission) | NOT RUN |
+| A critical-minerals niche Discovery (query → Tavily execution → ranked result → fetched source → thematic evidence → official listing verification → admission) | **PARTIAL** — 1 search-admitted candidate, traced end to end (run 7) |
 | B Rainbow Rare Earths / Pensana / EcoGraf fresh deep runs, full read-through | NOT RUN |
 | C Southern Copper / Cleveland-Cliffs regressions | NOT RUN |
-| D additional niches (EU grid/data-centre, industrial automation, medical imaging, ASX niche, UK small-cap) | NOT RUN |
+| D additional niches | **0 admitted in 5 runs; gates behaved correctly** | grid `33801653`, automation `c5a68775`, ASX `f150364d` / `f9a648d6`, UK small-cap `16cef339`. Search surfaced real names (Lynas, IGO, Core Lithium, Elevra, Lindian, Meteoric, Midas, Cognex, Symbotic …); each stopped on a named rule: wrong geography, size, no theme passage on the issuer page, no independent official domain, robots/403 on the issuer site. **Medical imaging / healthcare software could not be run**: the product has no matching theme and rejects the thesis with HTTP 422 ("did not match any known theme"). LSE/AIM/TSX/TSXV/OTC leads have no directory or domain source (`identity_unverified`). |
 | E whitepaper path | NOT RUN |
 | F recent-news path | NOT RUN |
-| G provider outage → explicit `search_unavailable`, recall never labelled search | NOT RUN live (unit/e2e covered: `w6b-discovery-web-search.spec.ts`) |
+| G provider outage | **PARTIAL** | Real Tavily returns HTTP 401 to the production adapter (`executed=False`, `error_code='auth'`, one counted call, no results); the orchestrator test asserts `web_search_unavailable`, the "Live web search unavailable" label, recalled leads staying `model_recall`, no fetch. A **production** outage was NOT induced: that needed overwriting the live credential, which the safety classifier denied; it was not worked around. Needs an explicit owner instruction (e.g. a temporary invalid key on a staging slot). |
 
 No Tavily network-call proof, query/fetch/cost totals, Discovery run IDs, company report IDs or
 long-tail discoveries exist yet; none are claimed.
@@ -247,7 +247,7 @@ were the curated registry's. Criterion A is therefore not met, and is not claime
 
 | Case | Verdict | Evidence |
 |---|---|---|
-| A critical-minerals Discovery, search-admitted shortlist | **NOT MET** | 3 runs; `web_admitted: 0`; shortlists were the curated registry's (PRE, RBW, ERA). Real long-tail names surfaced and shown as *also surfaced* with the rule that stopped each (Anson Resources, Ioneer, Lynas, Arafura, Iluka, Hastings, IGO, Mineral Resources). |
+| A critical-minerals Discovery, search-admitted shortlist | **PARTIAL** | Run `4470e038` on `f0f8938` admitted **one** search-discovered company, **Liontown Resources (ASX: LTR)**, traced end to end (see run 7). It was **not reproduced** in three later critical-minerals runs (`77470abf`, `9d519129`; search results vary by day and cache), so the rate is 1 admission in 4 runs. Shortlists are otherwise the curated registry's. |
 | B Rainbow Rare Earths | **PASS with limits** (run 3 `63a610ea`) | Phalaborwa capex US$325–350m (press) with debt/equity split, Interim Economic Study (NPV10 US$611m, IRR 38%, US$326m capital), Uberaba EA 11 Mar 2026 (NPV10 US$916m, IRR 45%), 85% Phalaborwa / 49% Uberaba, ~1,850 t/yr, first production moved 2028 → H1 2029 (recorded). **Limit:** "No planned annual output tonnage" gap stays open while a finding states ~1,850 t/yr without a planning word — deliberately not closed (over-closure is the worse error). |
 | B Pensana | **PASS** (run 3 `d696dbdd`) | 6 Aug 2026 "Update on Cascade financing" (US$165m; US$15m received), Longonjo 22% built / ~US$135m of ~US$250m committed, production 2027, Stage 1 20,000 t/yr → Stage 2 40,000 t/yr, Saltend refinery scrapped. Older guidance is single-valued in the evidence, so no supersession arises. |
 | B EcoGraf | **PASS** (run 3 `30dc4423`) | 30 Sep 2026 SPP close, KfW IPEX mandate (up to US$105m), EIB grant, offtake 40,000 tpa incl. ThyssenKrupp, Mitsubishi Chemical MOU, SML 733/2025; honest state "FY2026 annual report acquired — figures not yet extracted". |
@@ -266,7 +266,7 @@ were the curated registry's. Criterion A is therefore not met, and is not claime
    verified domain). Admitting search-found companies at the rate the brief expects needs a rule for
    trusting an issuer domain, e.g. registrable label equals the directory-verified name. That widens what
    a page can claim about a real company, so it was not made unilaterally.
-2. `V3_DEEPSEEK_SEARCH_ENABLED` is still ON: the replacement is not fully accepted, so it was not retired.
+2. `V3_DEEPSEEK_SEARCH_ENABLED` is now **OFF** (set `false` 2026-10-25). Verified by run `9d519129`: `external_leads: 0`, the warning "external company discovery is unavailable", no `external_search`-labelled candidates, and the Tavily web stage still ran (19 web leads, 6 also surfaced). Note: with it off, a Discovery run has no model-generated universe additions (e.g. TSLA no longer arrives as an `external_search` lead; it still appears from the curated registry).
 3. App-setting changes restart the app 5–8 minutes later; confirm the process start time, not `/health`.
 4. FCA NSM and ASX sources remain private-use only.
 
@@ -325,3 +325,59 @@ Arafura `arultd.com`, Ioneer `ioneer.com`, Lynas `lynasrareearths.com`) and the 
 page — and every read was refused `budget:max_fetches`: the plan and the corroboration allowance had already
 spent past base + targets. The reader's allowance is now one page per target beyond what the run has already
 fetched (still bounded by the number of targets).
+
+### Discovery — run 7 (`4470e038`, deployed `f0f8938`) — one company admitted by search, traced end to end
+
+**Liontown Resources (ASX: LTR)**, thesis "small and mid-cap critical minerals … outside China". Funnel: 50 raw
+leads, 14 web leads, **1 admitted**, 10 also surfaced; 20 Tavily credits, 31 fetches.
+
+| Step | Evidence |
+|---|---|
+| Executed query | Tavily `local.fr` template, query id `1c709824…` (`query_origin: template`) |
+| Result | rank 2: `fr.finance.yahoo.com/actualites/actions-producteurs-lithium-chinois-australiens-…` (class `aggregator`) |
+| Entity extraction | "Liontown Resources (ASX:LTR) a grimpé jusqu'à 25 %" — method `ticker_venue` |
+| Listing verification (A2) | ASX directory: LTR verified |
+| Official domain | `liontown.com`, basis `exchange_announcement` (letterhead of 4 announcements published under LTR) |
+| Page fetch | `https://liontown.com/` → `fetch_attempt_id 6479ed3e…`, ingested (`c:c04551c9…`) |
+| Theme passage | "We're producing the lithium that can power it all." (`theme_terms: lithium`) |
+| Admission | A1, A2, A3 (`verified_issuer`), A4 pass → `state: admitted`, `corroboration: issuer_only` |
+
+**Issuer-only, not independently corroborated.** The Yahoo page names the company but carries no theme
+passage; the theme rests on the issuer's own page. This is the ADR-057 rule and is labelled as such in the UI.
+
+Rejected / stopped leads, with reasons (run 7 and the later runs):
+Talga (`no_search_provenance`: model recall only), Core Lithium (`robots_unavailable` on its own site),
+Lynas (`http_403`), Arafura / Syrah / Novonix / GenusPlus (page read, no passage ties company to theme),
+Global Lithium Resources (`dns_failure`), Lithium Argentina (theme independent, but `identity_unverified`: no
+TSX directory), Lindian / Meteoric / Midas (admitted-grade evidence, then excluded by geography or size),
+Rio Tinto / Wesfarmers / POSCO (independent evidence, excluded by size or geography).
+
+### Corrective #279 (`d4510bf`) — official-domain lookups go to search leads first
+
+ASX run `f150364d`: 26 leads passed A1+A2 but few had a domain lookup (cap 12, filled in input order by
+model-recalled names; skipped leads left no trace). Search leads now take the budget first, and every lead
+that qualified but was not read records `official_page.reason` (`lookup_cap`, `domain_not_established`).
+Re-run `f9a648d6` shows the reason on each lead: **the dominant cause is `domain_not_established`**. The ASX
+profile endpoint returns an empty `websiteUrl` for many small caps and the announcements endpoint returns a
+fixed 5 items (no paging) dominated by substantial-holder and administrative notices, so the "≥2 issuer
+letterheads, or one that names the ticker" rule rarely holds. **That is a data limit, and the trust rule was
+deliberately not loosened.** Also fixed (test-only, #280): five Phase 24 tests failed from 2026-10-24 because
+hard-coded July dates aged out of the 120-day lookback.
+
+### Totals (Discovery acceptance runs, 2026-10-25)
+
+7 Discovery runs on deployed code (+1 verifying DeepSeek off): **103 Tavily credits** reported by the runs (cache
+hits excluded; daily total 133 of the 300 cap before the last run), **136 pages fetched / 108 ingested**, 1
+model call per run (DeepSeek, ~460 input / ~70 output tokens), 0 OCR pages. Dollar cost is read from the Tavily
+dashboard.
+
+### Remaining known limitations
+
+1. Search admission is low-yield: 1 company in 8 runs, issuer-only. 2. ASX domain establishment fails for most
+small caps (empty profile website, 5-item announcement feed). 3. LSE / AIM / TSX / TSXV / OTC / Euronext /
+SIX leads have no independent official-domain source or directory (`identity_unverified`). 4. US issuers rely on
+the SEC submissions `website` field, often empty (Cognex, Symbotic: `domain_not_established`). 5. Issuer sites
+that block robots/403 or render client-side give no passage (Lynas, Core Lithium, Arafura). 6. Medical imaging
+is outside the supported theme vocabulary. 7. Criterion G production outage not induced. 8. Rainbow
+"no planned annual output tonnage" gap kept conservative. 9. Large-cap names reached by search (Rio Tinto,
+Wesfarmers, POSCO) are correctly excluded by size/geography but consume lookups.
