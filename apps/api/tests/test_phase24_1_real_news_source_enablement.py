@@ -50,7 +50,8 @@ from app.services.company_source_discovery_service import (
 from app.services.news_query_planner import build_news_search_plan
 from app.services.news_relevance_scorer import brand_tokens, score_news_relevance
 
-TODAY = datetime.date(2026, 7, 16)
+# Real today: catalyst discovery ages events against the wall clock, so a fixed date rots.
+TODAY = datetime.date.today()
 TODAY_ISO = TODAY.isoformat()
 OLD_ISO = (TODAY - datetime.timedelta(days=200)).isoformat()
 
