@@ -472,7 +472,9 @@ def _filing_website_text(content: bytes) -> str:
     import html as _html
 
     raw = content[:MAX_FILING_BYTES].decode("utf-8", "replace")
-    raw = re.sub(r"(?is)<ix:header>.*?</ix:header>|<(?:script|style)\b.*?</(?:script|style)>", " ", raw)
+    raw = re.sub(
+        r"(?is)<ix:header>.*?</ix:header>|<(?:script|style)\b.*?</(?:script|style)>", " ", raw
+    )
     text = _html.unescape(re.sub(r"(?s)<[^>]+>", " ", raw))
     text = re.sub(r"\s+", " ", text)
     windows: list[str] = []

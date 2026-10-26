@@ -277,7 +277,8 @@ def stated_websites(text: str | None, *, prose_anywhere: bool = False) -> list[s
     for pattern in (_LABELLED, _WWW, _PROSE_SITE, _PROSE_MAINTAINS, _PROSE_OWN_SITE):
         for m in pattern.finditer(body):
             # A registrant's own prose ("our website is …") is its voice wherever it sits.
-            if not (prose_anywhere and pattern in (_PROSE_SITE, _PROSE_MAINTAINS, _PROSE_OWN_SITE)) and not _in_issuer_block(
+            is_prose = pattern in (_PROSE_SITE, _PROSE_MAINTAINS, _PROSE_OWN_SITE)
+            if not (prose_anywhere and is_prose) and not _in_issuer_block(
                 body, m.start()
             ):
                 continue
