@@ -243,3 +243,22 @@ class TestReviewRegressions:
                 "For further information contact:\nMedia and investor enquiries\n"
                 "Website: www.readcorporate.com.au")
         assert dp.stated_websites(text) == []
+
+
+class TestRealFilingPhrasings:
+    """Statements measured in live 10-Ks (Cognex, Emerson, Globus, Ondas, Honeywell)."""
+
+    @pytest.mark.parametrize("text,domain", [
+        ("Available Information Cognex maintains a website at www.cognex.com. We make", "cognex.com"),
+        ("The Corporate Governance section of the Company's website may be accessed as follows: "
+         "www.Emerson.com", "emerson.com"),
+        ("Our corporate website address is http://www.globusmedical.com. We file", "globusmedical.com"),
+        ("Available Information Our Internet website is www.ondas.com. We file", "ondas.com"),
+        ("press releases on our primary Honeywell website (honeywell.com) under the heading", "honeywell.com"),
+    ])
+    def test_a_registrant_statement_resolves(self, text: str, domain: str) -> None:
+        assert dp.stated_websites(text, prose_anywhere=True) == [domain]
+
+    def test_the_sec_own_site_is_never_the_registrants(self) -> None:
+        text = "The SEC maintains a website (www.sec.gov) that contains reports. "
+        assert dp.stated_websites(text, prose_anywhere=True) == []
