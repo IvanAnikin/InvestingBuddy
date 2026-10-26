@@ -683,6 +683,12 @@ async def run_dynamic_stage(
                      plan_date=plan_date),
             web_deps=web_deps, progress=progress, executed_query_ids=executed_query_ids,
         )
+        # PATH B: an independent fetched source may identify a verified company by its legal
+        # name (no official domain, no printed ticker needed) — see ``entity_match``.
+        await _attach_independent_matches(
+            verified_external, list(getattr(web_result, "passages", None) or []),
+            cfg=cfg, fetcher=fetcher, gate=gate,
+        )
     unverifiable: list[IdentityOutcome] = []
     for outcome in verified_external:
         if web_on and outcome.lead.discovery_mode == "search":
@@ -992,6 +998,180 @@ MAX_OFFICIAL_DOMAIN_LOOKUPS = 12
 MAX_OFFICIAL_MENTIONS = 12
 
 
+#: Candidate sites probed per lead for a hard-identifier match (rule E).
+MAX_CANDIDATE_SITES = 2
+
+
+async def _hard_identifier_entity(outcome: IdentityOutcome, *, cfg: Any, fetcher: Any) -> Any:
+    """The verified entity IF an authoritative source gave it a hard identifier, else None."""
+    from app.services.discovery.official_domains import resolve_entity
+
+    try:
+        entity = await resolve_entity(
+            ticker=outcome.ticker, venue=outcome.exchange, name=outcome.name, cfg=cfg,
+            fetcher=fetcher,
+        )
+    except Exception:  # noqa: BLE001 - no entity, no probe
+        return None
+    if entity.lei or entity.registration_numbers or entity.isin:
+        return entity
+    return None
+
+
+def _candidate_hosts(outcome: IdentityOutcome) -> list[str]:
+    """Registrable domains seen in this lead's own search results that could be its site.
+
+    Never an exchange, wire, aggregator or shared host. Seen is not trusted: each is only a
+    place to LOOK for the verified entity's hard identifiers.
+    """
+    from app.services.discovery.official_domains import _is_never_an_issuer, registrable_domain
+
+    seen: list[str] = []
+    for raw in ((outcome.lead.web or {}).get("domains") or []):
+        domain = registrable_domain(str(raw).lower())
+        if domain and not _is_never_an_issuer(domain) and domain not in seen:
+            seen.append(domain)
+    return seen
+
+
+#: Independent passages kept per lead.
+MAX_INDEPENDENT_MATCHES = 3
+
+
+def _has_independent_theme_passage(outcome: IdentityOutcome) -> bool:
+    from app.services.discovery import admission as adm
+
+    return any(
+        adm.is_a3_passage(m) and not adm.is_issuer_origin(m)
+        for m in ((outcome.lead.web or {}).get("mentions") or [])
+    )
+
+
+async def _attach_independent_matches(
+    outcomes: list[IdentityOutcome],
+    passages: list[dict[str, Any]],
+    *,
+    cfg: Any,
+    fetcher: Any,
+    gate: Any,
+) -> None:
+    """Path B. For each VERIFIED search-found lead without independent theme evidence, find
+    the run's fetched theme passages (independent source classes only) that unambiguously
+    identify it through the entity master. Never raises; leaves a trace on every lead."""
+    from app.services.discovery import admission as adm
+    from app.services.discovery import entity_match as em
+    from app.services.discovery.official_domains import relations_for, resolve_entity
+
+    eligible = [
+        o for o in outcomes
+        if o.verified and o.lead.discovery_mode == "search"
+        and not _has_independent_theme_passage(o)
+    ]
+    if not eligible:
+        return
+    # A list is not evidence about any one company in it: a paragraph that annotates three or
+    # more listings (ticker/venue tags) or names three or more of this run's verified
+    # companies is a price list, a watch list or stuffing — it admits nobody.
+    verified_names = [em._fold(" ".join(em._tokens(o.name or ""))) for o in outcomes
+                      if o.verified and o.name]
+
+    def _is_a_list(text: str) -> bool:
+        if len(em._LISTING_TAG.findall(text)) >= 3:
+            return True
+        folded = em._fold(text)
+        return sum(1 for n in verified_names if n and em._phrase(folded, n)) >= 3
+
+    usable = [
+        p for p in passages
+        if not _is_a_list(str(p.get("passage") or ""))
+        and p.get("passage_ref") and adm.is_acceptable_source(
+            p.get("source_class"), p.get("domain"), p.get("hosts") or ()
+        ) and p.get("source_class") not in adm.ISSUER_ORIGIN_CLASSES
+    ]
+
+    async def one(outcome: IdentityOutcome) -> None:
+        try:
+            async with gate:
+                entity = await resolve_entity(
+                    ticker=outcome.ticker, venue=outcome.exchange, name=outcome.name, cfg=cfg,
+                    fetcher=fetcher,
+                )
+            names = tuple(dict.fromkeys(
+                n for n in (outcome.name, outcome.lead.name) if n
+            ))
+            master = em.EntityMaster(
+                names=names, ticker=outcome.ticker, venue=outcome.exchange, isin=entity.isin,
+                lei=entity.lei, cik=entity.cik, registration_numbers=entity.registration_numbers,
+                projects=tuple(relations_for(outcome.ticker, outcome.exchange))
+                + tuple(_page_relations(outcome)),
+            )
+            others = [
+                " ".join(em._tokens(n)) for o in eligible if o is not outcome for n in
+                (o.name,) if o.name
+            ]
+            kept: list[dict[str, Any]] = []
+            seen = {m.get("passage_ref") for m in ((outcome.lead.web or {}).get("mentions") or [])}
+            for p in usable:
+                if len(kept) >= MAX_INDEPENDENT_MATCHES:
+                    break
+                if p["passage_ref"] in seen:
+                    continue
+                hit = em.match_entity(p["passage"], master)
+                if hit is None:
+                    continue
+                folded = em._fold(p["passage"])
+                if hit.method == "project" and any(
+                    o and em._phrase(folded, o) for o in others
+                ):
+                    continue  # another listed company's name sits in the same passage
+                kept.append({
+                    "evidence_id": p.get("chunk_id") or p["passage_ref"],
+                    "passage_ref": p["passage_ref"], "kind": "paragraph",
+                    "method": "independent_name_match", "source_class": p["source_class"],
+                    "url": p["url"], "domain": p["domain"], "hosts": p.get("hosts") or [],
+                    "dimensions": ["theme_relevance"], "theme_terms": p["theme_terms"][:6],
+                    "catalyst_terms": [], "risk_terms": [], "passage": p["passage"],
+                    "injection_suspect": False, "query_id": p.get("query_id"),
+                    "fetch_attempt_id": p.get("attempt_id"),
+                    "entity_match": {
+                        "method": hit.method, "matched": hit.matched,
+                        "anchors": list(hit.anchors),
+                        "relationship": (
+                            {"project": hit.relation.project,
+                             "source_url": hit.relation.source_url,
+                             "document_id": hit.relation.document_id,
+                             "source_class": hit.relation.source_class}
+                            if hit.relation else None
+                        ),
+                    },
+                })
+            web = dict(outcome.lead.web or {})
+            web["independent_match"] = {"passages_checked": len(usable), "matched": len(kept)}
+            if kept:
+                web["mentions"] = [*(web.get("mentions") or []), *kept][:MAX_OFFICIAL_MENTIONS + 6]
+            outcome.lead.web = web
+        except Exception:  # noqa: BLE001 - an unmatched lead stays where it was
+            return
+
+    await asyncio.gather(*(one(o) for o in eligible), return_exceptions=True)
+
+
+def _page_relations(outcome: IdentityOutcome) -> list[Any]:
+    """Company↔project relationships the ISSUER's own official-page passages state."""
+    from app.services.discovery import entity_match as em
+
+    toks = [t for t in em._distinctive(em._tokens(outcome.name or "")) if t]
+    out: list[Any] = []
+    for m in ((outcome.lead.web or {}).get("mentions") or []):
+        if m.get("method") != "official_domain_page":
+            continue
+        out.extend(em.relations_from_document(
+            str(m.get("passage") or ""), name_tokens=toks, document_id=m.get("passage_ref"),
+            url=m.get("url"), source_class=str(m.get("source_class") or "company_web_page"),
+        ))
+    return out
+
+
 def _needs_official_domain(outcome: IdentityOutcome, *, provenance: bool = True) -> bool:
     """A verified lead that search surfaced (A1) and that no acceptable source yet ties to the
     theme: its own official page may."""
@@ -1066,7 +1246,7 @@ async def _attach_official_domains(
                 cik = getattr(row, "cik", None)
             found = await establish_official_domains(
                 ticker=outcome.ticker, venue=outcome.exchange, verified=outcome.verified,
-                cik=cik, cfg=cfg, fetcher=fetcher,
+                cik=cik, cfg=cfg, fetcher=fetcher, name=outcome.name,
             )
         if found:
             outcome.lead.web = {
@@ -1079,8 +1259,9 @@ async def _attach_official_domains(
     # Read each established official page, one at a time (a shared session).
     if session is None or ctx is None:
         return
-    targets: list[tuple[str, str, str, str]] = []
+    targets: list[tuple[Any, ...]] = []
     by_id: dict[str, IdentityOutcome] = {}
+    candidates: dict[str, Any] = {}
     for o in todo:
         domains = (o.lead.web or {}).get("official_domains") or []
         if domains:
@@ -1089,6 +1270,19 @@ async def _attach_official_domains(
                 o.ticker or "",
             ))
             by_id[o.lead.lead_id] = o
+            continue
+        # No independently established domain: a candidate site seen in this lead's own search
+        # results may still PROVE itself by printing a hard identifier of the verified entity
+        # (LEI / ISIN / company number from GLEIF or the exchange) beside a compatible legal
+        # name. The page, not the hostname, is the proof — and an unproven page is discarded.
+        entity = await _hard_identifier_entity(o, cfg=cfg, fetcher=fetcher)
+        if entity is None:
+            continue
+        for host in _candidate_hosts(o)[:MAX_CANDIDATE_SITES]:
+            targets.append((o.lead.lead_id, host, o.name or o.lead.name or "",
+                            o.ticker or "", entity))
+        by_id[o.lead.lead_id] = o
+        candidates[o.lead.lead_id] = entity
     for o in todo:
         if o.lead.lead_id not in by_id:
             o.lead.web = {
@@ -1106,6 +1300,26 @@ async def _attach_official_domains(
         outcome = by_id.get(lead_id)
         if outcome is None:
             continue
+        proof = status.get("domain_proof")
+        if proof and proof.get("status", "verified_official") != "verified_official":
+            outcome.lead.web = {
+                **(outcome.lead.web or {}), "domain_candidates": [proof],
+            }
+        elif proof:
+            from app.services.discovery.official_domains import OfficialDomain
+
+            outcome.lead.web = {
+                **(outcome.lead.web or {}),
+                "official_domains": [OfficialDomain(
+                    proof["domain"], proof["method"], proof.get("source_url"), proof.get("detail"),
+                    proof.get("verified_at"), method=proof["method"],
+                    source_class=proof.get("source_class"),
+                    matched_entity=proof.get("matched_entity"),
+                    matched_identifiers=proof.get("matched_identifiers"),
+                    confidence=proof.get("confidence"),
+                    status=proof.get("status", "verified_official"),
+                ).to_dict()],
+            }
         web = dict(outcome.lead.web or {})
         entries = pages.by_lead.get(lead_id) or []
         # The issuer's passages first: they are the ones A3 may rest on, and a cap must not
