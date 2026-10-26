@@ -446,6 +446,7 @@ def _pdf_front_back_text(content: bytes) -> str:
 
 
 MAX_PDF_BYTES = 12_000_000
+MAX_FILING_BYTES = 12_000_000
 
 
 async def _pdf_deep_text(content: bytes) -> str:
@@ -458,6 +459,36 @@ async def _pdf_deep_text(content: bytes) -> str:
             )
         except (asyncio.TimeoutError, Exception):  # noqa: BLE001
             return ""
+
+
+_WEBSITE_HINT = re.compile(r"web\s*site|internet\s+site|www\.", re.IGNORECASE)
+
+
+def _filing_website_text(content: bytes) -> str:
+    """The sentences of a (possibly 10 MB iXBRL) filing that mention a website or a ``www.``
+    address. The statement sits anywhere in the document, so the whole body is scanned, but only
+    the windows around those mentions are kept — the XBRL header and the financial tables are
+    not text worth parsing."""
+    import html as _html
+
+    raw = content[:MAX_FILING_BYTES].decode("utf-8", "replace")
+    raw = re.sub(
+        r"(?is)<ix:header>.*?</ix:header>|<(?:script|style)\b.*?</(?:script|style)>", " ", raw
+    )
+    text = _html.unescape(re.sub(r"(?s)<[^>]+>", " ", raw))
+    text = re.sub(r"\s+", " ", text)
+    windows: list[str] = []
+    last_end = -1
+    for m in _WEBSITE_HINT.finditer(text):
+        if m.start() < last_end:
+            continue
+        lo, hi = max(0, m.start() - 160), min(len(text), m.end() + 200)
+        windows.append(text[lo:hi])
+        last_end = hi
+        if len(windows) >= 60:
+            break
+    head = text[:3000]  # the cover page: the registrant's name, address, telephone
+    return (head + "\n\n" + "\n\n".join(windows))[:120_000]
 
 
 def _html_text(content: bytes) -> str:
@@ -625,7 +656,7 @@ async def _sec_documents(cik: str, data: dict[str, Any], entity: Any, *, cfg: An
         result = await _fetch(url, "www.sec.gov", cfg=cfg, fetcher=fetcher)
         if result is None:
             continue
-        text = await asyncio.to_thread(_html_text, result.content)
+        text = await asyncio.to_thread(_filing_website_text, result.content)
         # A filing under this CIK is the registrant speaking about itself.
         docs.append(DocText(ref=acc, url=url, source_class="regulator_filing", text=text,
                             names_issuer=True))

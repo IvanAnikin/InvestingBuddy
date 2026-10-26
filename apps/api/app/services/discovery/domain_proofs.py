@@ -83,6 +83,22 @@ _LABELLED = re.compile(
     re.IGNORECASE,
 )
 _WWW = re.compile(r"\bwww\.([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,})\b", re.IGNORECASE)
+#: "Cognex maintains a website at www.cognex.com" / "The Company operates an Internet site at …"
+_PROSE_MAINTAINS = re.compile(
+    r"\b(?:maintains?|operates?|hosts?)\s+(?:an?\s+)?(?:internet\s+)?(?:web\s*site|web\s*page|site)"
+    r"\s*(?:address\s*)?(?:at|located\s+at|is|:)?\s*(?:https?://)?(?:www\.)?"
+    r"([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,})\b",
+    re.IGNORECASE,
+)
+#: The registrant's OWN website, up to a few modifiers and ~120 characters before the address:
+#: "Our corporate website address is http://www.x.com", "the Company's website may be accessed as
+#: follows: www.x.com", "on our Investor website at www.ir.x.com".
+_PROSE_OWN_SITE = re.compile(
+    r"\b(?:our|the\s+company[’']?s?|its|the\s+registrant[’']?s?)\s+(?:[a-z-]+\s+){0,3}"
+    r"(?:web\s*site|internet\s+site)\b[^.]{0,120}?(?:https?://|www\.|\()"
+    r"(?:www\.)?([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,})\b",
+    re.IGNORECASE,
+)
 _EMAIL = re.compile(r"[a-z0-9._%+-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)", re.IGNORECASE)
 #: "our website is www.x.com" / "Internet address: x.com" / "investor relations website at …"
 _PROSE_SITE = re.compile(
@@ -258,10 +274,11 @@ def stated_websites(text: str | None, *, prose_anywhere: bool = False) -> list[s
     """
     body = (text or "")[:MAX_TEXT_CHARS]
     found: list[str] = []
-    for pattern in (_LABELLED, _WWW, _PROSE_SITE):
+    for pattern in (_LABELLED, _WWW, _PROSE_SITE, _PROSE_MAINTAINS, _PROSE_OWN_SITE):
         for m in pattern.finditer(body):
             # A registrant's own prose ("our website is …") is its voice wherever it sits.
-            if not (prose_anywhere and pattern is _PROSE_SITE) and not _in_issuer_block(
+            is_prose = pattern in (_PROSE_SITE, _PROSE_MAINTAINS, _PROSE_OWN_SITE)
+            if not (prose_anywhere and is_prose) and not _in_issuer_block(
                 body, m.start()
             ):
                 continue
