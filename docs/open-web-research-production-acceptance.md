@@ -61,10 +61,10 @@ produce explicit `web_search_unavailable` states.
 | A critical-minerals niche Discovery (query → Tavily execution → ranked result → fetched source → thematic evidence → official listing verification → admission) | **PARTIAL** — 1 search-admitted candidate, traced end to end (run 7) |
 | B Rainbow Rare Earths / Pensana / EcoGraf fresh deep runs, full read-through | NOT RUN |
 | C Southern Copper / Cleveland-Cliffs regressions | NOT RUN |
-| D additional niches | **0 admitted in 5 runs; gates behaved correctly** | grid `33801653`, automation `c5a68775`, ASX `f150364d` / `f9a648d6`, UK small-cap `16cef339`. Search surfaced real names (Lynas, IGO, Core Lithium, Elevra, Lindian, Meteoric, Midas, Cognex, Symbotic …); each stopped on a named rule: wrong geography, size, no theme passage on the issuer page, no independent official domain, robots/403 on the issuer site. **Medical imaging / healthcare software could not be run**: the product has no matching theme and rejects the thesis with HTTP 422 ("did not match any known theme"). LSE/AIM/TSX/TSXV/OTC leads have no directory or domain source (`identity_unverified`). |
+| D additional niches (EU grid/data-centre, industrial automation, medical imaging, ASX niche, UK small-cap) | **RUN on deployed code, 0 admitted** — see §8 and the run logs |
 | E whitepaper path | NOT RUN |
 | F recent-news path | NOT RUN |
-| G provider outage | **PARTIAL** | Real Tavily returns HTTP 401 to the production adapter (`executed=False`, `error_code='auth'`, one counted call, no results); the orchestrator test asserts `web_search_unavailable`, the "Live web search unavailable" label, recalled leads staying `model_recall`, no fetch. A **production** outage was NOT induced: that needed overwriting the live credential, which the safety classifier denied; it was not worked around. Needs an explicit owner instruction (e.g. a temporary invalid key on a staging slot). |
+| G provider outage → explicit `search_unavailable`, recall never labelled search | PARTIAL — production outage not induced; owner: not needed (see §8) |
 
 No Tavily network-call proof, query/fetch/cost totals, Discovery run IDs, company report IDs or
 long-tail discoveries exist yet; none are claimed.
@@ -253,7 +253,7 @@ were the curated registry's. Criterion A is therefore not met, and is not claime
 | B EcoGraf | **PASS** (run 3 `30dc4423`) | 30 Sep 2026 SPP close, KfW IPEX mandate (up to US$105m), EIB grant, offtake 40,000 tpa incl. ThyssenKrupp, Mitsubishi Chemical MOU, SML 733/2025; honest state "FY2026 annual report acquired — figures not yet extracted". |
 | C Southern Copper | **PASS** (`ba5782f7`) | FY2025 Group revenue US$13,420.0m from SEC, OCF/capex/FCF consistent, cash conversion 109.3% = 4,752.1 ÷ 4,348.2, cash not presented as liquidity. Limit: one finding says "no interim revenue" while another cites Q2 2026 net sales. |
 | C Cleveland-Cliffs | **PASS** (`cee90510`) | SEC FY2025 canonical; H1 2026 net income (363) captured from the 10-Q as interim with "not comparable, never annualised"; cash US$57m vs "cash plus ABL liquidity US$3.3bn" kept apart; steel ASP and "+US$240m on pricing" stated factually, no "pricing power" claim. |
-| D additional niches | **NOT MET** (grid `44371d41`, automation `8ca9e615`) | Same pattern: curated shortlists, recalled leads uncorroborated. Medical-imaging, ASX and UK small-cap niches were not run: the cause is shared and unchanged. |
+| D additional niches | **0 admitted in 6 runs; gates behaved correctly** | grid `33801653`, automation `c5a68775`, ASX `f150364d` / `f9a648d6`, UK small-cap `16cef339`, medical imaging `cd55e011`. Search surfaced real names (Lynas, IGO, Core Lithium, Elevra, Lindian, Meteoric, Midas, Cognex, Symbotic …); each stopped on a named rule: wrong geography, size, no theme passage on the issuer page, no independent official domain, robots/403 on the issuer site. **Medical imaging / healthcare software** was first unrunnable (HTTP 422, no matching theme); PR #282 added the `healthcare_technology` theme and the niche then ran (run 8). LSE/AIM/TSX/TSXV/OTC leads have no directory or domain source (`identity_unverified`). |
 | E whitepaper / PDF path | **PASS** | Pensana finding `4742893c` cites a corporate-presentation PDF (p.3) reached by a `company_docs` search (request id present) → `application/pdf` 200 → extraction → corpus chunk → finding `ev:c:`; SCCO 10-K PDF (573 chunks), CLF annual report PDF (399), a University of Texas PDF via `competitive`. |
 | F recent news | **PASS** | Finding `27e3ef08` rests on the issuer's 6 Aug 2026 release (found by a `risk` search, fetched from `news.cision.com`, class `company_press_release`, dated 2026-08-06); also rareearthexchanges.com 2026-06-08 and a BBC article 2025-10-16. |
 | G provider outage | **PARTIAL** | Real Tavily returns HTTP 401 to the production adapter (`executed=False`, `error_code='auth'`, one counted call, no results); the orchestrator test asserts `web_search_unavailable`, the "Live web search unavailable" label, recalled leads staying `model_recall`, no fetch. A production outage was NOT induced: that needed overwriting the live credential, which the safety classifier denied. |
@@ -377,7 +377,16 @@ dashboard.
 small caps (empty profile website, 5-item announcement feed). 3. LSE / AIM / TSX / TSXV / OTC / Euronext /
 SIX leads have no independent official-domain source or directory (`identity_unverified`). 4. US issuers rely on
 the SEC submissions `website` field, often empty (Cognex, Symbotic: `domain_not_established`). 5. Issuer sites
-that block robots/403 or render client-side give no passage (Lynas, Core Lithium, Arafura). 6. Medical imaging
-is outside the supported theme vocabulary. 7. Criterion G production outage not induced. 8. Rainbow
+that block robots/403 or render client-side give no passage (Lynas, Core Lithium, Arafura). 6. The `healthcare_technology` curated universe is four names (GEHC, VEEV, Siemens Healthineers, Pro Medicus). 7. Criterion G production outage not induced. 8. Rainbow
 "no planned annual output tonnage" gap kept conservative. 9. Large-cap names reached by search (Rio Tinto,
 Wesfarmers, POSCO) are correctly excluded by size/geography but consume lookups.
+
+### Discovery — medical imaging / healthcare software, run 8 (`cd55e011`, deployed `217945c`)
+
+Thesis previously rejected with 422; after #282 it parses to `healthcare_technology`. 12 raw leads, 8 web leads,
+**0 admitted**, 5 also surfaced; 20 Tavily credits, 15 pages fetched. Curated GEHC / VEEV / Pro Medicus were
+excluded by the small/mid-cap size constraint; Siemens Healthineers was returned. **Singular Health (ASX: SHG)**
+passed A1, A2 and A3 (`verified_issuer`, 3 official-page passages on `singular.health`) and was then
+**excluded as a micro-cap (A$52m)** by the thesis size constraint. Tempus AI and IQVIA: `domain_not_established`
+(SEC record has no website); Perimeter Medical Imaging, Rocket Doctor, WELL Health, HEALWELL: TSXV/OTC,
+`identity_unverified`. All five requested niches have now been run on deployed code.
