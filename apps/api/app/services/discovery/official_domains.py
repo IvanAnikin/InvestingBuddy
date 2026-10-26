@@ -81,7 +81,9 @@ _NEVER_AN_ISSUER: tuple[str, ...] = (
     "globenewswire.com", "businesswire.com", "prnewswire.com", "accesswire.com",
     "newsfilecorp.com", "cision.com", "marketscreener.com", "yahoo.com", "reuters.com",
     "bloomberg.com", "wikipedia.org", "computershare.com", "linkmarketservices.com.au",
-    "automicgroup.com.au", "boardroomlimited.com.au", "advancedshare.com.au",
+    "automicgroup.com.au", "automic.com.au", "boardroomlimited.com.au", "advancedshare.com.au",
+    "computershare.com.au", "computershare.co.uk", "linkgroup.com", "linkassetservices.com",
+    "equiniti.com", "neonsq.com", "securitytransfer.com.au", "xcend.com.au",
 )
 
 #: ``w LynasRareEarths.com`` · ``Website: www.example.com.au`` · ``web  example.com``
@@ -115,6 +117,14 @@ class OfficialDomain:
     source_url: str | None = None
     detail: str | None = None
     as_of: str | None = None
+    # Provenance (domain_proofs.DomainProof): inspectable in the admin diagnostics.
+    method: str | None = None
+    source_class: str | None = None
+    document_id: str | None = None
+    matched_entity: str | None = None
+    matched_identifiers: dict[str, str] | None = None
+    confidence: str | None = None
+    status: str = "verified_official"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -201,6 +211,7 @@ _CACHE: dict[tuple[str, str, str, str], list[OfficialDomain]] = {}
 
 def reset_cache() -> None:
     _CACHE.clear()
+    _RELATIONS.clear()
 
 
 def _today() -> str:
@@ -344,17 +355,27 @@ async def _asx(code: str, *, cfg: Any, fetcher: Any) -> list[OfficialDomain]:
     return out
 
 
-async def _sec(cik: str, *, cfg: Any, fetcher: Any) -> list[OfficialDomain]:
+async def _sec_submissions(cik: str, *, cfg: Any, fetcher: Any) -> dict[str, Any] | None:
     if not re.fullmatch(r"\d{1,10}", str(cik or "")):
-        return []
+        return None
     url = f"https://{SEC_DATA_HOST}/submissions/CIK{int(cik):010d}.json"
     result = await _fetch(url, SEC_DATA_HOST, cfg=cfg, fetcher=fetcher, json_body=True)
     if result is None:
-        return []
+        return None
     try:
         data = json.loads(result.content.decode("utf-8", "replace"))
     except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _sec(cik: str, *, cfg: Any, fetcher: Any, data: dict[str, Any] | None = None
+               ) -> list[OfficialDomain]:
+    if data is None:
+        data = await _sec_submissions(cik, cfg=cfg, fetcher=fetcher)
+    if data is None:
         return []
+    url = f"https://{SEC_DATA_HOST}/submissions/CIK{int(cik):010d}.json"
     out: list[OfficialDomain] = []
     for field_name in ("website", "investorWebsite"):
         site = str(data.get(field_name) or "").strip()
@@ -368,6 +389,334 @@ async def _sec(cik: str, *, cfg: Any, fetcher: Any) -> list[OfficialDomain]:
     return out
 
 
+
+# --------------------------------------------------------------------------- #
+# Generic resolver: authoritative DOCUMENTS (owner direction 2026-10-26)
+# --------------------------------------------------------------------------- #
+
+#: Headlines of ASX documents that carry the issuer's own contact block / website.
+_HIGH_VALUE_HEADLINE = re.compile(
+    r"annual\s+report|investor\s+presentation|corporate\s+presentation|company\s+presentation"
+    r"|quarterly|activities\s+report|project\s+update|company\s+overview|results|half[\s-]year"
+    r"|operations?\s+update|investor\s+update",
+    re.IGNORECASE,
+)
+_HEADLINE_PRIORITY = (
+    (re.compile(r"annual\s+report", re.IGNORECASE), 0),
+    (re.compile(r"investor|corporate|company\s+(?:presentation|overview)", re.IGNORECASE), 1),
+    (re.compile(r"quarterly|activities", re.IGNORECASE), 2),
+)
+#: Bounded: never a crawl of the issuer's announcement history.
+MAX_DEEP_DOCS = 4
+MAX_SEC_DOCS = 2
+MAX_UK_DOCS = 3
+MAX_DEEP_PDF_BYTES = 12_000_000
+RESOLVER_WALL_SECONDS = 75.0
+
+_ENTITY_CACHE: dict[tuple[str, str, str], Any] = {}
+#: (venue, ticker) -> company↔project relationships proven by the issuer's regulated documents.
+_RELATIONS: dict[tuple[str, str], list[Any]] = {}
+
+
+def relations_for(ticker: str | None, venue: str | None) -> list[Any]:
+    """Company↔project relationships an authoritative source proved (this process, today)."""
+    return list(_RELATIONS.get(((venue or "").upper(), (ticker or "").upper()), []))
+
+
+def _headline_rank(headline: str) -> int:
+    for pattern, rank in _HEADLINE_PRIORITY:
+        if pattern.search(headline or ""):
+            return rank
+    return 3
+
+
+def _pdf_front_back_text(content: bytes) -> str:
+    """The first three and last three pages: cover, corporate directory, contact block."""
+    if len(content) > MAX_DEEP_PDF_BYTES or not content.startswith(b"%PDF"):
+        return ""
+    try:
+        import pypdf
+
+        reader = pypdf.PdfReader(io.BytesIO(content))
+        total = len(reader.pages)
+        picked = list(range(min(3, total))) + [i for i in range(max(3, total - 3), total)]
+        return "\n".join((reader.pages[i].extract_text() or "")[:6000] for i in picked)[:40_000]
+    except Exception:  # noqa: BLE001 - an unreadable PDF names no domain
+        return ""
+
+
+MAX_PDF_BYTES = 12_000_000
+
+
+async def _pdf_deep_text(content: bytes) -> str:
+    if len(content) > MAX_PDF_BYTES:
+        return ""
+    async with _PDF_SLOTS:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(_pdf_front_back_text, content), PDF_PARSE_TIMEOUT_SECONDS * 2
+            )
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            return ""
+
+
+def _html_text(content: bytes) -> str:
+    from app.services.sources.disclosures.asx import _text
+
+    return _text(content[:1_500_000].decode("utf-8", "replace"))[:80_000]
+
+
+def _issuer_named(text: str, name: str, ticker: str | None, *, asx: bool = False) -> bool:
+    from app.services.discovery.domain_proofs import EntityIds, _names
+
+    if _names(text, EntityIds(name=name)):
+        return True
+    return bool(
+        asx and ticker and re.search(
+            rf"\bASX\s*(?:code)?\s*[:\-]?\s*{re.escape(ticker)}\b", text, re.IGNORECASE
+        )
+    )
+
+
+async def _gleif(
+    isin: str, *, cfg: Any, fetcher: Any
+) -> tuple[str | None, str | None, frozenset[str]]:
+    """``(lei, legal name, registration numbers)`` from GLEIF for one ISIN (one record)."""
+    from app.services.discovery.domain_proofs import _norm_regno
+    from app.services.sources.disclosures.uk_nsm import GLEIF_HOST, GLEIF_ISIN_URL
+
+    result = await _fetch(GLEIF_ISIN_URL.format(isin=isin), GLEIF_HOST, cfg=cfg, fetcher=fetcher,
+                          json_body=True)
+    if result is None:
+        return None, None, frozenset()
+    try:
+        records = json.loads(result.content).get("data") or []
+    except (ValueError, AttributeError):
+        return None, None, frozenset()
+    if len(records) != 1:
+        return None, None, frozenset()
+    rec = records[0]
+    entity = (rec.get("attributes") or {}).get("entity") or {}
+    regno = str(entity.get("registeredAs") or "")
+    return (
+        str(rec.get("id") or "").upper() or None,
+        str((entity.get("legalName") or {}).get("name") or "") or None,
+        frozenset({_norm_regno(regno)}) if regno else frozenset(),
+    )
+
+
+async def resolve_entity(
+    *, ticker: str | None, venue: str | None, name: str | None, cik: str | None = None,
+    cfg: Any = None, fetcher: Any = None,
+) -> Any:
+    """The verified listed entity with every hard identifier an authoritative source gives it
+    (ISIN from the exchange, LEI and company number from GLEIF). **Never raises.**"""
+    from app.services.discovery.domain_proofs import EntityIds
+
+    base = EntityIds(name=name or "", ticker=ticker, cik=cik)
+    key = ((venue or "").upper(), (ticker or "").upper(), _today())
+    if key in _ENTITY_CACHE:
+        return _ENTITY_CACHE[key]
+    isin: str | None = None
+    try:
+        v = (venue or "").upper()
+        if v in ("AU", "ASX") and _safe_code(ticker):
+            result = await _fetch(
+                f"https://{ASX_API_HOST}/asx-research/1.0/companies/{_safe_code(ticker)}/key-statistics",
+                ASX_API_HOST, cfg=cfg, fetcher=fetcher, json_body=True)
+            if result is not None:
+                isin = str((json.loads(result.content).get("data") or {}).get("isin") or "") or None
+        elif v == "LSE" and ticker:
+            from app.services.discovery.directories import _lse_listing
+
+            row, _why = await _lse_listing(name=name, ticker=ticker.upper(), cfg=cfg,
+                                           fetcher=fetcher)
+            isin = getattr(row, "isin", None)
+        lei = legal = None
+        regnos: frozenset[str] = frozenset()
+        if isin:
+            from app.services.discovery.domain_proofs import valid_isin
+
+            if valid_isin(isin):
+                lei, legal, regnos = await _gleif(isin, cfg=cfg, fetcher=fetcher)
+            else:
+                isin = None
+        # GLEIF's legal name must agree with the exchange's, or its identifiers are not used.
+        if legal and name:
+            from app.services.discovery.directories import _names_agree
+            from app.services.discovery.identity import normalised_name
+
+            if not _names_agree(normalised_name(legal), normalised_name(name), ticker_matched=True):
+                lei, regnos = None, frozenset()
+        entity = EntityIds(name=name or "", ticker=ticker, isin=isin, lei=lei,
+                           registration_numbers=regnos, cik=cik)
+    except Exception:  # noqa: BLE001 - the entity without extra identifiers is still the entity
+        entity = base
+    if entity.isin or entity.lei or entity.cik or entity.registration_numbers:
+        _ENTITY_CACHE[key] = entity  # a failed resolution is retried, never remembered
+    return entity
+
+
+async def _asx_documents(code: str, entity: Any, *, cfg: Any, fetcher: Any) -> list[Any]:
+    """A bounded read of the issuer's high-value ASX documents (annual report, presentations,
+    quarterly reports), found on the ASX's own yearly announcement pages — the native
+    research feed shows only the latest five items."""
+    from app.services.discovery.domain_proofs import DocText
+    from app.services.sources.disclosures import asx as asx_mod
+
+    rows: list[dict[str, Any]] = []
+    year = date.today().year
+    for y in (year, year - 1):
+        page = await _fetch(asx_mod.ASX_LISTING_URL.format(code=code, year=y), asx_mod.ASX_HOST,
+                            cfg=cfg, fetcher=fetcher)
+        if page is None:
+            continue
+        parsed, _bad = await asyncio.to_thread(
+            asx_mod.parse_asx_listing,
+            page.content[: asx_mod.MAX_LISTING_BYTES].decode("utf-8", "replace"),
+        )
+        rows.extend(parsed)
+    rows = list({r["ids_id"]: r for r in rows}.values())
+    own = [
+        r for r in rows
+        if _HIGH_VALUE_HEADLINE.search(r.get("headline") or "")
+        and not _THIRD_PARTY_HEADLINE.search(r.get("headline") or "")
+    ]
+    own.sort(key=lambda r: (_headline_rank(r["headline"]), -r["published_at"].timestamp()))
+    docs: list[Any] = []
+    for row in own[:MAX_DEEP_DOCS]:
+        display = asx_mod.ASX_DISPLAY_URL.format(ids_id=row["ids_id"])
+        shown = await _fetch(display, asx_mod.ASX_HOST, cfg=cfg, fetcher=fetcher)
+        if shown is None:
+            continue
+        pdf_url = asx_mod.pdf_url_from_display_page(shown.content.decode("utf-8", "replace"))
+        if not pdf_url:
+            continue
+        pdf = await _fetch(pdf_url, asx_mod.ASX_PDF_HOST, cfg=cfg, fetcher=fetcher)
+        if pdf is None:
+            continue
+        text = await _pdf_deep_text(pdf.content)
+        if text:
+            docs.append(DocText(
+                ref=str(row["ids_id"]), url=display, source_class="exchange_announcement",
+                text=text, names_issuer=_issuer_named(text, entity.name, code, asx=True)))
+    return docs
+
+
+async def _sec_documents(cik: str, data: dict[str, Any], entity: Any, *, cfg: Any,
+                         fetcher: Any) -> list[Any]:
+    """The registrant's latest annual and current reports, which state its website."""
+    from app.services.discovery.domain_proofs import DocText
+
+    recent = ((data.get("filings") or {}).get("recent")) or {}
+    forms = recent.get("form") or []
+    accs = recent.get("accessionNumber") or []
+    prims = recent.get("primaryDocument") or []
+    picked: list[tuple[str, str, str]] = []
+    for wanted in (("10-K", "20-F", "40-F"), ("8-K", "10-Q", "6-K")):
+        for form, acc, prim in zip(forms, accs, prims, strict=False):
+            if form in wanted and re.fullmatch(r"[A-Za-z0-9._-]+\.(?:htm|html)", str(prim)) \
+                    and re.fullmatch(r"\d{10}-\d{2}-\d{6}", str(acc)):
+                picked.append((form, str(acc), str(prim)))
+                break
+    docs: list[Any] = []
+    for form, acc, prim in picked[:MAX_SEC_DOCS]:
+        url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc.replace('-', '')}/{prim}"
+        result = await _fetch(url, "www.sec.gov", cfg=cfg, fetcher=fetcher)
+        if result is None:
+            continue
+        text = await asyncio.to_thread(_html_text, result.content)
+        # A filing under this CIK is the registrant speaking about itself.
+        docs.append(DocText(ref=acc, url=url, source_class="regulator_filing", text=text,
+                            names_issuer=True))
+    return docs
+
+
+async def _uk_documents(entity: Any, *, cfg: Any, fetcher: Any) -> list[Any]:
+    """The issuer's recent FCA National Storage Mechanism filings, found by its GLEIF LEI."""
+    import uuid
+
+    from app.services.discovery.domain_proofs import DocText
+    from app.services.sources.disclosures import uk_nsm
+    from app.services.sources.disclosures.model import SOURCE_UK_FCA_NSM, VerifiedIssuer
+    from app.services.sources.document_fetcher import safe_post_json
+
+    if not entity.lei:
+        return []
+    try:
+        result = await safe_post_json(
+            uk_nsm.NSM_SEARCH_URL, uk_nsm._query(entity.lei),
+            allowed_domains=(uk_nsm.NSM_SEARCH_HOST,), cfg=cfg)
+        content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+        payload = json.loads(content) if content else {}
+    except Exception:  # noqa: BLE001
+        return []
+    from datetime import datetime, timezone
+
+    issuer = VerifiedIssuer(
+        company_id=uuid.uuid4(), ticker=entity.ticker or "", venue="LSE", name=entity.name,
+        source_id=SOURCE_UK_FCA_NSM, identity_basis="GLEIF LEI for the exchange ISIN",
+        isin=entity.isin, lei=entity.lei)
+    documents, _refused = uk_nsm.parse_nsm_hits(
+        payload, issuer, lookback_days=730, now=datetime.now(timezone.utc))
+    documents.sort(key=lambda d: (_headline_rank(d.headline), -d.published_at.timestamp()))
+    docs: list[Any] = []
+    for doc in documents[:MAX_UK_DOCS]:
+        got = await _fetch(doc.official_url, uk_nsm.NSM_ARTEFACT_HOST, cfg=cfg, fetcher=fetcher)
+        if got is None:
+            continue
+        text = (await _pdf_deep_text(got.content) if doc.media == "pdf"
+                else await asyncio.to_thread(_html_text, got.content))
+        if text:
+            docs.append(DocText(ref=doc.document_ref, url=doc.official_url,
+                                source_class="regulator_filing", text=text,
+                                names_issuer=_issuer_named(text, entity.name, entity.ticker)))
+    return docs
+
+
+def _from_proof(proof: Any) -> OfficialDomain:
+    return OfficialDomain(
+        proof.domain, proof.method, proof.source_url, proof.detail, proof.verified_at,
+        method=proof.method, source_class=proof.source_class, document_id=proof.document_id,
+        matched_entity=proof.matched_entity, matched_identifiers=dict(proof.matched_identifiers),
+        confidence=proof.confidence, status=proof.status,
+    )
+
+
+async def _document_proofs(
+    venue: str, ticker: str, entity: Any, cik: str | None, sec_data: dict[str, Any] | None,
+    *, cfg: Any, fetcher: Any,
+) -> list[OfficialDomain]:
+    from app.services.discovery.domain_proofs import proofs_from_documents
+
+    docs: list[Any] = []
+    v = venue.upper()
+    if v in ("AU", "ASX") and _safe_code(ticker):
+        docs = await _asx_documents(_safe_code(ticker) or "", entity, cfg=cfg, fetcher=fetcher)
+    elif v == "US" and cik and sec_data is not None:
+        docs = await _sec_documents(str(cik), sec_data, entity, cfg=cfg, fetcher=fetcher)
+    elif v == "LSE":
+        docs = await _uk_documents(entity, cfg=cfg, fetcher=fetcher)
+    from app.services.discovery.entity_match import _distinctive, _tokens, relations_from_document
+
+    toks = _distinctive(_tokens(entity.name))
+    relations: list[Any] = []
+    for doc in docs:
+        if doc.names_issuer:
+            relations.extend(relations_from_document(
+                doc.text, name_tokens=toks, document_id=doc.ref, url=doc.url,
+                source_class=doc.source_class))
+    if relations:
+        _RELATIONS[(venue.upper(), ticker.upper())] = relations[:12]
+    # Only VERIFIED proofs are an issuer's official domain; a single unconfirmed statement is
+    # not (it would carry the A3 issuer voice on one document's word).
+    return [
+        _from_proof(p)
+        for p in proofs_from_documents(docs, entity, verified_at=_today())
+        if p.status == "verified_official"
+    ]
+
+
 async def establish_official_domains(
     *,
     ticker: str | None,
@@ -376,6 +725,7 @@ async def establish_official_domains(
     cik: str | None = None,
     cfg: Any = None,
     fetcher: Any = None,
+    name: str | None = None,
 ) -> list[OfficialDomain]:
     """The issuer's official domains, from independent sources only. **Never raises.**
 
@@ -397,15 +747,30 @@ async def establish_official_domains(
             if d and not any(o.domain == d for o in found):
                 found.append(OfficialDomain(d, BASIS_REGISTRY, None,
                                             "the platform's verified issuer registry", _today()))
+    sec_data: dict[str, Any] | None = None
     try:
         if (venue or "").upper() in ("AU", "ASX"):
             code = _safe_code(ticker)
             if code:
                 found.extend(await _asx(code, cfg=cfg, fetcher=fetcher))
         elif (venue or "").upper() == "US" and cik:
-            found.extend(await _sec(str(cik), cfg=cfg, fetcher=fetcher))
+            sec_data = await _sec_submissions(str(cik), cfg=cfg, fetcher=fetcher)
+            found.extend(await _sec(str(cik), cfg=cfg, fetcher=fetcher, data=sec_data))
     except Exception:  # noqa: BLE001 - a lookup that fails leaves the domain unestablished
         pass
+    # Nothing from the exchange profile or the latest announcements: read the issuer's own
+    # high-value regulated documents (bounded). The domain is proven by those BYTES, matched to
+    # the verified entity — never by a search snippet.
+    if not found and name:
+        try:
+            entity = await resolve_entity(ticker=ticker, venue=venue, name=name, cik=cik,
+                                          cfg=cfg, fetcher=fetcher)
+            found.extend(await asyncio.wait_for(
+                _document_proofs((venue or ""), ticker or "", entity, cik, sec_data,
+                                 cfg=cfg, fetcher=fetcher),
+                RESOLVER_WALL_SECONDS))
+        except Exception:  # noqa: BLE001 - an unreadable document names no domain
+            pass
     unique: list[OfficialDomain] = []
     for item in found:
         if not any(u.domain == item.domain for u in unique):
@@ -423,6 +788,7 @@ __all__ = [
     "BASIS_REGISTRY",
     "BASIS_REGULATOR_PROFILE",
     "OfficialDomain",
+    "resolve_entity",
     "domain_covers",
     "domains_in_letterhead",
     "is_issuer_voice",

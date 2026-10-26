@@ -4125,3 +4125,49 @@ empty lookup is never cached and the cache is per day; (6) the strict name guard
 (7) the Council pack carries `issuer_origin` and `corroboration`, and a company's own pages count as ONE
 origin and never an authoritative one; (8) the absence-contradiction check compares the year and ignores
 guidance, forecast and "did not decline" clauses.
+
+
+## ADR-058: Generic Official-Domain Resolution and Independent-Source (Path B) Discovery Admission
+
+**Date:** 2026-10-26 · **Status:** Accepted · **Decided by:** owner (direction) · implemented by agent
+**Extends:** ADR-057 · **Preserves:** A1 (executed search), A2 (official listing), A4, the fabricated-company safeguards, `issuer_only` vs `independently_corroborated`
+
+### Context
+Live acceptance after ADR-057 admitted one search-found company in eight Discovery runs. The cause was
+infrastructure, not policy: the ASX research feed shows only the latest five announcements (mostly holder
+notices) and an empty profile website for most small caps; SEC submissions often carry no website; TSX/LSE had no
+domain source; and independent journalism rarely prints a ticker next to a name.
+
+### Decision
+1. **Two admission paths for theme evidence.** Path A — a verified *issuer* source (domain proven independently,
+   page fetched, passage ties issuer to theme). Path B — an *independent* source of an acceptable class, fetched,
+   that unambiguously identifies the verified listed company; **no official domain required**.
+2. **One generic resolver** (`discovery/domain_proofs.py`, `official_domains.py`). A domain is a provenance-carrying
+   fact (`DomainProof`: method, source class, document id, matched entity, matched identifiers, confidence,
+   `verified_at`). Methods: `directory_record`; `regulated_document_stated_website` (ASX / SEC / FCA NSM bytes that
+   name the issuer, in its OWN contact block — never the share registry's, auditor's, broker's); `regulated_document_letterhead`;
+   `filing_contact_email`; `legal_identifier_site_match` (a candidate site prints the verified entity's legal name AND a
+   checksum-valid LEI / ISIN / ABN / ACN / company number from GLEIF or the exchange). Ticker alone, name alone,
+   hostname resemblance and search-provider labels never qualify.
+   **Independent review (2026-10-26) tightened this:** identifiers are public, so a lookalike or aggregator can print
+   them. `legal_identifier_site_match` therefore yields status `candidate_self_claim` — recorded for Admin diagnostics
+   (`domain_candidates`) but never read as the issuer's voice and never an official domain. A single stated website in
+   one exchange announcement is `stated_unconfirmed` (verified only from a regulator-lodged filing, a second document,
+   a matching contact e-mail domain, or the entity's own identifier). IR/PR/media-contact blocks are third-party anchors.
+3. **ASX:** a bounded pass (≤4 documents) over the issuer's high-value announcements (annual report, presentations,
+   quarterly reports) found on the ASX's own yearly announcement pages; **SEC:** the registrant's latest 10-K/20-F/8-K
+   text; **UK:** FCA NSM filings located by the GLEIF LEI of the exchange ISIN. **TSX/TSXV:** the TMX directory anchors
+   identity only; no authoritative filing source exists in the current architecture, so these rely on Path B or rule E.
+4. **Path B entity matching** (`discovery/entity_match.py`): the full legal-name phrase (with a distinctive token) matches
+   on its own (geographic words are not distinctive); short forms and generic-only names need a STRONG anchor within 80
+   characters (the ticker immediately preceded by its own venue's tag, or an ISIN/LEI/CIK/number on a token boundary —
+   "ASX-listed" alone is not an anchor); a project name (matched as the full phrase "<Project> Project"; bare geographic tokens never) supports a company only when an authoritative or issuer document proved the
+   company↔project relationship (recorded with its provenance). A paragraph annotating ≥3 listings or naming ≥3 verified
+   companies is a list and admits nobody.
+5. **Unchanged:** issuer claims stay `issuer_only`; Path B passages are independent *thematic* evidence about
+   candidate discovery, not canonical financial facts (those remain primary/regulated only); superlatives still need
+   independent support; search snippets are never evidence.
+
+### Consequences
+Domain resolution costs a few bounded fetches per qualifying lead and is cached per day; a lead that qualified but was
+not looked up records why. Remaining limits are documented in `docs/open-web-research-production-acceptance.md`.

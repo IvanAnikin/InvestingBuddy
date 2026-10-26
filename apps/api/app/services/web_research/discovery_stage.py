@@ -189,6 +189,9 @@ class DiscoveryWebResult:
     executed_query_ids: frozenset[str] = frozenset()
     units: ConsumptionUnits = field(default_factory=ConsumptionUnits)
     theme_key: str | None = None
+    #: Theme-bearing paragraphs of the fetched pages, kept so a VERIFIED listed company can be
+    #: matched in an independent source that never prints its ticker (``entity_match``).
+    passages: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ran(self) -> bool:
@@ -199,6 +202,8 @@ class DiscoveryWebResult:
 class _Box:
     units: ConsumptionUnits = field(default_factory=ConsumptionUnits)
     budget: WebResearchBudget | None = None
+    #: Theme-bearing paragraphs of every fetched page (Path B: independent name matching).
+    passages: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -251,6 +256,8 @@ class _Page:
     suspect: bool
     mentions: list[tuple[ce.RawMention, str, str]] = field(default_factory=list)
     other_hosts: tuple[str, ...] = ()
+    #: ``(paragraph, theme terms, chunk id | None)`` — the page's theme-bearing paragraphs.
+    theme_paragraphs: list[tuple[str, tuple[str, ...], str | None]] = field(default_factory=list)
 
 
 class _Abort(Exception):
@@ -691,7 +698,7 @@ async def run_discovery_web_stage(
     summary["label"] = _label(summary)
     summary["notes"] = tally.notes[:12]
     summary["elapsed_seconds"] = round(deps.clock() - started, 3)
-    return DiscoveryWebResult(state, summary, leads, executed_ids, units, theme_key)
+    return DiscoveryWebResult(state, summary, leads, executed_ids, units, theme_key, box.passages)
 
 
 def _label(summary: Mapping[str, Any]) -> str | None:
@@ -930,6 +937,18 @@ async def _execute(
         summary=summary,
         provider_name=summary.get("provider"),
     )
+    box.passages = [
+        {
+            "passage": text, "theme_terms": list(terms), "chunk_id": chunk,
+            "passage_ref": passage_ref(page.attempt_id, text), "url": page.url,
+            "domain": page.domain, "hosts": list(page.other_hosts),
+            "source_class": page.source_class, "attempt_id": page.attempt_id,
+            "query_id": str(page.candidate.query_id) if page.candidate.query_id else None,
+            "query_key": page.query_key,
+        }
+        for page in pages
+        for text, terms, chunk in page.theme_paragraphs
+    ][:400]
     summary["results"] = {
         "seen": tally.results_seen,
         "selected": tally.selected,
@@ -1131,6 +1150,27 @@ async def _chunk_index(
     return await asyncio.to_thread(
         lambda: [(str(cid)[:120], fold(str(text or "")[:_MAX_CHUNK_CHARS])) for cid, text in rows]
     )
+
+
+MAX_THEME_PARAGRAPHS_PER_PAGE = 15
+
+
+def _theme_paragraph_candidates(
+    paragraphs: Sequence[str], vocab: ce.ThemeVocabulary
+) -> list[tuple[str, tuple[str, ...]]]:
+    """The paragraphs of a page that carry a theme term (bounded). Pure and CPU-bound: call it
+    off the event loop."""
+    found: list[tuple[str, tuple[str, ...]]] = []
+    for block in paragraphs:
+        text = " ".join(str(block).split())
+        if len(text) < OFFICIAL_PASSAGE_MIN_CHARS:
+            continue
+        terms = vocab.match(text)
+        if terms:
+            found.append((text[: ce.MAX_PASSAGE_CHARS], tuple(terms)))
+        if len(found) >= MAX_THEME_PARAGRAPHS_PER_PAGE:
+            break
+    return found
 
 
 def _find_chunk(index: Sequence[tuple[str, str]], mention: ce.RawMention) -> str | None:
@@ -1389,7 +1429,11 @@ async def _fetch_phase(
         tally.rejected_names += stats.rejected_names
         if mentions:
             tally.pages_with_mentions += 1
-        chunk_index = await _chunk_index(session, version_id) if mentions else []
+        theme_candidates = await asyncio.to_thread(_theme_paragraph_candidates, paragraphs, vocab)
+        # ONE chunk index per page serves both the mentions and the theme paragraphs.
+        chunk_index = (
+            await _chunk_index(session, version_id) if (mentions or theme_candidates) else []
+        )
         kept = mentions[:MAX_MENTIONS_PER_PAGE]
         # The substring scans over every chunk are CPU work proportional to the page: off the
         # loop, like the extraction itself.
@@ -1397,6 +1441,18 @@ async def _fetch_phase(
         for mention, chunk_id in zip(kept, found, strict=True):
             ref = passage_ref(page.attempt_id, mention.passage)
             page.mentions.append((mention, chunk_id or ref, ref))
+        if theme_candidates:
+            from types import SimpleNamespace
+
+            chunks = await asyncio.to_thread(
+                lambda: [_find_chunk(chunk_index, SimpleNamespace(passage=t)) if chunk_index
+                         else None for t, _terms in theme_candidates]
+            )
+            page.theme_paragraphs = [
+                (t, terms, chunk)
+                for (t, terms), chunk in zip(theme_candidates, chunks, strict=True)
+                if not (version_id is not None and not chunk)
+            ]
         pages.append(page)
     await session.flush()
 
@@ -1904,7 +1960,7 @@ def passage_ties_company_to_theme(
 async def read_official_pages(
     session: Any,
     intent: Any,
-    targets: Sequence[tuple[str, str, str, str]],
+    targets: Sequence[tuple[Any, ...]],
     ctx: DiscoveryWebContext,
     *,
     cfg: Any,
@@ -1940,7 +1996,7 @@ async def read_official_pages(
 async def _read_official(
     session: Any,
     intent: Any,
-    targets: Sequence[tuple[str, str, str, str]],
+    targets: Sequence[tuple[Any, ...]],
     ctx: DiscoveryWebContext,
     cfg: Any,
     deps: DiscoveryWebDeps,
@@ -1967,7 +2023,14 @@ async def _read_official(
     )
     fetch_ctx = fetch_mod.WebFetchContext(discovery_run_id=ctx.run_id)
     await _progress(progress, PROGRESS_FETCH)
-    for lead_id, domain, name, ticker in targets:
+    for target in targets:
+        # ``(lead_id, domain, name, ticker)``; a fifth element is the verified ``EntityIds`` of a
+        # CANDIDATE site whose domain is not yet established: the page is kept only if it
+        # prints a hard identifier of that entity (``domain_proofs.proof_from_site``).
+        lead_id, domain, name, ticker = target[:4]
+        entity = target[4] if len(target) > 4 else None
+        if out.status.get(lead_id, {}).get("read"):
+            continue  # an earlier candidate site of this lead already proved itself
         refusal = budget.fetch_refusal()
         if refusal is not None:
             out.notes.append(f"official pages: {refusal}")
@@ -1978,7 +2041,7 @@ async def _read_official(
             async with session.begin_nested():
                 entries, status = await _read_one(
                     session, fetch_ctx, budget, domain, name, ticker, vocab, terms, depth,
-                    cfg, deps, ctx,
+                    cfg, deps, ctx, entity,
                 )
         except Exception as exc:  # noqa: BLE001 - one site costs that lead only
             out.status[lead_id] = {"read": False, "reason": type(exc).__name__[:60]}
@@ -2006,6 +2069,7 @@ async def _read_one(
     cfg: Any,
     deps: DiscoveryWebDeps,
     ctx: DiscoveryWebContext,
+    entity: Any = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """One issuer's official page → (passages, status)."""
     from types import SimpleNamespace
@@ -2067,8 +2131,25 @@ async def _read_one(
     if extraction.injection_suspect:
         status["reason"] = "injection_suspect"
         return [], status
-    status["read"] = True
     blocks, _tables = _blocks_and_tables(extraction)
+    if entity is not None:
+        from app.services.discovery.domain_proofs import proof_from_site
+
+        page_text = " ".join(" ".join(b.split()) for b in blocks)[:60_000]
+        proof = proof_from_site(
+            domain, page_text, entity, url=final,
+            verified_at=(deps.now or datetime.now(timezone.utc)).date().isoformat(),
+        )
+        if proof is None:
+            status["reason"] = "candidate_site_unproven"
+            return [], status
+        status["domain_proof"] = proof.to_dict()
+        if proof.status != "verified_official":
+            # A site that merely prints public identifiers is a self-claim: diagnostics only,
+            # never read as the issuer's voice.
+            status["reason"] = "candidate_site_self_claim_only"
+            return [], status
+    status["read"] = True
     # Only DISTINCTIVE name words tie a passage to the company: "gallium" in "Zeta Gallium
     # Limited" is the theme itself, and "rare"/"earths"/"mining" are generic. Matching those
     # would let any industry sentence on the page qualify.
