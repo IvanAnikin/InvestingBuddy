@@ -2517,8 +2517,9 @@ example builds a non-empty universe.
 
 **Themes:** `defense`, `semiconductors`, `nuclear_energy`,
 `grid_electrification`, `robotics_automation`, `biotech_pharma`,
-`banks_fintech`, `mining_materials`, `ai_infrastructure`, **`luxury_goods`**
-(new).
+`banks_fintech`, `mining_materials`, `ai_infrastructure`, **`luxury_goods`**,
+**`healthcare_technology`** (medical imaging / healthcare software; curated universe GEHC, VEEV,
+Siemens Healthineers, Pro Medicus — added 2026-10-25 so that niche can run).
 
 **Sector taxonomy.** `app/services/sector_taxonomy.py` maps sector/industry
 aliases to canonical names, so a thesis filtered on `sector="Luxury Goods"`
