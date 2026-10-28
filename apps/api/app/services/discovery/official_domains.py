@@ -403,17 +403,23 @@ _HIGH_VALUE_HEADLINE = re.compile(
     r"|operations?\s+update|investor\s+update",
     re.IGNORECASE,
 )
+_KIND_QUARTERLY = re.compile(r"quarterly|activities\s+report", re.IGNORECASE)
+_KIND_PRESENTATION = re.compile(
+    r"investor|corporate|company\s+(?:presentation|overview)|project\s+update", re.IGNORECASE)
+_KIND_ANNUAL = re.compile(r"annual\s+report", re.IGNORECASE)
 _HEADLINE_PRIORITY = (
     (re.compile(r"annual\s+report", re.IGNORECASE), 0),
     (re.compile(r"investor|corporate|company\s+(?:presentation|overview)", re.IGNORECASE), 1),
     (re.compile(r"quarterly|activities", re.IGNORECASE), 2),
 )
 #: Bounded: never a crawl of the issuer's announcement history.
-MAX_DEEP_DOCS = 4
+MAX_DEEP_DOCS = 3
 MAX_SEC_DOCS = 2
 MAX_UK_DOCS = 3
 MAX_DEEP_PDF_BYTES = 12_000_000
 RESOLVER_WALL_SECONDS = 75.0
+#: Path C reads the documents' BODIES (more pages, more parsing), on a clock of its own.
+DOCUMENTS_WALL_SECONDS = 150.0
 
 _ENTITY_CACHE: dict[tuple[str, str, str], Any] = {}
 #: (venue, ticker) -> company↔project relationships proven by the issuer's regulated documents.
@@ -441,7 +447,7 @@ def _headline_rank(headline: str) -> int:
     return 3
 
 
-MAX_FULL_PAGES = 120
+MAX_FULL_PAGES = 80
 MAX_FULL_TEXT_CHARS = 300_000
 
 
@@ -625,7 +631,9 @@ async def resolve_entity(
     return entity
 
 
-async def _asx_documents(code: str, entity: Any, *, cfg: Any, fetcher: Any) -> list[Any]:
+async def _asx_documents(
+    code: str, entity: Any, *, cfg: Any, fetcher: Any, sink: list[Any] | None = None
+) -> list[Any]:
     """A bounded read of the issuer's high-value ASX documents (annual report, presentations,
     quarterly reports), found on the ASX's own yearly announcement pages — the native
     research feed shows only the latest five items."""
@@ -649,9 +657,20 @@ async def _asx_documents(code: str, entity: Any, *, cfg: Any, fetcher: Any) -> l
         r for r in rows
         if _HIGH_VALUE_HEADLINE.search(r.get("headline") or "")
         and not _THIRD_PARTY_HEADLINE.search(r.get("headline") or "")
+        and (r.get("pages") is None or r["pages"] >= 4)  # a 1-page notice has no body to read
     ]
-    own.sort(key=lambda r: (_headline_rank(r["headline"]), -r["published_at"].timestamp()))
-    docs: list[Any] = []
+    own.sort(key=lambda r: -r["published_at"].timestamp())
+    # One of each KIND first (latest quarterly/activities report, latest presentation or
+    # overview, latest annual report), then by recency. Smaller, thematic documents are read
+    # first so a wall clock that fires still leaves usable evidence.
+    picked: list[dict[str, Any]] = []
+    for kind in (_KIND_QUARTERLY, _KIND_PRESENTATION, _KIND_ANNUAL):
+        first = next((r for r in own if kind.search(r["headline"]) and r not in picked), None)
+        if first is not None:
+            picked.append(first)
+    picked += [r for r in own if r not in picked]
+    own = picked
+    docs: list[Any] = sink if sink is not None else []
     for row in own[:MAX_DEEP_DOCS]:
         display = asx_mod.ASX_DISPLAY_URL.format(ids_id=row["ids_id"])
         shown = await _fetch(display, asx_mod.ASX_HOST, cfg=cfg, fetcher=fetcher)
@@ -779,13 +798,22 @@ async def _collect_docs(
         return list(_DOCS[key])
     docs: list[Any] = []
     v = venue.upper()
-    if v in ("AU", "ASX") and _safe_code(ticker):
-        docs = await _asx_documents(_safe_code(ticker) or "", entity, cfg=cfg, fetcher=fetcher)
-    elif v == "US" and cik and sec_data is not None:
-        docs = await _sec_documents(str(cik), sec_data, entity, cfg=cfg, fetcher=fetcher)
-    elif v == "LSE":
-        docs = await _uk_documents(entity, cfg=cfg, fetcher=fetcher)
-    if docs:
+    complete = True
+    try:
+        if v in ("AU", "ASX") and _safe_code(ticker):
+            await asyncio.wait_for(
+                _asx_documents(_safe_code(ticker) or "", entity, cfg=cfg, fetcher=fetcher,
+                               sink=docs), DOCUMENTS_WALL_SECONDS)
+        elif v == "US" and cik and sec_data is not None:
+            docs = await asyncio.wait_for(
+                _sec_documents(str(cik), sec_data, entity, cfg=cfg, fetcher=fetcher),
+                DOCUMENTS_WALL_SECONDS)
+        elif v == "LSE":
+            docs = await asyncio.wait_for(
+                _uk_documents(entity, cfg=cfg, fetcher=fetcher), DOCUMENTS_WALL_SECONDS)
+    except asyncio.TimeoutError:
+        complete = False  # keep what finished; do not remember a partial set
+    if docs and complete:
         _DOCS.pop(key, None)
         _DOCS[key] = docs
         while len(_DOCS) > MAX_DOCS_CACHED:
@@ -805,10 +833,8 @@ async def regulated_documents(
         sec_data = None
         if (venue or "").upper() == "US" and cik:
             sec_data = await _sec_submissions(str(cik), cfg=cfg, fetcher=fetcher)
-        docs = await asyncio.wait_for(
-            _collect_docs((venue or ""), ticker or "", entity, cik, sec_data,
-                          cfg=cfg, fetcher=fetcher),
-            RESOLVER_WALL_SECONDS)
+        docs = await _collect_docs((venue or ""), ticker or "", entity, cik, sec_data,
+                                   cfg=cfg, fetcher=fetcher)
         return entity, docs
     except Exception:  # noqa: BLE001 - no document is no evidence, never an error
         return None, []

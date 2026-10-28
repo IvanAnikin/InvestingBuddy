@@ -148,3 +148,16 @@ async def test_a_lead_that_already_has_theme_evidence_is_not_re_read() -> None:
     await pl._attach_regulated_passages(
         [o], intent=_Intent(), cfg=None, fetcher=None, gate=_Gate(), executed_query_ids={"q-1"})
     assert "regulated_documents" not in o.lead.web
+
+
+def test_a_theme_word_inside_the_company_name_is_not_evidence() -> None:
+    text = ("Elevra Lithium Limited Level 28, 10 Eagle Street Brisbane QLD 4000 Page 1 of 40. "
+            "QUARTERLY REPORT FOR THE PERIOD ENDED 30 JUNE 2026 Elevra Lithium Limited.")
+    entries, _ = ds.regulated_entries(
+        [doc(text=text)], vocab=VOCAB, name="Elevra Lithium Limited", ticker="ELV", venue="AU")
+    assert entries == []
+    with_business = text + "\n\nOur lithium concentrate plant shipped 40,000 tonnes this quarter."
+    entries, _ = ds.regulated_entries(
+        [doc(text=with_business)], vocab=VOCAB, name="Elevra Lithium Limited", ticker="ELV",
+        venue="AU")
+    assert entries and "concentrate plant" in entries[0]["passage"]
