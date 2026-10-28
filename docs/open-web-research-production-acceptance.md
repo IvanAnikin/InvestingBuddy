@@ -390,3 +390,23 @@ passed A1, A2 and A3 (`verified_issuer`, 3 official-page passages on `singular.h
 **excluded as a micro-cap (A$52m)** by the thesis size constraint. Tempus AI and IQVIA: `domain_not_established`
 (SEC record has no website); Perimeter Medical Imaging, Rocket Doctor, WELL Health, HEALWELL: TSXV/OTC,
 `identity_unverified`. All five requested niches have now been run on deployed code.
+
+## 9. Domain-resolution acceptance (2026-10-26/28) — ADR-058
+
+Deployed: PR #284 (`2aba8be`, resolver + Path B), PR #285 (`ae94a27`, SEC website statements anywhere in multi-MB iXBRL filings; verified on real 10-Ks of Cognex, Deere, Emerson, Honeywell, Globus, Ondas, Cisco).
+
+**Runs (all on deployed code).** Critical minerals `07763b44` (post-#284), `6d89679d` (post-#285); grid `3c7c0f31`, `a14acc7d` (`5c4f7f27` died on a worker `PendingRollbackError` during a container recycle, not repeated on retry); automation `60169232`, `816d125a`; medical imaging `93772ed2`, `e2822aa5`; ASX niche `f8c2462d`; UK small-cap `349ffb58`. SCCO company research job `5e960804`.
+
+| Niche | Search-derived admissions | Path / proof |
+|---|---|---|
+| Critical minerals | Elmet Group (ELMT), Lithium Argentina (LAR) — run 1; Greenland Mines (GRML) — run 2 | ELMT/LAR: Path B, independent trade press (Northern Miner, metal.com), `ticker_venue` match, `independently_corroborated`. GRML: Path A, `regulated_document_stated_website` (SEC filing) → issuer page read, `issuer_only` |
+| Automation | Ondas (ONDS) | Path A, SEC-stated `ondas.com`, issuer page + PR Newswire mention, `issuer_only` |
+| Grid / medical / ASX / UK | 0 | see below |
+
+**Official domains now established** (previously `domain_not_established`): SEC issuers (Cisco, GE, Cognex, Deere, Emerson, Honeywell, Globus, Tempus, QT Imaging, USA Rare Earth, Symbotic), ASX issuers (Core Lithium, Elevra, Lynas, Iluka, Lindian, Meteoric, Encounter, Red Mountain, Argosy, Atlantic Lithium, Astron, Global Lithium, Rio Tinto) via the bounded older-document pass; `niocorp.com`, `sigmalithiumresources.com`. Methods seen live: `regulated_document_stated_website`, `regulated_document_letterhead`, `filing_contact_email`.
+
+**Where leads still stop (named, not hidden):** issuer sites that refuse automated reads (robots / 403 / captcha / `js_required`: Lynas, Iluka, Cognex, Emerson, Symbotic, Honeywell, USA Rare Earth, Tempus, Niocorp); a domain read that redirects off the issuer; a guessed second domain that does not resolve; no theme passage on the issuer page (Cisco, GE, Globus — correct rejections); size/geography constraints (Argosy, Atlantic, Lindian, Meteoric, Rio Tinto); TSX/TSXV/OTC/Japan leads with no directory or filing source (`identity_unverified`: Neo, Ucore, Rocket Doctor, HEALWELL…). Candidate sites that merely print a public identifier are recorded as `candidate_self_claim` and never read as the issuer's voice (independent review H1).
+
+**Does live search materially expand Discovery?** Modestly. Across the post-ADR-058 runs it admitted 4 distinct companies not in the curated universe (ELMT, LAR, GRML, ONDS) versus 1 across the previous 8 runs, in 2 of 5 niches; grid, medical imaging, ASX and UK remain 0. The binding constraints are now issuer-site access policy and LSE/AIM/TSX/OTC identity sources, not domain resolution. The campaign is therefore **not** declared fully validated.
+
+**Southern Copper contradiction.** Live job `5e960804`: no "no interim/quarterly revenue appears" denial coexists with the 2026-Q2 net-sales finding, and the reconciler records a `conflicting_sources` gap for the divergent FY2025 revenue figures instead of keeping both as confident claims. Regression: `tests/test_contradicted_absence.py`.
