@@ -437,3 +437,27 @@ deploy-triggered container recycle. The exception chain is structural: Discovery
 the connection drop locally and the application log was not available, so the *trigger* is inferred (recycle /
 pool disconnect), not observed. Fix: `PendingRollbackError` is transient (a retry builds a fresh session).
 Regression: `test_an_invalidated_session_is_retried_not_failed`.
+
+## 11. Regulated-document discovery (Path C) — acceptance runs on `7034fe9` (2026-10-28)
+
+Runs: ASX `a32620fc`, critical minerals `48d5d141`, UK/AIM `1d147267`, Canada `900878ac`, grid `6eb35d5b`.
+Each: 20 Tavily queries (plus ≤3 candidate-evidence queries per lead under the kill switch).
+
+| Niche | search results | entity cand. | listing-verified | reg. docs acquired | Path C | Path A | Path B | admitted (route) |
+|---|---|---|---|---|---|---|---|---|
+| ASX battery/graphite | 144 | 34 | 13 | 11 | 4 | 4 | 1 | 0 |
+| Critical minerals | 160 | 19 | 5 | 3 | 1 | 2 | 0 | 2 (Lynas via C; one via A) |
+| UK/AIM | 144 | 24 | 13 | 12 | 6 | 3 | 0 | 0 |
+| Canada TSX/TSXV | 152 | 20 | 5 | 2 | 1 | 0 | 1 | 0 |
+| Grid | 128 | 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Findings
+- Lynas (LYC/ASX) admitted by Path C: 3 regulated documents, 3 passages, `issuer_only`; the issuer site was robots-blocked.
+- ASX-niche and UK-niche zero admissions are constraint outcomes, not evidence failures: ASX names were micro-cap against a small-cap request, non-UK issuers fell outside the UK geography. Constraints held.
+- Canada: TMX identity verified (Lithium Chile, Aclara, Ucore, NextSource, Defense Metals, CoTec, Neo); no permitted filing source (SEDAR+ is behind a bot manager; no connector) → `no_regulated_source_for_venue`. The Tavily → TMX → SEDAR+ → filing chain is NOT proven.
+- AIM: no AIM-only issuer reached a regulated document (LSE terms §8 forbid programmatic access; FCA NSM lookup is by LEI only). The AIM chain is NOT proven.
+- Defect found and fixed (PR #289): list numbering and country possessives ("7. Mineral Resources", "Australia’s IGO") made listed ASX issuers fail the directory name check. Not re-run after the fix.
+- Genuinely absent from the ASX directory (acquired/renamed): Latin Resources, Leo Lithium, Arcadium.
+- Grid: search returned only already-curated large caps (duplicates) — no incremental names.
+
+Conclusion: Path C admits search-found issuers whose own site is blocked (Symbotic, QT Imaging, Tempus AI in the earlier run; Lynas here), with truthful `issuer_only` provenance. Expansion beyond the curated registry is real but small (a handful of names across ~8 runs), bounded by venue access, not by evidence quality. The open-web campaign is not declared validated.
