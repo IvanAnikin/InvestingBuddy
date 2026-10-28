@@ -1101,6 +1101,14 @@ class TestFailureClassification:
             is True
         )
 
+    async def test_an_invalidated_session_is_retried_not_failed(self):
+        """Run 5c4f7f27: a connection dropped inside a swallowed savepoint left the outer
+        transaction invalid; the next use raised PendingRollbackError and the run died
+        'permanently'. The condition belongs to that session; a retry builds a new one."""
+        from sqlalchemy import exc as sa_exc
+
+        assert is_transient_failure(sa_exc.PendingRollbackError("Can't reconnect")) is True
+
     async def test_database_statement_errors_stay_permanent(self):
         """The database refusing a STATEMENT repeats the same answer on retry."""
         from sqlalchemy import exc as sa_exc

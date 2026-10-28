@@ -114,10 +114,10 @@ class TestAsxOlderDocumentResolvesTheDomain:
             "abcdef123456.pdf": b"%PDF-annual",
         })
 
-        async def fake_text(_content: bytes) -> str:
-            return ANNUAL_REPORT
+        async def fake_bundle(_content: bytes) -> tuple[str, str]:
+            return ANNUAL_REPORT, ANNUAL_REPORT
 
-        monkeypatch.setattr(od, "_pdf_deep_text", fake_text)
+        monkeypatch.setattr(od, "_pdf_deep_bundle", fake_bundle)
         got = await od.establish_official_domains(
             ticker="ELV", venue="AU", verified=True, cfg=None, fetcher=fetcher,
             name="Elevra Lithium Limited",

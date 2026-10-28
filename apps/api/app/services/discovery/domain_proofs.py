@@ -139,6 +139,12 @@ class DocText:
     source_class: str  # exchange_announcement | regulator_filing | company_register
     text: str
     names_issuer: bool
+    #: The document's body for theme-passage reading (Path C); ``text`` stays the short
+    #: contact-bearing excerpt the domain proofs read.
+    full_text: str = ""
+    content_hash: str | None = None
+    headline: str | None = None
+    published_at: str | None = None
 
 
 @dataclass(frozen=True)
