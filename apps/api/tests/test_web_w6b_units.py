@@ -654,3 +654,16 @@ class TestMarketCapColumnIsNotTheVenue:
         stats = ce.ExtractionStats()
         assert ce._table_mentions(rows, VOCAB, stats) == []
         assert stats.name_only_dropped == 1
+
+
+class TestNameCleaning:
+    def test_enumerator_possessive_and_geo_prefix_are_not_part_of_the_name(self):
+        from app.services.web_research.candidate_extract import name_before
+
+        for text, want in (
+            ("7. Mineral Resources (ASX: MIN)", "Mineral Resources"),
+            ("Australia’s IGO (ASX: IGO)", "IGO"),
+            ("Leo Lithium’s (ASX: LLL)", "Leo Lithium"),
+        ):
+            end = text.index("(")
+            assert name_before(text, end) == want

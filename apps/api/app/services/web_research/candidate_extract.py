@@ -489,6 +489,14 @@ def _clean_token(token: str) -> str:
     return token.strip("\"'“”‘’()[]{}")
 
 
+#: List numbering ("7." / "3)") and a leading country possessive ("Australia’s IGO") are not part
+#: of a company's name; left in, they make a listed issuer look like a name mismatch.
+_ENUMERATOR_RE = re.compile(r"\(?\d{1,2}[.)]")
+_GEO_POSSESSIVE_RE = re.compile(
+    r"(?:Australia|Canada|Britain|America|Europe|China|India|Japan|Chile|Brazil|Africa)[’']s",
+)
+
+
 def _is_name_token(token: str) -> bool:
     t = _clean_token(token)
     if not t:
@@ -520,8 +528,11 @@ def name_before(text: str, end: int) -> str | None:
         if len(run) >= MAX_NAME_TOKENS:
             break
     run.reverse()
-    while run and (run[0].lower() in _BAD_LEADING or run[0].lower() in _CONNECTORS):
+    while run and (run[0].lower() in _BAD_LEADING or run[0].lower() in _CONNECTORS
+                   or _ENUMERATOR_RE.fullmatch(run[0]) or _GEO_POSSESSIVE_RE.fullmatch(run[0])):
         run.pop(0)
+    if run and run[-1][-2:] in ("’s", "'s"):
+        run[-1] = run[-1][:-2]
     while run and run[-1].lower() in _CONNECTORS:
         run.pop()
     name = " ".join(run).strip(" ,;:-–—")
