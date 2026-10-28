@@ -624,3 +624,33 @@ class TestA3HostsAnyoneCanPublishTo:
 
     def test_a_trade_publication_still_carries_it(self) -> None:
         assert adm.is_a3_passage(mention(source_class="trade_publication", domain="tdworld.com"))
+
+
+
+class TestMarketCapColumnIsNotTheVenue:
+    """Live run 5cebcde8: 'Market Cap' matched the venue header; 'A$257.16M' became the venue
+    and eight real ASX companies were rejected as unknown_venue."""
+
+    ROWS = [
+        ["Company", "Ticker", "Market Cap"],
+        ["Core Lithium Limited", "CXO", "A$257.16M"],
+        ["Liontown Resources Limited", "LTR", "A$2.30B"],
+    ]
+
+    def test_the_market_cap_column_is_not_a_venue_column(self) -> None:
+        stats = ce.ExtractionStats()
+        got = ce._table_mentions(self.ROWS, VOCAB, stats)
+        assert [m.ticker for m in got] == ["CXO", "LTR"]
+        assert all(m.venue_raw == "ASX" for m in got)  # from the A$ figure, checked by A2 later
+
+    def test_a_real_venue_column_still_wins(self) -> None:
+        rows = [["Company", "Exchange", "Ticker", "Market Cap"],
+                ["Core Lithium Limited", "ASX", "CXO", "A$257.16M"]]
+        (m,) = ce._table_mentions(rows, VOCAB, ce.ExtractionStats())
+        assert m.venue_raw == "ASX"
+
+    def test_a_row_with_no_venue_evidence_is_still_dropped_and_counted(self) -> None:
+        rows = [["Company", "Ticker", "Market Cap"], ["Some Co", "SMC", "$1.2B"]]
+        stats = ce.ExtractionStats()
+        assert ce._table_mentions(rows, VOCAB, stats) == []
+        assert stats.name_only_dropped == 1

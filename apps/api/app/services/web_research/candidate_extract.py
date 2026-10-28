@@ -685,6 +685,32 @@ def _paragraph_mentions(
 _NAME_HEADER = re.compile(r"company|name|issuer|business|firma|société|unternehmen", re.I)
 _TICKER_HEADER = re.compile(r"ticker|symbol|code|epic|tidm|kürzel", re.I)
 _VENUE_HEADER = re.compile(r"exchange|market|listing|venue|bourse|börse|boerse", re.I)
+#: "Market Cap", "Market Value", "Listing date"… name a number or a date, never the venue.
+#: Live Discovery run 5cebcde8: the "Market Cap" column ("A$257.16M") was read as the venue
+#: and eight real ASX companies were rejected as ``unknown_venue``.
+_NOT_A_VENUE_HEADER = re.compile(
+    r"\bcap\b|\bcapital|\bvalue|\bprice|\bvolume|\bdate\b|\bsince\b|\byear\b"
+    r"|\bchange\b|%|\brank\b|\bshares?\b", re.I
+)
+
+
+_CURRENCY_VENUES = (
+    (re.compile(r"(?:^|\s)(?:A\$|AU\$|AUD)\s?\d", re.I), "ASX"),
+    (re.compile(r"(?:^|\s)(?:£|GBX|GBP)\s?\d|\d\s?(?:GBX|GBP)\b", re.I), "LSE"),
+)
+
+
+def _venue_from_currency(cells: Sequence[str]) -> str | None:
+    """The exchange to check for a row whose only venue evidence is a currency-marked figure."""
+    for cell in cells:
+        for pattern, venue in _CURRENCY_VENUES:
+            if pattern.search(cell):
+                return venue
+    return None
+
+
+def _is_venue_header(cell: str) -> bool:
+    return bool(_VENUE_HEADER.search(cell)) and not _NOT_A_VENUE_HEADER.search(cell)
 
 
 def _row_text(cells: Sequence[str]) -> str:
@@ -705,7 +731,7 @@ def _table_mentions(
     header = [str(c or "")[:MAX_CELL_CHARS] for c in rows[0]]
     name_col = next((i for i, c in enumerate(header) if _NAME_HEADER.search(c)), None)
     ticker_col = next((i for i, c in enumerate(header) if _TICKER_HEADER.search(c)), None)
-    venue_col = next((i for i, c in enumerate(header) if _VENUE_HEADER.search(c)), None)
+    venue_col = next((i for i, c in enumerate(header) if _is_venue_header(c)), None)
     # A table with no header row keeps its first row as DATA (a venue:ticker cell needs
     # no header).
     first = 1 if (name_col is not None or ticker_col is not None) else 0
@@ -754,6 +780,12 @@ def _table_mentions(
                         if venue_col is not None and venue_col < len(cells)
                         else None
                     )
+                    if not venue:
+                        # No venue column. A currency-marked cell ("A$257.16M", "£120m")
+                        # says which country's exchange to CHECK; the official directory
+                        # still decides whether the listing exists (A2), so a wrong guess
+                        # costs one lookup and admits nobody.
+                        venue = _venue_from_currency(cells)
                     if not venue:
                         # ``AIM: PRE`` style combined cells are handled above; a bare
                         # ticker with no venue cannot be verified, so it is not a lead.

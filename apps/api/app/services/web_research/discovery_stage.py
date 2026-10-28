@@ -2341,7 +2341,7 @@ async def _read_one(
         text = " ".join(block.split())
         if len(text) < OFFICIAL_PASSAGE_MIN_CHARS:
             continue
-        found = vocab.match(text)
+        found = vocab.match(_mask_company_name(text, name))
         if found and passage_ties_company_to_theme(
             text, found, name_tokens=tokens, ticker=ticker or None
         ):
@@ -2423,6 +2423,23 @@ def document_blocks(text: str) -> list[str]:
     return [b for b in blocks if len(b) >= OFFICIAL_PASSAGE_MIN_CHARS]
 
 
+def _mask_company_name(text: str, name: str) -> str:
+    """``text`` with the company's own name (and its legal suffix) blanked out.
+
+    A name that contains a thesis word ("Lynas Rare Earths Ltd") is not evidence the company
+    DOES that: the letterhead of every page would qualify. The theme must appear in what the
+    document says about the business."""
+    from app.services.discovery.identity import name_tokens
+
+    toks = list(name_tokens(name))
+    if not toks:
+        return text
+    pattern = r"\b" + r"[\s,.&-]+".join(re.escape(t) for t in toks) + (
+        r"(?:[\s,.]+(?:ltd|limited|plc|inc|corp|corporation|n\.?l\.?|s\.?a\.?|ag|nv|se))?\b\.?"
+    )
+    return re.sub(pattern, " ", text, flags=re.IGNORECASE)
+
+
 def regulated_entries(
     docs: Sequence[Any], *, vocab: Any, name: str, ticker: str, venue: str,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -2449,7 +2466,7 @@ def regulated_entries(
         status["naming_issuer"] += 1
         for position, block in enumerate(document_blocks(getattr(doc, "full_text", "") or "")):
             status["blocks"] += 1
-            found = vocab.match(block)
+            found = vocab.match(_mask_company_name(block, name))
             if found and passage_ties_company_to_theme(
                 block, found, name_tokens=tokens, ticker=ticker or None
             ):
