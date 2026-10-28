@@ -54,6 +54,7 @@ def _flags(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202
     for name, value in {
         "v3_dynamic_discovery_enabled": True, "v3_discovery_web_search_enabled": True,
         "v3_web_search_enabled": True, "v3_web_search_provider": "fake",
+        "v3_discovery_candidate_evidence_enabled": False,  # these tests count the plan exactly
         "v3_web_search_max_queries_per_day": 5000, "v3_web_fetch_enabled": True,
         "v3_corpus_enabled": True, "v3_web_corpus_ingest_enabled": False,
         "v3_artifact_store_backend": "none", "v3_run_max_web_searches": 0,

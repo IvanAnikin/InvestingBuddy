@@ -410,3 +410,30 @@ Deployed: PR #284 (`2aba8be`, resolver + Path B), PR #285 (`ae94a27`, SEC websit
 **Does live search materially expand Discovery?** Modestly. Across the post-ADR-058 runs it admitted 4 distinct companies not in the curated universe (ELMT, LAR, GRML, ONDS) versus 1 across the previous 8 runs, in 2 of 5 niches; grid, medical imaging, ASX and UK remain 0. The binding constraints are now issuer-site access policy and LSE/AIM/TSX/OTC identity sources, not domain resolution. The campaign is therefore **not** declared fully validated.
 
 **Southern Copper contradiction.** Live job `5e960804`: no "no interim/quarterly revenue appears" denial coexists with the 2026-Q2 net-sales finding, and the reconciler records a `conflicting_sources` gap for the divergent FY2025 revenue figures instead of keeping both as confident claims. Regression: `tests/test_contradicted_absence.py`.
+
+## 10. Independent-review dispositions (ADR-058 review, M1–M5 + lows) and the worker error
+
+| # | Finding | Disposition | Decision and regression |
+|---|---|---|---|
+| H1–H5 | blocking | FIX (#284) | self-claim status, strict anchors, IR/PR third-party blocks, unconfirmed single statements |
+| M1 | issuer/affiliated pages labelled independent in Path B | **FIX** | Path B drops passages whose domain is, or is a subdomain of, any official or candidate domain of the lead, and PR-wire / exchange-mirror hosts (`PR_WIRE_HOSTS`). `test_m1_the_issuers_own_subdomain_and_pr_wires_are_not_independent` |
+| M2 | search-supplied `lead.name` in the entity master; same-name collisions | **FIX** | the master is built from the verified legal name only; a name another verified entity in the run shares needs a venue-checked anchor. `test_m2_*` (two tests) |
+| M3 | unproven candidate pages stored/classified as issuer before the proof | **FIX** | a candidate site is extracted in memory, classified with no issuer domain, never stored; Rule E can only yield a self-claim, which is never read as the issuer's voice |
+| M4 | failure cached for the day; unbounded caches | **FIX** (partly #284) | failed resolutions are not cached; all caches evict oldest-first at 400 entries (24 for full document texts). `test_m4_caches_are_bounded`. `_RELATIONS` is not date-keyed: ACCEPTED RISK (authoritative, slow-changing facts, bounded) |
+| M5 | wall-clock cancellation leaves PDF threads running | **FIX** | the parse slot is held until the thread finishes; byte cap before `PdfReader`; page cap (120). `test_m5_the_pdf_slot_is_held_until_the_thread_finishes` |
+| L: `context` arg dead | OBSOLETE | `match_entity` now uses it for anchor text and near-anchor proximity |
+| L: uppercase common-word tickers | **FIX** | a ticker is an anchor only when its OWN venue's tag immediately precedes it |
+| L: `_norm_regno` alphanumeric numbers | ACCEPTED RISK | false negative only (Rule E can only under-match) |
+| L: `w`/`url` labels, file-like TLDs | ACCEPTED RISK | cosmetic; gated by the issuer-block rule |
+| L: SEC 80k text cap | **FIX** (#285) | whole-filing scan, windows kept |
+| L: Path B regex on the event loop | ACCEPTED RISK | bounded: ≤ 400 passages × ≤ 14 leads |
+
+**`PendingRollbackError` (run `5c4f7f27`).** The run died `0/7` with "permanent error (PendingRollbackError)" seconds after a
+deploy-triggered container recycle. The exception chain is structural: Discovery stages wrap work in
+`session.begin_nested()` and swallow `Exception` per item; a database connection dropped mid-savepoint leaves the
+**outer** transaction invalid, nothing rolls it back, and the next use raises `PendingRollbackError` far from the cause.
+`is_transient_failure` classed it permanent, so the durable job failed a run that had done nothing wrong; a retry
+(new session) succeeded on the identical input, which is what a stale-session fault looks like. I could not reproduce
+the connection drop locally and the application log was not available, so the *trigger* is inferred (recycle /
+pool disconnect), not observed. Fix: `PendingRollbackError` is transient (a retry builds a fresh session).
+Regression: `test_an_invalidated_session_is_retried_not_failed`.

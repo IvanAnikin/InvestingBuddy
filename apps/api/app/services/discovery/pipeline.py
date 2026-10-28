@@ -683,11 +683,27 @@ async def run_dynamic_stage(
                      plan_date=plan_date),
             web_deps=web_deps, progress=progress, executed_query_ids=executed_query_ids,
         )
+        # PATH C: the issuer's own REGULATED documents (SEC filing, ASX announcement, FCA NSM
+        # filing), fetched directly from the regulator / exchange, may tie it to the theme —
+        # no issuer website needed, so a bot-blocked site no longer decides the lead.
+        await _attach_regulated_passages(
+            verified_external, intent=intent, cfg=cfg, fetcher=fetcher, gate=gate,
+            executed_query_ids=executed_query_ids,
+        )
         # PATH B: an independent fetched source may identify a verified company by its legal
-        # name (no official domain, no printed ticker needed) — see ``entity_match``.
+        # name (no official domain, no printed ticker needed) — see ``entity_match``. The
+        # run's own passages are searched first; a lead that still has no theme evidence gets
+        # a small candidate-specific query family (never an open-ended search).
+        path_b_passages = list(getattr(web_result, "passages", None) or [])
+        path_b_passages += await _search_candidate_evidence(
+            verified_external, session=session, intent=intent,
+            ctx=_Ctx(run_id=run_id, known_domains=known_domains, commit=commit,
+                     plan_date=plan_date),
+            cfg=cfg, web_deps=web_deps, progress=progress,
+            executed_query_ids=executed_query_ids,
+        )
         await _attach_independent_matches(
-            verified_external, list(getattr(web_result, "passages", None) or []),
-            cfg=cfg, fetcher=fetcher, gate=gate,
+            verified_external, path_b_passages, cfg=cfg, fetcher=fetcher, gate=gate,
         )
     unverifiable: list[IdentityOutcome] = []
     for outcome in verified_external:
@@ -824,7 +840,9 @@ async def run_dynamic_stage(
             web_also_surfaced=len(also_surfaced),
         )
         stage.web = {**(stage.web or {}),
-                     "admission": _admission_summary(records, also_surfaced, stage.rejected)}
+                     "admission": _admission_summary(records, also_surfaced, stage.rejected),
+                     "funnel": _path_funnel(records, also_surfaced, stage.rejected,
+                                            len(web_leads), (stage.web or {}))}
     if units:
         from app.services.consumption import ConsumptionUnits
 
@@ -1047,6 +1065,124 @@ def _has_independent_theme_passage(outcome: IdentityOutcome) -> bool:
     )
 
 
+MAX_REGULATED_LOOKUPS = 14
+
+
+async def _search_candidate_evidence(
+    outcomes: list[IdentityOutcome],
+    *,
+    session: Any,
+    intent: Any,
+    ctx: Any,
+    cfg: Any,
+    web_deps: Any,
+    progress: Any,
+    executed_query_ids: Any,
+) -> list[dict[str, Any]]:
+    """Path B search quality. For verified, search-found leads that neither the official page
+    nor a regulated document tied to the theme, run the bounded candidate-specific query
+    family and return the fetched pages' theme paragraphs. Never raises."""
+    from app.services.discovery import admission as adm
+    from app.services.web_research.discovery_stage import search_candidate_evidence
+
+    if session is None or ctx is None:
+        return []
+    if not bool(getattr(cfg, "v3_discovery_candidate_evidence_enabled", True)):
+        return []
+    needy = [
+        o for o in outcomes
+        if o.verified and o.lead.discovery_mode == "search" and o.name
+        and adm.search_lead_has_provenance(o.lead.web, executed_query_ids)
+        and not any(adm.is_a3_passage(m) for m in (o.lead.web or {}).get("mentions") or [])
+    ]
+    if not needy:
+        return []
+    try:
+        names = [(str(id(o.lead)), o.name or "") for o in needy]
+        result = await search_candidate_evidence(
+            session, intent, names, ctx, cfg=cfg, deps=web_deps, progress=progress)
+    except Exception:  # noqa: BLE001 - the lead stays where it was
+        return []
+    searched = {k for k, _n in names[:6]}
+    for o in needy:
+        key = str(id(o.lead))
+        o.lead.web = {**(o.lead.web or {}), "candidate_evidence_search": {
+            "queries": result.by_lead_queries.get(key, 0) if key in searched else 0,
+            "reason": None if key in searched else "lead_cap",
+        }}
+    return list(result.passages)
+
+
+async def _attach_regulated_passages(
+    outcomes: list[IdentityOutcome],
+    *,
+    intent: Any,
+    cfg: Any,
+    fetcher: Any,
+    gate: Any,
+    executed_query_ids: Any = (),
+) -> None:
+    """Path C. For each VERIFIED search-found lead (A1: an executed search) that no acceptable
+    source yet ties to the theme, read its regulated documents and record the passages. Never
+    raises; every attempt leaves a trace on the lead so no candidate vanishes silently."""
+    from app.services.discovery import admission as adm
+    from app.services.discovery.directories import find_listing
+    from app.services.web_research.discovery_stage import read_regulated_documents
+
+    eligible = [
+        o for o in outcomes
+        if o.verified and o.lead.discovery_mode == "search"
+        and adm.search_lead_has_provenance(o.lead.web, executed_query_ids)
+        and not any(adm.is_a3_passage(m) for m in (o.lead.web or {}).get("mentions") or [])
+    ][:MAX_REGULATED_LOOKUPS]
+    if not eligible:
+        return
+    targets: list[tuple[Any, ...]] = []
+    by_id: dict[str, IdentityOutcome] = {}
+    for o in eligible:
+        venue = (o.exchange or "").upper()
+        cik = None
+        if venue == "US":
+            try:
+                async with gate:
+                    row, _r = await find_listing(
+                        name=o.name, ticker=o.ticker, venue="US", cfg=cfg, fetcher=fetcher)
+                cik = getattr(row, "cik", None)
+            except Exception:  # noqa: BLE001
+                cik = None
+        lead_id = str(id(o.lead))
+        by_id[lead_id] = o
+        if venue in _REGULATED_VENUES and (venue != "US" or cik):
+            targets.append((lead_id, o.name, o.ticker, venue, cik))
+        else:
+            o.lead.web = {**(o.lead.web or {}), "regulated_documents": {
+                "read": False,
+                "reason": "no_regulated_source_for_venue" if venue not in _REGULATED_VENUES
+                else "no_sec_registrant_found",
+                "venue": venue,
+            }}
+    if not targets:
+        return
+    result = await read_regulated_documents(intent, targets, cfg=cfg, fetcher=fetcher, gate=gate)
+    for lead_id, o in by_id.items():
+        status = result.status.get(lead_id)
+        if status is None:
+            continue
+        entries = result.by_lead.get(lead_id) or []
+        web = dict(o.lead.web or {})
+        web["regulated_documents"] = {**status, "passages": len(entries)}
+        if entries:
+            web["mentions"] = [*entries, *(web.get("mentions") or [])][:MAX_OFFICIAL_MENTIONS]
+        o.lead.web = web
+
+
+#: Venues with an authoritative, permitted document source: SEC EDGAR, the ASX announcements
+#: platform and the FCA National Storage Mechanism (LSE-listed issuers it covers). TSX/TSXV
+#: (SEDAR+ is behind a bot manager) and AIM-only issuers (LSE RNS terms forbid scripted
+#: access) have none: they are recorded, not guessed.
+_REGULATED_VENUES = ("US", "AU", "ASX", "LSE")
+
+
 async def _attach_independent_matches(
     outcomes: list[IdentityOutcome],
     passages: list[dict[str, Any]],
@@ -1087,6 +1223,7 @@ async def _attach_independent_matches(
         and p.get("passage_ref") and adm.is_acceptable_source(
             p.get("source_class"), p.get("domain"), p.get("hosts") or ()
         ) and p.get("source_class") not in adm.ISSUER_ORIGIN_CLASSES
+        and not _is_issuer_paid_host(p.get("domain"), p.get("hosts") or ())
     ]
 
     async def one(outcome: IdentityOutcome) -> None:
@@ -1096,9 +1233,15 @@ async def _attach_independent_matches(
                     ticker=outcome.ticker, venue=outcome.exchange, name=outcome.name, cfg=cfg,
                     fetcher=fetcher,
                 )
-            names = tuple(dict.fromkeys(
-                n for n in (outcome.name, outcome.lead.name) if n
-            ))
+            # The master is built from the VERIFIED legal name only: a search- or
+            # model-supplied label that the identity match merely tolerated is not a name
+            # the exchange recognises (review M2).
+            names = (outcome.name,) if outcome.name else ()
+            own_domains = _issuer_domains_of(outcome)
+            shared_name = bool(names) and any(
+                " ".join(em._tokens(names[0])) == " ".join(em._tokens(o.name or ""))
+                for o in outcomes if o is not outcome and o.name
+            )
             master = em.EntityMaster(
                 names=names, ticker=outcome.ticker, venue=outcome.exchange, isin=entity.isin,
                 lei=entity.lei, cik=entity.cik, registration_numbers=entity.registration_numbers,
@@ -1116,8 +1259,16 @@ async def _attach_independent_matches(
                     break
                 if p["passage_ref"] in seen:
                     continue
+                # Review M1: the issuer's own subdomains (news., media., press.) and any
+                # host it is known to control are never independent of it.
+                if _on_domains(p.get("domain"), p.get("hosts") or (), own_domains):
+                    continue
                 hit = em.match_entity(p["passage"], master)
                 if hit is None:
+                    continue
+                # Review M2: a legal name that another entity in this run shares needs an
+                # anchor (venue-tagged ticker or hard identifier), however full the name.
+                if shared_name and not hit.anchors:
                     continue
                 folded = em._fold(p["passage"])
                 if hit.method == "project" and any(
@@ -1154,6 +1305,32 @@ async def _attach_independent_matches(
             return
 
     await asyncio.gather(*(one(o) for o in eligible), return_exceptions=True)
+
+
+def _issuer_domains_of(outcome: IdentityOutcome) -> tuple[str, ...]:
+    """Every domain the lead is known (or only suspected) to control."""
+    web = outcome.lead.web or {}
+    found = [d.get("domain") for d in (web.get("official_domains") or [])]
+    found += [d.get("domain") for d in (web.get("domain_candidates") or [])]
+    return tuple(str(d).lower() for d in found if d)
+
+
+def _on_domains(domain: Any, hosts: Any, owned: tuple[str, ...]) -> bool:
+    """``domain`` / any host is one of ``owned`` or a subdomain of one."""
+    if not owned:
+        return False
+    for h in (domain, *tuple(hosts or ())):
+        h = str(h or "").lower().removeprefix("www.")
+        if h and any(h == o or h.endswith("." + o) for o in owned):
+            return True
+    return False
+
+
+def _is_issuer_paid_host(domain: Any, hosts: Any) -> bool:
+    """A PR wire / exchange announcement mirror publishes the ISSUER's words (spec §14.2)."""
+    from app.services.web_research.trust import PR_WIRE_HOSTS
+
+    return _on_domains(domain, hosts, tuple(PR_WIRE_HOSTS))
 
 
 def _page_relations(outcome: IdentityOutcome) -> list[Any]:
@@ -1408,6 +1585,59 @@ def _make_record(
 
 def _record_state(record: CandidateRecord) -> str | None:
     return ((record.web or {}).get("admission") or {}).get("state")
+
+
+def _path_funnel(
+    records: list[CandidateRecord], also: list[CandidateRecord], rejected: list[IdentityOutcome],
+    entity_candidates: int, web_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Where search-found recall goes: one count per stage, so a lead's disappearance is
+    attributable. Counts SEARCH-found leads only (the curated registry is not the question)."""
+    webs: list[dict[str, Any]] = []
+    for r in [*records, *also]:
+        w = r.web or {}
+        if w.get("discovery_mode") == "search":
+            webs.append(w)
+    for o in rejected:
+        w = o.lead.web or {}
+        if o.lead.discovery_mode == "search":
+            webs.append(w)
+
+    def with_method(w: dict[str, Any], method: str) -> bool:
+        return any(m.get("method") == method for m in w.get("mentions") or [])
+
+    results = (web_summary.get("results") or {}).get("seen")
+    fetched = (web_summary.get("fetch") or {}).get("fetched")
+    verified = [w for w in webs if (w.get("admission") or {}).get("rules", {}).get("A2", {})
+                .get("passed")]
+    admitted = [w for w in webs if (w.get("admission") or {}).get("state") == "admitted"]
+
+    def route(w: dict[str, Any]) -> str:
+        if with_method(w, "official_domain_page"):
+            return "A"
+        if with_method(w, "regulated_document_passage"):
+            return "C"
+        if with_method(w, "independent_name_match"):
+            return "B"
+        return "search_mention"
+
+    routes: dict[str, int] = {}
+    for w in admitted:
+        routes[route(w)] = routes.get(route(w), 0) + 1
+    return {
+        "search_results": results,
+        "pages_fetched": fetched,
+        "entity_candidates": entity_candidates,
+        "listing_verified": len(verified),
+        "regulated_documents_acquired": sum(
+            int((w.get("regulated_documents") or {}).get("documents") or 0) for w in webs),
+        "path_c_qualified": sum(1 for w in webs if with_method(w, "regulated_document_passage")),
+        "official_domains_resolved": sum(1 for w in webs if w.get("official_domains")),
+        "path_a_qualified": sum(1 for w in webs if with_method(w, "official_domain_page")),
+        "path_b_qualified": sum(1 for w in webs if with_method(w, "independent_name_match")),
+        "final_admitted": len(admitted),
+        "admitted_by_route": routes,
+    }
 
 
 def _admission_summary(

@@ -43,6 +43,7 @@ process per day.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import re
@@ -212,6 +213,7 @@ _CACHE: dict[tuple[str, str, str, str], list[OfficialDomain]] = {}
 def reset_cache() -> None:
     _CACHE.clear()
     _RELATIONS.clear()
+    _DOCS.clear()
 
 
 def _today() -> str:
@@ -416,6 +418,15 @@ RESOLVER_WALL_SECONDS = 75.0
 _ENTITY_CACHE: dict[tuple[str, str, str], Any] = {}
 #: (venue, ticker) -> company↔project relationships proven by the issuer's regulated documents.
 _RELATIONS: dict[tuple[str, str], list[Any]] = {}
+MAX_CACHE_ENTRIES = 400
+
+
+def _bounded_put(cache: dict[Any, Any], key: Any, value: Any) -> None:
+    """Insert with oldest-first eviction, so a long-lived process cannot grow without bound."""
+    cache.pop(key, None)
+    cache[key] = value
+    while len(cache) > MAX_CACHE_ENTRIES:
+        cache.pop(next(iter(cache)))
 
 
 def relations_for(ticker: str | None, venue: str | None) -> list[Any]:
@@ -430,45 +441,67 @@ def _headline_rank(headline: str) -> int:
     return 3
 
 
-def _pdf_front_back_text(content: bytes) -> str:
-    """The first three and last three pages: cover, corporate directory, contact block."""
+MAX_FULL_PAGES = 120
+MAX_FULL_TEXT_CHARS = 300_000
+
+
+def _pdf_bundle(content: bytes) -> tuple[str, str]:
+    """``(contact excerpt, body)``: the first and last three pages (cover, corporate
+    directory, contact block) and up to ``MAX_FULL_PAGES`` pages for theme passages."""
     if len(content) > MAX_DEEP_PDF_BYTES or not content.startswith(b"%PDF"):
-        return ""
+        return "", ""
     try:
         import pypdf
 
         reader = pypdf.PdfReader(io.BytesIO(content))
         total = len(reader.pages)
+        keep = min(total, MAX_FULL_PAGES)
+        head = range(keep - 3 if total > keep else keep)
+        idx = sorted(set(head) | set(range(max(0, total - 3), total)))
+        pages = {i: (reader.pages[i].extract_text() or "")[:8000] for i in idx}
         picked = list(range(min(3, total))) + [i for i in range(max(3, total - 3), total)]
-        return "\n".join((reader.pages[i].extract_text() or "")[:6000] for i in picked)[:40_000]
+        excerpt = "\n".join(pages.get(i, "")[:6000] for i in picked)[:40_000]
+        return excerpt, "\n\n".join(pages[i] for i in idx)[:MAX_FULL_TEXT_CHARS]
     except Exception:  # noqa: BLE001 - an unreadable PDF names no domain
-        return ""
+        return "", ""
+
+
+def _pdf_front_back_text(content: bytes) -> str:
+    return _pdf_bundle(content)[0]
 
 
 MAX_PDF_BYTES = 12_000_000
 MAX_FILING_BYTES = 12_000_000
 
 
-async def _pdf_deep_text(content: bytes) -> str:
+async def _pdf_deep_bundle(content: bytes) -> tuple[str, str]:
+    """Parse off-loop. The slot is held until the THREAD finishes, not until the wait times out:
+    a cancelled wait does not stop a running thread, so releasing early would let timeouts pile
+    parses up (review M5)."""
     if len(content) > MAX_PDF_BYTES:
-        return ""
-    async with _PDF_SLOTS:
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(_pdf_front_back_text, content), PDF_PARSE_TIMEOUT_SECONDS * 2
-            )
-        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-            return ""
+        return "", ""
+    await _PDF_SLOTS.acquire()
+    task = asyncio.ensure_future(asyncio.to_thread(_pdf_bundle, content))
+    task.add_done_callback(lambda _t: _PDF_SLOTS.release())
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), PDF_PARSE_TIMEOUT_SECONDS * 3)
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+        return "", ""
+
+
+async def _pdf_deep_text(content: bytes) -> str:
+    return (await _pdf_deep_bundle(content))[0]
 
 
 _WEBSITE_HINT = re.compile(r"web\s*site|internet\s+site|www\.", re.IGNORECASE)
 
 
-def _filing_website_text(content: bytes) -> str:
-    """The sentences of a (possibly 10 MB iXBRL) filing that mention a website or a ``www.``
-    address. The statement sits anywhere in the document, so the whole body is scanned, but only
-    the windows around those mentions are kept — the XBRL header and the financial tables are
-    not text worth parsing."""
+def _filing_texts(content: bytes) -> tuple[str, str]:
+    """``(website-bearing windows, body)`` of a (possibly 10 MB iXBRL) filing.
+
+    The website statement sits anywhere in the document, so the whole body is scanned, but the
+    windows around those mentions are kept for the domain proofs; the stripped body (XBRL
+    header, scripts and tags removed) serves theme-passage reading."""
     import html as _html
 
     raw = content[:MAX_FILING_BYTES].decode("utf-8", "replace")
@@ -488,7 +521,11 @@ def _filing_website_text(content: bytes) -> str:
         if len(windows) >= 60:
             break
     head = text[:3000]  # the cover page: the registrant's name, address, telephone
-    return (head + "\n\n" + "\n\n".join(windows))[:120_000]
+    return (head + "\n\n" + "\n\n".join(windows))[:120_000], text[:MAX_FULL_TEXT_CHARS]
+
+
+def _filing_website_text(content: bytes) -> str:
+    return _filing_texts(content)[0]
 
 
 def _html_text(content: bytes) -> str:
@@ -584,7 +621,7 @@ async def resolve_entity(
     except Exception:  # noqa: BLE001 - the entity without extra identifiers is still the entity
         entity = base
     if entity.isin or entity.lei or entity.cik or entity.registration_numbers:
-        _ENTITY_CACHE[key] = entity  # a failed resolution is retried, never remembered
+        _bounded_put(_ENTITY_CACHE, key, entity)  # a failed resolution is retried, never remembered
     return entity
 
 
@@ -626,11 +663,15 @@ async def _asx_documents(code: str, entity: Any, *, cfg: Any, fetcher: Any) -> l
         pdf = await _fetch(pdf_url, asx_mod.ASX_PDF_HOST, cfg=cfg, fetcher=fetcher)
         if pdf is None:
             continue
-        text = await _pdf_deep_text(pdf.content)
+        text, body = await _pdf_deep_bundle(pdf.content)
         if text:
             docs.append(DocText(
                 ref=str(row["ids_id"]), url=display, source_class="exchange_announcement",
-                text=text, names_issuer=_issuer_named(text, entity.name, code, asx=True)))
+                text=text, names_issuer=_issuer_named(text, entity.name, code, asx=True),
+                full_text=body, content_hash=hashlib.sha256(pdf.content).hexdigest(),
+                headline=str(row.get("headline") or "")[:200],
+                published_at=row["published_at"].date().isoformat()
+                if row.get("published_at") else None))
     return docs
 
 
@@ -656,10 +697,12 @@ async def _sec_documents(cik: str, data: dict[str, Any], entity: Any, *, cfg: An
         result = await _fetch(url, "www.sec.gov", cfg=cfg, fetcher=fetcher)
         if result is None:
             continue
-        text = await asyncio.to_thread(_filing_website_text, result.content)
+        text, body = await asyncio.to_thread(_filing_texts, result.content)
         # A filing under this CIK is the registrant speaking about itself.
         docs.append(DocText(ref=acc, url=url, source_class="regulator_filing", text=text,
-                            names_issuer=True))
+                            names_issuer=True, full_text=body,
+                            content_hash=hashlib.sha256(result.content).hexdigest(),
+                            headline=form))
     return docs
 
 
@@ -696,12 +739,19 @@ async def _uk_documents(entity: Any, *, cfg: Any, fetcher: Any) -> list[Any]:
         got = await _fetch(doc.official_url, uk_nsm.NSM_ARTEFACT_HOST, cfg=cfg, fetcher=fetcher)
         if got is None:
             continue
-        text = (await _pdf_deep_text(got.content) if doc.media == "pdf"
-                else await asyncio.to_thread(_html_text, got.content))
+        if doc.media == "pdf":
+            text, body = await _pdf_deep_bundle(got.content)
+        else:
+            text = await asyncio.to_thread(_html_text, got.content)
+            body = text
         if text:
             docs.append(DocText(ref=doc.document_ref, url=doc.official_url,
                                 source_class="regulator_filing", text=text,
-                                names_issuer=_issuer_named(text, entity.name, entity.ticker)))
+                                names_issuer=_issuer_named(text, entity.name, entity.ticker),
+                                full_text=body,
+                                content_hash=hashlib.sha256(got.content).hexdigest(),
+                                headline=str(doc.headline or "")[:200],
+                                published_at=doc.published_at.date().isoformat()))
     return docs
 
 
@@ -714,12 +764,19 @@ def _from_proof(proof: Any) -> OfficialDomain:
     )
 
 
-async def _document_proofs(
+_DOCS: dict[tuple[str, str, str], list[Any]] = {}
+MAX_DOCS_CACHED = 24  # full texts are large: far fewer entries than the small caches
+
+
+async def _collect_docs(
     venue: str, ticker: str, entity: Any, cik: str | None, sec_data: dict[str, Any] | None,
     *, cfg: Any, fetcher: Any,
-) -> list[OfficialDomain]:
-    from app.services.discovery.domain_proofs import proofs_from_documents
-
+) -> list[Any]:
+    """The issuer's authoritative documents, fetched once a day and shared by the domain proofs
+    and Path C (theme passages), so one document is never fetched or parsed twice."""
+    key = (venue.upper(), ticker.upper(), _today())
+    if key in _DOCS:
+        return list(_DOCS[key])
     docs: list[Any] = []
     v = venue.upper()
     if v in ("AU", "ASX") and _safe_code(ticker):
@@ -728,6 +785,42 @@ async def _document_proofs(
         docs = await _sec_documents(str(cik), sec_data, entity, cfg=cfg, fetcher=fetcher)
     elif v == "LSE":
         docs = await _uk_documents(entity, cfg=cfg, fetcher=fetcher)
+    if docs:
+        _DOCS.pop(key, None)
+        _DOCS[key] = docs
+        while len(_DOCS) > MAX_DOCS_CACHED:
+            _DOCS.pop(next(iter(_DOCS)))
+    return list(docs)
+
+
+async def regulated_documents(
+    *, ticker: str | None, venue: str | None, name: str, cik: str | None = None,
+    cfg: Any = None, fetcher: Any = None,
+) -> tuple[Any, list[Any]]:
+    """``(entity, documents)`` for Path C. **Never raises.** Empty for a venue with no
+    authoritative document source (the caller records why)."""
+    try:
+        entity = await resolve_entity(ticker=ticker, venue=venue, name=name, cik=cik,
+                                      cfg=cfg, fetcher=fetcher)
+        sec_data = None
+        if (venue or "").upper() == "US" and cik:
+            sec_data = await _sec_submissions(str(cik), cfg=cfg, fetcher=fetcher)
+        docs = await asyncio.wait_for(
+            _collect_docs((venue or ""), ticker or "", entity, cik, sec_data,
+                          cfg=cfg, fetcher=fetcher),
+            RESOLVER_WALL_SECONDS)
+        return entity, docs
+    except Exception:  # noqa: BLE001 - no document is no evidence, never an error
+        return None, []
+
+
+async def _document_proofs(
+    venue: str, ticker: str, entity: Any, cik: str | None, sec_data: dict[str, Any] | None,
+    *, cfg: Any, fetcher: Any,
+) -> list[OfficialDomain]:
+    from app.services.discovery.domain_proofs import proofs_from_documents
+
+    docs = await _collect_docs(venue, ticker, entity, cik, sec_data, cfg=cfg, fetcher=fetcher)
     from app.services.discovery.entity_match import _distinctive, _tokens, relations_from_document
 
     toks = _distinctive(_tokens(entity.name))
@@ -735,10 +828,10 @@ async def _document_proofs(
     for doc in docs:
         if doc.names_issuer:
             relations.extend(relations_from_document(
-                doc.text, name_tokens=toks, document_id=doc.ref, url=doc.url,
+                doc.full_text or doc.text, name_tokens=toks, document_id=doc.ref, url=doc.url,
                 source_class=doc.source_class))
     if relations:
-        _RELATIONS[(venue.upper(), ticker.upper())] = relations[:12]
+        _bounded_put(_RELATIONS, (venue.upper(), ticker.upper()), relations[:12])
     # Only VERIFIED proofs are an issuer's official domain; a single unconfirmed statement is
     # not (it would carry the A3 issuer voice on one document's word).
     return [
@@ -809,7 +902,7 @@ async def establish_official_domains(
     # An empty answer is never remembered: a transient failure must not blind the lookup for
     # the rest of the process, and a source that publishes later should be read then.
     if unique:
-        _CACHE[key] = unique
+        _bounded_put(_CACHE, key, unique)
     return list(unique)
 
 

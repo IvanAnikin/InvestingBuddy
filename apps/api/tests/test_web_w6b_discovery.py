@@ -100,6 +100,8 @@ def cfg(**over: Any) -> Settings:
         "app_env": "test",
         "v3_discovery_web_search_enabled": True,
         "v3_web_search_enabled": True,
+        # These tests count the PLAN's queries exactly; the candidate-specific family has its own.
+        "v3_discovery_candidate_evidence_enabled": False,
         "v3_web_search_provider": "fake",
         "v3_web_search_max_queries_per_day": 300,
         "v3_run_max_web_searches": 0,
@@ -1070,6 +1072,17 @@ class TestResume:
         assert web["queries"]["executed"] == first.web["queries"]["executed"]
         alg = next(r for r in second.candidates if r.identity.ticker == "ALG")
         assert alg.web["admission"]["state"] == "admitted"
+
+    async def test_candidate_evidence_queries_are_bounded_and_named_by_origin(
+        self, h: H
+    ) -> None:
+        """Path B search quality: at most 3 queries per needy lead, a legal name (never a
+        search label), origin ``candidate_evidence``; off with its kill switch."""
+        h.serve_obscure()
+        await h.stage(config=cfg(v3_discovery_candidate_evidence_enabled=True))
+        extra = [r for r in h.provider.requests if r.origin == "candidate_evidence"]
+        assert 0 < len(extra) <= 3 * 6
+        assert all(r.query.startswith('"') or '"' in r.query for r in extra)
 
     async def test_a_retry_after_midnight_plans_the_same_queries_from_the_run_date(
         self, h: H

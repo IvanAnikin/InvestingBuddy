@@ -347,9 +347,14 @@ def _is_transient_db_error(exc: BaseException) -> bool:
         return False
     if isinstance(exc, sa_exc.DBAPIError) and exc.connection_invalidated:
         return True
+    # A session whose transaction was invalidated earlier (a connection that dropped inside a
+    # savepoint whose error a stage swallowed) raises PendingRollbackError on its NEXT use,
+    # far from the cause. The condition belongs to that session, and a retry builds a fresh
+    # one, so it is retried — never a permanent failure of a run that did nothing wrong.
     return isinstance(
         exc,
         (
+            sa_exc.PendingRollbackError,
             sa_exc.OperationalError,
             sa_exc.InterfaceError,
             sa_exc.DisconnectionError,

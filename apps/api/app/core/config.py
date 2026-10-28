@@ -1418,6 +1418,10 @@ class Settings(BaseSettings):
     # ``services/web_research/search.py``. Off → state ``web_search_disabled`` and no
     # row, no socket.
     v3_web_search_enabled: bool = False
+    #: Discovery Path B search quality: a bounded candidate-specific query family for
+    #: listing-verified leads that no regulated or official document tied to the theme.
+    #: A kill switch for its (small, capped) search spend.
+    v3_discovery_candidate_evidence_enabled: bool = True
     # ``none`` | ``fake`` | ``tavily``. Consumer: ``integrations/search``'s factory.
     # DeepSeek is deliberately NOT a value here (spec §8.2): an unknown value is
     # reported as unavailable, never mapped to some other provider.

@@ -197,3 +197,82 @@ def test_only_the_full_project_phrase_matches_a_proven_project() -> None:
 def test_venue_words_that_are_english_words_are_not_anchors() -> None:
     master = em.EntityMaster(names=("Hastings Technology Metals Limited",), ticker="HAS", venue="LSE")
     assert em.strong_anchors("we aim to hit HAS targets; six HAS units", master) == ()
+
+
+# --------------------------------------------------------------------------- #
+# Independent-review M1–M5 regressions
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_no_network")
+async def test_m1_the_issuers_own_subdomain_and_pr_wires_are_not_independent() -> None:
+    o = _outcome("ELEVRA LITHIUM LIMITED", "ELV")
+    o.lead.web["official_domains"] = [{"domain": "elevra.com.au"}]
+    text = "Elevra Lithium Limited operates a lithium concentrate plant in Quebec, Canada."
+    await pl._attach_independent_matches(
+        [o],
+        [_passage(text, source_class="trade_publication", domain="news.elevra.com.au"),
+         _passage(text, source_class="trade_publication", domain="prnewswire.com")],
+        cfg=None, fetcher=None, gate=_Gate())
+    assert o.lead.web["mentions"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_no_network")
+async def test_m2_a_search_supplied_label_is_not_a_name_the_exchange_recognises() -> None:
+    o = _outcome("ELEVRA LITHIUM LIMITED", "ELV")
+    o.lead.name = "Zorbco Metals Holdings"  # what search called it; identity tolerated it
+    text = "Zorbco Metals Holdings has a lithium refinery in Texas, according to officials."
+    await pl._attach_independent_matches([o], [_passage(text)], cfg=None, fetcher=None,
+                                         gate=_Gate())
+    assert o.lead.web["mentions"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_no_network")
+async def test_m2_a_name_two_verified_entities_share_needs_an_anchor() -> None:
+    a = _outcome("DELTA RESOURCES LIMITED", "DLT")
+    b = _outcome("DELTA RESOURCES LIMITED", "DLX")
+    text = "Delta Resources Limited operates a lithium concentrate plant in Quebec."
+    await pl._attach_independent_matches([a, b], [_passage(text)], cfg=None, fetcher=None,
+                                         gate=_Gate())
+    assert a.lead.web["mentions"] == [] and b.lead.web["mentions"] == []
+    anchored = text + " Delta Resources (ASX: DLT) said so."
+    await pl._attach_independent_matches([a, b], [_passage(anchored)], cfg=None, fetcher=None,
+                                         gate=_Gate())
+    assert len(a.lead.web["mentions"]) == 1 and b.lead.web["mentions"] == []
+
+
+def test_m4_caches_are_bounded() -> None:
+    cache: dict = {}
+    for i in range(od.MAX_CACHE_ENTRIES + 25):
+        od._bounded_put(cache, i, i)
+    assert len(cache) == od.MAX_CACHE_ENTRIES and 0 not in cache
+
+
+@pytest.mark.asyncio
+async def test_m5_the_pdf_slot_is_held_until_the_thread_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    release = threading.Event()
+
+    def slow(_c: bytes) -> tuple[str, str]:
+        release.wait(5)
+        return "x", "y"
+
+    monkeypatch.setattr(od, "_pdf_bundle", slow)
+    monkeypatch.setattr(od, "PDF_PARSE_TIMEOUT_SECONDS", 0.02)
+    before = od._PDF_SLOTS._value
+    assert await od._pdf_deep_bundle(b"%PDF") == ("", "")  # timed out
+    assert od._PDF_SLOTS._value == before - 1  # the thread still runs: the slot is NOT free
+    release.set()
+    import asyncio
+
+    for _ in range(100):
+        if od._PDF_SLOTS._value == before:
+            break
+        await asyncio.sleep(0.01)
+    assert od._PDF_SLOTS._value == before

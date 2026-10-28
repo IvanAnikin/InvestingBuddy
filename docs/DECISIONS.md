@@ -4171,3 +4171,54 @@ domain source; and independent journalism rarely prints a ticker next to a name.
 ### Consequences
 Domain resolution costs a few bounded fetches per qualifying lead and is cached per day; a lead that qualified but was
 not looked up records why. Remaining limits are documented in `docs/open-web-research-production-acceptance.md`.
+
+---
+
+## ADR-059: Path C — Regulated-Document Discovery Admission; Source-Access Findings (SEDAR+, LSE)
+
+**Date:** 2026-10-28 · **Status:** Accepted (implementation) · open owner decisions listed below
+**Extends:** ADR-057, ADR-058 · **Preserves:** every trust rule; no browser automation; no paid provider
+
+### Context
+After ADR-058 the binding limit was issuer-website availability: many verified issuers resolve to a domain that
+refuses automated reads (robots / 403 / captcha / JS), and a blocked site ended the lead.
+
+### Decision
+1. **Path C.** A search-found candidate (A1: an executed search) whose listing is verified (A2) is admitted on theme
+   evidence from a **regulated document fetched directly from the regulator / exchange**: SEC filing under the CIK,
+   ASX announcement, FCA NSM filing (by GLEIF LEI). The document must name the verified issuer
+   (`names_issuer`); its sentence-bounded window must tie the company to a thesis term (a distinctive name token, the
+   ticker, or the company speaking in the first person). No issuer website is required.
+2. **Truthful semantics.** Path C text is `issuer_regulated_disclosure`: `theme_evidence.status = verified_issuer`,
+   `corroboration = issuer_only`, with a `regulated_passages` count. It is never called independent merely because the
+   venue is an exchange. Financial-statement facts stay primary-source canonical; Path C is admission evidence only.
+3. **Order and fallback.** official page (Path A) → regulated documents (Path C) → run passages + a bounded
+   candidate-specific query family (Path B). A lead is rejected only when none establishes thematic relevance. A
+   blocked issuer website is no longer a terminal state.
+4. **Reuse, not a second stack.** Path C and the domain proofs share one cached document collector
+   (`official_domains._collect_docs`); a document is fetched and parsed once per day. Discovery holds the document's
+   id, URL and content hash with each passage; nothing is written to the corpus at Discovery time, so no duplicate
+   copies exist, and `ensure_disclosure_evidence` (content-hash deduplicated) ingests the same documents when company
+   research starts.
+5. **Path B search quality.** At most 3 queries per needy lead (≤ 6 leads), built from the VERIFIED legal name:
+   `"<name>" <theme>`, `"<name>" project permit funding`, `"<name>" government customer contract`. Origin
+   `candidate_evidence`; kill switch `V3_DISCOVERY_CANDIDATE_EVIDENCE_ENABLED`. Snippets remain non-evidence.
+   Domain-prioritised search (include-domains) is not implemented: the provider adapter has no such parameter.
+6. **Funnel.** `web.funnel` on every run records search results → entity candidates → listing-verified → regulated
+   documents → Path C / official domains / Path A / Path B qualified → admitted, with `admitted_by_route`.
+7. **Independent-review M1–M5** (ADR-058 review) are dispositioned in `docs/open-web-research-production-acceptance.md` §10.
+8. **Worker.** `PendingRollbackError` (an invalidated session) is transient: a retry builds a fresh session.
+
+### Source-access findings (investigated 2026-10-28; owner decisions)
+* **SEDAR+ (Canada): no connector built.** `sedarplus.ca` sits behind a Radware bot manager that serves a captcha to
+  non-browser clients; no documented public API or bulk file was found. Defeating the challenge or driving a browser
+  is outside the stated constraints. The CSA reporting-issuer lists are behind a JavaScript challenge. TSX/TSXV
+  identity is the existing TMX directory (+ GLEIF legal name → LEI + corporation number). Primary documents exist only
+  for SEC-registered Canadian filers (40-F / 6-K / 10-K via EDGAR). **Owner decision needed:** written CSA permission
+  or a licensed feed, or approval of browser automation.
+* **LSE / AIM: no RNS or website connector built.** The LSE disclaimer (§8) forbids "any programmatic, scripted or
+  other mechanical means to access this Website or the Information". The company-page values load from origin-gated
+  APIs. The existing `_lse_listing` identity call (`api.londonstockexchange.com`) returned 403 from a development
+  machine and should be re-checked against the same terms. AIM Rule 11/26 announcements are generally not in the FCA
+  NSM. **Owner decision needed:** an LSEG licence/API agreement.
+* Both venues are therefore recorded as `no_regulated_source_for_venue`, never guessed or approximated.

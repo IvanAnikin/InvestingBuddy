@@ -1910,6 +1910,177 @@ async def _corroborate(
 
 
 # --------------------------------------------------------------------------- #
+# Path B search quality: a small candidate-specific query family
+# --------------------------------------------------------------------------- #
+
+ORIGIN_CANDIDATE_EVIDENCE = "candidate_evidence"
+MAX_EVIDENCE_LEADS = 6
+EVIDENCE_QUERIES_PER_LEAD = 3
+RESULTS_FETCHED_PER_EVIDENCE_QUERY = 2
+#: Query shapes per lead (``{name}`` is the VERIFIED legal name, never a search label). Each is
+#: a name check plus one angle independent publishers write about: the project, the customer /
+#: government counterpart. They steer which page is read; they never say what it says.
+EVIDENCE_QUERY_SHAPES: tuple[str, ...] = (
+    '"{name}" {subject}',
+    '"{name}" project permit funding',
+    '"{name}" government customer contract',
+)
+
+
+@dataclass
+class CandidateEvidence:
+    """Independent-evidence search for listing-verified leads that no regulated or official
+    document tied to the theme."""
+
+    passages: list[dict[str, Any]] = field(default_factory=list)
+    attempted: int = 0
+    executed_query_ids: frozenset[str] = frozenset()
+    by_lead_queries: dict[str, int] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    units: ConsumptionUnits = field(default_factory=ConsumptionUnits)
+
+
+async def search_candidate_evidence(
+    session: Any,
+    intent: Any,
+    names: Sequence[tuple[str, str]],
+    ctx: DiscoveryWebContext,
+    *,
+    cfg: Any,
+    deps: DiscoveryWebDeps | None = None,
+    progress: ProgressHook | None = None,
+) -> CandidateEvidence:
+    """``names`` are ``(lead_key, verified legal name)``. Issues at most
+    :data:`EVIDENCE_QUERIES_PER_LEAD` queries per lead through the normal budgeted search path
+    and returns the fetched pages' THEME PARAGRAPHS (the Path B input). Search snippets are
+    never evidence. **Never raises** (a ``progress`` abort excepted)."""
+    deps = deps or DiscoveryWebDeps()
+    out = CandidateEvidence()
+    todo = [n for n in names if n[1]][:MAX_EVIDENCE_LEADS]
+    if not todo or not stage_enabled(cfg):
+        return out
+    try:
+        return await _candidate_search(session, intent, todo, ctx, cfg, deps, progress, out)
+    except _Abort as abort:
+        raise abort.original from None
+    except Exception as exc:  # noqa: BLE001 - no extra evidence leaves the lead where it was
+        out.notes.append(f"candidate evidence search raised {type(exc).__name__} and was isolated")
+        return out
+
+
+async def _candidate_search(
+    session: Any,
+    intent: Any,
+    todo: Sequence[tuple[str, str]],
+    ctx: DiscoveryWebContext,
+    cfg: Any,
+    deps: DiscoveryWebDeps,
+    progress: ProgressHook | None,
+    out: CandidateEvidence,
+) -> CandidateEvidence:
+    from app.integrations.search import web_search_provider_from_settings
+
+    provider = (
+        web_search_provider_from_settings(cfg) if deps.provider is _UNSET else deps.provider
+    )
+    if provider is None or not bool(getattr(cfg, "v3_web_search_enabled", False)):
+        return out
+    facts = dp.facts_from_intent(intent)
+    depth = _depth(cfg)
+    profile = f"discovery_{depth}"
+    now = deps.now or datetime.now(timezone.utc)
+    today = deps.today or ctx.plan_date or now.date()
+    budget = await budget_for_run(session, profile, cfg=cfg, now=now, clock=deps.clock)
+    await _prime_budget(session, budget, ctx.run_id)
+    wanted = len(todo) * EVIDENCE_QUERIES_PER_LEAD
+    _grant_corroboration_allowance(budget, wanted, cfg)
+    noun = (facts.nouns() or [("", "")])[0]
+    subject = dp.noun_text(*noun) if noun[1] else ""
+    planned: list[tuple[str, dp.PlannedQuery]] = []
+    for index, (key, name) in enumerate(todo):
+        for shape_no, shape in enumerate(EVIDENCE_QUERY_SHAPES[:EVIDENCE_QUERIES_PER_LEAD]):
+            text = shape.format(name=name, subject=subject).strip()
+            request, refusal = dp._make_request(
+                text, None, family=QueryFamily.ENTITY, today=today,
+                private_tokens=ctx.private_tokens, origin=ORIGIN_CANDIDATE_EVIDENCE,
+                version=f"{dp.DISCOVERY_TEMPLATE_VERSION}:candidate_evidence", windowed=False,
+            )
+            if request is None:
+                out.notes.append(f"a candidate-evidence query was refused ({refusal})")
+                continue
+            planned.append((key, dp.PlannedQuery(
+                request, QueryFamily.ENTITY, f"candidate_evidence.{index}.{shape_no}", 1,
+                3000 + index * 10 + shape_no, dp.FAMILY_TERMS[QueryFamily.ENTITY])))
+    if not planned:
+        return out
+    await _progress(progress, PROGRESS_SEARCH)
+    tally, box = _Tally(), _Box(budget=budget)
+    search_ctx = SearchContext(
+        discovery_run_id=ctx.run_id, stage=STAGE_NAME, private_tokens=ctx.private_tokens,
+        budget=budget, budget_profile=profile,
+    )
+    async with session.begin_nested():
+        pairs = await _search_batch(
+            session, [q for _k, q in planned], ctx=ctx, search_ctx=search_ctx,
+            provider=provider, cfg=cfg, deps=deps, now=now, tally=tally, box=box,
+        )
+    out.attempted = len(pairs)
+    if ctx.commit is not None:
+        await ctx.commit()
+    out.executed_query_ids = frozenset(str(o.query_id) for _q, o in pairs if o.execution.executed)
+    for key, q in planned:
+        out.by_lead_queries[key] = out.by_lead_queries.get(key, 0) + 1
+    rows = await _result_rows(session, [o.query_id for _q, o in pairs if o.execution.executed])
+    candidates: list[SearchCandidate] = []
+    meta: dict[uuid.UUID, tuple[dp.PlannedQuery, QueryOutcome]] = {}
+    for q, outcome in pairs:
+        if not outcome.execution.executed:
+            continue
+        meta[outcome.query_id] = (q, outcome)
+        for item in outcome.results[:RESULTS_FETCHED_PER_EVIDENCE_QUERY]:
+            row = rows.get((outcome.query_id, item.rank))
+            candidates.append(SearchCandidate(
+                family=q.family, item=item, query_key=q.key, query_id=outcome.query_id,
+                result_id=getattr(row, "id", None)))
+    selection = select_discovery_results(
+        candidates, today=today, known_domains=ctx.known_domains,
+        terms_by_family={QueryFamily.ENTITY: dp.FAMILY_TERMS[QueryFamily.ENTITY]},
+        total=RESULTS_FETCHED_PER_EVIDENCE_QUERY * len(planned), mode=depth,
+    )
+    rows_by_id = {r.id: r for r in rows.values()}
+    for scored in selection.selected:
+        _disposition(rows_by_id.get(scored.candidate.result_id), "selected", None)
+    for candidate, reason in selection.skipped:
+        _disposition(rows_by_id.get(candidate.result_id), "skipped", reason)
+    await session.flush()
+    await _progress(progress, PROGRESS_FETCH)
+    pages: list[_Page] = []
+    async with session.begin_nested():
+        await _fetch_phase(
+            session, ctx, selection, meta, rows_by_id, theme_vocabulary(facts), facts, pages,
+            budget=budget, cfg=cfg, deps=deps, tally=tally, summary={},
+            theme_key=theme_key_for_run(ctx.run_id), provider_name=getattr(provider, "name", None),
+            progress=progress, depth=depth,
+        )
+    out.units = _units_of(tally, budget, ConsumptionUnits())
+    if ctx.commit is not None:
+        await ctx.commit()
+    out.passages = [
+        {
+            "passage": text, "theme_terms": list(terms), "chunk_id": chunk,
+            "passage_ref": passage_ref(page.attempt_id, text), "url": page.url,
+            "domain": page.domain, "hosts": list(page.other_hosts),
+            "source_class": page.source_class, "attempt_id": page.attempt_id,
+            "query_id": str(page.candidate.query_id) if page.candidate.query_id else None,
+            "query_key": page.query_key,
+        }
+        for page in pages
+        for text, terms, chunk in page.theme_paragraphs
+    ][:200]
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # The issuer's own official page (owner decision 2026-10-07, ADR-057)
 # --------------------------------------------------------------------------- #
 
@@ -2101,7 +2272,9 @@ async def _read_one(
     if not is_issuer_voice(domain, host_of(final)):
         status["reason"] = "redirected_off_the_issuers_voice"
         return [], status
-    if ingest_on:
+    # A CANDIDATE site (entity given: not yet proven to be the issuer's) is extracted in memory
+    # and checked; it is never stored or classified as issuer-class (review M3).
+    if ingest_on and entity is None:
         prepared = await ingest_mod.prepare_web_document(
             fetched, cfg=cfg, provider=None, subject_scope="theme",
             theme_key=theme_key_for_run(ctx.run_id), candidates=(), issuer_domains=(domain,),
@@ -2126,7 +2299,9 @@ async def _read_one(
         if not extraction.extracted:
             status["reason"] = extraction.failure_code or "extraction_failed"
             return [], status
-        source_class = classify_source(final, issuer_domains=(domain,)).source_class
+        source_class = classify_source(
+            final, issuer_domains=(domain,) if entity is None else ()
+        ).source_class
         version_id = None
     if extraction.injection_suspect:
         status["reason"] = "injection_suspect"
@@ -2206,6 +2381,183 @@ async def _read_one(
 
 
 # --------------------------------------------------------------------------- #
+# Path C: regulated-document theme passages (no issuer website needed)
+# --------------------------------------------------------------------------- #
+
+METHOD_REGULATED_DOCUMENT = "regulated_document_passage"
+MAX_REGULATED_LEADS = 14
+MAX_REGULATED_PASSAGES = 3
+REGULATED_BLOCK_CHARS = 700
+REGULATED_WALL_SECONDS = 240.0
+
+
+@dataclass
+class RegulatedPassages:
+    """What reading the verified issuers' REGULATED documents found, per lead."""
+
+    by_lead: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    status: dict[str, dict[str, Any]] = field(default_factory=dict)
+    documents: int = 0
+    notes: list[str] = field(default_factory=list)
+
+
+def document_blocks(text: str) -> list[str]:
+    """Sentence-bounded windows (2–4 sentences, ≤ ``REGULATED_BLOCK_CHARS``) of a document body.
+
+    Regulated filings are long and PDF text has no reliable paragraphs, so the unit a theme
+    term and the company must share is a short run of sentences, never the whole page."""
+    blocks: list[str] = []
+    for chunk in re.split(r"\n\s*\n", text or ""):
+        flat = " ".join(chunk.split())
+        if len(flat) < OFFICIAL_PASSAGE_MIN_CHARS:
+            continue
+        sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z(])", flat)
+        cur = ""
+        for sentence in sentences:
+            if cur and len(cur) + len(sentence) + 1 > REGULATED_BLOCK_CHARS:
+                blocks.append(cur)
+                cur = ""
+            cur = f"{cur} {sentence}".strip()
+        if cur:
+            blocks.append(cur)
+    return [b for b in blocks if len(b) >= OFFICIAL_PASSAGE_MIN_CHARS]
+
+
+def regulated_entries(
+    docs: Sequence[Any], *, vocab: Any, name: str, ticker: str, venue: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Theme passages of fetched regulated documents that tie THIS issuer to the theme.
+
+    A document is used only if it names the verified issuer (``names_issuer``). Its passages
+    are the issuer's own regulated words: ``issuer_regulated_disclosure`` — evidence of what
+    the company says it does, never independent corroboration (the admission summary keeps it
+    ``issuer_only``). Pure: the fetching already happened."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+    theme_words = {w for phrase in vocab.phrases for w in fold(phrase).split()}
+    tokens = [
+        t for t in name_tokens(name)
+        if t not in _GENERIC_TOKENS and t not in theme_words
+        and not any(t.startswith(w) or w.startswith(t) for w in theme_words if len(w) >= 4)
+    ]
+    status: dict[str, Any] = {"documents": 0, "naming_issuer": 0, "blocks": 0}
+    scored: list[tuple[int, int, int, str, tuple[str, ...], Any]] = []
+    for d_pos, doc in enumerate(docs):
+        status["documents"] += 1
+        if not getattr(doc, "names_issuer", False):
+            continue
+        status["naming_issuer"] += 1
+        for position, block in enumerate(document_blocks(getattr(doc, "full_text", "") or "")):
+            status["blocks"] += 1
+            found = vocab.match(block)
+            if found and passage_ties_company_to_theme(
+                block, found, name_tokens=tokens, ticker=ticker or None
+            ):
+                scored.append((-len(found), d_pos, position, block, found, doc))
+    scored.sort(key=lambda r: (r[0], r[1], r[2]))
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for _neg, _d, _p, text, found, doc in scored:
+        if len(entries) >= MAX_REGULATED_PASSAGES:
+            break
+        passage = text[: ce.MAX_PASSAGE_CHARS]
+        key = fold(passage)
+        if key in seen:
+            continue
+        seen.add(key)
+        # The document's own hash stands in for a fetch attempt: the reference names the
+        # exact bytes the passage came from, so it is re-checkable and reusable later.
+        ref = passage_ref(getattr(doc, "content_hash", None) or doc.ref, passage)
+        entries.append({
+            "evidence_id": ref,
+            "passage_ref": ref,
+            "kind": "paragraph",
+            "method": METHOD_REGULATED_DOCUMENT,
+            "source_class": "regulatory_filing" if doc.source_class == "regulator_filing"
+            else "exchange_announcement",
+            "issuer_origin": True,
+            "url": doc.url,
+            "domain": host_of(doc.url or ""),
+            "hosts": [],
+            "dimensions": ["theme_relevance"],
+            "theme_terms": list(found)[:6],
+            "catalyst_terms": [],
+            "risk_terms": [],
+            "passage": passage,
+            "injection_suspect": False,
+            "query_id": None,
+            "fetch_attempt_id": None,
+            "regulated_document": {
+                "document_id": doc.ref, "content_hash": getattr(doc, "content_hash", None),
+                "headline": getattr(doc, "headline", None),
+                "published_at": getattr(doc, "published_at", None),
+                "venue": venue, "source_system": doc.source_class,
+            },
+        })
+    if not entries:
+        status["reason"] = (
+            "no_regulated_document" if not status["documents"]
+            else "no_document_names_the_issuer" if not status["naming_issuer"]
+            else "no_passage_ties_the_company_to_the_theme"
+        )
+    return entries, status
+
+
+async def read_regulated_documents(
+    intent: Any,
+    targets: Sequence[tuple[Any, ...]],
+    *,
+    cfg: Any,
+    fetcher: Any = None,
+    gate: Any = None,
+) -> RegulatedPassages:
+    """Path C. ``targets`` are ``(lead_id, name, ticker, venue, cik)`` of VERIFIED, search-found
+    leads. For each: the issuer's authoritative documents (SEC filing, ASX announcement, FCA NSM
+    filing) are fetched directly from the regulator / exchange, the entity is matched, and the
+    theme passages are returned. **Never raises.** No issuer website is involved."""
+    from app.services.discovery.official_domains import regulated_documents
+
+    out = RegulatedPassages()
+    try:
+        facts = dp.facts_from_intent(intent)
+        vocab = theme_vocabulary(facts)
+    except Exception:  # noqa: BLE001
+        out.notes.append("regulated documents: theme vocabulary unavailable")
+        return out
+
+    async def one(target: tuple[Any, ...]) -> None:
+        lead_id, name, ticker, venue, cik = target[:5]
+        try:
+            async with (gate if gate is not None else _NullGate()):
+                _entity, docs = await regulated_documents(
+                    ticker=ticker, venue=venue, name=name, cik=cik, cfg=cfg, fetcher=fetcher)
+            entries, status = regulated_entries(
+                docs, vocab=vocab, name=name, ticker=ticker or "", venue=str(venue))
+            out.documents += status.get("documents", 0)
+            out.status[str(lead_id)] = {"read": bool(status.get("naming_issuer")), **status}
+            if entries:
+                out.by_lead[str(lead_id)] = entries
+        except Exception as exc:  # noqa: BLE001 - one issuer costs that lead only
+            out.status[str(lead_id)] = {"read": False, "reason": type(exc).__name__[:60]}
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(one(t) for t in targets[:MAX_REGULATED_LEADS])),
+            REGULATED_WALL_SECONDS)
+    except asyncio.TimeoutError:
+        out.notes.append("regulated documents: wall clock reached")
+    return out
+
+
+class _NullGate:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_a: object) -> None:
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Theme key of a candidate's run (so ``search_theme_corpus`` works for its research)
 # --------------------------------------------------------------------------- #
 
@@ -2250,6 +2602,13 @@ __all__ = [
     "OfficialPages",
     "corroborate_recall_leads",
     "read_official_pages",
+    "read_regulated_documents",
+    "search_candidate_evidence",
+    "CandidateEvidence",
+    "regulated_entries",
+    "document_blocks",
+    "RegulatedPassages",
+    "METHOD_REGULATED_DOCUMENT",
     "passage_ref",
     "run_discovery_web_stage",
     "select_discovery_results",

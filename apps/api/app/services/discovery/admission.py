@@ -237,6 +237,9 @@ def theme_evidence_summary(mentions: Iterable[Mapping[str, Any]]) -> dict[str, A
         "status": status,
         "corroboration": corroboration,
         "issuer_passages": len(issuer),
+        "regulated_passages": sum(
+            1 for m in issuer if m.get("method") == "regulated_document_passage"
+        ),
         "independent_passages": len(independent),
         "independent_domains": sorted(domains)[:6],
     }

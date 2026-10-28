@@ -95,6 +95,7 @@ def _flags(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN202
         "v3_dynamic_discovery_enabled": True,
         "v3_discovery_web_search_enabled": True,
         "v3_web_search_enabled": True,
+        "v3_discovery_candidate_evidence_enabled": False,  # these tests count the plan exactly
         "v3_web_search_provider": "fake",
         "v3_web_search_max_queries_per_day": 300,
         "v3_web_fetch_enabled": True,
@@ -114,6 +115,7 @@ def cfg(**over: Any) -> Settings:
         "app_env": "test",
         "v3_discovery_web_search_enabled": True,
         "v3_web_search_enabled": True,
+        "v3_discovery_candidate_evidence_enabled": False,  # these tests count the plan exactly
         "v3_web_search_provider": "fake",
         "v3_web_search_max_queries_per_day": 300,
         "v3_run_max_web_searches": 0,
