@@ -394,7 +394,9 @@ _COUNTRY_TABLE: dict[str, tuple[str, str]] = {
     "france": ("France", "Europe"),
     "french": ("France", "Europe"),
     "united kingdom": ("United Kingdom", "Europe"),
-    "uk ": ("United Kingdom", "Europe"),
+    "uk": ("United Kingdom", "Europe"),
+    "australia": ("Australia", "Oceania"),
+    "australian": ("Australia", "Oceania"),
     "britain": ("United Kingdom", "Europe"),
     "british": ("United Kingdom", "Europe"),
     "italy": ("Italy", "Europe"),
@@ -639,13 +641,17 @@ def parse_thesis(
 
     # ── Regions & countries — prompt-text detection ───────────────────────
     # First, what the PROMPT TEXT alone says (used to auto-fill the selectors).
+    # Geography is matched on a copy with list punctuation removed: "the US, UK and
+    # Australia" must read as three countries, not one ("us," never matched "us").
+    geo = " " + re.sub(r"[,;:()\[\]/\"]+", " ", normalized.lower()) + " "
+    geo = re.sub(r"\s+", " ", geo)
     text_regions: list[str] = []
     for canon, phrases in _REGION_TABLE.items():
-        if any(_contains(padded, p) or padded.strip().startswith(p) for p in phrases):
+        if any(_contains(geo, p) or geo.strip().startswith(p) for p in phrases):
             text_regions.append(canon)
     text_countries: list[str] = []
     for phrase, (c_country, c_region) in _COUNTRY_TABLE.items():
-        if _contains(padded, phrase):
+        if _contains(geo, phrase):
             text_countries.append(c_country)
             text_regions.append(c_region)
     text_regions = _dedup(text_regions)
@@ -725,6 +731,13 @@ def parse_thesis(
     # ── Effective filter lists the universe builder acts on ────────────────
     regions: list[str] = [eff_region] if eff_region else []
     countries: list[str] = [eff_country] if eff_country else []
+    # A prompt that names SEVERAL countries ("the US, UK and Australia") is not a
+    # request for the first one. With no explicit form value, keep them all.
+    if not explicit_country and not explicit_region and len(text_countries) > 1:
+        countries = list(text_countries)
+        regions = list(text_regions)
+        eff_country = None  # the single-value selectors cannot hold several countries
+        eff_region = None
 
     # ── Size hints ────────────────────────────────────────────────────────
     size_hints: list[str] = []

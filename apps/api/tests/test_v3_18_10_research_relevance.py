@@ -474,3 +474,25 @@ def _role(role_id: str):  # noqa: ANN202
     from app.services.director.roles import role_for
 
     return role_for(role_id)
+
+
+class TestAFindingNamesWhoseFactsTheyAre:
+    def test_the_system_prompt_forbids_another_companys_facts_as_the_subjects(self) -> None:
+        system, _user = _build_prompt(
+            _question(), [_ev("ev:c:1", "search_company_corpus", "text")], "financial_analyst",
+        )
+        assert "8a. Name whose it is" in system
+        assert "ANOTHER company" in system
+        assert "must name that company" in system
+
+    def test_a_web_item_shows_its_publisher_and_the_issuers_own_is_not_an_id(self) -> None:
+        other = _ev("ev:c:2", "search_company_corpus", "Annual report text")
+        other.web = True
+        other.origin_key = "pensana.co.uk"
+        own = _ev("ev:c:3", "search_company_corpus", "Quarterly text")
+        own.web = True
+        own.origin_key = "issuer:3f2a0c1e-0000-0000-0000-000000000000"
+        _system, user = _build_prompt(_question(), [other, own], "financial_analyst")
+        assert "publisher=pensana.co.uk" in user
+        assert "publisher=issuer-own" in user
+        assert "3f2a0c1e" not in user
