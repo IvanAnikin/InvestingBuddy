@@ -474,3 +474,69 @@ def _role(role_id: str):  # noqa: ANN202
     from app.services.director.roles import role_for
 
     return role_for(role_id)
+
+
+class TestAFindingNamesWhoseFactsTheyAre:
+    def test_the_system_prompt_forbids_another_companys_facts_as_the_subjects(self) -> None:
+        system, _user = _build_prompt(
+            _question(), [_ev("ev:c:1", "search_company_corpus", "text")], "financial_analyst",
+        )
+        assert "8a. Name whose it is" in system
+        assert "ANOTHER company" in system
+        assert "must name that company" in system
+
+    def test_a_web_item_shows_its_publisher_and_the_issuers_own_is_not_an_id(self) -> None:
+        other = _ev("ev:c:2", "search_company_corpus", "Annual report text")
+        other.web = True
+        other.origin_key = "pensana.co.uk"
+        own = _ev("ev:c:3", "search_company_corpus", "Quarterly text")
+        own.web = True
+        own.origin_key = "issuer:3f2a0c1e-0000-0000-0000-000000000000"
+        _system, user = _build_prompt(_question(), [other, own], "financial_analyst")
+        assert "publisher=pensana.co.uk" in user
+        assert "publisher=issuer-own" in user
+        assert "3f2a0c1e" not in user
+
+
+class TestAnotherCompanysSiteIsNotTheIssuersEvidence:
+    def _web(self, cid: str, origin: str) -> Any:
+        item = _ev(cid, "search_company_corpus", "text")
+        item.web = True
+        item.origin_key = origin
+        return item
+
+    def test_domain_token_is_the_registrable_label(self) -> None:
+        from app.services.agents.investigator import _domain_token
+
+        assert _domain_token("www.pensana.co.uk") == "pensana"
+        assert _domain_token("iluka.com") == "iluka"
+        assert _domain_token("group:nine_entertainment") == ""
+        assert _domain_token("issuer:3f2a0c1e") == ""
+
+    def test_labels_cover_other_companies_only_and_skip_generic_words(self) -> None:
+        from app.services.agents.investigator import other_company_labels
+
+        labels = other_company_labels(
+            ["PENSANA PLC", "RAINBOW RARE EARTHS LIMITED", "AMERICAN RARE EARTHS LIMITED"],
+            "AMERICAN RARE EARTHS LIMITED",
+        )
+        assert labels["pensana"] == "PENSANA PLC"
+        assert "american" not in labels  # a word the subject's own name carries
+
+    def test_a_finding_resting_only_on_a_peers_site_is_foreign(self) -> None:
+        from app.services.agents.investigator import foreign_publisher
+
+        peer = self._web("ev:c:1", "pensana.co.uk")
+        others = {"pensana": "PENSANA PLC"}
+        assert foreign_publisher(["ev:c:1"], [peer], others) == "PENSANA PLC"
+
+    def test_one_item_from_anywhere_else_gives_the_finding_its_own_footing(self) -> None:
+        from app.services.agents.investigator import foreign_publisher
+
+        peer = self._web("ev:c:1", "pensana.co.uk")
+        news = self._web("ev:c:2", "afr.com")
+        filing = _ev("ev:c:3", "search_company_corpus", "text")
+        others = {"pensana": "PENSANA PLC"}
+        assert foreign_publisher(["ev:c:1", "ev:c:2"], [peer, news], others) is None
+        assert foreign_publisher(["ev:c:1", "ev:c:3"], [peer, filing], others) is None
+        assert foreign_publisher(["ev:c:1"], [peer], {}) is None

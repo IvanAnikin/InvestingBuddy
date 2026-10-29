@@ -475,6 +475,8 @@ class TestDiagnosticsCarryNoSensitiveContent:
             "responses_retried_after_truncation", "retries_recovered",
             # V3.18.9 — statements about the evidence, recorded as gaps. A count.
             "statements_about_evidence",
+            # Live QA 2026-10-29 — a peer's own-site text dropped. A count.
+            "statements_about_another_company",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 

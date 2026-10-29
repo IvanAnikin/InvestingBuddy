@@ -274,3 +274,23 @@ async def test_21_parse_thesis_endpoint_does_not_create_run(client) -> None:
     blob = " ".join(str(v) for v in body.values()).upper()
     for bad in (" BUY ", " SELL ", " HOLD ", " WATCH "):
         assert bad not in f" {blob} "
+
+
+class TestSeveralCountriesInOnePrompt:
+    def test_us_uk_and_australia_are_all_kept_and_none_autofills_a_single_selector(self):
+        from app.services.market_thesis_parser import parse_thesis
+
+        parsed = parse_thesis(
+            "Find smaller and mid-cap listed companies in the US, UK and Australia "
+            "involved in critical minerals"
+        )
+        assert set(parsed.countries) == {"United States", "United Kingdom", "Australia"}
+        assert set(parsed.regions) == {"North America", "Europe", "Oceania"}
+        assert parsed.country is None and parsed.region is None
+
+    def test_a_single_country_still_fills_its_selectors(self):
+        from app.services.market_thesis_parser import parse_thesis
+
+        parsed = parse_thesis("UK semiconductor companies")
+        assert parsed.countries == ["United Kingdom"]
+        assert parsed.country == "United Kingdom"
