@@ -897,6 +897,57 @@ _SCHEMA_LINE = (
 )
 
 
+#: Questions whose job is to describe OTHER companies: a competitor's facts are the answer.
+_PEER_DOMAINS: frozenset[str] = frozenset({"competitive_position"})
+_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "gov", "edu", "ac"})
+
+
+def _domain_token(origin_key: str | None) -> str:
+    """The registrable label of a publisher: ``www.pensana.co.uk`` -> ``pensana``."""
+    key = (origin_key or "").strip().lower()
+    if not key or ":" in key or "/" in key or " " in key:
+        return ""  # an origin GROUP ("group:...") or the issuer's own id, not a host
+    labels = [x for x in key.split(".") if x]
+    if len(labels) >= 3 and labels[-2] in _SECOND_LEVEL:
+        return labels[-3]
+    return labels[-2] if len(labels) >= 2 else ""
+
+
+def other_company_labels(names: "Sequence[str]", subject_name: str | None) -> dict[str, str]:
+    """``{first distinctive name word: full name}`` for companies OTHER than the subject.
+
+    ``pensana`` -> ``PENSANA PLC``. Only words of five letters or more that are not
+    generic business words, and never a word the subject's own name carries.
+    """
+    from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+    own = set(name_tokens(subject_name or ""))
+    out: dict[str, str] = {}
+    for name in names:
+        words = [t for t in name_tokens(name) if t not in _GENERIC_TOKENS and len(t) >= 5]
+        if words and words[0] not in own:
+            out.setdefault(words[0], name)
+    return out
+
+
+def foreign_publisher(
+    cited: "Sequence[str]", evidence: "Sequence[_Evidence]", others: dict[str, str]
+) -> str | None:
+    """The other company a finding rests on, when EVERY item it cites is web text that
+    company published on its own site; else None. One item from anywhere else (the
+    issuer's filing, a regulator, a news outlet) means the finding has its own footing."""
+    items = [e for e in evidence if e.citation_id in set(cited)]
+    if not items or not others:
+        return None
+    names: set[str] = set()
+    for item in items:
+        name = others.get(_domain_token(item.origin_key)) if item.web else None
+        if name is None:
+            return None
+        names.add(name)
+    return sorted(names)[0]
+
+
 def _publisher_label(origin_key: str | None) -> str:
     """The publisher a web item came from, for the prompt: the issuer's own material is
     "issuer-own" (its internal id is no use to a reader), anything else its origin."""
@@ -1306,6 +1357,9 @@ class InvestigatorDiagnostics:
     statements_dropped_uncited: int = 0
     #: Statements about what the evidence lacked, recorded as gaps instead (V3.18).
     statements_about_evidence: int = 0
+    #: A statement resting only on ANOTHER registered company's own website, dropped
+    #: because it would have been filed under the issuer (live QA, 2026-10-29).
+    statements_about_another_company: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -1329,6 +1383,7 @@ class InvestigatorDiagnostics:
         self.responses_truncated += other.responses_truncated
         self.statements_dropped_uncited += other.statements_dropped_uncited
         self.statements_about_evidence += other.statements_about_evidence
+        self.statements_about_another_company += other.statements_about_another_company
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -1345,6 +1400,7 @@ class InvestigatorDiagnostics:
             "responses_truncated": self.responses_truncated,
             "statements_dropped_uncited": self.statements_dropped_uncited,
             "statements_about_evidence": self.statements_about_evidence,
+            "statements_about_another_company": self.statements_about_another_company,
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -1418,6 +1474,8 @@ class LLMInvestigator:
     #: The commodity the company's own documents discuss most, for intents that name
     #: ``{commodity}`` on a question that is not per-commodity.
     primary_commodity: str | None = None
+    #: Lazily-loaded ``other_company_labels`` for the other-company guard.
+    _other_names: "dict[str, str] | None" = field(default=None, repr=False)
     #: Open-web W7 — ``async (question_key, candidates, round_index, max_fetches, terms)
     #: -> CandidateFetchResult`` (``WebFollowup.fetch_candidates``). When set, the
     #: candidates a ``search_web`` call returns are fetched and ingested DETERMINISTICALLY
@@ -2084,6 +2142,24 @@ class LLMInvestigator:
             )
         return evidence, used
 
+    async def _other_companies(self) -> dict[str, str]:
+        """Registered companies other than the subject, once per investigator. Never raises."""
+        if self._other_names is None:
+            try:
+                import sqlalchemy as sa
+
+                from app.models.company import Company
+
+                rows = (
+                    await self.session.execute(
+                        sa.select(Company.name).where(Company.id != self.company_id)
+                    )
+                ).scalars().all()
+                self._other_names = other_company_labels(list(rows), self.company_name)
+            except Exception:  # noqa: BLE001 - a guard that cannot read must not block research
+                self._other_names = {}
+        return self._other_names
+
     async def _write_up(
         self,
         role_id: str,
@@ -2235,6 +2311,15 @@ class LLMInvestigator:
                 )
                 self.diagnostics.statements_about_evidence += 1
                 continue
+            if question.domain not in _PEER_DOMAINS:
+                foreign = foreign_publisher(real, evidence, await self._other_companies())
+                if foreign is not None:
+                    # Another registered company's own site is the whole footing of this
+                    # statement: it is that company's fact, not the issuer's. Dropped
+                    # rather than filed under the issuer (a peer's annual report once
+                    # stood in the subject's capital-allocation section).
+                    self.diagnostics.statements_about_another_company += 1
+                    continue
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
                 direction = None
