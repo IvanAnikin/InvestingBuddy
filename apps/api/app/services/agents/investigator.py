@@ -954,7 +954,9 @@ def _publisher_label(origin_key: str | None) -> str:
     key = (origin_key or "").strip()
     if key.startswith("issuer:"):
         return "issuer-own"
-    return key[:80]
+    # Only a plain host name: an origin can carry a NAME the page claimed for itself, and
+    # a page-derived string never reaches the prompt (it would be an injection channel).
+    return key if re.fullmatch(r"(?:[a-z0-9-]{1,40}\.){1,4}[a-z]{2,15}", key) else ""
 
 
 def _build_prompt(
@@ -1066,7 +1068,7 @@ def _build_prompt(
                 # WHO published it: "pensana.co.uk" beside a finding about another company
                 # is the cue that the text is that company's, not the issuer's (rule 8a).
                 f"publisher={_publisher_label(item.origin_key)}"
-                if item.web and item.origin_key
+                if item.web and _publisher_label(item.origin_key)
                 else "",
                 # Says where the TEXT came from — never a verdict on the figure. "UNTRUSTED"
                 # was repeated by writers as a judgement on USGS statistics.
