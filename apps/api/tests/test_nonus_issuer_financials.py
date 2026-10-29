@@ -684,3 +684,17 @@ def test_state_b_is_labelled_acquired_not_extracted():
     state = build_financial_statements_state(
         [], core_disclosures=_disclosures(ANNUAL_READY), now=NOW)
     assert state["annual"]["knowledge_state"] == STATE_ACQUIRED_NOT_EXTRACTED
+
+
+class TestAQuarterlyReportIsNotCalledInterim:
+    def test_the_current_period_label_says_quarterly_for_a_quarterly_report(self):
+        quarterly = {"document_kind": "results_release", "state": "ready",
+                     "headline": "September Quarterly Report", "filing_date": "2026-10-25",
+                     "source_url": "https://official.example/q.pdf",
+                     "source_id": "asx_announcements"}
+        state = build_financial_statements_state(
+            [], core_disclosures=_disclosures(quarterly), core_filings={},
+        )
+        label = state["current_period"]["label"]
+        assert "uarterly report acquired" in label
+        assert "nterim" not in label

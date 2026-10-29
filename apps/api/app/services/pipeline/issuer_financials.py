@@ -553,7 +553,10 @@ def _current_state(
     if document is not None:
         hint = _period_hint(document.get("headline"))
         when = document.get("filing_date")
-        what = f"{hint} interim report" if hint else "Interim report"
+        # A quarterly activities report is not an interim (half-year) report.
+        quarterly = "quarter" in str(document.get("headline") or "").lower()
+        noun = "quarterly report" if quarterly else "interim report"
+        what = f"{hint} {noun}" if hint else noun.capitalize()
         return {
             "state": STATE_ACQUIRED_NOT_EXTRACTED,
             "period": hint,
