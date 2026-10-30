@@ -17,14 +17,27 @@ may DISCOVER a company — it is recorded as where the lead came from — and th
 
 The venue must also be one ``exchange_registry`` knows, so the listing's country, region
 and currency are known facts rather than guesses.
+
+ISSUER ≠ SECURITY (ADR-061)
+===========================
+One issuer may have N listed securities: Cellectis S.A. is ``ALCLS`` on Euronext Growth
+Paris (ordinary shares, ISIN FR0010425595) AND ``CLLS`` on Nasdaq (ADSs). Every security a
+lead names is verified on ITS OWN venue's directory — a European ticker is never routed to
+the SEC list. Verified securities are linked to one issuer only on strong evidence (named
+together by one source and the exchanges' names agree; or the regulator's stated domicile
+agrees with the other listing's ISIN / venue country). The issuer carries its domicile with
+the evidence for it; the PRIMARY listing is the one in the domicile country, so a US ADS
+line never becomes the issuer's economic identity, and geography is judged on the issuer,
+not on whichever venue a page happened to print.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,6 +49,8 @@ from app.services.exchange_registry import (
     get_exchange,
     region_for_exchange,
 )
+
+logger = logging.getLogger(__name__)
 
 IDENTITY_VERIFIED = "verified"
 IDENTITY_PLATFORM = "platform_registry"
@@ -361,6 +376,11 @@ class IdentityOutcome:
     attempts: list[dict[str, Any]] = field(default_factory=list)
     #: V3.19.10 — the exchange directory's own row for this listing, when one matched.
     directory_listing: dict[str, Any] | None = None
+    #: ADR-061 — the legal entity behind the listing: legal name, domicile and its basis.
+    issuer: dict[str, Any] | None = None
+    #: ADR-061 — every listed security of the issuer this run observed or found, each
+    #: verified (or not) on its own venue, with its role (primary / secondary / unlinked).
+    securities: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def verified(self) -> bool:
@@ -379,7 +399,24 @@ class IdentityOutcome:
             "rejection_reason": self.rejection_reason,
             "detail": self.detail,
             "company_id": self.company_id,
+            # Additive: absent for a single-listing identity with no issuer evidence, so
+            # the V3.19 record shape is unchanged.
+            **({"issuer": self.issuer} if self.issuer else {}),
+            **({"securities": self.securities} if self.securities else {}),
         }
+
+    @property
+    def domicile_country(self) -> str | None:
+        return (self.issuer or {}).get("domicile_country")
+
+    @property
+    def domicile_source(self) -> dict[str, Any] | None:
+        return (self.issuer or {}).get("domicile_source")
+
+    @property
+    def hq_country(self) -> str | None:
+        """The regulator-recorded business address country, when known."""
+        return (self.issuer or {}).get("hq_country")
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -397,8 +434,15 @@ def dedup_key(ticker: str | None, exchange: str | None) -> str | None:
 def normalised_name(name: str | None) -> str:
     """The FULL name minus legal suffixes, for dedup. Short words are kept: "AB Science"
     must not collapse to "science" and collide with another company."""
-    words = re.findall(r"[a-z0-9&]+", _fold(name))
+    words = re.findall(r"[a-z0-9&]+", _DOTTED_ABBREVIATION_RE.sub(
+        lambda m: m.group().replace(".", ""), _fold(name)))
     return " ".join(w for w in words if w not in _LEGAL_SUFFIXES)
+
+
+#: A dotted abbreviation ("s.a.", "n.v.", "s.p.a.") is ONE word: split on its dots it
+#: becomes the letters "s" and "a", which no suffix rule strips, and "Cellectis S.A."
+#: stops matching the exchange's "CELLECTIS".
+_DOTTED_ABBREVIATION_RE = re.compile(r"\b(?:[a-z]\.){2,}|\b(?:[a-z]\.)+[a-z]\b")
 
 
 async def _page_text(url: str, cfg: Any, fetcher: Any) -> tuple[str | None, dict[str, Any]]:
@@ -430,6 +474,49 @@ async def _page_text(url: str, cfg: Any, fetcher: Any) -> tuple[str | None, dict
     return text, record
 
 
+#: A lead naming more securities than this is a list, not one issuer's listings.
+MAX_SECURITIES_PER_LEAD = 4
+
+SECURITY_ORDINARY = "ordinary"
+#: A line outside the issuer's domicile (an ADS/ADR or another secondary listing).
+SECURITY_FOREIGN_LINE = "foreign_listing"
+SECURITY_FORM_UNKNOWN = "unknown"
+
+ROLE_PRIMARY = "primary"
+ROLE_SECONDARY = "secondary"
+#: Verified, but the evidence does not tie it to this issuer (a different company).
+ROLE_UNLINKED = "unlinked"
+
+#: ``verify_identity(primary=...)``: the home-country line leads, or the venue the caller named.
+PRIMARY_HOME = "home"
+PRIMARY_GIVEN = "given"
+
+#: ISO 3166 alpha-2 (an ISIN's prefix) → the country names ``exchange_registry`` uses.
+ISO2_COUNTRY: dict[str, str] = {
+    "AU": "Australia", "AT": "Austria", "BE": "Belgium", "BR": "Brazil", "CA": "Canada",
+    "CN": "China", "DK": "Denmark", "FI": "Finland", "FR": "France", "DE": "Germany",
+    "HK": "Hong Kong", "IN": "India", "IE": "Ireland", "IT": "Italy", "JP": "Japan",
+    "MX": "Mexico", "NL": "Netherlands", "NZ": "New Zealand", "NO": "Norway",
+    "PL": "Poland", "PT": "Portugal", "ZA": "South Africa", "KR": "South Korea",
+    "ES": "Spain", "SE": "Sweden", "CH": "Switzerland", "TW": "Taiwan",
+    "GB": "United Kingdom", "US": "United States", "LU": "Luxembourg", "IL": "Israel",
+    "JE": "Jersey", "GG": "Guernsey", "IM": "Isle of Man", "BM": "Bermuda",
+    "KY": "Cayman Islands", "CY": "Cyprus", "GR": "Greece",
+}
+
+
+def observed_securities(lead: CompanyLead) -> list[tuple[str | None, str | None]]:
+    """``(ticker, venue_raw)`` for every security the lead names, in the order observed."""
+    pairs: list[tuple[str | None, str | None]] = []
+    for sec in lead.securities or []:
+        pair = ((sec.get("ticker") or "").strip().upper() or None, sec.get("venue_raw"))
+        if pair not in pairs:
+            pairs.append(pair)
+    if not pairs:
+        pairs.append(((lead.ticker or "").strip().upper() or None, lead.exchange_raw))
+    return pairs[:MAX_SECURITIES_PER_LEAD]
+
+
 async def verify_identity(
     lead: CompanyLead,
     *,
@@ -437,8 +524,243 @@ async def verify_identity(
     fetcher: Any = None,
     max_fetches: int = 2,
     directory_fetcher: Any = None,
+    primary: str = PRIMARY_HOME,
 ) -> IdentityOutcome:
-    """Verify one EXTERNAL lead's listing. Never raises; always names its reason.
+    """Verify one EXTERNAL lead: each security on its own venue, then the issuer.
+
+    Never raises; always names its reason. A lead naming several securities (``ALCLS`` on
+    Euronext Growth and ``CLLS`` on Nasdaq) has EACH verified on its own venue's directory;
+    the verified ones that are the same issuer are linked. A security that cannot be
+    verified, or that belongs to a different issuer, is recorded as such — it never
+    rejects its siblings.
+
+    ``primary``: ``PRIMARY_HOME`` (discovery) makes the issuer's home-country line the
+    primary listing; ``PRIMARY_GIVEN`` keeps the venue the caller named — a venue someone
+    chose wins over the rule (a peer named on Nasdaq stays SEC-comparable).
+    """
+    pairs = observed_securities(lead)
+    outcomes: list[IdentityOutcome] = []
+    for ticker, venue_raw in pairs:
+        single = replace(lead, ticker=ticker, exchange_raw=venue_raw, securities=None)
+        outcome = await _verify_one(single, cfg=cfg, fetcher=fetcher, max_fetches=max_fetches,
+                                    directory_fetcher=directory_fetcher)
+        outcome.lead = lead
+        outcomes.append(outcome)
+    try:
+        return await _resolve_issuer(lead, outcomes, cfg=cfg,
+                                     fetcher=directory_fetcher or fetcher, primary=primary)
+    except Exception:  # noqa: BLE001 - issuer linking enriches; it never loses a listing
+        logger.warning("issuer_resolution_failed securities=%d", len(outcomes), exc_info=True)
+        first = next((o for o in outcomes if o.verified), outcomes[0])
+        return first
+
+
+def _security_row(outcome: IdentityOutcome, *, surfaced: bool) -> dict[str, Any]:
+    row = outcome.directory_listing or {}
+    out: dict[str, Any] = {
+        "ticker": outcome.ticker,
+        "exchange": outcome.exchange,
+        "mic": row.get("mic"),
+        "isin": row.get("isin"),
+        "currency": row.get("currency") or outcome.listing_currency,
+        "listing_country": outcome.listing_country,
+        "status": "verified" if outcome.verified else "not_verified",
+        "directory": row.get("directory"),
+        "basis": (outcome.listing_source or {}).get("basis") if outcome.verified
+        else outcome.detail,
+        "surfaced": surfaced,
+    }
+    if not outcome.verified:
+        out["reason"] = outcome.rejection_reason
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _isin_country(outcome: IdentityOutcome) -> tuple[str, str] | None:
+    """(country, ISIN) when the line's ISIN states the issuer's domicile.
+
+    A US-prefixed ISIN on a non-US venue is a depositary receipt's (an LSE GDR carries its
+    US depositary bank's ISIN): it says where the RECEIPT was issued, not the company.
+    """
+    isin = str((outcome.directory_listing or {}).get("isin") or "")
+    if not (_isin_valid(isin) and isin[:2] in ISO2_COUNTRY):
+        return None
+    if isin[:2] == "US" and outcome.listing_country != "United States":
+        return None
+    return ISO2_COUNTRY[isin[:2]], isin
+
+
+def _legal_name(names: list[str]) -> str | None:
+    """The most complete of the exchanges' names: one carrying its legal form, else the
+    longest ("Cellectis S.A." over Euronext's "CELLECTIS")."""
+    names = [n for n in names if n]
+    if not names:
+        return None
+
+    def rank(n: str) -> tuple[int, int, int]:
+        words = re.findall(r"[a-z.]+", _fold(n))
+        has_form = any(w in _LEGAL_SUFFIXES for w in words)
+        return (1 if has_form else 0, 0 if n.isupper() else 1, len(n))
+
+    return max(names, key=rank)
+
+
+async def _member_domicile(
+    outcome: IdentityOutcome, *, cfg: Any, fetcher: Any
+) -> tuple[str, str, dict[str, Any]] | None:
+    """(country, basis, source) of the issuer's legal domicile as ONE verified security
+    states it: an ordinary-share ISIN's country prefix on the exchange's own list, else
+    the SEC registrant's country of incorporation, else its business address. None when it
+    states none. ``source["business_country"]`` carries the registrant's business address."""
+    found = _isin_country(outcome)
+    if found:
+        country, isin = found
+        return country, f"ISIN {isin} on the {outcome.exchange} listing", {
+            "url": (outcome.listing_source or {}).get("url"),
+            "tier": (outcome.listing_source or {}).get("tier"), "isin": isin}
+    cik = (outcome.directory_listing or {}).get("cik")
+    if cik:
+        from app.services.discovery.directories import sec_registrant_domicile
+
+        record = await sec_registrant_domicile(cik, cfg=cfg, fetcher=fetcher)
+        if record is not None:
+            source = {"url": record.url, "tier": "regulator", "cik": str(cik),
+                      "business_country": record.business}
+            if record.incorporation:
+                return (record.incorporation,
+                        "the SEC registrant's country of incorporation", source)
+            if record.business:
+                return record.business, "the SEC registrant's business address", source
+    return None
+
+
+def _same_issuer(a: IdentityOutcome, b: IdentityOutcome) -> bool:
+    """Two independently verified securities named TOGETHER by one source are the same
+    issuer only if the exchanges' own names for them agree (the ticker-anchored rule)."""
+    from app.services.discovery.directories import _names_agree
+
+    return bool(a.name and b.name) and _names_agree(
+        normalised_name(a.name), normalised_name(b.name), ticker_matched=True
+    )
+
+
+async def _resolve_issuer(
+    lead: CompanyLead, outcomes: list[IdentityOutcome], *, cfg: Any, fetcher: Any,
+    primary: str = PRIMARY_HOME,
+) -> IdentityOutcome:
+    verified = [o for o in outcomes if o.verified]
+    if not verified:
+        first = outcomes[0]
+        if len(outcomes) > 1:
+            first.securities = [_security_row(o, surfaced=True) for o in outcomes]
+        return first
+    anchor = verified[0]
+    linked = [anchor] + [o for o in verified[1:] if _same_issuer(anchor, o)]
+    unlinked = [o for o in verified[1:] if o not in linked]
+    signals = [await _member_domicile(o, cfg=cfg, fetcher=fetcher) for o in linked]
+    reference = next((sig for sig in signals if sig), None)
+    country = reference[0] if reference else None
+    # Strong-identifier check: a security whose own authoritative record states ANOTHER
+    # domicile is a different issuer that shares the name — never a sibling.
+    members = list(zip(linked, signals))
+    for outcome, sig in members:
+        if sig and country and sig[0] != country and outcome is not anchor:
+            unlinked.append(outcome)
+    members = [(o, sig) for o, sig in members if o not in unlinked]
+    linked = [o for o, _sig in members]
+    # The ISIN on an ordinary-share line is the clearest statement of domicile.
+    chosen = next((sig for _o, sig in members if sig and sig[0] == country
+                   and "ISIN" in sig[1]), reference)
+    basis, source = (chosen[1], chosen[2]) if chosen else (None, None)
+    # Where the regulator's record says the business is run (NIO: a Cayman company run
+    # from China) — a headquarters, kept apart from the legal domicile.
+    hq_country = next((sig[2].get("business_country") for _o, sig in members
+                       if sig and sig[2].get("business_country")), None)
+    linked_by = "named together by one source; the exchanges' names agree"
+    if len(linked) == 1 and country and primary == PRIMARY_HOME:
+        # A single verified line of a foreign issuer: its home listing, when the home
+        # exchange's own list carries the same name AND (where it prints one) an ISIN
+        # from the domicile country. Never on a name alone.
+        sibling = await _home_sibling(anchor, country, cfg=cfg, fetcher=fetcher)
+        if sibling is not None:
+            linked.append(sibling)
+            linked_by = ("same name on the home exchange's list, and the registrant's stated "
+                         "domicile matches that listing's country")
+            if not _isin_country(anchor) and _isin_country(sibling):
+                country, isin = _isin_country(sibling)  # type: ignore[misc]
+                basis = f"{basis}; ISIN {isin} on the {sibling.exchange} listing"
+    if len(outcomes) == 1 and len(linked) == 1 and not country:
+        return anchor  # one listing, nothing known about the issuer beyond it
+    chosen_line = anchor if primary == PRIMARY_GIVEN else next(
+        (o for o in linked if country and o.listing_country == country), None) or anchor
+    rows: list[dict[str, Any]] = []
+    for outcome in outcomes + [o for o in linked if o not in outcomes]:
+        row = _security_row(outcome, surfaced=outcome in outcomes)
+        if outcome in linked:
+            row["role"] = ROLE_PRIMARY if outcome is chosen_line else ROLE_SECONDARY
+            row["security_form"] = (
+                SECURITY_FORM_UNKNOWN if not country
+                else SECURITY_ORDINARY if outcome.listing_country == country
+                else SECURITY_FOREIGN_LINE
+            )
+        elif outcome in unlinked:
+            row["role"] = ROLE_UNLINKED
+        rows.append(row)
+    chosen_line.lead = lead
+    chosen_line.issuer = {
+        "legal_name": _legal_name([o.name or "" for o in linked]),
+        "domicile_country": country,
+        "domicile_basis": basis,
+        "domicile_source": source,
+        "hq_country": hq_country,
+        "linked_by": linked_by if len(linked) > 1 else None,
+    }
+    chosen_line.securities = rows if len(rows) > 1 else []
+    return chosen_line
+
+
+async def _home_sibling(
+    anchor: IdentityOutcome, country: str, *, cfg: Any, fetcher: Any
+) -> IdentityOutcome | None:
+    """The issuer's listing on a home-country exchange, for a verified line elsewhere."""
+    if anchor.listing_country == country:
+        return None
+    from app.services.discovery.directories import DIRECTORY_FOR_VENUE, find_listing
+
+    for venue in DIRECTORY_FOR_VENUE:
+        if country_for_exchange(venue) != country:
+            continue
+        row, _reason = await find_listing(name=anchor.name, ticker=None, venue=venue,
+                                          cfg=cfg, fetcher=fetcher)
+        if row is None:
+            continue
+        if row.isin and _isin_valid(row.isin) and ISO2_COUNTRY.get(row.isin[:2]) != country:
+            continue  # an ISIN from another country: not this issuer's home line
+        return IdentityOutcome(
+            lead=anchor.lead, status=IDENTITY_VERIFIED, ticker=row.ticker, exchange=venue,
+            name=row.name, listing_country=country_for_exchange(venue),
+            listing_region=region_for_exchange(venue),
+            listing_currency=currency_for_exchange(venue),
+            listing_source={
+                "url": row.source_url, "tier": row.tier,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "basis": f"listed in the {row.directory.upper()} directory as {row.ticker} "
+                         f"({row.name})",
+                "directory": row.directory,
+            },
+            directory_listing=row.to_dict(),
+        )
+    return None
+
+
+async def _verify_one(
+    lead: CompanyLead,
+    *,
+    cfg: Any = None,
+    fetcher: Any = None,
+    max_fetches: int = 2,
+    directory_fetcher: Any = None,
+) -> IdentityOutcome:
+    """Verify ONE security of a lead on its own venue. Never raises.
 
     Order: the venue's official directory (authoritative, vendor-free); only for a venue
     no directory covers, a page the lead cited on an exchange/regulator/issuer host.

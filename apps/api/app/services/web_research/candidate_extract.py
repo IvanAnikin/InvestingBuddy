@@ -456,6 +456,10 @@ class RawMention:
     theme_terms: tuple[str, ...] = ()
     catalyst_terms: tuple[str, ...] = ()
     risk_terms: tuple[str, ...] = ()
+    #: The OTHER ``(venue, ticker)`` pairs printed with this one for the same issuer
+    #: (``Cellectis (Euronext Growth: ALCLS – NASDAQ: CLLS)``): one issuer, several
+    #: securities. Never merged into one ticker.
+    co_listings: tuple[tuple[str | None, str], ...] = ()
 
     @property
     def key(self) -> str:
@@ -541,6 +545,64 @@ def name_before(text: str, end: int) -> str | None:
     return name or None
 
 
+#: An alias the text gives the issuer right after its name: ``(the “Company”)``,
+#: ``(“Cellectis” or the “Company”)``. It sits between the name and the listing.
+_ALIAS_PAREN_RE = re.compile(r"\((?:[^()]{0,60})[“\"'‘”’][^()]{0,60}\)\s*$")
+#: What may separate two listings of ONE issuer printed together.
+_LISTING_GAP_RE = re.compile(
+    r"^[\s;,/|&–—\-()\[\]]*(?:(?:and|or|et|und|y|e|og|och)\b[\s;,/|&–—\-()\[\]]*)?$",
+    re.IGNORECASE,
+)
+MAX_LISTING_GAP_CHARS = 12
+MAX_LISTINGS_PER_ISSUER = 4
+
+
+def listing_name(text: str, start: int) -> str | None:
+    """The issuer name before a listing at ``text[start]``, skipping at most two alias
+    parentheticals (``Cellectis (the “Company”) (Euronext Growth: ALCLS …)``)."""
+    name = name_before(text, start)
+    end = start
+    for _ in range(2):
+        if name:
+            return name
+        alias = _ALIAS_PAREN_RE.search(text[:end].rstrip(" ([,–—-\t"))
+        if alias is None:
+            return None
+        end = alias.start()
+        name = name_before(text, end)
+    return name
+
+
+def _in_parentheses(text: str, index: int) -> bool:
+    """True when ``index`` sits inside an open ``(`` on its line of text."""
+    return text.rfind("(", 0, index) > max(text.rfind(")", 0, index), text.rfind("\n", 0, index))
+
+
+def listing_groups(text: str, matches: list[re.Match[str]]) -> list[list[re.Match[str]]]:
+    """Consecutive ``venue: ticker`` matches printed together for ONE issuer.
+
+    Two matches join a group only when both are inside parentheses — the issuer's own
+    listing block, ``(Euronext Growth: ALCLS – NASDAQ: CLLS)`` or ``(LSE: PRE) (ASX: PM8)``
+    — nothing but separators lies between them, and their venues differ. The same venue
+    twice is a list of different companies; so is a bare ``NASDAQ: FOO, TSX: BAR`` run.
+    """
+    groups: list[list[re.Match[str]]] = []
+    for m in matches:
+        if groups:
+            prev = groups[-1][-1]
+            gap = text[prev.end() : m.start()]
+            venues = {fold(x.group("venue")) for x in groups[-1]}
+            if (_in_parentheses(text, prev.start("venue"))
+                    and _in_parentheses(text, m.start("venue"))
+                    and len(gap) <= MAX_LISTING_GAP_CHARS and _LISTING_GAP_RE.match(gap)
+                    and fold(m.group("venue")) not in venues
+                    and len(groups[-1]) < MAX_LISTINGS_PER_ISSUER):
+                groups[-1].append(m)
+                continue
+        groups.append([m])
+    return groups
+
+
 def _name_ok(name: str | None, *, has_identifier: bool) -> bool:
     if not name or len(name) < 3 or not re.search(r"[A-Za-z]", name):
         return False
@@ -597,6 +659,7 @@ class _Pending:
     method: str
     start: int  # where the NAME starts
     end: int  # end of the identifier span
+    co_listings: tuple[tuple[str | None, str], ...] = ()
 
 
 def _paragraph_mentions(
@@ -614,7 +677,8 @@ def _paragraph_mentions(
     pending: list[_Pending] = []
 
     def add(name: str | None, ticker: str | None, venue: str | None, isin: str | None,
-            method: str, span: tuple[int, int]) -> None:
+            method: str, span: tuple[int, int],
+            co_listings: tuple[tuple[str | None, str], ...] = ()) -> None:
         if len(pending) >= MAX_MENTIONS_PER_PAGE:
             return
         if not _name_ok(name, has_identifier=bool(ticker or isin)):
@@ -623,12 +687,19 @@ def _paragraph_mentions(
         assert name is not None
         start = text.rfind(name, 0, span[0] + 1)
         pending.append(
-            _Pending(name, ticker, venue, isin, method, start if start >= 0 else span[0], span[1])
+            _Pending(name, ticker, venue, isin, method, start if start >= 0 else span[0],
+                     span[1], co_listings)
         )
 
-    for m in _TICKER_MENTION_RE.finditer(text):
-        add(name_before(text, m.start()), m.group("ticker"), _venue_text(m.group("venue")),
-            None, METHOD_TICKER_VENUE, m.span())
+    ticker_matches = list(_TICKER_MENTION_RE.finditer(text))
+    for group in listing_groups(text, ticker_matches):
+        # One issuer's listings printed together share ITS name: the second ticker of
+        # "(Euronext Growth: ALCLS – NASDAQ: CLLS)" is not a company called "ALCLS".
+        name = listing_name(text, group[0].start())
+        pairs = [(_venue_text(m.group("venue")), m.group("ticker")) for m in group]
+        for m, pair in zip(group, pairs):
+            co = tuple(p for p in pairs if p != pair)
+            add(name, pair[1], pair[0], None, METHOD_TICKER_VENUE, m.span(), co)
         if len(pending) >= MAX_MENTIONS_PER_PAGE:
             break
     for m in _ISIN_RE.finditer(text):
@@ -684,6 +755,7 @@ def _paragraph_mentions(
                 name=p.name, ticker=p.ticker, venue_raw=p.venue, isin=p.isin, method=p.method,
                 passage=shown, passage_kind=PASSAGE_PARAGRAPH, theme_terms=theme_terms,
                 catalyst_terms=catalyst_terms, risk_terms=risk_terms,
+                co_listings=p.co_listings,
             )
         )
     return out

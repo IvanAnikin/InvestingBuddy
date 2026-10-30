@@ -25,7 +25,7 @@ import {
 import type { DiscoveryCandidate } from "@/types/api";
 import CandidateConstraints from "./CandidateConstraints";
 import CandidateWebEvidence from "./CandidateWebEvidence";
-import { candidateRecord } from "./v319View";
+import { candidateRecord, issuerListingLine } from "./v319View";
 import { candidateWebView } from "./webEvidenceView";
 
 /**
@@ -154,6 +154,14 @@ export default function CandidateCard({
             {c.country ? ` · ${c.country}` : ""}
             {c.sector ? ` · ${c.sector}` : ""}
           </p>
+          {issuerListingLine(candidateRecord(c)) && (
+            <p
+              className="ib-breakable mt-0.5 text-xs text-[color:var(--ib-ink-3)]"
+              data-testid="candidate-issuer-listings"
+            >
+              {issuerListingLine(candidateRecord(c))}
+            </p>
+          )}
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center gap-3">

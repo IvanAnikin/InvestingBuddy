@@ -381,21 +381,34 @@ def verify_geography(
     listing_source: dict[str, Any] | None,
     hq_country: str | None = None,
     hq_source: dict[str, Any] | None = None,
+    domicile_country: str | None = None,
+    domicile_source: dict[str, Any] | None = None,
 ) -> ConstraintResult:
+    """Where the COMPANY is, against the thesis's geography.
+
+    ADR-061: with a known legal domicile, the issuer — its domicile and headquarters — is
+    judged, not the venue a line trades on: a French issuer seen through its Nasdaq ADS is
+    in Europe, and a Dutch one is "non-US". Without a domicile the listing country and the
+    headquarters are judged, as before.
+    """
     from app.services.exchange_registry import region_for_country
 
-    observed = [c for c in (listing_country, hq_country) if c]
+    if domicile_country:
+        observed = list(dict.fromkeys(c for c in (domicile_country, hq_country) if c))
+    else:
+        observed = [c for c in (listing_country, hq_country) if c]
     if constraint is None:
         return ConstraintResult(
             "geography", [], HARD, NOT_REQUESTED,
             value=(
-                {"listing_country": listing_country, "hq_country": hq_country}
+                {"listing_country": listing_country, "hq_country": hq_country,
+                 **({"domicile_country": domicile_country} if domicile_country else {})}
                 if observed
                 else None
             ),
         )
     requested = set(constraint.requested)
-    sources = [s for s in (listing_source, hq_source) if s]
+    sources = [s for s in (listing_source, hq_source, domicile_source) if s]
     if not observed:
         return ConstraintResult(
             "geography", list(constraint.requested), constraint.hardness, UNKNOWN,
@@ -405,6 +418,7 @@ def verify_geography(
         "listing_country": listing_country,
         "listing_region": region_for_country(listing_country) if listing_country else None,
         "hq_country": hq_country,
+        **({"domicile_country": domicile_country} if domicile_country else {}),
     }
     # V3.19.2 — what the user EXCLUDED ("non-US", "Europe excluding the UK") fails,
     # whatever else matches: a UK company is in Europe and still not wanted.

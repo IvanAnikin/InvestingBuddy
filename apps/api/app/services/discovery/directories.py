@@ -139,6 +139,7 @@ _SAFE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,11}$")
 def reset_cache() -> None:
     """Forget every cached directory and failure (tests; a manual refresh)."""
     _CACHE.clear()
+    _DOMICILE_CACHE.clear()
     _FAILED_AT.clear()
     _LOCKS.clear()
 
@@ -538,6 +539,108 @@ async def sec_public_float(
     if (datetime.now(timezone.utc).date() - as_of).days > MAX_FLOAT_AGE_DAYS:
         return None
     return float(latest["val"]), as_of.isoformat(), url
+
+
+#: CIK → (country, url) or None, for today: one submissions read per registrant per day.
+@dataclass(frozen=True)
+class RegistrantDomicile:
+    """What an SEC registrant's own record says about WHERE the issuer is.
+
+    ``incorporation``: the country of incorporation (its legal domicile). ``business``: the
+    country of its business address (where it is run). Either may be None.
+    """
+
+    incorporation: str | None
+    business: str | None
+    url: str
+
+
+_DOMICILE_CACHE: dict[tuple[str, str], RegistrantDomicile | None] = {}
+#: EDGAR writes a US state as two letters; every foreign code carries a digit (I0, X0, 1T).
+_US_STATE_CODE = re.compile(r"^[A-Z]{2}$")
+#: EDGAR's own country texts that are not the registry's names.
+_EDGAR_COUNTRY_TEXT = {
+    "korea, republic of": "South Korea",
+    "virgin islands, british": "British Virgin Islands",
+    "taiwan, province of china": "Taiwan",
+    "russian federation": "Russia",
+}
+
+
+def edgar_country(text: str | None) -> str | None:
+    """EDGAR's country text as the registry's country name: "Canada (Federal Level)" and
+    "Ontario, Canada" are Canada; "Korea, Republic of" is South Korea."""
+    from app.services.discovery.identity import ISO2_COUNTRY
+    from app.services.exchange_registry import COUNTRY_TO_REGION
+
+    raw = re.sub(r"\s*\(.*?\)\s*", " ", str(text or "")).strip()
+    if not raw:
+        return None
+    known = {c.lower(): c for c in (*COUNTRY_TO_REGION, *ISO2_COUNTRY.values())}
+    low = raw.lower()
+    if low in _EDGAR_COUNTRY_TEXT:
+        return _EDGAR_COUNTRY_TEXT[low]
+    if low in known:
+        return known[low]
+    tail = low.rsplit(",", 1)[-1].strip()
+    if tail in known:
+        return known[tail]
+    return raw.title()[:60]
+
+
+async def sec_registrant_domicile(
+    cik: str | None, *, cfg: Any = None, fetcher: Any = None
+) -> RegistrantDomicile | None:
+    """Where an SEC registrant's own record places the issuer, or None. Never raises.
+
+    ``stateOfIncorporation`` is a US state's two-letter code or an EDGAR foreign code (a
+    letter and a digit: ``I0`` France) described by ``stateOfIncorporationDescription``. The
+    field is not always right — Shell plc is recorded as ``DC`` — so a US state code counts
+    only when the business address is not a foreign location. An empty incorporation (Cameco)
+    leaves the business address as the only statement.
+    """
+    from app.services.sources.document_fetcher import safe_fetch_document
+
+    if not cik or not re.fullmatch(r"[0-9]{1,10}", str(cik)):
+        return None
+    key = (str(int(cik)), _today())
+    if key in _DOMICILE_CACHE:
+        return _DOMICILE_CACHE[key]
+    url = f"https://{SEC_DATA_HOST}/submissions/CIK{int(cik):010d}.json"
+    try:
+        result = await (fetcher or safe_fetch_document)(
+            url, allowed_domains=(SEC_DATA_HOST,), cfg=cfg, resolve_ip=True,
+            extra_text_content_types=("application/json",),
+        )
+        content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+        data = json.loads(content) if content else None
+    except Exception:  # noqa: BLE001 - an unreadable record is no verdict (not cached)
+        return None
+    if not isinstance(data, dict):
+        return None
+    business_address = ((data.get("addresses") or {}).get("business") or {})
+    if not isinstance(business_address, dict):
+        business_address = {}
+    business: str | None = None
+    if business_address.get("isForeignLocation") == 1:
+        business = edgar_country(business_address.get("country"))
+    else:
+        state = str(business_address.get("stateOrCountry") or "").strip().upper()
+        if _US_STATE_CODE.match(state):
+            business = "United States"
+        elif state:
+            business = edgar_country(business_address.get("stateOrCountryDescription"))
+    code = str(data.get("stateOfIncorporation") or "").strip().upper()
+    incorporation: str | None = None
+    if _US_STATE_CODE.match(code):
+        if business in (None, "United States"):
+            incorporation = "United States"
+    elif code:
+        incorporation = edgar_country(data.get("stateOfIncorporationDescription"))
+    found = (RegistrantDomicile(incorporation, business, url)
+             if incorporation or business else None)
+    _DOMICILE_CACHE[key] = found
+    return found
 
 
 async def euronext_admitted_shares(
