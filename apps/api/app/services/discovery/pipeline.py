@@ -116,12 +116,23 @@ class StageResult:
     #: with the flag off.
     web: dict[str, Any] | None = None
     also_surfaced: list[CandidateRecord] = field(default_factory=list)
+    #: Where this run's leads could come from and whether each source actually ran: web
+    #: search (provider + executed queries), model recall, the registries, and the
+    #: screening investigation. ``external_discovery`` is the union, so "unavailable" is
+    #: said only when NO source beyond the registries ran. Web-on runs only.
+    lead_sources: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = self._base_dict()
         if self.web is not None:
             out["web"] = self.web
             out["also_surfaced"] = [c.to_dict() for c in self.also_surfaced][:40]
+            if self.lead_sources is not None:
+                out["lead_sources"] = self.lead_sources
+            # Every rejected lead says which source named it, so a model's suggestion is
+            # never shown as a web-search find (and a registry duplicate as neither).
+            for row, outcome in zip(out["rejected_leads"], self.rejected):
+                row["origin"] = lead_origin(outcome.lead)
         return out
 
     def _base_dict(self) -> dict[str, Any]:
@@ -152,6 +163,15 @@ class StageResult:
             "warnings": self.warnings[:40],
             "elapsed_seconds": round(self.elapsed_seconds, 1),
         }
+
+
+def lead_origin(lead: CompanyLead) -> str:
+    """``web_search`` | ``model_recall`` | ``curated_registry`` | ``platform_registry``."""
+    if lead.discovery_mode == "search":
+        return "web_search"
+    if lead.discovery_mode == "model_recall":
+        return "model_recall"
+    return str(lead.source or "unknown")
 
 
 def _registry_leads(run_universe: dict[str, Any] | None) -> list[CompanyLead]:
@@ -483,9 +503,16 @@ async def run_dynamic_stage(
         stage.web = dict(web_result.summary)
         web_leads = list(web_result.leads)
     external_leads: list[CompanyLead] = []
+    recall_available = False
     if external:
         found = await discover_leads(intent, cfg=cfg, provider=provider)
-        stage.external_available = found.available
+        recall_available = found.available
+        # Open discovery is available when ANY source beyond the registries ran: model
+        # recall or a live web search. Recall being off is not "discovery unavailable"
+        # when the web search looked (the run stores which source did what).
+        stage.external_available = found.available or (
+            web_result is not None and web_result.state in _LIVE_SEARCH_STATES
+        )
         stage.queries = found.queries
         stage.warnings.extend(found.warnings)
         external_leads = found.leads
@@ -799,6 +826,12 @@ async def run_dynamic_stage(
                                         fetcher=fetcher)
         for result in screened.values():
             units.extend(result.consumption)
+    elif external and web_on and to_screen:
+        stage.warnings.append(
+            f"{len(to_screen)} verified issuer(s) were checked against the requirements from "
+            "registry, exchange-directory and fetched-page evidence only: no screening "
+            "investigation provider is enabled"
+        )
     for identity in to_screen:
         screening = screened.get(f"{identity.exchange}:{identity.ticker}")
         results, eligibility = await evaluate(identity, screening, intent, cfg=cfg,
@@ -834,7 +867,16 @@ async def run_dynamic_stage(
     }
     if web_on:
         stage.also_surfaced = also_surfaced
+        stage.lead_sources = _lead_sources(
+            web_result, stage.web or {}, web_leads=len(web_leads),
+            recall_available=recall_available, recall_leads=len(external_leads),
+            registry_leads=len(leads), screening_available=provider is not None,
+            screened=len(screened),
+        )
         stage.funnel.update(
+            # Every verified issuer is checked against the hard requirements (a geography
+            # pre-filter, or the full evaluation); stated so no surface infers it.
+            checked_against_requirements=len(identities),
             web_leads=len(web_leads),
             web_admitted=sum(1 for r in records if _record_state(r) == "admitted"),
             web_also_surfaced=len(also_surfaced),
@@ -857,6 +899,41 @@ async def run_dynamic_stage(
 # --------------------------------------------------------------------------- #
 # Open-web W6b helpers
 # --------------------------------------------------------------------------- #
+
+
+def _lead_sources(
+    web_result: Any,
+    web: dict[str, Any],
+    *,
+    web_leads: int,
+    recall_available: bool,
+    recall_leads: int,
+    registry_leads: int,
+    screening_available: bool,
+    screened: int,
+) -> dict[str, Any]:
+    """What each lead source did on this run, from what executed (never from a flag)."""
+    queries = web.get("queries") or {}
+    results = web.get("results") or {}
+    return {
+        "web_search": {
+            "state": web_result.state if web_result is not None else "not_run",
+            "provider": web.get("provider"),
+            "queries_executed": int(queries.get("executed") or 0),
+            "results_seen": int(results.get("seen") or 0),
+            "companies_named": web_leads,
+        },
+        "model_recall": {
+            "state": "ran" if recall_available else "unavailable",
+            "companies_named": recall_leads,
+        },
+        "registry": {"companies_named": registry_leads},
+        "screening_investigation": {
+            "state": "ran" if screening_available and screened else (
+                "not_needed" if screening_available else "unavailable"),
+            "investigated": screened,
+        },
+    }
 
 
 def _web_enabled(cfg: Any) -> bool:

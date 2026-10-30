@@ -622,6 +622,8 @@ export interface ParseThesisResponse {
   // V3.19.2 — the structured Discovery Intent; V3.19.6 — whether open discovery runs.
   discovery_intent?: DiscoveryIntent | null;
   dynamic_discovery_enabled?: boolean;
+  /** Sources beyond the registries a run would use: `web_search:<provider>`, `model_recall`. */
+  open_discovery_sources?: string[];
   disclaimer?: string;
 }
 
@@ -866,6 +868,7 @@ export interface DiscoveryWebSummary {
   label?: string | null;
   depth?: string;
   provider?: string | null;
+  results?: { seen?: number; selected?: number };
   queries?: {
     planned: number;
     executed: number;
@@ -911,21 +914,42 @@ export interface DiscoveryCandidateRecord {
   v3_web?: DiscoveryWebBlock | null;
 }
 
+export interface DiscoveryRejectedLead {
+  name?: string | null;
+  ticker?: string | null;
+  exchange?: string | null;
+  exchange_raw?: string | null;
+  source?: string | null;
+  rejection_reason?: string | null;
+  detail?: string | null;
+  discovery_mode?: string | null;
+  /** `web_search` | `model_recall` | `curated_registry` | `platform_registry` */
+  origin?: string | null;
+  admission?: DiscoveryAdmission | null;
+}
+
+export interface DiscoveryLeadSources {
+  web_search?: {
+    state: string;
+    provider?: string | null;
+    queries_executed?: number;
+    results_seen?: number;
+    companies_named?: number;
+  };
+  model_recall?: { state: "ran" | "unavailable"; companies_named?: number };
+  registry?: { companies_named?: number };
+  screening_investigation?: { state: "ran" | "not_needed" | "unavailable"; investigated?: number };
+}
+
 export interface DiscoveryDynamicStage {
   schema?: string;
   status: "running" | "completed" | "failed";
   external_discovery?: "available" | "unavailable";
   funnel?: Record<string, number>;
   excluded?: DiscoveryCandidateRecord[];
-  rejected_leads?: {
-    name?: string | null;
-    ticker?: string | null;
-    exchange?: string | null;
-    rejection_reason?: string | null;
-    detail?: string | null;
-    discovery_mode?: string | null;
-    admission?: DiscoveryAdmission | null;
-  }[];
+  rejected_leads?: DiscoveryRejectedLead[];
+  /** What each lead source did on this run (web-search runs since the provenance corrective). */
+  lead_sources?: DiscoveryLeadSources | null;
   warnings?: string[];
   error?: string;
   // W6b — present only for a run that used live web search.

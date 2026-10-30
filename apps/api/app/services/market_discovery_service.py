@@ -1066,7 +1066,8 @@ async def process_run(
         final_status = "failed"
         warnings.append(
             "Dynamic discovery could not run ("
-            + str(stage_record.get("error") or "no external research provider available")
+            + str(stage_record.get("error")
+                  or "no open-discovery source ran: neither web search nor model recall")
             + "), and the curated registry held no match. Nothing was screened."
         )
     elif processed == 0 and dynamic_ran and not universe:
@@ -1121,6 +1122,34 @@ async def process_run(
 def dynamic_discovery_enabled(cfg: Any | None = None) -> bool:
     """V3.19.4 — intent-driven external discovery. Off by default (spend + network)."""
     return bool(getattr(cfg or settings, "v3_dynamic_discovery_enabled", False))
+
+
+def open_discovery_sources(cfg: Any | None = None) -> list[str]:
+    """The sources beyond the registries a thesis run WOULD use, from live configuration.
+
+    ``web_search:<provider>`` when Discovery web search is on and a provider is usable
+    (selected and credentialed), ``model_recall`` when the research-model provider is
+    enabled and credentialed. Empty when dynamic discovery is off. Read on every call from
+    the process's settings — the in-process durable worker reads the same object — so the
+    page's "open discovery is on" line describes the configuration the run will see.
+    """
+    from app.integrations.search import web_search_provider_from_settings
+    from app.integrations.search.base import UnavailableSearchProvider
+    from app.services.agents.routing import research_provider_for
+
+    cfg = cfg or settings
+    if not dynamic_discovery_enabled(cfg):
+        return []
+    sources: list[str] = []
+    if getattr(cfg, "v3_discovery_web_search_enabled", False) and getattr(
+        cfg, "v3_web_search_enabled", False
+    ):
+        provider = web_search_provider_from_settings(cfg)
+        if provider is not None and not isinstance(provider, UnavailableSearchProvider):
+            sources.append(f"web_search:{getattr(provider, 'name', None) or 'unknown'}")
+    if research_provider_for(cfg) is not None:
+        sources.append("model_recall")
+    return sources
 
 
 def _eligibility_rank_key(candidate: DiscoveryCandidate) -> tuple:

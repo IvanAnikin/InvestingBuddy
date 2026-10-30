@@ -266,11 +266,22 @@ CODE_IDENTITY_INCOMPLETE = "IDENTITY_INCOMPLETE"
 CODE_COUNCIL_PARTIAL = "COUNCIL_PARTIAL"
 CODE_SOURCE_QUALITY_WEAK = "SOURCE_QUALITY_WEAK"
 CODE_CITATION_TIER_LOW = "CITATION_TIER_LOW"
+CODE_MODEL_RECALL_OFF = "MODEL_RECALL_OFF"
 CODE_UNCLASSIFIED = "UNCLASSIFIED"
 
 # Ordered most-specific-first: the first match wins, so a broad pattern can
 # never capture a message a narrower rule explains better.
 _CLASSIFIERS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
+    (
+        # Runs stored before the corrective said "external company discovery is
+        # unavailable" when only the MODEL-RECALL source was off — even on runs whose
+        # live web search ran. The source-level status is on the run's stage record.
+        CODE_MODEL_RECALL_OFF,
+        SEVERITY_INFO,
+        "Model-recall company discovery was off for this run (no research-model provider "
+        "is enabled). Web search, when it ran, is reported with the discovery funnel.",
+        ("external company discovery is unavailable", "model-recall company discovery is off"),
+    ),
     (
         CODE_PRICE_FALLBACK_USED,
         SEVERITY_INFO,

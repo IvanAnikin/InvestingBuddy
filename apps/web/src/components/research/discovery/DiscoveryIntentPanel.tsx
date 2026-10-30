@@ -1,7 +1,7 @@
 "use client";
 
 import type { DiscoveryIntent } from "@/types/api";
-import { hardnessWord, intentChips } from "./v319View";
+import { hardnessWord, intentChips, openDiscoveryLine } from "./v319View";
 
 /**
  * "Understood" — the thesis as the platform read it, before anything runs.
@@ -14,13 +14,17 @@ import { hardnessWord, intentChips } from "./v319View";
 export default function DiscoveryIntentPanel({
   intent,
   openDiscovery,
+  openDiscoverySources,
   testId = "discovery-intent",
 }: {
   intent: DiscoveryIntent | null | undefined;
-  /** Whether open company discovery (beyond the curated registry) will run. */
+  /** Whether open company discovery (beyond the curated registry) is enabled. */
   openDiscovery?: boolean | null;
+  /** The sources that would actually run (`web_search:<provider>`, `model_recall`). */
+  openDiscoverySources?: string[] | null;
   testId?: string;
 }) {
+  const openLine = openDiscoveryLine(openDiscovery, openDiscoverySources);
   const chips = intentChips(intent);
   if (!intent || chips.length === 0) return null;
   return (
@@ -51,11 +55,9 @@ export default function DiscoveryIntentPanel({
           </div>
         ))}
       </dl>
-      {typeof openDiscovery === "boolean" && (
+      {openLine && (
         <p className="mt-2 text-xs text-[color:var(--ib-ink-3)]" data-testid="intent-open-discovery">
-          {openDiscovery
-            ? "Open company discovery is on: companies beyond the curated registry are searched for and verified."
-            : "Open company discovery is off: only the curated registry and companies already on this platform are screened."}
+          {openLine}
         </p>
       )}
       {intent.unmatched_terms.length > 0 && (

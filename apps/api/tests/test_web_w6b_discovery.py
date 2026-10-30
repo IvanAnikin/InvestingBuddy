@@ -2329,3 +2329,153 @@ class TestTheOfficialPageAllowanceIsRelativeToWhatTheRunSpent:
             cfg=cfg(), deps=h.deps(),
         )
         assert len([u for u in h.net.requested if u in urls]) == 3, "one page per target, no more"
+
+
+# --------------------------------------------------------------------------- #
+# Source provenance and counts (owner test 2026-10-30, "European biotechnology")
+#
+# The run's web search executed 20 Tavily queries, yet the page said "open company
+# discovery was unavailable", because ``external_discovery`` reflected only the
+# MODEL-RECALL source (off: V3_DEEPSEEK_SEARCH_ENABLED=false). These pin each source's
+# status to what executed, and the names/reasons/counts the page renders.
+# --------------------------------------------------------------------------- #
+
+
+class TestSourceProvenance:
+    async def test_web_search_ran_with_recall_off_is_not_discovery_unavailable(
+        self, h: H
+    ) -> None:
+        """(A) Web search configured and executed + no research-model provider."""
+        h.serve_obscure()
+        stage = await h.stage()  # recall=None and no DeepSeek key → model recall is off
+        payload = json.loads(json.dumps(stage.to_dict()))
+        assert payload["external_discovery"] == "available"
+        joined = " ".join(payload["warnings"]).lower()
+        assert "no external research provider" not in joined
+        assert "external company discovery is unavailable" not in joined
+        assert "model-recall company discovery is off" in joined
+        sources = payload["lead_sources"]
+        assert sources["web_search"]["state"] == "ok"
+        assert sources["web_search"]["provider"] == "fake_web_search"
+        assert sources["web_search"]["queries_executed"] > 0
+        assert sources["web_search"]["companies_named"] == payload["funnel"]["web_leads"]
+        assert sources["model_recall"] == {"state": "unavailable", "companies_named": 0}
+        assert sources["screening_investigation"]["state"] == "unavailable"
+
+    async def test_no_source_ran_is_still_unavailable(self, h: H) -> None:
+        """The honest negative: a search outage AND no recall provider → unavailable."""
+        h.provider.mode = MODE_OUTAGE
+        stage = await h.stage()
+        payload = stage.to_dict()
+        assert payload["external_discovery"] == "unavailable"
+        assert payload["lead_sources"]["web_search"]["state"] == "web_search_unavailable"
+        assert payload["lead_sources"]["web_search"]["queries_executed"] == 0
+
+    async def test_a_recall_lead_is_never_labelled_a_web_search_find(self, h: H) -> None:
+        """(B) Search outage → recall fallback: every rejected lead names its real origin."""
+        h.provider.mode = MODE_OUTAGE
+        recall = _Recall([{"legal_name": "Nowhere AG", "ticker": "NWL",
+                           "exchange": "Moon Exchange"}])
+        stage = await h.stage(recall=recall)
+        payload = stage.to_dict()
+        assert payload["lead_sources"]["model_recall"]["state"] == "ran"
+        row = next(x for x in payload["rejected_leads"] if x["ticker"] == "NWL")
+        assert row["origin"] == "model_recall"
+        assert all(x["origin"] != "web_search" for x in payload["rejected_leads"])
+
+    async def test_a_search_lead_is_labelled_web_search(self, h: H) -> None:
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(COL, "Gallium by-product")]})
+        h.net.pages[COL] = COLLISION_ARTICLE
+        stage = await h.stage()
+        row = next(x for x in stage.to_dict()["rejected_leads"] if x["ticker"] == "APX")
+        assert row["origin"] == "web_search"
+
+    async def test_names_reasons_and_counts_survive_persistence_and_the_api(
+        self, h: H
+    ) -> None:
+        """(C, D) The funnel the header uses and every excluded / rejected name and reason
+        survive JSON persistence and the run read model unchanged."""
+        from datetime import datetime, timezone
+
+        from app.schemas.market_discovery import DiscoveryRunRead
+
+        serve(h.provider, h.plan, {"entity_listed.0": [hit(ART, "Gallium producers"),
+                                                         hit(COL, "Gallium by-product")]})
+        h.net.pages[ART] = GALLIUM_ARTICLE
+        h.net.pages[COL] = COLLISION_ARTICLE
+        stage = await h.stage()
+        now = datetime.now(timezone.utc)
+        read = DiscoveryRunRead.model_validate({
+            "id": uuid.uuid4(), "status": "completed_with_warnings", "mode": "thesis",
+            "provider_name": "free_real", "universe_source": "thesis_generated",
+            "universe_count": 0, "requested_tickers": [], "processed_count": 0,
+            "candidate_count": 0, "error_count": 0, "lookback_days": 90, "warnings": [],
+            "config_json": {}, "safety_notes": {}, "created_by": None,
+            "human_review_required": True, "started_at": now, "completed_at": now,
+            "created_at": now, "updated_at": now,
+            "universe_json": json.loads(json.dumps({"items": [], "dynamic": stage.to_dict()})),
+        })
+        dyn = json.loads(read.model_dump_json())["universe_json"]["dynamic"]
+        funnel = dyn["funnel"]
+        assert funnel["raw_leads"] > 0
+        assert funnel["checked_against_requirements"] == funnel["verified_issuers"]
+        rejected = dyn["rejected_leads"]
+        assert rejected and all(x["name"] and x["rejection_reason"] for x in rejected)
+        assert all(x["origin"] for x in rejected)
+        for record in dyn["excluded"]:
+            assert record["identity"]["name"] and record["eligibility"]["reasons"]
+
+
+class TestLegacyRecallWarning:
+    def test_the_legacy_message_is_relabelled_with_its_original_wording_kept(self) -> None:
+        """(E, backend half) Stored runs keep the old sentence; it now groups under a
+        truthful label, and the original survives as a sample that DIFFERS from it."""
+        from app.schemas.research_quality import WarningCollector
+
+        legacy = ("external company discovery is unavailable: no external research provider "
+                  "is configured and enabled (a statement about this platform, not the web)")
+        groups = [g.to_payload() for g in WarningCollector.from_messages([legacy]).groups()]
+        assert groups[0]["code"] == "MODEL_RECALL_OFF"
+        assert groups[0]["severity"] == "info"
+        assert "Model-recall" in groups[0]["message"]
+        assert groups[0]["samples"] == [legacy]
+
+
+class TestOpenDiscoveryConfiguration:
+    def test_sources_follow_configuration(self) -> None:
+        from app.services.market_discovery_service import open_discovery_sources
+
+        on = cfg(v3_dynamic_discovery_enabled=True, v3_web_search_provider="tavily",
+                 tavily_api_key="k-test", v3_deepseek_search_enabled=False)
+        assert open_discovery_sources(on) == ["web_search:tavily"]
+        no_key = cfg(v3_dynamic_discovery_enabled=True, v3_web_search_provider="tavily",
+                     tavily_api_key="")
+        assert open_discovery_sources(no_key) == []
+        off = cfg(v3_dynamic_discovery_enabled=False, v3_web_search_provider="tavily",
+                  tavily_api_key="k-test")
+        assert open_discovery_sources(off) == []
+
+    def test_the_durable_worker_reads_the_live_settings_object(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """(F) The in-process worker and the API share ONE settings object, read at call
+        time: no module snapshots it, so a restart (a new process reading the new app
+        settings) is the only way configuration changes — and both see the change."""
+        import app.core.config as config_mod
+        import app.services.jobs.discovery_research_job as job_mod
+        import app.services.market_discovery_service as svc_mod
+
+        assert svc_mod.settings is config_mod.settings
+        assert not hasattr(job_mod, "settings"), "the job must import settings at call time"
+        monkeypatch.setattr(config_mod.settings, "v3_dynamic_discovery_enabled", True)
+        monkeypatch.setattr(config_mod.settings, "v3_discovery_web_search_enabled", True)
+        monkeypatch.setattr(config_mod.settings, "v3_web_search_enabled", True)
+        monkeypatch.setattr(config_mod.settings, "v3_web_search_provider", "tavily")
+        monkeypatch.setattr(config_mod.settings, "tavily_api_key", "k-test")
+        monkeypatch.setattr(config_mod.settings, "v3_deepseek_search_enabled", False)
+        assert svc_mod.open_discovery_sources() == ["web_search:tavily"]
+        monkeypatch.setattr(config_mod.settings, "tavily_api_key", "")
+        assert svc_mod.open_discovery_sources() == []
+        # A fresh process reads the environment: the restart path.
+        monkeypatch.setenv("V3_WEB_SEARCH_PROVIDER", "tavily")
+        assert config_mod.Settings().v3_web_search_provider == "tavily"

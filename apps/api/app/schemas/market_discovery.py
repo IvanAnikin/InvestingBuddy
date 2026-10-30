@@ -511,6 +511,9 @@ class ParseThesisResponse(BaseModel):
     discovery_intent: dict | None = None
     # V3.19.6 — whether open external company discovery would run for this thesis.
     dynamic_discovery_enabled: bool = False
+    # Which sources beyond the registries would run: ``web_search:<provider>`` and/or
+    # ``model_recall``. Empty → only the registries are screened, whatever the flag says.
+    open_discovery_sources: list[str] = Field(default_factory=list)
     disclaimer: str = INTERNAL_DISCLAIMER
 
 

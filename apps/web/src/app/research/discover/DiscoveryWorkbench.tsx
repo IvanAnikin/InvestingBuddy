@@ -364,6 +364,7 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
             <DiscoveryIntentPanel
               intent={detected.discovery_intent}
               openDiscovery={detected.dynamic_discovery_enabled ?? null}
+              openDiscoverySources={detected.open_discovery_sources ?? null}
             />
           )}
 

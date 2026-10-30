@@ -244,7 +244,7 @@ async def test_no_provider_means_registry_only_and_says_so():
         external=True,
     )
     assert stage.external_available is False
-    assert stage.warnings and "unavailable" in stage.warnings[0]
+    assert stage.warnings and "model-recall company discovery is off" in stage.warnings[0]
 
 
 # ── units ──────────────────────────────────────────────────────────────────── #

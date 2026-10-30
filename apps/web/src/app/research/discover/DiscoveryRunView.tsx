@@ -12,6 +12,7 @@ import RunLimitations from "@/components/research/discovery/RunLimitations";
 import { splitWarningSubjects } from "@/components/research/discovery/candidateView";
 import { useDiscoveryCouncil } from "@/components/research/discovery/useDiscoveryCouncil";
 import { progressWords } from "@/components/research/discovery/webEvidenceView";
+import { runCountParts } from "@/components/research/discovery/v319View";
 import {
   buildResearchLinkState,
   NO_RESEARCH_LINK,
@@ -378,9 +379,7 @@ export default function DiscoveryRunView({
                 {run.thesis_text ?? "Discovery run"}
               </p>
               <p className="mt-1 text-xs text-[color:var(--ib-ink-3)]">
-                {runStateLabel(run)} · {run.processed_count} of{" "}
-                {run.universe_count} screened · {run.candidate_count} candidate
-                {run.candidate_count === 1 ? "" : "s"}
+                {[runStateLabel(run), ...runCountParts(run)].join(" · ")}
                 {run.error_count > 0 ? ` · ${run.error_count} error(s)` : ""}
               </p>
               {/* Open-web W8b: the job's stage in plain words (never the raw stage name). */}
@@ -458,7 +457,9 @@ export default function DiscoveryRunView({
       {cohortWarningGroups.length > 0 && (
         <RunLimitations
           groups={cohortWarningGroups}
-          rawCount={run?.warning_raw_count ?? run?.warnings?.length ?? 0}
+          // The occurrences of the groups shown here — not of every stored warning,
+          // informational ones included, which would not add up to what the reader sees.
+          rawCount={cohortWarningGroups.reduce((n, g) => n + g.count, 0)}
         />
       )}
 

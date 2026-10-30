@@ -16,6 +16,16 @@ import type { DiscoveryWarningGroup } from "@/types/api";
  * original wording stays available, and the count of collapsed instances is
  * shown.
  */
+/**
+ * "Original wording" shows what a grouped message replaced. A sample identical to
+ * the message (or blank) adds nothing, so a group with no differing sample has no
+ * such section at all — never an empty or repeated one.
+ */
+function originalWording(g: DiscoveryWarningGroup): string[] {
+  const message = g.message.trim();
+  return g.samples.filter((sample) => sample.trim() && sample.trim() !== message);
+}
+
 export default function RunLimitations({
   groups,
   rawCount,
@@ -87,13 +97,13 @@ export default function RunLimitations({
                 Affects {g.subjects.join(", ")}
               </p>
             )}
-            {g.samples.length > 0 && (
-              <details className="mt-1.5 text-xs text-[color:var(--ib-ink-3)]">
+            {originalWording(g).length > 0 && (
+              <details className="mt-1.5 text-xs text-[color:var(--ib-ink-3)]" data-testid="run-limitation-original">
                 <summary className="cursor-pointer list-none underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink-2)]">
                   Original wording
                 </summary>
                 <ul className="mt-1.5 space-y-1">
-                  {g.samples.map((sample, i) => (
+                  {originalWording(g).map((sample, i) => (
                     <li key={i} className="ib-breakable leading-relaxed">
                       {sample}
                     </li>

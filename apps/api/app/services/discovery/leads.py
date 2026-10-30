@@ -311,8 +311,9 @@ async def discover_leads(
         return LeadDiscoveryResult(
             available=False,
             warnings=[
-                "external company discovery is unavailable: no external research provider "
-                "is configured and enabled (a statement about this platform, not the web)"
+                "model-recall company discovery is off: no research-model provider is "
+                "configured and enabled (a statement about this platform, not the web; "
+                "a live web search, when it ran, is reported separately)"
             ],
         )
     queries = plan_lead_queries(

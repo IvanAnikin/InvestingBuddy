@@ -226,6 +226,7 @@ async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisRespon
     return ParseThesisResponse(
         discovery_intent=intent.to_dict(),
         dynamic_discovery_enabled=svc.dynamic_discovery_enabled(),
+        open_discovery_sources=svc.open_discovery_sources(),
         themes=parsed.themes,
         region=parsed.region,
         country=parsed.country,
