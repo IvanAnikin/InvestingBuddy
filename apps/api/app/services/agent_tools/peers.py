@@ -203,7 +203,7 @@ async def _dynamic_peers(
         return {"items": cached[1].get("items", []), "gaps": cached[1].get("gaps", [])}
     try:
         from app.services.agents.routing import research_provider_for
-        from app.services.discovery.identity import dedup_key, verify_identity
+        from app.services.discovery.identity import PRIMARY_GIVEN, dedup_key, verify_identity
         from app.services.discovery.leads import LeadQuery, _ask, parse_company_leads
         from app.services.exchange_registry import is_sec_eligible
 
@@ -239,7 +239,9 @@ async def _dynamic_peers(
     for lead in leads[: MAX_DYNAMIC_PEERS * 2]:
         if len(items) >= MAX_DYNAMIC_PEERS:
             break
-        outcome = await verify_identity(lead, cfg=cfg)
+        # The venue the model named stays the peer's listing: a Nasdaq ADS line is the one
+        # whose SEC financials are comparable here (ADR-061).
+        outcome = await verify_identity(lead, cfg=cfg, primary=PRIMARY_GIVEN)
         key = dedup_key(outcome.ticker, outcome.exchange)
         if not outcome.verified or key in seen:
             rejected += int(not outcome.verified)

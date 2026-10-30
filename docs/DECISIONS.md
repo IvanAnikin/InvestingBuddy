@@ -4258,3 +4258,64 @@ was not stale.
 ### Not changed
 Admission rules, verification, screening and the thesis itself. With model recall off there is still no screening
 investigation; the run says so instead of implying it ran.
+
+---
+
+## ADR-061: One Issuer, Several Listed Securities (Dual / Multi-Venue Listings)
+
+**Date:** 2026-10-30 · **Status:** Accepted (implementation)
+**Trigger:** owner rerun `6f8861c5` ("European biotechnology companies"): Cellectis
+(Euronext Growth `ALCLS`, Nasdaq ADS `CLLS`) was rejected as "SEC company tickers and exchanges
+lists CLLS on US as 'Cellectis S.A.', not 'ALCLS'".
+
+### Context
+The press release Tavily returned prints `Cellectis (the "Company") (Euronext Growth: ALCLS –
+NASDAQ: CLLS)`. The mention extractor read each `VENUE: TICKER` match on its own. The name before
+the first match was lost behind the `(the "Company")` alias, and the second match took the
+first ticker as its company name. That produced ONE lead: name "ALCLS", ticker CLLS, venue
+NASDAQ. Identity verification knew one ticker per lead and checked it on that venue's list. The
+SEC row's name disagreed, so the lead was rejected. The model had no notion of an issuer
+separate from a listing, so "a European company whose ADS trades in New York" could only be one
+of the two. The geography constraint read the listing venue's country.
+
+### Decision
+1. **Issuer ≠ security.** `IdentityOutcome` gains `issuer` (legal name, domicile country,
+   domicile basis and source, how the lines were linked) and `securities` (ticker, exchange,
+   MIC, ISIN, currency, listing country, verified/not_verified, role primary/secondary/unlinked,
+   form ordinary/foreign_listing/unknown, surfaced). Both are absent for a plain single listing,
+   so V3.19 records are unchanged. `CompanyLead.securities` carries every listing a source
+   printed. Tickers are never collapsed; a security's key is `(venue, ticker)`.
+2. **Venue-aware verification.** Each security is verified on its own venue's directory.
+   `ALCLS` on Euronext Growth is verified on the Euronext list, `CLLS` on Nasdaq on the SEC
+   list. One failing line never rejects its siblings.
+3. **Linking needs strong evidence.** Lines are one issuer when one source printed them as
+   one company's listings, the exchanges' names agree, and no line's own authoritative record
+   states a different domicile. A lone foreign line (a Nasdaq ADS) gains its home listing only
+   when the SEC registrant record states a non-US domicile, that country's exchange lists the
+   **exact** same name, and that row's ISIN (where printed) is from that country. A name alone
+   never links.
+4. **Domicile, not venue, is the issuer's geography.** Sources, in order: the ISIN prefix of a
+   verified line, then the SEC registrant's `stateOfIncorporation` (a two-letter code is a US
+   state). The geography constraint, the shortlist `country` and the `region` use it; the
+   venue's own country stays in `identity.listing_country`.
+5. **Primary listing.** The home-country line leads (`primary="home"`, discovery). A venue a
+   caller chose wins (`primary="given"`). The peer tool uses it, because a peer named on Nasdaq
+   is the line whose SEC financials are comparable.
+6. **Extraction.** Consecutive `VENUE: TICKER` matches separated only by a dash, slash, comma,
+   "and" (and its de/fr/es/it/pt/nordic forms) or adjacent parentheses, on **different** venues,
+   are one company's listings. The name before them skips up to two alias parentheticals. Two
+   tickers on the same venue are never one issuer.
+7. **Dedup.** Two leads that resolve to one issuer are one candidate. The later one is recorded
+   as a duplicate: "the same issuer's other listing".
+8. Dotted legal forms (`S.A.`, `N.V.`, `S.p.A.`) normalise as one word, so `Cellectis S.A.`
+   matches the exchange's `CELLECTIS`.
+
+### Not changed / known limits
+- No issuer name, alias or ticker map is added.
+- LEI/GLEIF is not consulted.
+- An issuer whose home exchange is not in its domicile country (argenx: Dutch SE on Euronext
+  Brussels) gains no home sibling unless a source prints both lines.
+- The SEC domicile is read only for SEC registrants.
+- ISINs are printed by the Euronext list only; on other venues the name and registrant
+  domicile carry the link.
+

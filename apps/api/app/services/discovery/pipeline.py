@@ -34,12 +34,14 @@ from app.services.discovery.identity import (
     dedup_key,
     normalise_venue,
     normalised_name,
+    observed_securities,
     platform_identity,
     verify_identity,
 )
 from app.services.discovery.intent import DiscoveryIntent
 from app.services.discovery.leads import CompanyLead, _bounded, discover_leads
 from app.services.discovery.screening import ScreeningResult, screen_issuers
+from app.services.exchange_registry import region_for_country
 
 STAGE_KEY = "dynamic"
 HARD_MAX_VERIFIED = 40
@@ -394,13 +396,17 @@ async def evaluate(
     """Constraint results + eligibility for one issuer. Deterministic given its inputs."""
     results = [cons.verify_listing(identity.identity_record())]
     listing_source = identity.listing_source
+    # ADR-061 — the issuer's DOMICILE (an ordinary-share ISIN, the regulator's record) is
+    # its geography; a page-read headquarters is used only when no domicile is known.
+    domicile = identity.domicile_country
     results.append(
         cons.verify_geography(
             intent.geography,
             listing_country=identity.listing_country,
             listing_source=listing_source,
-            hq_country=screening.hq_country if screening else None,
-            hq_source=screening.hq_source if screening else None,
+            hq_country=domicile or (screening.hq_country if screening else None),
+            hq_source=identity.domicile_source if domicile
+            else (screening.hq_source if screening else None),
         )
     )
     results.append(
@@ -583,6 +589,14 @@ async def run_dynamic_stage(
     for lead in [*leads, *web_leads, *external_leads]:
         venue = normalise_venue(lead.exchange_raw) or (lead.exchange_raw or None)
         key = dedup_key(lead.ticker, venue)
+        # ADR-061 — a lead naming several listings of one issuer duplicates a lead on ANY
+        # of them (a registry ``SAN`` on Paris and a search ``SNY`` on Nasdaq are one).
+        if lead.securities:
+            for sec_ticker, sec_venue in observed_securities(lead):
+                other = dedup_key(sec_ticker, normalise_venue(sec_venue) or sec_venue)
+                if other and other in seen_keys:
+                    key = other
+                    break
         name_key = normalised_name(lead.name)
         if lead.discovery_mode == "search":
             # A1, BEFORE any verification is spent: a lead labelled ``search`` must show an
@@ -633,6 +647,11 @@ async def run_dynamic_stage(
         if key:
             seen_keys.add(key)
             first_by_key[key] = lead
+        for sec_ticker, sec_venue in (observed_securities(lead) if lead.securities else []):
+            other = dedup_key(sec_ticker, normalise_venue(sec_venue) or sec_venue)
+            if other:
+                seen_keys.add(other)
+                first_by_key.setdefault(other, lead)
         if name_key:
             seen_names.add(name_key)
             first_by_name[name_key] = lead
@@ -777,6 +796,15 @@ async def run_dynamic_stage(
                 surfaced_by=((outcome.lead.web or {}).get("surfaced_by") or []),
             )
             _attach_admission(outcome.lead, recall_decision.to_dict())
+        if outcome.verified:
+            primary_key = dedup_key(outcome.ticker, outcome.exchange)
+            if primary_key and primary_key in {dedup_key(i.ticker, i.exchange)
+                                               for i in identities}:
+                # Its home listing (ADR-061) is already a candidate of this run.
+                outcome.status = IDENTITY_REJECTED
+                outcome.rejection_reason = REJECT_DUPLICATE
+                outcome.detail = (f"{outcome.ticker} on {outcome.exchange} is already in this "
+                                  "run (the same issuer's other listing)")
         (identities if outcome.verified else stage.rejected).append(outcome)
     if web_on:
         # Leads beyond the verification bound were never verified: record why.
@@ -801,6 +829,7 @@ async def run_dynamic_stage(
         geo = cons.verify_geography(
             intent.geography, listing_country=identity.listing_country,
             listing_source=identity.listing_source,
+            hq_country=identity.domicile_country, hq_source=identity.domicile_source,
         )
         claimed = cons.verify_geography(
             intent.geography, listing_country=identity.lead.country,
@@ -1773,8 +1802,12 @@ def universe_item(record: CandidateRecord, intent: DiscoveryIntent) -> dict[str,
             "ticker": identity.ticker,
             "exchange": identity.exchange,
             "company_name": identity.name,
-            "country": identity.listing_country or item.get("country"),
-            "region": identity.listing_region,
+            # The ISSUER's country (ADR-061): a French company whose only verified line is
+            # its Nasdaq ADS is French. The venue's own geography stays in ``v319.identity``.
+            "country": identity.domicile_country or identity.listing_country
+            or item.get("country"),
+            "region": region_for_country(identity.domicile_country)
+            or identity.listing_region,
             "theme": item.get("theme") or (intent.themes[0] if intent.themes else None),
             "matched_keywords": list((industry_result.value or {}).get("matched") or [])
             if industry_result and industry_result.value else [],

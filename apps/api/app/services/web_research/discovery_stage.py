@@ -1474,6 +1474,53 @@ class _Acc:
     domains: set[str] = field(default_factory=set)
     pages: set[str] = field(default_factory=set)
     first_query_text: str | None = None
+    #: ADR-061 — keys of the other listings printed WITH this one for the same issuer.
+    co_keys: set[str] = field(default_factory=set)
+    #: ``(ticker, venue_raw)`` of every security of this issuer, in the order observed.
+    securities: list[tuple[str | None, str | None]] = field(default_factory=list)
+
+
+def _merge_co_listed(accs: dict[str, _Acc]) -> dict[str, _Acc]:
+    """One lead per issuer: listings a source printed TOGETHER for one company are one
+    issuer with several securities (ADR-061). The first-seen listing leads; every listing
+    is kept as a security in the order observed and verified on its own venue."""
+    keys = list(accs)
+    parent = {k: k for k in keys}
+
+    def root(k: str) -> str:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    for key in keys:
+        for co in accs[key].co_keys:
+            if co in parent:
+                a, b = root(key), root(co)
+                if a != b:
+                    # The earlier-seen listing stays the group's representative.
+                    first, second = sorted((a, b), key=keys.index)
+                    parent[second] = first
+    out: dict[str, _Acc] = {}
+    for key in keys:
+        acc = accs[key]
+        head = out.get(root(key))
+        if head is None:
+            out[root(key)] = acc
+            if acc.ticker:
+                acc.securities = [(acc.ticker, acc.venue_raw)]
+            continue
+        if acc.ticker and (acc.ticker, acc.venue_raw) not in head.securities:
+            head.securities.append((acc.ticker, acc.venue_raw))
+        head.name = _better_name(head.name, acc.name)
+        head.isin = head.isin or acc.isin
+        head.mentions.extend(acc.mentions)
+        for sighting in acc.sightings:
+            if sighting["url"] not in head.pages:
+                head.pages.add(sighting["url"])
+                head.sightings.append(sighting)
+        head.domains |= acc.domains
+    return out
 
 
 def _identity_evidence_url(
@@ -1592,6 +1639,8 @@ async def _build_leads(
                 acc.sightings.append(sighting)
             acc.domains.add(page.domain)
             acc.mentions.append(_mention_entry(page, mention, evidence_id, ref, sighting))
+            for co_venue, co_ticker in mention.co_listings:
+                acc.co_keys.add(f"{fold(co_venue or '')}:{co_ticker.upper()}")
 
     # An ISIN-only or name+venue mention joins the ticker-keyed lead of the same company.
     by_name = {normalised_name(a.name): a for a in accs.values() if a.ticker}
@@ -1608,6 +1657,7 @@ async def _build_leads(
             target.domains |= acc.domains
             continue
         merged[key] = acc
+    merged = _merge_co_listed(merged)
 
     def score(a: _Acc) -> tuple[Any, ...]:
         a3 = sum(1 for m in a.mentions if m["theme_terms"])
@@ -1618,6 +1668,16 @@ async def _build_leads(
     if finder is None:
         from app.services.discovery.directories import find_listing as finder
 
+    async def _euronext_market(name: str, ticker: str | None, venue_raw: str | None) -> str | None:
+        # A generic "Euronext"/"Euronext Growth" mention does not say WHICH Euronext
+        # market: the directory of each decides, deterministically, in a fixed order.
+        if ticker and venue_raw and venue_raw.lower() in ("euronext", "euronext growth"):
+            for code in EURONEXT_VENUES:
+                row, _reason = await finder(name=name, ticker=ticker, venue=code, cfg=cfg)
+                if row is not None:
+                    return code
+        return venue_raw
+
     leads: list[CompanyLead] = []
     resolutions = 0
     for acc in ordered:
@@ -1625,15 +1685,13 @@ async def _build_leads(
         venue_raw: str | None = acc.venue_raw
         if not venue_raw and acc.isin:
             venue_raw = ce.ISIN_COUNTRY_VENUE.get(acc.isin[:2])
-        # A generic "Euronext"/"Euronext Growth" mention does not say WHICH Euronext
-        # market: the directory of each decides, deterministically, in a fixed order.
-        low = (venue_raw or "").lower()
-        if ticker and venue_raw and low in ("euronext", "euronext growth"):
-            for code in EURONEXT_VENUES:
-                row, _reason = await finder(name=acc.name, ticker=ticker, venue=code, cfg=cfg)
-                if row is not None:
-                    venue_raw = code
-                    break
+        venue_raw = await _euronext_market(acc.name, ticker, venue_raw)
+        securities: list[dict[str, Any]] | None = None
+        if len(acc.securities) > 1:
+            securities = []
+            for sec_ticker, sec_venue in acc.securities:
+                resolved = await _euronext_market(acc.name, sec_ticker, sec_venue)
+                securities.append({"ticker": sec_ticker, "venue_raw": resolved})
         if not ticker and venue_raw and resolutions < MAX_TICKER_RESOLUTIONS:
             resolutions += 1
             venue_code = normalise_venue(venue_raw)
@@ -1677,6 +1735,7 @@ async def _build_leads(
                 provider=str(provider_name) if provider_name else None,
                 discovery_mode="search",
                 web=block,
+                securities=securities,
             )
         )
     summary["mentions"] = {

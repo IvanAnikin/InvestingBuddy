@@ -884,6 +884,27 @@ export interface DiscoveryWebSummary {
   };
 }
 
+/** ADR-061 — the legal entity, kept apart from any one listed security of it. */
+export interface DiscoveryIssuer {
+  legal_name: string | null;
+  domicile_country: string | null;
+  domicile_basis?: string | null;
+  linked_by?: string | null;
+}
+
+/** One listed security of an issuer, verified on its OWN venue. */
+export interface DiscoverySecurity {
+  ticker: string;
+  exchange: string | null;
+  isin?: string | null;
+  listing_country?: string | null;
+  status: "verified" | "not_verified";
+  role?: "primary" | "secondary" | "unlinked";
+  security_form?: "ordinary" | "foreign_listing" | "unknown";
+  surfaced?: boolean;
+  reason?: string | null;
+}
+
 export interface DiscoveryCandidateRecord {
   schema: "discovery_candidate/1";
   identity: {
@@ -893,6 +914,10 @@ export interface DiscoveryCandidateRecord {
     name: string | null;
     listing_country?: string | null;
     listing_source?: { url?: string | null; tier?: string | null; basis?: string } | null;
+    // ADR-061 — the issuer behind the listing, and every listed security of it the run saw
+    // or found. Absent for a single listing with no issuer evidence.
+    issuer?: DiscoveryIssuer | null;
+    securities?: DiscoverySecurity[];
   };
   provenance: {
     discovery_source: "external_search" | "curated_registry" | "platform_registry" | string;

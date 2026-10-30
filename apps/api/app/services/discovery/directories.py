@@ -139,6 +139,7 @@ _SAFE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,11}$")
 def reset_cache() -> None:
     """Forget every cached directory and failure (tests; a manual refresh)."""
     _CACHE.clear()
+    _DOMICILE_CACHE.clear()
     _FAILED_AT.clear()
     _LOCKS.clear()
 
@@ -538,6 +539,53 @@ async def sec_public_float(
     if (datetime.now(timezone.utc).date() - as_of).days > MAX_FLOAT_AGE_DAYS:
         return None
     return float(latest["val"]), as_of.isoformat(), url
+
+
+#: CIK → (country, url) or None, for today: one submissions read per registrant per day.
+_DOMICILE_CACHE: dict[tuple[str, str], tuple[str, str] | None] = {}
+_US_STATE_CODE = re.compile(r"^[A-Z]{2}$")
+
+
+async def sec_registrant_domicile(
+    cik: str | None, *, cfg: Any = None, fetcher: Any = None
+) -> tuple[str, str] | None:
+    """(country, source URL) of an SEC registrant's incorporation, or None.
+
+    ``stateOfIncorporation`` is a US state's two-letter code, or an EDGAR foreign code
+    (a letter and a digit: ``I0`` France) with ``stateOfIncorporationDescription`` naming
+    the country. The registrant's own filing record — a domicile, not a trading venue.
+    """
+    from app.services.discovery.identity import ISO2_COUNTRY
+    from app.services.sources.document_fetcher import safe_fetch_document
+
+    if not cik or not str(cik).isdigit():
+        return None
+    key = (str(int(cik)), _today())
+    if key in _DOMICILE_CACHE:
+        return _DOMICILE_CACHE[key]
+    url = f"https://{SEC_DATA_HOST}/submissions/CIK{int(cik):010d}.json"
+    try:
+        result = await (fetcher or safe_fetch_document)(
+            url, allowed_domains=(SEC_DATA_HOST,), cfg=cfg, resolve_ip=True,
+            extra_text_content_types=("application/json",),
+        )
+        content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+        data = json.loads(content) if content else None
+    except Exception:  # noqa: BLE001 - an unreadable record is no verdict (not cached)
+        return None
+    if not isinstance(data, dict):
+        return None
+    code = str(data.get("stateOfIncorporation") or "").strip().upper()
+    described = str(data.get("stateOfIncorporationDescription") or "").strip()
+    country: str | None = None
+    if _US_STATE_CODE.match(code):
+        country = "United States"
+    elif code and described:
+        names = {v.lower(): v for v in ISO2_COUNTRY.values()}
+        country = names.get(described.lower()) or described.title()
+    found = (country, url) if country else None
+    _DOMICILE_CACHE[key] = found
+    return found
 
 
 async def euronext_admitted_shares(
