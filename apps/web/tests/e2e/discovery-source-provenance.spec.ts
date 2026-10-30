@@ -113,7 +113,7 @@ test.describe("Discovery — which source ran, and which source named each compa
   test("the run's address survives a reload", async ({ page }) => {
     await run(page, BIO);
     const url = page.url();
-    expect(url).toMatch(/\/research\/discover\/77777777-0000-0000-0000-0000000000b1$/);
+    expect(url).toMatch(/\/research\/discover\/77777777-0000-0000-0000-0000000000c1$/);
     await page.reload();
     await expect(page.getByTestId("discovery-run-state")).toContainText(BIO);
     await expect(page.getByTestId("discovery-rejected-item")).toHaveCount(9);

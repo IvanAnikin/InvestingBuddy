@@ -11,9 +11,9 @@
 export const BIO_THESIS = "European biotechnology companies";
 export const BIO_LEGACY_THESIS = "European biotechnology companies (stored before the fix)";
 export const RECALL_ONLY_THESIS = "Nordic biotechnology companies";
-export const BIO_RUN_ID = "77777777-0000-0000-0000-0000000000b1";
-export const BIO_LEGACY_RUN_ID = "77777777-0000-0000-0000-0000000000b0";
-export const RECALL_ONLY_RUN_ID = "77777777-0000-0000-0000-0000000000b2";
+export const BIO_RUN_ID = "77777777-0000-0000-0000-0000000000c1";
+export const BIO_LEGACY_RUN_ID = "77777777-0000-0000-0000-0000000000c0";
+export const RECALL_ONLY_RUN_ID = "77777777-0000-0000-0000-0000000000c2";
 
 export const BIO_OPEN_DISCOVERY_SOURCES = ["web_search:tavily"];
 
