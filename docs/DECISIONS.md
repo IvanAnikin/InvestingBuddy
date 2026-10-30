@@ -4222,3 +4222,39 @@ refuses automated reads (robots / 403 / captcha / JS), and a blocked site ended 
   machine and should be re-checked against the same terms. AIM Rule 11/26 announcements are generally not in the FCA
   NSM. **Owner decision needed:** an LSEG licence/API agreement.
 * Both venues are therefore recorded as `no_regulated_source_for_venue`, never guessed or approximated.
+
+
+## ADR-060: Discovery Source Provenance and One Count Model
+
+**Date:** 2026-10-30 · **Status:** Accepted (implementation)
+**Trigger:** owner test of production run `7cce7dcd` ("European biotechnology companies")
+
+### Context
+The run's Tavily search executed (20 queries, 52 results, 10 companies named), but the page said "Open company
+discovery was unavailable", the limitation said "no external research provider is configured and enabled", the
+header said "0 of 0 screened" beside "12 companies considered", and the nine unverified names sat under collapsed
+toggles. Cause: `StageResult.external_discovery` was set from `discover_leads` alone — the **model-recall** source,
+gated by `V3_DEEPSEEK_SEARCH_ENABLED` (off since 2026-10-25). The web-search stage is a separate source and never fed
+that field. The header counted the per-company scan of the shortlist (`processed_count of universe_count`), which is
+0/0 whenever nothing is returned. API and the durable worker share one in-process `Settings` object; configuration
+was not stale.
+
+### Decision
+1. `external_discovery` is the union: `available` when model recall **or** a live web search (`ok` / degraded) ran.
+2. Web-search runs store `lead_sources` (web search: state, provider, executed queries, results seen, companies
+   named; model recall: ran/unavailable; screening investigation: ran/not_needed/unavailable) and an `origin`
+   (`web_search` | `model_recall` | `curated_registry` | `platform_registry`) on every rejected lead. The page never
+   labels a model suggestion as a web-search find. Flag-off (V3.19) payloads are byte-identical.
+3. One count model, in funnel order: considered → listing verified → checked against the requirements
+   (`checked_against_requirements`) → met every requirement → returned. The header leads with the funnel and shows
+   the shortlist scan only when a shortlist exists.
+4. Stored runs keep their warning text; the read-time grouper relabels the old sentence as `MODEL_RECALL_OFF`
+   (informational). "Original wording" is shown only when a sample differs from the grouped message.
+5. The pre-run line names the sources that will run (`open_discovery_sources`, from live settings), not only the
+   `V3_DYNAMIC_DISCOVERY_ENABLED` flag.
+6. When a run returns nothing, the excluded and not-verified lists open by default; each row shows name, listing
+   (ticker · venue) when known, origin and a plain-language reason.
+
+### Not changed
+Admission rules, verification, screening and the thesis itself. With model recall off there is still no screening
+investigation; the run says so instead of implying it ran.

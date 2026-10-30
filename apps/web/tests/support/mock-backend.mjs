@@ -27,6 +27,11 @@ import {
   w6bCandidates,
 } from "./w6b-fixtures.mjs";
 import {
+  BIO_OPEN_DISCOVERY_SOURCES,
+  PROVENANCE_RUNS,
+  provenanceRun,
+} from "./provenance-fixtures.mjs";
+import {
   W8B_INTENT,
   W8B_REPORT_ID,
   W8B_RUN_ID,
@@ -1324,6 +1329,12 @@ const THESIS_RUN_IDS = {
   // Open-web W8b: web-found, recall-corroborated, recall-demoted, identity-unverified and
   // theme-missing candidates, with a council review that carries per-dimension confidence.
   [W8B_THESIS]: W8B_RUN_ID,
+  // Source provenance and counts (owner test 2026-10-30): web search ran with model
+  // recall off and nothing returned — current and legacy stored shapes — and a
+  // recall-only run whose search was unavailable.
+  ...Object.fromEntries(
+    Object.entries(PROVENANCE_RUNS).map(([id, r]) => [r.thesis, id]),
+  ),
   // Two plain runs for the run-address tests (discovery-run-routes.spec.ts):
   // distinct theses so the page can be seen to show THE run its URL names.
   "Route test A: Nordic grid equipment suppliers":
@@ -4020,9 +4031,13 @@ const server = createServer((req, res) => {
           : t.includes("tungsten")
             ? W8B_INTENT
             : null;
+      const prov = Object.values(PROVENANCE_RUNS).find(
+        (r) => r.thesis.toLowerCase() === t,
+      );
       send(res, 200, {
-        discovery_intent: v319 ? V319_INTENT : w6b,
-        dynamic_discovery_enabled: v319 || w6b !== null,
+        discovery_intent: prov ? prov.intent : v319 ? V319_INTENT : w6b,
+        dynamic_discovery_enabled: prov !== undefined || v319 || w6b !== null,
+        ...(prov ? { open_discovery_sources: BIO_OPEN_DISCOVERY_SOURCES } : {}),
         themes,
         region,
         country,
@@ -4031,7 +4046,7 @@ const server = createServer((req, res) => {
         theme,
         confidence: needs_narrowing ? 0.1 : 0.9,
         extraction_source: "prompt_text",
-        needs_narrowing,
+        needs_narrowing: prov ? false : needs_narrowing,
         warnings: [],
         disclaimer: DISC,
       });
@@ -4241,6 +4256,9 @@ const server = createServer((req, res) => {
       return send(res, 200, { candidates: v319, total: v319.length, run_id: runId,
                               disclaimer: DISC });
     }
+    if (PROVENANCE_RUNS[runId]) {
+      return send(res, 200, { candidates: [], total: 0, run_id: runId, disclaimer: DISC });
+    }
     if (W6B_RUNS[runId]) {
       const w6b = w6bCandidates(mockCandidate, runId);
       return send(res, 200, { candidates: w6b, total: w6b.length, run_id: runId,
@@ -4353,6 +4371,9 @@ const server = createServer((req, res) => {
       return send(res, 404, { detail: "Discovery run not found (mock backend)" });
     }
     const base = mockThesisRun(runId, THESIS_BY_RUN_ID[runId] ?? "");
+    if (PROVENANCE_RUNS[runId]) {
+      return send(res, 200, provenanceRun(base, runId));
+    }
     if (runId === V319_RUN_ID) {
       base.parsed_thesis_json = { ...(base.parsed_thesis_json ?? {}), discovery_intent: V319_INTENT };
       base.universe_json = { items: [], excluded: [], source_summary: {}, warnings: [],

@@ -244,7 +244,7 @@ async def test_no_provider_means_registry_only_and_says_so():
         external=True,
     )
     assert stage.external_available is False
-    assert stage.warnings and "unavailable" in stage.warnings[0]
+    assert stage.warnings and "model-recall company discovery is off" in stage.warnings[0]
 
 
 # ── units ──────────────────────────────────────────────────────────────────── #
@@ -499,3 +499,27 @@ async def test_failed_or_unavailable_stage_is_not_reported_as_no_match(monkeypat
     run = await mds.process_run(db, run, extractor=_fake_extractor())
     assert run.status == "failed"
     assert any("could not run" in w for w in run.warnings)
+
+
+async def test_a_search_that_ran_but_verified_nobody_is_an_answer_not_a_failure(monkeypatch):
+    """ADR-060: the web search looked (state ok) with model recall off; no company it named
+    could be verified. That is an answer, worded as such — never "could not run"."""
+    from app.services.discovery import pipeline as pl
+
+    async def fake_stage(*_a, **_kw):
+        stage = pl.StageResult(external_available=True, web={"state": "ok"})
+        stage.funnel = {"raw_leads": 9, "verified_issuers": 0, "returned": 0}
+        return stage
+
+    monkeypatch.setattr(settings, "v3_dynamic_discovery_enabled", True)
+    monkeypatch.setattr(settings, "v3_deepseek_search_enabled", False)
+    monkeypatch.setattr(pl, "run_dynamic_stage", fake_stage)
+    db, _added = _db()
+    run = await mds.create_pending_thesis_run(
+        db, ThesisDiscoveryRunCreate(
+            thesis_text="gallium producers in Oceania", provider_name="free_real")
+    )
+    run = await mds.process_run(db, run, extractor=_fake_extractor())
+    assert run.status == "completed_with_warnings"
+    assert not any("could not run" in w for w in run.warnings)
+    assert any("could be verified as a listed issuer" in w for w in run.warnings)

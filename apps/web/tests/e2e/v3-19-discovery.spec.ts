@@ -62,7 +62,7 @@ test.describe("V3.19 — verified candidates", () => {
       "23 companies considered",
     );
     await expect(page.getByTestId("discovery-funnel")).toContainText(
-      "11 verified public issuers",
+      "11 listing verified",
     );
     const excluded = page.getByTestId("discovery-excluded");
     await excluded.locator("summary").click();

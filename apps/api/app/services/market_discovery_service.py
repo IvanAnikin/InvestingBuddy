@@ -1066,17 +1066,26 @@ async def process_run(
         final_status = "failed"
         warnings.append(
             "Dynamic discovery could not run ("
-            + str(stage_record.get("error") or "no external research provider available")
+            + str(stage_record.get("error")
+                  or "no open-discovery source ran: neither web search nor model recall")
             + "), and the curated registry held no match. Nothing was screened."
         )
     elif processed == 0 and dynamic_ran and not universe:
         # Nothing met the hard constraints. That is an ANSWER, not a failure: the
         # excluded companies and rejected leads are on the run with their reasons.
         final_status = "completed_with_warnings"
-        warnings.append(
-            "No company met the thesis's hard constraints; see the excluded list. "
-            "Nothing was added to fill the shortlist."
-        )
+        if (stage_record.get("funnel") or {}).get("verified_issuers"):
+            warnings.append(
+                "No company met the thesis's hard constraints; see the excluded list. "
+                "Nothing was added to fill the shortlist."
+            )
+        else:
+            # The sources looked, but no company they named could be verified as listed —
+            # a different answer from "the verified ones failed a requirement".
+            warnings.append(
+                "No company named by this run's sources could be verified as a listed "
+                "issuer; see the not-verified list. Nothing was added to fill the shortlist."
+            )
     elif processed == 0:
         final_status = "failed"
     elif error_count >= processed:
@@ -1121,6 +1130,34 @@ async def process_run(
 def dynamic_discovery_enabled(cfg: Any | None = None) -> bool:
     """V3.19.4 — intent-driven external discovery. Off by default (spend + network)."""
     return bool(getattr(cfg or settings, "v3_dynamic_discovery_enabled", False))
+
+
+def open_discovery_sources(cfg: Any | None = None) -> list[str]:
+    """The sources beyond the registries a thesis run WOULD use, from live configuration.
+
+    ``web_search:<provider>`` when Discovery web search is on and a provider is usable
+    (selected and credentialed), ``model_recall`` when the research-model provider is
+    enabled and credentialed. Empty when dynamic discovery is off. Read on every call from
+    the process's settings — the in-process durable worker reads the same object — so the
+    page's "open discovery is on" line describes the configuration the run will see.
+    """
+    from app.integrations.search import web_search_provider_from_settings
+    from app.integrations.search.base import UnavailableSearchProvider
+    from app.services.agents.routing import research_provider_for
+
+    cfg = cfg or settings
+    if not dynamic_discovery_enabled(cfg):
+        return []
+    sources: list[str] = []
+    if getattr(cfg, "v3_discovery_web_search_enabled", False) and getattr(
+        cfg, "v3_web_search_enabled", False
+    ):
+        provider = web_search_provider_from_settings(cfg)
+        if provider is not None and not isinstance(provider, UnavailableSearchProvider):
+            sources.append(f"web_search:{getattr(provider, 'name', None) or 'unknown'}")
+    if research_provider_for(cfg) is not None:
+        sources.append("model_recall")
+    return sources
 
 
 def _eligibility_rank_key(candidate: DiscoveryCandidate) -> tuple:

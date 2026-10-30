@@ -77,7 +77,8 @@ test.describe("W6b — candidates found by live web search", () => {
     const rejected = page.getByTestId("discovery-rejected");
     await rejected.locator("summary").click();
     await expect(rejected).toContainText("Apex Metals");
-    await expect(rejected).toContainText("name mismatch with listing");
+    await expect(rejected).toContainText("name does not match the exchange's listing");
+    await expect(rejected).toContainText("web search");
   });
 });
 

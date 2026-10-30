@@ -266,7 +266,7 @@ were the curated registry's. Criterion A is therefore not met, and is not claime
    verified domain). Admitting search-found companies at the rate the brief expects needs a rule for
    trusting an issuer domain, e.g. registrable label equals the directory-verified name. That widens what
    a page can claim about a real company, so it was not made unilaterally.
-2. `V3_DEEPSEEK_SEARCH_ENABLED` is now **OFF** (set `false` 2026-10-25). Verified by run `9d519129`: `external_leads: 0`, the warning "external company discovery is unavailable", no `external_search`-labelled candidates, and the Tavily web stage still ran (19 web leads, 6 also surfaced). Note: with it off, a Discovery run has no model-generated universe additions (e.g. TSLA no longer arrives as an `external_search` lead; it still appears from the curated registry).
+2. `V3_DEEPSEEK_SEARCH_ENABLED` is now **OFF** (set `false` 2026-10-25). Verified by run `9d519129`: `external_leads: 0`, the warning "external company discovery is unavailable", no `external_search`-labelled candidates, and the Tavily web stage still ran (19 web leads, 6 also surfaced). Note: with it off, a Discovery run has no model-generated universe additions (e.g. TSLA no longer arrives as an `external_search` lead; it still appears from the curated registry). **Correction 2026-10-30 (ADR-060):** that warning described model recall only; the page wrongly showed it as "open company discovery unavailable" on runs whose web search ran. It now reads "model-recall company discovery is off", and `external_discovery` reflects every source.
 3. App-setting changes restart the app 5–8 minutes later; confirm the process start time, not `/health`.
 4. FCA NSM and ASX sources remain private-use only.
 
