@@ -1074,10 +1074,18 @@ async def process_run(
         # Nothing met the hard constraints. That is an ANSWER, not a failure: the
         # excluded companies and rejected leads are on the run with their reasons.
         final_status = "completed_with_warnings"
-        warnings.append(
-            "No company met the thesis's hard constraints; see the excluded list. "
-            "Nothing was added to fill the shortlist."
-        )
+        if (stage_record.get("funnel") or {}).get("verified_issuers"):
+            warnings.append(
+                "No company met the thesis's hard constraints; see the excluded list. "
+                "Nothing was added to fill the shortlist."
+            )
+        else:
+            # The sources looked, but no company they named could be verified as listed —
+            # a different answer from "the verified ones failed a requirement".
+            warnings.append(
+                "No company named by this run's sources could be verified as a listed "
+                "issuer; see the not-verified list. Nothing was added to fill the shortlist."
+            )
     elif processed == 0:
         final_status = "failed"
     elif error_count >= processed:

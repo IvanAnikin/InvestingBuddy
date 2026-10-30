@@ -383,7 +383,8 @@ export function leadSourceLines(stage: DiscoveryDynamicStage | null | undefined)
   }
   const recall = src?.model_recall;
   const recallNamed = recall?.companies_named ?? stage.funnel?.external_leads ?? 0;
-  const recallOn = recall ? recall.state === "ran" : stage.external_discovery === "available" && recallNamed > 0;
+  // Stored before `lead_sources`, `external_discovery` was set from model recall alone.
+  const recallOn = recall ? recall.state === "ran" : stage.external_discovery === "available";
   lines.push(
     recallOn
       ? `Model suggestions: ${recallNamed} compan${recallNamed === 1 ? "y" : "ies"} named, each checked against search and exchange lists`
