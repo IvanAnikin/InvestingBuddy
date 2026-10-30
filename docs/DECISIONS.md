@@ -4279,43 +4279,80 @@ separate from a listing, so "a European company whose ADS trades in New York" co
 of the two. The geography constraint read the listing venue's country.
 
 ### Decision
-1. **Issuer ≠ security.** `IdentityOutcome` gains `issuer` (legal name, domicile country,
-   domicile basis and source, how the lines were linked) and `securities` (ticker, exchange,
-   MIC, ISIN, currency, listing country, verified/not_verified, role primary/secondary/unlinked,
-   form ordinary/foreign_listing/unknown, surfaced). Both are absent for a plain single listing,
-   so V3.19 records are unchanged. `CompanyLead.securities` carries every listing a source
-   printed. Tickers are never collapsed; a security's key is `(venue, ticker)`.
-2. **Venue-aware verification.** Each security is verified on its own venue's directory.
-   `ALCLS` on Euronext Growth is verified on the Euronext list, `CLLS` on Nasdaq on the SEC
-   list. One failing line never rejects its siblings.
-3. **Linking needs strong evidence.** Lines are one issuer when one source printed them as
-   one company's listings, the exchanges' names agree, and no line's own authoritative record
-   states a different domicile. A lone foreign line (a Nasdaq ADS) gains its home listing only
-   when the SEC registrant record states a non-US domicile, that country's exchange lists the
-   **exact** same name, and that row's ISIN (where printed) is from that country. A name alone
-   never links.
-4. **Domicile, not venue, is the issuer's geography.** Sources, in order: the ISIN prefix of a
-   verified line, then the SEC registrant's `stateOfIncorporation` (a two-letter code is a US
-   state). The geography constraint, the shortlist `country` and the `region` use it; the
-   venue's own country stays in `identity.listing_country`.
-5. **Primary listing.** The home-country line leads (`primary="home"`, discovery). A venue a
-   caller chose wins (`primary="given"`). The peer tool uses it, because a peer named on Nasdaq
-   is the line whose SEC financials are comparable.
-6. **Extraction.** Consecutive `VENUE: TICKER` matches separated only by a dash, slash, comma,
-   "and" (and its de/fr/es/it/pt/nordic forms) or adjacent parentheses, on **different** venues,
-   are one company's listings. The name before them skips up to two alias parentheticals. Two
-   tickers on the same venue are never one issuer.
-7. **Dedup.** Two leads that resolve to one issuer are one candidate. The later one is recorded
-   as a duplicate: "the same issuer's other listing".
-8. Dotted legal forms (`S.A.`, `N.V.`, `S.p.A.`) normalise as one word, so `Cellectis S.A.`
+1. **Issuer ≠ security.**
+   - `IdentityOutcome` gains `issuer`: legal name, domicile country and its basis and source,
+     the regulator-recorded HQ country, and how the lines were linked.
+   - It also gains `securities`: ticker, exchange, MIC, ISIN, currency, listing country,
+     verified/not_verified, role primary/secondary/unlinked, form
+     ordinary/foreign_listing/unknown, and surfaced.
+   - `issuer` is present whenever a domicile is known. `securities` is present only when more
+     than one line is known. A listing with no issuer evidence keeps the V3.19 record shape.
+   - `CompanyLead.securities` carries every listing a source printed. Tickers are never
+     collapsed; a security's key is `(venue, ticker)`.
+2. **Venue-aware verification.**
+   - Each security is verified on its own venue's directory. `ALCLS` on Euronext Growth is
+     checked on the Euronext list, `CLLS` on Nasdaq on the SEC list.
+   - One failing line never rejects its siblings.
+3. **Linking needs strong evidence.**
+   - Co-printed lines are one issuer when all three hold: one source printed them as one
+     company's listings, the exchanges' names agree, and no line's own authoritative record
+     states a different domicile.
+   - A lone foreign line (a Nasdaq ADS) gains its home listing only when all three hold:
+     - the SEC registrant record places the issuer in a non-US country;
+     - that country's exchange lists the **exact** same name;
+     - that row's ISIN, where printed, is from that country.
+   - A name alone never links. Two leads with the same name on different listings are both
+     verified; a namesake is never dropped as a duplicate before verification.
+4. **Where the issuer is.**
+   - Domicile, in order:
+     - the ISIN prefix of a verified line;
+     - the SEC registrant's country of incorporation;
+     - the SEC registrant's business address.
+   - A US-prefixed ISIN on a non-US venue is a depositary receipt's and is ignored.
+   - EDGAR's incorporation field is not always right (Shell plc reads `DC`). A US state code
+     therefore counts only when the business address is not a foreign location.
+   - EDGAR country texts are mapped to the registry's names: "Canada (Federal Level)" and
+     "Ontario, Canada" become Canada, "Korea, Republic of" becomes South Korea.
+   - The business address is also kept as `hq_country`: NIO is incorporated in the Cayman
+     Islands and run from China.
+5. **Geography follows the issuer.**
+   - When a domicile is known, the geography constraint judges the issuer's domicile and HQ
+     (a screened HQ is kept, never replaced), not the venue. A Dutch issuer seen through its
+     Nasdaq line is "non-US".
+   - Without a domicile, the listing country and HQ are judged as before.
+   - The shortlist `country`/`region` follow the domicile. The venue's country stays in
+     `identity.listing_country`.
+6. **Primary listing.**
+   - Discovery uses `primary="home"`: the home-country line leads.
+   - A venue a caller chose wins (`primary="given"`), and no home-line scan is spent. The peer
+     tool uses it, because a peer named on Nasdaq is the line whose SEC financials are
+     comparable.
+   - Regulated-document reading (Path C) and the SEC official-domain lookup use a verified
+     linked US/ASX/LSE sibling line when the primary's venue has no regulated source.
+7. **Extraction.**
+   - Consecutive `VENUE: TICKER` matches are one company's listings only when all three hold:
+     - both sit inside parentheses (`(Euronext Growth: ALCLS – NASDAQ: CLLS)`,
+       `(LSE: PRE) (ASX: PM8)`);
+     - only a separator lies between them: a dash, slash, comma, semicolon, "and" (and its
+       de/fr/es/it/pt/nordic forms) or a parenthesis;
+     - their venues differ.
+   - A bare `NASDAQ: FOO, TSX: BAR` run is a list of companies.
+   - The name before a group skips up to two alias parentheticals.
+8. **Dedup.** Two leads that resolve to one issuer (any shared linked line) are one candidate.
+   The later one is recorded as a duplicate: "the same issuer's other listing".
+9. Dotted legal forms (`S.A.`, `N.V.`, `S.p.A.`) normalise as one word, so `Cellectis S.A.`
    matches the exchange's `CELLECTIS`.
+
+### Cost
+- One data.sec.gov submissions fetch per verified SEC registrant, cached per day.
+- Home-line scans reuse the cached exchange directories.
 
 ### Not changed / known limits
 - No issuer name, alias or ticker map is added.
 - LEI/GLEIF is not consulted.
-- An issuer whose home exchange is not in its domicile country (argenx: Dutch SE on Euronext
-  Brussels) gains no home sibling unless a source prints both lines.
-- The SEC domicile is read only for SEC registrants.
-- ISINs are printed by the Euronext list only; on other venues the name and registrant
+- Some issuers' home exchange is not in their domicile country (argenx: a Dutch SE on Euronext
+  Brussels). They gain no home sibling unless a source prints both lines.
+- UK registrants gain no home line, because the LSE lookup needs a ticker.
+- Only SEC registrants have a regulator-recorded domicile.
+- ISINs are printed by the Euronext list only. On other venues, the name and the registrant
   domicile carry the link.
-

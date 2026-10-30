@@ -889,6 +889,8 @@ export interface DiscoveryIssuer {
   legal_name: string | null;
   domicile_country: string | null;
   domicile_basis?: string | null;
+  // Where the regulator's record says the business is run (NIO: Cayman-incorporated, China).
+  hq_country?: string | null;
   linked_by?: string | null;
 }
 

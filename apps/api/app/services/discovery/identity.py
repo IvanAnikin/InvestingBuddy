@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -48,6 +49,8 @@ from app.services.exchange_registry import (
     get_exchange,
     region_for_exchange,
 )
+
+logger = logging.getLogger(__name__)
 
 IDENTITY_VERIFIED = "verified"
 IDENTITY_PLATFORM = "platform_registry"
@@ -410,6 +413,11 @@ class IdentityOutcome:
     def domicile_source(self) -> dict[str, Any] | None:
         return (self.issuer or {}).get("domicile_source")
 
+    @property
+    def hq_country(self) -> str | None:
+        """The regulator-recorded business address country, when known."""
+        return (self.issuer or {}).get("hq_country")
+
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["lead"] = self.lead.to_dict()
@@ -542,6 +550,7 @@ async def verify_identity(
         return await _resolve_issuer(lead, outcomes, cfg=cfg,
                                      fetcher=directory_fetcher or fetcher, primary=primary)
     except Exception:  # noqa: BLE001 - issuer linking enriches; it never loses a listing
+        logger.warning("issuer_resolution_failed securities=%d", len(outcomes), exc_info=True)
         first = next((o for o in outcomes if o.verified), outcomes[0])
         return first
 
@@ -567,10 +576,17 @@ def _security_row(outcome: IdentityOutcome, *, surfaced: bool) -> dict[str, Any]
 
 
 def _isin_country(outcome: IdentityOutcome) -> tuple[str, str] | None:
+    """(country, ISIN) when the line's ISIN states the issuer's domicile.
+
+    A US-prefixed ISIN on a non-US venue is a depositary receipt's (an LSE GDR carries its
+    US depositary bank's ISIN): it says where the RECEIPT was issued, not the company.
+    """
     isin = str((outcome.directory_listing or {}).get("isin") or "")
-    if _isin_valid(isin) and isin[:2] in ISO2_COUNTRY:
-        return ISO2_COUNTRY[isin[:2]], isin
-    return None
+    if not (_isin_valid(isin) and isin[:2] in ISO2_COUNTRY):
+        return None
+    if isin[:2] == "US" and outcome.listing_country != "United States":
+        return None
+    return ISO2_COUNTRY[isin[:2]], isin
 
 
 def _legal_name(names: list[str]) -> str | None:
@@ -593,7 +609,8 @@ async def _member_domicile(
 ) -> tuple[str, str, dict[str, Any]] | None:
     """(country, basis, source) of the issuer's legal domicile as ONE verified security
     states it: an ordinary-share ISIN's country prefix on the exchange's own list, else
-    the SEC registrant's state/country of incorporation. None when it states neither."""
+    the SEC registrant's country of incorporation, else its business address. None when it
+    states none. ``source["business_country"]`` carries the registrant's business address."""
     found = _isin_country(outcome)
     if found:
         country, isin = found
@@ -604,10 +621,15 @@ async def _member_domicile(
     if cik:
         from app.services.discovery.directories import sec_registrant_domicile
 
-        found_sec = await sec_registrant_domicile(cik, cfg=cfg, fetcher=fetcher)
-        if found_sec:
-            return found_sec[0], "the SEC registrant's state/country of incorporation", {
-                "url": found_sec[1], "tier": "regulator", "cik": str(cik)}
+        record = await sec_registrant_domicile(cik, cfg=cfg, fetcher=fetcher)
+        if record is not None:
+            source = {"url": record.url, "tier": "regulator", "cik": str(cik),
+                      "business_country": record.business}
+            if record.incorporation:
+                return (record.incorporation,
+                        "the SEC registrant's country of incorporation", source)
+            if record.business:
+                return record.business, "the SEC registrant's business address", source
     return None
 
 
@@ -639,16 +661,22 @@ async def _resolve_issuer(
     country = reference[0] if reference else None
     # Strong-identifier check: a security whose own authoritative record states ANOTHER
     # domicile is a different issuer that shares the name — never a sibling.
-    for outcome, sig in list(zip(linked, signals)):
+    members = list(zip(linked, signals))
+    for outcome, sig in members:
         if sig and country and sig[0] != country and outcome is not anchor:
-            linked.remove(outcome)
             unlinked.append(outcome)
+    members = [(o, sig) for o, sig in members if o not in unlinked]
+    linked = [o for o, _sig in members]
     # The ISIN on an ordinary-share line is the clearest statement of domicile.
-    chosen = next((sig for o, sig in zip(linked, signals) if sig and sig[0] == country
+    chosen = next((sig for _o, sig in members if sig and sig[0] == country
                    and "ISIN" in sig[1]), reference)
     basis, source = (chosen[1], chosen[2]) if chosen else (None, None)
+    # Where the regulator's record says the business is run (NIO: a Cayman company run
+    # from China) — a headquarters, kept apart from the legal domicile.
+    hq_country = next((sig[2].get("business_country") for _o, sig in members
+                       if sig and sig[2].get("business_country")), None)
     linked_by = "named together by one source; the exchanges' names agree"
-    if len(linked) == 1 and country:
+    if len(linked) == 1 and country and primary == PRIMARY_HOME:
         # A single verified line of a foreign issuer: its home listing, when the home
         # exchange's own list carries the same name AND (where it prints one) an ISIN
         # from the domicile country. Never on a name alone.
@@ -683,6 +711,7 @@ async def _resolve_issuer(
         "domicile_country": country,
         "domicile_basis": basis,
         "domicile_source": source,
+        "hq_country": hq_country,
         "linked_by": linked_by if len(linked) > 1 else None,
     }
     chosen_line.securities = rows if len(rows) > 1 else []

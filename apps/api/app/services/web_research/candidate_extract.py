@@ -573,12 +573,18 @@ def listing_name(text: str, start: int) -> str | None:
     return name
 
 
+def _in_parentheses(text: str, index: int) -> bool:
+    """True when ``index`` sits inside an open ``(`` on its line of text."""
+    return text.rfind("(", 0, index) > max(text.rfind(")", 0, index), text.rfind("\n", 0, index))
+
+
 def listing_groups(text: str, matches: list[re.Match[str]]) -> list[list[re.Match[str]]]:
     """Consecutive ``venue: ticker`` matches printed together for ONE issuer.
 
-    Two matches join a group only when nothing but separators lies between them
-    (``ALCLS – NASDAQ``, ``ABC; TSX: ABC``, ``) (``) and their venues differ: the same venue
-    twice is a list of different companies, never two lines of one.
+    Two matches join a group only when both are inside parentheses — the issuer's own
+    listing block, ``(Euronext Growth: ALCLS – NASDAQ: CLLS)`` or ``(LSE: PRE) (ASX: PM8)``
+    — nothing but separators lies between them, and their venues differ. The same venue
+    twice is a list of different companies; so is a bare ``NASDAQ: FOO, TSX: BAR`` run.
     """
     groups: list[list[re.Match[str]]] = []
     for m in matches:
@@ -586,7 +592,9 @@ def listing_groups(text: str, matches: list[re.Match[str]]) -> list[list[re.Matc
             prev = groups[-1][-1]
             gap = text[prev.end() : m.start()]
             venues = {fold(x.group("venue")) for x in groups[-1]}
-            if (len(gap) <= MAX_LISTING_GAP_CHARS and _LISTING_GAP_RE.match(gap)
+            if (_in_parentheses(text, prev.start("venue"))
+                    and _in_parentheses(text, m.start("venue"))
+                    and len(gap) <= MAX_LISTING_GAP_CHARS and _LISTING_GAP_RE.match(gap)
                     and fold(m.group("venue")) not in venues
                     and len(groups[-1]) < MAX_LISTINGS_PER_ISSUER):
                 groups[-1].append(m)

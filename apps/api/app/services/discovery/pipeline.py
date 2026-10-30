@@ -30,6 +30,7 @@ from app.services.discovery.identity import (
     REJECT_BUDGET,
     REJECT_DUPLICATE,
     REJECT_NO_LISTING_EVIDENCE,
+    ROLE_UNLINKED,
     IdentityOutcome,
     dedup_key,
     normalise_venue,
@@ -396,17 +397,19 @@ async def evaluate(
     """Constraint results + eligibility for one issuer. Deterministic given its inputs."""
     results = [cons.verify_listing(identity.identity_record())]
     listing_source = identity.listing_source
-    # ADR-061 — the issuer's DOMICILE (an ordinary-share ISIN, the regulator's record) is
-    # its geography; a page-read headquarters is used only when no domicile is known.
-    domicile = identity.domicile_country
+    # ADR-061 — the issuer's domicile (an ordinary-share ISIN, the regulator's record) and
+    # headquarters are its geography, each its own observation; the venue is not.
+    screened_hq = screening.hq_country if screening else None
     results.append(
         cons.verify_geography(
             intent.geography,
             listing_country=identity.listing_country,
             listing_source=listing_source,
-            hq_country=domicile or (screening.hq_country if screening else None),
-            hq_source=identity.domicile_source if domicile
-            else (screening.hq_source if screening else None),
+            hq_country=screened_hq or identity.hq_country,
+            hq_source=(screening.hq_source if screened_hq and screening
+                       else identity.domicile_source if identity.hq_country else None),
+            domicile_country=identity.domicile_country,
+            domicile_source=identity.domicile_source,
         )
     )
     results.append(
@@ -615,7 +618,17 @@ async def run_dynamic_stage(
                                     detail=a1_decision.detail or "")
                 )
                 continue
-        if (key and key in seen_keys) or (name_key and name_key in seen_names):
+        name_dup = bool(name_key and name_key in seen_names)
+        if name_dup and key:
+            # ADR-061: the same NAME on another listing is not yet the same issuer (a
+            # namesake, or the issuer's other line). Both are verified; one issuer's lines
+            # are merged after verification, a namesake never is.
+            named = first_by_name.get(name_key)
+            named_key = dedup_key(
+                named.ticker, normalise_venue(named.exchange_raw) or named.exchange_raw
+            ) if named is not None else None
+            name_dup = named_key is None or named_key == key
+        if (key and key in seen_keys) or name_dup:
             earlier = (first_by_key.get(key) if key else None) or first_by_name.get(name_key)
             if (lead.discovery_mode == "model_recall" and earlier is not None
                     and earlier.discovery_mode == "search"):
@@ -647,11 +660,6 @@ async def run_dynamic_stage(
         if key:
             seen_keys.add(key)
             first_by_key[key] = lead
-        for sec_ticker, sec_venue in (observed_securities(lead) if lead.securities else []):
-            other = dedup_key(sec_ticker, normalise_venue(sec_venue) or sec_venue)
-            if other:
-                seen_keys.add(other)
-                first_by_key.setdefault(other, lead)
         if name_key:
             seen_names.add(name_key)
             first_by_name[name_key] = lead
@@ -753,6 +761,22 @@ async def run_dynamic_stage(
         )
     unverifiable: list[IdentityOutcome] = []
     for outcome in verified_external:
+        if outcome.verified:
+            # ADR-061 — two leads that resolve to ONE issuer (a search's ``ALCLS`` and a
+            # recalled ``CLLS``) are one candidate; the later is the same issuer's other
+            # listing. Its own record keeps its provenance.
+            in_run = {k for i in identities for k in _issuer_keys(i)}
+            overlap = sorted(_issuer_keys(outcome) & in_run)
+            if overlap:
+                outcome.status = IDENTITY_REJECTED
+                outcome.rejection_reason = REJECT_DUPLICATE
+                outcome.detail = (f"{overlap[0]} is already in this run (the same issuer's "
+                                  "other listing)")
+                if web_on and outcome.lead.discovery_mode in ("search", "model_recall"):
+                    _attach_admission(outcome.lead,
+                                      {"state": "rejected", "codes": [REJECT_DUPLICATE]})
+                stage.rejected.append(outcome)
+                continue
         if web_on and outcome.lead.discovery_mode == "search":
             from app.services.discovery import admission as adm
 
@@ -796,15 +820,6 @@ async def run_dynamic_stage(
                 surfaced_by=((outcome.lead.web or {}).get("surfaced_by") or []),
             )
             _attach_admission(outcome.lead, recall_decision.to_dict())
-        if outcome.verified:
-            primary_key = dedup_key(outcome.ticker, outcome.exchange)
-            if primary_key and primary_key in {dedup_key(i.ticker, i.exchange)
-                                               for i in identities}:
-                # Its home listing (ADR-061) is already a candidate of this run.
-                outcome.status = IDENTITY_REJECTED
-                outcome.rejection_reason = REJECT_DUPLICATE
-                outcome.detail = (f"{outcome.ticker} on {outcome.exchange} is already in this "
-                                  "run (the same issuer's other listing)")
         (identities if outcome.verified else stage.rejected).append(outcome)
     if web_on:
         # Leads beyond the verification bound were never verified: record why.
@@ -829,7 +844,10 @@ async def run_dynamic_stage(
         geo = cons.verify_geography(
             intent.geography, listing_country=identity.listing_country,
             listing_source=identity.listing_source,
-            hq_country=identity.domicile_country, hq_source=identity.domicile_source,
+            hq_country=identity.hq_country,
+            hq_source=identity.domicile_source if identity.hq_country else None,
+            domicile_country=identity.domicile_country,
+            domicile_source=identity.domicile_source,
         )
         claimed = cons.verify_geography(
             intent.geography, listing_country=identity.lead.country,
@@ -1061,6 +1079,31 @@ def _strict_name_guard(outcome: IdentityOutcome) -> IdentityOutcome:
     )
 
 
+def _issuer_keys(identity: IdentityOutcome) -> set[str]:
+    """Every listing key of ONE issuer: its primary line and each verified sibling line
+    linked to it (never an ``unlinked`` one — a different company)."""
+    keys = {dedup_key(identity.ticker, identity.exchange)}
+    keys |= {
+        dedup_key(row.get("ticker"), row.get("exchange")) for row in identity.securities
+        if row.get("status") == "verified" and row.get("role") != ROLE_UNLINKED
+    }
+    return {k for k in keys if k}
+
+
+def _line_on(identity: IdentityOutcome, venues: tuple[str, ...]) -> tuple[str | None, str]:
+    """(ticker, venue) of the issuer's line on one of ``venues``: the primary when it trades
+    there, else a verified linked sibling (ADR-061 — a French issuer's Nasdaq ADS files with
+    the SEC). The primary when none does."""
+    venue = (identity.exchange or "").upper()
+    if venue in venues:
+        return identity.ticker, venue
+    for row in identity.securities:
+        if (row.get("status") == "verified" and row.get("role") != ROLE_UNLINKED
+                and (row.get("exchange") or "").upper() in venues):
+            return row.get("ticker"), (row.get("exchange") or "").upper()
+    return identity.ticker, venue
+
+
 def _attach_admission(lead: CompanyLead, decision: dict[str, Any]) -> None:
     lead.web = {**(lead.web or {}), "admission": decision}
 
@@ -1246,20 +1289,20 @@ async def _attach_regulated_passages(
     targets: list[tuple[Any, ...]] = []
     by_id: dict[str, IdentityOutcome] = {}
     for o in eligible:
-        venue = (o.exchange or "").upper()
+        ticker, venue = _line_on(o, _REGULATED_VENUES)
         cik = None
         if venue == "US":
             try:
                 async with gate:
                     row, _r = await find_listing(
-                        name=o.name, ticker=o.ticker, venue="US", cfg=cfg, fetcher=fetcher)
+                        name=o.name, ticker=ticker, venue="US", cfg=cfg, fetcher=fetcher)
                 cik = getattr(row, "cik", None)
             except Exception:  # noqa: BLE001
                 cik = None
         lead_id = str(id(o.lead))
         by_id[lead_id] = o
         if venue in _REGULATED_VENUES and (venue != "US" or cik):
-            targets.append((lead_id, o.name, o.ticker, venue, cik))
+            targets.append((lead_id, o.name, ticker, venue, cik))
         else:
             o.lead.web = {**(o.lead.web or {}), "regulated_documents": {
                 "read": False,
@@ -1521,14 +1564,17 @@ async def _attach_official_domains(
     async def one(outcome: IdentityOutcome) -> None:
         async with gate:
             cik = None
-            if (outcome.exchange or "").upper() == "US":
+            # The SEC registrant record names the issuer's website: read it through the US
+            # line when the issuer has one, even when its home line is primary (ADR-061).
+            ticker, venue = _line_on(outcome, ("US",))
+            if venue == "US":
                 row, _reason = await find_listing(
-                    name=outcome.name, ticker=outcome.ticker, venue="US", cfg=cfg,
+                    name=outcome.name, ticker=ticker, venue="US", cfg=cfg,
                     fetcher=fetcher,
                 )
                 cik = getattr(row, "cik", None)
             found = await establish_official_domains(
-                ticker=outcome.ticker, venue=outcome.exchange, verified=outcome.verified,
+                ticker=ticker, venue=venue or outcome.exchange, verified=outcome.verified,
                 cik=cik, cfg=cfg, fetcher=fetcher, name=outcome.name,
             )
         if found:

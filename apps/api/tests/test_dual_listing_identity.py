@@ -14,6 +14,7 @@ appears in the code under test.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -46,6 +47,7 @@ SEC_JSON = json.dumps({"fields": ["cik", "name", "ticker", "exchange"], "data": 
     [1697862, "ARGENX SE", "ARGX", "Nasdaq"],
     [1111111, "Orion", "ORN", "Nasdaq"],
     [2222222, "Acme Therapeutics Inc", "ACMT", "Nasdaq"],
+    [1736541, "NIO Inc.", "NIO", "NYSE"],
 ]})
 SUBMISSIONS = {
     1627281: ("I0", "France"),
@@ -53,6 +55,28 @@ SUBMISSIONS = {
     1697862: ("P7", "Netherlands"),
     1111111: ("I0", "France"),  # a FRENCH registrant named Orion — not the LU-ISIN line
     2222222: ("DE", "DELAWARE"),
+}
+#: Real EDGAR shapes (data.sec.gov, read 2026-10-30), including its two traps: Shell plc is
+#: recorded as incorporated in "DC" with a UK business address, and Cameco's incorporation
+#: is empty with "Canada (Federal Level)" as its address country.
+RAW_SUBMISSIONS: dict[int, dict[str, Any]] = {
+    1306965: {"stateOfIncorporation": "DC", "stateOfIncorporationDescription": "DC",
+              "addresses": {"business": {"isForeignLocation": 1, "country": "United Kingdom",
+                                         "countryCode": "X0"}}},
+    1009001: {"stateOfIncorporation": "", "stateOfIncorporationDescription": "",
+              "addresses": {"business": {"isForeignLocation": 1,
+                                         "country": "Canada (Federal Level)",
+                                         "countryCode": "Z4"}}},
+    1445930: {"stateOfIncorporation": "M5",
+              "stateOfIncorporationDescription": "Korea, Republic of",
+              "addresses": {"business": {"stateOrCountry": "M5",
+                                         "stateOrCountryDescription": "Korea, Republic of"}}},
+    1736541: {"stateOfIncorporation": "E9", "stateOfIncorporationDescription": "Cayman Islands",
+              "addresses": {"business": {"isForeignLocation": 1, "country": "China",
+                                         "countryCode": "F4"}}},
+    320193: {"stateOfIncorporation": "CA", "stateOfIncorporationDescription": "CA",
+             "addresses": {"business": {"stateOrCountry": "CA",
+                                        "stateOrCountryDescription": "CA"}}},
 }
 
 
@@ -76,7 +100,9 @@ async def fetcher(url: str, **_kw: Any) -> DocumentFetchResult:
         body = SEC_JSON
     elif "/submissions/CIK" in url:
         cik = int(url.rsplit("CIK", 1)[1].split(".")[0])
-        if cik in SUBMISSIONS:
+        if cik in RAW_SUBMISSIONS:
+            body = json.dumps(RAW_SUBMISSIONS[cik])
+        elif cik in SUBMISSIONS:
             code, desc = SUBMISSIONS[cik]
             body = json.dumps({"stateOfIncorporation": code,
                                "stateOfIncorporationDescription": desc})
@@ -195,7 +221,8 @@ async def test_d_a_us_registrant_does_not_absorb_a_same_named_european_company()
     Luxembourg ISIN. Same name, different issuer: no sibling."""
     out = await verify_identity(_lead("Orion", ("ORN", "NASDAQ")), fetcher=fetcher)
     assert (out.ticker, out.exchange) == ("ORN", "US")
-    assert ("ORNX", "PA") not in _by_ticker(out) if out.securities else True
+    assert out.issuer["domicile_country"] == "France"
+    assert out.securities == [], "the Luxembourg-ISIN ORION on Paris is not its home line"
 
 
 async def test_d_co_printed_lines_with_conflicting_domiciles_are_not_merged():
@@ -244,7 +271,8 @@ async def test_g_a_european_issuer_with_a_nasdaq_line_passes_a_europe_filter():
     results, _eligibility = await evaluate(out, None, intent, cfg=settings, fx_fetcher=fetcher)
     geo = next(r for r in results if r.key == "geography")
     assert geo.status == cons.PASS
-    assert geo.value["hq_country"] == "France"
+    assert geo.value["domicile_country"] == "France"
+    assert geo.value["listing_country"] == "France", "the home line is primary"
 
 
 async def test_g_the_ads_line_alone_does_not_fail_europe_when_domicile_is_known():
@@ -345,6 +373,147 @@ async def test_a_venue_the_caller_named_stays_the_primary_listing():
                                 primary=PRIMARY_GIVEN)
     assert (out.ticker, out.exchange) == ("CLLS", "US")
     assert out.issuer["domicile_country"] == "France", "the issuer is still French"
-    rows = _by_ticker(out)
-    assert rows[("CLLS", "US")]["role"] == "primary"
-    assert rows[("ALCLS", "PA")]["role"] == "secondary"
+    assert out.securities == [], "no home-line scan is spent when the venue is given"
+    assert not any("pd_es/data/stocks/download" in u for u in requested)
+
+
+# ── Review follow-ups: where an issuer IS, from records that are not always tidy ───── #
+
+
+@pytest.mark.parametrize(("cik", "incorporation", "business"), [
+    (1306965, None, "United Kingdom"),  # "DC" + a UK address: not a US company
+    (1009001, None, "Canada"),  # empty incorporation; "Canada (Federal Level)"
+    (1445930, "South Korea", "South Korea"),  # "Korea, Republic of"
+    (1736541, "Cayman Islands", "China"),  # incorporated in Cayman, run from China
+    (320193, "United States", "United States"),
+])
+async def test_the_sec_record_is_read_as_incorporation_and_business_address(
+    cik: int, incorporation: str | None, business: str | None
+) -> None:
+    record = await d.sec_registrant_domicile(str(cik), fetcher=fetcher)
+    assert record is not None
+    assert (record.incorporation, record.business) == (incorporation, business)
+
+
+async def test_a_cik_that_is_not_plain_digits_is_no_verdict():
+    assert await d.sec_registrant_domicile("²", fetcher=fetcher) is None
+    assert not requested
+
+
+def test_a_depositary_receipts_us_isin_is_not_the_issuers_domicile():
+    """An LSE GDR carries its US depositary bank's ISIN: that says nothing about where the
+    company is."""
+    from app.services.discovery.identity import IdentityOutcome, _isin_country
+
+    gdr = IdentityOutcome(lead=_lead("Some Miner", ("KAP", "LSE")), status="verified",
+                          ticker="KAP", exchange="LSE", listing_country="United Kingdom",
+                          directory_listing={"isin": _isin_ok("US0378331005")})
+    assert _isin_country(gdr) is None
+    home = replace(gdr, listing_country="United States")
+    assert _isin_country(home) == ("United States", "US0378331005")
+
+
+async def test_a_cayman_company_run_from_china_is_chinese_by_headquarters():
+    out = await verify_identity(_lead("NIO Inc.", ("NIO", "NYSE")), fetcher=fetcher)
+    assert out.issuer["domicile_country"] == "Cayman Islands"
+    assert out.issuer["hq_country"] == "China"
+    results, _ = await evaluate(out, None, build_intent("Chinese electric vehicle companies"),
+                                cfg=settings, fx_fetcher=fetcher)
+    geo = next(r for r in results if r.key == "geography")
+    assert geo.status == cons.PASS, geo.basis
+
+
+async def test_a_dutch_issuer_seen_through_its_us_line_is_non_us():
+    """"non-US" names the company, not the venue: argenx's only verified line here is
+    Nasdaq, and it is still a Dutch company."""
+    out = await verify_identity(_lead("argenx", ("ARGX", "NASDAQ")), fetcher=fetcher)
+    results, _ = await evaluate(out, None, build_intent("non-US biotechnology companies"),
+                                cfg=settings, fx_fetcher=fetcher)
+    geo = next(r for r in results if r.key == "geography")
+    assert geo.status == cons.PASS, geo.basis
+
+
+async def test_a_us_company_stays_excluded_by_non_us():
+    out = await verify_identity(_lead("Acme Therapeutics", ("ACMT", "NASDAQ")), fetcher=fetcher)
+    results, _ = await evaluate(out, None, build_intent("non-US biotechnology companies"),
+                                cfg=settings, fx_fetcher=fetcher)
+    assert next(r for r in results if r.key == "geography").status == cons.FAIL
+
+
+def test_a_bare_ticker_list_after_one_name_is_not_one_issuer():
+    text = "Tickers mentioned: Foo Corp NASDAQ: FOO, TSX: BAR, ASX: BAZ in lithium."
+    mentions, _ = ce.extract_mentions([text], [], ce.ThemeVocabulary(("lithium",)))
+    assert all(not m.co_listings for m in mentions)
+
+
+async def test_the_regulated_line_falls_back_to_a_linked_us_sibling():
+    from app.services.discovery.pipeline import _REGULATED_VENUES, _issuer_keys, _line_on
+
+    out = await verify_identity(
+        _lead("Cellectis", ("ALCLS", "Euronext Growth Paris"), ("CLLS", "NASDAQ")),
+        fetcher=fetcher)
+    assert _line_on(out, _REGULATED_VENUES) == ("CLLS", "US")
+    assert _line_on(out, ("PA",)) == ("ALCLS", "PA")
+    assert _issuer_keys(out) == {"PA:ALCLS", "US:CLLS"}
+    orion = await verify_identity(
+        _lead("Orion", ("ORNX", "Euronext Paris"), ("ORN", "NASDAQ")), fetcher=fetcher)
+    assert _line_on(orion, ("US",)) == ("ORNX", "PA"), "an unlinked line is another company"
+    assert _issuer_keys(orion) == {"PA:ORNX"}
+
+
+async def test_two_pages_naming_two_lines_of_one_issuer_are_one_candidate(
+    session: Any, pool: Any  # noqa: F811
+) -> None:
+    """One page prints the Paris line, another the Nasdaq line: two leads, one issuer —
+    the second is "the same issuer's other listing", never a second candidate."""
+    h = H(session, pool)
+    h.intent = build_intent("European biotechnology companies")
+    h.plan = plan_for(h.intent)
+    paris = "https://www.example-biotech-news.com/paris"
+    nasdaq = "https://www.example-biotech-news.com/nasdaq"
+    serve(h.provider, h.plan, {h.plan.queries[0].key: [search_hit(paris, "a"),
+                                                        search_hit(nasdaq, "b")]})
+    h.net.pages[paris] = page("Gene editing in Paris", [
+        "Cellectis (Euronext Growth: ALCLS) is a clinical-stage biotechnology company "
+        "developing gene-edited cell therapies, the company said in its quarterly update."],
+        host="www.example-biotech-news.com")
+    h.net.pages[nasdaq] = page("Gene editing on Nasdaq", [
+        "Cellectis S.A. (NASDAQ: CLLS) is a clinical-stage biotechnology company whose "
+        "allogeneic CAR-T programmes were presented at a medical conference this week."],
+        host="www.example-biotech-news.com")
+    stage = await h.stage(fetcher=fetcher)
+    records = [*stage.candidates, *stage.excluded, *stage.also_surfaced]
+    mine = [r for r in records if r.identity.ticker in {"ALCLS", "CLLS"}]
+    assert len(mine) == 1
+    assert (mine[0].identity.ticker, mine[0].identity.exchange) == ("ALCLS", "PA")
+    dupes = [r for r in stage.to_dict()["rejected_leads"]
+             if r.get("rejection_reason") == "duplicate"]
+    assert any("the same issuer's other listing" in (r.get("detail") or "") for r in dupes), stage.to_dict()["rejected_leads"]
+
+
+async def test_d_two_namesakes_on_two_listings_stay_two_companies(
+    session: Any, pool: Any  # noqa: F811
+) -> None:
+    """Same name, different issuers (their own records disagree on domicile): neither is
+    dropped as the other's duplicate, and neither absorbs the other."""
+    h = H(session, pool)
+    h.intent = build_intent("European biotechnology companies")
+    h.plan = plan_for(h.intent)
+    one = "https://www.example-biotech-news.com/orion-paris"
+    two = "https://www.example-biotech-news.com/orion-nasdaq"
+    serve(h.provider, h.plan, {h.plan.queries[0].key: [search_hit(one, "a"),
+                                                        search_hit(two, "b")]})
+    h.net.pages[one] = page("Orion in Paris", [
+        "Orion (Euronext Paris: ORNX) is a biotechnology company developing antibody "
+        "therapies, the company said in its quarterly statement this week."],
+        host="www.example-biotech-news.com")
+    h.net.pages[two] = page("Orion on Nasdaq", [
+        "Orion (NASDAQ: ORN) is a biotechnology company that presented trial data at a "
+        "medical conference, according to its announcement."],
+        host="www.example-biotech-news.com")
+    stage = await h.stage(fetcher=fetcher)
+    records = [*stage.candidates, *stage.excluded, *stage.also_surfaced]
+    assert {(r.identity.ticker, r.identity.exchange) for r in records
+            if r.identity.ticker in {"ORNX", "ORN"}} == {("ORNX", "PA"), ("ORN", "US")}
+    assert not [r for r in stage.to_dict()["rejected_leads"]
+                if r.get("rejection_reason") == "duplicate"]
