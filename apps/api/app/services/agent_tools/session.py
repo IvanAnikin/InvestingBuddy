@@ -108,6 +108,12 @@ class ToolContext:
     #: Open-web W4: the run's theme key, when the run is a theme run. The ONLY scope
     #: ``search_theme_corpus`` searches — an agent cannot name another theme.
     theme_key: str | None = None
+    #: ADR-069 — generic calculations and financial categories the company's playbooks
+    #: declare not meaningful for its business model (a bank's cash conversion). A
+    #: statement or calculation tool does not compute or hand them out. Empty by default,
+    #: so every other run is unchanged.
+    not_meaningful_calculations: frozenset[str] = frozenset()
+    not_meaningful_categories: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -125,6 +131,9 @@ class ToolSession:
     search_backend: Any = None
     #: See ``ToolContext.theme_key``.
     theme_key: str | None = None
+    #: See ``ToolContext.not_meaningful_calculations`` (ADR-069).
+    not_meaningful_calculations: frozenset[str] = frozenset()
+    not_meaningful_categories: frozenset[str] = frozenset()
     spend: ToolSpend = field(default_factory=ToolSpend)
     #: The safety ceiling. See ``MAX_RECORDED_CALLS_PER_SESSION``.
     max_recorded_calls: int = MAX_RECORDED_CALLS_PER_SESSION
@@ -274,6 +283,8 @@ class ToolSession:
             task_ref=task_ref,
             search_backend=self.search_backend,
             theme_key=self.theme_key,
+            not_meaningful_calculations=self.not_meaningful_calculations,
+            not_meaningful_categories=self.not_meaningful_categories,
         )
         try:
             payload = await spec.handler(context, args)

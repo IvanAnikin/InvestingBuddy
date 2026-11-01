@@ -109,6 +109,9 @@ class FinancialDataAgentOutput:
     source_tier_summary: dict  # e.g. {"T5_api_aggregator": 2, "T6_model_estimate": 0}
     financial_context_summary: str
     warnings: list[str] = field(default_factory=list)
+    #: ADR-069 — ``financials.<category>`` paths not meaningful for this business model
+    #: under its playbook. Neither available nor missing.
+    not_meaningful_financial_data: list[str] = field(default_factory=list)
 
 
 def _fmt_m(value: float | None) -> str | None:
@@ -293,8 +296,18 @@ def run_financial_data_agent(
         if fundamentals_summary.get(key) is not None:
             available_categories.add(cat)
 
+    # ADR-069 — a category the company's playbooks declare not meaningful for its
+    # business model (a bank's EBITDA, free cash flow, current ratio) is neither
+    # expected nor reported: it is listed ONCE as not meaningful, never as missing.
+    from app.services.playbooks.applicability import for_snapshot
+
+    applicability = for_snapshot(company_snapshot)
+    not_meaningful: list[str] = []
     for cat in _EXPECTED_FINANCIAL_CATEGORIES:
         path = f"financials.{cat}"
+        if not applicability.keeps_category(cat):
+            not_meaningful.append(path)
+            continue
         if cat in available_categories:
             available.append(path)
         else:
@@ -391,6 +404,7 @@ def run_financial_data_agent(
         source_tier_summary=source_tier_summary,
         financial_context_summary=financial_context_summary,
         warnings=warnings,
+        not_meaningful_financial_data=not_meaningful,
     )
 
 

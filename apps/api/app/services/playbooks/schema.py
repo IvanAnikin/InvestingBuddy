@@ -251,6 +251,76 @@ class AppliesTo:
         return False
 
 
+#: The generic financial-category vocabulary a playbook may declare not meaningful.
+#: Mostly the FinancialDataAgent's expected categories (what ``final_research_state``
+#: reports as open or resolved), plus the two cash-flow statement lines the cash
+#: metrics are built from. A name outside this set would silently filter nothing.
+NOT_MEANINGFUL_CATEGORY_VOCABULARY: frozenset[str] = frozenset(
+    {
+        "ebitda",
+        "ebit",
+        "free_cash_flow",
+        "ev_ebitda",
+        "current_ratio",
+        "debt_to_equity",
+        "operating_cash_flow",
+        "capital_expenditure",
+    }
+)
+
+
+@dataclass(frozen=True)
+class NotMeaningfulMetrics:
+    """Generic metrics that carry no economic meaning for a business model — ADR-069.
+
+    A bank's operating cash flow swings with trading assets and deposits, and its debt
+    is funding, not leverage. Cash conversion, capex/OCF, free cash flow, net debt,
+    EBITDA and a current ratio computed for it are arithmetic with no reading, and a
+    missing one is not a research gap. The playbook says so ONCE, here, and every
+    generic producer and gap-counter reads the declaration instead of testing for a
+    bank.
+
+    ``applies_to`` is deliberately narrower than the playbook's own: a playbook that
+    matches a whole SECTOR (Financials includes payments networks, for which free cash
+    flow is the analysis) must not strip generic metrics from a company it matched only
+    by sector. Hence a sector-only declaration is refused.
+    """
+
+    applies_to: AppliesTo
+    #: Keys of the calculation engine's ``DEFINITIONS``.
+    calculations: tuple[str, ...] = ()
+    #: Names from :data:`NOT_MEANINGFUL_CATEGORY_VOCABULARY`.
+    financial_categories: tuple[str, ...] = ()
+    #: Why, in one sentence a reader sees beside the list.
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if self.applies_to.sectors or not (
+            self.applies_to.industries or self.applies_to.business_model_signals
+        ):
+            raise ValueError(
+                "a not-meaningful declaration must match by industry or business-model "
+                "signal, never by sector alone: a sector is too broad to say a metric "
+                "means nothing for every company in it."
+            )
+        unknown_calcs = set(self.calculations) - set(DEFINITIONS)
+        if unknown_calcs:
+            raise ValueError(
+                f"not-meaningful calculations {sorted(unknown_calcs)} are not "
+                "calculation definitions; the declaration would filter nothing."
+            )
+        unknown_categories = (
+            set(self.financial_categories) - NOT_MEANINGFUL_CATEGORY_VOCABULARY
+        )
+        if unknown_categories:
+            raise ValueError(
+                f"not-meaningful categories {sorted(unknown_categories)} are not in "
+                "the generic category vocabulary; the declaration would filter nothing."
+            )
+        if not self.reason.strip():
+            raise ValueError("a not-meaningful declaration must say why.")
+
+
 def _fold(value: str | None) -> str:
     return (value or "").strip().casefold()
 
@@ -312,6 +382,10 @@ class Playbook:
     #: The supersession is recorded on the plan (``ResearchPlan.superseded``), never
     #: silent.
     overlay: bool = False
+    #: ADR-069 — generic calculations and financial categories that are not meaningful
+    #: for the business models this playbook covers. ``None`` for every playbook whose
+    #: companies the generic metrics describe correctly.
+    not_meaningful: NotMeaningfulMetrics | None = None
 
     def __post_init__(self) -> None:
         if self.version < 1:
@@ -349,6 +423,17 @@ class Playbook:
                 f"{self.playbook_id}: a playbook with no risk taxonomy lets 'we found "
                 "no risks' mean 'nobody looked for any'."
             )
+        if self.not_meaningful is not None:
+            contradicted = sorted(
+                {c for q in self.questions for c in q.required_calculations}
+                & set(self.not_meaningful.calculations)
+            )
+            if contradicted:
+                raise ValueError(
+                    f"{self.playbook_id}: requires {contradicted} and declares them not "
+                    "meaningful. A methodology cannot both demand a metric and say it "
+                    "means nothing."
+                )
 
     # -- the `PlaybookLike` protocol the Director consumes (5.2) -------------- #
 
@@ -383,6 +468,12 @@ class Playbook:
         if self.overlay:
             # Only when set: every existing playbook's record stays byte-identical.
             out["overlay"] = True
+        if self.not_meaningful is not None:
+            out["not_meaningful"] = {
+                "calculations": list(self.not_meaningful.calculations),
+                "financial_categories": list(self.not_meaningful.financial_categories),
+                "reason": self.not_meaningful.reason,
+            }
         return out
 
     @property
@@ -485,6 +576,8 @@ class PlaybookSelection:
 
 __all__ = [
     "EVALUABLE_COMPLETION_RULES",
+    "NOT_MEANINGFUL_CATEGORY_VOCABULARY",
+    "NotMeaningfulMetrics",
     "planned_from",
     "AppliesTo",
     "Playbook",

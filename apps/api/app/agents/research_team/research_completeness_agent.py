@@ -26,6 +26,7 @@ Phase 19.4.1 — enrichment completeness consistency:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from typing import Any
 
 from app.services.sources.company_evidence import regulator_connector_for
@@ -159,6 +160,21 @@ class ResearchCompletenessAgentOutput:
     next_research_tasks: list[str]
     blocking_gaps: list[str]
     non_blocking_gaps: list[str]
+    #: ADR-069 — schema fields not meaningful for this business model under its
+    #: playbook. Never a gap, required or optional.
+    not_meaningful_fields: list[str] = _dc_field(default_factory=list)
+
+
+#: ADR-069 — schema fields that ARE a generic metric a playbook may declare not
+#: meaningful (by calculation key or financial category).
+_SCHEMA_FIELD_METRIC: dict[str, str] = {
+    "snapshot_financials.ebitda": "ebitda",
+    "financials_deep.gross_margin": "gross_margin",
+    "financials_deep.ebitda_margin": "ebitda",
+    "financials_deep.capex_intensity": "capex_intensity",
+    "financials_deep.free_cash_flow": "free_cash_flow",
+    "financials_deep.net_debt_ebitda": "net_debt_to_ebitda",
+}
 
 
 def _first_present(source: dict, *keys: str) -> bool:
@@ -360,6 +376,16 @@ def run_research_completeness_agent(
     # Phase 29B.3: genuine T1 primary-filing facts likewise satisfy their field.
     enriched_present = _enriched_present_fields(company_snapshot, primary_facts)
 
+    # ADR-069 — a field the company's playbooks declare not meaningful for its business
+    # model (a bank's EBITDA) is not part of its schema, required or optional.
+    from app.services.playbooks.applicability import for_snapshot
+
+    applicability = for_snapshot(company_snapshot)
+    declared = applicability.calculations | applicability.financial_categories
+    not_meaningful = [
+        entry for entry, metric in _SCHEMA_FIELD_METRIC.items() if metric in declared
+    ]
+
     complete_sections: list[str] = []
     incomplete_sections: list[str] = []
     missing_required_fields: list[str] = []
@@ -373,7 +399,9 @@ def run_research_completeness_agent(
         in_draft = section_key in draft
         is_required = meta["required"]
         phase = meta["phase"]
-        sub_fields = meta["fields"]
+        sub_fields = [
+            f for f in meta["fields"] if f"{section_key}.{f}" not in not_meaningful
+        ]
         section_data = draft.get(section_key, {}) if in_draft else {}
 
         # A field counts as present when it is in the draft section OR the
@@ -445,12 +473,13 @@ def run_research_completeness_agent(
         next_research_tasks=next_tasks,
         blocking_gaps=blocking_gaps,
         non_blocking_gaps=non_blocking_gaps,
+        not_meaningful_fields=not_meaningful,
     )
 
 
 def research_completeness_output_to_dict(output: ResearchCompletenessAgentOutput) -> dict:
     """Serialize output to a plain dict suitable for JSON storage."""
-    return {
+    out = {
         "complete_sections": output.complete_sections,
         "incomplete_sections": output.incomplete_sections,
         "missing_required_fields": output.missing_required_fields,
@@ -458,3 +487,7 @@ def research_completeness_output_to_dict(output: ResearchCompletenessAgentOutput
         "blocking_gaps": output.blocking_gaps,
         "non_blocking_gaps": output.non_blocking_gaps,
     }
+    if output.not_meaningful_fields:
+        # ADR-069 — only when declared, so every other summary is unchanged.
+        out["not_meaningful_fields"] = list(output.not_meaningful_fields)
+    return out

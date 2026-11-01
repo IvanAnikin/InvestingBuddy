@@ -5251,3 +5251,112 @@ counts of current maturities.
 - Persisted snapshots written before this change keep their old totals until research is
   rerun. Only the "short leg with no long leg" and "withheld leg" shapes are detectable
   after the fact.
+
+## ADR-069: Generic Metrics a Playbook Declares Not Meaningful Are Not Computed, Required or Counted
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect JPM-3)
+
+### Context
+JPMorgan's report 30828043 ran under `banks_financials`. Its executive synthesis and
+the chair's verdict opened with "operating cash flow was negative, indicating cash
+consumption" (-$147.8bn) and "cash conversion -259.1%". Its `final_research_state`
+listed EBITDA, EBIT, free cash flow, EV/EBITDA and current ratio as open financial
+categories. Its open questions said "Valuation blocked: inputs missing
+(financials.free_cash_flow, financials.ebitda)", and EBITDA was a required-field
+blocking gap. For a bank none of these has a reading. Operating cash flow swings with
+trading assets, loans and deposits, and debt is funding, not leverage.
+
+The playbook already steered the questions. Every generic producer and gap counter was
+sector-agnostic, and none of them could ask a playbook anything:
+
+- `director/base_model.py`: `cash_generation_and_funding` requires `cash_conversion`,
+  `capex_to_ocf` and `net_debt`. `profitability` requires operating and gross margin.
+  `capital_allocation` requires `dividend_cover_by_fcf`. The planner gives every
+  company these requirements.
+- `agent_tools/peers.py`: `get_sec_statements` computes `PEER_METRICS` (cash
+  conversion, capex/OCF, capex intensity, net debt) through `statement_metrics` for
+  every subject. It also hands out the OCF, capex and "free cash flow (OCF - capex)"
+  lines. These are the `secfin:JPM:FY2025:cash_conversion` and `:operating_cash_flow`
+  ids that the two adverse findings cited. `get_peer_financials` and the report's peer
+  table (`professional_research.peer_rows`) use the same set.
+- `llm/evidence_pack.py`: the V2 council receives `metrics_from_sec_summary` (all of
+  `STATEMENT_METRIC_KEYS`) plus the raw OCF, capex, FCF and D/E keys.
+- `FinancialDataAgent._EXPECTED_FINANCIAL_CATEGORIES` expects EBITDA, EBIT, FCF,
+  EV/EBITDA and current ratio from every company. `final_research_state` copies the
+  agent's `missing_fields` into `open_financial_categories`. The completeness schema
+  requires `snapshot_financials.ebitda`. The valuation guard requires FCF and EBITDA.
+
+### Decision
+- **A playbook declares what is not meaningful.** `Playbook.not_meaningful` is a
+  `NotMeaningfulMetrics`. It lists calculation keys (validated against `DEFINITIONS`),
+  generic financial categories (validated against a closed vocabulary) and a reason.
+  It also carries its own `applies_to`, which must match by industry or signal and
+  never by sector alone. `banks_financials` matches the whole Financials sector, and a
+  payments network keeps free cash flow. A playbook cannot both require a calculation
+  and declare it not meaningful.
+- **`banks_financials` v2** declares the following not meaningful for Banks,
+  Diversified Financials, Insurance and the `regulated_capital` signal:
+  - calculations: cash conversion, capex/OCF, capex intensity, FCF conversion, FCF
+    margin, dividend cover by FCF, net debt, net debt/EBITDA, operating margin, gross
+    margin and cash runway;
+  - categories: EBITDA, EBIT, FCF, EV/EBITDA, current ratio, D/E, OCF and capex.
+
+  Its `funding_and_deposits` question now `replaces` the base `cash_generation_and_funding`
+  question, which is the existing supersession mechanism.
+- **One resolver.** `playbooks/applicability.py` resolves the declaration for one
+  company into a `MetricApplicability`.
+  - V3 resolves it from the run's own selection inputs.
+  - The V2 agents and the council evidence pack resolve it from the snapshot profile.
+    The profile goes through `resolve_classification`, so "National Commercial Banks"
+    reads as Banks.
+  - A metric is not meaningful only when every applicable non-overlay playbook
+    declares it so. A conglomerate keeps it.
+- **Every consumer filters through it. No consumer tests for a bank.**
+  - The planner drops the metric from `required_calculations` and records the
+    narrowing under `plan.not_meaningful_calculations`.
+  - `ToolSession` and `ToolContext` carry the sets.
+  - `get_sec_statements` and `get_peer_financials` neither compute these metrics nor
+    hand out the lines.
+  - `get_calculated_metrics` does not compute them, persist them or refuse them. A
+    refusal would read as a gap.
+  - The peer table has no such column.
+  - The evidence pack strips them.
+  - The FinancialDataAgent neither expects nor reports them.
+  - `final_research_state` neither resolves nor opens them.
+  - The completeness schema drops the fields.
+  - The valuation guard records "DCF on free cash flow is not meaningful for this
+    business model" as a blocker. It does not list the inputs as missing.
+- **Recorded once, as not meaningful, never as a gap.** The record appears as
+  `v3_research.not_meaningful_metrics`, with status `not_meaningful_for_business_model`,
+  the playbook, the reason and the narrowed questions. It also appears as
+  `final_research_state.not_meaningful_financial_categories` and as
+  `not_meaningful_fields` on the agent and completeness summaries. Each is emitted only
+  when non-empty, so every other company's payload is byte-identical.
+- **JPM 30828043, replayed against the stored report:**
+  - `open_financial_categories` goes from `[ebitda, ebit, free_cash_flow, ev_ebitda,
+    dividend_yield, book_value_per_share, current_ratio]` to
+    `[dividend_yield, book_value_per_share]`. `debt_to_equity` leaves the resolved list.
+  - The two adverse findings behind the verdict ("cash conversion was -259.1%" and
+    "operations consumed rather than generated cash") can no longer arise. Their
+    question is not asked, and the evidence ids they cite are no longer handed out.
+
+### Not changed / known limits
+- No bank metric is added. NIM, CET1, NCO rate and provisions extraction remain open
+  (JPM-11: blocking bank questions can be "satisfied" without the metric they ask for).
+- `balance_sheet_risk` is still asked of a bank. It requires no calculation, and on JPM
+  it produced supplementary-leverage-ratio findings, which are capital facts. The same
+  question produced "liabilities exceeding eleven times equity" (neutral). That
+  sentence is not filtered.
+- Net margin and ROE are still computed for a bank. Net margin is on net revenue and is
+  commonly quoted, and ROE is in the playbook's `required_metrics`.
+- The raw OCF line stays in the V2 snapshot for non-council uses, for example the
+  report's own statement tables. Only the council evidence pack and the V3 tools drop
+  it.
+- A sector-only Financials company (payments, fintech) keeps every generic metric. An
+  asset manager classified as "Diversified Financials" loses them. That is acceptable
+  for now, and a narrower industry would fix it.
+- A prior-run gap for a replaced base question is still re-asked as a carry-forward
+  question. This is the existing planner behaviour for every `replaces`.
+- The V2 snapshot path depends on the provider's profile words. A bank whose profile
+  carries neither a recognised industry nor a bank-like SIC description keeps the
+  generic metrics in the V2 surfaces, though not in V3.

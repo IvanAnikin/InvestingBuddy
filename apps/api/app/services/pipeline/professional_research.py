@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1185,22 +1185,33 @@ _PEER_FIELDS: dict[str, str] = {
 
 
 def peer_rows(
-    payloads: Sequence[Mapping[str, Any]], subject_ticker: str | None
+    payloads: Sequence[Mapping[str, Any]],
+    subject_ticker: str | None,
+    not_meaningful: "Collection[str]" = (),
 ) -> list[dict[str, Any]]:
-    """One row per registrant, on identical definitions. Missing stays ``None``."""
+    """One row per registrant, on identical definitions. Missing stays ``None``.
+
+    ADR-069 — a column the subject's playbooks declare not meaningful for its business
+    model is not in the table at all, rather than a column of ``None`` that reads as
+    "not found" for every peer.
+    """
+    fields = {
+        metric: name for metric, name in _PEER_FIELDS.items()
+        if metric not in set(not_meaningful)
+    }
     by_ticker: dict[str, dict[str, Any]] = {}
     for payload in payloads:
         for item in payload.get("items") or []:
             if not isinstance(item, dict) or not item.get("ticker"):
                 continue
-            field_name = _PEER_FIELDS.get(str(item.get("metric_id") or ""))
+            field_name = fields.get(str(item.get("metric_id") or ""))
             if field_name is None:
                 continue
             ticker = str(item["ticker"]).upper()
             row = by_ticker.setdefault(
                 ticker,
                 {"ticker": ticker, "period": item.get("period"),
-                 **{name: None for name in _PEER_FIELDS.values()}},
+                 **{name: None for name in fields.values()}},
             )
             row[field_name] = item.get("value")
             row.setdefault("evidence_ids", []).append(item.get("id"))

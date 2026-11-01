@@ -212,6 +212,10 @@ class ResearchPlan:
     #: the same plan already blocks: ``{question_key: overlay_playbook_id}``. A plan's
     #: blocking questions come from one methodology, never two stacked (≤ 2 total).
     blocking_demoted: dict[str, str] = field(default_factory=dict)
+    #: ADR-069 — ``{question_key: [calculation, ...]}``: calculations a question would
+    #: have required and the company's playbooks declare not meaningful for its business
+    #: model. Not computed, not required, not a gap. Empty for most companies.
+    not_meaningful: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def blocking_questions(self) -> list[PlannedQuestion]:
@@ -233,6 +237,8 @@ class ResearchPlan:
             **({"superseded_by": dict(self.superseded)} if self.superseded else {}),
             **({"blocking_demoted": dict(self.blocking_demoted)}
                if self.blocking_demoted else {}),
+            **({"not_meaningful_calculations": dict(self.not_meaningful)}
+               if self.not_meaningful else {}),
             "limits": {
                 "max_rounds": self.limits.max_rounds,
                 "max_tasks": self.limits.max_tasks,
@@ -312,6 +318,7 @@ async def plan_research(
     cfg: "Any | None" = None,
     commodities: "Sequence[Any]" = (),
     extra_questions: "Sequence[PlannedQuestion]" = (),
+    not_meaningful_calculations: "frozenset[str] | Sequence[str]" = (),
 ) -> ResearchPlan:
     """Build a bounded plan. Never raises on a model failure.
 
@@ -470,6 +477,27 @@ async def plan_research(
                     priority=priority,
                 )
             questions[key] = restored
+
+    # 3d. ADR-069 — a calculation the company's playbooks declare not meaningful for its
+    #     business model is not required by any question. Recorded once on the plan, by
+    #     question, never turned into a gap. A question left with no calculation drops
+    #     the calculation tool it only held for them.
+    if not_meaningful_calculations:
+        dropped_calcs = frozenset(not_meaningful_calculations)
+        for key, question in list(questions.items()):
+            removed = [c for c in question.required_calculations if c in dropped_calcs]
+            if not removed:
+                continue
+            kept_calcs = tuple(
+                c for c in question.required_calculations if c not in dropped_calcs
+            )
+            tools = frozenset(question.required_tools)
+            if not kept_calcs and len(tools) > 1:
+                tools = tools - {"get_calculated_metrics"}
+            questions[key] = replace(
+                question, required_calculations=kept_calcs, required_tools=tools
+            )
+            plan.not_meaningful[key] = removed
 
     # Blocking first, then priority, then the METHODOLOGY before the generic model
     # within one priority level, then a stable key order. A blocking question dropped

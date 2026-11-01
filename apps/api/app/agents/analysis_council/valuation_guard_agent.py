@@ -173,16 +173,28 @@ def run_valuation_guard_agent(
                 "cannot confirm which entity is being valued."
             )
 
+    # ADR-069 — inputs the company's playbooks declare not meaningful for its business
+    # model (a bank's free cash flow and EBITDA). A method built on one is not
+    # meaningful either, which is a different statement from "blocked by missing data".
+    not_meaningful_inputs = set(_fds.not_meaningful_fields)
+
     # ── Check DCF inputs ──────────────────────────────────────────────────
+    dcf_not_meaningful = [f for f in _DCF_REQUIRED if f in not_meaningful_inputs]
     dcf_available = [f for f in _DCF_REQUIRED if f in available_financial_data]
     dcf_missing = [
         f for f in _DCF_REQUIRED
-        if f in missing_financial_data or f not in available_financial_data
+        if (f in missing_financial_data or f not in available_financial_data)
+        and not dcf_not_meaningful
     ]
     available_valuation_inputs.extend(dcf_available)
     missing_valuation_inputs.extend(dcf_missing)
 
-    if dcf_missing:
+    if dcf_not_meaningful:
+        valuation_blockers.append(
+            "DCF on free cash flow is not meaningful for this business model "
+            f"({', '.join(dcf_not_meaningful)} not meaningful under its playbook)."
+        )
+    elif dcf_missing:
         ellipsis = "..." if len(dcf_missing) > 3 else ""
         valuation_blockers.append(
             f"DCF valuation blocked: {len(dcf_missing)} of {len(_DCF_REQUIRED)} "
@@ -190,8 +202,9 @@ def run_valuation_guard_agent(
         )
 
     # ── Check relative valuation inputs ───────────────────────────────────
-    rel_available = [f for f in _RELATIVE_REQUIRED if f in available_financial_data]
-    rel_missing = [f for f in _RELATIVE_REQUIRED if f not in available_financial_data]
+    rel_required = [f for f in _RELATIVE_REQUIRED if f not in not_meaningful_inputs]
+    rel_available = [f for f in rel_required if f in available_financial_data]
+    rel_missing = [f for f in rel_required if f not in available_financial_data]
 
     for f in rel_available:
         if f not in available_valuation_inputs:

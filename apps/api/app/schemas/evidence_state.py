@@ -118,6 +118,10 @@ class FinancialDataSummary(BaseModel):
     # A present field list ALWAYS wins, so a populated list can never report 0.
     count_only_available: int | None = None
     count_only_missing: int | None = None
+    #: ADR-069 — ``financials.<category>`` paths the company's playbooks declare not
+    #: meaningful for its business model. In neither list above; serialised only when
+    #: present, so every other summary's payload is unchanged.
+    not_meaningful_fields: list[str] = Field(default_factory=list)
 
     @property
     def available_count(self) -> int:
@@ -160,6 +164,9 @@ class FinancialDataSummary(BaseModel):
             source_tier_summary=dict(output.source_tier_summary or {}),
             financial_context_summary=output.financial_context_summary or "",
             warnings=list(output.warnings or []),
+            not_meaningful_fields=list(
+                getattr(output, "not_meaningful_financial_data", None) or []
+            ),
         )
 
     @classmethod
@@ -218,6 +225,9 @@ class FinancialDataSummary(BaseModel):
                 payload.get("financial_context_summary") or ""
             ),
             warnings=[str(v) for v in (payload.get("warnings") or [])],
+            not_meaningful_fields=[
+                str(v) for v in (payload.get("not_meaningful_fields") or [])
+            ],
         )
 
     # -- egress ------------------------------------------------------------
@@ -228,7 +238,7 @@ class FinancialDataSummary(BaseModel):
         readers and the report renderer consume). The counts are computed here,
         so a serialised payload cannot carry a stale count.
         """
-        return {
+        payload: dict[str, Any] = {
             "available_fields": list(self.available_fields),
             "available_count": self.available_count,
             "missing_fields": list(self.missing_fields),
@@ -240,6 +250,9 @@ class FinancialDataSummary(BaseModel):
             "warnings_count": self.warnings_count,
             "evidence_state_schema_version": EVIDENCE_STATE_SCHEMA_VERSION,
         }
+        if self.not_meaningful_fields:
+            payload["not_meaningful_fields"] = list(self.not_meaningful_fields)
+        return payload
 
 
 class PriceSummary(BaseModel):

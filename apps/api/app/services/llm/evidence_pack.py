@@ -394,6 +394,19 @@ def _add_sec_fundamentals(
     if not isinstance(fs, dict) or not fs:
         return
 
+    # ADR-069 — what the company's playbooks declare not meaningful for its business
+    # model (a bank's operating cash flow, free cash flow, EBITDA) never reaches the
+    # council: neither as a statement line nor as a derived or defined metric.
+    from app.services.calculations.statement_metrics import SEC_SUMMARY_KEY_METRIC
+    from app.services.playbooks.applicability import for_snapshot
+
+    applicability = for_snapshot(company_snapshot)
+    if not applicability.is_empty:
+        declared = applicability.calculations | applicability.financial_categories
+        fs = {
+            k: v for k, v in fs.items() if SEC_SUMMARY_KEY_METRIC.get(k) not in declared
+        }
+
     if not tier_split:
         # Only the metric fields carry filing facts; the rest is filing metadata.
         metric_keys = [
@@ -468,12 +481,19 @@ def _add_sec_fundamentals(
             fields_supported=[k for k, _ in derived],
         )
 
-    _add_defined_metrics(builder, fs, label=label, filed=filed)
+    _add_defined_metrics(
+        builder, fs, label=label, filed=filed, not_meaningful=applicability.calculations
+    )
     _add_market_and_price(builder, company_snapshot, fs)
 
 
 def _add_defined_metrics(
-    builder: _Builder, fs: dict[str, Any], *, label: str | None, filed: str | None
+    builder: _Builder,
+    fs: dict[str, Any],
+    *,
+    label: str | None,
+    filed: str | None,
+    not_meaningful: "frozenset[str]" = frozenset(),
 ) -> None:
     """Deterministic metrics, each with its DEFINITION and its READING — V3.18.1.
 
@@ -491,7 +511,7 @@ def _add_defined_metrics(
     from app.services.calculations.statement_metrics import metrics_from_sec_summary
 
     try:
-        readings, _refusals = metrics_from_sec_summary(fs)
+        readings, _refusals = metrics_from_sec_summary(fs, not_meaningful)
     except Exception:  # noqa: BLE001 - an evidence pack must never fail on a metric
         return
     if not readings:

@@ -105,6 +105,7 @@ completion_rules:
 | `specialist_roles` | Which conditional investigators are instantiated (on top of the always-present roles). |
 | `risk_framework` | The risk taxonomy the Risk Analyst must address, so "we found no risks" is impossible where a named category was simply not investigated. |
 | `completion_rules` | The Director's definition of "enough". |
+| `not_meaningful` | ADR-069. The generic calculations and financial categories that mean nothing for the business models the playbook covers, with a reason. Matched by its own industry/signal `applies_to` (never by sector alone). For such a company they are not required by any question (the plan records the narrowing under `not_meaningful_calculations`), not computed by the statement, peer or calculation tools, not handed to the V2 council, not counted as open financial categories, blocking completeness gaps or missing valuation inputs, and recorded once as `not_meaningful_for_business_model` (`v3_research.not_meaningful_metrics`, `final_research_state.not_meaningful_financial_categories`). A calculation is not meaningful only when every applicable non-overlay playbook declares it so, so a conglomerate keeps it. |
 
 ## 5. Initial five
 
@@ -113,7 +114,7 @@ completion_rules:
 | `biotech` | Pipeline, trial phases, readouts, approvals, cash runway, dilution. Registry sources (ClinicalTrials.gov, openFDA, EMA where feasible). |
 | `luxury` | Brand and regional mix, segment discipline, pricing power, China exposure. **Group-vs-segment scope is the primary failure mode.** |
 | `semiconductors` | Cycle position, capex, capacity, export controls, equipment lead times, trade data. |
-| `banks_financials` | CET1, NPL, deposits, cost of risk, regulatory and central-bank data. Generic margin analysis is actively misleading here. |
+| `banks_financials` | CET1, NPL, deposits, cost of risk, regulatory and central-bank data. Generic margin analysis is actively misleading here. v2 (ADR-069): for Banks / Diversified Financials / Insurance it declares cash conversion, capex/OCF, capex intensity, FCF metrics, net debt, net debt/EBITDA, operating and gross margin and cash runway not meaningful, plus the EBITDA, EBIT, FCF, EV/EBITDA, current ratio, D/E, OCF and capex categories; `funding_and_deposits` replaces `cash_generation_and_funding`. |
 | `industrial_defense` | Procurement, contract awards, public budgets, backlog. NATO/SIPRI where appropriate. |
 
 These five are chosen to match the real-issuer regression set (CFR → luxury,
