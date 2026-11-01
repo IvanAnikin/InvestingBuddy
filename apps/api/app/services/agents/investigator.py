@@ -2417,8 +2417,8 @@ class LLMInvestigator:
 
     async def _unended_period(self, statement: str) -> "period_closure.UnendedPeriod | None":
         """ADR-072: the period a statement gives a figure for as an ACTUAL, when it had not
-        ended on the run date. A calendar or dated period is judged without the issuer's
-        calendar; a fiscal one is judged only when the calendar is known."""
+        ended on the run date. Only fiscal periods are judged, and only when the issuer's
+        calendar is known (ADR-072, review round 3)."""
         if not names_the_subject(statement, self.company_name, self.ticker):
             return None
         if any(
@@ -2427,13 +2427,18 @@ class LLMInvestigator:
             for match in re.finditer(rf"\b{re.escape(word)}\b", statement, re.IGNORECASE)
         ):
             return None  # another company's figure may be the one stated
-        as_of = self.as_of or datetime.now(timezone.utc).date()
-        found = period_closure.unended_actual(statement, as_of=as_of, anchor=None)
-        if found is None and period_closure.wants_fiscal_calendar(statement):
-            found = period_closure.unended_actual(
-                statement, as_of=as_of, anchor=await self._fiscal_year_anchor()
-            )
-        return found
+        from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+        words = [t for t in name_tokens(self.company_name or "") if t not in _GENERIC_TOKENS]
+        names = tuple(n for n in (self.ticker, words[0] if words else None) if n)
+        if not period_closure.wants_fiscal_calendar(statement, names):
+            return None
+        return period_closure.unended_actual(
+            statement,
+            as_of=self.as_of or datetime.now(timezone.utc).date(),
+            anchor=await self._fiscal_year_anchor(),
+            subject_names=names,
+        )
 
     async def _write_up(
         self,

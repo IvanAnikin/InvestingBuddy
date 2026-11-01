@@ -47,7 +47,7 @@ F14 = (
 
 
 # ---------------------------------------------------------------------------
-# The two review batteries of PR #309, verbatim (round 1: 38, round 2: 48)
+# The three review batteries of PR #309, verbatim (round 1: 38, round 2: 48, round 3: 54)
 # ---------------------------------------------------------------------------
 
 MSFT_FYE = pc.FiscalYearAnchor(2026, date(2026, 6, 30))
@@ -60,7 +60,7 @@ BATTERY_NAMES = {
     "ADBE": "Adobe Inc.", "TGT": "Target Corporation", "WMT": "Walmart Inc.",
     "HON": "Honeywell International Inc.", "MSFT": "Microsoft Corporation", "AAPL": "Apple Inc.",
 }
-#: The only statements either battery expects dropped.
+#: The only statements any battery expects dropped (round 3 marks them as controls).
 BATTERY_DROPS = frozenset(
     {
         "Trefis reports Adobe FY2026 total revenue 26.58 Bil and ending ARR growth 10.2%, "
@@ -159,6 +159,63 @@ ROUND_2: list[tuple[str, str, str]] = [
     ('WMT', '2026-11-01', "Walmart's fiscal 2027 revenue was $530 billion as of the October quarter-end."),
     ('WMT', '2026-11-01', "Walmart's FY2027 revenue was $350 billion as of July 31, 2026."),
     ('TGT', '2026-11-01', "Target Corp's FY2026 revenue was $50 billion as of August 2, 2026."),
+]
+
+ROUND_3: list[tuple[str, str, str]] = [
+    ('ADBE', '2026-01-15', "Adobe's full-year 2025 revenue was $23.77 billion."),
+    ('ADBE', '2026-11-01', "Adobe's full-year 2025 revenue was $23.77 billion."),
+    ('HON', '2026-02-10', "Honeywell's full year 2025 sales were $37.44 billion."),
+    ('HON', '2025-12-28', "Honeywell's full year 2025 sales were $37.44 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 annual recurring revenue was $25.2 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 annual-recurring revenue was $25.2 billion."),
+    ('HON', '2026-11-01', "Honeywell's annual dividend of $4.76 in FY2026 was paid on revenue of $37.44 billion."),
+    ('HON', '2026-11-01', "Honeywell's FY2026 annual dividend is $4.76 per share and its sales were $37.44 billion last year."),
+    ('ADBE', '2026-11-01', "At Adobe's FY2026 annual general meeting, shareholders heard revenue was $23.77 billion last year."),
+    ('HON', '2026-11-01', "Honeywell's fourth-quarter 2025 sales were $9.8 billion."),
+    ('HON', '2026-11-01', "Honeywell's Q4 FY2026 guidance calls for sales of $10.5 billion."),
+    ('HON', '2026-11-01', "Honeywell's full-year 2026 outlook was raised to sales of $40.5 billion."),
+    ('ADBE', '2026-11-01', 'Adobe expects full-year revenue of $26.0 billion in FY2026.'),
+    ('MSFT', '2026-03-01', "Microsoft's total revenue for fiscal 2026 is projected at $325 billion."),
+    ('ADBE', '2026-11-01', "Adobe's annualised run-rate revenue was $26 billion in FY2026."),
+    ('HON', '2026-11-01', "Honeywell's full year 2026 consensus sales figure was $40.4 billion."),
+    ('MSFT', '2026-08-01', "Microsoft's fiscal year 2026 annual revenue was $331.84 billion."),
+    ('MSFT', '2026-11-01', "Microsoft's full-year FY2026 revenue was $331.84 billion."),
+    ('MSFT', '2026-07-25', "Microsoft's FY2026 full year revenue was $331.84 billion."),
+    ('MSFT', '2026-08-01', "Microsoft's Q4 FY2026 revenue was $76.4 billion."),
+    ('WMT', '2026-11-01', "Walmart's fiscal 2026 full-year revenue was $713.16 billion."),
+    ('WMT', '2026-03-01', "Walmart's full-year fiscal 2026 revenue was $713.16 billion."),
+    ('WMT', '2026-03-01', "Walmart's Q4 FY2026 revenue was $190 billion."),
+    ('HON', '2026-11-01', "Honeywell's Q4 2025 sales were $9.8 billion, the last quarter of full year 2025."),
+    ('HON', '2026-11-01', "Honeywell's 2025 sales were $37.44 billion; full-year results will be reported on Feb 3."),
+    ('HON', '2026-11-01', "Honeywell's 2025 sales were $37.44 billion; its full year 2026 results are due early next year."),
+    ('HON', '2026-11-01', "Honeywell's 2025 sales were $37.44 billion, and fourth-quarter 2026 results are due soon."),
+    ('HON', '2026-11-01', "Honeywell's 2025 full-year sales were $37.44 billion, and its Q4 2026 dividend is $1.19 per share."),
+    ('HON', '2026-11-01', "Honeywell's full-year sales were $37.44 billion for 2025, and Q4 2026 is under way."),
+    ('HON', '2026-11-01', "Honeywell's annual sales were $37.44 billion last year, a base for full year 2026."),
+    ('ADBE', '2026-11-01', "Adobe's annual revenue was $23.77 billion entering fiscal 2026."),
+    ('ADBE', '2026-11-01', "Adobe's annual revenue was $23.77 billion at the start of fiscal 2026."),
+    ('ADBE', '2026-11-01', "Adobe's prior full-year revenue was $23.77 billion, the base for FY2026."),
+    ('ADBE', '2026-11-01', "Adobe's Q4 FY2026 is now under way; its annual revenue was $23.77 billion in 2025."),
+    ('ADBE', '2026-11-01', "Adobe's annual revenue was $23.77 billion when fiscal 2026 began."),
+    ('MSFT', '2025-11-01', "Microsoft's annual revenue was $281.72 billion, and fiscal year 2026 began this summer."),
+    ('MSFT', '2026-11-01', "Microsoft's annual revenue was $331.84 billion, and its fiscal year 2027 is under way."),
+    ('MSFT', '2026-11-01', "Microsoft's last full-year revenue was $331.84 billion; Q4 FY2027 is far off."),
+    ('WMT', '2026-11-01', "Walmart's annual revenue was $713.16 billion, and fiscal 2027 is its 64th year."),
+    ('WMT', '2026-11-01', "Walmart's full-year revenue was $713.16 billion, the largest of any retailer, ahead of full year 2027."),
+    ('HON', '2026-11-01', "Honeywell's annual sales were $37.44 billion; Q4 2026 marks its final quarter as a conglomerate."),
+    ('HON', '2026-11-15', "Honeywell's annual sales were $37.44 billion, larger than Emerson's full-year 2026 sales of $18.0 billion."),
+    ('HON', '2026-11-01', "Honeywell posted annual sales of $37.44 billion in its last reported fiscal year, ahead of FY2026's close."),
+    ('ADBE', '2026-11-01', "Adobe's total revenue for the year was $23.77 billion, it said as FY2026 opened."),
+    ('ADBE', '2026-12-20', "Adobe's full-year fiscal 2026 revenue was $26.4 billion."),
+    ('ADBE', '2026-11-25', "Adobe's fourth-quarter fiscal 2026 revenue was $6.6 billion."),
+    ('HON', '2027-01-30', "Honeywell's fourth-quarter 2026 sales were $10.1 billion."),
+    ('HON', '2026-11-01', 'Honeywell reported annual sales of $37.44 billion; FY26 Q4 earnings come next.'),
+    ('HON', '2026-11-01', "Honeywell's calendar Q3 2026 sales were $10.4 billion."),
+    ('MSFT', '2026-11-01', "Microsoft's FY26 full-year revenue was $331.84 billion."),
+    ('MSFT', '2026-11-01', "Microsoft's full-year revenue was $331.84 billion in FY 26."),
+    ('ADBE', '2026-11-01', "Adobe's FY2025/26 annual revenue was $23.77 billion."),
+    ('HON', '2026-11-01', "Honeywell's full year 2026 sales were $40 billion."),
+    ('ADBE', '2026-11-01', 'Trefis reports Adobe FY2026 total revenue 26.58 Bil and ending ARR growth 10.2%, per its Q4 2026 summary.'),
 ]
 
 
@@ -289,11 +346,9 @@ class TestUnendedActual:
             "Vexmoor revenue for Q4 CY2026 was USD 7.1bn.",
         ],
     )
-    def test_a_future_calendar_quarter_is_caught_without_a_fiscal_calendar(
-        self, statement: str
-    ) -> None:
-        found = pc.unended_actual(statement, as_of=RUN_DATE, anchor=None)
-        assert found is not None and found.ends == date(2026, 12, 31)
+    def test_a_calendar_quarter_is_not_judged(self, statement: str) -> None:
+        # Review round 3: only the open FISCAL year or fiscal fourth quarter is judged.
+        assert pc.unended_actual(statement, as_of=RUN_DATE, anchor=DEC_FYE) is None
 
     def test_a_platform_quarter_key_on_a_december_year_end_is_a_calendar_quarter(self) -> None:
         statement = "Vexmoor 2026-Q4 revenue was USD 7.1bn."
@@ -305,10 +360,14 @@ class TestUnendedActual:
     @pytest.mark.parametrize(
         "statement",
         [
-            # Review round 2: no positive full-period marker, so never judged. Bare
-            # "FY2026 revenue was $X" is as often a year-to-date figure.
-            "Vexmoor FY2026 revenue was USD 26.6bn.",
             "Vexmoor CY2026 revenue was USD 27bn.",
+            # Review round 3: the open label and the figure are not adjacent, or not in
+            # the same clause, or an earlier year's figure stands beside the label.
+            "Vexmoor's revenue was USD 23.8bn, and FY2026 results are due soon.",
+            "Vexmoor's FY2026 revenue rose to USD 26.6bn.",
+            "Vexmoor's 2025 revenue was USD 23.8bn; FY2026 revenue was USD 26.6bn.",
+            "Vexmoor's FY2026 annual-recurring revenue was USD 25.2bn.",
+            "Vexmoor's FY2026 revenue was USD 26.6bn, ARR rising 10%.",
             # A printed date or month anywhere: the figure may stand at that point.
             "Vexmoor revenue for the quarter ending November 27, 2026 was USD 7.1bn.",
             "Vexmoor full-year FY2026 revenue was USD 26.6bn as of 2026-08-28.",
@@ -322,12 +381,14 @@ class TestUnendedActual:
 
     @pytest.mark.parametrize(
         "ticker,as_of,statement",
-        [*ROUND_1, *ROUND_2],
-        ids=[f"r1-{i}" for i in range(len(ROUND_1))] + [f"r2-{i}" for i in range(len(ROUND_2))],
+        [*ROUND_1, *ROUND_2, *ROUND_3],
+        ids=[f"r1-{i}" for i in range(len(ROUND_1))]
+        + [f"r2-{i}" for i in range(len(ROUND_2))]
+        + [f"r3-{i}" for i in range(len(ROUND_3))],
     )
     def test_the_review_batteries(self, ticker: str, as_of: str, statement: str) -> None:
-        """Both review batteries of PR #309 (86 statements): every TRUE statement is kept;
-        only F14 and an open full-year result are dropped."""
+        """The three review batteries of PR #309 (140 statements): every TRUE statement is
+        kept; only F14 and an open full-year result are dropped."""
         found = pc.unended_actual(
             statement, as_of=date.fromisoformat(as_of), anchor=BATTERY_ANCHORS[ticker]
         )
@@ -335,6 +396,36 @@ class TestUnendedActual:
             statement, BATTERY_NAMES[ticker], ticker
         )
         assert dropped == (statement in BATTERY_DROPS)
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "Vexmoor's FY2026 revenue was USD 26.6bn.",
+            "Vexmoor FY2026 revenue: USD 26.6bn.",
+            "Vexmoor's Q4 FY2026 revenue was USD 7.0bn.",
+            "Vexmoor's fourth quarter of fiscal 2026 net income was USD 1.9bn.",
+        ],
+    )
+    def test_an_adjacent_open_period_result_is_caught(self, statement: str) -> None:
+        assert pc.unended_actual(statement, as_of=RUN_DATE, anchor=NOV_FYE) is not None
+
+    def test_a_possessive_owner_must_open_the_sentence_and_be_the_subject(self) -> None:
+        statement = "Northwind's FY2026 revenue was USD 26.6bn."
+        assert pc.unended_actual(statement, as_of=RUN_DATE, anchor=NOV_FYE) is not None
+        assert pc.unended_actual(
+            statement, as_of=RUN_DATE, anchor=NOV_FYE, subject_names=("VXM", "vexmoor")
+        ) is None
+        assert pc.unended_actual(
+            "Vexmoor's FY2026 revenue was USD 26.6bn.",
+            as_of=RUN_DATE,
+            anchor=NOV_FYE,
+            subject_names=("VXM", "vexmoor"),
+        ) is not None
+        assert pc.unended_actual(
+            "Vexmoor's revenue trails Northwind's FY2026 revenue of USD 30bn.",
+            as_of=RUN_DATE,
+            anchor=NOV_FYE,
+        ) is None
 
     def test_a_full_open_year_result_is_still_caught(self) -> None:
         found = pc.unended_actual(
@@ -487,17 +578,17 @@ class TestInvestigatorGuard:
         assert inv.diagnostics.statements_for_unended_period == 0
         assert not _unended_gaps(gaps)
 
-    async def test_a_future_calendar_quarter_is_dropped_without_a_fiscal_calendar(
+    async def test_a_future_calendar_quarter_is_kept(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Review round 3: calendar periods are no longer judged at all.
         inv, findings, gaps, reads = await _run(
             monkeypatch, ["Vexmoor calendar Q4 2026 revenue was USD 7.1bn."], anchor=None
         )
-        assert findings == []
-        assert inv.diagnostics.statements_for_unended_period == 1
-        (gap,) = _unended_gaps(gaps)
-        assert "calendar Q4 2026 (ends 2026-12-31)" in gap.description
-        assert reads == []  # a calendar period needs no issuer calendar
+        assert len(findings) == 1
+        assert inv.diagnostics.statements_for_unended_period == 0
+        assert not _unended_gaps(gaps)
+        assert reads == []  # the shape is not judged, so the calendar is never read
 
     async def test_a_statement_resting_on_a_filing_is_not_judged(
         self, monkeypatch: pytest.MonkeyPatch
@@ -524,14 +615,14 @@ class TestInvestigatorGuard:
         inv, findings, _gaps, _reads = await _run(
             monkeypatch,
             [
-                "Vexmoor full-year FY2026 revenue was below Northwind's full-year FY2026 revenue of USD 245bn.",
+                "Vexmoor FY2026 revenue was USD 26.6bn, below Northwind.",
                 # A held company's name as an ordinary lower-case word is not that company.
                 F14,
             ],
             other_names=others,
         )
         assert [f.statement for f in findings] == [
-            "Vexmoor full-year FY2026 revenue was below Northwind's full-year FY2026 revenue of USD 245bn."
+            "Vexmoor FY2026 revenue was USD 26.6bn, below Northwind."
         ]
         assert inv.diagnostics.statements_for_unended_period == 1
 

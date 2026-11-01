@@ -17,13 +17,13 @@ acceptable; dropping a true statement is not (review of PR #309):
    period needs a :class:`FiscalYearAnchor` (one observed fiscal year and the date it
    ended, from the issuer's own SEC statements). Without one, a fiscal period has no
    known end and the statement is never judged.
-3. The SHAPE of the statement, by ALLOW-list (review round 2). It is judged only when it
-   reports a FLOW result (revenue, sales, net income, EPS, operating income, FCF) with its
-   money amount and a reporting verb; carries a positive full-period marker ("full
-   year", "annual", "total revenue for the year", the fourth quarter of the fiscal year,
-   or a calendar quarter); prints no date or month anywhere; carries no point,
-   part-period, forward, estimate or event wording; and EVERY period it names is known
-   and still open. Anything else is kept: bare "FY2026 revenue was $X" included.
+3. The SHAPE of the statement, by ADJACENCY (review round 3, the final design). It is
+   judged only when the open fiscal year or fiscal fourth quarter's label is followed, in
+   the same clause, by a flow metric and its money figure ("FY2026 total revenue 26.58
+   Bil", "full year 2026 sales were $40 billion"); a possessive before the label opens
+   the sentence and is the subject; no point-in-time metric, "recurring", earlier year,
+   date or deny-list word appears; and EVERY period named is known and still open.
+   Calendar quarters and years are never judged.
 
 A bare ``2026-Q4`` / ``Q4 2026`` is the platform's FISCAL-keyed quarter (ADR-065), so it
 is judged only on a known fiscal calendar. For a fiscal year ending January–March no
@@ -39,7 +39,8 @@ from __future__ import annotations
 import asyncio
 import calendar as _calendar
 import re
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 
 from app.services import research_fields as rf
@@ -127,6 +128,9 @@ class StatedPeriod:
     ordinal: int | None = None
     #: Only for :data:`KIND_DATED`: the printed end date.
     end: date | None = None
+    #: Where the label sits in the statement (``[start, stop)``); not part of equality.
+    start: int = field(default=-1, compare=False)
+    stop: int = field(default=-1, compare=False)
 
     @property
     def is_fiscal(self) -> bool:
@@ -253,6 +257,7 @@ def stated_periods(statement: str | None) -> list[StatedPeriod]:
     out: list[StatedPeriod] = []
     for match in _PERIOD_RE.finditer(statement or ""):
         text = match.group(0)
+        before = len(out)
         if match.group("dated"):
             end = _dated_end(match)
             if end is not None:
@@ -277,6 +282,8 @@ def stated_periods(statement: str | None) -> list[StatedPeriod]:
         elif match.group("fy"):
             year = _first(match, "fyy1", "fyy2", "fyy3") or "0"
             out.append(StatedPeriod(KIND_FISCAL_YEAR, text, _year(year)))
+        if len(out) > before:
+            out[-1] = replace(out[-1], start=match.start(), stop=match.end())
     return out
 
 
@@ -322,7 +329,10 @@ _UNPLACED_SUBPERIOD_RE = re.compile(
 _PART_OR_POINT_RE = re.compile(
     r"\b(?:as\s+(?:of|at)|by|until|till|cumulative\w*|\d+[\s-]*(?:months?|weeks?)|weeks?|"
     r"months?|[12]h|semi[\s-]?annual\w*|periods?|tracking|latest|after|before|versus|vs|"
-    r"compared|year[\s-]on[\s-]year|yoy|10-?q|hit|headwinds?|tailwinds?)\b",
+    r"compared|year[\s-]on[\s-]year|yoy|10-?q|hit|headwinds?|tailwinds?|"
+    # Review round 3: an earlier year's figure beside the open period's label.
+    r"last|prior|previous|entering|base|began|begins?|start(?:s|ed|ing)?|"
+    r"under\s?way|due|next|recurring)\b",
     re.IGNORECASE,
 )
 
@@ -344,39 +354,37 @@ _DATE_PRINTED_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: A FLOW result — what a period produces — immediately followed by its money amount
-#: ("revenue was $26.6 billion", "total revenue 26.58 Bil", "sales of $40bn"). Point-in-time
-#: metrics (ARR, RPO, backlog, cash, debt) and growth rates are never judged.
 _MONEY = (
     r"(?:(?:[$€£¥]|\b(?:usd|us\$|eur|gbp|jpy|chf|aud|cad)\s?)\s?\d[\d,]*(?:\.\d+)?"
     r"(?:\s?(?:bn|billion|bil|mn|million|mil|tn|trillion|b|m)\b)?"
     r"|\b\d[\d,]*(?:\.\d+)?\s?(?:bn|billion|bil|mn|million|mil|tn|trillion)\b)"
 )
-_FLOW_FIGURE_RE = re.compile(
-    r"\b(?:revenues?|sales|turnover|net\s+(?:income|profit|loss|earnings)|eps|"
-    r"earnings\s+per\s+share|operating\s+(?:income|profit|loss)|gross\s+profit|"
-    r"free\s+cash\s+flow|fcf)\b"
-    r"(?:\W+\w+){0,4}?\W+" + _MONEY,
+
+#: Review round 3 (PR #309): the ADJACENCY rule. Right after the open period's label
+#: comes an optional "total" / "full-year" / "annual", a FLOW metric, a connector of at
+#: most four words from a closed set, and the money figure itself:
+#: "FY2026 total revenue 26.58 Bil", "full year 2026 sales were $40 billion".
+_ADJACENT_TAIL_RE = re.compile(
+    r"(?:['’]s)?\s+(?:(?:total|full[\s-]+year|annual)\s+)?"
+    r"(?:revenues?|sales|net\s+(?:income|profit)|eps|earnings\s+per\s+share|"
+    r"operating\s+income)\b"
+    r"(?:\s*:\s*|\s+(?:(?:was|were|of|at|came|in|totall?ed|reached|amounted|to)\s+){0,4})"
+    + _MONEY,
     re.IGNORECASE,
 )
-_RESULT_VERB_RE = re.compile(
-    r"\b(?:was|were|reported|reports|totall?ed|totals|came\s+in\s+at|amounted\s+to|"
-    r"posted|recorded|generated|delivered|achieved)\b",
-    re.IGNORECASE,
-)
-#: The POSITIVE full-period marker a judged statement must carry: "full year", "annual"
-#: (not annual recurring revenue), or "total revenue for the (fiscal) year". The other
-#: markers are periods: the fourth quarter of the open fiscal year, or a calendar quarter.
-_FULL_YEAR_RE = re.compile(
-    r"\bfull[\s-]+year\b|\bannual\b(?!\s+recurring)|"
-    r"\btotal\s+(?:revenues?|sales|net\s+income)\s+for\s+(?:the\s+)?(?:fiscal\s+)?year\b",
-    re.IGNORECASE,
-)
+#: What may stand right before the label: "full-year FY2026", "total FY2026".
+_LEADING_MARKER_RE = re.compile(r"(?:full[\s-]+year|annual|total)\s+$", re.IGNORECASE)
+#: Clause boundaries the label and the figure may not straddle.
+_CLAUSE_BREAK_RE = re.compile(r";|,\s|\s(?:and|but)\s|[—–]|\s-\s", re.IGNORECASE)
+#: A point-in-time or run-rate metric in the matched clause: never a period's flow.
+_POINT_METRIC_RE = re.compile(r"\b(?:arr|rpo|backlog|run[\s-]?rate)\b", re.IGNORECASE)
+#: A four-digit year standing on its own ("2025 sales"), not inside a label ("FY2026").
+_BARE_YEAR_RE = re.compile(r"(?<![\w/$.,])((?:19|20)\d{2})(?![\w/])")
 
 
 def is_forward_or_partial(statement: str | None) -> bool:
     """A statement that speaks of what is expected or estimated, of part of a period, of
-    an event in it, or of a point in time: never judged."""
+    an event in it, of a point in time or of an earlier year: never judged."""
     text = statement or ""
     return bool(
         _PROTECTED_RE.search(text)
@@ -394,77 +402,111 @@ def _residue(statement: str, periods: list[StatedPeriod]) -> str:
     return residue
 
 
-def _judgeable(statement: str | None) -> list[StatedPeriod] | None:
-    """The periods of a statement that reports a period's FLOW result as an actual, or
-    ``None`` when the statement is not of that shape (and so is never judged)."""
+def _clause_bounds(text: str, position: int) -> tuple[int, int]:
+    """The ``[start, stop)`` of the clause holding ``position``."""
+    start, stop = 0, len(text)
+    for match in _CLAUSE_BREAK_RE.finditer(text):
+        if match.end() <= position:
+            start = match.end()
+        elif match.start() >= position:
+            stop = match.start()
+            break
+    return start, stop
+
+
+def _fold_word(word: str) -> str:
+    return re.sub(r"[^a-z0-9&]", "", word.lower())
+
+
+def _owner_is_the_subject(text: str, period: StatedPeriod, subject_names: Sequence[str]) -> bool:
+    """The word right before the label (after an optional "full-year"/"total"). A
+    possessive there must open the sentence — "Honeywell's full year 2026 sales", never
+    "larger than Emerson's full-year 2026 sales" — and, when the subject's names are
+    known, must be one of them."""
+    before = _LEADING_MARKER_RE.sub("", text[: period.start])
+    word = re.search(r"(\S+)\s*$", before)
+    if word is None or not re.search(r"['’]s$", word.group(1)):
+        return True
+    lead = before[: word.start()].strip()
+    if lead and lead.lower() != "the":
+        return False
+    owner = _fold_word(word.group(1)[:-2])
+    return not subject_names or owner in {_fold_word(n) for n in subject_names if n}
+
+
+def _adjacent_periods(
+    statement: str | None, subject_names: Sequence[str] = ()
+) -> tuple[str, list[StatedPeriod], list[StatedPeriod]]:
+    """``(text, every period named, the open-period candidates)``. A candidate is a fiscal
+    year or a fiscal fourth quarter whose label is followed, in the same clause, by a flow
+    metric and its figure. Empty when the statement is not of that shape."""
     text = (statement or "").strip()
     if not text or is_forward_or_partial(text):
-        return None
+        return text, [], []
     periods = stated_periods(text)
-    if not periods:
-        return None
-    residue = _residue(text, periods)
-    if _UNPLACED_SUBPERIOD_RE.search(residue):
-        return None
-    if not (_FLOW_FIGURE_RE.search(residue) and _RESULT_VERB_RE.search(residue)):
-        return None
-    return periods
-
-
-def _full_period_marker(text: str, periods: list[StatedPeriod]) -> bool:
-    """Does the statement say the figure is for a WHOLE period? Bare "FY2026 revenue was
-    $X" does not: in the wild it is as often a year-to-date figure (review round 2)."""
-    if _FULL_YEAR_RE.search(text) and any(p.kind == KIND_FISCAL_YEAR for p in periods):
-        return True
-    return any(
-        (p.kind == KIND_FISCAL_QUARTER and p.ordinal == 4) or p.kind == KIND_CALENDAR_QUARTER
-        for p in periods
-    )
+    if not periods or _UNPLACED_SUBPERIOD_RE.search(_residue(text, periods)):
+        return text, periods, []
+    candidates: list[StatedPeriod] = []
+    for period in periods:
+        if not (
+            period.kind == KIND_FISCAL_YEAR
+            or (period.kind == KIND_FISCAL_QUARTER and period.ordinal == 4)
+        ):
+            continue
+        start, stop = _clause_bounds(text, period.start)
+        if _ADJACENT_TAIL_RE.match(text[:stop], period.stop) is None:
+            continue
+        if _POINT_METRIC_RE.search(text[start:stop]):
+            continue
+        if any(int(y) != period.year for y in _BARE_YEAR_RE.findall(text)):
+            continue  # "2025 sales were $37.4B; full year 2026 results are due …"
+        if not _owner_is_the_subject(text, period, subject_names):
+            continue
+        candidates.append(period)
+    return text, periods, candidates
 
 
 def unended_actual(
-    statement: str | None, *, as_of: date, anchor: FiscalYearAnchor | None
+    statement: str | None,
+    *,
+    as_of: date,
+    anchor: FiscalYearAnchor | None,
+    subject_names: Sequence[str] = (),
 ) -> UnendedPeriod | None:
-    """The period a statement gives a WHOLE-period flow result for as an actual, when that
-    period had not ended on ``as_of``; else ``None``.
+    """The open period a statement gives a FLOW result for as an actual; else ``None``.
 
-    An allow-list, not a deny-list (review round 2 of PR #309). ALL of these must hold:
+    The final, tightest design (review round 3 of PR #309). ALL of these must hold:
 
-    - a flow result (revenue, sales, net income, EPS, operating income, gross profit, FCF)
-      followed by its money amount, with a reporting verb ("was", "reports", "totalled");
-    - a positive full-period marker: "full year" / "annual" / "total revenue for the
-      year" with a fiscal year, or the fourth quarter of a fiscal year, or a calendar
-      quarter;
+    - the open period's label (``FY2026``, ``fiscal 2026``, ``full year 2026``,
+      ``Q4 FY2026``, ``fourth quarter of fiscal 2026``) is followed, in the same clause, by
+      an optional "total"/"full-year", a flow metric (revenue, sales, net income, EPS,
+      operating income), a connector of at most four words from a closed set ("was",
+      "of", "came in at", ":") and the money figure;
+    - a possessive right before the label opens the sentence (and is the subject, when
+      ``subject_names`` is given): "Emerson's full-year 2026 sales" is not the subject's;
+    - no point-in-time metric (ARR, RPO, backlog, run rate) in that clause, no
+      "recurring", no bare year other than the open one, no date or month, and none of
+      the deny-list words (forward, estimate, part-period, event, "last", "prior",
+      "entering", "base", "due", …);
     - EVERY period named has a known end that is still ahead (a fiscal period needs the
-      ``anchor``; one closed or unknown period keeps the statement);
-    - no printed date or month name anywhere, no point/part-period wording ("as of", "by",
-      "cumulative", "39 weeks", "1H", "semi-annual"), no unplaced quarter or half, and no
-      forward, estimate or event wording.
+      ``anchor``; one closed or unknown period keeps the statement).
     """
-    text = (statement or "").strip()
-    periods = _judgeable(text)
-    if not periods or not _full_period_marker(text, periods):
+    _text, periods, candidates = _adjacent_periods(statement, subject_names)
+    if not candidates:
         return None
-    open_periods: list[tuple[StatedPeriod, date]] = []
     for period in periods:
-        end = period.end_date(anchor)
-        if end is None or period.has_ended_by(as_of, anchor) is not False:
+        if period.end_date(anchor) is None or period.has_ended_by(as_of, anchor) is not False:
             return None
-        open_periods.append((period, end))
-    # Report the longest period named: the year, when a year and its quarter are both open.
-    period, end = max(open_periods, key=lambda pair: pair[1])
-    return UnendedPeriod(period, end)
+    period = candidates[0]
+    end = period.end_date(anchor)
+    return UnendedPeriod(period, end) if end is not None else None
 
 
-def wants_fiscal_calendar(statement: str | None) -> bool:
+def wants_fiscal_calendar(statement: str | None, subject_names: Sequence[str] = ()) -> bool:
     """Would the issuer's fiscal calendar decide this statement? True only for a statement
-    of the judged shape that names a fiscal period — so the calendar is read when it can
-    matter, never for every statement."""
-    text = (statement or "").strip()
-    periods = _judgeable(text)
-    return bool(periods) and any(p.is_fiscal for p in periods or ()) and (
-        _full_period_marker(text, periods or [])
-    )
+    of the judged shape — so the calendar is read when it can matter, never for every
+    statement."""
+    return bool(_adjacent_periods(statement, subject_names)[2])
 
 
 # ── The issuer's fiscal calendar, from its own SEC statements ──────────────── #
