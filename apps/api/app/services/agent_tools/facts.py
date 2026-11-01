@@ -43,6 +43,7 @@ say which population each number counts (``fact_count_scopes``).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -88,9 +89,7 @@ SCOPE_SEGMENT = SCOPE_TYPE_SEGMENT
 SCOPE_UNKNOWN = "unknown"
 SCOPE_ANY = "any"
 
-SCOPE_ARGUMENTS: frozenset[str] = frozenset(
-    {SCOPE_GROUP, SCOPE_SEGMENT, SCOPE_UNKNOWN, SCOPE_ANY}
-)
+SCOPE_ARGUMENTS: frozenset[str] = frozenset({SCOPE_GROUP, SCOPE_SEGMENT, SCOPE_UNKNOWN, SCOPE_ANY})
 
 SERIES_PERIOD_TYPES: frozenset[str] = frozenset(
     {PERIOD_TYPE_ANNUAL, PERIOD_TYPE_HALF, PERIOD_TYPE_QUARTER, PERIOD_TYPE_SPLIT_YEAR}
@@ -188,7 +187,8 @@ def _view(row: ExtractedFact) -> FactView:
         fact_id=str(row.id),
         label=row.label,
         value_numeric=(
-            float(row.value_numeric) if isinstance(row.value_numeric, Decimal | int | float)
+            float(row.value_numeric)
+            if isinstance(row.value_numeric, Decimal | int | float)
             else None
         ),
         value_text=row.value_text,
@@ -424,9 +424,12 @@ async def _count_other_scope_keys(
         return 0
     conditions = _base_conditions(company_id, labels)
     scope_condition = _scope_condition(scope)
-    stmt = select(func.count()).select_from(ExtractedFact).join(
-        ExtractedDocument, ExtractedDocument.id == ExtractedFact.extracted_document_id
-    ).where(*conditions, ExtractedFact.scope_key.notin_(scope_keys))
+    stmt = (
+        select(func.count())
+        .select_from(ExtractedFact)
+        .join(ExtractedDocument, ExtractedDocument.id == ExtractedFact.extracted_document_id)
+        .where(*conditions, ExtractedFact.scope_key.notin_(scope_keys))
+    )
     if scope_condition is not None:
         stmt = stmt.where(scope_condition)
     return int((await session.execute(stmt)).scalar_one() or 0)
@@ -435,9 +438,23 @@ async def _count_other_scope_keys(
 # ── The tools ────────────────────────────────────────────────────────────── #
 
 
-async def _get_financial_facts(
-    context: "ToolContext", arguments: dict[str, Any]
-) -> dict[str, Any]:
+#: ADR-069 — the population exclusion reason for a fact whose label is a metric the
+#: company's playbooks declare not meaningful for its business model.
+NOT_MEANINGFUL_EXCLUSION = "not_meaningful_for_business_model"
+
+
+def _label_filter(context: "ToolContext") -> "Callable[[str | None], bool]":
+    """True for a fact label the run may hand out. Everything passes by default."""
+    from app.services.playbooks.applicability import MetricApplicability
+
+    applicability = MetricApplicability(
+        calculations=frozenset(getattr(context, "not_meaningful_calculations", ()) or ()),
+        financial_categories=frozenset(getattr(context, "not_meaningful_categories", ()) or ()),
+    )
+    return applicability.keeps_fact_label
+
+
+async def _get_financial_facts(context: "ToolContext", arguments: dict[str, Any]) -> dict[str, Any]:
     scope = arguments["scope"]
     population = Population(
         definition=(
@@ -454,8 +471,14 @@ async def _get_financial_facts(
         },
     )
     population.row_limit = arguments["limit"]
-    population.filtered_in_query = ["company_id", "is_active", "validation_status",
-                                    "labels", "scope", "scope_keys"]
+    population.filtered_in_query = [
+        "company_id",
+        "is_active",
+        "validation_status",
+        "labels",
+        "scope",
+        "scope_keys",
+    ]
     population.filtered_after_query = ["period_keys"] if arguments["period_keys"] else []
     rows = await _active_validated_facts(
         context.session,
@@ -486,11 +509,17 @@ async def _get_financial_facts(
     )
 
     wanted_periods = set(arguments["period_keys"])
+    keeps = _label_filter(context)
     items: list[dict[str, Any]] = []
     for row in rows:
         view = _view(row)
         if wanted_periods and (view.period_key or "") not in wanted_periods:
             population.exclude("period_not_requested")
+            continue
+        if not keeps(view.label):
+            # ADR-069 — a bank's operating cash flow is a real fact with no reading
+            # under its playbook. Counted under its own reason, never a gap.
+            population.exclude(NOT_MEANINGFUL_EXCLUSION)
             continue
         items.append(view.to_dict())
 
@@ -527,8 +556,14 @@ async def _get_financial_series(
         },
     )
     population.row_limit = arguments["limit"]
-    population.filtered_in_query = ["company_id", "is_active", "validation_status",
-                                    "label", "scope", "scope_key"]
+    population.filtered_in_query = [
+        "company_id",
+        "is_active",
+        "validation_status",
+        "label",
+        "scope",
+        "scope_key",
+    ]
     population.filtered_after_query = ["period_type", "period_known"]
     rows = await _active_validated_facts(
         context.session,
@@ -559,7 +594,12 @@ async def _get_financial_series(
     )
 
     by_period: dict[str, list[FactView]] = {}
+    keeps = _label_filter(context)
     for row in rows:
+        if not keeps(getattr(row, "label", None)):
+            # ADR-069 — see `_get_financial_facts`.
+            population.exclude(NOT_MEANINGFUL_EXCLUSION)
+            continue
         period = parse_period(row.period)
         if period.is_unknown:
             # A series is an ordering, and an unknown period cannot be ordered. It is
@@ -596,9 +636,7 @@ async def _get_financial_series(
     # Counted as CONFLICTED, not excluded: those facts are returned under `conflicts`,
     # so calling them excluded would make `returned + excluded` describe a population
     # that never existed.
-    population.conflicted = sum(
-        len(by_period[k]) for k in by_period if len(by_period[k]) > 1
-    )
+    population.conflicted = sum(len(by_period[k]) for k in by_period if len(by_period[k]) > 1)
     return {
         "items": points,
         "conflicts": conflicts,
@@ -611,9 +649,7 @@ async def _get_financial_series(
     }
 
 
-async def _get_segment_facts(
-    context: "ToolContext", arguments: dict[str, Any]
-) -> dict[str, Any]:
+async def _get_segment_facts(context: "ToolContext", arguments: dict[str, Any]) -> dict[str, Any]:
     population = Population(
         definition=(
             "active, validated ExtractedFact rows for this company whose scope is a "
@@ -629,8 +665,13 @@ async def _get_segment_facts(
         },
     )
     population.row_limit = arguments["limit"]
-    population.filtered_in_query = ["company_id", "is_active", "validation_status",
-                                    "labels", "scope"]
+    population.filtered_in_query = [
+        "company_id",
+        "is_active",
+        "validation_status",
+        "labels",
+        "scope",
+    ]
     population.filtered_after_query = ["period_keys"] if arguments["period_keys"] else []
     rows = await _active_validated_facts(
         context.session,

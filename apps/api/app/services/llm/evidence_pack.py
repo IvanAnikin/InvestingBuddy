@@ -20,6 +20,7 @@ assembled ``report_content`` always; the richer ``company_snapshot``,
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from app.schemas.evidence_state import FinancialDataSummary
@@ -173,10 +174,7 @@ def _looks_like_sec(source_tier: str | None, source_type: str | None, url: str |
     st = (source_type or "").lower()
     u = (url or "").lower()
     return (
-        source_tier == TIER_T2_REGULATOR_OR_GOV
-        or "sec.gov" in u
-        or "edgar" in u
-        or "filing" in st
+        source_tier == TIER_T2_REGULATOR_OR_GOV or "sec.gov" in u or "edgar" in u or "filing" in st
     )
 
 
@@ -288,9 +286,7 @@ class _Builder:
         """
         pf = getattr(item, "primary_fact", None)
         pf_dump = (
-            pf.model_dump(mode="json")
-            if pf is not None and hasattr(pf, "model_dump")
-            else None
+            pf.model_dump(mode="json") if pf is not None and hasattr(pf, "model_dump") else None
         )
         # Semantic-grounding fields: the item's own ``scope`` (set generically
         # from document structure, see ``primary_document_extractor._infer_scope``)
@@ -394,14 +390,23 @@ def _add_sec_fundamentals(
     if not isinstance(fs, dict) or not fs:
         return
 
+    # ADR-069 — what the company's playbooks declare not meaningful for its business
+    # model (a bank's operating cash flow, free cash flow, EBITDA) never reaches the
+    # council: neither as a statement line nor as a derived or defined metric.
+    from app.services.calculations.statement_metrics import SEC_SUMMARY_KEY_METRIC
+    from app.services.playbooks.applicability import for_snapshot
+
+    applicability = for_snapshot(company_snapshot)
+    if not applicability.is_empty:
+        declared = applicability.calculations | applicability.financial_categories
+        fs = {k: v for k, v in fs.items() if SEC_SUMMARY_KEY_METRIC.get(k) not in declared}
+
     if not tier_split:
         # Only the metric fields carry filing facts; the rest is filing metadata.
         metric_keys = [
             k
             for k, v in fs.items()
-            if isinstance(v, (int, float))
-            and not k.endswith("_year")
-            and k not in {"source_tier"}
+            if isinstance(v, (int, float)) and not k.endswith("_year") and k not in {"source_tier"}
         ]
         if not metric_keys:
             return
@@ -468,12 +473,19 @@ def _add_sec_fundamentals(
             fields_supported=[k for k, _ in derived],
         )
 
-    _add_defined_metrics(builder, fs, label=label, filed=filed)
+    _add_defined_metrics(
+        builder, fs, label=label, filed=filed, not_meaningful=applicability.calculations
+    )
     _add_market_and_price(builder, company_snapshot, fs)
 
 
 def _add_defined_metrics(
-    builder: _Builder, fs: dict[str, Any], *, label: str | None, filed: str | None
+    builder: _Builder,
+    fs: dict[str, Any],
+    *,
+    label: str | None,
+    filed: str | None,
+    not_meaningful: "frozenset[str]" = frozenset(),
 ) -> None:
     """Deterministic metrics, each with its DEFINITION and its READING — V3.18.1.
 
@@ -491,7 +503,7 @@ def _add_defined_metrics(
     from app.services.calculations.statement_metrics import metrics_from_sec_summary
 
     try:
-        readings, _refusals = metrics_from_sec_summary(fs)
+        readings, _refusals = metrics_from_sec_summary(fs, not_meaningful)
     except Exception:  # noqa: BLE001 - an evidence pack must never fail on a metric
         return
     if not readings:
@@ -599,8 +611,9 @@ def _add_financial_context(
             fds.get("financial_context_summary")
             or fds.get("summary")
             or ", ".join(
-                (FinancialDataSummary.from_payload(fds) or FinancialDataSummary())
-                .available_fields[:8]
+                (FinancialDataSummary.from_payload(fds) or FinancialDataSummary()).available_fields[
+                    :8
+                ]
             )
         )
         if context:
@@ -822,6 +835,7 @@ def _add_historical_series(
     max_lines: int,
     max_periods: int,
     historical_facts: "list[dict[str, Any]] | None" = None,
+    keep_metric: "Callable[[str | None], bool] | None" = None,
 ) -> None:
     """Add the compact multi-period trend slice — private-use readiness PR-B.
 
@@ -843,9 +857,7 @@ def _add_historical_series(
     # prompt and fatal for a series: a real annual report yields ~50
     # period-scoped facts of which only ~10 become items, so every metric
     # arrives as one observation and no trend can exist.
-    facts = list(historical_facts or []) or _facts_from_connector_evidence(
-        connector_evidence
-    )
+    facts = list(historical_facts or []) or _facts_from_connector_evidence(connector_evidence)
     if not facts:
         return
     history = build_financial_history(facts, max_periods=max_periods)
@@ -864,6 +876,8 @@ def _add_historical_series(
         # per-fact evidence; repeating it here would spend a slot to say
         # nothing new.
         if series.period_count < MIN_PERIODS_FOR_TREND:
+            continue
+        if keep_metric is not None and not keep_metric(series.metric):
             continue
         line = series.compact_line()
         if not series.is_comparable:
@@ -975,9 +989,7 @@ def _add_current_period_state(
             continue
         seen.add(key)
         period = parse_period(fact.get("period"))
-        unit = " ".join(
-            b for b in (fact.get("currency"), fact.get("scale")) if isinstance(b, str)
-        )
+        unit = " ".join(b for b in (fact.get("currency"), fact.get("scale")) if isinstance(b, str))
         value = fact.get("value") or fact.get("numeric_value")
         added += builder.add(
             source_tier=TIER_T1_PRIMARY_FILING,
@@ -1033,9 +1045,7 @@ def build_evidence_pack(
     # Phase 32A Slice 2: the same flag gates the build-time tier-split + news
     # materiality here AND the category-aware selection inside the budgeter. Off
     # by default → byte-identical dark path. Read defensively from ``budget_cfg``.
-    budgets_enabled = bool(
-        getattr(budget_cfg, "llm_council_evidence_budgets_enabled", False)
-    )
+    budgets_enabled = bool(getattr(budget_cfg, "llm_council_evidence_budgets_enabled", False))
 
     # Fall back to the report's own source appendix when explicit rows are not
     # supplied, so the builder works from report_content alone.
@@ -1050,10 +1060,23 @@ def build_evidence_pack(
         if builder.full:
             break
         builder.add_framework_item(fw_item)
+    # ADR-069 — no series or current-period line for a metric the company's playbooks
+    # declare not meaningful (a bank's operating cash flow trend).
+    from app.services.playbooks.applicability import for_snapshot
+
+    applicability = for_snapshot(company_snapshot)
+    if historical_facts and not applicability.is_empty:
+        historical_facts = [
+            f
+            for f in historical_facts
+            if not isinstance(f, dict)
+            or applicability.keeps_fact_label(f.get("field") or f.get("field_name"))
+        ]
     _add_historical_series(
         builder,
         connector_evidence,
         historical_facts=historical_facts,
+        keep_metric=applicability.keeps_fact_label,
         max_lines=int(
             getattr(budget_cfg, "llm_council_history_max_series", DEFAULT_MAX_HISTORY_SERIES)
             or DEFAULT_MAX_HISTORY_SERIES

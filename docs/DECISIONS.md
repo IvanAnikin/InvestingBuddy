@@ -5251,3 +5251,181 @@ counts of current maturities.
 - Persisted snapshots written before this change keep their old totals until research is
   rerun. Only the "short leg with no long leg" and "withheld leg" shapes are detectable
   after the fact.
+
+## ADR-069: Generic Metrics a Playbook Declares Not Meaningful Are Not Computed, Required or Counted
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect JPM-3)
+
+### Context
+JPMorgan's report 30828043 ran under `banks_financials`. Its executive synthesis and
+the chair's verdict opened with "operating cash flow was negative, indicating cash
+consumption" (-$147.8bn) and "cash conversion -259.1%". Its `final_research_state`
+listed EBITDA, EBIT, free cash flow, EV/EBITDA and current ratio as open financial
+categories. Its open questions said "Valuation blocked: inputs missing
+(financials.free_cash_flow, financials.ebitda)", and EBITDA was a required-field
+blocking gap. For a bank none of these has a reading. Operating cash flow swings with
+trading assets, loans and deposits, and debt is funding, not leverage.
+
+The playbook already steered the questions. Every generic producer and gap counter was
+sector-agnostic, and none of them could ask a playbook anything:
+
+- `director/base_model.py`: `cash_generation_and_funding` requires `cash_conversion`,
+  `capex_to_ocf` and `net_debt`. `profitability` requires operating and gross margin.
+  `capital_allocation` requires `dividend_cover_by_fcf`. The planner gives every
+  company these requirements.
+- `agent_tools/peers.py`: `get_sec_statements` computes `PEER_METRICS` (cash
+  conversion, capex/OCF, capex intensity, net debt) through `statement_metrics` for
+  every subject. It also hands out the OCF, capex and "free cash flow (OCF - capex)"
+  lines. These are the `secfin:JPM:FY2025:cash_conversion` and `:operating_cash_flow`
+  ids that the two adverse findings cited. `get_peer_financials` and the report's peer
+  table (`professional_research.peer_rows`) use the same set.
+- `llm/evidence_pack.py`: the V2 council receives `metrics_from_sec_summary` (all of
+  `STATEMENT_METRIC_KEYS`) plus the raw OCF, capex, FCF and D/E keys.
+- `FinancialDataAgent._EXPECTED_FINANCIAL_CATEGORIES` expects EBITDA, EBIT, FCF,
+  EV/EBITDA and current ratio from every company. `final_research_state` copies the
+  agent's `missing_fields` into `open_financial_categories`. The completeness schema
+  requires `snapshot_financials.ebitda`. The valuation guard requires FCF and EBITDA.
+
+### Decision
+- **A playbook declares what is not meaningful.** `Playbook.not_meaningful` is a
+  `NotMeaningfulMetrics`. It lists:
+  - calculation keys (validated against `DEFINITIONS`);
+  - generic financial categories (validated against a closed vocabulary);
+  - base research-model `questions` not asked of a matching company;
+  - `analysed_by`: categories the business model is valued by instead (validated
+    against categories the FinancialDataAgent already tracks);
+  - a `reason` and a short `reader_note`.
+
+  It carries its own `applies_to`, which must match by industry or signal and never by
+  sector alone. A playbook cannot both require a calculation and declare it not
+  meaningful.
+- **`banks_financials` v2 declares this for the "Banks" industry only**, which means
+  deposit-taking banks: SIC 6020–6036 and the canonical label.
+  - Calculations: cash conversion, capex/OCF, capex intensity, FCF conversion, FCF
+    margin, dividend cover by FCF, net debt, net debt/EBITDA, operating margin, gross
+    margin and cash runway.
+  - Categories: EBITDA, EBIT, FCF, EV/EBITDA, current ratio, D/E, OCF and capex.
+  - The base `cash_generation_and_funding` question is not asked.
+  - `analysed_by`: book value per share and ROE (P/B with ROE).
+- **Insurers are deliberately not covered (review of PR #308).** SIC 6311–6411 maps to
+  "Insurance". That range holds managed care (UNH 6324), insurance brokers (MMC and AON,
+  6411) and conglomerates (BRK, 6331). For those companies operating margin, FCF and net
+  debt are the analysis.
+  - The playbook still MATCHES them, because its questions are unchanged. The
+    declaration does not, so V2 and V3 agree that they keep every generic metric.
+  - The cash-generation supersession is part of the declaration, not a `replaces` on
+    `funding_and_deposits`. A `replaces` would apply to every company the playbook
+    matches, insurers and payments companies included.
+  - "Diversified Financials" was dropped from the declaration: no classifier produces
+    it. The `regulated_capital` signal was dropped too: nothing sets it.
+  - Tests pin the real SIC codes of UNH, MMC, AON, BRK, PYPL, V, ICE, CME, BLK, SCHW,
+    AXP and SOFI. Each keeps every generic metric.
+- **One resolver.** `playbooks/applicability.py` resolves the declaration for one
+  company into a `MetricApplicability`.
+  - V3 resolves it from the run's own selection inputs.
+  - The V2 agents and the council evidence pack resolve it from the snapshot profile.
+    The profile goes through `resolve_classification`, so "National Commercial Banks"
+    reads as Banks.
+  - A metric is not meaningful only when every applicable non-overlay playbook
+    declares it so. A conglomerate keeps it.
+- **Every consumer filters through it. No consumer tests for a bank.**
+  - **Planner:** drops the metric from `required_calculations` (recorded as
+    `plan.not_meaningful_calculations`). It skips the declared base questions,
+    including as carry-forward gaps (recorded as `plan.not_meaningful_questions`).
+  - **Tools:** `ToolSession` and `ToolContext` carry the sets.
+    - `get_sec_statements` and `get_peer_financials` neither compute these metrics nor
+      hand out the lines.
+    - `get_financial_facts` and `get_financial_series` exclude facts labelled OCF,
+      capex, FCF, EBITDA and net debt. They are counted under the population reason
+      `not_meaningful_for_business_model`. A bank's own "operating profit" is kept.
+    - `get_calculated_metrics` neither computes, persists nor refuses them.
+  - **Report:** the peer table has no such column.
+  - **V2 council evidence pack:** strips the statement keys, the derived and defined
+    metrics, and the historical-series lines for those labels.
+  - **FinancialDataAgent:** neither expects nor reports them. Its
+    `financial_context_summary`, which reaches the council, is written from the
+    filtered fundamentals and says once that these metrics are not shown.
+  - **`final_research_state`:** neither resolves nor opens them.
+  - **Completeness schema:** drops the fields and asks `financials_deep` for the
+    `analysed_by` fields instead.
+  - **Valuation guard:**
+    - records "DCF on free cash flow is not meaningful for this business model" as a
+      blocker;
+    - requires book value per share and ROE for relative valuation (labelled P/B, P/E);
+    - no longer says EBITDA is unavailable;
+    - does not count free cash flow among the core statement inputs that make
+      readiness "partial".
+
+    No platform source produces book value per share yet, so it is an honest missing
+    input.
+- **Total debt stays meaningful for a bank (after ADR-067).** A bank's total debt is a
+  real, disclosed figure. For JPM it is 499,982: long-term debt including the current
+  portion (435,206) plus `ShortTermBorrowings` (64,776). It is neither declared nor
+  filtered, and it resolves as a financial category. What is not meaningful is net debt
+  and everything derived from it: net debt/EBITDA and the EV-based industrial
+  multiples. A test on real JPM companyfacts rows (a trimmed fixture with an identical
+  normalised record) asserts all of this:
+  - total debt is 499,982;
+  - no net debt is computed or refused;
+  - no valuation blocker mentions net debt;
+  - `total_debt` is not an open category.
+- **SIC wins over a vendor label for "Banks".** When a SIC code is present,
+  `resolve_classification` never infers "Banks" from text. A broker-dealer under SIC
+  6211 whose vendor label reads "Investment Banking & Brokerage" used to become
+  "Banks" because of the word "banking", and so lost its metrics. Banks map from SIC
+  6020–6036 directly. Every other keyword inference for an unmapped SIC is unchanged,
+  because removing all of them would strip the playbook from every filer whose SIC
+  the table does not map, which is wider than this slice. The resolver table says
+  inference applies "only when no SIC code is available", and the code has never done
+  that; the disagreement is left as a recorded limit.
+- **Recorded once, as not meaningful, never as a gap.**
+  - The record appears as `v3_research.not_meaningful_metrics`, with status
+    `not_meaningful_for_business_model`, the playbook, reason, reader note, narrowed
+    questions and skipped questions.
+  - It also appears as `final_research_state.not_meaningful_financial_categories`, and
+    as `not_meaningful_fields` on the agent and completeness summaries.
+  - The investor sees the playbook's `reader_note` as `metrics_note` on the
+    financial-capacity and competitive-position sections. The web renders it under the
+    peer table. For a bank it reads: "Cash conversion, free cash flow, net debt and
+    EBITDA are not shown: they are not meaningful for a deposit-taking bank…"
+  - Every record is emitted only when non-empty, so every other company's payload is
+    byte-identical.
+- **JPM 30828043, replayed against the stored report:**
+  - `open_financial_categories` goes from `[ebitda, ebit, free_cash_flow, ev_ebitda,
+    dividend_yield, book_value_per_share, current_ratio]` to
+    `[dividend_yield, book_value_per_share]`. `debt_to_equity` leaves the resolved list.
+  - The two adverse findings behind the verdict ("cash conversion was -259.1%" and
+    "operations consumed rather than generated cash") came from the cash-generation
+    question, which is no longer asked of a bank. The platform's own statement, facts,
+    calculation and council-pack paths no longer supply those figures.
+
+### Not changed / known limits
+- **OCF figures can still reach a model.** The figures themselves can still be read
+  from corpus text, for example a 10-K cash-flow statement chunk returned by
+  `search_company_corpus`, or from a web page. Only the platform's structured paths
+  withhold them. The V2 snapshot also keeps the raw OCF line for non-council uses.
+- No bank metric is added. NIM, CET1, NCO rate and provisions extraction remain open
+  (JPM-11: blocking bank questions can be "satisfied" without the metric they ask for).
+- **Book value per share is never produced.** It could be derived as an estimate from
+  `shareholders_equity_usd_m / shares_outstanding_mln`, but this PR does not do that.
+  The derivation needs the period of the share count matched to the balance-sheet date,
+  and an estimate label. Until then the valuation guard reports it as missing, and P/B
+  for a bank stays blocked.
+- `balance_sheet_risk` is still asked of a bank. It requires no calculation, and on JPM
+  it produced supplementary-leverage-ratio findings, which are capital facts. The same
+  question produced "liabilities exceeding eleven times equity" (neutral). That
+  sentence is not filtered.
+- Net margin and ROE are still computed for a bank. Net margin is on net revenue and is
+  commonly quoted, and ROE is what a bank is analysed by.
+- **Insurers, brokers, managed care, exchanges, asset managers, card issuers and
+  payments keep every generic metric.** An insurer's float makes its cash conversion
+  hard to read too. That needs its own declaration, keyed on a narrower industry than
+  SIC 6311–6411.
+- A bank holding company filed under a non-bank SIC code is treated as a non-bank and
+  keeps the metrics. Examples: AXP and SOFI under 6199.
+- The V2 snapshot path depends on the provider's profile words. A bank whose profile
+  carries neither a recognised industry nor a bank-like SIC description keeps the
+  generic metrics in the V2 surfaces, though not in V3. The reverse case also exists:
+  a V2 profile with no SIC code and a vendor label such as "Investment Banking &
+  Brokerage" is still inferred to be Banks (T6 estimate). SIC wins only where a code
+  is present.

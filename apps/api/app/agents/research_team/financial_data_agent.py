@@ -109,6 +109,9 @@ class FinancialDataAgentOutput:
     source_tier_summary: dict  # e.g. {"T5_api_aggregator": 2, "T6_model_estimate": 0}
     financial_context_summary: str
     warnings: list[str] = field(default_factory=list)
+    #: ADR-069 — ``financials.<category>`` paths not meaningful for this business model
+    #: under its playbook. Neither available nor missing.
+    not_meaningful_financial_data: list[str] = field(default_factory=list)
 
 
 def _fmt_m(value: float | None) -> str | None:
@@ -118,7 +121,9 @@ def _fmt_m(value: float | None) -> str | None:
     return f"{value:,.0f} USD_m"
 
 
-def _summarize_fundamentals(fs: dict, legal_name: str) -> str:
+def _summarize_fundamentals(
+    fs: dict, legal_name: str, not_meaningful: frozenset[str] = frozenset()
+) -> str:
     """
     Build a factual, internal narrative from normalized fundamentals.
 
@@ -221,8 +226,13 @@ def _summarize_fundamentals(fs: dict, legal_name: str) -> str:
 
     # ── Honest remaining gaps (annual vs TTM, EBITDA, beta) ──────────────
     remaining: list[str] = []
-    if fs.get("ebitda_usd_m") is None:
+    if fs.get("ebitda_usd_m") is None and "ebitda" not in not_meaningful:
         remaining.append("EBITDA and EV/EBITDA")
+    if not_meaningful:
+        parts.append(
+            "Operating cash flow, free cash flow, EBITDA and leverage ratios are not "
+            "shown: they are not meaningful for this business model under its playbook."
+        )
     if mktcap is None:
         remaining.append("market capitalization")
     remaining.append("beta and validated TTM figures")
@@ -293,8 +303,18 @@ def run_financial_data_agent(
         if fundamentals_summary.get(key) is not None:
             available_categories.add(cat)
 
+    # ADR-069 — a category the company's playbooks declare not meaningful for its
+    # business model (a bank's EBITDA, free cash flow, current ratio) is neither
+    # expected nor reported: it is listed ONCE as not meaningful, never as missing.
+    from app.services.playbooks.applicability import for_snapshot
+
+    applicability = for_snapshot(company_snapshot)
+    not_meaningful: list[str] = []
     for cat in _EXPECTED_FINANCIAL_CATEGORIES:
         path = f"financials.{cat}"
+        if not applicability.keeps_category(cat):
+            not_meaningful.append(path)
+            continue
         if cat in available_categories:
             available.append(path)
         else:
@@ -373,8 +393,12 @@ def run_financial_data_agent(
     )
 
     if available_categories:
+        # ADR-069 — the narrative reaches the council (`_add_financial_context`), so it
+        # carries no metric the company's playbooks declare not meaningful.
         financial_context_summary = header + _summarize_fundamentals(
-            fundamentals_summary, legal_name
+            applicability.filter_fundamentals(fundamentals_summary),
+            legal_name,
+            not_meaningful=applicability.declared,
         )
     else:
         financial_context_summary = (
@@ -391,6 +415,7 @@ def run_financial_data_agent(
         source_tier_summary=source_tier_summary,
         financial_context_summary=financial_context_summary,
         warnings=warnings,
+        not_meaningful_financial_data=not_meaningful,
     )
 
 

@@ -380,8 +380,17 @@ def total_debt_is_usable(n: Any) -> bool:
     return not (n.long_term_debt is None and n.short_term_debt is not None)
 
 
-def _peer_metrics(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[str]]:
-    """Normalise with the subject's own rules, then compute the defined metrics."""
+def _peer_metrics(
+    ticker: str,
+    facts: dict,
+    not_meaningful: "frozenset[str] | set[str]" = frozenset(),
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Normalise with the subject's own rules, then compute the defined metrics.
+
+    ADR-069 — a metric in ``not_meaningful`` (declared by the SUBJECT's playbooks) is
+    neither computed nor reported as a refusal: it has no reading for this business
+    model, so it is not a gap either.
+    """
     from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
     from app.services.calculations.statement_metrics import compute_statement_metrics
 
@@ -409,7 +418,7 @@ def _peer_metrics(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[
     readings, refusals = compute_statement_metrics(
         values,
         period_label=f"FY{n.fiscal_year}",
-        keys=[k for k in PEER_METRICS if k not in withheld],
+        keys=[k for k in PEER_METRICS if k not in withheld and k not in not_meaningful],
     )
     items: list[dict[str, Any]] = [
         {
@@ -462,7 +471,12 @@ async def _get_peer_financials(
         if facts is None:
             gaps.append(f"{ticker}: {reason}")
             continue
-        found, notes = await asyncio.to_thread(_peer_metrics, ticker, facts)
+        found, notes = await asyncio.to_thread(
+            _peer_metrics,
+            ticker,
+            facts,
+            getattr(context, "not_meaningful_calculations", frozenset()),
+        )
         items.extend(found)
         gaps.extend(notes)
     verified = sorted({i["ticker"] for i in items})
@@ -476,6 +490,28 @@ async def _get_peer_financials(
         ),
         "consumption": units_for(PEER_UNITS, url_fetch_calls=fetches),
         "contains_untrusted_content": False,
+        **_not_meaningful_block(context),
+    }
+
+
+def _not_meaningful_block(context: "ToolContext") -> dict[str, Any]:
+    """ADR-069 — what was deliberately not computed, said once. Absent when nothing."""
+    calcs = sorted(getattr(context, "not_meaningful_calculations", ()) or ())
+    cats = sorted(getattr(context, "not_meaningful_categories", ()) or ())
+    if not (calcs or cats):
+        return {}
+    return {
+        "not_meaningful_for_business_model": {
+            "calculations": calcs,
+            "statement_lines": [
+                line for line, category in STATEMENT_LINE_CATEGORY.items()
+                if category in cats
+            ],
+            "note": (
+                "Not computed: these generic metrics have no reading for this business "
+                "model under its playbook. Their absence is not a research gap."
+            ),
+        }
     }
 
 
@@ -534,6 +570,17 @@ STATEMENT_LINES: tuple[tuple[str, str, str], ...] = (
     ("net_income_yoy_growth", "Net income growth vs prior fiscal year", "%"),
 )
 
+#: ADR-069 — the statement lines that ARE a generic financial category a playbook may
+#: declare not meaningful. A bank's "free cash flow (OCF - capex)" is the same arithmetic
+#: as the calculation the playbook refuses, under a statement-line name.
+STATEMENT_LINE_CATEGORY: dict[str, str] = {
+    "operating_income": "ebit",
+    "ebitda": "ebitda",
+    "operating_cash_flow": "operating_cash_flow",
+    "capital_expenditures": "capital_expenditure",
+    "free_cash_flow": "free_cash_flow",
+}
+
 
 def validate_get_sec_statements(arguments: dict[str, Any]) -> dict[str, Any]:
     company_id = str(arguments.get("company_id") or "").strip()
@@ -552,13 +599,26 @@ _QUARTER_METRIC_IDS = {
 _FLOW_IDS = frozenset({"revenue", "operating_income", "net_income"})
 
 
-def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[str]]:
+def statement_items(
+    ticker: str,
+    facts: dict,
+    not_meaningful_calculations: "frozenset[str] | set[str]" = frozenset(),
+    not_meaningful_categories: "frozenset[str] | set[str]" = frozenset(),
+) -> tuple[list[dict[str, Any]], list[str]]:
     """The subject's latest annual statements and defined metrics, from SEC XBRL.
 
     The SAME producer as the report's own figures and the peer table: the normaliser's
     own-period rule (a line not tagged for the reporting period is withheld, never
     carried from another year), and the defined metrics with their directions.
+
+    ADR-069 — lines and metrics the subject's playbooks declare not meaningful for its
+    business model are not handed out at all (a bank's operating cash flow read as
+    "cash consumption" led a live report's verdict).
     """
+    skipped_lines = {
+        line for line, category in STATEMENT_LINE_CATEGORY.items()
+        if category in not_meaningful_categories
+    }
     from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
 
     n = normalize_company_facts(facts, ticker)
@@ -569,7 +629,7 @@ def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], lis
     items: list[dict[str, Any]] = []
     for field_name, label, unit in STATEMENT_LINES:
         value = getattr(n, field_name, None)
-        if value is None or field_name in n.withheld_fields:
+        if value is None or field_name in n.withheld_fields or field_name in skipped_lines:
             continue
         if field_name == "total_debt" and not debt_usable:
             continue
@@ -599,6 +659,8 @@ def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], lis
     labels = {name: (label, unit) for name, label, unit in STATEMENT_LINES}
     for fact in n.current_period_facts:
         metric_id = _QUARTER_METRIC_IDS.get(fact["field"], fact["field"])
+        if metric_id in skipped_lines:
+            continue
         label, unit = labels.get(metric_id, (metric_id, "USD millions"))
         quarter, year = str(fact["period"]).split(" ", 1)
         q_period = f"{year}-{quarter}"
@@ -621,7 +683,7 @@ def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], lis
                 "source_ref": fact.get("source_url"),
             }
         )
-    metrics, gaps = _peer_metrics(ticker, facts)
+    metrics, gaps = _peer_metrics(ticker, facts, not_meaningful_calculations)
     # A change of basis since the annual statements is stated to the investigator, so it
     # never builds a trend or a per-share comparison across it.
     gaps = [
@@ -654,7 +716,13 @@ async def _get_sec_statements(
                 "summary": "SEC statements unavailable",
                 "consumption": units_for(PEER_UNITS, url_fetch_calls=1),
                 "contains_untrusted_content": False}
-    items, gaps = await asyncio.to_thread(statement_items, company.ticker, facts)
+    items, gaps = await asyncio.to_thread(
+        statement_items,
+        company.ticker,
+        facts,
+        getattr(context, "not_meaningful_calculations", frozenset()),
+        getattr(context, "not_meaningful_categories", frozenset()),
+    )
     return {
         "items": items,
         "gaps": gaps,
@@ -664,6 +732,7 @@ async def _get_sec_statements(
         ),
         "consumption": units_for(PEER_UNITS, url_fetch_calls=1),
         "contains_untrusted_content": False,
+        **_not_meaningful_block(context),
     }
 
 

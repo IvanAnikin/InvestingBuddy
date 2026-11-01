@@ -158,6 +158,11 @@ class V3ResearchOutcome:
     #: ``V3_COMPANY_WEB_RESEARCH_ENABLED`` ran the stage, so a run without it serialises
     #: exactly as it did before.
     web_context: dict[str, Any] = field(default_factory=dict)
+    #: ADR-069 — the generic metrics the company's playbooks declare not meaningful for
+    #: its business model, recorded ONCE (``MetricApplicability.to_dict()``), with the
+    #: questions whose required calculations were narrowed. EMPTY — and absent from
+    #: ``to_dict()`` — for every company the generic metrics describe.
+    not_meaningful_metrics: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -171,6 +176,8 @@ class V3ResearchOutcome:
         payload = self._base_dict()
         if self.web_context:
             payload["web_context"] = dict(self.web_context)
+        if self.not_meaningful_metrics:
+            payload["not_meaningful_metrics"] = dict(self.not_meaningful_metrics)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -669,6 +676,18 @@ async def _run(
         )
     playbooks = [_PlaybookAdapter(p) for p in selection.playbooks]
     outcome.playbook_versions = dict(selection.versions)
+    # ADR-069 — what the applicable methodologies jointly declare not meaningful for
+    # THIS company (a bank's cash conversion). The same selection inputs, so the
+    # declaration can never apply to a company its playbook did not.
+    from app.services.playbooks.applicability import resolve as resolve_applicability
+
+    applicability = resolve_applicability(
+        selection,
+        sector=classification.matching_sector,
+        industry=classification.industry,
+        signals=stage.signals,
+    )
+    outcome.not_meaningful_metrics = applicability.to_dict()
 
     # 3. The ledger run.
     run = await ledger.open_run(
@@ -730,7 +749,15 @@ async def _run(
         cfg=cfg,
         commodities=[m.commodity for m in profile.commodities],
         extra_questions=thesis_questions(thesis),
+        not_meaningful_calculations=applicability.calculations,
+        not_meaningful_questions=applicability.questions,
     )
+    if plan.not_meaningful and outcome.not_meaningful_metrics:
+        outcome.not_meaningful_metrics["narrowed_questions"] = dict(plan.not_meaningful)
+    if plan.not_meaningful_questions and outcome.not_meaningful_metrics:
+        outcome.not_meaningful_metrics["skipped_questions"] = list(
+            plan.not_meaningful_questions
+        )
     # A plan that will answer a question with less than it asks for says so on the run,
     # where a reader sees it — not only in the planner's own record.
     for reason in plan.degraded:
@@ -884,6 +911,10 @@ async def _run(
                 # Open-web W6b: the Discovery run's theme, so the W4 theme tool can read the
                 # documents that run ingested. None for a company run.
                 theme_key=theme_key,
+                # ADR-069 — the statement and calculation tools do not compute or hand
+                # out what the company's playbooks declare not meaningful.
+                not_meaningful_calculations=applicability.calculations,
+                not_meaningful_categories=applicability.financial_categories,
             )
             worker = LLMInvestigator(
                 session=tool_session,
@@ -1094,6 +1125,8 @@ async def _run(
             supersessions=(outcome.gap_reconciliation or {}).get("supersessions") or [],
             stage=(outcome.stage or {}).get("stage"),
             web_context=outcome.web_context or None,
+            not_meaningful_calculations=applicability.calculations,
+            not_meaningful_note=applicability.reader_note or None,
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1157,6 +1190,8 @@ async def _professional_report(
     supersessions: list[dict[str, Any]] | None = None,
     stage: str | None = None,
     web_context: dict[str, Any] | None = None,
+    not_meaningful_calculations: "frozenset[str]" = frozenset(),
+    not_meaningful_note: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1327,7 +1362,9 @@ async def _professional_report(
         withheld_for_safety=withheld,
         commodity_rows=pr.commodity_rows(table_payloads.get("get_industry_series", [])),
         peer_rows=pr.peer_rows(
-            table_payloads.get("get_peer_financials", []), getattr(company, "ticker", None)
+            table_payloads.get("get_peer_financials", []),
+            getattr(company, "ticker", None),
+            not_meaningful=not_meaningful_calculations,
         ),
         council_convened=council_convened,
         domain_cost=pr.domain_cost(
@@ -1335,6 +1372,7 @@ async def _professional_report(
         ),
         web_support=web_support,
         web_context=web_context or None,
+        not_meaningful_note=not_meaningful_note,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

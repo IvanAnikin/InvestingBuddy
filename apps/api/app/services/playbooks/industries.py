@@ -41,7 +41,12 @@ the clearest case: without it there is no view to take.
 from __future__ import annotations
 
 from app.services.playbooks.registry import register
-from app.services.playbooks.schema import AppliesTo, Playbook, PlaybookQuestion
+from app.services.playbooks.schema import (
+    AppliesTo,
+    NotMeaningfulMetrics,
+    Playbook,
+    PlaybookQuestion,
+)
 
 # --------------------------------------------------------------------------- #
 # Luxury
@@ -338,9 +343,65 @@ SEMICONDUCTORS = Playbook(
 # Banks and financials
 # --------------------------------------------------------------------------- #
 
+#: ADR-069. What the generic methodology computes and demands that means nothing for a
+#: DEPOSIT-TAKING BANK. Matched by the "Banks" industry only (SIC 6020-6036 and the
+#: canonical label), never by the playbook's sector arm or its other industries:
+#: - an insurer is deliberately NOT covered. SIC 6311-6411 maps to "Insurance" and
+#:   holds managed care (UNH 6324), brokers (MMC, AON 6411) and conglomerates (BRK
+#:   6331), for which operating margin, FCF and net debt are the analysis;
+#: - "Diversified Financials" is not produced by any classifier, and payments, exchanges
+#:   and asset managers (V, PYPL, ICE, CME, BLK) keep every generic metric.
+BANK_NOT_MEANINGFUL = NotMeaningfulMetrics(
+    applies_to=AppliesTo(industries=("Banks",)),
+    calculations=(
+        "cash_conversion",
+        "capex_to_ocf",
+        "capex_intensity",
+        "fcf_conversion",
+        "fcf_margin",
+        "dividend_cover_by_fcf",
+        "net_debt",
+        "net_debt_to_ebitda",
+        "operating_margin",
+        "gross_margin",
+        "cash_runway_quarters",
+    ),
+    financial_categories=(
+        "ebitda",
+        "ebit",
+        "free_cash_flow",
+        "ev_ebitda",
+        "current_ratio",
+        "debt_to_equity",
+        "operating_cash_flow",
+        "capital_expenditure",
+    ),
+    # "How much cash does the business generate after capital spending" has no reading
+    # for a deposit-taker; `funding_and_deposits` asks how it is funded. Declared HERE,
+    # not as that question's `replaces`, because the playbook also matches insurers and
+    # payments companies, for which the base question is the right one.
+    questions=("cash_generation_and_funding",),
+    # A bank is valued on its book and the return it earns on it (P/B with ROE).
+    analysed_by=("book_value_per_share", "return_on_equity"),
+    reader_note=(
+        "Cash conversion, free cash flow, net debt and EBITDA are not shown: they are "
+        "not meaningful for a deposit-taking bank, whose operating cash flow moves with "
+        "deposits and trading assets and whose debt is funding."
+    ),
+    reason=(
+        "For a deposit-taking bank, operating cash flow swings with trading assets, "
+        "loans and deposits, debt is funding rather than leverage, and there is no "
+        "EBITDA, "
+        "gross margin or current ratio: these generic metrics are not computed and a "
+        "missing one is not a research gap."
+    ),
+)
+
 BANKS_FINANCIALS = Playbook(
     playbook_id="banks_financials",
-    version=1,
+    # v2 (ADR-069): declares, for deposit-taking banks, the generic metrics and the
+    # base cash-generation question it does not use.
+    version=2,
     display_name="Banks and financials",
     applies_to=AppliesTo(
         sectors=("Financials",),
@@ -426,6 +487,7 @@ BANKS_FINANCIALS = Playbook(
         "produces confident nonsense, so the generic margin metrics are ABSENT from "
         "required_metrics rather than merely deprioritised."
     ),
+    not_meaningful=BANK_NOT_MEANINGFUL,
 )
 
 # --------------------------------------------------------------------------- #
@@ -1270,6 +1332,7 @@ def register_all() -> tuple[Playbook, ...]:
 
 
 __all__ = [
+    "BANK_NOT_MEANINGFUL",
     "BANKS_FINANCIALS",
     "BIOTECH",
     "DEVELOPMENT_STAGE_RESOURCE",

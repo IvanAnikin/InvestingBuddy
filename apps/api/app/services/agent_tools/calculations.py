@@ -276,10 +276,23 @@ async def _get_calculated_metrics(
         filtered_after_query=["scope", "scope_key", "period_key"],
     )
 
-    definitions = [definition_for(key) for key in arguments["metrics"]]
+    # ADR-069 — a metric the company's playbooks declare not meaningful for its business
+    # model is not computed, not persisted and not refused: a refusal reads as a gap,
+    # and a bank's missing cash conversion is not one.
+    excluded: frozenset[str] = frozenset(
+        getattr(context, "not_meaningful_calculations", None) or ()
+    )
+    not_meaningful = [key for key in arguments["metrics"] if key in excluded]
+    definitions = [
+        definition_for(key) for key in arguments["metrics"] if key not in excluded
+    ]
     labels = {label for d in definitions for spec in d.inputs for label in spec.labels}
-    rows = await _candidate_facts(
-        context.session, company_id=arguments["company_id"], labels=labels
+    rows = (
+        await _candidate_facts(
+            context.session, company_id=arguments["company_id"], labels=labels
+        )
+        if definitions
+        else []
     )
 
     computed: list[dict[str, Any]] = []
@@ -319,6 +332,11 @@ async def _get_calculated_metrics(
             else f"{len(computed)} computed, 0 refused"
         ),
         "contains_untrusted_content": False,
+        **(
+            {"not_meaningful_for_business_model": not_meaningful}
+            if not_meaningful
+            else {}
+        ),
     }
 
 

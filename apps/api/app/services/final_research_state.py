@@ -183,6 +183,9 @@ class FinancialEvidenceState:
     #: Facts that are real evidence but close no tracked category
     #: (e.g. ``fiscal_year``, ``reporting_currency``, ``net_debt``).
     unmapped_fact_count: int = 0
+    #: ADR-069 — categories the company's playbooks declare not meaningful for its
+    #: business model. Neither resolved nor open: recorded here, once.
+    not_meaningful_categories: tuple[str, ...] = ()
 
     @property
     def is_primary_backed(self) -> bool:
@@ -295,6 +298,15 @@ def build_financial_evidence_state(
     """
     resolved: dict[str, ResolvedFinancialFact] = {}
     channels: list[str] = list(fundamentals.channels)
+    agent = FinancialDataSummary.from_payload(financial_data_summary)
+    # ADR-069 — declared not meaningful for this business model by the company's
+    # playbooks (carried on the agent summary). Such a category is neither resolved
+    # nor open, whichever channel happens to carry a value for it.
+    not_meaningful = tuple(
+        path[len(FINANCIAL_FIELD_PREFIX) :]
+        for path in (agent.not_meaningful_fields if agent else [])
+        if path.startswith(FINANCIAL_FIELD_PREFIX)
+    )
 
     # 1. Issuer primary-document facts (T1) — strongest.
     fact_rows = _qualifying_fact_rows(primary_facts)
@@ -304,6 +316,8 @@ def build_financial_evidence_state(
         category = PRIMARY_FACT_TO_CATEGORY.get(name)
         if category is None:
             unmapped += 1
+            continue
+        if category in not_meaningful:
             continue
         resolved.setdefault(
             category,
@@ -328,7 +342,7 @@ def build_financial_evidence_state(
     if fs.get("fiscal_year"):
         fs_period = f"{fs.get('period_basis') or 'annual'} FY{fs.get('fiscal_year')}"
     for key, category in REGULATOR_FACT_TO_CATEGORY.items():
-        if fs.get(key) is None:
+        if fs.get(key) is None or category in not_meaningful:
             continue
         existing = resolved.get(category)
         if existing is not None and tier_rank(existing.source_tier) <= tier_rank(fs_tier):
@@ -344,13 +358,12 @@ def build_financial_evidence_state(
     # 3. Whatever the FinancialDataAgent already listed as available keeps its
     #    place: those categories come from the aggregator channel and are real.
     #    They never OVERWRITE a stronger fact above.
-    agent = FinancialDataSummary.from_payload(financial_data_summary)
     agent_tier = _aggregator_tier(company_snapshot)
     for path in agent.available_fields if agent else []:
         if not path.startswith(FINANCIAL_FIELD_PREFIX):
             continue
         category = path[len(FINANCIAL_FIELD_PREFIX) :]
-        if category in resolved:
+        if category in resolved or category in not_meaningful:
             continue
         resolved[category] = ResolvedFinancialFact(
             category=category,
@@ -366,6 +379,7 @@ def build_financial_evidence_state(
         for path in (agent.missing_fields if agent else [])
         if path.startswith(FINANCIAL_FIELD_PREFIX)
         and path[len(FINANCIAL_FIELD_PREFIX) :] not in resolved
+        and path[len(FINANCIAL_FIELD_PREFIX) :] not in not_meaningful
     )
 
     if fact_rows and "issuer_primary_document" not in channels:
@@ -379,6 +393,7 @@ def build_financial_evidence_state(
         open_categories=open_categories,
         channels=tuple(dict.fromkeys(channels)),
         unmapped_fact_count=unmapped,
+        not_meaningful_categories=not_meaningful,
     )
 
 
@@ -605,7 +620,7 @@ class FinalResearchState:
 
     def to_payload(self) -> dict[str, Any]:
         """Bounded, auditable diagnostics — persisted beside the report."""
-        return {
+        payload: dict[str, Any] = {
             "version": self.version,
             "fundamentals_available": self.fundamentals.available,
             "fundamentals_source": self.fundamentals.source,
@@ -620,6 +635,12 @@ class FinalResearchState:
             ),
             "primary_fact_count": len(self.primary_facts),
         }
+        if self.financial_evidence.not_meaningful_categories:
+            # ADR-069 — only when declared, so every other report's payload is unchanged.
+            payload["not_meaningful_financial_categories"] = list(
+                self.financial_evidence.not_meaningful_categories
+            )
+        return payload
 
 
 def build_final_research_state(

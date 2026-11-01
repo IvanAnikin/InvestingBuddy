@@ -236,10 +236,34 @@ def summary_total_debt_is_usable(fs: Mapping[str, Any]) -> bool:
     )
 
 
+#: ADR-069 — `fundamentals_summary` keys that ARE a generic metric a playbook may declare
+#: not meaningful, by calculation key or financial category. A consumer that hands the
+#: summary to a model drops these for a company whose playbook declares them.
+SEC_SUMMARY_KEY_METRIC: dict[str, str] = {
+    "operating_income_usd_m": "ebit",
+    "operating_cash_flow_usd_m": "operating_cash_flow",
+    "capital_expenditures_usd_m": "capital_expenditure",
+    "free_cash_flow_usd_m": "free_cash_flow",
+    "free_cash_flow_margin_pct": "free_cash_flow",
+    "free_cash_flow_yoy_growth_pct": "free_cash_flow",
+    "ebitda_usd_m": "ebitda",
+    "ebitda_mln": "ebitda",
+    "ev_ebitda_x": "ev_ebitda",
+    "debt_to_equity": "debt_to_equity",
+    "operating_margin_pct": "operating_margin",
+    "gross_margin_pct": "gross_margin",
+}
+
+
 def metrics_from_sec_summary(
     fs: Mapping[str, Any],
+    not_meaningful: "frozenset[str] | set[str]" = frozenset(),
 ) -> tuple[list[MetricReading], list[MetricRefusal]]:
-    """Readings from a snapshot's ``fundamentals_summary``. Empty when it has no year."""
+    """Readings from a snapshot's ``fundamentals_summary``. Empty when it has no year.
+
+    ``not_meaningful`` (ADR-069): calculation keys the company's playbooks declare not
+    meaningful for its business model. Not computed and not refused.
+    """
     fiscal_year = fs.get("fiscal_year")
     if not fiscal_year or (fs.get("period_basis") or "annual") != "annual":
         # An interim bundle has no annual label to compute under, and stamping one on
@@ -253,11 +277,14 @@ def metrics_from_sec_summary(
     }
     if not summary_total_debt_is_usable(fs):
         withheld.add("net_debt")
-    keys = [k for k in STATEMENT_METRIC_KEYS if k not in withheld]
+    keys = [
+        k for k in STATEMENT_METRIC_KEYS if k not in withheld and k not in not_meaningful
+    ]
     return compute_statement_metrics(values, period_label=f"FY{fiscal_year}", keys=keys)
 
 
 __all__ = [
+    "SEC_SUMMARY_KEY_METRIC",
     "SEC_SUMMARY_TO_INPUT",
     "STATEMENT_METRIC_KEYS",
     "MetricReading",
