@@ -5041,7 +5041,10 @@ quarter's results.
   and the newest 8-K is still read (existing behaviour). The item codes travel on
   `SecFilingDocument.item_codes` and `SecPreflightFailure.item_codes`, so the fetched,
   budget-skipped and preflight artifacts all carry the same label.
-- **Plumbing.** Both filing-dict adapters now carry `item_numbers`.
+- **Plumbing.** Both filing-dict adapters pass `item_numbers` through RAW, not
+  wrapped in `list(...)`. `list("2.02,9.01")` would split the string into
+  characters, and a real Item 2.02 8-K would be labelled `other`. `parse_item_codes`
+  accepts both strings and lists.
 - **The press release, not the cover page.** An Item 2.02 8-K's primary document is a
   cover page of a few KB. It only refers to the earnings release filed as Exhibit 99.1.
   EDGAR's `index.json` types every file by its icon (`text.gif`), so it cannot identify
@@ -5049,10 +5052,18 @@ quarter's results.
   `<accession>-index.htm` page (`fetch_filing_index_page`), whose "Document Format
   Files" table gives each document's EDGAR type. It resolves the `.htm` document typed
   `EX-99.1`, or else the first `EX-99*` (`select_results_exhibit`).
-  - Same host (`www.sec.gov/Archives`), same guarded, pinned, throttled, byte-capped
-    network leg as `index.json` (one shared `_fetch_sec_archive_bytes`). No new host
-    and no caller-supplied URL. The filename is the anchor text and is re-validated by
+  - Same host (`www.sec.gov/Archives`), same guarded, pinned, throttled network leg as
+    `index.json` (one shared `_fetch_sec_archive_bytes`). No new host and no
+    caller-supplied URL. The filename is the anchor text and is re-validated by
     `build_document_url`.
+  - The page has its own byte cap (`INDEX_PAGE_MAX_BYTES`, 256 KB; the real page is
+    ~12 KB) and its own `sec_filing_index_page_*` log events.
+  - No regex backtracking. A first version located the table with
+    `<table[^>]*summary="…"[^>]*>`, which took 143 s on a 100 KB page of unclosed
+    openers, on the event loop. That is the failure mode of the gunicorn worker-timeout
+    outage. The parser now uses only `str.find` / split on `</tr>` and `</td>`, and
+    lowercases ASCII only so indexes stay aligned. It runs in `asyncio.to_thread`.
+    Adversarial 256 KB pages parse in at most ~27 ms, and a test bounds them at 0.5 s.
   - The page fetch counts against the existing attempt cap (`max_documents × 3`) and
     deadline. The two-body cap is unchanged.
   - Degrades, never fails. If the page cannot be read, names no `EX-99*` document, or

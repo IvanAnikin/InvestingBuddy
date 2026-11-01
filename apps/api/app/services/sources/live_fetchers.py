@@ -114,7 +114,7 @@ def _filing_dict(event: Any) -> dict[str, Any]:
         "summary": get("summary") or get("headline"),
         "accession_number": get("accession_number"),
         # EDGAR's own item codes — what makes an 8-K a results release (ADR-068).
-        "item_numbers": list(get("item_numbers") or []),
+        "item_numbers": get("item_numbers"),
     }
 
 

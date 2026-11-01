@@ -125,6 +125,9 @@ _SOURCE_ID = "sec_edgar"
 DEFAULT_REQUEST_MIN_INTERVAL_MS = 120
 DEFAULT_INDEX_TIMEOUT_SECONDS = 15
 DEFAULT_INDEX_MAX_BYTES = 2_000_000
+#: Byte ceiling for a filing's ``-index.htm`` page. A real page is ~12 KB (JPM's
+#: Q3 2026 results 8-K: 11.7 KB); anything past this is discarded, never parsed.
+INDEX_PAGE_MAX_BYTES = 262_144
 
 # Index fetches allowed per document we are trying to resolve. Headroom for
 # filings whose index carries no usable body document, WITHOUT letting a long
@@ -541,19 +544,74 @@ def select_primary_document(
     return None
 
 
-_DOC_TABLE_RE = re.compile(
-    r"<table[^>]*summary=\"Document Format Files\"[^>]*>(.*?)</table>",
-    re.IGNORECASE | re.DOTALL,
-)
-_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
-_CELL_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.IGNORECASE | re.DOTALL)
-_ANCHOR_TEXT_RE = re.compile(r"<a\b[^>]*>(.*?)</a>", re.IGNORECASE | re.DOTALL)
-_TAG_RE = re.compile(r"<[^>]+>")
+#: The ``-index.htm`` page is parsed with ``str.find`` / ``str.split`` only: every
+#: step is linear in the page, so an adversarial page (thousands of unclosed tags)
+#: cannot stall the event loop the way a backtracking ``<tag[^>]*…>`` regex can.
+_DOC_TABLE_MARKER = 'summary="document format files"'
+#: ASCII-only lower-casing. ``str.lower`` can change a string's LENGTH ("İ" lowers to
+#: two code points), which would misalign every index found in the lowered copy.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 _PRESS_RELEASE_EXHIBIT_RE = re.compile(r"^EX-99\.0*1$")
 
 
+def _strip_tags(raw: str) -> str:
+    """Text with every ``<…>`` removed; an unclosed ``<`` drops the rest. Linear."""
+    out: list[str] = []
+    i, n = 0, len(raw)
+    while i < n:
+        lt = raw.find("<", i)
+        if lt < 0:
+            out.append(raw[i:])
+            break
+        out.append(raw[i:lt])
+        out.append(" ")
+        gt = raw.find(">", lt + 1)
+        if gt < 0:
+            break
+        i = gt + 1
+    return "".join(out)
+
+
 def _cell_text(raw: str) -> str:
-    return html.unescape(_TAG_RE.sub(" ", raw)).replace("\xa0", " ").strip()
+    return html.unescape(_strip_tags(raw)).replace("\xa0", " ").strip()
+
+
+def _split_ci(text: str, lowered: str, separator: str) -> list[tuple[str, str]]:
+    """Split ``text`` on a lower-case ``separator`` found in ``lowered``. Linear."""
+    parts: list[tuple[str, str]] = []
+    start = 0
+    while True:
+        at = lowered.find(separator, start)
+        if at < 0:
+            parts.append((text[start:], lowered[start:]))
+            return parts
+        parts.append((text[start:at], lowered[start:at]))
+        start = at + len(separator)
+
+
+def _after_open_tag(text: str, lowered: str, tag: str) -> tuple[str, str] | None:
+    """The content after the LAST ``<tag …>`` opener in a segment, or None. Linear."""
+    at = lowered.rfind(tag)
+    if at < 0:
+        return None
+    gt = lowered.find(">", at)
+    if gt < 0:
+        return None
+    return text[gt + 1 :], lowered[gt + 1 :]
+
+
+def _anchor_text(cell: str, lowered: str) -> str:
+    """The text of the first ``<a …>…</a>`` in a cell, else the whole cell. Linear."""
+    at = lowered.find("<a ")
+    if at < 0:
+        at = lowered.find("<a>")
+    if at < 0:
+        return cell
+    gt = lowered.find(">", at)
+    end = lowered.find("</a>", gt + 1) if gt >= 0 else -1
+    if gt < 0 or end < 0:
+        return cell
+    return cell[gt + 1 : end]
 
 
 def _exhibit_type(entry: dict[str, Any]) -> str:
@@ -565,33 +623,45 @@ def parse_filing_index_page(page: str | bytes | None) -> list[dict[str, Any]]:
 
     Each row becomes ``{"name", "type", "size", "description"}``, in the filing's own
     sequence order. Only that FIRST table is read: the "Data Files" table below it
-    holds XBRL files, never a press release. Any shape mismatch returns ``[]``. A name
-    is the anchor TEXT (never the link target) and is re-validated by
-    :func:`build_document_url` before it can become a URL.
+    holds XBRL files, never a press release. Any shape mismatch, or a page over
+    ``INDEX_PAGE_MAX_BYTES``, returns ``[]``. A name is the anchor TEXT (never the link
+    target) and is re-validated by :func:`build_document_url` before it can become a
+    URL. Linear in the page: ``str.find`` / ``str.split`` only, no regex.
     """
     if isinstance(page, bytes):
+        if len(page) > INDEX_PAGE_MAX_BYTES:
+            return []
         page = page.decode("utf-8", errors="replace")
-    if not isinstance(page, str):
+    if not isinstance(page, str) or len(page) > INDEX_PAGE_MAX_BYTES:
         return []
-    table = _DOC_TABLE_RE.search(page)
-    if table is None:
+    lowered_page = page.translate(_ASCII_LOWER)
+    marker = lowered_page.find(_DOC_TABLE_MARKER)
+    if marker < 0:
         return []
+    open_end = lowered_page.find(">", marker)
+    close = lowered_page.find("</table>", open_end + 1) if open_end >= 0 else -1
+    if open_end < 0 or close < 0:
+        return []
+    table, lowered_table = page[open_end + 1 : close], lowered_page[open_end + 1 : close]
     entries: list[dict[str, Any]] = []
-    for row in _ROW_RE.findall(table.group(1)):
-        cells = _CELL_RE.findall(row)
+    for row, lowered_row in _split_ci(table, lowered_table, "</tr>"):
+        cells: list[tuple[str, str]] = []
+        for piece, lowered_piece in _split_ci(row, lowered_row, "</td>"):
+            content = _after_open_tag(piece, lowered_piece, "<td")
+            if content is not None:
+                cells.append(content)
         if len(cells) < 5:
             continue
-        anchor = _ANCHOR_TEXT_RE.search(cells[2])
-        text = _cell_text(anchor.group(1) if anchor else cells[2])
+        text = _cell_text(_anchor_text(*cells[2]))
         name = text.split()[0] if text.split() else ""
         if not name:
             continue
         entries.append(
             {
                 "name": name,
-                "type": _cell_text(cells[3]),
-                "size": _cell_text(cells[4]),
-                "description": _cell_text(cells[1]),
+                "type": _cell_text(cells[3][0]),
+                "size": _cell_text(cells[4][0]),
+                "description": _cell_text(cells[1][0]),
             }
         )
     return entries
@@ -734,24 +804,28 @@ async def _fetch_sec_archive_bytes(
     client_factory: Callable[..., Any] | None,
     limiter: SecRateLimiter | None,
     resolver: Resolver | None,
+    max_bytes: int | None = None,
+    event_prefix: str = "sec_filing_index",
 ) -> bytes | None:
     """GET one small SEC Archives listing; ``None`` on any failure. Never raises.
 
     The single network leg shared by ``index.json`` and the ``-index.htm`` page: the
     same allowlist re-check with ``resolve_ip=True``, address pinning, declared
     User-Agent, config timeout, byte cap, no redirects, 2xx only. A truncated
-    (over-cap) body is discarded rather than half-parsed.
+    (over-cap) body is discarded rather than half-parsed. ``max_bytes`` defaults to the
+    ``index.json`` cap; ``event_prefix`` keeps each listing's log events distinct.
     """
     cfg = cfg or default_settings
     limiter = limiter or SecRateLimiter(cfg=cfg)
-    max_bytes = _index_max_bytes(cfg)
+    if max_bytes is None:
+        max_bytes = _index_max_bytes(cfg)
 
     try:
         import httpx
     except Exception as exc:  # noqa: BLE001 - degrade, never crash a run
         log_event(
             _logger,
-            "sec_filing_index_unavailable",
+            f"{event_prefix}_unavailable",
             reason=type(exc).__name__,
         )
         return None
@@ -770,7 +844,7 @@ async def _fetch_sec_archive_bytes(
     if reason:
         log_event(
             _logger,
-            "sec_filing_index_blocked",
+            f"{event_prefix}_blocked",
             reason=failure_code_for_block(reason),
             accession=format_accession(str(accession or "")),
         )
@@ -801,7 +875,7 @@ async def _fetch_sec_archive_bytes(
                     # Only the status CLASS is logged — never the exact code.
                     log_event(
                         _logger,
-                        "sec_filing_index_rejected",
+                        f"{event_prefix}_rejected",
                         status_class=http_status_class(status),
                         accession=format_accession(str(accession or "")),
                     )
@@ -818,7 +892,7 @@ async def _fetch_sec_archive_bytes(
                 if truncated:
                     log_event(
                         _logger,
-                        "sec_filing_index_over_cap",
+                        f"{event_prefix}_over_cap",
                         max_bytes=max_bytes,
                         accession=format_accession(str(accession or "")),
                     )
@@ -827,7 +901,7 @@ async def _fetch_sec_archive_bytes(
     except Exception as exc:  # noqa: BLE001 - transport must never crash a run
         log_event(
             _logger,
-            "sec_filing_index_fetch_failed",
+            f"{event_prefix}_fetch_failed",
             reason=type(exc).__name__,
             accession=format_accession(str(accession or "")),
         )
@@ -901,9 +975,10 @@ async def fetch_filing_index_page(
 ) -> list[dict[str, Any]]:
     """Fetch and parse one filing's ``-index.htm`` page. ``[]`` on any failure.
 
-    Same hardened, throttled, byte-capped network leg as :func:`fetch_filing_index`
-    (one shared helper) and the same official host: no new host and no
-    caller-supplied URL.
+    Same hardened, throttled network leg as :func:`fetch_filing_index` (one shared
+    helper) and the same official host: no new host and no caller-supplied URL. Its
+    own byte cap (``INDEX_PAGE_MAX_BYTES``) and its own ``sec_filing_index_page_*``
+    log events; the parse runs in a worker thread.
     """
     url = build_filing_index_page_url(cik, accession)
     if url is None:
@@ -916,10 +991,14 @@ async def fetch_filing_index_page(
         client_factory=client_factory,
         limiter=limiter,
         resolver=resolver,
+        max_bytes=INDEX_PAGE_MAX_BYTES,
+        event_prefix="sec_filing_index_page",
     )
     if body is None:
         return []
-    entries = parse_filing_index_page(body)
+    # Off the event loop: the parse is linear and the page capped, but a request
+    # handler is never the place to find out (the gunicorn worker-timeout outage).
+    entries = await asyncio.to_thread(parse_filing_index_page, body)
     log_event(
         _logger,
         "sec_filing_index_page_fetched",
@@ -1577,6 +1656,7 @@ __all__ = [
     "build_filing_index_url",
     "cik_from_accession",
     "cik_from_archives_url",
+    "INDEX_PAGE_MAX_BYTES",
     "build_filing_index_page_url",
     "doc_kind_for_form",
     "fetch_filing_index_page",

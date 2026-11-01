@@ -1291,7 +1291,7 @@ def sec_filings_from_catalyst(catalyst_discovery: dict | None) -> list[dict]:
                 "accession_number": e.get("accession_number"),
                 # EDGAR's own item codes — what makes an 8-K a results release
                 # rather than just the newest 8-K (ADR-068).
-                "item_numbers": list(e.get("item_numbers") or []),
+                "item_numbers": e.get("item_numbers"),
             }
         )
     return out

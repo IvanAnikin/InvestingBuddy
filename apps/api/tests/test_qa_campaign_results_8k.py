@@ -29,6 +29,7 @@ from app.services.sources.document_discovery import (
 )
 from app.services.sources.ingestion_status import FAILURE_NO_PRIMARY_FILING_DOCUMENT
 from app.services.sources.sec_filing_documents import (
+    INDEX_PAGE_MAX_BYTES,
     SecFilingDocument,
     SecPreflightFailure,
     SecRateLimiter,
@@ -716,3 +717,104 @@ def test_fetch_filing_index_page_uses_the_sec_archives_chain(status, expected_co
     assert client_kwargs["follow_redirects"] is False
     assert client_kwargs["headers"]["Accept"] == "text/html"
     assert "InvestingBuddy" in client_kwargs["headers"]["User-Agent"]
+
+
+# --------------------------------------------------------------------------- #
+# PR #305 review — no backtracking on the event loop; raw item values survive
+# --------------------------------------------------------------------------- #
+
+
+def _adversarial_pages() -> dict[str, str]:
+    """Inputs near the 256 KB cap that hurt a backtracking ``<tag[^>]*…>`` parser."""
+    budget = INDEX_PAGE_MAX_BYTES - 64
+    marker = '<table summary="Document Format Files">'
+
+    def fill(unit: str, head: str = "") -> str:
+        return head + unit * ((budget - len(head)) // len(unit))
+
+    return {
+        "unclosed_table_openers": fill("<table "),
+        "openers_before_marker": fill("<table x ")[: budget - 60]
+        + 'summary="Document Format Files"',
+        "unclosed_rows": fill("<tr ", marker),
+        "unclosed_cells": fill("<td ", marker + "<tr>"),
+        "unclosed_anchors": fill("<td><a ", marker + "<tr>"),
+        "unclosed_tags_in_cells": fill("<td><<<<<<<<</td>", marker + "<tr>"),
+        "many_tiny_rows": fill(
+            "<tr><td>1</td><td>d</td><td><a>x.htm</a></td><td>EX-99.1</td><td>1</td></tr>", marker
+        )
+        + "</table>",
+    }
+
+
+@pytest.mark.parametrize("name", list(_adversarial_pages()))
+def test_index_page_parser_is_linear_on_adversarial_input(name):
+    import time
+
+    page = _adversarial_pages()[name]
+    assert len(page.encode()) <= INDEX_PAGE_MAX_BYTES
+    started = time.perf_counter()
+    parse_filing_index_page(page)
+    parse_filing_index_page(page.encode())
+    # The regex version took 143 s on a 100 KB page of unclosed openers.
+    assert time.perf_counter() - started < 0.5
+
+
+def test_index_page_over_the_cap_is_never_parsed():
+    page = _jpm_index_page()
+    padded = page + " " * (INDEX_PAGE_MAX_BYTES + 1 - len(page.encode()))
+    assert parse_filing_index_page(padded) == []
+    assert parse_filing_index_page(padded.encode()) == []
+    assert len(parse_filing_index_page(page)) == 5  # the real page (~12 KB) is unaffected
+
+
+def test_index_page_with_a_length_changing_lowercase_character_still_aligns():
+    # "İ".lower() is two code points; an index found in a .lower() copy would drift.
+    page = "İ" * 50 + _jpm_index_page()
+    assert parse_filing_index_page(page)[1]["name"] == JPM_EXHIBIT
+
+
+def test_the_index_page_has_its_own_byte_cap_and_log_events(caplog):
+    log: list[Any] = []
+    over = b"x" * (INDEX_PAGE_MAX_BYTES + 1)
+    with caplog.at_level("INFO", logger="app.services.sources.sec_filing_documents"):
+        entries = asyncio.run(
+            fetch_filing_index_page(
+                JPM_CIK,
+                JPM_ACC,
+                cfg=_offline_fetch_cfg(),
+                client_factory=lambda **kw: _Client(200, over, log, **kw),
+                limiter=_quiet_limiter(),
+                resolver=_public_resolver,
+            )
+        )
+    assert entries == []
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "sec_filing_index_page_over_cap" in text
+    assert str(INDEX_PAGE_MAX_BYTES) in text
+
+
+@pytest.mark.parametrize("raw", ["2.02,9.01", "Item 2.02, Item 9.01", ["2.02", "9.01"]])
+def test_adapters_pass_raw_item_values_through_so_a_string_still_reads_as_2_02(raw):
+    event = {
+        "form_type": "8-K",
+        "headline": "SEC 8-K filing",
+        "filing_date": "2026-10-13",
+        "accession_number": ACC_RESULTS,
+        "item_numbers": raw,
+    }
+    via_catalyst = sec_filings_from_catalyst({"filing_events": [event]})[0]
+    via_live = live_fetchers._filing_dict(event)
+    for filing in (via_catalyst, via_live):
+        assert filing_item_codes(filing) == ("2.02", "9.01")
+        assert is_results_release_8k(filing["form_type"], filing_item_codes(filing))
+        assert doc_kind_for_form("8-K", filing_item_codes(filing)) == DOC_KIND_RESULTS_RELEASE
+
+
+def test_adapters_keep_a_missing_item_value_unknown():
+    event = {"form_type": "8-K", "filing_date": "2026-10-13", "accession_number": ACC_RESULTS}
+    for filing in (
+        sec_filings_from_catalyst({"filing_events": [event]})[0],
+        live_fetchers._filing_dict(event),
+    ):
+        assert filing_item_codes(filing) == ()
