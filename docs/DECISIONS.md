@@ -4792,6 +4792,10 @@ MRNA and MP have none.
   investigator, failures included. A failed submissions read backs off for 15 minutes
   (`FAILURE_RETRY_SECONDS`), so a hanging data.sec.gov costs one timeout, not two per
   statement. `reset_cache()` clears the new caches.
+- **Security review.** The backoff is set when the host does not serve the record
+  (`ok=False`: a timeout, 403, 429 or 5xx, which the fetcher returns rather than raises).
+  One malformed record is "no verdict" for that record alone and does not back off the
+  host.
 - **Replay of both live HON reports:**
   - e50cb267 (44 findings): 3 of the 4 H3 findings are dropped (Tempe twice, False Claims
     Act). All cite web corpus chunks (`secondary_web`, `government_or_regulator`).

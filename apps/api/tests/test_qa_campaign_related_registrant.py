@@ -355,7 +355,7 @@ class TestSecAnnualAccessions:
         return _fetch
 
     async def test_annual_forms_only(self) -> None:
-        directories._ANNUAL_ACCESSIONS_CACHE.clear()
+        directories.reset_cache()
         body = (
             b'{"filings": {"recent": {"form": ["10-Q", "10-K", "8-K", "10-K/A"],'
             b' "accessionNumber": ["a-1", "a-2", "a-3", "a-4"]}}}'
@@ -365,7 +365,7 @@ class TestSecAnnualAccessions:
 
     @pytest.mark.parametrize("body,ok", [(b"not json", True), (b"{}", True), (None, False)])
     async def test_an_unreadable_record_is_no_verdict(self, body: bytes | None, ok: bool) -> None:
-        directories._ANNUAL_ACCESSIONS_CACHE.clear()
+        directories.reset_cache()
         got = await _REAL_SEC_ANNUAL_ACCESSIONS("65984", fetcher=self._fetcher(body, ok))
         assert got is None
 
@@ -415,16 +415,39 @@ class TestReviewRound2:
         assert calls == ["773840"]  # one read, remembered
 
     async def test_a_failed_read_backs_off_instead_of_retrying_per_statement(self) -> None:
+        # The real fetcher never raises: a timeout or a 429 comes back as ok=False.
         directories.reset_cache()
         attempts: list[str] = []
 
-        async def _refusing(url: str, **_kw: Any) -> Any:  # noqa: ANN401
-            attempts.append(url)
-            raise TimeoutError("data.sec.gov did not answer")
+        class _NotServed:
+            ok = False
+            content = None
 
-        assert await _REAL_SEC_ANNUAL_ACCESSIONS("773840", fetcher=_refusing) is None
-        assert await _REAL_SEC_ANNUAL_ACCESSIONS("2089271", fetcher=_refusing) is None
+        async def _timing_out(url: str, **_kw: Any) -> _NotServed:  # noqa: ANN401
+            attempts.append(url)
+            return _NotServed()
+
+        assert await _REAL_SEC_ANNUAL_ACCESSIONS("773840", fetcher=_timing_out) is None
+        assert await _REAL_SEC_ANNUAL_ACCESSIONS("2089271", fetcher=_timing_out) is None
         assert len(attempts) == 1
+        directories.reset_cache()
+
+    async def test_one_malformed_record_does_not_back_off_the_host(self) -> None:
+        directories.reset_cache()
+        bodies = iter([b'{"filings": {}}', b'{"filings": {"recent": {"form": ["10-K"],'
+                       b' "accessionNumber": ["k-1"]}}}'])
+
+        class _R:
+            ok = True
+
+            def __init__(self) -> None:
+                self.content = next(bodies)
+
+        async def _fetch(url: str, **_kw: Any) -> _R:  # noqa: ANN401
+            return _R()
+
+        assert await _REAL_SEC_ANNUAL_ACCESSIONS("1", fetcher=_fetch) is None
+        assert await _REAL_SEC_ANNUAL_ACCESSIONS("2", fetcher=_fetch) == frozenset({"k-1"})
         directories.reset_cache()
 
     async def test_a_transition_report_is_an_annual_report(self) -> None:

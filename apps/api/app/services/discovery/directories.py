@@ -692,14 +692,19 @@ async def sec_annual_accessions(
             url, allowed_domains=(SEC_DATA_HOST,), cfg=cfg, resolve_ip=True,
             extra_text_content_types=("application/json",),
         )
-        content = getattr(result, "content", None) if getattr(result, "ok", False) else None
-        data = json.loads(content) if content else None
-        if not isinstance(data, dict):
-            return None
+    except Exception:  # noqa: BLE001 - the fetcher is documented never to raise; belt and braces
+        result = None
+    content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+    if not content:
+        # The HOST did not serve the record (timeout, 403/429, 5xx — returned as ok=False,
+        # never raised): back off, so a slow data.sec.gov costs one deadline per window.
+        _ACCESSIONS_FAILED_AT[SEC_DATA_HOST] = time.monotonic()
+        return None
+    try:
+        data = json.loads(content)
         recent = data["filings"]["recent"]
         forms, accessions = recent["form"], recent["accessionNumber"]
-    except Exception:  # noqa: BLE001 - an unreadable record is no verdict (not cached)
-        _ACCESSIONS_FAILED_AT[SEC_DATA_HOST] = time.monotonic()
+    except Exception:  # noqa: BLE001 - one malformed RECORD is no verdict for it alone (not cached)
         return None
     if not isinstance(forms, list) or not isinstance(accessions, list):
         return None
