@@ -19,7 +19,9 @@ Nothing here writes a ``companies`` row. Only the returned candidates reach
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +45,8 @@ from app.services.discovery.intent import DiscoveryIntent
 from app.services.discovery.leads import CompanyLead, _bounded, discover_leads
 from app.services.discovery.screening import ScreeningResult, screen_issuers
 from app.services.exchange_registry import region_for_country
+
+logger = logging.getLogger(__name__)
 
 STAGE_KEY = "dynamic"
 HARD_MAX_VERIFIED = 40
@@ -473,8 +477,13 @@ async def run_dynamic_stage(
     plan_date: Any = None,
     expansion_loader: Any = None,
     expansion_saver: Any = None,
+    relevance: Callable[[CandidateRecord], float | None] | None = None,
 ) -> StageResult:
     """The whole stage. Never raises for a single lead's failure.
+
+    ``relevance`` scores a record's thesis fit. It breaks ties within an eligibility
+    tier BEFORE the shortlist cap (ADR-073), so the cap keeps the best-fitting names
+    rather than whichever source happened to be listed first.
 
     Open-web W6b: with ``V3_DISCOVERY_WEB_SEARCH_ENABLED`` on (and ``external``), wave 1 of
     the open-web flow adds a ``discovery_mode="search"`` lead source AFTER the curated and
@@ -897,8 +906,17 @@ async def run_dynamic_stage(
     # 6. Decide. Eligibility is final; the quota is never filled with excluded names.
     cap = _bounded(max_candidates, DEFAULT_MAX_CANDIDATES, 50)
     included = [r for r in records if r.eligibility.status != cons.EXCLUDED]
-    included.sort(key=lambda r: cons.ranking_key(r.eligibility))
+    scores = {id(r): _relevance_of(relevance, r) for r in included}
+    included.sort(key=lambda r: cons.ranking_key(r.eligibility, scores[id(r)]))
     stage.candidates = included[:cap]
+    # Never silent: a name the cap cut is stated, with why (ADR-073).
+    beyond_cap = included[cap:]
+    if beyond_cap:
+        stage.warnings.append(
+            f"{len(beyond_cap)} candidate(s) met the requirements but were beyond the "
+            f"shortlist cap of {cap}: "
+            + ", ".join(f"{r.identity.exchange}:{r.identity.ticker}" for r in beyond_cap[:20])
+        )
     stage.excluded = [r for r in records if r.eligibility.status == cons.EXCLUDED]
     stage.funnel = {
         "raw_leads": raw_count,
@@ -916,6 +934,7 @@ async def run_dynamic_stage(
             1 for r in records if r.eligibility.status == cons.ELIGIBLE_UNVERIFIED
         ),
         "returned": len(stage.candidates),
+        "beyond_cap": len(beyond_cap),
     }
     if web_on:
         stage.also_surfaced = also_surfaced
@@ -951,6 +970,19 @@ async def run_dynamic_stage(
 # --------------------------------------------------------------------------- #
 # Open-web W6b helpers
 # --------------------------------------------------------------------------- #
+
+
+def _relevance_of(
+    relevance: Callable[[CandidateRecord], float | None] | None, record: CandidateRecord
+) -> float | None:
+    """A record's thesis-fit score; a scorer failure ranks it as unscored, never aborts."""
+    if relevance is None:
+        return None
+    try:
+        return relevance(record)
+    except Exception:  # noqa: BLE001 - ranking degrades to the old order for this record
+        logger.warning("discovery_relevance_failed ticker=%s", record.identity.ticker)
+        return None
 
 
 def _lead_sources(

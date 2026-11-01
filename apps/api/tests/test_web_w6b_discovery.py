@@ -660,6 +660,7 @@ class TestFlagOffIsV319:
             "met_hard_constraints",
             "eligible_unverified",
             "returned",
+            "beyond_cap",
         }
         candidate = stage.candidates[0].to_dict()
         assert set(candidate) == {

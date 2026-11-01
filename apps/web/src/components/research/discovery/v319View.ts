@@ -344,6 +344,9 @@ export function funnelSteps(stage: DiscoveryDynamicStage | null | undefined): st
   if (typeof f.met_hard_constraints === "number")
     steps.push(`${f.met_hard_constraints} met every requirement`);
   if (typeof f.returned === "number") steps.push(`${f.returned} returned for research`);
+  // ADR-073: a name that met every requirement but fell beyond the shortlist cap is stated.
+  if (typeof f.beyond_cap === "number" && f.beyond_cap > 0)
+    steps.push(`${f.beyond_cap} met the requirements but were beyond the shortlist cap`);
   return steps;
 }
 
