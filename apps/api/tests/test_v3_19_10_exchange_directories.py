@@ -565,3 +565,34 @@ async def test_issuer_page_text_is_neutralised_and_parsed_off_the_loop(monkeypat
         cfg=settings, fetcher=_fetch)
     assert found and threads
     assert all("BUY" not in e.statement for e in found)
+
+
+async def test_a_current_filers_float_is_used_until_its_next_10k() -> None:
+    """QA campaign 2026-11: a September year-end filer's float (dated 31 March, filed in
+    November) is ~19-21 months old just before its next 10-K. It is still the latest
+    statement of a current filer and must be read, so a USD 29bn company cannot pass a
+    small-cap thesis as "size: not verified". Only a lapsed filer's float is stale."""
+    import json as _json
+    from datetime import date, timedelta
+
+    from app.services.discovery.directories import MAX_FLOAT_AGE_DAYS, sec_public_float
+    from app.services.sources.document_fetcher import DocumentFetchResult
+
+    body: dict = {"units": {"USD": []}}
+
+    async def _fetch(url, **kw):  # noqa: ANN001, ANN202
+        return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
+                                   content_type="application/json", document_type="html",
+                                   content=_json.dumps(body).encode())
+
+    # Float 31 March, 10-K mid-November, read the next October (~19 months).
+    nineteen_months = (date.today() - timedelta(days=580)).isoformat()
+    body["units"]["USD"] = [{"end": nineteen_months, "val": 29.1e9, "form": "10-K"}]
+    result = await sec_public_float("1024478", fetcher=_fetch)
+    assert result is not None and result[0] == 29.1e9
+    # The latest a current filer's float can be: Q2 end + 12 months + 90 days + 15 days.
+    assert MAX_FLOAT_AGE_DAYS >= 183 + 365 + 105
+    # Past that, the filer has missed a 10-K: its float proves nothing about today.
+    lapsed = (date.today() - timedelta(days=MAX_FLOAT_AGE_DAYS + 30)).isoformat()
+    body["units"]["USD"] = [{"end": lapsed, "val": 29.1e9, "form": "10-K"}]
+    assert await sec_public_float("1024478", fetcher=_fetch) is None
