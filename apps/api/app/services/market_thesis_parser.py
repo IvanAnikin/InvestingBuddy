@@ -540,8 +540,16 @@ def _dedup(seq: list[str]) -> list[str]:
 
 
 def _contains(haystack: str, phrase: str) -> bool:
-    """Whole-word/phrase containment on a space-padded lowercased string."""
-    return f" {phrase.strip()} " in haystack
+    """Whole-word/phrase containment on a lowercased string.
+
+    Bounded by any non-alphanumeric character, not only a space: "Banks, payments and
+    fintech" and "Utilities, grid …" put a comma straight after the phrase, and the
+    space-only test never matched it (QA campaign 2026-11, independent review).
+    """
+    needle = phrase.strip()
+    if not needle:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", haystack) is not None
 
 
 def _extract_exclusions(text: str) -> list[str]:
@@ -670,8 +678,10 @@ def parse_thesis(
     # Keywords are taken in the order the TEXT states them, not the theme table's order:
     # "utilities with grid exposure" names utilities first.
     def _text_position(phrase: str) -> int:
-        at = padded.find(f" {phrase} ")
-        return at if at >= 0 else len(padded)
+        # Word boundaries, not padded spaces: "Utilities, grid equipment …" puts a comma
+        # after the first keyword (independent review).
+        m = re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", padded)
+        return m.start() if m else len(padded)
 
     text_ordered_keywords = sorted(keywords, key=_text_position)
     detected_industry = next(

@@ -516,6 +516,12 @@ def _is_name_token(token: str) -> bool:
 #: mismatch. Shape: upper-case alphanumerics with at least one digit and one letter, 6-12
 #: characters, or a run of 5-9 digits.
 _SECURITY_CODE_RE = re.compile(r"(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,12}|\d{5,9}")
+#: Without a label, a mixed token is a code only when it is ISIN-shaped, all digits, or
+#: carries at least two digits: "B2GOLD", "E2OPEN", "4IMPRINT", "1COMMS" are names
+#: (independent review), "A0NFN3" and "B0YBKJ7" are not.
+_BARE_CODE_RE = re.compile(
+    r"[A-Z]{2}[A-Z0-9]{9}\d|\d{5,9}|(?=(?:[A-Z]*\d){2})(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,12}"
+)
 _SECURITY_CODE_LABEL = r"(?:WKN|ISIN|CUSIP|SEDOL|Valor(?:en)?|Valoren-?Nr\.?|LEI|FIGI|RIC)"
 _CODE_ITEM = rf"(?:{_SECURITY_CODE_LABEL}\s*[:#.]?\s*)?[A-Z0-9]{{5,12}}"
 #: Trailing identifiers between a name and its listing: ``BB Biotech AG WKN A0NFN3``,
@@ -528,20 +534,43 @@ _TRAILING_CODES_RE = re.compile(
 
 def is_security_code(token: str) -> bool:
     """True for a token shaped like a security identifier rather than a word of a name."""
-    return bool(_SECURITY_CODE_RE.fullmatch(_clean_token(token).rstrip(",;:")))
+    return bool(_BARE_CODE_RE.fullmatch(_clean_token(token).rstrip(",;:")))
+
+
+#: Only the end of the text before a listing can hold its trailing identifiers.
+_CODE_TAIL_CHARS = 120
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
 
 
 def _strip_trailing_codes(before: str) -> str:
-    """``before`` without the security identifiers printed at its end."""
+    """``before`` without the security identifiers printed at its end.
+
+    The pattern runs only on the last :data:`_CODE_TAIL_CHARS` characters, with every
+    whitespace run (any Unicode space: a PDF block can carry U+3000 or U+2000-U+200A
+    that the PDF normaliser keeps) collapsed to one space first. Over a whole
+    paragraph, a long whitespace run made the optional separators backtrack in cubic
+    time and held the worker for minutes (security review of ADR-063). The caller only
+    splits the result into tokens, so collapsing whitespace changes nothing it reads.
+    """
+    head = before[:-_CODE_TAIL_CHARS] if len(before) > _CODE_TAIL_CHARS else ""
+    tail = _WHITESPACE_RUN_RE.sub(" ", before[len(head):])
     for _ in range(4):
-        m = _TRAILING_CODES_RE.search(before)
+        m = _TRAILING_CODES_RE.search(tail)
         if m is None:
             break
-        codes = re.findall(r"[A-Z0-9]{5,12}", m.group(0))
-        if not codes or not all(is_security_code(c) for c in codes):
+        found = m.group(0)
+        labelled = re.search(rf"\b{_SECURITY_CODE_LABEL}", found) is not None
+        codes = [
+            c for c in re.findall(r"[A-Z0-9]{5,12}", found)
+            if not re.fullmatch(_SECURITY_CODE_LABEL, c)
+        ]
+        if not codes or not all(
+            is_security_code(c) or (labelled and _SECURITY_CODE_RE.fullmatch(c))
+            for c in codes
+        ):
             break
-        before = before[: m.start()]
-    return before
+        tail = tail[: m.start()]
+    return head + tail
 
 
 def name_before(text: str, end: int) -> str | None:

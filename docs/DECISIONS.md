@@ -4406,6 +4406,27 @@ and the rerun `d15a74c4` was replayed.
    label) are stripped from the name before a listing, and a name made only of codes is
    rejected. Short tickers (`PH1`, `3M`) and years are not codes.
 
+### Review round 1 (independent review + security review)
+- **Materials-class rules tightened.**
+  - A coordinated class counts only when one adjective is critical, strategic or rare.
+    "Specialty chemicals and advanced materials" and "engineered materials" are not miners
+    theses.
+  - The class makes a materials thesis only when it is what the companies SUPPLY
+    ("supplying…", "producers of…").
+  - "Defence primes exposed to critical minerals" keeps its defence industry.
+- **Phrase matching is word-bounded** (`_contains`, keyword order). "Banks, payments…" and
+  "Utilities, …" put a comma after the phrase, and the space-only test missed it.
+- **Aliases trimmed to unambiguous phrases.** "transmission", "transformer", a bare "grid"
+  and "lender" are dropped: `normalize_sector` serves every caller.
+- **Bare codes need two digits** (or ISIN / all-digit shape), so "B2GOLD", "E2OPEN" and
+  "4IMPRINT" stay names. A labelled code ("SEDOL 6086253") is stripped.
+- **Security: the trailing-code pattern runs on the last 120 characters**, with whitespace
+  collapsed. On a long Unicode-space run in a PDF block it backtracked in cubic time and
+  could hold the worker for minutes.
+
 ### Not changed / known limits
 - No issuer or thesis is special-cased.
-- A six-letter all-alphabetic code cannot be told from a word, so it is not stripped.
+- A six-letter all-alphabetic code cannot be told from a word, so it is not stripped. A bare
+  WKN with a single digit ("A1JWVX") is not stripped either: it stays in the name, as before.
+- Theme and sector may still come from different keywords ("AI data centers and power grid
+  companies" → theme grid, sector Technology).

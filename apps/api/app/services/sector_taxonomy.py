@@ -191,20 +191,19 @@ _INDUSTRY_ALIASES: dict[str, str] = {
     "data centers": "Data Centers",
     # The words a thesis uses for an industry, so selector auto-fill follows the TEXT
     # rather than a theme's first industry. Live QA campaign 2026-11: "payments or fintech
-    # infrastructure companies" auto-filled "Banks".
+    # infrastructure companies" auto-filled "Banks". Only unambiguous phrases: "normalize_sector"
+    # falls back to these for every caller, and "transformer", "transmission" or a bare
+    # "grid" mean other things elsewhere (independent review).
     "fintech": "Financial Technology",
     "payments": "Financial Technology",
     "bank": "Banks",
     "banks": "Banks",
     "banking": "Banks",
     "neobank": "Banks",
-    "lender": "Banks",
-    "grid": "Electrical Equipment",
     "power grid": "Electrical Equipment",
+    "grid infrastructure": "Electrical Equipment",
     "electrical grid": "Electrical Equipment",
-    "transmission": "Electrical Equipment",
     "substation": "Electrical Equipment",
-    "transformer": "Electrical Equipment",
     "electrification": "Electrical Equipment",
     "utility": "Utilities",
 }

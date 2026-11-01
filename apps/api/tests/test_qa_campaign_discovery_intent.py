@@ -48,8 +48,6 @@ def _industry_constraint(intent) -> list[str]:
     [
         "critical or specialty materials",
         "critical and strategic minerals",
-        "specialty materials",
-        "advanced materials",
         "critical, strategic or rare metals",
     ],
 )
@@ -191,3 +189,71 @@ def test_extracted_mentions_never_carry_a_security_code_as_name() -> None:
     mentions, _stats = extract_mentions(paragraphs)
     names = {m.name for m in mentions}
     assert names == {"BB Biotech AG"}
+
+
+@pytest.mark.parametrize("space", [" ", "\u3000", "\u2003", "\u2009"])
+def test_a_long_whitespace_run_cannot_stall_name_extraction(space: str) -> None:
+    # Security review: over a whole paragraph the trailing-code pattern backtracked in
+    # cubic time on a long whitespace run (400 spaces: 2.7s; 2,000: minutes).
+    import time
+
+    text = "the results were published." + space * 2000 + "BB Biotech AG (ISIN CH0038389992) (SIX: BION)"
+    started = time.perf_counter()
+    name = listing_name(text, text.rindex("("))
+    mentions, _stats = extract_mentions([text])
+    assert time.perf_counter() - started < 1.0
+    assert name == "BB Biotech AG"
+    assert {m.name for m in mentions} == {"BB Biotech AG"}
+
+
+# ── Independent review round 1 ───────────────────────────────────────────── #
+
+
+@pytest.mark.parametrize(
+    "text,theme",
+    [
+        ("Defence primes exposed to critical minerals export controls.", "defense"),
+        ("European defence and aerospace exposure to critical minerals.", "defense"),
+        ("Aerospace and defence suppliers of advanced materials and composites", "defense"),
+    ],
+)
+def test_an_exposure_to_critical_minerals_keeps_the_company_kind(text: str, theme: str) -> None:
+    intent = build_intent(text, parsed=parse_thesis(text))
+    assert theme in intent.themes
+    assert theme in _industry_constraint(intent)
+    assert intent.materials_role != "product"
+    assert "Metals & Mining" not in intent.industries
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Specialty chemicals and advanced materials companies.", "Engineered materials for EV batteries."],
+)
+def test_a_class_without_critical_strategic_or_rare_is_not_a_miners_thesis(text: str) -> None:
+    intent = build_intent(text, parsed=parse_thesis(text))
+    assert "critical_materials" not in intent.themes
+    assert "Metals & Mining" not in intent.industries
+
+
+def test_keyword_order_survives_punctuation() -> None:
+    _, sector, _ = _autofill("Utilities, with regulated grid exposure, in Europe.")
+    assert sector == "Utilities"
+    _, _, industry = _autofill("Banks, payments and fintech companies.")
+    assert industry == "Banks"
+
+
+@pytest.mark.parametrize("token", ["B2GOLD", "E2OPEN", "4IMPRINT", "1COMMS"])
+def test_names_with_one_digit_are_not_security_codes(token: str) -> None:
+    assert not is_security_code(token)
+    text = f"{token} (NYSE: XXX)"
+    assert listing_name(text, text.rindex("(")) == token
+
+
+def test_a_labelled_sedol_is_stripped() -> None:
+    text = "Fortescue SEDOL 6086253 (ASX: FMG)"
+    assert listing_name(text, text.rindex("(")) == "Fortescue"
+
+
+def test_ambiguous_words_do_not_become_an_industry() -> None:
+    assert normalize_sector("transformer") is None
+    assert normalize_sector("transmission") is None
