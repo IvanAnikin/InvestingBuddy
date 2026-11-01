@@ -4448,3 +4448,30 @@ MRNA MSFT PYPL UPS WMT):
 - The annual bundle itself is not re-based. The note tells the reader that it predates the
   change.
 - An 8-K earnings release (filed before the 10-Q) is not read as a current-period source.
+
+### Review round 1
+An independent review found false basis changes and a stale-quarter path. Fixes:
+- **The baseline is the annual report's own filing.** Before, a comparative was checked
+  against "the latest value filed by the annual-report date", which could be an earlier
+  10-Q. A split made before the 10-K (and adjusted in it), or a disposal already recast in
+  it, would then read as a change since the 10-K. Now only the 10-K's own tagging of the
+  period counts (`_as_filed_in`). When the 10-K does not tag that quarter, nothing is
+  concluded. Honeywell's 10-K tags Q3 2025 (revenue 9,437m, EPS 2.86), so it is still caught.
+- **Cover-page share counts.** A second, EPS-independent signal compares
+  dei `EntityCommonStockSharesOutstanding` on the 10-K cover with the newest 10-Q cover
+  (summed per filing across class rows, 4% tolerance for buybacks):
+  Honeywell 635.7m → 317.4m = 1-for-2. It is used only when the EPS route found nothing.
+- **The latest quarter must be after the annual period.** A 10-Q/A for an old quarter
+  filed after the 10-K is no longer "the latest quarter" or a restating filing.
+- **One net-income concept per comparison.** "Net income unchanged" compares the same
+  concept on both sides.
+- **The operating-income reason no longer over-claims.** It now reads "not group operating
+  income as reported — possibly segment profit or a non-GAAP measure (or R&D is already inside
+  cost of revenue)". A filer that tags R&D inside cost of revenue loses its operating income
+  to withholding (an omission, never a misstatement). Companyfacts carries no presentation
+  linkbase to tell the two apart.
+- An accession that is not `\d{10}-\d{2}-\d{6}` never becomes part of a URL.
+- The peers tool's latest-quarter items carry `T2_regulator_or_gov`, the same tier as the
+  quarter fact dicts. Annual statement items stay `T1_primary_filing`.
+Re-verified on the 19 cached filers: HON alone shows a recast and a 1-for-2 consolidation,
+and no other filer gains a withholding or a basis change.

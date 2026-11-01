@@ -45,12 +45,28 @@ def _e(val: float, end: str, accn: str, filed: str, form: str, fy: int, fp: str,
     return row
 
 
-def _facts(**concepts: list[dict[str, Any]]) -> dict[str, Any]:
+def _facts(dei: list[dict[str, Any]] | None = None,
+           **concepts: list[dict[str, Any]]) -> dict[str, Any]:
     us_gaap: dict[str, Any] = {}
     for name, rows in concepts.items():
         unit = "USD/shares" if name.startswith("EarningsPerShare") else "USD"
         us_gaap[name] = {"units": {unit: rows}}
-    return {"cik": 1, "facts": {"us-gaap": us_gaap, "dei": {}}}
+    dei_facts = (
+        {"EntityCommonStockSharesOutstanding": {"units": {"shares": dei}}} if dei else {}
+    )
+    return {"cik": 1, "facts": {"us-gaap": us_gaap, "dei": dei_facts}}
+
+
+def _cover(val: float, end: str, accn: str, filed: str, form: str) -> dict[str, Any]:
+    return {"val": val, "end": end, "accn": accn, "filed": filed, "form": form}
+
+
+def _changes(rows: dict[str, list], dei: list[dict[str, Any]] | None = None) -> list[dict]:
+    facts = _facts(dei=dei, **rows)["facts"]
+    return basis_changes_since_annual(
+        facts["us-gaap"], annual_filed="2026-02-17", annual_accn=K25,
+        annual_end="2025-12-31", dei=facts["dei"],
+    )
 
 
 M = 1_000_000
@@ -127,12 +143,15 @@ def _quarter_rows() -> dict[str, list]:
         _e(1825 * M, "2025-09-30", Q325, "2025-10-23", "10-Q", 2025, "Q3", "2025-07-01"),
         _e(1825 * M, "2025-09-30", Q326, "2026-10-22", "10-Q", 2026, "Q3", "2025-07-01"),
         _e(664 * M, "2026-09-30", Q326, "2026-10-22", "10-Q", 2026, "Q3", "2026-07-01"),
+        # The 10-K tags the fourth-quarter breakdown, Q3 included (as Honeywell's does).
+        _e(1825 * M, "2025-09-30", K25, "2026-02-17", "10-K", 2025, "FY", "2025-07-01"),
     ]
     rows["EarningsPerShareDiluted"] = [
         _e(7.36, "2025-12-31", K25, "2026-02-17", "10-K", 2025, "FY", "2025-01-01"),
         _e(2.86, "2025-09-30", Q325, "2025-10-23", "10-Q", 2025, "Q3", "2025-07-01"),
         _e(5.71, "2025-09-30", Q326, "2026-10-22", "10-Q", 2026, "Q3", "2025-07-01"),
         _e(2.08, "2026-09-30", Q326, "2026-10-22", "10-Q", 2026, "Q3", "2026-07-01"),
+        _e(2.86, "2025-09-30", K25, "2026-02-17", "10-K", 2025, "FY", "2025-07-01"),
     ]
     return rows
 
@@ -187,7 +206,9 @@ def test_a_segment_profit_total_is_withheld_as_operating_income() -> None:
     result = normalize_company_facts(_facts(**_income_statement(8127)), "XYZ", "1")
     assert result.operating_income is None
     assert result.operating_margin is None
-    assert "segment profit" in result.withheld_fields["operating_income"]["reason"]
+    reason = result.withheld_fields["operating_income"]["reason"]
+    assert "not group operating income as reported" in reason
+    assert "segment profit" in reason
     assert result.net_margin is not None
 
 
@@ -217,9 +238,7 @@ def test_without_cost_of_revenue_and_sga_nothing_is_said() -> None:
 
 
 def test_a_perimeter_recast_and_a_share_consolidation_are_detected() -> None:
-    us_gaap = _facts(**_quarter_rows())["facts"]["us-gaap"]
-    changes = basis_changes_since_annual(us_gaap, annual_filed="2026-02-17")
-    kinds = {c["kind"]: c for c in changes}
+    kinds = {c["kind"]: c for c in _changes(_quarter_rows())}
     assert kinds[BASIS_RECAST]["as_filed"] == 9437.0  # as carried by the annual report
     assert kinds[BASIS_RECAST]["restated"] == 4929.0
     assert kinds[BASIS_SHARE_CONSOLIDATION]["ratio"] == 2
@@ -235,9 +254,7 @@ def test_pre_consolidation_eps_is_withheld_and_the_reader_is_told() -> None:
 def test_a_forward_split_is_named_as_a_split() -> None:
     rows = _quarter_rows()
     rows["EarningsPerShareDiluted"][2]["val"] = 2.86 / 4  # restated quarter
-    us_gaap = _facts(**rows)["facts"]["us-gaap"]
-    changes = basis_changes_since_annual(us_gaap, annual_filed="2026-02-17")
-    split = [c for c in changes if c["kind"] == BASIS_SHARE_SPLIT]
+    split = [c for c in _changes(rows) if c["kind"] == BASIS_SHARE_SPLIT]
     assert split and split[0]["ratio"] == 4
 
 
@@ -245,16 +262,14 @@ def test_unchanged_comparatives_report_no_basis_change() -> None:
     rows = _quarter_rows()
     rows["Revenues"][6]["val"] = 4929 * M  # the 2025 10-Q said the same
     rows["Revenues"][7]["val"] = 4929 * M  # and so did the 10-K
-    rows["EarningsPerShareDiluted"][1]["val"] = 5.71
-    us_gaap = _facts(**rows)["facts"]["us-gaap"]
-    assert basis_changes_since_annual(us_gaap, annual_filed="2026-02-17") == []
+    rows["EarningsPerShareDiluted"][4]["val"] = 5.71  # the 10-K's own Q3 figure
+    assert _changes(rows) == []
 
 
 def test_eps_moving_with_net_income_is_not_a_split() -> None:
     rows = _quarter_rows()
     rows["NetIncomeLoss"][2]["val"] = 3650 * M  # earnings restated too
-    us_gaap = _facts(**rows)["facts"]["us-gaap"]
-    kinds = {c["kind"] for c in basis_changes_since_annual(us_gaap, annual_filed="2026-02-17")}
+    kinds = {c["kind"] for c in _changes(rows)}
     assert BASIS_SHARE_CONSOLIDATION not in kinds
 
 
@@ -269,3 +284,109 @@ def test_statement_items_carry_the_quarter_under_its_own_ids() -> None:
     assert by_id["secfin:XYZ:FY2025:revenue"]["value"] == 37442.0
     assert not any(i["id"].endswith(":eps_diluted") for i in items)
     assert any("basis change" in g and "share consolidation" in g for g in gaps)
+
+
+# ── Review round 1: no false basis change; only the annual report is a baseline ── #
+
+Q125 = "0000000001-25-000040"  # an earlier 10-Q, pre-split
+Q326A = "0000000001-26-000020"  # a 10-Q/A for an OLD quarter, filed after the 10-K
+
+
+def test_a_split_made_before_the_10k_is_not_a_change_since_it() -> None:
+    # The split happened in 2025-11: the Q3 2025 10-Q said 2.86, the 10-K restated it
+    # to 1.43 and so does this year's 10-Q. The annual figures are already adjusted.
+    rows = _quarter_rows()
+    rows["Revenues"][6]["val"] = rows["Revenues"][7]["val"] = 4929 * M
+    rows["EarningsPerShareDiluted"][4]["val"] = 1.43  # the 10-K's own figure
+    rows["EarningsPerShareDiluted"][2]["val"] = 1.43  # this 10-Q's comparative
+    dei = [
+        _cover(317e6, "2025-10-20", Q325, "2025-10-23", "10-Q"),
+        _cover(634e6, "2026-01-23", K25, "2026-02-17", "10-K"),
+        _cover(635e6, "2026-10-20", Q326, "2026-10-22", "10-Q"),
+    ]
+    assert _changes(rows, dei) == []
+
+
+def test_without_the_10k_tagging_the_quarter_nothing_is_concluded() -> None:
+    # Only an earlier 10-Q carries the original figures (pre-split EPS, pre-disposal
+    # revenue): either may already be inside the annual figures, so nothing is said.
+    rows = _quarter_rows()
+    del rows["Revenues"][7]  # the 10-K's Q3 revenue
+    del rows["EarningsPerShareDiluted"][4]
+    del rows["NetIncomeLoss"][4]
+    assert _changes(rows) == []
+
+
+def test_a_consolidation_is_read_from_the_cover_pages_alone() -> None:
+    rows = _quarter_rows()
+    del rows["EarningsPerShareDiluted"][4]  # the EPS route is closed
+    dei = [
+        _cover(635.7e6, "2026-01-23", K25, "2026-02-17", "10-K"),
+        _cover(317.4e6, "2026-10-20", Q326, "2026-10-22", "10-Q"),
+    ]
+    shares = [c for c in _changes(rows, dei) if c["metric"] == "shares_outstanding"]
+    assert shares and shares[0]["kind"] == BASIS_SHARE_CONSOLIDATION
+    assert shares[0]["ratio"] == 2
+    assert "635.7m" in shares[0]["sentence"] and "317.4m" in shares[0]["sentence"]
+    result = normalize_company_facts(_facts(dei=dei, **rows), "XYZ", "1")
+    assert result.eps_diluted is None
+
+
+def test_cover_pages_with_two_share_classes_are_summed() -> None:
+    rows = _quarter_rows()
+    del rows["EarningsPerShareDiluted"][4]
+    dei = [
+        _cover(400e6, "2026-01-23", K25, "2026-02-17", "10-K"),
+        _cover(200e6, "2026-01-23", K25, "2026-02-17", "10-K"),
+        _cover(390e6, "2026-10-20", Q326, "2026-10-22", "10-Q"),
+        _cover(205e6, "2026-10-20", Q326, "2026-10-22", "10-Q"),
+    ]
+    assert not [c for c in _changes(rows, dei) if c["metric"] == "shares_outstanding"]
+
+
+def test_buybacks_are_not_a_split() -> None:
+    rows = _quarter_rows()
+    del rows["EarningsPerShareDiluted"][4]
+    dei = [
+        _cover(635e6, "2026-01-23", K25, "2026-02-17", "10-K"),
+        _cover(601e6, "2026-10-20", Q326, "2026-10-22", "10-Q"),
+    ]
+    assert not [c for c in _changes(rows, dei) if c["metric"] == "shares_outstanding"]
+
+
+def test_a_late_10q_amendment_for_an_old_quarter_is_not_the_latest_period() -> None:
+    rows = _annual_rows({"Revenues": (37442 * M, 34717 * M, 38498 * M)})
+    rows["Revenues"] += [
+        _e(10408 * M, "2025-09-30", Q326A, "2026-03-10", "10-Q/A", 2025, "Q3", "2025-07-01"),
+        _e(4929 * M, "2024-09-30", Q326A, "2026-03-10", "10-Q/A", 2025, "Q3", "2024-07-01"),
+        _e(4800 * M, "2024-09-30", K25, "2026-02-17", "10-K", 2025, "FY", "2024-07-01"),
+    ]
+    us_gaap = _facts(**rows)["facts"]["us-gaap"]
+    assert latest_quarter_facts(
+        us_gaap, annual_filed="2026-02-17", cik="1", annual_end="2025-12-31"
+    ) == []
+    assert _changes(rows) == []
+
+
+def test_a_malformed_accession_never_becomes_a_url() -> None:
+    rows = _quarter_rows()
+    for concept in ("Revenues", "NetIncomeLoss", "CashAndCashEquivalentsAtCarryingValue"):
+        for row in rows[concept]:
+            if row["accn"] == Q326:
+                row["accn"] = "../../evil"
+    out = latest_quarter_facts(
+        _facts(**rows)["facts"]["us-gaap"], annual_filed="2026-02-17", cik="1"
+    )
+    assert out and all(f["source_url"] is None for f in out)
+
+
+def test_r_and_d_inside_cost_of_revenue_is_withheld_with_the_alternative_named() -> None:
+    # A filer whose cost of revenue already includes the R&D it also tags: its true
+    # operating income (revenue - cost - SG&A = 8,379) exceeds the bound that subtracts
+    # R&D twice. Companyfacts cannot tell the two presentations apart, so the figure is
+    # withheld (an omission), never shown as something else, and the reason says why.
+    result = normalize_company_facts(_facts(**_income_statement(8379)), "XYZ", "1")
+    assert result.operating_income is None
+    assert "R&D is already inside cost of revenue" in (
+        result.withheld_fields["operating_income"]["reason"]
+    )

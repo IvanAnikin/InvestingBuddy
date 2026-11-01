@@ -609,7 +609,7 @@ def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], lis
                 "scope": "group",
                 "form": "10-Q",
                 "filed": fact.get("document_date"),
-                "source_tier": "T1_primary_filing",
+                "source_tier": "T2_regulator_or_gov",
                 "source_ref": fact.get("source_url"),
             }
         )
