@@ -4638,3 +4638,63 @@ Net cash is 8,496m and operating cash flow 4,880m, both validated in millions.
   are headings.
 Re-verified on the real Richemont FY26 PDF: unchanged (tables "€ million", net cash
 8,496m, operating cash flow 4,880m).
+
+---
+
+## ADR-065: A Quarter Is Keyed by Its Fiscal Year; the Issuer's Own Release Is "Company Says"
+
+**Status:** Accepted (cross-sector QA campaign 2026-11)
+
+### Context
+The live Richemont report (run `19354d90`) showed two findings about the quarter ended
+30 June 2026 as "2026-Q1, source dated 2025-11-21", and discarded a third as citing
+evidence that "does not agree on periods ['2026-Q1', '2027-Q1']". The issuer published one
+quarter in two documents:
+- the PDF `…-fy27-q1-sales-en.pdf`, which rule 1 (the fiscal label) reads as **2027-Q1**;
+- the HTML release `…-for-its-first-quarter-ended-30-june-2026`, which rule 3 (the
+  period-end phrase) keyed by the quarter's end year as **2026-Q1**.
+
+The same quarter had two keys. Both findings also carried "[reported in the press; not from
+a filing]", although their only source was the issuer's own release.
+
+### Decision
+1. **A period-end phrase names the fiscal year.** When the end month is printed in an
+   "ended / ending / to / through" clause, a quarter's year is the year its fiscal year
+   ENDS: end month + 3 × (4 − ordinal) months. That is the issuer's own label (FY27 Q1) and
+   SEC's `fy` convention.
+   - Q1 ended 30 June 2026 → 2027-Q1.
+   - Calendar fiscal years are unchanged (Q2 ended 30 June 2026 → 2026-Q2).
+   - A fiscal year ending in January or February is named both ways (Walmart "fiscal 2027"
+     = year to January 2027; Home Depot "fiscal 2025" = year to February 2026), so no
+     period is stated.
+   - Without an end month, the printed year is kept.
+2. **The verified issuer's own non-filing material is "company says; not from a filing".**
+   A financial figure whose support includes the verified issuer's own press release,
+   presentation or IR page is labelled `LABEL_COMPANY_SAYS_NOT_FILING`, not "reported in
+   the press". It stays non-closing: context, never a gap's answer, because the filing path
+   is canonical. A page that only CLAIMS the issuer's text is still the press. The web
+   reader knows the new label.
+
+### Review round 1
+- **A fiscal key is fiscal for "had it begun?".** The phrase now returns the new basis
+  `fiscal_period_end_phrase`, which `disclosure_period_policy._is_fiscal` counts as fiscal.
+  Before, the title-only path (UK NSM, ASX) refused "first quarter ended 30 June 2026",
+  published July 2026, because 2027-Q1 read as a calendar quarter "had not begun". A
+  forecast title ("first quarter ending 31 March 2028", published 2026) is still refused.
+- **52/53-week years.** A quarter ending on day 1–7 of a month counts as the month before
+  ("first quarter ended April 4, 2026" → 2026-Q1, "fourth quarter ended January 2, 2027" →
+  2026-Q4). Before, it landed on a January fiscal year-end and stated nothing.
+- Not changed (recorded): when a verified issuer's figure conflicts with a filing,
+  `ledger/store.py` still writes "reported in the press; a filing figure differs". It is
+  non-closing, but the wording is wrong for the issuer's own voice. `_period_hint` shows
+  "Q1 2027" with no FY marker.
+- **Review round 2.** Only a SHIFTED fiscal year carries the fiscal basis. A calendar
+  quarter ("first quarter ending March 31, 2027", published November 2026) keeps the strict
+  rule and is still refused as a forecast.
+
+### Not changed / known limits
+- Halves keep the existing rule. A half ending in a non-calendar month states no half.
+- Stored corpus versions are immutable, so a page already stored as 2026-Q1 keeps that key
+  until a new version of it (new content) is ingested.
+- Why the release carried a published date of 2025-11-21 is not explained by this change.
+  It is recorded as open in the QA report.

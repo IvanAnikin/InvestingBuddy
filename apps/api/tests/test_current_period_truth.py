@@ -37,6 +37,8 @@ shapes and period wording are real; every figure is fixture data.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from app.services.final_report_generator import (
@@ -53,7 +55,7 @@ from app.services.report_consistency import (
 )
 from app.services.sources.document_period import (
     BASIS_FISCAL_LABEL,
-    BASIS_PERIOD_END_PHRASE,
+    BASIS_FISCAL_PERIOD_END,
     BASIS_PERIOD_LABEL,
     UNKNOWN_DOCUMENT_PERIOD,
     detect_document_period,
@@ -119,8 +121,104 @@ def test_a_period_end_sentence_is_read_when_nothing_else_states_one() -> None:
         url="https://storage.test/files/20260722_187106.pdf",
         headings=["FOR ITS FIRST QUARTER ENDED 30 JUNE 2026"],
     )
+    # A first quarter ending in June belongs to the fiscal year ending March 2027:
+    # the same key as the issuer's own "FY27 Q1" label (QA campaign 2026-11).
+    assert found.period.key == "2027-Q1"
+    assert found.basis == BASIS_FISCAL_PERIOD_END
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        # Calendar fiscal years: unchanged.
+        ("Results for the first quarter ended 31 March 2026", "2026-Q1"),
+        ("Report for the second quarter ended June 30, 2026", "2026-Q2"),
+        ("Fourth quarter ended 31 December 2025", "2025-Q4"),
+        # Fiscal years ending in another month: named by the year they END.
+        ("First quarter ended September 30, 2026", "2027-Q1"),  # June year-end
+        ("Third quarter ended 31 December 2025", "2026-Q3"),  # June year-end
+        ("First quarter ended December 27, 2025", "2026-Q1"),  # September year-end
+        ("Fourth quarter ended September 27, 2025", "2025-Q4"),
+        # No end month printed: the year as printed.
+        ("Fourth quarter 2025 trading update", "2025-Q4"),
+    ],
+)
+def test_a_quarter_end_phrase_names_the_fiscal_year(phrase: str, expected: str) -> None:
+    assert detect_document_period(title=phrase).period.key == expected
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        # 52/53-week calendar years: a quarter that spills into a month's first days.
+        ("First quarter ended April 4, 2026", "2026-Q1"),
+        ("Third quarter ended October 3, 2026", "2026-Q3"),
+        ("Fourth quarter ended January 2, 2027", "2026-Q4"),
+        ("Fourth quarter ended 3 January 2026", "2025-Q4"),
+    ],
+)
+def test_a_52_53_week_quarter_keeps_its_calendar_year(phrase: str, expected: str) -> None:
+    assert detect_document_period(title=phrase).period.key == expected
+
+
+@pytest.mark.parametrize(
+    ("title", "published", "expected"),
+    [
+        ("Q1 trading statement for the first quarter ended 30 June 2026",
+         date(2026, 7, 17), "2027-Q1"),
+        ("Quarterly activities report for the first quarter ended 30 September 2026",
+         date(2026, 10, 30), "2027-Q1"),
+        ("Report for the third quarter ended 31 December 2026", date(2027, 1, 29), "2027-Q3"),
+    ],
+)
+def test_a_fiscal_quarter_title_survives_the_title_only_policy(
+    title: str, published: date, expected: str
+) -> None:
+    """Review round 3: a fiscal key (2027-Q1 for a quarter ended June 2026) must not be
+    discarded as "not yet begun" on the title-only path (UK NSM, ASX)."""
+    from app.services.sources.disclosure_period_policy import document_period_for
+
+    found = document_period_for(title=title, url=None, extraction=None, title_only=True,
+                                published_at=published)
+    assert found.period.key == expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Guidance for the first quarter ending 31 March 2028",
+        # Review round 4: calendar quarters keep the strict rule.
+        "Guidance for the first quarter ending March 31, 2027",
+        "Outlook for the fourth quarter ending December 31, 2027",
+        # A shifted quarter that had not begun either.
+        "Outlook for the first quarter ending 30 June 2027",
+    ],
+)
+def test_a_forecast_quarter_title_is_still_refused(title: str) -> None:
+    from app.services.sources.disclosure_period_policy import document_period_for
+
+    found = document_period_for(title=title, url=None, extraction=None, title_only=True,
+                                published_at=date(2026, 11, 1))
+    assert not found.is_known
+
+
+def test_a_quarter_of_a_january_year_end_states_no_year() -> None:
+    # Walmart calls the year to January 2027 "fiscal 2027"; Home Depot calls the year
+    # to February 2026 "fiscal 2025". The phrase alone cannot say which.
+    assert not detect_document_period(title="Second quarter ended July 31, 2026").is_known
+
+
+def test_a_modal_may_is_not_an_end_month() -> None:
+    found = detect_document_period(title="First quarter results may vary in 2026")
     assert found.period.key == "2026-Q1"
-    assert found.basis == BASIS_PERIOD_END_PHRASE
+
+
+def test_the_html_release_and_the_pdf_of_one_quarter_share_a_key() -> None:
+    html = detect_document_period(
+        url="https://www.issuer.test/news/posts-strong-start-for-its-first-quarter-ended-"
+            "30-june-2026/")
+    pdf = detect_document_period(url="https://www.issuer.test/media/x/fy27-q1-sales-en.pdf")
+    assert html.period.key == pdf.period.key == "2027-Q1"
 
 
 @pytest.mark.parametrize(

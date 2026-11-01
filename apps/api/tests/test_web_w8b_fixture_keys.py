@@ -214,7 +214,7 @@ def test_the_readers_vocabularies_cover_the_backend_s() -> None:
         trust.LABEL_COMPANY_SAYS, trust.LABEL_MANAGEMENT_SAYS, trust.LABEL_SINGLE_SOURCE,
         trust.LABEL_SINGLE_SOURCE_ESTIMATE, trust.LABEL_SELF_DESCRIBED,
         trust.LABEL_ISSUER_TECHNICAL, trust.LABEL_ANECDOTAL, trust.LABEL_PRESS_NOT_FILING,
-        trust.LABEL_PRESS_FILING_DIFFERS,
+        trust.LABEL_PRESS_FILING_DIFFERS, trust.LABEL_COMPANY_SAYS_NOT_FILING,
     ):
         assert label in READER, label
     assert "estimate by" in READER and "reported in the press" in READER

@@ -68,9 +68,12 @@ def period_began_by(period_key: str, published: date | None, *,
 
 
 def _is_fiscal(basis: str | None) -> bool:
-    from app.services.sources.document_period import BASIS_FISCAL_LABEL
+    from app.services.sources.document_period import (
+        BASIS_FISCAL_LABEL,
+        BASIS_FISCAL_PERIOD_END,
+    )
 
-    return basis == BASIS_FISCAL_LABEL
+    return basis in (BASIS_FISCAL_LABEL, BASIS_FISCAL_PERIOD_END)
 
 
 def document_period_for(
