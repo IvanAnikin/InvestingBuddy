@@ -785,6 +785,33 @@ async def create_pending_thesis_run(
     return run
 
 
+def score_dynamic_items(
+    records: Any, parsed_thesis_json: dict[str, Any] | None, intent: Any
+) -> list[dict[str, Any]]:
+    """Shortlist items for the dynamic stage's candidates, scored for thesis relevance.
+
+    Scored on the SAME reading of the thesis the curated universe was scored with
+    (ADR-070): the legacy parse alone still read a materials thesis as defence and
+    semiconductors (D2), so every dynamic candidate scored 0 theme points beside curated
+    ones scored on the intent — a ranking by where a company came from, not by fit. A
+    registry item that already carries a score keeps it.
+    """
+    from app.services.discovery.pipeline import universe_item
+    from app.services.discovery_thesis_scoring import score_thesis_relevance
+
+    parsed = {**(parsed_thesis_json or {}), **intent.universe_filter()}
+    items = []
+    for record in records:
+        item = universe_item(record, intent)
+        if item.get("relevance_score_pre_scan") is None:
+            relevance = score_thesis_relevance(item, parsed)
+            item["relevance_score_pre_scan"] = relevance["thesis_relevance_score"]
+            item["matched_keywords"] = item.get("matched_keywords") or relevance["matched_keywords"]
+            item["relevance_reason"] = item.get("relevance_reason") or relevance["relevance_reason"]
+        items.append(item)
+    return items
+
+
 def _log_candidate(
     run_id: uuid.UUID, candidate: DiscoveryCandidate, signal: dict[str, Any]
 ) -> None:
@@ -1232,8 +1259,7 @@ async def _run_dynamic_discovery(
     degrades to the pre-V3.19 behaviour with the failure stated — and the constraint
     contract still holds downstream (no candidate carries a verified attribute).
     """
-    from app.services.discovery.pipeline import STAGE_KEY, run_dynamic_stage, universe_item
-    from app.services.discovery_thesis_scoring import score_thesis_relevance
+    from app.services.discovery.pipeline import STAGE_KEY, run_dynamic_stage
 
     base = dict(run.universe_json or {})
     base[STAGE_KEY] = {"status": "running",
@@ -1279,15 +1305,7 @@ async def _run_dynamic_discovery(
         await db.commit()
         return
 
-    parsed = run.parsed_thesis_json or {}
-    items = []
-    for record in stage.candidates:
-        item = universe_item(record, intent)
-        if item.get("relevance_score_pre_scan") is None:
-            relevance = score_thesis_relevance(item, parsed)
-            item["relevance_score_pre_scan"] = relevance["thesis_relevance_score"]
-            item["matched_keywords"] = item.get("matched_keywords") or relevance["matched_keywords"]
-        items.append(item)
+    items = score_dynamic_items(stage.candidates, run.parsed_thesis_json, intent)
     updated = dict(run.universe_json or {})
     updated["curated_items"] = base.get("items") or []
     updated["items"] = items

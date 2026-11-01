@@ -4829,3 +4829,55 @@ MRNA and MP have none.
   ("Honeywell Aerospace backlog" while it was still a segment) is dropped too. The
   segment's filed figures still come from the issuer's 10-K, which the guard never
   judges.
+
+---
+
+## ADR-070: Discovery Relevance Ranks by Fit, Not by Where a Candidate Came From
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, Hypothesis J)
+
+### Context
+In every Discovery run of the campaign (A, B, D, E, E2), the pre-scan relevance score was
+constant per universe source. In E2, on the materials thesis:
+- curated-registry items scored 85;
+- platform-registry items scored 30;
+- every web lead scored 20.
+
+ETM, whose own issuer text verified the rare-earths theme, scored 20, while Cleveland-Cliffs
+(steel, curated) scored 85. Re-scoring the stored items found two causes:
+
+1. Dynamic candidates (web leads and held companies) were scored against the LEGACY
+   thesis parse (`parsed_thesis_json`). For the materials thesis it still reads
+   defence / semiconductors / grid, the D2 misreading that ADR-063 fixed only in the
+   V3.19 intent. The curated universe is built and scored on the intent
+   (`{**parsed, **intent.universe_filter()}`). One run therefore held scores from two
+   different readings of the same thesis, and every dynamic candidate got 0 theme points.
+2. `universe_item` labelled every web lead with the thesis theme, whatever its evidence.
+   With the right parse, that unearned label would be worth the dominant 45 points.
+
+### Decision
+- `score_dynamic_items` scores dynamic candidates on the same merged reading the curated
+  universe uses. A registry item that already carries a score keeps it.
+- A search lead carries the theme it was searched for, marked `theme_unverified` unless
+  its theme evidence is verified (`verified_issuer`, `independent` or `multiple`). An
+  unverified theme earns HALF weight (22.5 of 45 points), with the reason "searched for
+  theme … (not yet verified; half weight)". Being found by a thesis query is weak
+  evidence of fit, but not no evidence.
+
+### Replay on stored runs
+| Run | Candidate | Before | After |
+|---|---|---|---|
+| E2 | Eramet, Umicore, Pensana, Rainbow (held) | 30 | 75 |
+| E2 | ETM (verified) | 20 | 65 |
+| E2 | Lynas, Lindian, Astron, ABX (unverified) | 20 | 42.5 |
+| D | WTC (verified) | 66 | 66 |
+| D | TSLA, DroneShield, Symbotic (unverified, off-thesis per the campaign review) | 66 | 43.5 |
+| A | Cellectis (unverified) | 61 | 38.5 |
+
+### Not changed / known limits
+- A verified web lead still trails a curated item by the sector and industry points that
+  only registry data carries (65 vs 85). Its theme is verified, but its industry is not.
+- The curated registry's own classification is trusted. Cleveland-Cliffs (steel) is filed
+  under `mining_materials` and scores 85 on a specialty-materials thesis.
+- The legacy parse is still stored and still read by older consumers. Only the relevance
+  score of dynamic candidates changes here.
