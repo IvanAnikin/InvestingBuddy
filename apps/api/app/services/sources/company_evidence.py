@@ -1289,6 +1289,9 @@ def sec_filings_from_catalyst(catalyst_discovery: dict | None) -> list[dict]:
                 "filed_date": e.get("filing_date") or e.get("event_date"),
                 "summary": e.get("summary") or e.get("headline"),
                 "accession_number": e.get("accession_number"),
+                # EDGAR's own item codes — what makes an 8-K a results release
+                # rather than just the newest 8-K (ADR-068).
+                "item_numbers": list(e.get("item_numbers") or []),
             }
         )
     return out

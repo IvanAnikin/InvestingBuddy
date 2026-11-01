@@ -113,6 +113,8 @@ def _filing_dict(event: Any) -> dict[str, Any]:
         "filed_date": get("filing_date") or get("event_date"),
         "summary": get("summary") or get("headline"),
         "accession_number": get("accession_number"),
+        # EDGAR's own item codes — what makes an 8-K a results release (ADR-068).
+        "item_numbers": list(get("item_numbers") or []),
     }
 
 
@@ -712,7 +714,7 @@ def _sec_budget_artifact(doc: SecFilingDocument) -> PrimaryDocumentArtifact:
         retrieved_at=datetime.now(timezone.utc),
         status=STATUS_EXTRACTION_FAILED,
         failure_code=FAILURE_BUDGET_EXHAUSTED,
-        doc_kind=doc_kind_for_form(doc.form_type),
+        doc_kind=doc_kind_for_form(doc.form_type, doc.item_codes),
         discovery_strategy=STRATEGY_SEC_ACCESSION,
         source_gaps=[
             _sec_gap(
@@ -776,7 +778,9 @@ def _preflight_artifact(failure: SecPreflightFailure) -> PrimaryDocumentArtifact
         retrieved_at=datetime.now(timezone.utc),
         status=STATUS_EXTRACTION_FAILED,
         failure_code=failure.failure_code,
-        doc_kind=doc_kind_for_form(failure.form_type) if failure.form_type else None,
+        doc_kind=(
+            doc_kind_for_form(failure.form_type, failure.item_codes) if failure.form_type else None
+        ),
         discovery_strategy=STRATEGY_SEC_ACCESSION,
         source_gaps=[
             _sec_gap(
@@ -935,7 +939,7 @@ async def live_sec_primary_document_extractor(
 
         # Provenance: the accession number located this document, not a page scan.
         artifact.title = artifact.title or f"{doc.form_type} {doc.accession_number}"
-        artifact.doc_kind = doc_kind_for_form(doc.form_type)
+        artifact.doc_kind = doc_kind_for_form(doc.form_type, doc.item_codes)
         artifact.discovery_strategy = STRATEGY_SEC_ACCESSION
         artifacts.append(artifact)
 

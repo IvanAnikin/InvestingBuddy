@@ -148,6 +148,12 @@ _EXHIBIT_NAME_RE = re.compile(r"^ex[-_]?\d|exhibit[-_]?\d", re.IGNORECASE)
 # XBRL viewer fragments: R1.htm, R42.htm — rendered slices, never the filing.
 _XBRL_FRAGMENT_RE = re.compile(r"^r\d+\.html?$", re.IGNORECASE)
 
+#: EDGAR 8-K Item 2.02, "Results of Operations and Financial Condition" — the item an
+#: issuer files its earnings release under. The only thing that makes an 8-K a results
+#: release (ADR-068).
+RESULTS_ITEM_CODE = "2.02"
+_ITEM_PREFIX_RE = re.compile(r"^\s*item\s*", re.IGNORECASE)
+
 
 # --------------------------------------------------------------------------- #
 # Pure helpers (no network — safe to unit-test exhaustively)
@@ -276,12 +282,75 @@ def is_supported_form(form: str | None) -> bool:
     return base_form(form) in SUPPORTED_FORMS
 
 
-def doc_kind_for_form(form: str | None) -> str:
+def parse_item_codes(value: Any) -> tuple[str, ...]:
+    """EDGAR 8-K item codes from the submissions feed's ``items`` value. Pure + total.
+
+    EDGAR sends one comma-separated string per filing (``"2.02,9.01"``, sometimes
+    ``"Item 2.02, Item 9.01"``); the catalyst layer already keeps them as a list. Both
+    shapes are accepted. Anything else — ``None``, a number, an empty string — is
+    ``()``: no item code is ever guessed.
+    """
+    if isinstance(value, str):
+        parts: list[Any] = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        return ()
+    codes: list[str] = []
+    for part in parts:
+        if not isinstance(part, str):
+            continue
+        code = _ITEM_PREFIX_RE.sub("", part).strip()
+        if code and code not in codes:
+            codes.append(code)
+    return tuple(codes)
+
+
+def filing_item_codes(filing: dict[str, Any] | None) -> tuple[str, ...]:
+    """The EDGAR item codes a connector filing dict carries; ``()`` when it carries none.
+
+    ``()`` means UNKNOWN, not "no items": an 8-K always reports at least one item, so
+    an empty value only ever says the caller did not pass them on (a 6-K has no items
+    field at all).
+    """
+    if not isinstance(filing, dict):
+        return ()
+    for key in ("item_numbers", "items"):
+        codes = parse_item_codes(filing.get(key))
+        if codes:
+            return codes
+    return ()
+
+
+def is_results_release_8k(form: str | None, item_codes: Any) -> bool:
+    """True only for an 8-K whose EDGAR items include 2.02, Results of Operations.
+
+    The item code is the issuer's own declaration of what the filing is. A note
+    offering, a director change or a Regulation FD slide deck is an 8-K too, and none
+    of them is a results release however recent it is (ADR-068).
+    """
+    if base_form(form) != "8-K":
+        return False
+    codes = item_codes if isinstance(item_codes, tuple) else parse_item_codes(item_codes)
+    return RESULTS_ITEM_CODE in codes
+
+
+def doc_kind_for_form(form: str | None, item_codes: Any = None) -> str:
     """Map a SEC form onto the shared ``doc_kind`` vocabulary. Pure + total.
 
     An unrecognised form is ``other`` — never guessed into ``annual_report``.
+
+    An 8-K is a ``results_release`` only when its item codes are unknown (the legacy
+    label, kept for callers that pass none) or include 2.02. An 8-K whose items are
+    known and do NOT include 2.02 is ``other``: it is an 8-K, not a results release
+    (ADR-068).
     """
-    return _FORM_DOC_KIND.get(base_form(form), DOC_KIND_OTHER)
+    base = base_form(form)
+    if base == "8-K":
+        codes = item_codes if isinstance(item_codes, tuple) else parse_item_codes(item_codes)
+        if codes and RESULTS_ITEM_CODE not in codes:
+            return DOC_KIND_OTHER
+    return _FORM_DOC_KIND.get(base, DOC_KIND_OTHER)
 
 
 def _form_rank(form: str | None) -> int:
@@ -291,6 +360,18 @@ def _form_rank(form: str | None) -> int:
         return SUPPORTED_FORMS.index(base)
     except ValueError:
         return len(SUPPORTED_FORMS)
+
+
+def _filing_rank(filing: dict[str, Any]) -> tuple[int, int]:
+    """Form rank, then — within the 8-Ks — an Item 2.02 results release first.
+
+    Without the second key the NEWEST 8-K always won, so a note-offering legal
+    opinion filed a week after the earnings 8-K displaced the quarter's results
+    (JPM, 2026-10-20 vs 2026-10-13). Every other form is unaffected.
+    """
+    form = filing.get("form_type")
+    results_first = 0 if is_results_release_8k(form, filing_item_codes(filing)) else 1
+    return (_form_rank(form), results_first)
 
 
 def parse_filing_index(payload: Any) -> list[dict[str, Any]]:
@@ -460,6 +541,9 @@ class SecFilingDocument:
     cik: str  # 10-digit zero-padded
     title: str
     is_exhibit: bool = False
+    #: The filing's EDGAR item codes (8-K only; ``()`` when unknown) — what decides
+    #: whether an 8-K is labelled a results release.
+    item_codes: tuple[str, ...] = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -688,7 +772,8 @@ def _sorted_filings(filings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Supported filings in preference order: form rank, then newest first.
 
     Two stable passes: newest ``filed_date`` first (ISO dates sort
-    lexicographically; a missing date sorts last), then by form rank.
+    lexicographically; a missing date sorts last), then by form rank — where, among
+    8-Ks, an Item 2.02 results release ranks ahead of every other 8-K (ADR-068).
     """
     usable = [
         f
@@ -699,7 +784,7 @@ def _sorted_filings(filings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     dated = [f for f in usable if str(f.get("filed_date") or "")]
     undated = [f for f in usable if not str(f.get("filed_date") or "")]
     dated.sort(key=lambda f: str(f.get("filed_date") or ""), reverse=True)
-    return sorted(dated + undated, key=lambda f: _form_rank(f.get("form_type")))
+    return sorted(dated + undated, key=_filing_rank)
 
 
 _ARCHIVES_CIK_RE = re.compile(r"/edgar/data/(\d{1,10})(?:/|$)", re.IGNORECASE)
@@ -877,6 +962,7 @@ class SecPreflightFailure:
     form_type: str | None
     filing_date: str | None
     failure_code: str
+    item_codes: tuple[str, ...] = ()
 
 
 _SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -972,6 +1058,7 @@ def _preflight_failure(
         form_type=form or None,
         filing_date=filed_date,
         failure_code=failure_code,
+        item_codes=filing_item_codes(filing),
     )
 
 
@@ -994,9 +1081,9 @@ async def resolve_filing_documents(
 
     ``filings`` are ``live_fetchers._filing_dict``-shaped dicts (``form_type``,
     ``accession_number``, ``filed_date``, ``title``, ``url``). Filings are visited
-    in preference order (10-K, 20-F, 10-Q, 6-K, 8-K; newest first within a form)
-    until ``max_documents`` bodies are resolved. Filings without a usable
-    accession are skipped. Never raises.
+    in preference order (10-K, 20-F, 10-Q, 6-K, 8-K; newest first within a form,
+    an Item 2.02 8-K ahead of any other 8-K) until ``max_documents`` bodies are
+    resolved. Filings without a usable accession are skipped. Never raises.
 
     RESOLUTION IS BUDGETED. Each filing costs one bounded index fetch, so a long
     ``filings`` list could otherwise spend minutes here — BEFORE the caller's
@@ -1177,6 +1264,7 @@ async def resolve_filing_documents(
                 cik=padded,
                 title=title,
                 is_exhibit=_is_exhibit_entry(entry),
+                item_codes=filing_item_codes(filing),
             )
         )
 
@@ -1283,6 +1371,9 @@ __all__ = [
     "cik_from_accession",
     "cik_from_archives_url",
     "doc_kind_for_form",
+    "filing_item_codes",
+    "is_results_release_8k",
+    "parse_item_codes",
     "fetch_filing_body",
     "fetch_filing_index",
     "format_accession",

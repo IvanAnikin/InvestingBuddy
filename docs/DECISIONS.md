@@ -5005,3 +5005,65 @@ from the counts.
   them.
 - No stored run is re-ranked. The replay needs a new run, because the payload of a
   past run does not hold the names that were cut.
+
+## ADR-068: An 8-K Is a Results Release Only When Its EDGAR Items Include 2.02
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect JPM-2)
+
+### Context
+JPM report 30828043 (job 60e705ec) read the wrong 8-K as JPM's latest results release.
+It read a 2026-10-20 note-offering legal-opinion 8-K (accession 0001193125-26-426704,
+Items 8.01 and 9.01). The Q3 2026 earnings 8-K (0001628280-26-065582, Item 2.02
+"Results of Operations and Financial Condition", exhibit 99.1) was filed on 2026-10-13.
+Q3 2026 (net income $15.3B, CET1 13.9%, ROTCE 20%) was missing from the report.
+
+The SEC filing-body path (`sec_filing_documents.resolve_filing_documents`) visits
+filings by form rank (10-K, 20-F, 10-Q, 6-K, 8-K), newest first within a form. With the
+default two-body cap (`primary_document_sec_max_bodies`) and the 90-day catalyst window,
+JPM resolved to the Q2 10-Q plus the newest 8-K. `doc_kind_for_form` also labelled
+every 8-K `results_release`. EDGAR's `items` field, which says what each 8-K is, was
+parsed into `CatalystEvent.item_numbers`. It was then dropped by both adapters that
+build the resolver's filing dicts (`live_fetchers._filing_dict` and
+`company_evidence.sec_filings_from_catalyst`). Any 8-K filed after the earnings 8-K
+(a note offering, a director change, a Regulation FD deck) therefore displaced the
+quarter's results.
+
+### Decision
+- **The item code decides.** An 8-K is a results release only when its EDGAR items
+  include `2.02` (`is_results_release_8k`). Multi-item strings (`"2.02,9.01"`,
+  `"Item 2.02, Item 9.01"`) and lists are both parsed (`parse_item_codes`).
+- **Ranking.** Within the 8-K rank, an Item 2.02 8-K now comes ahead of every other
+  8-K, newest first in each group (`_filing_rank`). A newer 8-K without 2.02 can no
+  longer displace the latest Item 2.02 8-K. Form rank still comes first, so a 10-Q
+  still beats any 8-K.
+- **Honest label.** An 8-K whose items are known and do not include 2.02 is labelled
+  `other`, not `results_release`. This applies when no Item 2.02 8-K is in the window
+  and the newest 8-K is still read (existing behaviour). The item codes travel on
+  `SecFilingDocument.item_codes` and `SecPreflightFailure.item_codes`, so the fetched,
+  budget-skipped and preflight artifacts all carry the same label.
+- **Plumbing.** Both filing-dict adapters now carry `item_numbers`.
+- **Offline replay** on cached EDGAR submissions (90-day window, first 8-K visited):
+  - JPM before: 2026-10-20 8.01/9.01. After: 2026-10-13 2.02/9.01.
+  - ADBE: 2026-09-10 (2.02) before and after.
+  - PYPL: 2026-10-27 (2.02) before and after.
+  - HON: 2026-10-22 (2.02) before and after.
+  - CLLS (6-K filer): 2026-10-28 6-K before and after.
+
+### Not changed / known limits
+- **6-K filers.** EDGAR records no items for a 6-K. Ranking and label (`interim_report`)
+  are unchanged.
+- **Missing item codes.** An 8-K whose items are missing keeps the legacy
+  `results_release` label, because a caller that passes no item codes cannot be told
+  apart from the old behaviour. Such an 8-K never outranks a known Item 2.02 8-K. The V3
+  filing bridge (`ensure_filing_corpus_evidence` → `acquire_sec_filing`) passes only
+  accession and form, so 8-Ks it acquires keep that legacy label.
+- **The 8-K body is a cover page.** The resolver still reads the 8-K's primary
+  document. That is a cover page with a few KB of text, which only refers to exhibit 99.1, where
+  the figures are. Exhibits stay excluded (`allow_exhibits=False`), and EDGAR's
+  `index.json` does not type exhibits (PayPal's release is
+  `pypl3q-26earningsrelease.htm`, typed `text.gif`). So the right 8-K being chosen does
+  not by itself bring Q3 figures into the report. Reading exhibit 99.1 is a separate
+  slice.
+- **V3 core filings.** `ensure_core_filings` still secures only the latest 10-K and
+  10-Q. A quarter reported by 8-K but not yet in a 10-Q is not secured into the corpus
+  by that step.
