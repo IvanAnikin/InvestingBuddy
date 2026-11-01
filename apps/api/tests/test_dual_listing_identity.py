@@ -79,6 +79,8 @@ RAW_SUBMISSIONS: dict[int, dict[str, Any]] = {
     1802768: {"stateOfIncorporation": "X0", "stateOfIncorporationDescription": "United Kingdom",
               "addresses": {"business": {"stateOrCountry": "NY",
                                          "stateOrCountryDescription": "NY"}}},
+    4444444: {"stateOfIncorporation": "I0", "stateOfIncorporationDescription": ["France"],
+              "addresses": "not an object"},
     320193: {"stateOfIncorporation": "CA", "stateOfIncorporationDescription": "CA",
              "addresses": {"business": {"stateOrCountry": "CA",
                                         "stateOrCountryDescription": "CA"}}},
@@ -631,3 +633,8 @@ async def test_a_verified_line_is_never_merged_into_a_lead_that_failed_verificat
     # The predicate alone would link them; the pipeline compares verified identities only.
     assert _same_issuer_in_run(sanofi_us, failed)
     assert not failed.verified
+
+
+
+async def test_a_malformed_registrant_record_is_no_verdict_never_an_error():
+    assert await d.sec_registrant_domicile("4444444", fetcher=fetcher) is None

@@ -567,13 +567,15 @@ _EDGAR_COUNTRY_TEXT = {
 }
 
 
-def edgar_country(text: str | None) -> str | None:
+def edgar_country(text: Any) -> str | None:
     """EDGAR's country text as the registry's country name: "Canada (Federal Level)" and
     "Ontario, Canada" are Canada; "Korea, Republic of" is South Korea."""
     from app.services.discovery.identity import ISO2_COUNTRY
     from app.services.exchange_registry import COUNTRY_TO_REGION
 
-    raw = re.sub(r"\s*\(.*?\)\s*", " ", str(text or "")).strip()
+    if not isinstance(text, str):
+        return None
+    raw = re.sub(r"\s*\(.*?\)\s*", " ", text).strip()
     if not raw:
         return None
     known = {c.lower(): c for c in (*COUNTRY_TO_REGION, *ISO2_COUNTRY.values())}
@@ -618,7 +620,8 @@ async def sec_registrant_domicile(
         return None
     if not isinstance(data, dict):
         return None
-    business_address = ((data.get("addresses") or {}).get("business") or {})
+    addresses = data.get("addresses")
+    business_address = addresses.get("business") if isinstance(addresses, dict) else None
     if not isinstance(business_address, dict):
         business_address = {}
     business: str | None = None
