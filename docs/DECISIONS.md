@@ -5369,12 +5369,15 @@ sector-agnostic, and none of them could ask a playbook anything:
   - no net debt is computed or refused;
   - no valuation blocker mentions net debt;
   - `total_debt` is not an open category.
-- **SIC wins over a vendor label.** `resolve_classification` now uses keyword
-  inference only when no SIC code is present, which is what its table already
-  documented. Before, a broker-dealer under SIC 6211 whose vendor label read
-  "Investment Banking & Brokerage" was inferred to be "Banks" from the word "banking",
-  and so lost its metrics. The only other code the change was seen to affect is SIC
-  5094 (jewelry wholesale), which no longer infers "Watches & Jewelry".
+- **SIC wins over a vendor label for "Banks".** When a SIC code is present,
+  `resolve_classification` never infers "Banks" from text. A broker-dealer under SIC
+  6211 whose vendor label reads "Investment Banking & Brokerage" used to become
+  "Banks" because of the word "banking", and so lost its metrics. Banks map from SIC
+  6020–6036 directly. Every other keyword inference for an unmapped SIC is unchanged,
+  because removing all of them would strip the playbook from every filer whose SIC
+  the table does not map, which is wider than this slice. The resolver table says
+  inference applies "only when no SIC code is available", and the code has never done
+  that; the disagreement is left as a recorded limit.
 - **Recorded once, as not meaningful, never as a gap.**
   - The record appears as `v3_research.not_meaningful_metrics`, with status
     `not_meaningful_for_business_model`, the playbook, reason, reader note, narrowed

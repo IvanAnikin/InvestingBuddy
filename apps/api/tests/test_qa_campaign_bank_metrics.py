@@ -745,3 +745,13 @@ def test_jpm_total_debt_is_meaningful_and_its_net_debt_is_not():
     out = run_valuation_guard_agent(snapshot, summary, {"overall_source_quality": "strong"})
     assert "financials.total_debt" not in out.missing_valuation_inputs
     assert not any("net debt" in b.lower() for b in out.valuation_blockers)
+
+
+def test_a_bank_label_never_overrides_a_non_bank_sic() -> None:
+    from app.services.classification.resolver import resolve_classification
+
+    broker = resolve_classification(
+        sic_code="6211", sic_description="Security Brokers, Dealers & Flotation Companies",
+        stored_industry="Investment Banking & Brokerage",
+    )
+    assert broker.industry != "Banks"
