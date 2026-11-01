@@ -4985,13 +4985,18 @@ from the counts.
   value is the tie-break inside `ranking_key`, so it applies before the cap. The order
   is unchanged otherwise: eligibility first, then verified hard passes, then soft
   passes. Fit never lifts an unverified company over an eligible one.
-- If the scorer raises for a record, that record ranks as unscored (the old order).
-  The stage never fails because of it.
+- If the scorer raises for a record, that record scores 0 and ranks below its scored
+  tier-mates. The stage never fails because of it. If every record fails, the old
+  insertion order is kept.
 - **Never silent.** `funnel.beyond_cap` counts the names the cap cut. A stage warning
-  names up to 20 of them (`VENUE:TICKER`). The admin funnel shows "N met the
-  requirements but were beyond the shortlist cap".
+  names up to 20 of them (`VENUE:TICKER`) and is placed first, so the run's truncated
+  warning list keeps it. The admin funnel shows "N met the requirements but were beyond
+  the shortlist cap".
 
 ### Not changed / known limits
+- **Uncapped runs change too.** Within a tier, the shortlist is now ordered by fit, so
+  `items`, `requested_tickers` and the scan order change for every dynamic run, not
+  only for capped ones. Ties in the final `_eligibility_rank_key` keep that order.
 - Relevance remains the LAST key. A curated name with more verified soft passes still
   outranks a better-fitting web lead with fewer. Passes measure how much was verified,
   not fit, and reordering the tiers is a policy decision this slice does not take.

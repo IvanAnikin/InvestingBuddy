@@ -906,13 +906,12 @@ async def run_dynamic_stage(
     # 6. Decide. Eligibility is final; the quota is never filled with excluded names.
     cap = _bounded(max_candidates, DEFAULT_MAX_CANDIDATES, 50)
     included = [r for r in records if r.eligibility.status != cons.EXCLUDED]
-    scores = {id(r): _relevance_of(relevance, r) for r in included}
-    included.sort(key=lambda r: cons.ranking_key(r.eligibility, scores[id(r)]))
-    stage.candidates = included[:cap]
-    # Never silent: a name the cap cut is stated, with why (ADR-073).
-    beyond_cap = included[cap:]
+    stage.candidates, beyond_cap = shortlist(included, cap, relevance)
+    # Never silent: a name the cap cut is stated, with why (ADR-073). First, so the run's
+    # truncated warning list keeps it.
     if beyond_cap:
-        stage.warnings.append(
+        stage.warnings.insert(
+            0,
             f"{len(beyond_cap)} candidate(s) met the requirements but were beyond the "
             f"shortlist cap of {cap}: "
             + ", ".join(f"{r.identity.exchange}:{r.identity.ticker}" for r in beyond_cap[:20])
@@ -970,6 +969,18 @@ async def run_dynamic_stage(
 # --------------------------------------------------------------------------- #
 # Open-web W6b helpers
 # --------------------------------------------------------------------------- #
+
+
+def shortlist(
+    included: list[CandidateRecord],
+    cap: int,
+    relevance: Callable[[CandidateRecord], float | None] | None = None,
+) -> tuple[list[CandidateRecord], list[CandidateRecord]]:
+    """(kept, beyond the cap): eligibility first, then verified passes, then thesis fit
+    (ADR-073). Every record is still in exactly one of the two lists."""
+    scores = {id(r): _relevance_of(relevance, r) for r in included}
+    ordered = sorted(included, key=lambda r: cons.ranking_key(r.eligibility, scores[id(r)]))
+    return ordered[:cap], ordered[cap:]
 
 
 def _relevance_of(
