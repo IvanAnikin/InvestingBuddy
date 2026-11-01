@@ -248,6 +248,12 @@ _NORMALIZER_COVERED_FIELDS: frozenset[str] = frozenset(
 )
 
 
+#: Fields ONLY the normalizer may supply; the legacy value is never backfilled (ADR-067).
+_NORMALIZER_EXCLUSIVE_FIELDS: frozenset[str] = frozenset(
+    {"sec_edgar.short_term_debt", "sec_edgar.long_term_debt"}
+)
+
+
 def merge_fundamentals(
     data: dict,
     ticker: str,
@@ -296,6 +302,25 @@ def merge_fundamentals(
             "period, and a value for another period is never carried into it."
         )
     base = [dp for dp in base if dp.field_name not in withheld]
+
+    # ADR-067 — the debt legs are the normalizer's alone. The legacy parser picks the
+    # first "long" and first "short" alias independently, and those concepts overlap
+    # (``LongTermDebt`` already contains ``DebtCurrent``'s current maturities), so a
+    # backfilled leg would not add up to the normalizer's total debt. A leg the
+    # normalizer left empty is empty because no compatible concept was tagged for the
+    # period, or because its total could not be split.
+    dropped_legs = sorted(
+        dp.field_name
+        for dp in base
+        if dp.field_name in _NORMALIZER_EXCLUSIVE_FIELDS and dp.field_name not in by_name
+    )
+    if dropped_legs:
+        warnings.append(
+            "SEC EDGAR: the legacy alias-order value was NOT used for "
+            f"{', '.join(dropped_legs)} — debt legs come only from the compatible "
+            "concepts total debt is derived from."
+        )
+    base = [dp for dp in base if dp.field_name not in _NORMALIZER_EXCLUSIVE_FIELDS]
 
     superseded = sorted(
         dp.field_name

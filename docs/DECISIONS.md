@@ -5006,101 +5006,108 @@ from the counts.
 - No stored run is re-ranked. The replay needs a new run, because the payload of a
   past run does not hold the names that were cut.
 
-## ADR-068: An 8-K Is a Results Release Only When Its EDGAR Items Include 2.02
+## ADR-067: Total Debt Is One Compatible Combination of Concepts, or Nothing
 
-**Status:** Accepted (cross-sector QA campaign 2026-11, defect JPM-2)
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect JPM-1)
 
 ### Context
-JPM report 30828043 (job 60e705ec) read the wrong 8-K as JPM's latest results release.
-It read a 2026-10-20 note-offering legal-opinion 8-K (accession 0001193125-26-426704,
-Items 8.01 and 9.01). The Q3 2026 earnings 8-K (0001628280-26-065582, Item 2.02
-"Results of Operations and Financial Condition", exhibit 99.1) was filed on 2026-10-13.
-Q3 2026 (net income $15.3B, CET1 13.9%, ROTCE 20%) was missing from the report.
+JPMorgan's report (30828043) said "Total debt 64,776m" and called a debt/equity of 0.179
+"conservative". 64,776 is JPM's `ShortTermBorrowings` alone. JPM last tagged
+`LongTermDebt` for 2013 (withheld, correctly, by the V3.18.1 own-period rule). It now
+tags `LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities` (435,206m),
+which the normalizer did not know. `total_debt` was then the "partial sum" of whichever
+leg was present, published with only a warning.
 
-The SEC filing-body path (`sec_filing_documents.resolve_filing_documents`) visits
-filings by form rank (10-K, 20-F, 10-Q, 6-K, 8-K), newest first within a form. With the
-default two-body cap (`primary_document_sec_max_bodies`) and the 90-day catalyst window,
-JPM resolved to the Q2 10-Q plus the newest 8-K. `doc_kind_for_form` also labelled
-every 8-K `results_release`. EDGAR's `items` field, which says what each 8-K is, was
-parsed into `CatalystEvent.item_numbers`. It was then dropped by both adapters that
-build the resolver's filing dicts (`live_fetchers._filing_dict` and
-`company_evidence.sec_filings_from_catalyst`). Any 8-K filed after the earnings 8-K
-(a note offering, a director change, a Regulation FD deck) therefore displaced the
-quarter's results.
+The derivation had a second defect. It picked the freshest of
+`LongTermDebt`/`LongTermDebtNoncurrent` and the freshest of
+`DebtCurrent`/`ShortTermBorrowings`/`LongTermDebtCurrent` independently, then added
+them. In the US-GAAP taxonomy these concepts overlap:
+
+- `LongTermDebt` and `LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities`
+  include the current portion of long-term debt.
+- `LongTermDebtNoncurrent` and `LongTermDebtAndCapitalLeaseObligations` exclude it.
+- `LongTermDebtCurrent` (and `…CapitalLeaseObligationsCurrent`) is the current portion.
+- `ShortTermBorrowings` excludes the current portion. `CommercialPaper` is part of it.
+- `DebtCurrent` is short-term borrowings plus the current portion.
+
+`LongTermDebt + LongTermDebtCurrent` and `LongTermDebt + DebtCurrent` both count the
+current maturities twice.
 
 ### Decision
-- **The item code decides.** An 8-K is a results release only when its EDGAR items
-  include `2.02` (`is_results_release_8k`). Multi-item strings (`"2.02,9.01"`,
-  `"Item 2.02, Item 9.01"`) and lists are both parsed (`parse_item_codes`).
-- **Ranking.** Within the 8-K rank, an Item 2.02 8-K now comes ahead of every other
-  8-K, newest first in each group (`_filing_rank`). A newer 8-K without 2.02 can no
-  longer displace the latest Item 2.02 8-K. Form rank still comes first, so a 10-Q
-  still beats any 8-K.
-- **Honest label.** An 8-K whose items are known and do not include 2.02 is labelled
-  `other`, not `results_release`. This applies when no Item 2.02 8-K is in the window
-  and the newest 8-K is still read (existing behaviour). The item codes travel on
-  `SecFilingDocument.item_codes` and `SecPreflightFailure.item_codes`, so the fetched,
-  budget-skipped and preflight artifacts all carry the same label.
-- **Plumbing.** Both filing-dict adapters pass `item_numbers` through RAW, not
-  wrapped in `list(...)`. `list("2.02,9.01")` would split the string into
-  characters, and a real Item 2.02 8-K would be labelled `other`. `parse_item_codes`
-  accepts both strings and lists.
-- **The press release, not the cover page.** An Item 2.02 8-K's primary document is a
-  cover page of a few KB. It only refers to the earnings release filed as Exhibit 99.1.
-  EDGAR's `index.json` types every file by its icon (`text.gif`), so it cannot identify
-  that exhibit. For an Item 2.02 8-K, the resolver therefore also reads the filing's
-  `<accession>-index.htm` page (`fetch_filing_index_page`), whose "Document Format
-  Files" table gives each document's EDGAR type. It resolves the `.htm` document typed
-  `EX-99.1`, or else the first `EX-99*` (`select_results_exhibit`).
-  - Same host (`www.sec.gov/Archives`), same guarded, pinned, throttled network leg as
-    `index.json` (one shared `_fetch_sec_archive_bytes`). No new host and no
-    caller-supplied URL. The filename is the anchor text and is re-validated by
-    `build_document_url`.
-  - The page has its own byte cap (`INDEX_PAGE_MAX_BYTES`, 256 KB; the real page is
-    ~12 KB) and its own `sec_filing_index_page_*` log events.
-  - No regex backtracking. A first version located the table with
-    `<table[^>]*summary="…"[^>]*>`, which took 143 s on a 100 KB page of unclosed
-    openers, on the event loop. That is the failure mode of the gunicorn worker-timeout
-    outage. The parser now uses only `str.find` / split on `</tr>` and `</td>`, and
-    lowercases ASCII only so indexes stay aligned. It runs in `asyncio.to_thread`.
-    Adversarial 256 KB pages parse in at most ~27 ms, and a test bounds them at 0.5 s.
-  - The page fetch counts against the existing attempt cap (`max_documents × 3`) and
-    deadline. The two-body cap is unchanged.
-  - Degrades, never fails. If the page cannot be read, names no `EX-99*` document, or
-    the budget is spent, the primary document is kept. An 8-K with missing or non-2.02
-    items never triggers the page fetch.
-  - Downstream is unchanged. The document keeps form `8-K` and its item codes, so the
-    artifact is still labelled `results_release`. `SecFilingDocument.is_exhibit` is
-    `True`.
-  - JPM replay (real index pages, offline): accession 0001628280-26-065582 now resolves
-    to `…/19617/000162828026065582/a3q26erfexhibit991narrative.htm`, not
-    `jpm-20261013.htm`.
-- **Offline replay** on cached EDGAR submissions (90-day window, first 8-K visited):
-  - JPM before: 2026-10-20 8.01/9.01. After: 2026-10-13 2.02/9.01.
-  - ADBE: 2026-09-10 (2.02) before and after.
-  - PYPL: 2026-10-27 (2.02) before and after.
-  - HON: 2026-10-22 (2.02) before and after.
-  - CLLS (6-K filer): 2026-10-28 6-K before and after.
+1. A new module, `app/integrations/sec_total_debt.py`, holds the concept roles and
+   `derive_total_debt`. Every term is read at the bundle's `reporting_period_end`, in a
+   filing of the bundle's basis (10-K for annual, 10-Q for quarterly), from the reporting
+   accession where one exists. Total debt is published only as one of these sums, tried
+   in this order:
+   - (b) noncurrent LTD + `DebtCurrent`. This is skipped when `DebtCurrent` is smaller
+     than a component of it.
+   - (c) noncurrent LTD + current LTD + short-term borrowings.
+   - (a) LTD including current maturities + short-term borrowings.
+   - Then the same sums with a short-term term missing, each with a basis note: "no
+     short-term borrowings tagged for the period (last tagged as … for …)", "no current
+     maturities…", or "no current debt…".
+
+   Noncurrent LTD may be derived as (including current − current) when both are tagged
+   and the noncurrent concept is not. `DebtCurrent` is never added to an
+   including-current concept.
+2. **Same line, two concepts.** When `ShortTermBorrowings` equals the current-maturities
+   concept (within 0.5m), it is one balance-sheet line tagged twice, and it is counted
+   once. IBM and AMD do this. Without the rule, adding the lease-inclusive current concept
+   would have overstated IBM by 6,424m.
+3. **Fail closed.** If no long-term debt concept is tagged for the period, `total_debt`,
+   `short_term_debt`, `long_term_debt` and `debt_to_equity` are all `None`. The filer's
+   latest long-term concept goes to `withheld_fields["long_term_debt"]` with its own
+   period, and a warning names it. Net debt then has no input.
+4. **The legs mean one thing.** `short_term_debt` is debt due within one year:
+   short-term borrowings plus current maturities. `long_term_debt` is debt due after one
+   year. Whenever both are set, they add up to `total_debt`. Both are `None` when basis (a)
+   cannot be split because the current portion is not tagged. The total still stands.
+   `debt_basis` records the combination, the concepts and values used, and the notes. The
+   `sec_edgar.total_debt` datapoint note carries the same text.
+5. **Consumers.**
+   - `merge_fundamentals` never backfills a debt leg from the legacy alias-order parser
+     (`_NORMALIZER_EXCLUSIVE_FIELDS`). Before this change, JPM's 2013 `LongTermDebt`
+     would have come back that way.
+   - `peers.total_debt_is_usable` gates net debt in both the peer table and the
+     subject's statement lines. It needs a published total, no withheld leg, and not
+     "a short leg with no long leg".
+   - `metrics_from_sec_summary` refuses net debt for a persisted summary of that last
+     shape too.
+   - Enterprise value already requires `total_debt`, so it inherits the rule.
+
+### Replay on 19 filers' cached companyfacts (before → after, USD m)
+11 of 19 totals changed. 7 were double counts of current maturities:
+
+| Filer | Before | After | Why |
+|---|---|---|---|
+| AAPL | 103,028 | 98,657 | `LongTermDebt` + `LongTermDebtCurrent` → noncurrent 78,328 + current 12,350 + CP 7,979 |
+| ABT | 15,962 | 12,929 | same double count; no STB for 2025 (noted) |
+| DIS | 48,737 | 42,026 | same double count |
+| MSFT | 49,521 | 40,294 | same double count |
+| MMM | 14,272 | 12,602 | `LongTermDebt` + `DebtCurrent` → noncurrent 10,932 + `DebtCurrent` 1,670 |
+| GE | 22,155 | 20,494 | same; equals GE's own `DebtLongtermAndShorttermCombinedAmount` |
+| UPS | 24,193 | 24,127 | same; equals UPS's own `DebtAndCapitalLeaseObligations` |
+| AMZN | 69,291 | 68,851 | `LongTermDebt` (68,836, face value) → balance-sheet carrying lines |
+| HON | 34,939 | 34,580 | `LongTermDebt` 29,046 → balance-sheet 27,141 + 1,546 + STB 5,893 |
+| JPM | 64,776 | 499,982 | including-current 435,206 + STB 64,776; d/e 0.179 → 1.379 |
+| GM | — | 131,574 | including-current concept was unknown; no STB tagged (noted) |
+
+These were unchanged: ADBE 6,210, AMD 3,222, CAT 36,210, DUK 89,836, IBM 61,260, MRNA 590,
+PYPL 9,987 and WMT 44,762. CAT, MRNA and PYPL now carry a basis note.
 
 ### Not changed / known limits
-- **6-K filers.** EDGAR records no items for a 6-K. Ranking and label (`interim_report`)
-  are unchanged.
-- **Missing item codes.** An 8-K whose items are missing keeps the legacy
-  `results_release` label, because a caller that passes no item codes cannot be told
-  apart from the old behaviour. Such an 8-K never outranks a known Item 2.02 8-K. The V3
-  filing bridge (`ensure_filing_corpus_evidence` → `acquire_sec_filing`) passes only
-  accession and form, so 8-Ks it acquires keep that legacy label.
-- **One exhibit only.** The financial supplement (JPM's EX-99.2, 3.4 MB) is not read.
-  Neither is any exhibit of a non-2.02 8-K. `allow_exhibits` is unchanged for every
-  other form.
-- **V3 bridge sees an exhibit URL.** A press release persisted by this path has an
-  exhibit-shaped URL when the issuer names it so (JPM's `…exhibit991…`; PayPal's
-  `pypl3q-26earningsrelease.htm` is not). If the V3 filing bridge later asks whether
-  that accession is searchable, `filing_evidence_state` treats an exhibit-only version
-  as "not the filing" and reacquires the cover page beside it. Nothing is lost, but
-  the bridge never prefers the release.
-- **An extra request per results 8-K.** Reading the `-index.htm` page (~12 KB) costs
-  one more throttled SEC request.
-- **V3 core filings.** `ensure_core_filings` still secures only the latest 10-K and
-  10-Q. A quarter reported by 8-K but not yet in a 10-Q is not secured into the corpus
-  by that step.
+- A short-term term that is not tagged is assumed absent, with a note. CAT tags no
+  balance-sheet current maturities (its debt note shows 7,120m due within a year), so its
+  total is understated by that amount. PYPL's 10-K tags no current debt for 2025. A
+  stale current concept still goes to `withheld_fields["short_term_debt"]`, which makes
+  net-debt consumers refuse net debt, as before.
+- Debt carried only on dimensional (segment) facts, and concepts outside the roles above
+  (`NotesPayableCurrent`, `OtherShortTermBorrowings`, finance leases tagged on their own,
+  `DebtLongtermAndShorttermCombinedAmount`), are not read. HON's combined amount is long-
+  term debt only, so it is not a safe total.
+- For a bank, total debt from these concepts excludes deposits and is not a leverage
+  measure. The banking playbook does not ask for net debt / EBITDA, but the normalizer
+  still emits `debt_to_equity` for a bank (JPM now shows 1.379, not 0.179). Suppressing
+  it by industry is out of scope here.
+- Persisted snapshots written before this change keep their old totals until research is
+  rerun. Only the "short leg with no long leg" shape is detectable after the fact.

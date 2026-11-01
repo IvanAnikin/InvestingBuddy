@@ -333,4 +333,7 @@ class TestMutation:
             "the fixture no longer reproduces the defect and the tests above prove less "
             "than they appear to"
         )
-        assert n.total_debt == pytest.approx(7250.5)
+        # ADR-067: debt no longer depends on this rule. Total debt reads every term AT
+        # the reporting period itself, so removing the own-period rule cannot bring the
+        # prior-year current debt (and the 7,250.5 the live report showed) back.
+        assert n.total_debt == FY2025_LONG_TERM_DEBT

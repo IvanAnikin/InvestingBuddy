@@ -236,6 +236,12 @@ def metrics_from_sec_summary(
         for item in fs.get("withheld_fields") or ()
     ):
         withheld.add("net_debt")
+    # ADR-067 (defect JPM-1): a short-term leg with no long-term leg beside it is the
+    # shape of a summary written before total debt was derived from compatible concepts
+    # only — short-term borrowings published as "total debt". The normaliser no longer
+    # produces it; a persisted summary may still carry it.
+    if fs.get("long_term_debt_usd_m") is None and fs.get("short_term_debt_usd_m") is not None:
+        withheld.add("net_debt")
     keys = [k for k in STATEMENT_METRIC_KEYS if k not in withheld]
     return compute_statement_metrics(values, period_label=f"FY{fiscal_year}", keys=keys)
 
