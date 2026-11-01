@@ -807,7 +807,10 @@ def score_dynamic_items(
             relevance = score_thesis_relevance(item, parsed)
             item["relevance_score_pre_scan"] = relevance["thesis_relevance_score"]
             item["matched_keywords"] = item.get("matched_keywords") or relevance["matched_keywords"]
-            item["relevance_reason"] = item.get("relevance_reason") or relevance["relevance_reason"]
+            # The scorer's basis is appended, never dropped: the half-weight disclosure
+            # for an unverified theme must reach the reader (ADR-070 review S1).
+            reasons = [item.get("relevance_reason"), relevance["relevance_reason"]]
+            item["relevance_reason"] = "; score basis: ".join(r for r in reasons if r) or None
         items.append(item)
     return items
 

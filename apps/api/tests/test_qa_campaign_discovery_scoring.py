@@ -158,3 +158,31 @@ class TestTheScore:
         )
         [item] = score_dynamic_items([record], LEGACY_PARSE, intent)
         assert item["relevance_score_pre_scan"] == 85.0
+
+    def test_the_half_weight_disclosure_reaches_the_reason(
+        self, intent: Any  # noqa: ANN401
+    ) -> None:
+        # Review S1: the pipeline already fills relevance_reason; the scorer's basis must
+        # be appended, not dropped.
+        [item] = score_dynamic_items(
+            [_Record(_Identity("LYCX"), web=_web("insufficient"))], LEGACY_PARSE, intent)
+        assert "not yet verified; half weight" in item["relevance_reason"]
+
+    @pytest.mark.parametrize("web", [None, {}, {"admission": {}}])
+    def test_a_lead_without_theme_evidence_is_unverified(
+        self, intent: Any, web: dict[str, Any] | None  # noqa: ANN401
+    ) -> None:
+        [item] = score_dynamic_items([_Record(_Identity("LYCX"), web=web)], LEGACY_PARSE, intent)
+        assert item["theme_unverified"] is True
+        assert "half weight" in item["relevance_reason"]
+
+    def test_an_intent_without_themes_marks_nothing(self) -> None:
+        bare = build_intent("Listed companies in Australia.")
+        [item] = score_dynamic_items([_Record(_Identity("LYCX"))], {}, bare)
+        assert not item["theme_unverified"]
+
+    def test_legacy_only_keys_survive_the_merge(self, intent: Any) -> None:  # noqa: ANN401
+        named = _Record(_Identity("LYCX", name="Vexmoor Defence Materials Ltd"),
+                        web=_web("insufficient"))
+        [item] = score_dynamic_items([named], LEGACY_PARSE, intent)
+        assert "defence" in item["matched_keywords"]

@@ -4860,9 +4860,11 @@ ETM, whose own issuer text verified the rare-earths theme, scored 20, while Clev
   universe uses. A registry item that already carries a score keeps it.
 - A search lead carries the theme it was searched for, marked `theme_unverified` unless
   its theme evidence is verified (`verified_issuer`, `independent` or `multiple`). An
-  unverified theme earns HALF weight (22.5 of 45 points), with the reason "searched for
-  theme … (not yet verified; half weight)". Being found by a thesis query is weak
-  evidence of fit, but not no evidence.
+  unverified theme earns HALF weight (22.5 of 45 points). The scorer's basis, e.g.
+  "searched for theme … (not yet verified; half weight)", is APPENDED to the reason the
+  pipeline already set ("…; score basis: …"), so the half weight is visible in the
+  admin universe view (review S1). Being returned by a thesis search (an
+  `external_search` lead) is weak evidence of fit, but not no evidence.
 
 ### Replay on stored runs
 | Run | Candidate | Before | After |
@@ -4881,3 +4883,13 @@ ETM, whose own issuer text verified the rare-earths theme, scored 20, while Clev
   under `mining_materials` and scores 85 on a specialty-materials thesis.
 - The legacy parse is still stored and still read by older consumers. Only the relevance
   score of dynamic candidates changes here.
+- Keyword, catalyst and confidence points still come from the legacy parse, which the
+  intent does not replace. For E2 the D2 keywords (defence, semiconductors) can still
+  earn up to 15 keyword points (review N2).
+- `theme_unverified` lives only on the universe item. `thesis_match_json` and the
+  director's `matched_theme` still present the searched theme as a match for an
+  unverified lead. This mislabel predates this ADR and is not fixed here (review S2).
+- The pipeline's own reason can contradict the score basis. A lead whose issuer text
+  verified the theme (ETM) can still show "no verified statement of what the company
+  does names the requested theme" from the industry classifier, beside "matches theme".
+  The two checks read different evidence.
