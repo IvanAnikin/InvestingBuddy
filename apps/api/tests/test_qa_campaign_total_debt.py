@@ -426,15 +426,55 @@ class TestEnterpriseValueFollowsTheNetDebtRule:
                     "shares_outstanding_mln": 10.0}) is None
 
 
+    def test_a_refused_total_is_called_withheld_not_missing(self) -> None:
+        from app.integrations.market_metrics_enrichment import derive_market_metrics
+        from tests.test_phase19_4_identity_sector_market_metrics import _build_prices
+
+        mm = derive_market_metrics("ANY", {
+            "total_debt_usd_m": 65.0, "short_term_debt_usd_m": 65.0,
+            "cash_and_equivalents_usd_m": 50.0, "shares_outstanding_mln": 10.0,
+        }, _build_prices(), "USD")
+        warning = next(w for w in mm.warnings if w.startswith("Enterprise value"))
+        assert "total debt withheld" in warning
+        assert "missing input(s)" not in warning
+
+
 class TestShortTermBorrowingsParts:
-    def test_commercial_paper_plus_other_short_term_borrowings(self) -> None:
-        """The bank shape: no ShortTermBorrowings total, but commercial paper and other
-        short-term borrowings tagged as two lines. CP alone dropped 48.1bn."""
+    def test_unconfirmed_parts_withhold_the_total(self) -> None:
+        """PR #307 round 2: one bank's single balance-sheet line "Short-term borrowings
+        48,088" is tagged OtherShortTermBorrowings, and its 20,400 of commercial paper is
+        INSIDE that line. Adding them overstated debt by 20.4bn; taking CP alone dropped
+        48.1bn. Without a total that says which, neither is a fact."""
         n = _n(LongTermDebt=320.0, CommercialPaper=20.0, OtherShortTermBorrowings=48.0)
-        assert n.total_debt == 388.0
-        assert "CommercialPaper (20.00m) + OtherShortTermBorrowings (48.00m)" in (
+        assert n.total_debt is None and n.debt_to_equity is None
+        assert n.total_debt not in (388.0, 340.0, 368.0)
+        assert "no total confirms" in n.debt_basis["withheld_reason"]
+
+    def test_parts_confirmed_by_a_parent_total_are_added(self) -> None:
+        """The other shape: 'Loans and notes payable' 1,551 = CP 1,495 + other 56."""
+        n = _n(LongTermDebtAndCapitalLeaseObligations=420.0,
+               LongTermDebtAndCapitalLeaseObligationsCurrent=18.0,
+               CommercialPaper=15.0, OtherShortTermBorrowings=0.6,
+               NotesAndLoansPayable=15.6)
+        assert n.total_debt == pytest.approx(453.6)
+        assert "CommercialPaper (15.00m) + OtherShortTermBorrowings (0.60m)" in (
             n.debt_basis["formula"]
         )
+
+    def test_a_parent_equal_to_the_larger_part_means_the_other_is_inside(self) -> None:
+        n = _n(LongTermDebt=320.0, CommercialPaper=20.0, OtherShortTermBorrowings=48.0,
+               ShortTermBankLoansAndNotesPayable=48.0)
+        assert n.total_debt == 368.0
+
+    def test_debt_current_minus_current_maturities_confirms_the_sum(self) -> None:
+        n = _n(LongTermDebt=330.0, LongTermDebtCurrent=30.0, DebtCurrent=58.0,
+               CommercialPaper=20.0, OtherShortTermBorrowings=8.0)
+        assert n.total_debt == 358.0
+
+    def test_a_zero_part_does_not_need_confirming(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0,
+               CommercialPaper=0.0, OtherShortTermBorrowings=6.0)
+        assert n.total_debt == 336.0
 
     def test_other_short_term_borrowings_alone(self) -> None:
         n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0,
@@ -449,6 +489,16 @@ class TestShortTermBorrowingsParts:
 
 
 class TestTheFilersOwnTotalIsACheck:
+    def test_review_probe_borrowings_inside_current_maturities_are_not_excused(self) -> None:
+        """PR #307 round 2: with the filer's total equal to noncurrent + current, ANY
+        excess was accepted as borrowings — 11,400 published against a filer total of
+        11,000. Borrowings no larger than the current maturities may be that line."""
+        n = _n(LongTermDebtNoncurrent=10_000.0, LongTermDebtCurrent=1_000.0,
+               ShortTermBorrowings=400.0, DebtLongtermAndShorttermCombinedAmount=11_000.0)
+        assert n.total_debt is None
+        assert n.total_debt != 11_400.0
+        assert "exceeds the filer's own" in n.debt_basis["withheld_reason"]
+
     def test_a_total_above_the_filers_own_is_withheld(self) -> None:
         n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0,
                ShortTermBorrowings=15.0, DebtAndCapitalLeaseObligations=338.0)

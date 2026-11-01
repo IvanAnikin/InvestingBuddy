@@ -35,9 +35,10 @@ reporting period:
   (a) LTD including current maturities + short-term borrowings
 
 Short-term borrowings are ``ShortTermBorrowings``, else ``CommercialPaper`` +
-``OtherShortTermBorrowings`` (whichever are tagged). A noncurrent figure may be derived
-as (LTD including current - current LTD) when both are tagged for the period and the
-noncurrent concept is not.
+``OtherShortTermBorrowings`` when a total confirms the sum (see
+``_resolve_short_term_parts``; unconfirmed non-zero parts withhold the total). A
+noncurrent figure may be derived as (LTD including current - current LTD) when both are
+tagged for the period and the noncurrent concept is not.
 
 A short-term term not tagged for the period is accepted only with a basis note — and
 never when it is KNOWN to be non-zero: a total without current maturities is withheld
@@ -269,6 +270,62 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) <= arithmetic_tolerance(b)
 
 
+#: Concepts that, when tagged, state the short-term borrowings line as one total. Used
+#: only to CONFIRM that commercial paper and other short-term borrowings add up — never
+#: as the value: ``NotesAndLoansPayable`` is not, by definition, short-term only.
+SHORT_TERM_PARENTS: tuple[str, ...] = (
+    "NotesAndLoansPayable",
+    "ShortTermBankLoansAndNotesPayable",
+)
+
+
+def _resolve_short_term_parts(
+    parts: list[DebtComponent],
+    at: Any,
+    debt_cur: DebtComponent | None,
+    cur: DebtComponent | None,
+) -> tuple[DebtComponent | None, str | None]:
+    """Commercial paper and other short-term borrowings, both non-zero: sum, part, or ?
+
+    The taxonomy defines them as separate parts, but filers do not always present them
+    so. PR #307 review: one bank's balance sheet has ONE line, "Short-term borrowings
+    48,088", tagged ``OtherShortTermBorrowings``; its 20,400 of commercial paper sits
+    INSIDE that line, and adding the two overstated its debt by 20.4bn. Another filer's
+    "Loans and notes payable" (1,551) really is 1,495 of commercial paper + 56 other.
+
+    So the parts are added only when a total confirms the sum (a parent concept, or
+    ``DebtCurrent`` minus current maturities). A total equal to the larger part says
+    the smaller is inside it. With no total, which reading is right cannot be told from
+    the facts, and the caller withholds total debt rather than guess either way.
+    """
+    first = parts[0]
+    summed = DebtComponent(
+        role="short_term_borrowings",
+        concept=" + ".join(p.concept for p in parts),
+        value=round(sum(p.value for p in parts), 2),
+        end=first.end, accn=first.accn, form=first.form, fy=first.fy,
+        fp=first.fp, filed=first.filed, parts=tuple(parts),
+    )
+    larger = max(parts, key=lambda p: p.value)
+    totals: list[tuple[str, float]] = [
+        (c, own.value) for c in SHORT_TERM_PARENTS
+        if (own := at((c,), "short_term_parent")) is not None
+    ]
+    if debt_cur is not None and cur is not None:
+        totals.append((f"{debt_cur.concept} - {cur.concept}", debt_cur.value - cur.value))
+    for _label, total in totals:
+        if abs(summed.value - total) <= arithmetic_tolerance(total):
+            return summed, None
+    for _label, total in totals:
+        if abs(larger.value - total) <= arithmetic_tolerance(total):
+            return larger, None
+    return None, (
+        f"{' and '.join(f'{p.concept} ({p.value:,.2f}m)' for p in parts)} are both tagged "
+        "and no total confirms whether they are two lines or one line and its part; "
+        "total debt withheld"
+    )
+
+
 def derive_total_debt(
     us_gaap: dict[str, Any],
     *,
@@ -292,25 +349,19 @@ def derive_total_debt(
     incl = at(LTD_INCLUDING_CURRENT, "long_term_debt_including_current")
     noncur = at(LTD_NONCURRENT, "long_term_debt_noncurrent")
     cur = at(LTD_CURRENT, "long_term_debt_current")
+    debt_cur = at(DEBT_CURRENT, "debt_current")
     stb = at(SHORT_TERM_BORROWINGS_TOTAL, "short_term_borrowings")
+    #: Set when commercial paper and other short-term borrowings are both tagged and
+    #: nothing says whether they are two lines or one line and its part.
+    stb_unresolved: str | None = None
     if stb is None:
-        # The parts, added: a filer that tags no total may tag commercial paper and
-        # its other short-term borrowings as separate lines (QA review: one bank tags
-        # 20.4bn of commercial paper and 48.1bn of other short-term borrowings).
         parts = [p for c in SHORT_TERM_BORROWINGS_PARTS
                  if (p := at((c,), "short_term_borrowings")) is not None]
-        if len(parts) == 1:
-            stb = parts[0]
-        elif parts:
-            first = parts[0]
-            stb = DebtComponent(
-                role="short_term_borrowings",
-                concept=" + ".join(p.concept for p in parts),
-                value=round(sum(p.value for p in parts), 2),
-                end=first.end, accn=first.accn, form=first.form, fy=first.fy,
-                fp=first.fp, filed=first.filed, parts=tuple(parts),
-            )
-    debt_cur = at(DEBT_CURRENT, "debt_current")
+        nonzero = [p for p in parts if abs(p.value) > SAME_AMOUNT_TOLERANCE_M]
+        if len(nonzero) <= 1:
+            stb = nonzero[0] if nonzero else (parts[0] if parts else None)
+        else:
+            stb, stb_unresolved = _resolve_short_term_parts(nonzero, at, debt_cur, cur)
     due_12m = at(DUE_WITHIN_TWELVE_MONTHS, "maturity_schedule")
     notes: list[str] = []
 
@@ -384,7 +435,7 @@ def derive_total_debt(
             components=parts,
             notes=notes + (extra_notes or []),
         )
-        return _cross_check_filer_total(result, at, noncur, cur, incl)
+        return _cross_check_filer_total(result, at, noncur, cur, incl, stb)
 
     def without_current_maturities(
         combination: str, parts: list[DebtComponent], current: float | None,
@@ -413,6 +464,12 @@ def derive_total_debt(
             f"{debt_cur.concept} ({debt_cur.value:,.2f}m) is smaller than the current "
             f"maturities and short-term borrowings it contains ({inside:,.2f}m); not used"
         )
+    if stb_unresolved is not None:
+        # Every remaining basis needs the short-term borrowings figure, and it is not
+        # known: neither the sum of the parts nor the larger part alone is a fact.
+        known = [p for p in (noncur, cur) if p is not None] or [p for p in (incl,) if p]
+        return withheld("short_term_parts_unresolved", stb_unresolved, known,
+                        noncur.value if noncur is not None else None)
     if noncur is not None and cur is not None and stb is not None:
         return done("noncurrent+current_ltd+short_term_borrowings", [noncur, cur, stb],
                     cur.value + stb.value, noncur.value)
@@ -458,14 +515,19 @@ def _cross_check_filer_total(
     noncur: DebtComponent | None,
     cur: DebtComponent | None,
     incl: DebtComponent | None,
+    stb: DebtComponent | None,
 ) -> TotalDebt:
     """Withhold a total that exceeds the filer's own total-debt concept.
 
     The filer's concept is a check, never the answer: filers use these concepts
     loosely. One of 19 tags long-term debt ONLY as ``DebtLongtermAndShorttermCombinedAmount``
     — so a total above it is kept when the concept equals the long-term debt including
-    current maturities (short-term borrowings sit outside it). Any other excess means a
-    term was counted twice, and the total is withheld.
+    current maturities AND the excess is a distinct borrowings line. Distinct means
+    larger than the current maturities: a borrowings figure no bigger than them could
+    be (part of) the current-maturities line itself, and accepting any excess as
+    borrowings would let exactly that double count through (review probe: noncurrent
+    10,000 + current 1,000 + borrowings 400 against a filer total of 11,000). Any other
+    excess means a term was counted twice, and the total is withheld.
     """
     if result.total is None:
         return result
@@ -484,8 +546,15 @@ def _cross_check_filer_total(
                     "includes lines outside the concepts read here (e.g. finance leases)"
                 )
             continue
-        if long_term_including_current is not None and _close(
-            long_term_including_current, own.value
+        borrowings_distinct = (
+            stb is not None
+            and cur is not None
+            and stb.value > cur.value + arithmetic_tolerance(cur.value)
+        )
+        if (
+            borrowings_distinct
+            and long_term_including_current is not None
+            and _close(long_term_including_current, own.value)
         ):
             result.notes.append(
                 f"the filer's {concept} ({own.value:,.2f}m) equals its long-term debt "

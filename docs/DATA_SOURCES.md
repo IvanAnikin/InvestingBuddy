@@ -255,7 +255,7 @@ millions (`USD_m`); margins/ROE/growth are percentages; debt-to-equity is a rati
 | `shareholders_equity` | `StockholdersEquity`, `StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest` |
 | `cash_and_equivalents` | `CashAndCashEquivalentsAtCarryingValue`, `CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents` |
 | `long_term_debt` | long-term debt due after one year — `LongTermDebtNoncurrent`, `LongTermDebtAndCapitalLeaseObligations` (or `LongTermDebt` − `LongTermDebtCurrent`) — see ADR-067 |
-| `short_term_debt` | debt due within one year — `DebtCurrent`, or `LongTermDebtCurrent` + `ShortTermBorrowings` (else `CommercialPaper` + `OtherShortTermBorrowings`) — see ADR-067 |
+| `short_term_debt` | debt due within one year — `DebtCurrent`, or `LongTermDebtCurrent` + `ShortTermBorrowings` (else `CommercialPaper` + `OtherShortTermBorrowings` when a total confirms the sum) — see ADR-067 |
 | `shares_outstanding` | `dei:EntityCommonStockSharesOutstanding` (often absent → market cap not computed) |
 
 **Derived metrics (marked `C_inferred`):** `free_cash_flow = OCF − capex`; `total_debt` from ONE compatible combination at the reporting period

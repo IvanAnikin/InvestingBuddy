@@ -207,7 +207,8 @@ def derive_market_metrics(
 
     # ADR-067: the same rule net debt follows. A total beside a withheld debt leg is
     # partial, and an EV built on it would understate the claim of debt holders.
-    total_debt = fs.get("total_debt_usd_m") if summary_total_debt_is_usable(fs) else None
+    debt_usable = summary_total_debt_is_usable(fs)
+    total_debt = fs.get("total_debt_usd_m") if debt_usable else None
     cash = fs.get("cash_and_equivalents_usd_m")
     if out.market_cap_mln is not None and total_debt is not None and cash is not None:
         out.enterprise_value_mln = round(
@@ -219,13 +220,23 @@ def derive_market_metrics(
         missing_bits = []
         if out.market_cap_mln is None:
             missing_bits.append("market cap")
-        if total_debt is None:
+        debt_withheld = total_debt is None and fs.get("total_debt_usd_m") is not None
+        if total_debt is None and not debt_withheld:
             missing_bits.append("total debt")
         if cash is None:
             missing_bits.append("cash & equivalents")
+        reasons = []
+        if missing_bits:
+            reasons.append(f"missing input(s): {', '.join(missing_bits)}")
+        if debt_withheld:
+            # A total exists but is not complete for this period (a debt leg withheld,
+            # or a short-term leg with no long-term leg): it is refused, not missing.
+            reasons.append(
+                "total debt withheld — the reported total is not complete for the "
+                "period (a debt leg is withheld or the long-term leg is absent)"
+            )
         out.warnings.append(
-            "Enterprise value not derived — missing input(s): "
-            f"{', '.join(missing_bits)}. Not fabricated."
+            f"Enterprise value not derived — {'; '.join(reasons)}. Not fabricated."
         )
 
     # ── P/E: prefer market cap / net income, else price / diluted EPS ────
