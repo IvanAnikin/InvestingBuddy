@@ -1278,6 +1278,11 @@ LABEL_SELF_DESCRIBED = "company describes itself as …"
 LABEL_ISSUER_TECHNICAL = "issuer technical claim"
 LABEL_ANECDOTAL = "anecdotal"
 LABEL_PRESS_NOT_FILING = "reported in the press; not from a filing"
+#: A financial figure in the VERIFIED issuer's own non-filing material (a press release,
+#: an investor presentation, an IR page). It is the company's voice, not the press, but
+#: it is still not the filing: context, never a gap's answer. QA campaign 2026-11:
+#: Richemont's own Q1 sales release was shown as "Reported in the press".
+LABEL_COMPANY_SAYS_NOT_FILING = "company says; not from a filing"
 #: Stored on a web finding whose value differs from a filing's. Value-free on purpose:
 #: the filing's figure lives in the ``conflicting_sources`` gap, so no second money
 #: figure rides inside the statement for numeric readers to pick up (review H3).
@@ -1286,7 +1291,8 @@ LABEL_PRESS_FILING_DIFFERS = "reported in the press; a filing figure differs"
 #: Labels that mean "this finding is context, not the answer": reconciliation never lets
 #: a finding carrying one close a gap (review H3).
 NON_CLOSING_LABELS: frozenset[str] = frozenset(
-    {LABEL_PRESS_NOT_FILING, LABEL_PRESS_FILING_DIFFERS, LABEL_SELF_DESCRIBED, LABEL_ANECDOTAL}
+    {LABEL_PRESS_NOT_FILING, LABEL_PRESS_FILING_DIFFERS, LABEL_SELF_DESCRIBED, LABEL_ANECDOTAL,
+     LABEL_COMPANY_SAYS_NOT_FILING}
 )
 
 
@@ -1394,6 +1400,8 @@ def assess_claim(
         # A web value is context only; the filing path is canonical.
         if verified_filing:
             return verdict(True, None)
+        if issuer_present:
+            return verdict(False, LABEL_COMPANY_SAYS_NOT_FILING)
         return verdict(False, LABEL_PRESS_NOT_FILING)
     if claim_type == CT_GUIDANCE:
         return verdict(True, None) if issuer_present else verdict(False, LABEL_MANAGEMENT_SAYS)
@@ -1464,7 +1472,7 @@ def assess_claim(
 
 
 _LABEL_PREFIX_RE = re.compile(
-    r"^\[(?:company says|management says|single source(?: estimate)?|"
+    r"^\[(?:company says(?:; not from a filing)?|management says|single source(?: estimate)?|"
     r"company describes itself as …|issuer technical claim|anecdotal|estimate by [^\]]{1,120}|"
     r"reported in the press[^\]]{0,200})\] "
 )

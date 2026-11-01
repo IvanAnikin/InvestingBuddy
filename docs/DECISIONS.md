@@ -4373,3 +4373,46 @@ of the two. The geography constraint read the listing venue's country.
 - Only SEC registrants have a regulator-recorded domicile.
 - ISINs are printed by the Euronext list only. On other venues, the name and the registrant
   domicile carry the link.
+
+---
+
+## ADR-065: A Quarter Is Keyed by Its Fiscal Year; the Issuer's Own Release Is "Company Says"
+
+**Status:** Accepted (cross-sector QA campaign 2026-11)
+
+### Context
+The live Richemont report (run `19354d90`) showed two findings about the quarter ended
+30 June 2026 as "2026-Q1, source dated 2025-11-21", and discarded a third as citing
+evidence that "does not agree on periods ['2026-Q1', '2027-Q1']". The issuer published one
+quarter in two documents:
+- the PDF `…-fy27-q1-sales-en.pdf`, which rule 1 (the fiscal label) reads as **2027-Q1**;
+- the HTML release `…-for-its-first-quarter-ended-30-june-2026`, which rule 3 (the
+  period-end phrase) keyed by the quarter's end year as **2026-Q1**.
+
+The same quarter had two keys. Both findings also carried "[reported in the press; not from
+a filing]", although their only source was the issuer's own release.
+
+### Decision
+1. **A period-end phrase names the fiscal year.** When the end month is printed in an
+   "ended / ending / to / through" clause, a quarter's year is the year its fiscal year
+   ENDS: end month + 3 × (4 − ordinal) months. That is the issuer's own label (FY27 Q1) and
+   SEC's `fy` convention.
+   - Q1 ended 30 June 2026 → 2027-Q1.
+   - Calendar fiscal years are unchanged (Q2 ended 30 June 2026 → 2026-Q2).
+   - A fiscal year ending in January or February is named both ways (Walmart "fiscal 2027"
+     = year to January 2027; Home Depot "fiscal 2025" = year to February 2026), so no
+     period is stated.
+   - Without an end month, the printed year is kept.
+2. **The verified issuer's own non-filing material is "company says; not from a filing".**
+   A financial figure whose support includes the verified issuer's own press release,
+   presentation or IR page is labelled `LABEL_COMPANY_SAYS_NOT_FILING`, not "reported in
+   the press". It stays non-closing: context, never a gap's answer, because the filing path
+   is canonical. A page that only CLAIMS the issuer's text is still the press. The web
+   reader knows the new label.
+
+### Not changed / known limits
+- Halves keep the existing rule. A half ending in a non-calendar month states no half.
+- Stored corpus versions are immutable, so a page already stored as 2026-Q1 keeps that key
+  until a new version of it (new content) is ingested.
+- Why the release carried a published date of 2025-11-21 is not explained by this change.
+  It is recorded as open in the QA report.

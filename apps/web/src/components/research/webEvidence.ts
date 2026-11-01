@@ -148,6 +148,7 @@ function corroboration(v: unknown): CorroborationState | null {
  */
 const STATEMENT_LABEL_WORDS: Record<string, string> = {
   "company says": "Company says",
+  "company says; not from a filing": "Company says; not from a filing",
   "management says": "Management says",
   "single source": "Single source",
   "single source estimate": "Single-source estimate",
@@ -171,7 +172,7 @@ export function statementLabelWords(label: string | null | undefined): string | 
 
 /** A W4 label is a leading `[...]` the producer prepends to a statement. */
 const LEADING_LABEL_RE =
-  /^\[((?:company says|management says|single source(?: estimate)?|company describes itself as …|issuer technical claim|anecdotal|ungrounded web claim|estimate by [^\]]{1,120}|reported in the press[^\]]{0,200}))\]\s*/i;
+  /^\[((?:company says(?:; not from a filing)?|management says|single source(?: estimate)?|company describes itself as …|issuer technical claim|anecdotal|ungrounded web claim|estimate by [^\]]{1,120}|reported in the press[^\]]{0,200}))\]\s*/i;
 
 /**
  * Split a leading W4 label off a statement so it can be shown as a chip.

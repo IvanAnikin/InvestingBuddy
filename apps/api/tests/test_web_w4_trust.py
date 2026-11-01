@@ -1130,6 +1130,27 @@ class TestMentionScopeNeverFillsAGroupSlot:
         assert trust.assess_claim("Revenue for FY2025 was US$1.5 billion.", [own_filing],
                                   issuer_key=COMPANY).meets
 
+    def test_the_issuers_own_release_is_company_says_never_the_press(self) -> None:
+        """QA campaign 2026-11: Richemont's own Q1 sales release was labelled "reported
+        in the press". The issuer's voice is "company says"; it is still not the filing,
+        so it stays context and never closes a gap."""
+        own_release = trust.SupportItem("ev:c:own", "company_press_release",
+                                        ISSUER.origin_key, web=True)
+        verdict = trust.assess_claim("Revenue for FY2025 was US$1.5 billion.", [own_release],
+                                     issuer_key=COMPANY)
+        assert not verdict.meets
+        assert verdict.label == trust.LABEL_COMPANY_SAYS_NOT_FILING
+        assert trust.is_non_closing_label(verdict.label)
+        stored = trust.labelled_statement("Revenue for FY2025 was US$1.5 billion.",
+                                          verdict.label)
+        assert trust.label_of_statement(stored) == trust.LABEL_COMPANY_SAYS_NOT_FILING
+        assert trust.unlabelled_statement(stored) == "Revenue for FY2025 was US$1.5 billion."
+        # A page that merely CLAIMS the issuer's text is not its voice: still the press.
+        claimed = trust.SupportItem("ev:c:c", "company_press_release", "company:rival",
+                                    web=True)
+        assert trust.assess_claim("Revenue for FY2025 was US$1.5 billion.", [claimed],
+                                  issuer_key=COMPANY).label == trust.LABEL_PRESS_NOT_FILING
+
     def test_a_rivals_press_release_is_not_the_issuers_voice(self) -> None:
         rival = trust.SupportItem("ev:c:r", "company_press_release", "company:rival", web=True,
                                   via_subject=True)

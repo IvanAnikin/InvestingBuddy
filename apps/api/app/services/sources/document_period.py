@@ -228,13 +228,50 @@ def _match_period_label(text: str) -> DocumentPeriod | None:
     return DocumentPeriod(period, BASIS_PERIOD_LABEL, match.group(0))
 
 
-def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
-    """"…for its first quarter ended 30 June 2026" → Q1 of calendar 2026.
+#: The END month of a quarter, only inside an "ended / ending / to / through" clause, so
+#: a modal "may" ("first quarter results may vary") is never read as May.
+_QUARTER_END_MONTH_RE = re.compile(
+    r"\b(?:ended|ending|to|through)\b[a-z0-9 ]{0,16}?"
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b"
+)
+_MONTH_NUMBER = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
 
-    The year is the period's END year as printed. When the issuer also states a
-    fiscal-year label (rule 1) that label wins, because it is the issuer's own
-    answer to which fiscal year the quarter belongs to; this rule is the
-    fallback for a document that never states one.
+
+def _fiscal_year_of_quarter(ordinal: int, end_month: str, end_year: int) -> int | None:
+    """The fiscal year a quarter belongs to, named by the year that fiscal year ENDS.
+
+    "First quarter ended 30 June 2026" is Q1 of a fiscal year ending March 2027: the
+    issuer's own label for it is "FY27 Q1" (Richemont), which rule 1 reads as
+    2027-Q1. Keying the phrase by the quarter's end year (2026-Q1) gave the same
+    quarter two keys. QA campaign 2026-11: Richemont's HTML release (slug "…first-
+    quarter-ended-30-june-2026") and its PDF ("…fy27-q1-sales…") disagreed, so a
+    statement citing both was discarded as a period conflict and another was labelled
+    2026-Q1. This is also SEC's ``fy`` convention (Microsoft Q1 ended 30 September
+    2026 is fy 2027).
+
+    A fiscal year ending in January or February is named both ways (Walmart names the
+    year to January 2027 "fiscal 2027", Home Depot the year to February 2026 "fiscal
+    2025"), so no year is stated for it.
+    """
+    month = _MONTH_NUMBER.get(end_month[:3])
+    if month is None:
+        return None
+    fiscal_end_month = month + 3 * (4 - ordinal)
+    fiscal_year = end_year + (fiscal_end_month - 1) // 12
+    if (fiscal_end_month - 1) % 12 + 1 in (1, 2):
+        return None
+    return fiscal_year
+
+
+def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
+    """"…for its first quarter ended 30 June 2026" → 2027-Q1 (fiscal year to March 2027).
+
+    A quarter's year is its FISCAL year, worked out from the printed end month (see
+    ``_fiscal_year_of_quarter``); without an end month it is the year as printed.
+    When the issuer also states a fiscal-year label (rule 1) that label wins,
+    because it is the issuer's own answer to which fiscal year the quarter
+    belongs to; this rule is the fallback for a document that never states one.
     """
     for phrase, period_type, ordinal in _ORDINAL_WORDS:
         index = text.find(phrase)
@@ -254,6 +291,13 @@ def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
             end_month = _MONTH_IN_WINDOW_RE.search(window[: year_match.start()])
             if end_month is not None and end_month.group(1) != ("jun" if ordinal == 1 else "dec"):
                 continue
+        if period_type == PERIOD_TYPE_QUARTER:
+            end_month = _QUARTER_END_MONTH_RE.search(window[: year_match.start()])
+            if end_month is not None:
+                fiscal_year = _fiscal_year_of_quarter(ordinal, end_month.group(1), year)
+                if fiscal_year is None:
+                    continue
+                year = fiscal_year
         kind = "q" if period_type == PERIOD_TYPE_QUARTER else "h"
         period = _period_of(kind, ordinal, year)
         if period is not None:

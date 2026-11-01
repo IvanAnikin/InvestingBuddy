@@ -119,8 +119,49 @@ def test_a_period_end_sentence_is_read_when_nothing_else_states_one() -> None:
         url="https://storage.test/files/20260722_187106.pdf",
         headings=["FOR ITS FIRST QUARTER ENDED 30 JUNE 2026"],
     )
-    assert found.period.key == "2026-Q1"
+    # A first quarter ending in June belongs to the fiscal year ending March 2027:
+    # the same key as the issuer's own "FY27 Q1" label (QA campaign 2026-11).
+    assert found.period.key == "2027-Q1"
     assert found.basis == BASIS_PERIOD_END_PHRASE
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        # Calendar fiscal years: unchanged.
+        ("Results for the first quarter ended 31 March 2026", "2026-Q1"),
+        ("Report for the second quarter ended June 30, 2026", "2026-Q2"),
+        ("Fourth quarter ended 31 December 2025", "2025-Q4"),
+        # Fiscal years ending in another month: named by the year they END.
+        ("First quarter ended September 30, 2026", "2027-Q1"),  # June year-end
+        ("Third quarter ended 31 December 2025", "2026-Q3"),  # June year-end
+        ("First quarter ended December 27, 2025", "2026-Q1"),  # September year-end
+        ("Fourth quarter ended September 27, 2025", "2025-Q4"),
+        # No end month printed: the year as printed.
+        ("Fourth quarter 2025 trading update", "2025-Q4"),
+    ],
+)
+def test_a_quarter_end_phrase_names_the_fiscal_year(phrase: str, expected: str) -> None:
+    assert detect_document_period(title=phrase).period.key == expected
+
+
+def test_a_quarter_of_a_january_year_end_states_no_year() -> None:
+    # Walmart calls the year to January 2027 "fiscal 2027"; Home Depot calls the year
+    # to February 2026 "fiscal 2025". The phrase alone cannot say which.
+    assert not detect_document_period(title="Second quarter ended July 31, 2026").is_known
+
+
+def test_a_modal_may_is_not_an_end_month() -> None:
+    found = detect_document_period(title="First quarter results may vary in 2026")
+    assert found.period.key == "2026-Q1"
+
+
+def test_the_html_release_and_the_pdf_of_one_quarter_share_a_key() -> None:
+    html = detect_document_period(
+        url="https://www.issuer.test/news/posts-strong-start-for-its-first-quarter-ended-"
+            "30-june-2026/")
+    pdf = detect_document_period(url="https://www.issuer.test/media/x/fy27-q1-sales-en.pdf")
+    assert html.period.key == pdf.period.key == "2027-Q1"
 
 
 @pytest.mark.parametrize(
