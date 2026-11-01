@@ -27,6 +27,8 @@ from app.services.sources.document_period import UNKNOWN_DOCUMENT_PERIOD
 from app.services.sources.extracted_fact_validator import (
     IssuerContext,
     _declared_scale,
+    _table_currency_scale,
+    _value_cell_scale,
     validate_extracted_facts,
 )
 from app.services.sources.financial_table_reconstructor import reconstruct_financial_tables
@@ -121,7 +123,7 @@ def _row(label: str, values: list[str], y: float, *, before: str | None = None,
         if before:
             out.append((before, edge - helvetica_width(value, 8.0) - 22.0, y, 8.0))
         if after:
-            out.append((after, edge + 3.0, y, 8.0))
+            out.append((after, edge + 4.5, y, 8.0))
     return out
 
 
@@ -226,3 +228,78 @@ def test_a_narrow_gap_with_few_lines_is_not_trusted() -> None:
 def test_a_gap_below_the_narrow_floor_is_not_a_gutter() -> None:
     words = _two_columns(12, left_x1=284.0, long_left_x1=296.0, right_x0=297.7)
     assert _reconstruct_two_column_text(words, A4) is None
+
+
+# ── Review round 1: the unit must be the TABLE's, not one row's ──────────── #
+
+
+def test_one_row_printing_a_unit_does_not_scale_the_table() -> None:
+    # "€ 2.1 bn" on one line of a table of unlabelled millions is that line's unit.
+    words = _header()
+    words += _row("Revenue", ["22 420", "21 399"], 135)
+    words += _row("Operating profit", ["4 492", "4 467"], 149)
+    words += _row("Net cash position", ["2.1", "1.9"], 163, before="CHF", after="bn")
+    tables = _rebuild(words)
+    assert tables and tables[0].unit_label is None
+
+
+def test_two_of_three_money_rows_printing_the_unit_is_enough() -> None:
+    words = _header()
+    words += _row("Revenue", ["22 420", "21 399"], 135, before="CHF", after="m")
+    words += _row("Operating profit", ["4 492", "4 467"], 149, before="CHF", after="m")
+    words += _row("Employees", ["38 000", "37 000"], 163)
+    tables = _rebuild(words)
+    assert tables and tables[0].unit_label == "CHF million"
+
+
+def test_a_bare_000_is_a_thousands_group_never_a_unit() -> None:
+    words = _header()
+    # "CHF 22 420 000": pdfplumber may split the last thousands group off as a word.
+    words += _row("Revenue", ["22 420", "21 399"], 135, before="CHF", after="000")
+    words += _row("Operating profit", ["4 492", "4 467"], 149, before="CHF", after="000")
+    tables = _rebuild(words)
+    assert all(t.unit_label is None for t in tables)
+
+
+def test_a_signed_change_column_unit_is_ignored() -> None:
+    words = _header()
+    words += _row("Revenue", ["22 420", "21 399"], 135, before="CHF", after="+bn")
+    words += _row("Operating profit", ["4 492", "4 467"], 149, before="CHF", after="+bn")
+    tables = _rebuild(words)
+    assert tables and tables[0].unit_label is None
+
+
+def _cell_table(rows: list[list[str]]) -> ExtractedTable:
+    return ExtractedTable(table_location="p1t0", table_index=0, page_number=1, rows=rows,
+                          row_count=len(rows), col_count=len(rows[0]),
+                          extraction_method="pdf_text")
+
+
+def test_validator_value_cells_need_coverage() -> None:
+    one_row = _cell_table([["", "2026", "2025"],
+                           ["Revenue", "22 420", "21 399"],
+                           ["Operating profit", "4 492", "4 467"],
+                           ["Net cash position", "€ 2.1 bn", "€ 1.9 bn"]])
+    assert _value_cell_scale(one_row) is None
+    all_rows = _cell_table([["", "2026", "2025"],
+                            ["Revenue", "€ 22 420 m", "€ 21 399 m"],
+                            ["Operating profit", "€ 4 492 m", "€ 4 467 m"],
+                            ["Net cash position", "€ 8 496 m", "€ 8 257 m", "+3.2bn"]])
+    assert _value_cell_scale(all_rows) == "million"  # the signed change cell is ignored
+
+
+def test_value_cells_never_override_a_declared_page_unit() -> None:
+    table = _cell_table([["", "2026", "", "2025", ""],
+                         ["Revenue", "22 420", "€m", "21 399", "€m"],
+                         ["Operating profit", "4 492", "€m", "4 467", "€m"]])
+    issuer = IssuerContext(company_name="TEST LUXURY SA", reporting_currency="EUR")
+    declared = {1: ["All amounts in € thousands unless otherwise stated."]}
+    assert _table_currency_scale(table, declared, issuer)[1] is None  # conflict
+    agreeing = {1: ["All amounts in € millions unless otherwise stated."]}
+    assert _table_currency_scale(table, agreeing, issuer)[1] == "million"
+    assert _table_currency_scale(table, {1: [PROSE]}, issuer)[1] == "million"
+
+
+def test_column_years_before_a_unit_still_declare_it() -> None:
+    assert _declared_scale("2025 2024 million CHF") == "million"
+    assert _declared_scale("31 March 2026 31 March 2025 € million") == "million"

@@ -4424,3 +4424,23 @@ cash "8,496 bn EUR" and operating cash flow "4,880 bn EUR", a thousand times the
   facts stay excerpt-only: missing, not wrong.
 - The key-data table's "Sales" caption is still not read as revenue there (revenue comes
   from the segment and income-statement tables).
+
+### Review round 1 (ADR-064)
+An independent review found that a unit printed among the values could scale more
+than the rows that print it. Fixes:
+- **Coverage.** A value-zone unit becomes the table's unit only when one of two things holds.
+  Either a units row before the first figure declares it ("€m €m" under the periods), or at
+  least two thirds of the money rows print it beside their figures (percent rows aside).
+  One row's "€ 2.1 bn" in a table of unlabelled millions no longer scales the table. This
+  applies in the reconstructor and in the validator's `_value_cell_scale` alike.
+- **Never over a declared page unit.** When the page declares one scale ("All amounts in
+  € thousands") and the cells print another, the scale is None. Neither is trusted over the
+  other.
+- **A bare "000" is not a unit.** It is a thousands group split off a number. Only "'000"
+  or a currency-attached "€000" count.
+- **Change columns are ignored.** A signed token (+, −, ±) or a percent cell says nothing
+  about the period columns' unit.
+- **Column years before a unit still declare it.** "2025 2024 million CHF" and
+  "31 March 2026 € million" are declarations, not an amount "2024 million".
+Re-verified on the real Richemont FY26 results PDF: tables p1, p12 and p13 are "€ million".
+Net cash is 8,496m and operating cash flow 4,880m, both validated in millions.

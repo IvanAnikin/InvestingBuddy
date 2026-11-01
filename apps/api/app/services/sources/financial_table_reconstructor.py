@@ -428,6 +428,12 @@ _VALUE_ZONE_CURRENCY = (
     r"|CHF|EUR|USD|GBP|DKK|SEK|NOK|JPY|AUD|CAD)"
 )
 _VALUE_ZONE_SCALE = r"(?:m|mn|bn|millions?|billions?|thousands?|[’']?000)"
+#: A change column ("+12%", "−€0.4bn", "±3") is not a figure of the period columns:
+#: its unit says nothing about theirs.
+_CHANGE_SIGNS = ("+", "-", "\u2212", "\u00b1")
+#: Share of a table's money rows (rows with figures, percent rows aside) that must
+#: print the unit beside their figures before that unit is the table's.
+_VALUE_ZONE_MIN_COVERAGE = 2 / 3
 _VALUE_ZONE_UNIT_RE = re.compile(
     rf"^\(?(?P<cur>{_VALUE_ZONE_CURRENCY})?\s?(?P<scale>{_VALUE_ZONE_SCALE})?\)?$",
     re.IGNORECASE,
@@ -440,14 +446,22 @@ def _value_zone_units(
     """``(currencies, scales)`` printed among one row's value words.
 
     A bare scale ("m") is only a unit when a currency is printed in the same row
-    (``€ 8 496 m``) or attached to it (``€m``): a lone "m" may be metres.
+    (``€ 8 496 m``) or attached to it (``€m``): a lone "m" may be metres. A bare
+    "000" is a thousands GROUP of a number ("1 000"), never a unit, unless a currency
+    is attached ("€000") or it carries the apostrophe ("'000"). A signed word is a
+    change column and is ignored.
     """
     currencies: set[str] = set()
     scales: set[str] = set()
     bare: set[str] = set()
     for word in words:
-        m = _VALUE_ZONE_UNIT_RE.match(_text(word).strip().lstrip("+-"))
+        text = _text(word).strip()
+        if not text or text.startswith(_CHANGE_SIGNS):
+            continue
+        m = _VALUE_ZONE_UNIT_RE.match(text)
         if m is None or not (m.group("cur") or m.group("scale")):
+            continue
+        if not m.group("cur") and (m.group("scale") or "") == "000":
             continue
         scale = (m.group("scale") or "").lower().replace("’", "'")
         scale = {"m": "million", "mn": "million", "millions": "million",
@@ -1030,6 +1044,9 @@ def _walk_region(
     pending_label: str | None = None
     value_zone_scales: set[str] = set()
     value_zone_currencies: set[str] = set()
+    units_row_scales: set[str] = set()  # a "€m €m" row under the periods
+    money_rows = 0  # rows with figures, percent rows aside
+    money_rows_with_unit = 0
     row_tops: list[float] = []
     previous_top = _f(header_row[0], "top")
 
@@ -1069,6 +1086,14 @@ def _walk_region(
             value_zone_currencies |= row_currencies
         cells, ambiguous = _assign_cells(value_words, group, rejections, label or "?")
 
+        if not cells and row_scales and not out_rows:
+            # A units row before the first figure DECLARES the table's unit.
+            units_row_scales |= row_scales
+            continue
+        if cells and not ambiguous and not any("%" in _text(w) for w in value_words):
+            money_rows += 1
+            money_rows_with_unit += bool(row_scales)
+
         if not cells:
             # A label-only line is either this region's heading (the first one
             # seen) or the first half of a wrapped metric name.
@@ -1100,9 +1125,16 @@ def _walk_region(
         return None
 
     # No unit in the header's label zone: take the one printed among the values,
-    # when every row that prints one agrees. Two scales say nothing.
+    # when every row that prints one agrees (two scales say nothing) AND it is the
+    # table's unit — declared by a units row under the periods, or printed beside the
+    # figures of at least two thirds of the money rows. One row's "€ 2.1 bn" in a
+    # table of unlabelled millions is that row's, not the table's.
+    covered = bool(units_row_scales) or (
+        money_rows > 0 and money_rows_with_unit >= _VALUE_ZONE_MIN_COVERAGE * money_rows
+    )
     if (
         unit_label is None
+        and covered
         and len(value_zone_currencies) == 1
         and len(value_zone_scales) == 1
     ):
