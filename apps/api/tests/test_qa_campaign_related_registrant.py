@@ -31,6 +31,9 @@ from app.services.agents.investigator import (
     statement_about_related_registrant,
 )
 from app.services.director.planner import PlannedQuestion
+from app.services.discovery import directories
+
+_REAL_SEC_ANNUAL_ACCESSIONS = directories.sec_annual_accessions
 
 
 @dataclass
@@ -50,9 +53,19 @@ DIRECTORY = [
     _Listing("Vexmoor Robotics Corp", "VXR", "1003"),
     _Listing("First Solar, Inc.", "FSLR", "1274494"),
     _Listing("First Horizon Corp", "FHN", "36966"),
+    # Legal-suffix word in second place: the phrase must be the name as written.
+    _Listing("Vexmoor Company Gas", "VXG", "1004"),
+    _Listing("WESTERN DIGITAL CORP", "WDC", "106040"),
+    _Listing("Western Digital Holdings Trust", "WDHT", "1005"),
 ]
 
-HONA = RelatedRegistrant("honeywell aerospace", "Honeywell Aerospace Inc.", "HONA")
+SEPARATE: dict[str, frozenset[str] | None] = {
+    "2089271": frozenset(), "773840": frozenset({"0000773840-26-000010"}),
+    "1003": frozenset({"0000001003-26-000001"}),
+}
+HONA = RelatedRegistrant(
+    "honeywell aerospace", "Honeywell Aerospace Inc.", "HONA", "2089271", "773840"
+)
 
 
 class TestRelatedRegistrants:
@@ -61,7 +74,13 @@ class TestRelatedRegistrants:
 
     def test_the_subjects_own_other_share_classes_are_not_related(self) -> None:
         found = related_registrants(DIRECTORY, "VXM", "Vexmoor Holdings Inc")
-        assert [r.ticker for r in found] == ["VXR"]  # not VXM-PA; not the generic "Energy"
+        # Not VXM-PA (same CIK), not the generic "Energy", not "Company Gas" (no "vexmoor gas").
+        assert [r.ticker for r in found] == ["VXR"]
+
+    def test_the_subjects_own_regulator_name_counts_as_its_own_words(self) -> None:
+        # The platform's table holds a short name; the SEC row says "Western Digital".
+        assert related_registrants(DIRECTORY, "WDC", "Western Digital") == ()
+        assert related_registrants(DIRECTORY, "WDC", "Western") == ()
 
     def test_a_ticker_reused_on_another_venue_never_stands_in_for_the_subject(self) -> None:
         # Richemont's SIX ticker is CFR; the SEC list's CFR is Cullen/Frost.
@@ -84,10 +103,16 @@ class TestStatementAboutRelatedRegistrant:
             "HONEYWELL AEROSPACE paid over $2M to settle False Claims Act allegations.",
             "In March 2026, Honeywell Aerospace opened a new facility.",
             "The Honeywell Aerospace backlog stood at $18.2 billion.",
+            # Review round 1: an appositive after the name, a dated lead-in, odd spacing.
+            "Honeywell Aerospace, based in Phoenix, announced a $500M facility in Tempe.",
+            "The Honeywell Aerospace unit, now listed, reported backlog of $18.2 billion.",
+            "On Oct. 30, 2026, Honeywell Aerospace began trading on Nasdaq.",
+            "Honeywell  Aerospace announced a new contract.",
+            "Honeywell\nAerospace announced a new contract.",
         ],
     )
     def test_the_registrants_own_news_is_its_own(self, statement: str) -> None:
-        assert statement_about_related_registrant(statement, [HONA]) == HONA
+        assert statement_about_related_registrant(statement, [HONA], "HON") == HONA
 
     @pytest.mark.parametrize(
         "statement",
@@ -102,10 +127,17 @@ class TestStatementAboutRelatedRegistrant:
             # A long lead-in: the registrant is no longer what the sentence is about.
             "Under a supply agreement signed with the issuer in 2024 and extended twice "
             "since, Honeywell Aerospace buys sensors.",
+            # The subject named by its ticker, even in a lead-in.
+            "Per HON's 10-Q, Honeywell Aerospace sales were $4B.",
         ],
     )
     def test_a_statement_naming_the_subject_on_its_own_is_kept(self, statement: str) -> None:
-        assert statement_about_related_registrant(statement, [HONA]) is None
+        assert statement_about_related_registrant(statement, [HONA], "HON") is None
+
+    def test_a_ticker_inside_a_longer_word_is_not_the_ticker(self) -> None:
+        assert statement_about_related_registrant(
+            "HONEYWELL AEROSPACE won a HONDA contract.", [HONA], "HON"
+        ) == HONA
 
     def test_no_related_registrants_means_no_verdict(self) -> None:
         assert statement_about_related_registrant("Honeywell Aerospace grew.", []) is None
@@ -159,11 +191,19 @@ async def _run(
     web: bool = True,
     exchange: str | None = "US",
     directory: list[_Listing] | None = None,
+    accessions: dict[str, frozenset[str] | None] | None = None,
 ) -> tuple[LLMInvestigator, list[Any], list[Any]]:
     async def _directory() -> list[_Listing]:
         return DIRECTORY if directory is None else directory
 
+    # Default: HONA has filed no annual report yet; HON files its own 10-K.
+    annual = SEPARATE if accessions is None else accessions
+
+    async def _accessions(cik: str | None, **_kw: Any) -> frozenset[str] | None:  # noqa: ANN401
+        return annual.get(str(cik))
+
     monkeypatch.setattr(inv_mod, "_load_sec_directory", _directory)
+    monkeypatch.setattr(directories, "sec_annual_accessions", _accessions)
     inv = LLMInvestigator(
         session=object(),
         company_id=uuid.uuid4(),
@@ -233,3 +273,91 @@ class TestInvestigatorGuard:
         )
         findings, _gaps, _a = await inv._write_up("event_analyst", _question(), _evidence(web=True))
         assert len(findings) == 1
+
+
+class TestOneReportingGroupIsNotSeparate:
+    """Review round 1: a consolidated subsidiary with its own registered debt (Entergy
+    Louisiana beside Entergy) files a COMBINED 10-K with its parent. Its rate case is the
+    parent's fact and must survive."""
+
+    async def test_a_combined_annual_report_keeps_the_statement(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shared = frozenset({"0000773840-26-000010"})
+        inv, findings, gaps = await _run(
+            monkeypatch,
+            ["Honeywell Aerospace received approval for a $2 billion rate increase."],
+            accessions={"2089271": shared, "773840": shared},
+        )
+        assert len(findings) == 1
+        assert inv.diagnostics.statements_about_related_registrant == 0
+        assert not [g for g in gaps if g.gap_type == "entity_ambiguous"]
+
+    async def test_an_unreadable_submissions_record_keeps_the_statement(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        inv, findings, _gaps = await _run(
+            monkeypatch,
+            ["Honeywell Aerospace backlog was $18.2 billion."],
+            accessions={"2089271": None, "773840": frozenset({"x"})},
+        )
+        assert len(findings) == 1
+        assert inv.diagnostics.statements_about_related_registrant == 0
+
+    async def test_the_gap_names_every_registrant_dropped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        directory = [
+            *DIRECTORY,
+            _Listing("Honeywell Quantum Inc.", "HONQ", "1006"),
+        ]
+        inv, findings, gaps = await _run(
+            monkeypatch,
+            [
+                "Honeywell Aerospace backlog was $18.2 billion.",
+                "Honeywell Quantum raised $600M.",
+            ],
+            directory=directory,
+            accessions={**SEPARATE, "1006": frozenset()},
+        )
+        assert findings == []
+        entity = [g for g in gaps if g.gap_type == "entity_ambiguous"]
+        assert len(entity) == 1
+        assert "(HONA)" in entity[0].description and "(HONQ)" in entity[0].description
+
+
+
+class TestSecAnnualAccessions:
+    """The helper itself, with a fake fetcher. conftest replaces the module attribute,
+    so the genuine function is captured before any fixture runs."""
+
+    @staticmethod
+    def _fetcher(body: bytes | None, ok: bool = True) -> Any:  # noqa: ANN401
+        class _Result:
+            def __init__(self) -> None:
+                self.ok = ok
+                self.content = body
+
+        async def _fetch(url: str, **_kw: Any) -> _Result:  # noqa: ANN401
+            assert url == "https://data.sec.gov/submissions/CIK0000065984.json"
+            return _Result()
+
+        return _fetch
+
+    async def test_annual_forms_only(self) -> None:
+        directories._ANNUAL_ACCESSIONS_CACHE.clear()
+        body = (
+            b'{"filings": {"recent": {"form": ["10-Q", "10-K", "8-K", "10-K/A"],'
+            b' "accessionNumber": ["a-1", "a-2", "a-3", "a-4"]}}}'
+        )
+        got = await _REAL_SEC_ANNUAL_ACCESSIONS("65984", fetcher=self._fetcher(body))
+        assert got == frozenset({"a-2", "a-4"})
+
+    @pytest.mark.parametrize("body,ok", [(b"not json", True), (b"{}", True), (None, False)])
+    async def test_an_unreadable_record_is_no_verdict(self, body: bytes | None, ok: bool) -> None:
+        directories._ANNUAL_ACCESSIONS_CACHE.clear()
+        got = await _REAL_SEC_ANNUAL_ACCESSIONS("65984", fetcher=self._fetcher(body, ok))
+        assert got is None
+
+    async def test_a_malformed_cik_never_reaches_the_network(self) -> None:
+        assert await _REAL_SEC_ANNUAL_ACCESSIONS("../etc", fetcher=None) is None

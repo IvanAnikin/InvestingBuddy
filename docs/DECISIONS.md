@@ -4741,7 +4741,8 @@ The regulator's ticker list decides which names are separate registrants.
    filing speaks for the issuer. A dropped statement is counted in
    `statements_about_related_registrant`, and the question gets one `entity_ambiguous`
    gap naming the registrant and its ticker.
-4. The rule applies only to an SEC-eligible subject. For any other subject, or when the
+4. The rule applies only to an SEC-eligible subject (an absent exchange counts as
+   eligible; the ticker-and-name match keeps that safe). For any other subject, or when the
    directory cannot be read, the guard fails open and changes nothing.
 5. The test suite makes the directory read inert by default (`conftest`), as it does
    every other live SEC lookup.
@@ -4755,10 +4756,40 @@ but "SCCO signed a contract with Southern California Edison" is. Of the campaign
 companies, only HON → HONA is flagged; ADBE, JPM, PYPL, CLLS, GE, MMM, AMZN, GOOGL, BRK-B,
 MRNA and MP have none.
 
+### Review round 1
+- **One reporting group is not separate.** A consolidated subsidiary that registers its
+  own debt or preferred stock (Entergy Arkansas, Louisiana, Mississippi and Texas beside
+  Entergy) files a COMBINED 10-K with its parent, under the parent's accession number. A
+  statement is dropped only when `directories.sec_annual_accessions` shows that the
+  registrant's annual-report accessions and the subject's do not overlap. If either
+  record is unreadable, nothing is dropped. Live check: HONA (no 10-K yet) is separate;
+  all four Entergy subsidiaries share Entergy's accessions; Southern California Edison is
+  separate from Southern Co; BlackRock's closed-end funds (no 10-K) are separate.
+- **Appositive, dated lead-in, spacing.** The registrant's name is tested at the very
+  start (after "The") as well as after one lead-in clause. "Honeywell Aerospace, based in
+  Phoenix, announced…" and "On Oct. 30, 2026, Honeywell Aerospace began trading…" are now
+  judged, and the name's words may be separated by any whitespace.
+- **The subject's ticker counts as naming it.** It is matched case-sensitively as a whole
+  token on the original text: "Per HON's 10-Q, Honeywell Aerospace sales…" is kept, while
+  "HONDA" is not "HON".
+- **The subject's own words include its SEC name.** A short platform name ("Western")
+  no longer makes "Western Digital" look like another company.
+- **The phrase is the name as written.** The registrant's first two raw words must be
+  its first two distinctive words, so "Southern Company Gas" no longer yields the phrase
+  "southern gas".
+- **One gap per write-up names every registrant dropped**, not just the first.
+
 ### Not changed / known limits
-- A statement where the registrant opens a longer sentence after a lead-in of more than
-  60 characters, or after a comma-separated appositive, is not judged. That is a miss,
-  not a false drop.
+- A registrant name after a lead-in of more than 60 characters, or after two lead-in
+  clauses, is not judged. That is a miss, not a false drop.
+- A wholly owned subsidiary that registers securities but files its OWN annual report
+  (not a combined one) is treated as separate. No such pair was found among the
+  campaign's companies or the utility and bank parents probed.
+- When the subject is a fund sponsor, statements about its listed funds are dropped
+  (BlackRock / a BlackRock trust). This is intended: a fund's distribution or NAV is not
+  the sponsor's result.
+- Only web-text statements are judged. HONA text that arrives as a non-web item (an IR
+  event, a non-web corpus chunk) is not.
 - Non-US families (a namesake listed only on the LSE or ASX) are not covered. No other
   directory carries a registrant id the platform can compare.
 - Names whose second word is generic (e.g. "X Energy Partners") are not treated as

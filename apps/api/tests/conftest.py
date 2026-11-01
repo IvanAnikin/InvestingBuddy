@@ -62,10 +62,12 @@ def _pin_process_boot_at(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_live_sec_directory(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the investigator's name-sharing-registrant guard read an EMPTY SEC directory.
+    """Make the investigator's name-sharing-registrant guard read an EMPTY SEC directory
+    and NO submissions record.
 
-    In production it downloads the SEC company-tickers list once per process per day; a
-    unit suite must not depend on sec.gov. Tests of the guard patch it themselves.
+    In production it downloads the SEC company-tickers list once per process per day, and a
+    registrant's submissions when a statement names one; a unit suite must not depend on
+    sec.gov. Tests of the guard patch both themselves.
     """
     from app.services.agents import investigator
 
@@ -73,6 +75,13 @@ def _no_live_sec_directory(monkeypatch: pytest.MonkeyPatch) -> None:
         return []
 
     monkeypatch.setattr(investigator, "_load_sec_directory", _empty)
+
+    from app.services.discovery import directories
+
+    async def _unread(cik: str | None, **_kw: object) -> None:
+        return None
+
+    monkeypatch.setattr(directories, "sec_annual_accessions", _unread)
 
 
 @pytest.fixture(autouse=True)

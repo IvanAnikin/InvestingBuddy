@@ -655,6 +655,51 @@ async def sec_registrant_domicile(
     return found
 
 
+_ANNUAL_ACCESSIONS_CACHE: dict[tuple[str, str], frozenset[str] | None] = {}
+_ANNUAL_FORMS = frozenset({"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"})
+
+
+async def sec_annual_accessions(
+    cik: str | None, *, cfg: Any = None, fetcher: Any = None
+) -> frozenset[str] | None:
+    """Accession numbers of the annual reports in an SEC registrant's recent filings, or
+    None when the record cannot be read. Never raises.
+
+    A consolidated subsidiary that registers its own debt or preferred stock usually files
+    a COMBINED annual report with its parent (Entergy Louisiana inside Entergy's 10-K),
+    under the parent's accession number. Two registrants sharing one is one reporting group.
+    """
+    from app.services.sources.document_fetcher import safe_fetch_document
+
+    if not cik or not re.fullmatch(r"[0-9]{1,10}", str(cik)):
+        return None
+    key = (str(int(cik)), _today())
+    if key in _ANNUAL_ACCESSIONS_CACHE:
+        return _ANNUAL_ACCESSIONS_CACHE[key]
+    url = f"https://{SEC_DATA_HOST}/submissions/CIK{int(cik):010d}.json"
+    try:
+        result = await (fetcher or safe_fetch_document)(
+            url, allowed_domains=(SEC_DATA_HOST,), cfg=cfg, resolve_ip=True,
+            extra_text_content_types=("application/json",),
+        )
+        content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+        data = json.loads(content) if content else None
+        if not isinstance(data, dict):
+            return None
+        recent = data["filings"]["recent"]
+        forms, accessions = recent["form"], recent["accessionNumber"]
+    except Exception:  # noqa: BLE001 - an unreadable record is no verdict (not cached)
+        return None
+    if not isinstance(forms, list) or not isinstance(accessions, list):
+        return None
+    found = frozenset(
+        str(accn) for form, accn in zip(forms, accessions, strict=False)
+        if str(form) in _ANNUAL_FORMS
+    )
+    _ANNUAL_ACCESSIONS_CACHE[key] = found
+    return found
+
+
 async def euronext_admitted_shares(
     isin: str, mic: str, *, cfg: Any = None, fetcher: Any = None
 ) -> tuple[float | None, str | None]:
