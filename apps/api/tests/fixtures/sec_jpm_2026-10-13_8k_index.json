@@ -1,0 +1,107 @@
+{
+ "directory": {
+  "name": "/Archives/edgar/data/19617/000162828026065582",
+  "item": [
+   {
+    "name": "0001628280-26-065582-index-headers.html",
+    "type": "text.gif",
+    "size": ""
+   },
+   {
+    "name": "0001628280-26-065582-index.html",
+    "type": "text.gif",
+    "size": ""
+   },
+   {
+    "name": "0001628280-26-065582.txt",
+    "type": "text.gif",
+    "size": ""
+   },
+   {
+    "name": "0001628280-26-065582-xbrl.zip",
+    "type": "compressed.gif",
+    "size": "127843"
+   },
+   {
+    "name": "a3q26erfex992supplement.htm",
+    "type": "text.gif",
+    "size": "3388051"
+   },
+   {
+    "name": "a3q26erfexhibit991narrative.htm",
+    "type": "text.gif",
+    "size": "206054"
+   },
+   {
+    "name": "FilingSummary.xml",
+    "type": "text.gif",
+    "size": "1752"
+   },
+   {
+    "name": "imagea.jpg",
+    "type": "image2.gif",
+    "size": "4394"
+   },
+   {
+    "name": "imageb.jpg",
+    "type": "image2.gif",
+    "size": "4394"
+   },
+   {
+    "name": "jpm-20261013.htm",
+    "type": "text.gif",
+    "size": "45260"
+   },
+   {
+    "name": "jpm-20261013.xsd",
+    "type": "text.gif",
+    "size": "5576"
+   },
+   {
+    "name": "jpm-20261013_def.xml",
+    "type": "text.gif",
+    "size": "20947"
+   },
+   {
+    "name": "jpm-20261013_htm.xml",
+    "type": "text.gif",
+    "size": "11308"
+   },
+   {
+    "name": "jpm-20261013_lab.xml",
+    "type": "text.gif",
+    "size": "45044"
+   },
+   {
+    "name": "jpm-20261013_pre.xml",
+    "type": "text.gif",
+    "size": "22095"
+   },
+   {
+    "name": "jpmc_logoxstandardxblackxra.jpg",
+    "type": "image2.gif",
+    "size": "36160"
+   },
+   {
+    "name": "MetaLinks.json",
+    "type": "text.gif",
+    "size": "29397"
+   },
+   {
+    "name": "R1.htm",
+    "type": "text.gif",
+    "size": "64587"
+   },
+   {
+    "name": "report.css",
+    "type": "text.gif",
+    "size": "2767"
+   },
+   {
+    "name": "Show.js",
+    "type": "text.gif",
+    "size": "1085"
+   }
+  ]
+ }
+}
