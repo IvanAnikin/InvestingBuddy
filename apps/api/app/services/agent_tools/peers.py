@@ -347,7 +347,7 @@ async def _facts_for(
                     body.extend(chunk)
                     if len(body) > MAX_FACTS_BYTES:
                         return None, "companyfacts exceeds the size cap; not read"
-            facts = json.loads(bytes(body))
+            facts = await asyncio.to_thread(json.loads, bytes(body))
     except Exception as exc:  # noqa: BLE001
         return None, f"companyfacts unreachable ({type(exc).__name__})"
     if len(_FACTS_CACHE) >= FACTS_CACHE_MAX:

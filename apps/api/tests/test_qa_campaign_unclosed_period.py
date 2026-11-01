@@ -47,6 +47,122 @@ F14 = (
 
 
 # ---------------------------------------------------------------------------
+# The two review batteries of PR #309, verbatim (round 1: 38, round 2: 48)
+# ---------------------------------------------------------------------------
+
+MSFT_FYE = pc.FiscalYearAnchor(2026, date(2026, 6, 30))
+AAPL_FYE = pc.FiscalYearAnchor(2026, date(2026, 9, 26))
+BATTERY_ANCHORS = {
+    "ADBE": NOV_FYE, "TGT": TGT_FYE, "WMT": WMT_FYE, "HON": DEC_FYE, "MSFT": MSFT_FYE,
+    "AAPL": AAPL_FYE,
+}
+BATTERY_NAMES = {
+    "ADBE": "Adobe Inc.", "TGT": "Target Corporation", "WMT": "Walmart Inc.",
+    "HON": "Honeywell International Inc.", "MSFT": "Microsoft Corporation", "AAPL": "Apple Inc.",
+}
+#: The only statements either battery expects dropped.
+BATTERY_DROPS = frozenset(
+    {
+        "Trefis reports Adobe FY2026 total revenue 26.58 Bil and ending ARR growth 10.2%, "
+        "per its Q4 2026 summary.",
+        "Honeywell's full year 2026 sales were $40 billion.",
+    }
+)
+
+ROUND_1: list[tuple[str, str, str]] = [
+    ('ADBE', '2026-11-01', "Adobe's FY2026 Q3 revenue was $6.19 billion."),
+    ('ADBE', '2026-11-01', "Adobe's fiscal 2026 third quarter revenue was $6.19 billion."),
+    ('ADBE', '2026-11-01', "Adobe's fiscal 2026 Q3 revenue was $6.19 billion, up 10%."),
+    ('ADBE', '2026-11-01', "Adobe's fiscal-year 2026 third-quarter revenue was $6.19 billion."),
+    ('ADBE', '2026-11-01', "Adobe's third quarter of fiscal 2026 revenue was $6.19 billion."),
+    ('ADBE', '2026-11-01', "Adobe's revenue in the nine months of FY2026 was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's 9M FY2026 revenue was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's H1 FY2026 revenue was $11.4 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue through the third quarter was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's six-month FY2026 revenue was $11.4 billion."),
+    ('ADBE', '2026-11-01', 'In fiscal 2026, Adobe repurchased $8.0 billion of its shares.'),
+    ('ADBE', '2026-11-01', 'During FY2026 Adobe completed its $1.9 billion acquisition of Semrush.'),
+    ('ADBE', '2026-11-01', "Adobe's FY2025 revenue was $23.77 billion; its Q4 FY2026 results are due December 11, 2026."),
+    ('ADBE', '2026-11-01', "Adobe's FY2025 revenue was $23.77 billion, and its shares fell 20% in calendar 2026."),
+    ('ADBE', '2026-11-01', 'For fiscal 2026, the company expects revenue of $25.9 billion.'),
+    ('ADBE', '2026-11-01', 'For fiscal 2026, Adobe targets revenue of $25.9 billion.'),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 Q3 revenue rose 10% to $6.19B from $5.99B in Q3 FY2025."),
+    ('ADBE', '2026-11-01', 'Trefis reports Adobe FY2026 total revenue 26.58 Bil and ending ARR growth 10.2%, per its Q4 2026 summary.'),
+    ('ADBE', '2026-11-01', 'Adobe FY2026 revenue was $26.58 billion (Trefis estimate).'),
+    ('ADBE', '2026-11-01', 'Adobe FY2026 revenue was $26.58 billion according to Visible Alpha consensus.'),
+    ('ADBE', '2026-11-01', 'Adobe FY2026 revenue was $26.58 billion per Wall Street.'),
+    ('ADBE', '2026-11-01', 'Adobe FY2026 revenue was $26.58 billion per FactSet mean.'),
+    ('ADBE', '2026-11-25', "Adobe's fiscal 2026 revenue was $26.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's fiscal 2025 fourth quarter revenue was $6.19 billion."),
+    ('TGT', '2026-03-15', "Target's fiscal 2025 revenue was $104.8 billion."),
+    ('TGT', '2026-03-15', "Target's FY2026 revenue was $104.8 billion (fiscal year ended January 31, 2026)."),
+    ('TGT', '2026-03-15', "Target's FY2026 revenue was $104.8 billion."),
+    ('TGT', '2026-11-01', "Target's Q2 2026 revenue was $25.2 billion."),
+    ('TGT', '2026-11-01', "Target's fiscal 2026 second quarter revenue was $25.2 billion."),
+    ('WMT', '2026-11-01', "Walmart's Q2 FY2027 revenue was $177 billion."),
+    ('WMT', '2026-11-01', "Walmart's fiscal 2027 second-quarter revenue was $177 billion."),
+    ('HON', '2026-11-01', "Honeywell's Q3 2026 sales were $10.4 billion."),
+    ('HON', '2026-11-01', "Honeywell's 2026 third-quarter sales were $10.4 billion."),
+    ('HON', '2026-11-01', "Honeywell's third-quarter 2026 sales were $10.4 billion."),
+    ('HON', '2026-11-01', "Honeywell's 3Q26 sales were $10.4 billion, and FY2026 sales are $40B."),
+    ('HON', '2026-11-01', "Honeywell's full year 2026 sales were $40 billion."),
+    ('HON', '2026-11-01', 'Honeywell reported sales of $10.4 billion for the quarter ended September 30, 2026.'),
+    ('HON', '2026-11-01', "Honeywell's Q3 FY2026 sales were $10.4 billion, and Q4 2026 has begun."),
+]
+
+ROUND_2: list[tuple[str, str, str]] = [
+    ('ADBE', '2026-11-01', 'Adobe posted FY2026 revenue guidance of $25.9 billion.'),
+    ('ADBE', '2026-11-01', "Adobe's revenue for FY2026 is tracking at $26.5 billion."),
+    ('ADBE', '2026-11-01', "Adobe's fiscal 2026 to date revenue was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's revenue for the twelve months to August 2026 was $25.2 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 Q3 revenue was $6.19B and its FY2025 revenue was $23.77B."),
+    ('ADBE', '2026-11-01', "Adobe's Q4 FY2026 begins on August 29, 2026 and revenue was $6.19B in Q3."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 Q3 revenue was $6.19 billion versus $5.99 billion a year earlier."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was $17.6 billion as of August 29, 2026."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 cumulative revenue was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's 9-month FY2026 revenue was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's 6-month FY2026 revenue was $11.4 billion."),
+    ('ADBE', '2026-11-01', "Adobe's 1H FY2026 revenue was $11.4 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue for the 39 weeks ended August 29, 2026 was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 ending ARR was $18.59 billion as of August 29, 2026."),
+    ('ADBE', '2026-11-01', "Adobe's Digital Media ARR stood at $18.59 billion in FY2026."),
+    ('ADBE', '2026-11-01', "Adobe's RPO stood at $20.4 billion in FY2026, up 13%."),
+    ('ADBE', '2026-11-01', "Adobe's revenue for the period ended 29 août 2026 (FY2026) was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue for the period ended 28 agosto 2026 was $17.6 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was $17.6 billion until the end of August."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 semi-annual revenue was $11.4 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was hit by a $150 million currency headwind."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was $17.6 billion after nine months."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was $6.19 billion in its latest quarter."),
+    ('ADBE', '2026-11-01', "The company's FY2026 operating margin was 46% at the half."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 Q3 and FY2025 revenue were $6.19B and $23.77B."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 year-on-year revenue growth was 10% for the first 3 fiscal quarters."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was $17.6 billion, per its 10-Q for the first three quarters."),
+    ('ADBE', '2026-11-01', "Adobe's fiscal 2026 revenue was $17.6 billion over 39 weeks."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was $17.6 billion before Q4."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 EPS was $15.0 on a non-GAAP basis in its 10-Q."),
+    ('ADBE', '2026-11-01', 'Adobe reported FY2026 revenue of $17.6 billion in its Sept. 22 10-Q.'),
+    ('ADBE', '2026-11-01', "Adobe's FY2025 revenue was $23.77 billion, compared with FY2026 Q3 revenue of $6.19 billion."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was $17.6bn in the first nine-month period."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 YoY revenue growth was 10.7%."),
+    ('ADBE', '2026-11-01', "Adobe's FY2026 revenue was $17.6 billion by August."),
+    ('MSFT', '2026-11-01', "Microsoft's fiscal 2027 first-quarter revenue was $77.7 billion."),
+    ('MSFT', '2026-11-01', "Microsoft's FY27 Q1 revenue was $77.7 billion."),
+    ('MSFT', '2026-11-01', "Microsoft's FY2027 revenue was $77.7 billion in the September quarter."),
+    ('MSFT', '2026-11-01', "Microsoft's FY2027 revenue was $77.7 billion for the three months ended September 30, 2026."),
+    ('MSFT', '2026-11-01', "Microsoft's FY2027 revenue was $77.7 billion for the 3-month period."),
+    ('AAPL', '2026-11-01', "Apple's fiscal 2026 revenue was $416 billion."),
+    ('AAPL', '2026-11-01', "Apple's Q4 FY2026 revenue was $102 billion."),
+    ('HON', '2026-11-01', "Honeywell's 2026 sales were $30.5 billion for the year ending September."),
+    ('HON', '2026-11-01', "Honeywell's FY2026 sales were $30.5 billion as of September 30, 2026."),
+    ('HON', '2026-11-01', "Honeywell's CY2026 free cash flow was $3.1 billion as of September."),
+    ('WMT', '2026-11-01', "Walmart's fiscal 2027 revenue was $530 billion as of the October quarter-end."),
+    ('WMT', '2026-11-01', "Walmart's FY2027 revenue was $350 billion as of July 31, 2026."),
+    ('TGT', '2026-11-01', "Target Corp's FY2026 revenue was $50 billion as of August 2, 2026."),
+]
+
+
+# ---------------------------------------------------------------------------
 # The pure rule
 # ---------------------------------------------------------------------------
 
@@ -171,10 +287,9 @@ class TestUnendedActual:
         [
             "Vexmoor calendar Q4 2026 revenue was USD 7.1bn.",
             "Vexmoor revenue for Q4 CY2026 was USD 7.1bn.",
-            "Vexmoor CY2026 revenue was USD 27bn.",
         ],
     )
-    def test_a_future_calendar_period_is_caught_without_a_fiscal_calendar(
+    def test_a_future_calendar_quarter_is_caught_without_a_fiscal_calendar(
         self, statement: str
     ) -> None:
         found = pc.unended_actual(statement, as_of=RUN_DATE, anchor=None)
@@ -187,71 +302,39 @@ class TestUnendedActual:
         # Unknown calendar: a fiscal-keyed quarter has no known end.
         assert pc.unended_actual(statement, as_of=RUN_DATE, anchor=None) is None
 
-    def test_a_printed_future_end_date_is_caught(self) -> None:
-        statement = "Vexmoor revenue for the quarter ending November 27, 2026 was USD 7.1bn."
-        found = pc.unended_actual(statement, as_of=RUN_DATE, anchor=None)
-        assert found is not None and found.ends == date(2026, 11, 27)
-
     @pytest.mark.parametrize(
-        "anchor,as_of,statement",
+        "statement",
         [
-            # The reviewer's battery for PR #309: every one of these is TRUE and kept.
-            (NOV_FYE, RUN_DATE, "Adobe's FY2026 Q3 revenue was $6.19 billion."),
-            (NOV_FYE, RUN_DATE, "Adobe's fiscal 2026 third quarter revenue was $6.19 billion."),
-            (NOV_FYE, RUN_DATE, "Adobe's fiscal 2026 Q3 revenue was $6.19 billion, up 10%."),
-            (NOV_FYE, RUN_DATE,
-             "Adobe's fiscal-year 2026 third-quarter revenue was $6.19 billion."),
-            (NOV_FYE, RUN_DATE, "Adobe's third quarter of fiscal 2026 revenue was $6.19 billion."),
-            (NOV_FYE, RUN_DATE, "Adobe's revenue in the nine months of FY2026 was $17.6 billion."),
-            (NOV_FYE, RUN_DATE, "Adobe's 9M FY2026 revenue was $17.6 billion."),
-            (NOV_FYE, RUN_DATE, "Adobe's H1 FY2026 revenue was $11.4 billion."),
-            (NOV_FYE, RUN_DATE,
-             "Adobe's FY2026 revenue through the third quarter was $17.6 billion."),
-            (NOV_FYE, RUN_DATE, "Adobe's six-month FY2026 revenue was $11.4 billion."),
-            (NOV_FYE, RUN_DATE, "In fiscal 2026, Adobe repurchased $8.0 billion of its shares."),
-            (NOV_FYE, RUN_DATE,
-             "During FY2026 Adobe completed its $1.9 billion acquisition of Semrush."),
-            (NOV_FYE, RUN_DATE, "Adobe's FY2025 revenue was $23.77 billion; its Q4 FY2026 "
-             "results are due December 11, 2026."),
-            (NOV_FYE, RUN_DATE, "Adobe's FY2025 revenue was $23.77 billion, and its shares "
-             "fell 20% in calendar 2026."),
-            (NOV_FYE, RUN_DATE, "For fiscal 2026, the company expects revenue of $25.9 billion."),
-            (NOV_FYE, RUN_DATE, "For fiscal 2026, Adobe targets revenue of $25.9 billion."),
-            (NOV_FYE, RUN_DATE,
-             "Adobe's FY2026 Q3 revenue rose 10% to $6.19B from $5.99B in Q3 FY2025."),
-            (NOV_FYE, RUN_DATE, "Adobe FY2026 revenue was $26.58 billion (Trefis estimate)."),
-            (NOV_FYE, RUN_DATE,
-             "Adobe FY2026 revenue was $26.58 billion according to Visible Alpha consensus."),
-            (NOV_FYE, RUN_DATE, "Adobe FY2026 revenue was $26.58 billion per Wall Street."),
-            (NOV_FYE, RUN_DATE, "Adobe FY2026 revenue was $26.58 billion per FactSet mean."),
-            (NOV_FYE, RUN_DATE, "Adobe FY2026 revenue was $26.58 billion, LSEG data show."),
-            (NOV_FYE, date(2026, 11, 25), "Adobe's fiscal 2026 revenue was $26.6 billion."),
-            (NOV_FYE, RUN_DATE, "Adobe's fiscal 2025 fourth quarter revenue was $6.19 billion."),
-            (TGT_FYE, date(2026, 3, 15), "Target's fiscal 2025 revenue was $104.8 billion."),
-            (TGT_FYE, date(2026, 3, 15), "Target's FY2026 revenue was $104.8 billion "
-             "(fiscal year ended January 31, 2026)."),
-            (TGT_FYE, date(2026, 3, 15), "Target's FY2026 revenue was $104.8 billion."),
-            (TGT_FYE, RUN_DATE, "Target's Q2 2026 revenue was $25.2 billion."),
-            (TGT_FYE, RUN_DATE, "Target's fiscal 2026 second quarter revenue was $25.2 billion."),
-            (WMT_FYE, RUN_DATE, "Walmart's Q2 FY2027 revenue was $177 billion."),
-            (WMT_FYE, RUN_DATE, "Walmart's fiscal 2027 second-quarter revenue was $177 billion."),
-            (DEC_FYE, RUN_DATE, "Honeywell's Q3 2026 sales were $10.4 billion."),
-            (DEC_FYE, RUN_DATE, "Honeywell's 2026 third-quarter sales were $10.4 billion."),
-            (DEC_FYE, RUN_DATE, "Honeywell's third-quarter 2026 sales were $10.4 billion."),
-            (DEC_FYE, RUN_DATE,
-             "Honeywell's 3Q26 sales were $10.4 billion, and FY2026 sales are $40B."),
-            (DEC_FYE, RUN_DATE, "Honeywell reported sales of $10.4 billion for the quarter "
-             "ended September 30, 2026."),
-            (DEC_FYE, RUN_DATE,
-             "Honeywell's Q3 FY2026 sales were $10.4 billion, and Q4 2026 has begun."),
-            # An event in the open year, not its result.
-            (NOV_FYE, RUN_DATE, "Adobe issued $2.0 billion of notes in FY2026."),
+            # Review round 2: no positive full-period marker, so never judged. Bare
+            # "FY2026 revenue was $X" is as often a year-to-date figure.
+            "Vexmoor FY2026 revenue was USD 26.6bn.",
+            "Vexmoor CY2026 revenue was USD 27bn.",
+            # A printed date or month anywhere: the figure may stand at that point.
+            "Vexmoor revenue for the quarter ending November 27, 2026 was USD 7.1bn.",
+            "Vexmoor full-year FY2026 revenue was USD 26.6bn as of 2026-08-28.",
+            # A point-in-time metric or a growth rate alone is never judged.
+            "Vexmoor's full-year FY2026 ending ARR was USD 18.6bn.",
+            "Vexmoor's full-year FY2026 revenue growth was 10.7%.",
         ],
     )
-    def test_true_statements_from_the_review_battery_are_kept(
-        self, anchor: pc.FiscalYearAnchor, as_of: date, statement: str
-    ) -> None:
-        assert pc.unended_actual(statement, as_of=as_of, anchor=anchor) is None
+    def test_only_the_allow_listed_shape_is_judged(self, statement: str) -> None:
+        assert pc.unended_actual(statement, as_of=RUN_DATE, anchor=NOV_FYE) is None
+
+    @pytest.mark.parametrize(
+        "ticker,as_of,statement",
+        [*ROUND_1, *ROUND_2],
+        ids=[f"r1-{i}" for i in range(len(ROUND_1))] + [f"r2-{i}" for i in range(len(ROUND_2))],
+    )
+    def test_the_review_batteries(self, ticker: str, as_of: str, statement: str) -> None:
+        """Both review batteries of PR #309 (86 statements): every TRUE statement is kept;
+        only F14 and an open full-year result are dropped."""
+        found = pc.unended_actual(
+            statement, as_of=date.fromisoformat(as_of), anchor=BATTERY_ANCHORS[ticker]
+        )
+        dropped = found is not None and names_the_subject(
+            statement, BATTERY_NAMES[ticker], ticker
+        )
+        assert dropped == (statement in BATTERY_DROPS)
 
     def test_a_full_open_year_result_is_still_caught(self) -> None:
         found = pc.unended_actual(
@@ -265,7 +348,9 @@ class TestUnendedActual:
         assert pc.is_forward_or_partial("Analysts raised the price target to $500.")
         # So Target's own open year is still judged (both naming readings open).
         found = pc.unended_actual(
-            "Target's FY2026 revenue was $110 billion.", as_of=date(2026, 1, 15), anchor=TGT_FYE
+            "Target's full-year FY2026 revenue was $110 billion.",
+            as_of=date(2026, 1, 15),
+            anchor=TGT_FYE,
         )
         assert found is not None and found.ends == date(2026, 1, 31)
 
@@ -439,14 +524,14 @@ class TestInvestigatorGuard:
         inv, findings, _gaps, _reads = await _run(
             monkeypatch,
             [
-                "Vexmoor FY2026 revenue was below Northwind's FY2026 revenue of USD 245bn.",
+                "Vexmoor full-year FY2026 revenue was below Northwind's full-year FY2026 revenue of USD 245bn.",
                 # A held company's name as an ordinary lower-case word is not that company.
                 F14,
             ],
             other_names=others,
         )
         assert [f.statement for f in findings] == [
-            "Vexmoor FY2026 revenue was below Northwind's FY2026 revenue of USD 245bn."
+            "Vexmoor full-year FY2026 revenue was below Northwind's full-year FY2026 revenue of USD 245bn."
         ]
         assert inv.diagnostics.statements_for_unended_period == 1
 

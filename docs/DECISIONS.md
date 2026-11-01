@@ -4965,6 +4965,146 @@ the same segment. The filing figure stays canonical in that case.
   (`rf.field_clause` takes the clause that names the field). Only the contradiction
   step now ignores it. Other consumers of that reading were not audited in this slice.
 
+## ADR-073: The Shortlist Cap Keeps the Best-Fitting Names, and Says Which It Cut
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, Hypothesis J)
+
+### Context
+Discovery run E2 (d6f5d2c6) had 23 candidates that met the hard requirements, against a
+shortlist cap of 15. `run_dynamic_stage` sorted them with
+`constraints.ranking_key(eligibility)` and passed no thesis relevance, although the key
+accepts one. Ties within an eligibility tier therefore fell to insertion order:
+curated, then held, then web. Eight `eligible_unverified` names were cut, including six
+of the seven web candidates whose theme evidence the open-web admission had verified.
+Nothing in the run said so; the campaign's Discovery review could only infer the cut
+from the counts.
+
+### Decision
+- `run_dynamic_stage(relevance=...)` takes a scorer. The service passes the same scorer
+  that scores the shortlist afterwards (`score_dynamic_items`, ADR-070). The scorer's
+  value is the tie-break inside `ranking_key`, so it applies before the cap. The order
+  is unchanged otherwise: eligibility first, then verified hard passes, then soft
+  passes. Fit never lifts an unverified company over an eligible one.
+- If the scorer raises for a record, that record scores 0 and ranks below its scored
+  tier-mates. The stage never fails because of it. If every record fails, the old
+  insertion order is kept.
+- **Never silent.** `funnel.beyond_cap` counts the names the cap cut. A stage warning
+  names up to 20 of them (`VENUE:TICKER`) and is placed first, so the run's truncated
+  warning list keeps it. The admin funnel shows "N met the requirements but were beyond
+  the shortlist cap".
+
+### Not changed / known limits
+- **Uncapped runs change too.** Within a tier, the shortlist is now ordered by fit, so
+  `items`, `requested_tickers` and the scan order change for every dynamic run, not
+  only for capped ones. Ties in the final `_eligibility_rank_key` keep that order.
+- Relevance remains the LAST key. A curated name with more verified soft passes still
+  outranks a better-fitting web lead with fewer. Passes measure how much was verified,
+  not fit, and reordering the tiers is a policy decision this slice does not take.
+- The cap value is unchanged (`max_candidates`, default 10, 15 in the campaign runs).
+- The names beyond the cap are not persisted as candidates; only the warning names
+  them.
+- No stored run is re-ranked. The replay needs a new run, because the payload of a
+  past run does not hold the names that were cut.
+
+## ADR-068: An 8-K Is a Results Release Only When Its EDGAR Items Include 2.02
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect JPM-2)
+
+### Context
+JPM report 30828043 (job 60e705ec) read the wrong 8-K as JPM's latest results release.
+It read a 2026-10-20 note-offering legal-opinion 8-K (accession 0001193125-26-426704,
+Items 8.01 and 9.01). The Q3 2026 earnings 8-K (0001628280-26-065582, Item 2.02
+"Results of Operations and Financial Condition", exhibit 99.1) was filed on 2026-10-13.
+Q3 2026 (net income $15.3B, CET1 13.9%, ROTCE 20%) was missing from the report.
+
+The SEC filing-body path (`sec_filing_documents.resolve_filing_documents`) visits
+filings by form rank (10-K, 20-F, 10-Q, 6-K, 8-K), newest first within a form. With the
+default two-body cap (`primary_document_sec_max_bodies`) and the 90-day catalyst window,
+JPM resolved to the Q2 10-Q plus the newest 8-K. `doc_kind_for_form` also labelled
+every 8-K `results_release`. EDGAR's `items` field, which says what each 8-K is, was
+parsed into `CatalystEvent.item_numbers`. It was then dropped by both adapters that
+build the resolver's filing dicts (`live_fetchers._filing_dict` and
+`company_evidence.sec_filings_from_catalyst`). Any 8-K filed after the earnings 8-K
+(a note offering, a director change, a Regulation FD deck) therefore displaced the
+quarter's results.
+
+### Decision
+- **The item code decides.** An 8-K is a results release only when its EDGAR items
+  include `2.02` (`is_results_release_8k`). Multi-item strings (`"2.02,9.01"`,
+  `"Item 2.02, Item 9.01"`) and lists are both parsed (`parse_item_codes`).
+- **Ranking.** Within the 8-K rank, an Item 2.02 8-K now comes ahead of every other
+  8-K, newest first in each group (`_filing_rank`). A newer 8-K without 2.02 can no
+  longer displace the latest Item 2.02 8-K. Form rank still comes first, so a 10-Q
+  still beats any 8-K.
+- **Honest label.** An 8-K whose items are known and do not include 2.02 is labelled
+  `other`, not `results_release`. This applies when no Item 2.02 8-K is in the window
+  and the newest 8-K is still read (existing behaviour). The item codes travel on
+  `SecFilingDocument.item_codes` and `SecPreflightFailure.item_codes`, so the fetched,
+  budget-skipped and preflight artifacts all carry the same label.
+- **Plumbing.** Both filing-dict adapters pass `item_numbers` through RAW, not
+  wrapped in `list(...)`. `list("2.02,9.01")` would split the string into
+  characters, and a real Item 2.02 8-K would be labelled `other`. `parse_item_codes`
+  accepts both strings and lists.
+- **The press release, not the cover page.** An Item 2.02 8-K's primary document is a
+  cover page of a few KB. It only refers to the earnings release filed as Exhibit 99.1.
+  EDGAR's `index.json` types every file by its icon (`text.gif`), so it cannot identify
+  that exhibit. For an Item 2.02 8-K, the resolver therefore also reads the filing's
+  `<accession>-index.htm` page (`fetch_filing_index_page`), whose "Document Format
+  Files" table gives each document's EDGAR type. It resolves the `.htm` document typed
+  `EX-99.1`, or else the first `EX-99*` (`select_results_exhibit`).
+  - Same host (`www.sec.gov/Archives`), same guarded, pinned, throttled network leg as
+    `index.json` (one shared `_fetch_sec_archive_bytes`). No new host and no
+    caller-supplied URL. The filename is the anchor text and is re-validated by
+    `build_document_url`.
+  - The page has its own byte cap (`INDEX_PAGE_MAX_BYTES`, 256 KB; the real page is
+    ~12 KB) and its own `sec_filing_index_page_*` log events.
+  - No regex backtracking. A first version located the table with
+    `<table[^>]*summary="…"[^>]*>`, which took 143 s on a 100 KB page of unclosed
+    openers, on the event loop. That is the failure mode of the gunicorn worker-timeout
+    outage. The parser now uses only `str.find` / split on `</tr>` and `</td>`, and
+    lowercases ASCII only so indexes stay aligned. It runs in `asyncio.to_thread`.
+    Adversarial 256 KB pages parse in at most ~27 ms, and a test bounds them at 0.5 s.
+  - The page fetch counts against the existing attempt cap (`max_documents × 3`) and
+    deadline. The two-body cap is unchanged.
+  - Degrades, never fails. If the page cannot be read, names no `EX-99*` document, or
+    the budget is spent, the primary document is kept. An 8-K with missing or non-2.02
+    items never triggers the page fetch.
+  - Downstream is unchanged. The document keeps form `8-K` and its item codes, so the
+    artifact is still labelled `results_release`. `SecFilingDocument.is_exhibit` is
+    `True`.
+  - JPM replay (real index pages, offline): accession 0001628280-26-065582 now resolves
+    to `…/19617/000162828026065582/a3q26erfexhibit991narrative.htm`, not
+    `jpm-20261013.htm`.
+- **Offline replay** on cached EDGAR submissions (90-day window, first 8-K visited):
+  - JPM before: 2026-10-20 8.01/9.01. After: 2026-10-13 2.02/9.01.
+  - ADBE: 2026-09-10 (2.02) before and after.
+  - PYPL: 2026-10-27 (2.02) before and after.
+  - HON: 2026-10-22 (2.02) before and after.
+  - CLLS (6-K filer): 2026-10-28 6-K before and after.
+
+### Not changed / known limits
+- **6-K filers.** EDGAR records no items for a 6-K. Ranking and label (`interim_report`)
+  are unchanged.
+- **Missing item codes.** An 8-K whose items are missing keeps the legacy
+  `results_release` label, because a caller that passes no item codes cannot be told
+  apart from the old behaviour. Such an 8-K never outranks a known Item 2.02 8-K. The V3
+  filing bridge (`ensure_filing_corpus_evidence` → `acquire_sec_filing`) passes only
+  accession and form, so 8-Ks it acquires keep that legacy label.
+- **One exhibit only.** The financial supplement (JPM's EX-99.2, 3.4 MB) is not read.
+  Neither is any exhibit of a non-2.02 8-K. `allow_exhibits` is unchanged for every
+  other form.
+- **V3 bridge sees an exhibit URL.** A press release persisted by this path has an
+  exhibit-shaped URL when the issuer names it so (JPM's `…exhibit991…`; PayPal's
+  `pypl3q-26earningsrelease.htm` is not). If the V3 filing bridge later asks whether
+  that accession is searchable, `filing_evidence_state` treats an exhibit-only version
+  as "not the filing" and reacquires the cover page beside it. Nothing is lost, but
+  the bridge never prefers the release.
+- **An extra request per results 8-K.** Reading the `-index.htm` page (~12 KB) costs
+  one more throttled SEC request.
+- **V3 core filings.** `ensure_core_filings` still secures only the latest 10-K and
+  10-Q. A quarter reported by 8-K but not yet in a 10-Q is not secured into the corpus
+  by that step.
+
 ## ADR-072: A Reported Actual Cannot Exist for a Period That Has Not Ended
 
 **Status:** Accepted (cross-sector QA campaign 2026-11, defect ADBE-3)
@@ -4995,21 +5135,33 @@ The rule is NARROW. A miss is acceptable; dropping a true statement is not.
    - a period ended on a printed date ("the quarter ending November 27, 2026").
 
    A bare year is not a period.
-2. **It judges only one shape: a period's RESULT stated as an actual.** All of these must
-   hold:
-   - a result metric (revenue, sales, net income, earnings, EPS, ARR, operating or gross
-     profit or margin, cash flow, EBITDA, bookings…);
+2. **It judges only one shape, by ALLOW-list** (review round 2). All of these must hold:
+   - a FLOW result (revenue, sales, net income, EPS, operating income, gross profit, FCF)
+     followed within a few words by its money amount ("revenue was $26.6 billion", "total
+     revenue 26.58 Bil", "sales of $40bn"). Point-in-time metrics (ARR, RPO, backlog,
+     cash, debt) and growth rates alone are never judged;
    - a reporting verb ("was", "were", "reported", "reports", "totalled", "came in at",
      "amounted to", "posted", "recorded"…);
-   - a money, percentage or metric figure once the period labels and dates are removed;
-   - no protected wording (item 3);
-   - no quarter or half that it does not place ("through the third quarter", "Q3",
-     "quarterly");
+   - a POSITIVE full-period marker tied to the open period. That is one of:
+     - "full year", "full-year" or "annual" (not "annual recurring revenue"), or "total
+       revenue / sales / net income for the (fiscal) year", together with a fiscal year;
+     - the fourth quarter of the open fiscal year;
+     - a calendar quarter.
+
+     Bare "FY2026 revenue was $X" carries no marker and is never dropped: in the wild it
+     is as often a year-to-date figure;
+   - no date or month printed anywhere in the sentence: a numeric date, or a month name
+     in English, French, German, Spanish or Italian;
+   - no point or part-period wording: "as of", "as at", "by", "until", "to date",
+     "cumulative", "N-month", "N-week", "1H"/"2H", "semi-annual", "period", "latest",
+     "after", "before", "versus", "YoY", "10-Q";
+   - no protected wording (item 3) and no quarter or half that it does not place;
    - EVERY period it names has a known end that is still ahead. One period that has
-     ended, or whose end is unknown, keeps the statement. "FY2025 revenue was $23.77B; its
-     Q4 FY2026 results are due Dec 11" is kept. F14 names FY2026 and "Q4 2026", the last
-     quarter of the same open year, so it is still judged.
-3. **Protected wording keeps the statement:**
+     ended, or whose end is unknown, keeps the statement.
+
+   F14 passes every test: "FY2026 total revenue 26.58 Bil", "reports", and "Q4 2026", the
+   fourth quarter of the same open year.
+3. **Protected wording keeps the statement** (the deny-list, kept as a second safety net):
    - forward or estimate wording: guidance, outlook, expects, forecast, projected,
      estimate, consensus, analysts, model, plan, "will", "would", "could", on track, run
      rate, reaffirmed, preliminary, `price target`, Wall Street, street, FactSet, LSEG,
@@ -5024,7 +5176,8 @@ The rule is NARROW. A miss is acceptable; dropping a true statement is not.
    - `target(s)` and `may` count only in lower case, so "Target Corp" and the month do not
      protect a statement.
 4. **When a period ends.**
-   - A calendar or dated period ends on a known date.
+   - A calendar period ends on a known date. A dated period is still read, but a
+     statement that prints a date is never judged (item 2).
    - A fiscal period is projected from a `FiscalYearAnchor`: one observed fiscal year and
      the date it ended, under the issuer's own label (companyfacts `fy`). FY(N) ends a whole
      number of years from it, and Qn ends 3 × (4 − n) months earlier. A fiscal period
@@ -5071,17 +5224,39 @@ statements:
 - "FY2025 revenue was $23.77B; its Q4 FY2026 results are due Dec 11";
 - WMT "fiscal 2027 second-quarter".
 
-It is now the narrow shape above. The reviewer's battery (38 statements, with ADBE, TGT,
-WMT and HON anchors) keeps every listed true statement. Two are dropped:
-- F14;
-- "Honeywell's full year 2026 sales were $40 billion" on 2026-11-01, which is a true drop:
-  Honeywell's FY2026 ends 2026-12-31.
-
-Also from the review:
+The rule was narrowed with a longer deny-list. Also from that review:
 - "target" no longer swallows "Target Corp".
 - Estimate-source words were added.
 - The anchor read has an overall timeout.
 - The loader's cache, failure TTL, annual-basis gate and timeout are tested.
+
+### Review round 2 (PR #309, NO-GO)
+The round-1 battery passed, but a second battery of 48 true statements found 19 more
+false drops. Examples:
+- "FY2026 revenue was $17.6 billion as of August 29, 2026";
+- "cumulative", "9-month", "1H", "semi-annual", "39 weeks ended …";
+- "RPO stood at $20.4 billion in FY2026", ending ARR "as of …";
+- "period ended 29 août 2026";
+- "by August", "until the end of August";
+- "reported FY2026 revenue of $17.6 billion in its Sept. 22 10-Q";
+- "FY2026 YoY revenue growth was 10.7%";
+- MSFT "FY2027 revenue … for the 3-month period";
+- HON and WMT figures "as of" a past quarter end.
+
+A deny-list of part-period words keeps leaking, so the rule was inverted to the
+allow-list in item 2. A statement is now judged only with a positive full-period marker,
+a flow result next to its money amount, and no printed date or month. The deny-list
+stays as a second safety net.
+
+**Result: no false drops on the two review batteries** (86 statements, with ADBE, TGT,
+WMT, HON, MSFT and AAPL anchors). Every true statement is kept, and exactly two are
+dropped:
+- F14;
+- "Honeywell's full year 2026 sales were $40 billion" on 2026-11-01, a true drop:
+  Honeywell's FY2026 ends 2026-12-31.
+
+Both batteries are pinned verbatim as parametrized tests. This is evidence on 86
+statements, not a proof: a phrasing neither battery holds may still be judged wrongly.
 
 ### Replay
 - **Live F14:** with the anchor FY2025 / 2025-11-28 and run date 2026-11-01, F14 is
@@ -5092,16 +5267,27 @@ Also from the review:
   with none; 177 findings): it catches nothing.
 
 ### Not changed / known limits (misses, chosen over false drops)
-- **Non-SEC issuers** (LSE, ASX, Euronext) have no anchor, so only calendar and dated
-  periods are judged for them.
+- **Non-SEC issuers** (LSE, ASX, Euronext) have no anchor, so only calendar quarters
+  are judged for them.
 - **January–March year-ends:** no quarter is judged. A full year is judged only when it
   is open under both naming readings, so "Target's FY2026 revenue was $104.8B" in March
   2026 (Walmart's convention for the year just ended) is kept.
+- **Bare open-year figures are kept.** "Adobe FY2026 revenue was $26.6 billion" in
+  November 2026, with no "full year", "annual" or Q4 marker, is not dropped, though it is
+  as impossible as F14. This is the main remaining miss.
+- **Calendar years are kept.** A bare "CY2026 revenue was $27bn" carries no full-period
+  marker.
+- **Any date or month keeps a statement**, even a future one ("for the quarter ending
+  November 27, 2026" before that date). "Mars", "May" and "Dec" as words do too.
 - **Statement shape:** a result stated without a reporting verb ("FY2026 revenue: $26.6B",
   "FY2026 sales are $40B", "revenue rose to $X in FY2026") is kept. So is an open-year
-  figure phrased as an event ("In fiscal 2026, revenue reached …").
-- **Protected wording is broad:** "mean", "street", "can", "closed", "plan" and similar
-  words anywhere in the sentence keep it.
+  figure phrased as an event ("In fiscal 2026, revenue reached …"). So is a figure more
+  than a few words from its metric, and one with no currency or scale word ("revenue was
+  26,580").
+- **Point-in-time metrics, margins and growth rates are never judged**, even for an open
+  period.
+- **Protected wording is broad:** "mean", "street", "can", "closed", "plan", "by",
+  "period", "after" and similar words anywhere in the sentence keep it.
 - **Subject naming:** a statement that does not name the subject is not judged, nor is one
   naming another held company.
 - **Not read as periods:** halves (`H1 FY2027`) and bare years ("2026 revenue").

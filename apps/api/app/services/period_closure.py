@@ -17,10 +17,13 @@ acceptable; dropping a true statement is not (review of PR #309):
    period needs a :class:`FiscalYearAnchor` (one observed fiscal year and the date it
    ended, from the issuer's own SEC statements). Without one, a fiscal period has no
    known end and the statement is never judged.
-3. The SHAPE of the statement. It is judged only when it reports a period's result
-   ("revenue was", "reports … revenue") with a figure, carries no forward, estimate,
-   part-period or event wording, names no quarter or half it does not place, and EVERY
-   period it names is known and still open. One closed or unknown period keeps it.
+3. The SHAPE of the statement, by ALLOW-list (review round 2). It is judged only when it
+   reports a FLOW result (revenue, sales, net income, EPS, operating income, FCF) with its
+   money amount and a reporting verb; carries a positive full-period marker ("full
+   year", "annual", "total revenue for the year", the fourth quarter of the fiscal year,
+   or a calendar quarter); prints no date or month anywhere; carries no point,
+   part-period, forward, estimate or event wording; and EVERY period it names is known
+   and still open. Anything else is kept: bare "FY2026 revenue was $X" included.
 
 A bare ``2026-Q4`` / ``Q4 2026`` is the platform's FISCAL-keyed quarter (ADR-065), so it
 is judged only on a known fiscal calendar. For a fiscal year ending January–March no
@@ -229,9 +232,6 @@ _PERIOD_RE = re.compile(
     re.IGNORECASE,
 )
 
-_ISO_DATE_RE = re.compile(rf"\b{_Y4}-\d{{2}}-\d{{2}}\b")
-
-
 def _first(match: re.Match[str], *names: str) -> str | None:
     return next((match.group(n) for n in names if match.group(n)), None)
 
@@ -315,42 +315,88 @@ _UNPLACED_SUBPERIOD_RE = re.compile(
     r"\b(?:quarters?|quarterly|q[1-4]|[1-4]q|semester)\b", re.IGNORECASE
 )
 
-#: "the period's result WAS X": a result metric and a verb that reports it.
-_RESULT_METRIC_RE = re.compile(
-    r"\b(?:revenues?|sales|turnover|net\s+(?:income|profit|loss|earnings)|earnings|eps|"
-    r"arr|annual\s+recurring\s+revenue|operating\s+(?:income|profit|loss|margin|cash\s+flow)|"
-    r"gross\s+(?:profit|margin)|free\s+cash\s+flow|cash\s+flow|ebitda|ebit|bookings|"
-    r"billings|rpo|profit|margins?)\b",
+#: Review round 2 (PR #309): a second safety net of words that place a figure at a point
+#: or over part of a period ("as of", "by August", "cumulative", "39 weeks", "1H",
+#: "semi-annual", "for the 3-month period", "in its 10-Q"), or make it a change or a
+#: comparison rather than the period's result.
+_PART_OR_POINT_RE = re.compile(
+    r"\b(?:as\s+(?:of|at)|by|until|till|cumulative\w*|\d+[\s-]*(?:months?|weeks?)|weeks?|"
+    r"months?|[12]h|semi[\s-]?annual\w*|periods?|tracking|latest|after|before|versus|vs|"
+    r"compared|year[\s-]on[\s-]year|yoy|10-?q|hit|headwinds?|tailwinds?)\b",
+    re.IGNORECASE,
+)
+
+#: Any month name (EN/FR/DE/ES/IT) or numeric date anywhere in the sentence: a printed
+#: date may be the point the figure stands at, so the statement is never judged.
+_MONTH_WORDS = (
+    "january february march april june july august september october november december "
+    "jan feb apr jun jul aug sep sept oct nov dec "
+    "janvier fevrier février mars avril mai juin juillet aout août septembre octobre "
+    "novembre decembre décembre "
+    "januar februar marz märz maerz juni juli oktober dezember "
+    "enero febrero marzo abril mayo junio julio agosto septiembre setiembre octubre "
+    "noviembre diciembre "
+    "gennaio febbraio aprile maggio giugno luglio settembre ottobre dicembre"
+)
+_DATE_PRINTED_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(set(_MONTH_WORDS.split()), key=len, reverse=True)) + r")\b"
+    r"|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b",
+    re.IGNORECASE,
+)
+
+#: A FLOW result — what a period produces — immediately followed by its money amount
+#: ("revenue was $26.6 billion", "total revenue 26.58 Bil", "sales of $40bn"). Point-in-time
+#: metrics (ARR, RPO, backlog, cash, debt) and growth rates are never judged.
+_MONEY = (
+    r"(?:(?:[$€£¥]|\b(?:usd|us\$|eur|gbp|jpy|chf|aud|cad)\s?)\s?\d[\d,]*(?:\.\d+)?"
+    r"(?:\s?(?:bn|billion|bil|mn|million|mil|tn|trillion|b|m)\b)?"
+    r"|\b\d[\d,]*(?:\.\d+)?\s?(?:bn|billion|bil|mn|million|mil|tn|trillion)\b)"
+)
+_FLOW_FIGURE_RE = re.compile(
+    r"\b(?:revenues?|sales|turnover|net\s+(?:income|profit|loss|earnings)|eps|"
+    r"earnings\s+per\s+share|operating\s+(?:income|profit|loss)|gross\s+profit|"
+    r"free\s+cash\s+flow|fcf)\b"
+    r"(?:\W+\w+){0,4}?\W+" + _MONEY,
     re.IGNORECASE,
 )
 _RESULT_VERB_RE = re.compile(
     r"\b(?:was|were|reported|reports|totall?ed|totals|came\s+in\s+at|amounted\s+to|"
-    r"stood\s+at|posted|recorded|generated|delivered|achieved|booked)\b",
+    r"posted|recorded|generated|delivered|achieved)\b",
+    re.IGNORECASE,
+)
+#: The POSITIVE full-period marker a judged statement must carry: "full year", "annual"
+#: (not annual recurring revenue), or "total revenue for the (fiscal) year". The other
+#: markers are periods: the fourth quarter of the open fiscal year, or a calendar quarter.
+_FULL_YEAR_RE = re.compile(
+    r"\bfull[\s-]+year\b|\bannual\b(?!\s+recurring)|"
+    r"\btotal\s+(?:revenues?|sales|net\s+income)\s+for\s+(?:the\s+)?(?:fiscal\s+)?year\b",
     re.IGNORECASE,
 )
 
 
 def is_forward_or_partial(statement: str | None) -> bool:
-    """A statement that speaks of what is expected or estimated, of part of a period, or
-    of an event in it: never judged."""
+    """A statement that speaks of what is expected or estimated, of part of a period, of
+    an event in it, or of a point in time: never judged."""
     text = statement or ""
-    return bool(_PROTECTED_RE.search(text) or _PROTECTED_LOWER_RE.search(text)) or bool(
-        set(rf.fields_stated(text)) & rf.SUPERSEDABLE_FIELDS
-    )
+    return bool(
+        _PROTECTED_RE.search(text)
+        or _PROTECTED_LOWER_RE.search(text)
+        or _PART_OR_POINT_RE.search(text)
+        or _DATE_PRINTED_RE.search(text)
+    ) or bool(set(rf.fields_stated(text)) & rf.SUPERSEDABLE_FIELDS)
 
 
 def _residue(statement: str, periods: list[StatedPeriod]) -> str:
-    """The statement with its period labels and dates taken out (an ISO date and "Q4" are
-    numbers too)."""
+    """The statement with its period labels taken out ("Q4" is a number too)."""
     residue = statement
     for period in periods:
         residue = residue.replace(period.text, " ")
-    return _ISO_DATE_RE.sub(" ", residue)
+    return residue
 
 
 def _judgeable(statement: str | None) -> list[StatedPeriod] | None:
-    """The periods of a statement that states a period's RESULT as an actual, or ``None``
-    when the statement is not of that shape (and so is never judged)."""
+    """The periods of a statement that reports a period's FLOW result as an actual, or
+    ``None`` when the statement is not of that shape (and so is never judged)."""
     text = (statement or "").strip()
     if not text or is_forward_or_partial(text):
         return None
@@ -360,30 +406,44 @@ def _judgeable(statement: str | None) -> list[StatedPeriod] | None:
     residue = _residue(text, periods)
     if _UNPLACED_SUBPERIOD_RE.search(residue):
         return None
-    if not (_RESULT_METRIC_RE.search(residue) and _RESULT_VERB_RE.search(residue)):
-        return None
-    if not rf.has_figure(residue):
-        return None
-    if not ("%" in residue or rf.has_money(residue) or rf.fields_mentioned(residue)):
+    if not (_FLOW_FIGURE_RE.search(residue) and _RESULT_VERB_RE.search(residue)):
         return None
     return periods
+
+
+def _full_period_marker(text: str, periods: list[StatedPeriod]) -> bool:
+    """Does the statement say the figure is for a WHOLE period? Bare "FY2026 revenue was
+    $X" does not: in the wild it is as often a year-to-date figure (review round 2)."""
+    if _FULL_YEAR_RE.search(text) and any(p.kind == KIND_FISCAL_YEAR for p in periods):
+        return True
+    return any(
+        (p.kind == KIND_FISCAL_QUARTER and p.ordinal == 4) or p.kind == KIND_CALENDAR_QUARTER
+        for p in periods
+    )
 
 
 def unended_actual(
     statement: str | None, *, as_of: date, anchor: FiscalYearAnchor | None
 ) -> UnendedPeriod | None:
-    """The period a statement gives a RESULT for as an actual, when that period had not
-    ended on ``as_of``; else ``None``.
+    """The period a statement gives a WHOLE-period flow result for as an actual, when that
+    period had not ended on ``as_of``; else ``None``.
 
-    Narrow by design. The statement must report a result metric with a reporting verb
-    ("revenue was", "reports … revenue") and a figure, carry no forward, estimate,
-    part-period or event wording, and EVERY period it names must have a known end that is
-    still ahead. One period that has ended, or whose end is unknown (a fiscal period with
-    no ``anchor``, a quarter of a January–March year-end), keeps it: "FY2025 revenue was
-    $23.8B; Q4 FY2026 results are due in December" is true.
+    An allow-list, not a deny-list (review round 2 of PR #309). ALL of these must hold:
+
+    - a flow result (revenue, sales, net income, EPS, operating income, gross profit, FCF)
+      followed by its money amount, with a reporting verb ("was", "reports", "totalled");
+    - a positive full-period marker: "full year" / "annual" / "total revenue for the
+      year" with a fiscal year, or the fourth quarter of a fiscal year, or a calendar
+      quarter;
+    - EVERY period named has a known end that is still ahead (a fiscal period needs the
+      ``anchor``; one closed or unknown period keeps the statement);
+    - no printed date or month name anywhere, no point/part-period wording ("as of", "by",
+      "cumulative", "39 weeks", "1H", "semi-annual"), no unplaced quarter or half, and no
+      forward, estimate or event wording.
     """
-    periods = _judgeable(statement)
-    if not periods:
+    text = (statement or "").strip()
+    periods = _judgeable(text)
+    if not periods or not _full_period_marker(text, periods):
         return None
     open_periods: list[tuple[StatedPeriod, date]] = []
     for period in periods:
@@ -397,11 +457,14 @@ def unended_actual(
 
 
 def wants_fiscal_calendar(statement: str | None) -> bool:
-    """Would the issuer's fiscal calendar decide this statement? True only for a result
-    stated as an actual for a FISCAL period — so the calendar is read when it can matter,
-    never for every statement."""
-    periods = _judgeable(statement)
-    return bool(periods) and any(p.is_fiscal for p in periods or ())
+    """Would the issuer's fiscal calendar decide this statement? True only for a statement
+    of the judged shape that names a fiscal period — so the calendar is read when it can
+    matter, never for every statement."""
+    text = (statement or "").strip()
+    periods = _judgeable(text)
+    return bool(periods) and any(p.is_fiscal for p in periods or ()) and (
+        _full_period_marker(text, periods or [])
+    )
 
 
 # ── The issuer's fiscal calendar, from its own SEC statements ──────────────── #
