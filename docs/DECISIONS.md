@@ -4557,6 +4557,90 @@ and the rerun `d15a74c4` was replayed.
 
 ---
 
+## ADR-064: A Table's Unit Is Printed in the Table — Never Borrowed from an Inline Amount
+
+**Date:** 2026-11-01 · **Status:** Accepted (implementation) · **Extraction pipeline:** v20
+**Trigger:** cross-sector QA campaign 2026-11. Richemont deep report `f722d620` showed net
+cash "8,496 bn EUR" and operating cash flow "4,880 bn EUR", a thousand times the truth.
+
+### Context
+- Richemont's FY2026 results announcement prints its "Key financial data" table as
+  `Net cash position € 8 496 m € 8 257 m`: the unit is beside each figure and absent from
+  the header (`2026 2025 change`).
+- Its cash-flow statement prints `€m €m` on a units row under the years.
+- The layout reconstructor kept only numeric words, so both units were lost.
+- `_table_currency_scale` then fell back to the page's excerpts and took the FIRST scale
+  token there: the "billion" of "Group sales reached € 22.4 billion".
+- ADR/pipeline v18 had fixed the same hazard only for official announcements
+  (`table_units_only`, Pensana).
+
+### Decision
+1. **Value-zone units.** The reconstructor reads currency/scale tokens printed among a
+   row's values (`€`, `US$`, `CHF`, `m`, `bn`, `million`, `'000`, alone or joined as `€m`).
+   When the header's label zone has no unit, the table's unit becomes `"<currency> <scale>"`,
+   provided every row that prints one agrees on exactly one currency and one scale. A bare
+   "m" counts only beside a currency (it may be metres). A header unit still wins.
+2. **Declared units only from prose.** The page fallback uses `_declared_scale()`. A scale
+   word or abbreviation directly after a number ("€ 22.4 billion", "5.2m", "€ 8 496 million")
+   belongs to that amount and is skipped. "in € millions", "€m" and "$'000" still declare.
+3. **Narrow column gutters.** A justified two-column page may leave only ~4pt between its
+   columns: Richemont's announcement, page 2, has the left column's longest line ending at
+   293.4pt and the right column starting at 297.6pt. The page was read interleaved, and
+   "the Jewellery Maisons … grow their operating profit to € 5 billion" absorbed "the Group
+   maintained …" from the other column. The segment figure was scoped to the Group, and the
+   report invented a conflict with the €4.5bn group operating profit. A gutter of 3–10pt is
+   now trusted only when BOTH sides carry at least 8 column-body lines, each at least 30% of
+   the page width.
+4. Extraction pipeline version 19 → 20, so held documents are re-read (DEPLOYMENT.md).
+
+### Verified
+- Re-extracting the real Richemont announcement gives tables p1/p12/p13 the unit
+  `€ million`.
+- Net cash 8,496 and operating cash flow 4,880 are validated at `million`.
+- No table is scaled "billion".
+- Pensana's whole-dollar table now stays unscaled on the general path too.
+
+### Not changed / known limits
+- A table whose only unit clue was an inline prose amount now has no scale. Its money
+  facts stay excerpt-only: missing, not wrong.
+- The key-data table's "Sales" caption is still not read as revenue there (revenue comes
+  from the segment and income-statement tables).
+
+### Review round 1 (ADR-064)
+An independent review found that a unit printed among the values could scale more
+than the rows that print it. Fixes:
+- **Coverage.** A value-zone unit becomes the table's unit only when one of two things holds.
+  Either a units row before the first figure declares it ("€m €m" under the periods), or at
+  least two thirds of the money rows print it beside their figures (percent rows aside).
+  One row's "€ 2.1 bn" in a table of unlabelled millions no longer scales the table. This
+  applies in the reconstructor and in the validator's `_value_cell_scale` alike.
+- **Never over a declared page unit.** When the page declares one scale ("All amounts in
+  € thousands") and the cells print another, the scale is None. Neither is trusted over the
+  other.
+- **A bare "000" is not a unit.** It is a thousands group split off a number. Only "'000"
+  or a currency-attached "€000" count.
+- **Change columns are ignored.** A signed token (+, −, ±) or a percent cell says nothing
+  about the period columns' unit.
+- **Column years before a unit still declare it.** "2025 2024 million CHF" and
+  "31 March 2026 € million" are declarations, not an amount "2024 million".
+Re-verified on the real Richemont FY26 results PDF: tables p1, p12 and p13 are "€ million".
+Net cash is 8,496m and operating cash flow 4,880m, both validated in millions.
+
+### Review round 2 (ADR-064)
+- **The page check now covers reconstructed tables.** The reconstructor writes a value-zone
+  unit into the header cell, so the validator read it as a header unit and never compared
+  it with the page. The reconstructed table now carries `unit_from_values`, passed on as
+  `ExtractedTable.unit_from_values`. Such a unit is checked against a unit the page
+  declares exactly like a raw cell table's: when they disagree, the scale is None. A unit
+  printed in the header's own label zone still wins outright.
+- **One bare year-like number is an amount.** "€ 1950 million" no longer reads as column
+  years. Only two or more years, or a month before the year ("At 30 June 2026 € million"),
+  are headings.
+Re-verified on the real Richemont FY26 PDF: unchanged (tables "€ million", net cash
+8,496m, operating cash flow 4,880m).
+
+---
+
 ## ADR-065: A Quarter Is Keyed by Its Fiscal Year; the Issuer's Own Release Is "Company Says"
 
 **Status:** Accepted (cross-sector QA campaign 2026-11)
