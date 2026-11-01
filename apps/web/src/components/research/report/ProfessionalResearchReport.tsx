@@ -571,9 +571,9 @@ function PeerTable({ rows }: { rows: PeerRow[] }) {
             <td className={`${td} text-right`}>{pct(row.operatingMarginPct)}</td>
             <td className={`${td} text-right`}>{pct(row.netMarginPct)}</td>
             <td className={`${td} text-right`}>
-              {row.cashConversion === null
-                ? DASH
-                : `${formatNumber(row.cashConversion, { maximumFractionDigits: 2 })}×`}
+              {/* cash_conversion is OCF / net income × 100 (calculations.CASH_CONVERSION,
+                  UNIT_PERCENT): 140.69 is 140.69%, never "140.69×" (QA 2026-11, ADBE-6). */}
+              {pct(row.cashConversion)}
             </td>
             <td className={`${td} text-right`}>{pct(row.capexToOcfPct)}</td>
             <td className={`${td} text-right`}>

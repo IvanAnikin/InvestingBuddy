@@ -451,6 +451,9 @@ test.describe("the professional report on the report page", () => {
     await expect(subject).toContainText("(subject)");
     await expect(subject).toContainText("13,420");
     await expect(subject).toContainText("52.2%");
+    // Cash conversion is a percentage on the producer's own unit, never a multiple.
+    await expect(subject).toContainText("108.4%");
+    await expect(peer).not.toContainText("×");
 
     const fcx = peer.getByTestId("peer-row").filter({ hasText: "FCX" });
     await expect(fcx).not.toHaveAttribute("data-subject", "true");
