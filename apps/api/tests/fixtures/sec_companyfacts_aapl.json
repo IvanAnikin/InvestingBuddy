@@ -291,9 +291,9 @@
           ]
         }
       },
-      "LongTermDebt": {
-        "label": "Long-term Debt",
-        "description": "Carrying amount of long-term debt.",
+      "LongTermDebtNoncurrent": {
+        "label": "Long-term Debt, Excluding Current Maturities",
+        "description": "Carrying amount of long-term debt, excluding current maturities.",
         "units": {
           "USD": [
             {

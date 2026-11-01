@@ -53,6 +53,7 @@ from app.integrations.financial_data_provider import (
     SourceTier,
 )
 from app.integrations.providers.sec_edgar_provider import _EDGAR_BASE_URL, _pad_cik
+from app.integrations.sec_total_debt import ALL_CURRENT, ALL_LONG_TERM, derive_total_debt
 
 _COMPANY_FACTS_URL = f"{_EDGAR_BASE_URL}/api/xbrl/companyfacts/CIK{{cik}}.json"
 _EDGAR_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
@@ -101,8 +102,9 @@ _CASH = [
     "CashAndCashEquivalentsAtCarryingValue",
     "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
 ]
-_LONG_TERM_DEBT = ["LongTermDebt", "LongTermDebtNoncurrent"]
-_SHORT_TERM_DEBT = ["DebtCurrent", "ShortTermBorrowings", "LongTermDebtCurrent"]
+# Debt concepts live in ``sec_total_debt`` (ADR-067): they overlap in the taxonomy, so
+# total debt is derived from one compatible combination at the reporting period, never
+# by picking a "long" and a "short" alias independently and adding them.
 # dei concepts (shares outstanding lives under facts.dei, not us-gaap).
 _SHARES_OUTSTANDING = ["EntityCommonStockSharesOutstanding"]
 
@@ -397,8 +399,16 @@ class NormalizedSecFinancials:
     total_liabilities: float | None = None
     shareholders_equity: float | None = None
     cash_and_equivalents: float | None = None
+    #: ADR-067 — debt due within one year: short-term borrowings + current maturities
+    #: of long-term debt. ``None`` when not tagged for the period or not separable.
     short_term_debt: float | None = None
+    #: ADR-067 — long-term debt due after one year (the noncurrent line).
     long_term_debt: float | None = None
+    #: ADR-067 — total debt from ONE compatible combination of concepts at the reporting
+    #: period (see ``debt_basis``); ``None`` when no long-term debt concept is tagged for
+    #: the period, or when the total is known to be partial or double counted
+    #: (``debt_basis["withheld_reason"]``). Never a partial sum. Equals
+    #: ``short_term_debt + long_term_debt`` whenever both legs are set.
     total_debt: float | None = None
     shares_outstanding: float | None = None
 
@@ -456,6 +466,10 @@ class NormalizedSecFinancials:
     consistency: dict[str, Any] = field(default_factory=dict)
     #: The one period end every reporting field in this bundle is for.
     reporting_period_end: str | None = None
+    #: ADR-067 — how ``total_debt`` was built: the combination, the concepts and values
+    #: used, and a note for every term not tagged for the period.
+    #: ``sec_total_debt.TotalDebt.to_dict()``; empty when no total was published.
+    debt_basis: dict[str, Any] = field(default_factory=dict)
 
     # ---- serialization -------------------------------------------------- #
 
@@ -598,7 +612,7 @@ class NormalizedSecFinancials:
         _add("free_cash_flow", self.free_cash_flow, "USD_m", DataQuality.C_inferred,
              "Derived: operating_cash_flow - capital_expenditures. " + period_note)
         _add("total_debt", self.total_debt, "USD_m", DataQuality.C_inferred,
-             "Derived: short_term_debt + long_term_debt. " + period_note)
+             self._total_debt_note(period_note))
 
         # Derived ratios / growth (percent).
         derived_pct = {
@@ -668,6 +682,18 @@ class NormalizedSecFinancials:
             )
 
         return dps
+
+    def _total_debt_note(self, period_note: str) -> str:
+        """The total's basis: which concepts were added, and what was not tagged."""
+        basis = self.debt_basis or {}
+        formula = basis.get("formula")
+        if not formula:
+            return "Derived: short_term_debt + long_term_debt. " + period_note
+        notes = "; ".join(basis.get("notes") or ())
+        return (
+            f"Derived: {formula}" + (f". Basis: {notes}" if notes else "") + ". "
+            + period_note
+        )
 
     def _note_for(self, field_name: str, fallback: str) -> str:
         """A note naming the period and concept THIS value came from."""
@@ -808,6 +834,133 @@ def _metrics_outside_reporting_period(
     return outside, anchor.strftime("%Y-%m-%d")
 
 
+#: Roles (``sec_total_debt.DebtComponent.role``) that make up each published leg.
+_DEBT_LEG_ROLES: dict[str, frozenset[str]] = {
+    "long_term_debt": frozenset({"long_term_debt_noncurrent"}),
+    "short_term_debt": frozenset(
+        {"short_term_borrowings", "debt_current", "long_term_debt_current"}
+    ),
+}
+
+
+def _apply_total_debt(
+    result: NormalizedSecFinancials, us_gaap: dict[str, Any], warnings: list[str]
+) -> None:
+    """Set the debt legs and ``total_debt`` from compatible concepts at the period.
+
+    QA campaign 2026-11, defect JPM-1 (ADR-067). The legs used to be chosen
+    independently — the freshest "long" alias and the freshest "short" alias — and then
+    added. So ``LongTermDebt``, which already contains current maturities, was summed
+    with ``LongTermDebtCurrent`` or ``DebtCurrent``. A filer with no long-term concept
+    for the period also got its short-term borrowings published as total debt.
+    ``sec_total_debt.derive_total_debt`` builds the total from one compatible
+    combination, every term at this bundle's reporting period (from its own filing
+    where possible), and refuses a total that has no long-term term.
+    """
+    basis = result.period_basis if result.period_basis in ("annual", "quarterly") else None
+    debt = derive_total_debt(
+        us_gaap,
+        period_end=result.reporting_period_end,
+        forms=_QUARTERLY_FORMS if basis == "quarterly" else _ANNUAL_FORMS,
+        prefer_accn=result.accession_number,
+        tolerance_days=_SAME_PERIOD_TOLERANCE_DAYS,
+    )
+    period_end = _parse_end(result.reporting_period_end)
+
+    def withhold(name: str, concepts: tuple[str, ...]) -> None:
+        """Record the filer's latest value for a leg that is not tagged for this period."""
+        latest = _select_metric(us_gaap, list(concepts), "USD", True)
+        if latest.value is None:
+            return
+        end = _parse_end(latest.end)
+        if basis is not None and latest.period_type != basis:
+            reason = "interim_in_annual_bundle"
+        elif (
+            end is not None
+            and period_end is not None
+            and (end - period_end).days > _SAME_PERIOD_TOLERANCE_DAYS
+        ):
+            reason = "later_period_outlier"
+        else:
+            reason = "stale_period"
+        result.withheld_fields[name] = {
+            "value": latest.value,
+            "end": latest.end,
+            "fy": latest.fy,
+            "concept": latest.concept,
+            "period_type": latest.period_type,
+            "reason": reason,
+        }
+
+    if debt.withheld_reason is not None:
+        # Computable, but known to be incomplete or double counted (a maturity schedule
+        # shows principal due within a year that no current concept carries; or the
+        # total exceeds the filer's own total-debt concept). The noncurrent line is a
+        # reported figure and is kept; the total, and every ratio on it, is not.
+        result.long_term_debt = debt.noncurrent
+        result.debt_basis = debt.to_dict()
+        noncurrent = [c for c in debt.components if c.role == "long_term_debt_noncurrent"]
+        if result.long_term_debt is not None and noncurrent:
+            first = noncurrent[0]
+            result.field_periods["long_term_debt"] = {
+                "fy": first.fy, "fp": first.fp, "end": first.end, "form": first.form,
+                "concept": first.concept, "period_type": basis, "duration_days": None,
+            }
+        warnings.append(
+            "SEC EDGAR: total_debt, debt_to_equity and net debt withheld — "
+            + debt.withheld_reason
+            + ". A partial or double-counted total is never published."
+        )
+        return
+
+    if debt.long_term_missing or debt.total is None:
+        withhold("long_term_debt", ALL_LONG_TERM)
+        last = result.withheld_fields.get("long_term_debt")
+        warnings.append(
+            "SEC EDGAR: total_debt, debt_to_equity and net debt withheld — no long-term "
+            "debt concept is tagged for the reporting period"
+            + (
+                f" (latest: us-gaap:{last['concept']} for the period ending {last['end']})"
+                if last
+                else ""
+            )
+            + ". Short-term borrowings alone are not total debt, and a partial sum is "
+            "never published."
+        )
+        return
+
+    result.total_debt = debt.total
+    result.short_term_debt = debt.current
+    result.long_term_debt = debt.noncurrent
+    result.debt_basis = debt.to_dict()
+    if not any(c.role in _DEBT_LEG_ROLES["short_term_debt"] for c in debt.components):
+        # Nothing current is tagged for the period. A value the filer tagged for ANOTHER
+        # period is recorded as withheld, exactly as the own-period rule records it.
+        withhold("short_term_debt", ALL_CURRENT)
+
+    def period_record(parts: list[Any]) -> dict[str, Any]:
+        first = parts[0]
+        return {
+            "fy": first.fy,
+            "fp": first.fp,
+            "end": first.end,
+            "form": first.form,
+            "concept": " + ".join(c.concept for c in parts),
+            "period_type": basis,
+            "duration_days": None,
+        }
+
+    for name, roles in _DEBT_LEG_ROLES.items():
+        parts = [c for c in debt.components if c.role in roles]
+        if getattr(result, name) is not None and parts:
+            result.field_periods[name] = period_record(parts)
+    result.field_periods["total_debt"] = period_record(debt.components)
+    if debt.notes:
+        warnings.append(
+            f"SEC EDGAR: total_debt basis — {debt.formula}; " + "; ".join(debt.notes) + "."
+        )
+
+
 def normalize_company_facts(
     data: dict,
     ticker: str,
@@ -865,8 +1018,6 @@ def normalize_company_facts(
     total_liabilities = _select_metric(us_gaap, _TOTAL_LIABILITIES, "USD", True)
     equity = _select_metric(us_gaap, _SHAREHOLDERS_EQUITY, "USD", True)
     cash = _select_metric(us_gaap, _CASH, "USD", True)
-    ltd = _select_metric(us_gaap, _LONG_TERM_DEBT, "USD", True)
-    std = _select_metric(us_gaap, _SHORT_TERM_DEBT, "USD", True)
     shares = _select_metric(dei, _SHARES_OUTSTANDING, "shares", True)
 
     result.revenue = revenue.value
@@ -882,8 +1033,6 @@ def normalize_company_facts(
     result.total_liabilities = total_liabilities.value
     result.shareholders_equity = equity.value
     result.cash_and_equivalents = cash.value
-    result.short_term_debt = std.value
-    result.long_term_debt = ltd.value
     result.shares_outstanding = shares.value
 
     # ── V3.18.1 — THE OWN-PERIOD RULE ────────────────────────────────────
@@ -914,8 +1063,6 @@ def normalize_company_facts(
         "total_liabilities": total_liabilities,
         "shareholders_equity": equity,
         "cash_and_equivalents": cash,
-        "short_term_debt": std,
-        "long_term_debt": ltd,
     }
     outside, anchor_end = _metrics_outside_reporting_period(selected)
     for name, reason, metric in outside:
@@ -988,8 +1135,6 @@ def normalize_company_facts(
         ("total_liabilities", total_liabilities),
         ("shareholders_equity", equity),
         ("cash_and_equivalents", cash),
-        ("short_term_debt", std),
-        ("long_term_debt", ltd),
         ("shares_outstanding", shares),
     ):
         if metric.value is None:
@@ -1060,20 +1205,8 @@ def normalize_company_facts(
                 "confirm no newer 10-K/20-F was filed."
             )
 
-    # ── Derived: total debt ──────────────────────────────────────────────
-    debt_parts = [d for d in (result.short_term_debt, result.long_term_debt) if d is not None]
-    if debt_parts:
-        result.total_debt = round(sum(debt_parts), 2)
-        if len(debt_parts) == 1:
-            warnings.append(
-                "SEC EDGAR: total_debt is a partial sum — only one of "
-                "short_term_debt / long_term_debt was available."
-            )
-    else:
-        warnings.append(
-            "SEC EDGAR: total_debt unavailable — no short-term or long-term "
-            "debt concepts found."
-        )
+    # ── Derived: total debt (ADR-067) ────────────────────────────────────
+    _apply_total_debt(result, us_gaap, warnings)
 
     # ── Derived: free cash flow ──────────────────────────────────────────
     if result.operating_cash_flow is not None and result.capital_expenditures is not None:

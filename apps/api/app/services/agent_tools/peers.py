@@ -363,6 +363,23 @@ FACTS_CACHE_TTL = timedelta(hours=1)
 FACTS_CACHE_MAX = 8
 
 
+def total_debt_is_usable(n: Any) -> bool:
+    """True when ``n.total_debt`` may feed net debt (ADR-067).
+
+    The normaliser publishes total debt only from one compatible combination of
+    concepts, with a long-term term for the reporting period. Defence in depth for any
+    record that did not come through that rule: a withheld debt leg, or a short-term
+    leg with no long-term leg beside it (the JPM-1 shape: short-term borrowings
+    published as "total debt"), refuses it. Both legs ``None`` is a total the
+    normaliser could not split, and stands.
+    """
+    if n.total_debt is None:
+        return False
+    if {"short_term_debt", "long_term_debt"} & set(n.withheld_fields or ()):
+        return False
+    return not (n.long_term_debt is None and n.short_term_debt is not None)
+
+
 def _peer_metrics(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[str]]:
     """Normalise with the subject's own rules, then compute the defined metrics."""
     from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
@@ -372,18 +389,13 @@ def _peer_metrics(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[
     if n.fiscal_year is None or n.period_basis != "annual":
         return [], [f"{ticker}: no annual statements could be normalised"]
     # THE SUBJECT'S RULES, not a looser copy: metrics derived from an inconsistent
-    # statement are withheld, and net debt needs BOTH debt legs reported for the period
-    # — a missing leg makes total debt a partial sum, and a peer would show net cash.
+    # statement are withheld, and net debt needs a total debt the normaliser published
+    # on a complete basis — a partial total would show a leveraged peer holding net cash.
     withheld = set((n.consistency or {}).get("withheld") or ())
     for finding in (n.consistency or {}).get("inconsistencies") or []:
         withheld.update(finding.get("withhold_derived") or ())
-    legs = {"short_term_debt", "long_term_debt"}
-    both_legs = (
-        not (legs & set(n.withheld_fields))
-        and n.short_term_debt is not None
-        and n.long_term_debt is not None
-    )
-    if not both_legs:
+    debt_usable = total_debt_is_usable(n)
+    if not debt_usable:
         withheld.add("net_debt")
     values = {
         "revenue": n.revenue,
@@ -391,7 +403,7 @@ def _peer_metrics(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[
         "net_income": n.net_income,
         "operating_cash_flow": n.operating_cash_flow,
         "capital_expenditure": n.capital_expenditures,
-        "total_debt": n.total_debt if both_legs else None,
+        "total_debt": n.total_debt if debt_usable else None,
         "cash_and_equivalents": n.cash_and_equivalents,
     }
     readings, refusals = compute_statement_metrics(
@@ -514,9 +526,9 @@ STATEMENT_LINES: tuple[tuple[str, str, str], ...] = (
     ("total_liabilities", "Total liabilities", "USD millions"),
     ("shareholders_equity", "Shareholders' equity", "USD millions"),
     ("cash_and_equivalents", "Cash and equivalents", "USD millions"),
-    ("short_term_debt", "Short-term debt", "USD millions"),
-    ("long_term_debt", "Long-term debt", "USD millions"),
-    ("total_debt", "Total debt (short + long)", "USD millions"),
+    ("short_term_debt", "Short-term debt (due within one year)", "USD millions"),
+    ("long_term_debt", "Long-term debt (due after one year)", "USD millions"),
+    ("total_debt", "Total debt", "USD millions"),
     ("eps_diluted", "Diluted EPS", "USD per share"),
     ("revenue_yoy_growth", "Revenue growth vs prior fiscal year", "%"),
     ("net_income_yoy_growth", "Net income growth vs prior fiscal year", "%"),
@@ -553,17 +565,13 @@ def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], lis
     if n.fiscal_year is None or n.period_basis != "annual":
         return [], [f"{ticker}: no annual statements could be normalised"]
     period = f"FY{n.fiscal_year}"
-    both_legs = (
-        not ({"short_term_debt", "long_term_debt"} & set(n.withheld_fields))
-        and n.short_term_debt is not None
-        and n.long_term_debt is not None
-    )
+    debt_usable = total_debt_is_usable(n)
     items: list[dict[str, Any]] = []
     for field_name, label, unit in STATEMENT_LINES:
         value = getattr(n, field_name, None)
         if value is None or field_name in n.withheld_fields:
             continue
-        if field_name == "total_debt" and not both_legs:
+        if field_name == "total_debt" and not debt_usable:
             continue
         own = (n.field_periods or {}).get(field_name) or {}
         items.append(

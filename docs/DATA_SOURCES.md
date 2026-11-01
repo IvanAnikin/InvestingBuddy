@@ -254,11 +254,14 @@ millions (`USD_m`); margins/ROE/growth are percentages; debt-to-equity is a rati
 | `total_liabilities` | `Liabilities` |
 | `shareholders_equity` | `StockholdersEquity`, `StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest` |
 | `cash_and_equivalents` | `CashAndCashEquivalentsAtCarryingValue`, `CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents` |
-| `long_term_debt` | `LongTermDebt`, `LongTermDebtNoncurrent` |
-| `short_term_debt` | `DebtCurrent`, `ShortTermBorrowings`, `LongTermDebtCurrent` |
+| `long_term_debt` | long-term debt due after one year — `LongTermDebtNoncurrent`, `LongTermDebtAndCapitalLeaseObligations` (or `LongTermDebt` − `LongTermDebtCurrent`) — see ADR-067 |
+| `short_term_debt` | debt due within one year — `DebtCurrent`, or `LongTermDebtCurrent` + `ShortTermBorrowings` (else `CommercialPaper` + `OtherShortTermBorrowings` when a total confirms the sum) — see ADR-067 |
 | `shares_outstanding` | `dei:EntityCommonStockSharesOutstanding` (often absent → market cap not computed) |
 
-**Derived metrics (marked `C_inferred`):** `free_cash_flow = OCF − capex`; `total_debt = short + long`;
+**Derived metrics (marked `C_inferred`):** `free_cash_flow = OCF − capex`; `total_debt` from ONE compatible combination at the reporting period
+(noncurrent LTD + `DebtCurrent`; noncurrent LTD + current LTD + short-term borrowings; LTD
+including current maturities + short-term borrowings), `None` when no long-term debt concept is
+tagged for the period or when the filer's maturity schedule shows current principal no current concept carries, never a partial sum, basis recorded in `debt_basis` (ADR-067);
 `gross/operating/net_margin`, `free_cash_flow_margin`, `return_on_equity`, `debt_to_equity`;
 `revenue/net_income/free_cash_flow` YoY growth (annual only).
 

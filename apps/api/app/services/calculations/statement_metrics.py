@@ -212,6 +212,30 @@ SEC_SUMMARY_TO_INPUT: dict[str, str] = {
 }
 
 
+def summary_total_debt_is_usable(fs: Mapping[str, Any]) -> bool:
+    """True when a summary's ``total_debt_usd_m`` may feed net debt or enterprise value.
+
+    ADR-067. The normaliser publishes total debt only on a complete basis; this is the
+    same rule applied to a persisted ``fundamentals_summary``, which may predate it:
+
+    * a debt leg the filer has not tagged for this period (``withheld_fields``) makes
+      the total partial. It may well be zero — and "may well be" is not a figure;
+    * a short-term leg with no long-term leg beside it is the JPM-1 shape: short-term
+      borrowings published as "total debt".
+    """
+    if fs.get("total_debt_usd_m") is None:
+        return False
+    debt_legs = {"short_term_debt", "long_term_debt"}
+    if any(
+        isinstance(item, dict) and item.get("field") in debt_legs
+        for item in fs.get("withheld_fields") or ()
+    ):
+        return False
+    return not (
+        fs.get("long_term_debt_usd_m") is None and fs.get("short_term_debt_usd_m") is not None
+    )
+
+
 def metrics_from_sec_summary(
     fs: Mapping[str, Any],
 ) -> tuple[list[MetricReading], list[MetricRefusal]]:
@@ -227,14 +251,7 @@ def metrics_from_sec_summary(
     values = {
         label: fs.get(summary_key) for summary_key, label in SEC_SUMMARY_TO_INPUT.items()
     }
-    # A debt leg the filer has not tagged for this period makes `total_debt` a PARTIAL
-    # sum. It may well be zero — and "may well be" is not a figure. Net debt built on a
-    # partial total would be handed to the council as a defined metric, with authority.
-    debt_legs = {"short_term_debt", "long_term_debt"}
-    if any(
-        isinstance(item, dict) and item.get("field") in debt_legs
-        for item in fs.get("withheld_fields") or ()
-    ):
+    if not summary_total_debt_is_usable(fs):
         withheld.add("net_debt")
     keys = [k for k in STATEMENT_METRIC_KEYS if k not in withheld]
     return compute_statement_metrics(values, period_label=f"FY{fiscal_year}", keys=keys)
@@ -247,4 +264,5 @@ __all__ = [
     "MetricRefusal",
     "compute_statement_metrics",
     "metrics_from_sec_summary",
+    "summary_total_debt_is_usable",
 ]
