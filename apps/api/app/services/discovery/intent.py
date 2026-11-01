@@ -105,10 +105,49 @@ _HORIZON_SINGLE = re.compile(
 
 # ── Themes the intent adds to the parser's ────────────────────────────────── #
 
-_CRITICAL_MATERIALS = re.compile(
-    r"critical[\s-]+(?:materials?|minerals?|metals?)|strategic[\s-]+(?:materials?|minerals?|metals?)",
+#: "critical materials", and the coordinated forms a thesis actually writes: "critical or
+#: specialty materials", "critical and strategic minerals", "advanced materials". Live QA
+#: campaign 2026-11: "supplying critical or specialty materials required by semiconductors,
+#: electrification, defence" matched none of the old contiguous forms, so the thesis was read
+#: as a DEFENCE thesis with a hard industry constraint.
+#: A coordinated phrase is a critical-materials class only when one of its adjectives is
+#: critical / strategic / rare: "specialty chemicals and advanced materials" and
+#: "engineered materials" are not (independent review: they turned chemicals and
+#: composites theses into miners theses).
+_MATERIAL_ADJECTIVE = r"(?:critical|strategic|specialty|speciality|advanced|engineered|rare)"
+_MATERIAL_CLASS_PHRASE = re.compile(
+    rf"\b{_MATERIAL_ADJECTIVE}(?:\s*(?:,|/|\bor\b|\band\b|&)\s*{_MATERIAL_ADJECTIVE})*"
+    r"[\s-]+(?:materials?|minerals?|metals?)\b",
     re.IGNORECASE,
 )
+_CRITICAL_ADJECTIVE = re.compile(r"\b(?:critical|strategic|rare)\b", re.IGNORECASE)
+#: The company SUPPLIES the material class: "companies supplying critical or specialty
+#: materials", "producers of strategic minerals". "Defence primes exposed to critical
+#: minerals" names an exposure, not a product.
+_SUPPLY_LEAD = re.compile(
+    r"\b(?:supply|supplies|supplying|suppliers?\s+of|producers?\s+of|producing|produce|"
+    r"makers?\s+of|making|manufacturers?\s+of|manufacturing|miners?\s+of|mining|"
+    r"developers?\s+of|developing|processors?\s+of|processing|refiners?\s+of|refining)"
+    r"\s+(?:of\s+)?$",
+    re.IGNORECASE,
+)
+
+
+def _names_critical_materials(text: str) -> bool:
+    """True when ``text`` names a critical-materials class (see above)."""
+    return any(
+        _CRITICAL_ADJECTIVE.search(m.group(0)) for m in _MATERIAL_CLASS_PHRASE.finditer(text or "")
+    )
+
+
+def _supplies_material_class(text: str) -> bool:
+    """True when a critical-materials class is introduced as what the companies supply."""
+    for m in _MATERIAL_CLASS_PHRASE.finditer(text or ""):
+        if _CRITICAL_ADJECTIVE.search(m.group(0)) and _SUPPLY_LEAD.search(
+            text[max(0, m.start() - 40):m.start()]
+        ):
+            return True
+    return False
 #: Parser themes that describe what a company's products are USED IN. When the thesis
 #: names materials, these are end markets of the materials — the company is a materials
 #: company — unless the text names them as the kind of company wanted ("semiconductor
@@ -611,7 +650,7 @@ def build_intent(
     ]
     warnings = list(parsed.warnings)
 
-    if _CRITICAL_MATERIALS.search(text) and "critical_materials" not in themes:
+    if _names_critical_materials(text) and "critical_materials" not in themes:
         themes.insert(0, "critical_materials")
     materials_role: str | None = None
     # A materials thesis names the company BY its material ("gallium producers") unless it
@@ -623,9 +662,13 @@ def build_intent(
         if t not in ("mining_materials", "critical_materials")
         and re.search(rf"\b(?:{_THEME_WORDS_RE.get(t, '$^')})\b{_COMPANY_NOUN}", text)
     ]
-    if materials and company_kind_themes:
+    # A thesis that SUPPLIES a materials class ("companies supplying critical or specialty
+    # materials") without a specific commodity is still a materials thesis: "semiconductors,
+    # electrification, defence" are where the materials go. An EXPOSURE to the class
+    # ("defence primes exposed to critical minerals") changes nothing (review round 1).
+    if (materials or _names_critical_materials(text)) and company_kind_themes:
         materials_role = "input"
-    elif materials:
+    elif materials or _supplies_material_class(text):
         materials_role = "product"
         # Industry themes that are really END MARKETS of the materials are demoted,
         # unless the text asks for companies OF that kind.

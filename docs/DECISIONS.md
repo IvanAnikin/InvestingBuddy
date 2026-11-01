@@ -4497,3 +4497,60 @@ and no other filer gains a withholding or a basis change.
   was missed: −0.14 → −1.09 is 7.79x, 2.7% off 8. The check now accepts half a cent of
   rounding on each side, but only for a move of at least 1.5x and never across a sign
   change.
+
+---
+
+## ADR-063: Discovery Intent Follows the Thesis Text; a Security Code Is Never a Name
+
+**Date:** 2026-11-01 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11. Five owner theses were run against production,
+and the rerun `d15a74c4` was replayed.
+
+### Context
+1. The materials thesis read: "Listed smaller companies supplying critical or specialty
+   materials required by semiconductors, electrification, defence or advanced manufacturing…".
+   Only a contiguous "critical materials" was recognised, so the thesis became a DEFENCE thesis
+   with a hard `industry: defense` constraint.
+2. Selector auto-fill took a theme's FIRST sector or industry, not what the text said.
+   "Payments or fintech" filled "Banks", and "electrical equipment … grid" was paired with
+   "Utilities". The owner workbench sends the auto-filled sector as an explicit filter.
+3. A German WKN printed beside an issuer (`BB Biotech AG WKN A0NFN3 (SIX: BION)`) was taken as
+   the issuer name, and the real SIX listing was rejected as a name mismatch.
+
+### Decision
+1. A material class may be named with coordinated adjectives: critical, strategic, specialty,
+   advanced, engineered or rare, joined by "or", "and", "/" or ",". It makes the thesis a
+   materials thesis. The applications it names stay end markets, never the industry, unless a
+   company-kind theme is also present: then materials are its input.
+2. Industry keywords are ranked by where they appear in the text. Aliases cover fintech,
+   payments, banking, grid and electrification. The auto-filled sector is the detected
+   industry's own sector. A theme the intent demoted does not auto-fill its sector.
+3. `is_security_code()` recognises WKN, ISIN, CUSIP, SEDOL and Valor shapes: 6–12 alphanumerics
+   with at least one digit and one letter, or 5–9 digits. Trailing codes (with or without a
+   label) are stripped from the name before a listing, and a name made only of codes is
+   rejected. Short tickers (`PH1`, `3M`) and years are not codes.
+
+### Review round 1 (independent review + security review)
+- **Materials-class rules tightened.**
+  - A coordinated class counts only when one adjective is critical, strategic or rare.
+    "Specialty chemicals and advanced materials" and "engineered materials" are not miners
+    theses.
+  - The class makes a materials thesis only when it is what the companies SUPPLY
+    ("supplying…", "producers of…").
+  - "Defence primes exposed to critical minerals" keeps its defence industry.
+- **Phrase matching is word-bounded** (`_contains`, keyword order). "Banks, payments…" and
+  "Utilities, …" put a comma after the phrase, and the space-only test missed it.
+- **Aliases trimmed to unambiguous phrases.** "transmission", "transformer", a bare "grid"
+  and "lender" are dropped: `normalize_sector` serves every caller.
+- **Bare codes need two digits** (or ISIN / all-digit shape), so "B2GOLD", "E2OPEN" and
+  "4IMPRINT" stay names. A labelled code ("SEDOL 6086253") is stripped.
+- **Security: the trailing-code pattern runs on the last 120 characters**, with whitespace
+  collapsed. On a long Unicode-space run in a PDF block it backtracked in cubic time and
+  could hold the worker for minutes.
+
+### Not changed / known limits
+- No issuer or thesis is special-cased.
+- A six-letter all-alphabetic code cannot be told from a word, so it is not stripped. A bare
+  WKN with a single digit ("A1JWVX") is not stripped either: it stays in the name, as before.
+- Theme and sector may still come from different keywords ("AI data centers and power grid
+  companies" → theme grid, sector Technology).
