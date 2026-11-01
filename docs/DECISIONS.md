@@ -4410,6 +4410,20 @@ a filing]", although their only source was the issuer's own release.
    is canonical. A page that only CLAIMS the issuer's text is still the press. The web
    reader knows the new label.
 
+### Review round 1
+- **A fiscal key is fiscal for "had it begun?".** The phrase now returns the new basis
+  `fiscal_period_end_phrase`, which `disclosure_period_policy._is_fiscal` counts as fiscal.
+  Before, the title-only path (UK NSM, ASX) refused "first quarter ended 30 June 2026",
+  published July 2026, because 2027-Q1 read as a calendar quarter "had not begun". A
+  forecast title ("first quarter ending 31 March 2028", published 2026) is still refused.
+- **52/53-week years.** A quarter ending on day 1–7 of a month counts as the month before
+  ("first quarter ended April 4, 2026" → 2026-Q1, "fourth quarter ended January 2, 2027" →
+  2026-Q4). Before, it landed on a January fiscal year-end and stated nothing.
+- Not changed (recorded): when a verified issuer's figure conflicts with a filing,
+  `ledger/store.py` still writes "reported in the press; a filing figure differs". It is
+  non-closing, but the wording is wrong for the issuer's own voice. `_period_hint` shows
+  "Q1 2027" with no FY marker.
+
 ### Not changed / known limits
 - Halves keep the existing rule. A half ending in a non-calendar month states no half.
 - Stored corpus versions are immutable, so a page already stored as 2026-Q1 keeps that key

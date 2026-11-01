@@ -48,6 +48,10 @@ BASIS_FISCAL_LABEL = "fiscal_period_label"
 BASIS_PERIOD_LABEL = "period_label"
 #: "for its first quarter ended 30 June 2026" — a period-end sentence.
 BASIS_PERIOD_END_PHRASE = "period_end_phrase"
+#: "first quarter ended 30 June 2026" read with its printed END month: the key names the
+#: FISCAL year (2027-Q1), so it is fiscal for every rule that asks whether the period
+#: had begun when the document was published.
+BASIS_FISCAL_PERIOD_END = "fiscal_period_end_phrase"
 
 #: Hard bound on how much document text is scanned. The period is stated in the
 #: title and the first headings; scanning a whole annual report would only add
@@ -232,13 +236,20 @@ def _match_period_label(text: str) -> DocumentPeriod | None:
 #: a modal "may" ("first quarter results may vary") is never read as May.
 _QUARTER_END_MONTH_RE = re.compile(
     r"\b(?:ended|ending|to|through)\b[a-z0-9 ]{0,16}?"
-    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b"
+    r"\b(?:(?P<day_before>\d{1,2}) )?"
+    r"(?P<month>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b"
+    r"(?: (?P<day_after>\d{1,2})\b)?"
 )
+#: A 52/53-week quarter can end in the first days of the next month ("first quarter
+#: ended April 4, 2026" is a calendar-March quarter): up to this day it counts as the
+#: month before.
+_WEEK_YEAR_SPILL_DAYS = 7
 _MONTH_NUMBER = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
 
 
-def _fiscal_year_of_quarter(ordinal: int, end_month: str, end_year: int) -> int | None:
+def _fiscal_year_of_quarter(ordinal: int, end_month: str, end_year: int,
+                            end_day: int | None = None) -> int | None:
     """The fiscal year a quarter belongs to, named by the year that fiscal year ENDS.
 
     "First quarter ended 30 June 2026" is Q1 of a fiscal year ending March 2027: the
@@ -257,6 +268,11 @@ def _fiscal_year_of_quarter(ordinal: int, end_month: str, end_year: int) -> int 
     month = _MONTH_NUMBER.get(end_month[:3])
     if month is None:
         return None
+    if end_day is not None and end_day <= _WEEK_YEAR_SPILL_DAYS:
+        # A 52/53-week quarter that spilled a few days into the next month.
+        month -= 1
+        if month == 0:
+            month, end_year = 12, end_year - 1
     fiscal_end_month = month + 3 * (4 - ordinal)
     fiscal_year = end_year + (fiscal_end_month - 1) // 12
     if (fiscal_end_month - 1) % 12 + 1 in (1, 2):
@@ -294,10 +310,18 @@ def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
         if period_type == PERIOD_TYPE_QUARTER:
             end_month = _QUARTER_END_MONTH_RE.search(window[: year_match.start()])
             if end_month is not None:
-                fiscal_year = _fiscal_year_of_quarter(ordinal, end_month.group(1), year)
+                day_text = end_month.group("day_before") or end_month.group("day_after")
+                fiscal_year = _fiscal_year_of_quarter(
+                    ordinal, end_month.group("month"), year,
+                    int(day_text) if day_text else None,
+                )
                 if fiscal_year is None:
                     continue
-                year = fiscal_year
+                period = _period_of("q", ordinal, fiscal_year)
+                if period is not None:
+                    return DocumentPeriod(period, BASIS_FISCAL_PERIOD_END,
+                                          window.strip()[:120])
+                continue
         kind = "q" if period_type == PERIOD_TYPE_QUARTER else "h"
         period = _period_of(kind, ordinal, year)
         if period is not None:
@@ -383,6 +407,7 @@ __all__ = [
     "title_states_annual",
     "title_states_part_year",
     "BASIS_FISCAL_LABEL",
+    "BASIS_FISCAL_PERIOD_END",
     "BASIS_PERIOD_END_PHRASE",
     "BASIS_PERIOD_LABEL",
     "BASIS_UNKNOWN",
