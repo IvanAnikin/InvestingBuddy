@@ -735,7 +735,8 @@ async def run_dynamic_stage(
     kept: list[IdentityOutcome] = []
     for outcome in verified_external:
         same = next((e for e in [*identities, *kept]
-                     if outcome.verified and _same_issuer_in_run(outcome, e)), None)
+                     if outcome.verified and e.verified and _same_issuer_in_run(outcome, e)),
+                    None)
         if same is None:
             kept.append(outcome)
             continue
@@ -1104,8 +1105,9 @@ def _same_issuer_in_run(outcome: IdentityOutcome, earlier: IdentityOutcome) -> b
     """
     if _issuer_keys(outcome) & _issuer_keys(earlier):
         return True
-    names = {normalised_name(n) for n in (outcome.name, outcome.lead.name) if n}
-    if not names & {normalised_name(n) for n in (earlier.name, earlier.lead.name) if n}:
+    # The directories' / registry's names only — never a page's or a model's wording.
+    if not (outcome.name and earlier.name
+            and normalised_name(outcome.name) == normalised_name(earlier.name)):
         return False
 
     def placed_with(a: IdentityOutcome, b: IdentityOutcome) -> bool:

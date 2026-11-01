@@ -4325,6 +4325,9 @@ of the two. The geography constraint read the listing venue's country.
    - An excluded geography is judged on the place when one is known: "non-US" names the
      company, so a Dutch issuer with a US line passes. A Jersey-incorporated London company is
      judged on its listing.
+   - With no place known (an offshore domicile, or the SEC record unreadable), an exclusion
+     is judged on the primary line only, as before. An outage never turns a sibling US line
+     into "non-US: excluded".
    - A UK plc run from New York (Royalty Pharma) is placed in the US: not "European".
    - The shortlist `country`/`region` follow the domicile. The venue's country stays in
      `identity.listing_country`. The HQ is cited to its own regulator record (`hq_source`).
@@ -4348,7 +4351,9 @@ of the two. The geography constraint read the listing venue's country.
    as a duplicate, "the same issuer's other listing", before any official-page,
    regulated-document or candidate-search budget is spent. One issuer means:
    - the two leads share a linked line; or
-   - where no directory links the venues (LSE, Xetra, Tokyo), the exact same normalised name
+   - where no directory links the venues (LSE, Xetra, Tokyo), the exact same normalised
+     directory/registry name (never a page's or a model's wording, and only against a
+     verified identity)
      plus one side's regulator- or ISIN-stated place equal to the other's domicile, or to its
      listing country when it has none. A held `SHEL` on LSE and a searched `SHEL` on NYSE are
      one company; namesakes from two countries stay apart.

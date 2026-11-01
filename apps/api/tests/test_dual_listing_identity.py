@@ -606,3 +606,28 @@ def test_a_wrapped_or_bracketed_listing_block_is_still_one_issuer(text: str) -> 
     mentions, _ = ce.extract_mentions(
         [text], [], ce.ThemeVocabulary(("biotechnology", "rare earth")))
     assert len(mentions) == 2 and all(m.co_listings for m in mentions)
+
+
+
+def test_an_unread_regulator_record_does_not_turn_a_us_sibling_into_an_exclusion():
+    """A TSX company with a verified NYSE line, and no place known (the SEC read failed):
+    "non-US" is judged on its primary line, as before."""
+    src = {"url": "x", "tier": "exchange"}
+    geo = cons.verify_geography(build_intent("non-US uranium companies").geography,
+                                listing_country="Canada", listing_source=src,
+                                other_listing_countries=("United States",))
+    assert geo.status == cons.PASS, geo.basis
+
+
+async def test_a_verified_line_is_never_merged_into_a_lead_that_failed_verification():
+    from app.services.discovery.identity import IdentityOutcome
+    from app.services.discovery.pipeline import _same_issuer_in_run
+
+    sanofi_us = await verify_identity(_lead("Sanofi", ("SNY", "NASDAQ")), fetcher=fetcher)
+    failed = IdentityOutcome(lead=_lead("Sanofi", ("SANX", "Euronext Paris")),
+                             status="rejected", ticker="SANX", exchange="PA", name="Sanofi",
+                             listing_country="France",
+                             rejection_reason="not_in_exchange_directory")
+    # The predicate alone would link them; the pipeline compares verified identities only.
+    assert _same_issuer_in_run(sanofi_us, failed)
+    assert not failed.verified

@@ -401,7 +401,11 @@ def verify_geography(
                  None)
     unplaced = [c for c in (hq_country, domicile_country) if c and c != place]
     observed = list(dict.fromkeys([*listings, *([place] if place else unplaced)]))
-    judged_for_exclusion = [place] if place else observed
+    # No place known (an offshore domicile, or the regulator's record unreadable): the
+    # exclusion is judged on the PRIMARY line, as before ADR-061 — a sibling US line must
+    # not turn an outage into "non-US: excluded".
+    judged_for_exclusion = [place] if place else [
+        c for c in (listing_country, *unplaced) if c]
     if constraint is None:
         return ConstraintResult(
             "geography", [], HARD, NOT_REQUESTED,
