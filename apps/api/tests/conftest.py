@@ -85,6 +85,23 @@ def _no_live_sec_directory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_fiscal_calendar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the investigator's unended-period check (ADR-072) see NO fiscal calendar.
+
+    In production it reads the issuer's SEC companyfacts when a web statement gives a
+    figure for a fiscal period; a unit suite must not depend on data.sec.gov. With no
+    calendar the check judges only calendar and dated periods. Tests of the check patch
+    the seam themselves.
+    """
+    from app.services.agents import investigator
+
+    async def _unknown(ticker: str | None, exchange: str | None) -> None:
+        return None
+
+    monkeypatch.setattr(investigator, "_load_fiscal_anchor", _unknown)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_sec_classification(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the classification layer's SEC lookup inert for every test by default.
 

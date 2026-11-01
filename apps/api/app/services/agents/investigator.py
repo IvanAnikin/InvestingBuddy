@@ -41,9 +41,10 @@ import secrets
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
+from app.services import period_closure
 from app.services.agent_tools.contracts import (
     EXTERNAL_TOOL_NAMES,
     OUTCOME_REFUSED,
@@ -1080,6 +1081,34 @@ async def _load_sec_directory() -> "list[Any]":
     return await directories.load(directories.SEC)
 
 
+async def _load_fiscal_anchor(
+    ticker: str | None, exchange: str | None
+) -> "period_closure.FiscalYearAnchor | None":
+    """The issuer's latest annual period from its SEC statements (cached; ``None`` when
+    unknown). A seam: the test suite makes it inert, as it does every other live SEC
+    lookup (ADR-072)."""
+    return await period_closure.load_fiscal_year_anchor(ticker, exchange)
+
+
+#: Words that stand for the subject in a statement that does not repeat its name.
+_SUBJECT_STANDIN_RE = re.compile(r"\bthe\s+(?:company|group|issuer|firm)\b", re.IGNORECASE)
+
+
+def names_the_subject(statement: str, company_name: str | None, ticker: str | None) -> bool:
+    """Does the statement name the subject: its ticker (case-sensitive whole token), its
+    first distinctive name word, or "the company"? A figure in a statement that names
+    nobody may be another company's, so the unended-period check leaves it alone."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, _fold, name_tokens  # noqa: PLC2701
+
+    ticker = (ticker or "").strip()
+    if ticker and re.search(rf"(?<![A-Za-z0-9.-]){re.escape(ticker)}(?![A-Za-z0-9-])", statement):
+        return True
+    if _SUBJECT_STANDIN_RE.search(statement):
+        return True
+    words = [t for t in name_tokens(company_name or "") if t not in _GENERIC_TOKENS]
+    return bool(words) and re.search(rf"\b{re.escape(words[0])}\b", _fold(statement)) is not None
+
+
 def foreign_publisher(
     cited: "Sequence[str]", evidence: "Sequence[_Evidence]", others: dict[str, str]
 ) -> str | None:
@@ -1515,6 +1544,9 @@ class InvestigatorDiagnostics:
     #: A statement about a SEPARATELY registered company that carries the issuer's name
     #: (Honeywell Aerospace beside Honeywell), resting only on web text (QA, 2026-11-01).
     statements_about_related_registrant: int = 0
+    #: A web statement giving a figure as a reported ACTUAL for a period that had not
+    #: ended on the run date ("FY2026 revenue was …" in November 2026), dropped (ADR-072).
+    statements_for_unended_period: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -1542,6 +1574,7 @@ class InvestigatorDiagnostics:
         self.statements_about_related_registrant += (
             other.statements_about_related_registrant
         )
+        self.statements_for_unended_period += other.statements_for_unended_period
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -1562,6 +1595,7 @@ class InvestigatorDiagnostics:
             "statements_about_related_registrant": (
                 self.statements_about_related_registrant
             ),
+            "statements_for_unended_period": self.statements_for_unended_period,
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -1642,6 +1676,13 @@ class LLMInvestigator:
     #: registrant CIK → does it report separately? Remembered, failures included, so one
     #: write-up never asks the regulator about the same registrant twice (review round 2).
     _separate: "dict[str, bool]" = field(default_factory=dict, repr=False)
+    #: ADR-072 — the date a stated period must have ended by. ``None`` = today (UTC).
+    as_of: date | None = None
+    #: Lazily-loaded issuer fiscal calendar for the unended-period check; ``False`` = not
+    #: read yet (``None`` is a real answer: unknown).
+    _fiscal_anchor: "period_closure.FiscalYearAnchor | None | bool" = field(
+        default=False, repr=False
+    )
     #: Open-web W7 — ``async (question_key, candidates, round_index, max_fetches, terms)
     #: -> CandidateFetchResult`` (``WebFollowup.fetch_candidates``). When set, the
     #: candidates a ``search_web`` call returns are fetched and ingested DETERMINISTICALLY
@@ -2363,6 +2404,42 @@ class LLMInvestigator:
         self._separate[related.cik] = verdict
         return verdict
 
+    async def _fiscal_year_anchor(self) -> "period_closure.FiscalYearAnchor | None":
+        """The issuer's fiscal calendar, once per investigator. ``None`` = unknown, which
+        leaves every fiscal period unjudged. Never raises."""
+        if self._fiscal_anchor is False:
+            try:
+                self._fiscal_anchor = await _load_fiscal_anchor(self.ticker, self.exchange)
+            except Exception:  # noqa: BLE001 - a guard that cannot read must not block research
+                self._fiscal_anchor = None
+        anchor = self._fiscal_anchor
+        return anchor if isinstance(anchor, period_closure.FiscalYearAnchor) else None
+
+    async def _unended_period(self, statement: str) -> "period_closure.UnendedPeriod | None":
+        """ADR-072: the period a statement gives a figure for as an ACTUAL, when it had not
+        ended on the run date. Only fiscal periods are judged, and only when the issuer's
+        calendar is known (ADR-072, review round 3)."""
+        if not names_the_subject(statement, self.company_name, self.ticker):
+            return None
+        if any(
+            match.group(0)[:1].isupper()  # a name as written: "Total", not "total revenue"
+            for word in await self._other_companies()
+            for match in re.finditer(rf"\b{re.escape(word)}\b", statement, re.IGNORECASE)
+        ):
+            return None  # another company's figure may be the one stated
+        from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+        words = [t for t in name_tokens(self.company_name or "") if t not in _GENERIC_TOKENS]
+        names = tuple(n for n in (self.ticker, words[0] if words else None) if n)
+        if not period_closure.wants_fiscal_calendar(statement, names):
+            return None
+        return period_closure.unended_actual(
+            statement,
+            as_of=self.as_of or datetime.now(timezone.utc).date(),
+            anchor=await self._fiscal_year_anchor(),
+            subject_names=names,
+        )
+
     async def _write_up(
         self,
         role_id: str,
@@ -2458,6 +2535,7 @@ class LLMInvestigator:
         findings: list[FindingDraft] = []
         gaps: list[GapDraft] = []
         related_dropped: dict[str, RelatedRegistrant] = {}
+        unended_dropped: dict[str, period_closure.UnendedPeriod] = {}
         for raw in (payload.get("findings") or [])[:MAX_FINDINGS_PER_QUESTION]:
             if not isinstance(raw, dict):
                 continue
@@ -2539,6 +2617,21 @@ class LLMInvestigator:
                     # news comes from the same domain, so only the regulator separates them.
                     self.diagnostics.statements_about_related_registrant += 1
                     related_dropped.setdefault(related.phrase, related)
+                    continue
+                unended = (
+                    await self._unended_period(statement)
+                    if cited_items and all(e.web for e in cited_items)
+                    else None
+                )
+                if unended is not None:
+                    # ADR-072. A figure given as a reported result for a period that had
+                    # not ended when the research ran cannot be a reported result: it is
+                    # an estimate or a forecast written as an actual ("Trefis reports
+                    # FY2026 total revenue 26.58 Bil", in November 2026, of a fiscal year
+                    # ending late November). Only web text is judged: a filing reports
+                    # periods that have ended.
+                    self.diagnostics.statements_for_unended_period += 1
+                    unended_dropped.setdefault(unended.period.text, unended)
                     continue
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
@@ -2622,6 +2715,32 @@ class LLMInvestigator:
                         "A company that files on its own reports its own results, "
                         "backlog and events; filing them under the issuer attributes "
                         "another company's facts."
+                    ),
+                    sources_tried=tuple(sorted({e.kind for e in evidence})),
+                )
+            )
+
+        if unended_dropped:
+            as_of = self.as_of or datetime.now(timezone.utc).date()
+            periods = "; ".join(
+                f"{u.period.text} (ends {'about ' if u.period.is_fiscal else ''}"
+                f"{u.ends.isoformat()})"
+                for u in unended_dropped.values()
+            )
+            gaps.append(
+                GapDraft(
+                    gap_type=ledger.GAP_CONFLICTING_SOURCES,
+                    description=(
+                        f"Web statements gave figures for {periods} as reported results, "
+                        f"but that period had not ended when this "
+                        f"research ran ({as_of.isoformat()}). They were not filed as "
+                        "reported facts."
+                    )[:600],
+                    question_key=question.key,
+                    why_it_matters=(
+                        "No actual can exist for a period that has not ended; a figure "
+                        "for it is an estimate or a forecast, and shown as a reported "
+                        "result it misstates what is known."
                     ),
                     sources_tried=tuple(sorted({e.kind for e in evidence})),
                 )

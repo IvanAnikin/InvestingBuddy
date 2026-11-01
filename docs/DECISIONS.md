@@ -5251,3 +5251,218 @@ counts of current maturities.
 - Persisted snapshots written before this change keep their old totals until research is
   rerun. Only the "short leg with no long leg" and "withheld leg" shapes are detectable
   after the fact.
+
+## ADR-072: A Reported Actual Cannot Exist for a Period That Has Not Ended
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect ADBE-3)
+
+### Context
+Adobe's deep report (`7b401826`, run 2026-11-01) carried F14 as a plain fact: "Trefis
+reports Adobe FY2026 total revenue 26.58 Bil and ending ARR growth 10.2%, per its Q4 2026
+summary." Adobe's last 10-K period ended 2025-11-28, so FY2026 ends about 2026-11-27. No
+FY2026 actual could exist on the run date: the figure was an estimate shown as a reported
+result. It cited one web corpus chunk (`secondary_web`). The W4 claim rules gave it no
+label either: `classify_claim` returns no type for it ("revenue" with a "Bil" amount is
+neither a financial-statement field nor a guidance cue). No layer asked whether a stated
+period had closed.
+
+### Decision
+The rule is NARROW. A miss is acceptable; dropping a true statement is not.
+
+1. **`period_closure.unended_actual(statement, as_of, anchor)`** (new module) reads the
+   periods a statement names:
+   - a fiscal year (`FY2026`, `FY26`, `fiscal 2026`, `full-year 2026`);
+   - a fiscal quarter, with the year after it (`Q4 FY2026`, `fourth quarter of fiscal
+     2026`) or before it (`FY26 Q4`, `fiscal 2026 third quarter`, `fiscal-year 2026
+     third-quarter`, `2026 third-quarter`), and `3Q26`;
+   - the platform's bare quarter key `2026-Q4` / `Q4 2026`, which is fiscal-keyed
+     (ADR-065);
+   - an explicit calendar year or quarter (`CY2026`, `calendar 2026`, `calendar Q4 2026`,
+     `Q4 CY2026`);
+   - a period ended on a printed date ("the quarter ending November 27, 2026").
+
+   A bare year is not a period.
+2. **It judges only one shape, by ADJACENCY** (review round 3, the final design). All of
+   these must hold:
+   - **The open label and its figure are adjacent.** The open fiscal year or fiscal
+     fourth quarter's label is matched (`FY2026`, `fiscal 2026`, `full year 2026`,
+     `Q4 FY2026`, `fourth quarter of fiscal 2026`), optionally after "full-year", "annual"
+     or "total". It must be followed by an optional "total"/"full-year"/"annual", then a
+     flow metric (revenue, sales, net income, net profit, EPS, earnings per share,
+     operating income), then a connector of at most four words from a closed set ("was",
+     "were", "of", "at", "came in at", "totalled", "reached", ":"), then the money
+     figure. Examples: "FY2026 total revenue 26.58 Bil", "full year 2026 sales were $40
+     billion", "FY2026 revenue was $26.6 billion".
+   - **One clause.** The label and the figure lie in the same clause; `;`, `, `, "and",
+     "but" and dashes are never crossed.
+   - **The owner is the subject.** A possessive right before the label must open the
+     sentence, and must be the subject's ticker or name word: "larger than Emerson's
+     full-year 2026 sales of $18.0 billion" is kept.
+   - **Nothing points elsewhere.** The matched clause holds no point-in-time metric (ARR,
+     RPO, backlog, run rate). The sentence holds no "recurring", no bare year other than
+     the open one ("2025 sales were …; full year 2026 results are due"), no date or month
+     (English, French, German, Spanish, Italian), and none of the deny-list words in item 3.
+   - **Every period it names has a known end that is still ahead.** One period that has
+     ended, or whose end is unknown, keeps the statement.
+
+   Calendar quarters and calendar years are no longer judged.
+3. **Protected wording keeps the statement** (the deny-list, kept as a second safety net):
+   - an earlier year beside the open label: last, prior, previous, entering, base, began,
+     start, under way, due, next;
+   - point and part-period wording: "as of", "as at", "by", "until", "cumulative",
+     "N-month", "N-week", "1H"/"2H", "semi-annual", "period", "latest", "after", "before",
+     "versus", "YoY", "10-Q";
+   - forward or estimate wording: guidance, outlook, expects, forecast, projected,
+     estimate, consensus, analysts, model, plan, "will", "would", "could", on track, run
+     rate, reaffirmed, preliminary, `price target`, Wall Street, street, FactSet, LSEG,
+     Refinitiv, Visible Alpha, mean, median;
+   - part periods and events within the period: year-to-date, YTD, so far, to date,
+     through, during, "in fiscal", trailing, TTM, nine-month, six-month, 9M, H1/H2, half,
+     interim;
+   - event verbs: repurchased, acquired, completed, announced, signed, raised, issued,
+     fell, rose, declined, gained, paid, spent, invested, launched, closed, sold, settled,
+     won…;
+   - a `research_fields.SUPERSEDABLE_FIELDS` field (guidance-type fields);
+   - `target(s)` and `may` count only in lower case, so "Target Corp" and the month do not
+     protect a statement.
+4. **When a period ends.**
+   - Only fiscal periods are judged, so every verdict needs the issuer's calendar.
+   - A fiscal period is projected from a `FiscalYearAnchor`: one observed fiscal year and
+     the date it ended, under the issuer's own label (companyfacts `fy`). FY(N) ends a whole
+     number of years from it, and Qn ends 3 × (4 − n) months earlier. A fiscal period
+     counts as open only when the run date is more than 7 days before the projected end
+     (52/53-week years).
+   - **No anchor means no fiscal verdict.**
+   - **January–March year-ends** (a day 1–7 end counts as the month before) are named
+     both ways: Walmart's fiscal 2027 ends January 2027, Target's fiscal 2025 ends January
+     2026. Two consequences:
+     - no quarter is judged, explicit or bare, because the issuer's label and ADR-065's
+       `2026-Q4` keying disagree;
+     - an explicit full fiscal year is judged on the EARLIER reading, the year ending in
+       calendar year N. It counts as open only if it is open under both readings.
+5. **Where the anchor comes from.** `load_fiscal_year_anchor` reads the issuer's SEC
+   companyfacts:
+   - It uses the same cached, allowlisted reader (`peers._facts_for`) and normaliser as
+     `get_sec_statements`, and keeps the headline `fiscal_year` and `reporting_period_end`
+     only on an annual basis.
+   - The whole read is bounded at 5 s.
+   - Results are cached per ticker: 12 hours after a success, 15 minutes after a failure.
+   - A subject SEC does not cover has no anchor.
+6. **The choke point is the investigator's write-up** (`LLMInvestigator._write_up`). It
+   runs beside ADR-066's related-registrant guard, outside peer domains, and only when:
+   - every cited item is web text (a filing reports periods that have ended);
+   - the statement names the subject (ticker, first distinctive name word, or "the
+     company");
+   - no other held company is named (its first distinctive word written capitalised).
+
+   The investigator passes the subject's ticker and first name word for the possessive
+   check. It reads the issuer calendar only for a statement of the judged shape, and at
+   most once per investigator.
+7. **The statement is dropped, not relabelled.** As written it is false, and a label
+   would still carry its money figure to numeric readers. Each write-up gets one
+   `conflicting_sources` gap. It names each period, its end and the run date, and never
+   the statement's figures. The drop is counted in
+   `InvestigatorDiagnostics.statements_for_unended_period`. `conftest` makes the calendar
+   read inert by default.
+
+### Review round 1 (PR #309, REQUEST CHANGES)
+The first version flagged any figure near an open-period mention. It dropped true
+statements:
+- "fiscal 2026 third quarter revenue was …": the year was read without its quarter;
+- "9M FY2026", "H1 FY2026", "FY2026 revenue through the third quarter";
+- "In fiscal 2026, Adobe repurchased $8.0B";
+- "FY2025 revenue was $23.77B; its Q4 FY2026 results are due Dec 11";
+- WMT "fiscal 2027 second-quarter".
+
+The rule was narrowed with a longer deny-list. Also from that review:
+- "target" no longer swallows "Target Corp".
+- Estimate-source words were added.
+- The anchor read has an overall timeout.
+- The loader's cache, failure TTL, annual-basis gate and timeout are tested.
+
+### Review round 2 (PR #309, NO-GO)
+The round-1 battery passed, but a second battery of 48 true statements found 19 more
+false drops. Examples:
+- "FY2026 revenue was $17.6 billion as of August 29, 2026";
+- "cumulative", "9-month", "1H", "semi-annual", "39 weeks ended …";
+- "RPO stood at $20.4 billion in FY2026", ending ARR "as of …";
+- "period ended 29 août 2026";
+- "by August", "until the end of August";
+- "reported FY2026 revenue of $17.6 billion in its Sept. 22 10-Q";
+- "FY2026 YoY revenue growth was 10.7%";
+- MSFT "FY2027 revenue … for the 3-month period";
+- HON and WMT figures "as of" a past quarter end.
+
+A deny-list of part-period words keeps leaking, so the rule was inverted to the
+allow-list in item 2. A statement is now judged only with a positive full-period marker,
+a flow result next to its money amount, and no printed date or month. The deny-list
+stays as a second safety net.
+
+**Result: no false drops on the two review batteries** (86 statements, with ADBE, TGT,
+WMT, HON, MSFT and AAPL anchors). Every true statement is kept, and exactly two are
+dropped:
+- F14;
+- "Honeywell's full year 2026 sales were $40 billion" on 2026-11-01, a true drop:
+  Honeywell's FY2026 ends 2026-12-31.
+
+### Review round 3 (PR #309, NO-GO)
+A third battery of 52 true statements found 21 false drops. The full-period marker and
+the figure were not tied together:
+- "Honeywell's 2025 sales were $37.44 billion; its full year 2026 results are due early
+  next year";
+- "Adobe's annual revenue was $23.77 billion entering fiscal 2026";
+- "Adobe's prior full-year revenue was $23.77 billion, the base for FY2026";
+- "… larger than Emerson's full-year 2026 sales of $18.0 billion";
+- "Adobe's FY2026 annual-recurring revenue was $25.2 billion".
+
+The adjacency rule in item 2 replaces the marker rule. Because the label must now sit
+directly before the metric and figure, a bare "Adobe's FY2026 revenue was $26.6 billion"
+in November 2026 is dropped again (a true positive). The marker is no longer needed.
+
+**Result: no false drops on the three review batteries** (140 statements: 38 + 48 + 54,
+with ADBE, TGT, WMT, HON, MSFT and AAPL anchors). Every true statement is kept. Exactly
+two statements are dropped, the controls:
+- F14;
+- "Honeywell's full year 2026 sales were $40 billion" on 2026-11-01.
+
+All 140 are pinned verbatim as parametrized tests. This is evidence on 140 statements, not
+a proof: a phrasing none of the batteries holds may still be judged wrongly.
+
+### Replay
+- **Live F14:** with the anchor FY2025 / 2025-11-28 and run date 2026-11-01, F14 is
+  caught on `FY2026` (projected end 2026-11-28). The same text on 2026-12-15 is kept, and
+  so is "Trefis estimates …".
+- **ADBE report:** of its 48 findings, the rule catches F14 alone.
+- **Other stored campaign reports** (HON ×2 and JPM with a December anchor, Richemont
+  with none; 177 findings): it catches nothing.
+
+### Not changed / known limits (misses, chosen over false drops)
+- **Non-SEC issuers** (LSE, ASX, Euronext) have no anchor, so nothing is judged for them.
+- **Calendar periods** (`CY2026`, `calendar Q4 2026`) and **open quarters other than the
+  fourth** are never judged.
+- **January–March year-ends:** no quarter is judged. A full year is judged only when it
+  is open under both naming readings, so "Target's FY2026 revenue was $104.8B" in March
+  2026 (Walmart's convention for the year just ended) is kept.
+- **Adjacency is strict.** Each of these is kept:
+  - "revenue for FY2026 was $X" (metric before the label);
+  - "FY2026 revenue rose to $X" (connector outside the closed set);
+  - "FY2026 revenue was about $X";
+  - a figure with no currency or scale word ("revenue was 26,580");
+  - "The company's FY2026 revenue was $X" ("company" is not the subject's name word);
+  - "Adobe Inc.'s FY2026 revenue" (a two-word owner).
+- **Point-in-time metrics, margins and growth rates are never judged.** Nor is any
+  statement whose matched clause names ARR, RPO, backlog or a run rate.
+- **Any date, month or other bare year keeps a statement**, even a future one. "Mars",
+  "May" and "Dec" as words do too.
+- **Protected wording is broad:** "mean", "street", "can", "closed", "plan", "by",
+  "period", "after", "base", "due", "next" and similar words anywhere in the sentence keep
+  it.
+- **Subject naming:** a statement that does not name the subject is not judged, nor is one
+  naming another held company.
+- **Mixed support:** a statement resting partly on a filing and partly on web text is not
+  judged.
+- **Changed year-end:** a change of fiscal year-end since the last 10-K projects the old
+  calendar.
+- **Labels:** the rule does not change the W4 claim type. A figure for an ENDED period with
+  no claim type (F14's shape after year end) still carries no "reported in the press"
+  label. That is a separate gap in `classify_claim`.
