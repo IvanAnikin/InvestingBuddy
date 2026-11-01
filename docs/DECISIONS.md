@@ -4373,3 +4373,78 @@ of the two. The geography constraint read the listing venue's country.
 - Only SEC registrants have a regulator-recorded domicile.
 - ISINs are printed by the Euronext list only. On other venues, the name and the registrant
   domicile carry the link.
+
+---
+
+## ADR-062: SEC XBRL — the Restated Prior Year, the Latest Quarter, Segment Profit and a Change of Basis
+
+**Date:** 2026-11-01 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11. The live Honeywell deep report `e50cb267` was
+generated after the Aerospace spin-off and the 1-for-2 share consolidation (both 2026-06-29).
+It had four problems:
+- It said revenue "fell 2.7%" (it grew 7.9%).
+- It printed a 21.7% "group operating margin".
+- It showed pre-consolidation EPS beside a post-consolidation price.
+- It said the latest quarter was "not yet extracted".
+
+### Context
+1. **Prior year.** The normalizer picked the prior fiscal year by `fy == latest_fy - 1`. But
+   XBRL `fy` is the fiscal year of the FILING, not of the period. The FY2024 comparative restated
+   inside the FY2025 10-K carries `fy=2025`, so it was skipped, and the FY2024 value as
+   originally filed was used: 38,498m before the Solstice spin-off, against 34,717m restated.
+2. **Latest quarter.** US reports read only the annual bundle. A 10-Q filed after the 10-K was
+   never turned into current-period facts, so `revenue_current_period` stayed empty for every US
+   filer.
+3. **Measure.** Honeywell presents no operating-income line. It tags its TOTAL SEGMENT PROFIT
+   as `OperatingIncomeLoss` (FY2025 8,127m). Revenue less its own cost of sales, SG&A and R&D
+   was 6,567m.
+4. **Basis.** The Q3 2026 10-Q restates Q3 2025 revenue from 9,437m (as carried by the 10-K)
+   to 4,929m, and Q3 2025 diluted EPS from 2.86 to 5.71. The annual figures shown predated both
+   changes.
+
+### Decision
+1. **Prior year = the period ending 330–400 days before the latest period.** Among candidates
+   for that period, prefer the same accession (the restated comparative), then the latest filed.
+   A quarter is never a prior year.
+2. **Latest quarter.** `latest_quarter_facts()` reads the newest 10-Q, only when it was filed
+   after the annual report. It reads only that filing's own quarter:
+   - flows of 80–100 days (never year to date, never comparatives) and instants;
+   - fields: revenue, operating profit, net income, cash, total assets and equity.
+   Each fact is labelled `Q3 2026`, scope `Group`, tier `T2_regulator_or_gov`, and cited to the
+   EDGAR archive index of that accession. The facts travel as
+   `fundamentals_summary.current_period_facts` and fill the `<field>_current_period` snapshot
+   slots beside the issuer-document facts. They also reach the peers statements tool under
+   their own ids: `secfin:<T>:<year>-Qn:<metric>`, metric `<metric>_latest_quarter`, so they
+   never overwrite an annual line.
+3. **Segment profit is not operating income.** `operating_income_excess()` computes a bound:
+   revenue minus the same filing's cost of revenue, SG&A (or S&M + G&A) and R&D. Leaving out any
+   other expense only lowers true operating income further. A tagged operating income above
+   that bound by more than 3% of revenue AND 10% of itself is withheld with the reason, and so
+   is its margin. Nothing is concluded when cost of revenue or SG&A is not tagged.
+4. **Change of basis.** `basis_changes_since_annual()` compares the newest post-annual 10-Q's
+   comparative quarter with the same period as filed by the annual-report date:
+   - revenue moved more than 5% → `perimeter_recast`;
+   - EPS moved by a near-integer ratio k (2% tolerance) while net income held within 1% →
+     `share_consolidation` (1-for-k) or `share_split`.
+   On a share-count change, annual EPS is withheld (`predates_share_count_change`). Each change
+   carries a sentence. The report's Key Financials prints it as a `basis_change_note`, and the
+   peers tool prefixes it to the gaps.
+5. The report header shows council completeness honestly: "6 of 7 agents completed · 1 failed",
+   not "7 agents".
+
+### Verified
+Recomputed against 19 live filers (AAPL ABT ADBE AMD AMZN CAT DIS DUK GE GM HON IBM JPM MMM
+MRNA MSFT PYPL UPS WMT):
+- HON: YoY +7.85%; operating income withheld; EPS withheld; recast and 1-for-2 consolidation
+  detected; Q3 2026 facts present.
+- No new withholding or basis change for the other 18. GE's operating income was already
+  withheld by the stale-period rule.
+
+### Not changed / known limits
+- No issuer is special-cased.
+- Banks have no cost-of-revenue tag, so the measure check never runs for them.
+- Only revenue and EPS comparatives are compared for basis changes. A recast that leaves
+  revenue within 5% goes unnoticed.
+- The annual bundle itself is not re-based. The note tells the reader that it predates the
+  change.
+- An 8-K earnings release (filed before the 10-Q) is not read as a current-period source.

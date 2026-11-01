@@ -266,6 +266,9 @@ export interface FinancialSnapshotView {
   statements: FinancialDatapoint[];
   statementsNote: string | null;
   currentPeriodNote: string | null;
+  /** QA campaign 2026-11 — a newer filing restated earlier periods (spin-off, split):
+      the annual figures are on a basis the issuer no longer reports. */
+  basisChangeNote?: string | null;
   latestClose: FinancialDatapoint | null;
   fallbackNote: string | null;
 }
@@ -330,6 +333,7 @@ function buildFinancialSnapshot(
     statements,
     statementsNote: noteText(section["fundamentals_note"]),
     currentPeriodNote: noteText(section["current_period_note"]),
+    basisChangeNote: noteText(section["basis_change_note"]),
     latestClose: toDatapoint(
       "latest_close",
       "Latest close",
@@ -820,6 +824,26 @@ function buildCouncil(council: LlmCouncilMetadata | null): CouncilView {
     openQuestions,
     unsupportedClaims,
   };
+}
+
+/**
+ * The council's status in a few words — never a normal-looking run when it was not one.
+ * QA campaign 2026-11: a Honeywell report headed "7 agents completed" while the source
+ * quality critic had failed; the header must say so, and say when the chair's label was a
+ * deterministic fallback rather than the chair's own.
+ */
+export function councilStatusText(council: CouncilView): string {
+  if (!council.used) return "Not run";
+  const total = council.completed + council.failed + council.skipped;
+  const normal = council.failed === 0 && council.skipped === 0 && !council.labelIsFallback;
+  if (normal) {
+    return `${council.completed} agent${council.completed === 1 ? "" : "s"} completed`;
+  }
+  const parts = [`${council.completed} of ${total} agents completed`];
+  if (council.failed > 0) parts.push(`${council.failed} failed`);
+  if (council.skipped > 0) parts.push(`${council.skipped} skipped`);
+  if (council.labelIsFallback) parts.push("chair label is a fallback");
+  return parts.join(" · ");
 }
 
 // ---------------------------------------------------------------------------
