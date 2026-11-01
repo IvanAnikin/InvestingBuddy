@@ -729,6 +729,15 @@ were already on.
   `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
 
+#### Extraction pipeline version 20 — table units (QA campaign 2026-11, ADR-064)
+
+Version 20 changes how a reconstructed PDF table gets its unit. A unit printed among
+the values ("€ 8 496 m", or "€m €m" under the years) is kept. Page prose lends a
+table only a declared unit, never an inline amount's scale. The re-read cost and paths
+are the same as version 19 (below). A table whose only unit clue was an inline amount
+in the page prose now has NO scale: its money facts stay excerpt-only rather than
+being scaled by the wrong sentence. Rolling back to 19 is safe.
+
 #### Extraction pipeline version 19 — the re-read cost (item 21)
 
 Version 19 changes how already-extracted statement tables and prose are READ (bracketed

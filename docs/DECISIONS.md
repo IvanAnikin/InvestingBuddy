@@ -4373,3 +4373,46 @@ of the two. The geography constraint read the listing venue's country.
 - Only SEC registrants have a regulator-recorded domicile.
 - ISINs are printed by the Euronext list only. On other venues, the name and the registrant
   domicile carry the link.
+
+---
+
+## ADR-064: A Table's Unit Is Printed in the Table — Never Borrowed from an Inline Amount
+
+**Date:** 2026-11-01 · **Status:** Accepted (implementation) · **Extraction pipeline:** v20
+**Trigger:** cross-sector QA campaign 2026-11. Richemont deep report `f722d620` showed net
+cash "8,496 bn EUR" and operating cash flow "4,880 bn EUR", a thousand times the truth.
+
+### Context
+- Richemont's FY2026 results announcement prints its "Key financial data" table as
+  `Net cash position € 8 496 m € 8 257 m`: the unit is beside each figure and absent from
+  the header (`2026 2025 change`).
+- Its cash-flow statement prints `€m €m` on a units row under the years.
+- The layout reconstructor kept only numeric words, so both units were lost.
+- `_table_currency_scale` then fell back to the page's excerpts and took the FIRST scale
+  token there: the "billion" of "Group sales reached € 22.4 billion".
+- ADR/pipeline v18 had fixed the same hazard only for official announcements
+  (`table_units_only`, Pensana).
+
+### Decision
+1. **Value-zone units.** The reconstructor reads currency/scale tokens printed among a
+   row's values (`€`, `US$`, `CHF`, `m`, `bn`, `million`, `'000`, alone or joined as `€m`).
+   When the header's label zone has no unit, the table's unit becomes `"<currency> <scale>"`,
+   provided every row that prints one agrees on exactly one currency and one scale. A bare
+   "m" counts only beside a currency (it may be metres). A header unit still wins.
+2. **Declared units only from prose.** The page fallback uses `_declared_scale()`. A scale
+   word or abbreviation directly after a number ("€ 22.4 billion", "5.2m", "€ 8 496 million")
+   belongs to that amount and is skipped. "in € millions", "€m" and "$'000" still declare.
+3. Extraction pipeline version 19 → 20, so held documents are re-read (DEPLOYMENT.md).
+
+### Verified
+- Re-extracting the real Richemont announcement gives tables p1/p12/p13 the unit
+  `€ million`.
+- Net cash 8,496 and operating cash flow 4,880 are validated at `million`.
+- No table is scaled "billion".
+- Pensana's whole-dollar table now stays unscaled on the general path too.
+
+### Not changed / known limits
+- A table whose only unit clue was an inline prose amount now has no scale. Its money
+  facts stay excerpt-only: missing, not wrong.
+- The key-data table's "Sales" caption is still not read as revenue there (revenue comes
+  from the segment and income-statement tables).
