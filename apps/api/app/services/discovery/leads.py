@@ -142,6 +142,11 @@ class CompanyLead:
     #: mention passages, evidence ids). Set ONLY by the web stage, and only for a lead a
     #: fetched page named; ``None`` for every other source.
     web: dict[str, Any] | None = None
+    #: ADR-061 — every listed security ONE source named for this issuer, in the order
+    #: printed (``[{"ticker": "ALCLS", "venue_raw": "Euronext Growth"}, {"ticker": "CLLS",
+    #: "venue_raw": "NASDAQ"}]``). Each is verified on its own venue; never collapsed into
+    #: one ticker. ``None`` when only ``ticker`` / ``exchange_raw`` were observed.
+    securities: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)

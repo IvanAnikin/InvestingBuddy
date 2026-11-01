@@ -381,21 +381,43 @@ def verify_geography(
     listing_source: dict[str, Any] | None,
     hq_country: str | None = None,
     hq_source: dict[str, Any] | None = None,
+    domicile_country: str | None = None,
+    domicile_source: dict[str, Any] | None = None,
+    other_listing_countries: tuple[str, ...] = (),
 ) -> ConstraintResult:
+    """Where the COMPANY is and where it TRADES, against the thesis's geography.
+
+    ADR-061 — the issuer is placed by its headquarters, else its legal domicile (an
+    offshore holding jurisdiction with no region — Jersey, Cayman — places it nowhere). A
+    requested geography matches the place OR any of the issuer's verified listings (a
+    French issuer's Nasdaq ADS line is "US-listed"; its Paris line is "European"). An
+    EXCLUDED geography is judged on the place when one is known — "non-US" names the
+    company — and on the listings otherwise.
+    """
     from app.services.exchange_registry import region_for_country
 
-    observed = [c for c in (listing_country, hq_country) if c]
+    listings = list(dict.fromkeys(c for c in (listing_country, *other_listing_countries) if c))
+    place = next((c for c in (hq_country, domicile_country) if c and region_for_country(c)),
+                 None)
+    unplaced = [c for c in (hq_country, domicile_country) if c and c != place]
+    observed = list(dict.fromkeys([*listings, *([place] if place else unplaced)]))
+    # No place known (an offshore domicile, or the regulator's record unreadable): the
+    # exclusion is judged on the PRIMARY line, as before ADR-061 — a sibling US line must
+    # not turn an outage into "non-US: excluded".
+    judged_for_exclusion = [place] if place else [
+        c for c in (listing_country, *unplaced) if c]
     if constraint is None:
         return ConstraintResult(
             "geography", [], HARD, NOT_REQUESTED,
             value=(
-                {"listing_country": listing_country, "hq_country": hq_country}
+                {"listing_country": listing_country, "hq_country": hq_country,
+                 **({"domicile_country": domicile_country} if domicile_country else {})}
                 if observed
                 else None
             ),
         )
     requested = set(constraint.requested)
-    sources = [s for s in (listing_source, hq_source) if s]
+    sources = [s for s in (listing_source, hq_source, domicile_source) if s]
     if not observed:
         return ConstraintResult(
             "geography", list(constraint.requested), constraint.hardness, UNKNOWN,
@@ -405,11 +427,15 @@ def verify_geography(
         "listing_country": listing_country,
         "listing_region": region_for_country(listing_country) if listing_country else None,
         "hq_country": hq_country,
+        **({"domicile_country": domicile_country} if domicile_country else {}),
+        **({"other_listing_countries": list(other_listing_countries)}
+           if other_listing_countries else {}),
     }
     # V3.19.2 — what the user EXCLUDED ("non-US", "Europe excluding the UK") fails,
     # whatever else matches: a UK company is in Europe and still not wanted.
     excluded = set(constraint.excluded)
-    hit = [c for c in observed if c in excluded or region_for_country(c) in excluded]
+    hit = [c for c in judged_for_exclusion
+           if c in excluded or region_for_country(c) in excluded]
     if hit:
         return ConstraintResult(
             "geography", list(constraint.requested), constraint.hardness, FAIL,

@@ -14,6 +14,7 @@ import { adminTest as test } from "../support/auth";
 const BIO = "European biotechnology companies";
 const BIO_LEGACY = "European biotechnology companies (stored before the fix)";
 const RECALL_ONLY = "Nordic biotechnology companies";
+const DUAL = "European gene editing companies";
 
 async function run(page: import("@playwright/test").Page, thesis: string) {
   await page.goto("/research/discover");
@@ -108,6 +109,26 @@ test.describe("Discovery — which source ran, and which source named each compa
     // Each remaining group's only sample IS its message: no "Original wording" section.
     await expect(page.getByTestId("run-limitation-original")).toHaveCount(0);
     await expect(section).not.toContainText("Original wording");
+  });
+
+  test("a dual-listed issuer is one row: its home line, its domicile, its other listing (ADR-061)", async ({
+    page,
+  }) => {
+    await run(page, DUAL);
+    const rows = page.getByTestId("discovery-excluded-item");
+    await expect(rows).toHaveCount(2, { timeout: 10_000 });
+    const cellectis = rows.filter({ hasText: "CELLECTIS" });
+    await expect(cellectis).toContainText("(ALCLS · PA)");
+    await expect(cellectis.getByTestId("discovery-excluded-issuer")).toHaveText(
+      "(Also listed: CLLS · US (verified))",
+    );
+    // The Nasdaq line is NOT a separate company, and no row reads "not verified".
+    await expect(rows.filter({ hasText: "(CLLS" })).toHaveCount(0);
+    await expect(page.getByTestId("discovery-rejected-item")).toHaveCount(0);
+    // A European issuer seen only on Nasdaq keeps its domicile.
+    await expect(
+      rows.filter({ hasText: "ARGENX" }).getByTestId("discovery-excluded-issuer"),
+    ).toHaveText("(Domiciled in Netherlands)");
   });
 
   test("the run's address survives a reload", async ({ page }) => {

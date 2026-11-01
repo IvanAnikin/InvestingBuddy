@@ -226,6 +226,38 @@ export function candidateRecord(c: DiscoveryCandidate): DiscoveryCandidateRecord
   return record && typeof record === "object" ? record : null;
 }
 
+/**
+ * ADR-061 — the issuer behind the listing, in one line: its domicile and its OTHER listed
+ * securities. "Domiciled in France · also listed: CLLS · US (verified)". A security the
+ * run could not tie to this issuer is never shown as one of its listings.
+ */
+export function issuerListingLine(
+  record: Pick<DiscoveryCandidateRecord, "identity"> | null | undefined,
+): string | null {
+  const identity = record?.identity;
+  if (!identity) return null;
+  const parts: string[] = [];
+  const domicile = identity.issuer?.domicile_country;
+  if (domicile && domicile !== identity.listing_country) parts.push(`Domiciled in ${domicile}`);
+  const others = (identity.securities ?? []).filter(
+    (s) =>
+      s.role !== "unlinked" &&
+      !(s.ticker === identity.ticker && s.exchange === identity.exchange),
+  );
+  if (others.length > 0) {
+    const listed = others.map(
+      (s) =>
+        `${[s.ticker, s.exchange].filter(Boolean).join(" · ")} (${
+          s.status === "verified" ? "verified" : "not verified"
+        })`,
+    );
+    parts.push(`also listed: ${listed.join(", ")}`);
+  }
+  if (parts.length === 0) return null;
+  const line = parts.join(" · ");
+  return line.charAt(0).toUpperCase() + line.slice(1);
+}
+
 export const ELIGIBILITY_WORD: Record<EligibilityStatus, string> = {
   eligible: "Meets every requirement that was checked",
   included_with_mismatch: "Meets the requirements; misses a preference",

@@ -4,6 +4,7 @@ import type { DiscoveryDynamicStage } from "@/types/api";
 import {
   exclusionReason,
   funnelSteps,
+  issuerListingLine,
   leadSourceLines,
   openDiscoveryUnavailable,
   rejectedLeadView,
@@ -101,6 +102,9 @@ export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicS
                   </span>
                 )}{" "}
                 — {exclusionReason(record)}
+                {issuerListingLine(record) && (
+                  <span data-testid="discovery-excluded-issuer"> ({issuerListingLine(record)})</span>
+                )}
               </li>
             ))}
           </ul>

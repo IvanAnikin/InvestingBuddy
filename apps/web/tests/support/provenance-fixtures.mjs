@@ -14,6 +14,9 @@ export const RECALL_ONLY_THESIS = "Nordic biotechnology companies";
 export const BIO_RUN_ID = "77777777-0000-0000-0000-0000000000c1";
 export const BIO_LEGACY_RUN_ID = "77777777-0000-0000-0000-0000000000c0";
 export const RECALL_ONLY_RUN_ID = "77777777-0000-0000-0000-0000000000c2";
+// ADR-061 — one issuer, two listed securities (a home ordinary line + a Nasdaq ADS line).
+export const DUAL_THESIS = "European gene editing companies";
+export const DUAL_RUN_ID = "77777777-0000-0000-0000-0000000000c3";
 
 export const BIO_OPEN_DISCOVERY_SOURCES = ["web_search:tavily"];
 
@@ -199,11 +202,72 @@ const BIO_WARNING_GROUPS = [
     samples: ["No company met the thesis's hard constraints; see the excluded list. Nothing was added to fill the shortlist."] },
 ];
 
+// The rerun shape after ADR-061: the press release printed "(Euronext Growth: ALCLS –
+// NASDAQ: CLLS)"; both lines verified on their own venues, one issuer, Europe kept. A
+// second issuer was surfaced only as its Nasdaq line, its home exchange did not list it.
+function dualRecord(identity, sizeBasis) {
+  return {
+    schema: "discovery_candidate/1",
+    identity,
+    provenance: { discovery_source: "external_search", discovery_mode: "search", why: null,
+                  source_url: null },
+    constraint_results: [
+      { key: "geography", requested: ["Europe"], hardness: "hard", status: "pass",
+        value: { listing_country: identity.listing_country,
+                 hq_country: identity.issuer.domicile_country },
+        basis: `${identity.issuer.domicile_country} is in Europe`, sources: [], borderline: false },
+      { key: "size", requested: ["small"], hardness: "hard", status: "fail", value: null,
+        basis: sizeBasis, sources: [], borderline: false },
+    ],
+    verified_attributes: {},
+    unknown_constraints: [],
+    failed_constraints: ["size"],
+    eligibility: { status: "excluded", reasons: [`size: ${sizeBasis}`], hard_passes: 2,
+                   soft_passes: 0, unknown_hard: [], failed_soft: [] },
+    screening: { status: "not_screened" },
+  };
+}
+
+const DUAL_EXCLUDED = [
+  dualRecord({
+    identity_status: "verified", ticker: "ALCLS", exchange: "PA", name: "CELLECTIS",
+    listing_country: "France",
+    listing_source: { url: null, tier: "exchange", basis: "listed in the EURONEXT directory" },
+    issuer: { legal_name: "Cellectis S.A.", domicile_country: "France",
+              domicile_basis: "ISIN FR0010425595 (France) on the PA listing",
+              linked_by: "the same source names both listings" },
+    securities: [
+      { ticker: "ALCLS", exchange: "PA", isin: "FR0010425595", listing_country: "France",
+        status: "verified", role: "primary", security_form: "ordinary", surfaced: true },
+      { ticker: "CLLS", exchange: "US", isin: null, listing_country: "United States",
+        status: "verified", role: "secondary", security_form: "foreign_listing", surfaced: true },
+    ],
+  }, "market cap above the requested band"),
+  dualRecord({
+    identity_status: "verified", ticker: "ARGX", exchange: "US", name: "ARGENX SE",
+    listing_country: "United States",
+    listing_source: { url: null, tier: "regulator", basis: "listed in the SEC directory" },
+    issuer: { legal_name: "ARGENX SE", domicile_country: "Netherlands",
+              domicile_basis: "the SEC registrant record states Netherlands", linked_by: null },
+  }, "market cap above the requested band"),
+];
+
+export const DUAL_STAGE = {
+  ...BIO_STAGE,
+  funnel: { ...FUNNEL, raw_leads: 2, web_leads: 2, registry_leads: 0, rejected_leads: 0,
+            verified_issuers: 2, excluded: 2, checked_against_requirements: 2 },
+  excluded: DUAL_EXCLUDED,
+  rejected_leads: [],
+  warnings: [],
+};
+
 export const PROVENANCE_RUNS = {
   [BIO_RUN_ID]: { thesis: BIO_THESIS, intent: bioIntent(BIO_THESIS, "Europe"), stage: BIO_STAGE,
                   warning_groups: BIO_WARNING_GROUPS },
   [BIO_LEGACY_RUN_ID]: { thesis: BIO_LEGACY_THESIS, intent: bioIntent(BIO_LEGACY_THESIS, "Europe"),
                          stage: BIO_LEGACY_STAGE, warning_groups: BIO_WARNING_GROUPS },
+  [DUAL_RUN_ID]: { thesis: DUAL_THESIS, intent: bioIntent(DUAL_THESIS, "Europe"),
+                   stage: DUAL_STAGE, warning_groups: [] },
   [RECALL_ONLY_RUN_ID]: { thesis: RECALL_ONLY_THESIS, intent: bioIntent(RECALL_ONLY_THESIS, "Nordics"),
                           stage: RECALL_ONLY_STAGE, warning_groups: [] },
 };

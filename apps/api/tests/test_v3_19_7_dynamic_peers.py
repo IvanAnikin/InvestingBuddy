@@ -69,7 +69,7 @@ _CFG = SimpleNamespace(
 )
 
 
-async def _fake_verify(lead, *, cfg=None, fetcher=None, max_fetches=2):
+async def _fake_verify(lead, *, cfg=None, fetcher=None, max_fetches=2, primary=None):
     verified = lead.ticker == "LYC"
     return identity_mod.IdentityOutcome(
         lead=lead, status="verified" if verified else "rejected", ticker=lead.ticker,
