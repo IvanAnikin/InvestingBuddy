@@ -318,10 +318,14 @@ def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
                 if fiscal_year is None:
                     continue
                 period = _period_of("q", ordinal, fiscal_year)
-                if period is not None:
-                    return DocumentPeriod(period, BASIS_FISCAL_PERIOD_END,
-                                          window.strip()[:120])
-                continue
+                if period is None:
+                    continue
+                # Only a SHIFTED year is fiscal. A calendar quarter keeps the strict
+                # began-by rule, so "guidance for the first quarter ending March 31,
+                # 2027" published in 2026 is still a forecast (review round 4).
+                basis = (BASIS_FISCAL_PERIOD_END if fiscal_year != year
+                         else BASIS_PERIOD_END_PHRASE)
+                return DocumentPeriod(period, basis, window.strip()[:120])
         kind = "q" if period_type == PERIOD_TYPE_QUARTER else "h"
         period = _period_of(kind, ordinal, year)
         if period is not None:

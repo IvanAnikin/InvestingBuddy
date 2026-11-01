@@ -183,12 +183,22 @@ def test_a_fiscal_quarter_title_survives_the_title_only_policy(
     assert found.period.key == expected
 
 
-def test_a_forecast_quarter_title_is_still_refused() -> None:
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Guidance for the first quarter ending 31 March 2028",
+        # Review round 4: calendar quarters keep the strict rule.
+        "Guidance for the first quarter ending March 31, 2027",
+        "Outlook for the fourth quarter ending December 31, 2027",
+        # A shifted quarter that had not begun either.
+        "Outlook for the first quarter ending 30 June 2027",
+    ],
+)
+def test_a_forecast_quarter_title_is_still_refused(title: str) -> None:
     from app.services.sources.disclosure_period_policy import document_period_for
 
-    found = document_period_for(
-        title="Guidance for the first quarter ending 31 March 2028", url=None,
-        extraction=None, title_only=True, published_at=date(2026, 7, 17))
+    found = document_period_for(title=title, url=None, extraction=None, title_only=True,
+                                published_at=date(2026, 11, 1))
     assert not found.is_known
 
 

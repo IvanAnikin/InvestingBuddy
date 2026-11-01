@@ -4423,6 +4423,9 @@ a filing]", although their only source was the issuer's own release.
   `ledger/store.py` still writes "reported in the press; a filing figure differs". It is
   non-closing, but the wording is wrong for the issuer's own voice. `_period_hint` shows
   "Q1 2027" with no FY marker.
+- **Review round 2.** Only a SHIFTED fiscal year carries the fiscal basis. A calendar
+  quarter ("first quarter ending March 31, 2027", published November 2026) keeps the strict
+  rule and is still refused as a forecast.
 
 ### Not changed / known limits
 - Halves keep the existing rule. A half ending in a non-calendar month states no half.
