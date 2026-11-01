@@ -1868,6 +1868,16 @@ def _safe_text(text: str | None, limit: int) -> str | None:
     return _safe(text, limit)
 
 
+def _theme_verified(record: CandidateRecord) -> bool:
+    """A search lead's theme evidence is verified: the issuer's own text, an independent
+    source, or several, name the requested theme (``discovery.admission``)."""
+    from app.services.discovery.admission import THEME_INSUFFICIENT
+
+    admission = (record.web or {}).get("admission") or {}
+    status = (admission.get("theme_evidence") or {}).get("status")
+    return bool(status) and status != THEME_INSUFFICIENT
+
+
 def universe_item(record: CandidateRecord, intent: DiscoveryIntent) -> dict[str, Any]:
     """A shortlist entry in the SAME shape as a curated universe item, plus ``v319``."""
     identity = record.identity
@@ -1884,7 +1894,14 @@ def universe_item(record: CandidateRecord, intent: DiscoveryIntent) -> dict[str,
             or item.get("country"),
             "region": region_for_country(identity.domicile_country)
             or identity.listing_region,
+            # A registry theme is the registry's classification. A search lead carries the
+            # thesis theme it was searched for, marked UNVERIFIED unless its theme evidence
+            # is (ADR-070): found by a thesis query is weak evidence of fit, not none, and
+            # not the same as the issuer saying so.
             "theme": item.get("theme") or (intent.themes[0] if intent.themes else None),
+            "theme_unverified": (
+                not item.get("theme") and bool(intent.themes) and not _theme_verified(record)
+            ),
             "matched_keywords": list((industry_result.value or {}).get("matched") or [])
             if industry_result and industry_result.value else [],
             "relevance_reason": (industry_result.basis if industry_result else None)

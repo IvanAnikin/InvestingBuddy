@@ -71,6 +71,12 @@ def _tokens(*values: Any) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
+#: Points for a candidate whose classification names a requested theme.
+THEME_PTS = 45.0
+#: ...and for a search lead found by a thesis query whose theme is not yet verified.
+THEME_UNVERIFIED_PTS = 22.5
+
+
 def score_thesis_relevance(
     item: dict[str, Any],
     parsed: dict[str, Any],
@@ -105,10 +111,17 @@ def score_thesis_relevance(
     matched_keywords: list[str] = []
 
     # ── Theme match (dominant) ────────────────────────────────────────────
+    # A search lead's theme is the one it was searched for; until its theme evidence is
+    # verified it earns HALF the weight (ADR-070) — neither the full classification credit
+    # of a registry theme nor nothing for having been found by the thesis query.
     theme_match = bool(item_theme and item_theme in parsed_themes)
-    theme_pts = 45.0 if theme_match else 0.0
+    theme_unverified = bool(item.get("theme_unverified"))
+    theme_pts = (THEME_UNVERIFIED_PTS if theme_unverified else THEME_PTS) if theme_match else 0.0
     if theme_match:
-        reasons.append(f"matches theme '{item_theme}'")
+        reasons.append(
+            f"searched for theme '{item_theme}' (not yet verified; half weight)"
+            if theme_unverified else f"matches theme '{item_theme}'"
+        )
 
     # ── Keyword / description overlap ─────────────────────────────────────
     item_tokens = _tokens(item_industry, item.get("company_name"), item_theme)
