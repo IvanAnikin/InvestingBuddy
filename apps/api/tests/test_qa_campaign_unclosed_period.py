@@ -34,6 +34,9 @@ from app.services.director.planner import PlannedQuestion
 #: Synthetic issuer with Adobe's calendar: the last 10-K period ended 2025-11-28.
 NOV_FYE = pc.FiscalYearAnchor(2025, date(2025, 11, 28))
 DEC_FYE = pc.FiscalYearAnchor(2025, date(2025, 12, 31))
+#: Read from the two issuers' own companyfacts (review of PR #309).
+TGT_FYE = pc.FiscalYearAnchor(2025, date(2026, 1, 31))
+WMT_FYE = pc.FiscalYearAnchor(2026, date(2026, 1, 31))
 RUN_DATE = date(2026, 11, 1)
 
 #: The live F14 shape, with the synthetic issuer's name.
@@ -65,6 +68,13 @@ class TestStatedPeriods:
             ("calendar 2026 revenue", pc.KIND_CALENDAR_YEAR, 2026, None),
             ("calendar Q4 2026 revenue", pc.KIND_CALENDAR_QUARTER, 2026, 4),
             ("Q4 CY2026 revenue", pc.KIND_CALENDAR_QUARTER, 2026, 4),
+            # Review of PR #309: the year BEFORE the quarter is still the quarter.
+            ("fiscal 2026 third quarter revenue", pc.KIND_FISCAL_QUARTER, 2026, 3),
+            ("fiscal 2026 Q3 revenue", pc.KIND_FISCAL_QUARTER, 2026, 3),
+            ("fiscal-year 2026 third-quarter revenue", pc.KIND_FISCAL_QUARTER, 2026, 3),
+            ("fiscal 2027 second-quarter revenue", pc.KIND_FISCAL_QUARTER, 2027, 2),
+            ("2026 third-quarter sales", pc.KIND_FISCAL_QUARTER, 2026, 3),
+            ("3Q26 sales", pc.KIND_FISCAL_QUARTER, 2026, 3),
         ],
     )
     def test_each_form_is_read(self, text: str, kind: str, year: int, ordinal: int | None) -> None:
@@ -94,6 +104,20 @@ class TestFiscalAnchor:
         assert pc.anchor_from_normalised(None, "2025-11-28") is None
         assert pc.anchor_from_normalised(2025, None) is None
         assert pc.anchor_from_normalised(2025, "2019-11-28") is None
+
+    def test_a_january_year_end_is_judged_on_the_earlier_reading_and_no_quarter(
+        self,
+    ) -> None:
+        # Target names the year ended 2026-01-31 "fiscal 2025"; Walmart names the same
+        # year "fiscal 2026". A writer may use either, so FY2026 is judged as ending
+        # 2026-01-31 for both, and no quarter of either is judged.
+        assert TGT_FYE.ends_early_in_the_year and WMT_FYE.ends_early_in_the_year
+        assert TGT_FYE.year_end(2026) == date(2027, 1, 31)  # its own label
+        assert TGT_FYE.judged_year_end(2026) == date(2026, 1, 31)
+        assert WMT_FYE.judged_year_end(2027) == date(2027, 1, 31)
+        assert TGT_FYE.quarter_end(2026, 2) is None
+        # A 52/53-week year ending on 2 January is a December year-end.
+        assert not pc.FiscalYearAnchor(2025, date(2026, 1, 2)).ends_early_in_the_year
 
 
 class TestUnendedActual:
@@ -167,6 +191,92 @@ class TestUnendedActual:
         statement = "Vexmoor revenue for the quarter ending November 27, 2026 was USD 7.1bn."
         found = pc.unended_actual(statement, as_of=RUN_DATE, anchor=None)
         assert found is not None and found.ends == date(2026, 11, 27)
+
+    @pytest.mark.parametrize(
+        "anchor,as_of,statement",
+        [
+            # The reviewer's battery for PR #309: every one of these is TRUE and kept.
+            (NOV_FYE, RUN_DATE, "Adobe's FY2026 Q3 revenue was $6.19 billion."),
+            (NOV_FYE, RUN_DATE, "Adobe's fiscal 2026 third quarter revenue was $6.19 billion."),
+            (NOV_FYE, RUN_DATE, "Adobe's fiscal 2026 Q3 revenue was $6.19 billion, up 10%."),
+            (NOV_FYE, RUN_DATE,
+             "Adobe's fiscal-year 2026 third-quarter revenue was $6.19 billion."),
+            (NOV_FYE, RUN_DATE, "Adobe's third quarter of fiscal 2026 revenue was $6.19 billion."),
+            (NOV_FYE, RUN_DATE, "Adobe's revenue in the nine months of FY2026 was $17.6 billion."),
+            (NOV_FYE, RUN_DATE, "Adobe's 9M FY2026 revenue was $17.6 billion."),
+            (NOV_FYE, RUN_DATE, "Adobe's H1 FY2026 revenue was $11.4 billion."),
+            (NOV_FYE, RUN_DATE,
+             "Adobe's FY2026 revenue through the third quarter was $17.6 billion."),
+            (NOV_FYE, RUN_DATE, "Adobe's six-month FY2026 revenue was $11.4 billion."),
+            (NOV_FYE, RUN_DATE, "In fiscal 2026, Adobe repurchased $8.0 billion of its shares."),
+            (NOV_FYE, RUN_DATE,
+             "During FY2026 Adobe completed its $1.9 billion acquisition of Semrush."),
+            (NOV_FYE, RUN_DATE, "Adobe's FY2025 revenue was $23.77 billion; its Q4 FY2026 "
+             "results are due December 11, 2026."),
+            (NOV_FYE, RUN_DATE, "Adobe's FY2025 revenue was $23.77 billion, and its shares "
+             "fell 20% in calendar 2026."),
+            (NOV_FYE, RUN_DATE, "For fiscal 2026, the company expects revenue of $25.9 billion."),
+            (NOV_FYE, RUN_DATE, "For fiscal 2026, Adobe targets revenue of $25.9 billion."),
+            (NOV_FYE, RUN_DATE,
+             "Adobe's FY2026 Q3 revenue rose 10% to $6.19B from $5.99B in Q3 FY2025."),
+            (NOV_FYE, RUN_DATE, "Adobe FY2026 revenue was $26.58 billion (Trefis estimate)."),
+            (NOV_FYE, RUN_DATE,
+             "Adobe FY2026 revenue was $26.58 billion according to Visible Alpha consensus."),
+            (NOV_FYE, RUN_DATE, "Adobe FY2026 revenue was $26.58 billion per Wall Street."),
+            (NOV_FYE, RUN_DATE, "Adobe FY2026 revenue was $26.58 billion per FactSet mean."),
+            (NOV_FYE, RUN_DATE, "Adobe FY2026 revenue was $26.58 billion, LSEG data show."),
+            (NOV_FYE, date(2026, 11, 25), "Adobe's fiscal 2026 revenue was $26.6 billion."),
+            (NOV_FYE, RUN_DATE, "Adobe's fiscal 2025 fourth quarter revenue was $6.19 billion."),
+            (TGT_FYE, date(2026, 3, 15), "Target's fiscal 2025 revenue was $104.8 billion."),
+            (TGT_FYE, date(2026, 3, 15), "Target's FY2026 revenue was $104.8 billion "
+             "(fiscal year ended January 31, 2026)."),
+            (TGT_FYE, date(2026, 3, 15), "Target's FY2026 revenue was $104.8 billion."),
+            (TGT_FYE, RUN_DATE, "Target's Q2 2026 revenue was $25.2 billion."),
+            (TGT_FYE, RUN_DATE, "Target's fiscal 2026 second quarter revenue was $25.2 billion."),
+            (WMT_FYE, RUN_DATE, "Walmart's Q2 FY2027 revenue was $177 billion."),
+            (WMT_FYE, RUN_DATE, "Walmart's fiscal 2027 second-quarter revenue was $177 billion."),
+            (DEC_FYE, RUN_DATE, "Honeywell's Q3 2026 sales were $10.4 billion."),
+            (DEC_FYE, RUN_DATE, "Honeywell's 2026 third-quarter sales were $10.4 billion."),
+            (DEC_FYE, RUN_DATE, "Honeywell's third-quarter 2026 sales were $10.4 billion."),
+            (DEC_FYE, RUN_DATE,
+             "Honeywell's 3Q26 sales were $10.4 billion, and FY2026 sales are $40B."),
+            (DEC_FYE, RUN_DATE, "Honeywell reported sales of $10.4 billion for the quarter "
+             "ended September 30, 2026."),
+            (DEC_FYE, RUN_DATE,
+             "Honeywell's Q3 FY2026 sales were $10.4 billion, and Q4 2026 has begun."),
+            # An event in the open year, not its result.
+            (NOV_FYE, RUN_DATE, "Adobe issued $2.0 billion of notes in FY2026."),
+        ],
+    )
+    def test_true_statements_from_the_review_battery_are_kept(
+        self, anchor: pc.FiscalYearAnchor, as_of: date, statement: str
+    ) -> None:
+        assert pc.unended_actual(statement, as_of=as_of, anchor=anchor) is None
+
+    def test_a_full_open_year_result_is_still_caught(self) -> None:
+        found = pc.unended_actual(
+            "Honeywell's full year 2026 sales were $40 billion.", as_of=RUN_DATE, anchor=DEC_FYE
+        )
+        assert found is not None and found.ends == date(2026, 12, 31)
+
+    def test_target_the_company_is_not_the_word_target(self) -> None:
+        assert not pc.is_forward_or_partial("Target's revenue was $1 billion.")
+        assert pc.is_forward_or_partial("Adobe targets revenue of $25.9 billion.")
+        assert pc.is_forward_or_partial("Analysts raised the price target to $500.")
+        # So Target's own open year is still judged (both naming readings open).
+        found = pc.unended_actual(
+            "Target's FY2026 revenue was $110 billion.", as_of=date(2026, 1, 15), anchor=TGT_FYE
+        )
+        assert found is not None and found.ends == date(2026, 1, 31)
+
+    def test_a_result_needs_a_reporting_verb(self) -> None:
+        # "FY2026 sales are $40B" (present tense) and a bare noun phrase are not judged.
+        assert pc.unended_actual(
+            "Honeywell FY2026 sales are $40 billion.", as_of=RUN_DATE, anchor=DEC_FYE
+        ) is None
+        assert pc.unended_actual(
+            "Vexmoor FY2026: revenue USD 26.6bn.", as_of=RUN_DATE, anchor=NOV_FYE
+        ) is None
 
     def test_the_subjects_own_names(self) -> None:
         assert names_the_subject(F14, "Vexmoor Holdings Inc.", "VXM")
@@ -329,14 +439,14 @@ class TestInvestigatorGuard:
         inv, findings, _gaps, _reads = await _run(
             monkeypatch,
             [
-                "Vexmoor FY2026 revenue trails Northwind's FY2026 revenue of USD 245bn.",
+                "Vexmoor FY2026 revenue was below Northwind's FY2026 revenue of USD 245bn.",
                 # A held company's name as an ordinary lower-case word is not that company.
                 F14,
             ],
             other_names=others,
         )
         assert [f.statement for f in findings] == [
-            "Vexmoor FY2026 revenue trails Northwind's FY2026 revenue of USD 245bn."
+            "Vexmoor FY2026 revenue was below Northwind's FY2026 revenue of USD 245bn."
         ]
         assert inv.diagnostics.statements_for_unended_period == 1
 
@@ -360,9 +470,105 @@ class TestInvestigatorGuard:
         assert len(findings) == 1
 
 
+class _Normalised:
+    def __init__(self, basis: str, fiscal_year: int | None, end: str | None) -> None:
+        self.period_basis = basis
+        self.fiscal_year = fiscal_year
+        self.reporting_period_end = end
+
+
 class TestLoader:
-    async def test_a_subject_sec_does_not_cover_has_no_anchor(self) -> None:
+    """``load_fiscal_year_anchor`` with the companyfacts read and the normaliser mocked."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self) -> Any:  # noqa: ANN401
         pc.reset_cache()
+        yield
+        pc.reset_cache()
+
+    @staticmethod
+    def _mock(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        facts: dict | None,
+        normalised: _Normalised | None = None,
+        delay: float = 0.0,
+    ) -> list[str]:
+        import asyncio
+
+        from app.integrations import sec_fundamentals_normalizer
+        from app.services.agent_tools import peers
+
+        calls: list[str] = []
+
+        async def _facts_for(ticker: str, exchange: str | None, provider: Any):  # noqa: ANN202, ANN401
+            calls.append(ticker)
+            if delay:
+                await asyncio.sleep(delay)
+            return facts, None if facts is not None else "unreachable"
+
+        monkeypatch.setattr(peers, "_facts_for", _facts_for)
+        monkeypatch.setattr(
+            sec_fundamentals_normalizer,
+            "normalize_company_facts",
+            lambda _facts, _ticker: normalised,
+        )
+        return calls
+
+    async def test_an_annual_basis_gives_an_anchor_and_is_cached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._mock(
+            monkeypatch, facts={"facts": {}}, normalised=_Normalised("annual", 2025, "2025-11-28")
+        )
+        assert await pc.load_fiscal_year_anchor("VXM", "US") == NOV_FYE
+        assert await pc.load_fiscal_year_anchor("VXM", "US") == NOV_FYE
+        assert calls == ["VXM"]
+
+    async def test_a_quarterly_basis_gives_no_anchor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No 10-K normalised: a 10-Q period end is not a fiscal year end.
+        self._mock(
+            monkeypatch, facts={"facts": {}}, normalised=_Normalised("quarterly", 2026, "2026-08-28")
+        )
+        assert await pc.load_fiscal_year_anchor("VXM", "US") is None
+
+    async def test_a_failure_is_retried_after_the_failure_ttl_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import datetime, timezone
+
+        calls = self._mock(monkeypatch, facts=None)
+        assert await pc.load_fiscal_year_anchor("VXM", "US") is None
+        assert await pc.load_fiscal_year_anchor("VXM", "US") is None
+        assert calls == ["VXM"]  # remembered inside the failure TTL
+        key = "VXM|US"
+        stamp, value = pc._ANCHOR_CACHE[key]
+        pc._ANCHOR_CACHE[key] = (stamp - pc.ANCHOR_FAILURE_TTL, value)
+        assert await pc.load_fiscal_year_anchor("VXM", "US") is None
+        assert calls == ["VXM", "VXM"]
+        # A success stays for the long TTL, well past the failure TTL.
+        self._mock(
+            monkeypatch, facts={"facts": {}}, normalised=_Normalised("annual", 2025, "2025-11-28")
+        )
+        pc.reset_cache()
+        assert await pc.load_fiscal_year_anchor("VXM", "US") == NOV_FYE
+        stamp, value = pc._ANCHOR_CACHE[key]
+        pc._ANCHOR_CACHE[key] = (stamp - pc.ANCHOR_FAILURE_TTL * 2, value)
+        assert pc._ANCHOR_CACHE[key][0] > datetime.now(timezone.utc) - pc.ANCHOR_CACHE_TTL
+        assert await pc.load_fiscal_year_anchor("VXM", "US") == NOV_FYE
+
+    async def test_a_slow_read_times_out_to_no_anchor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(pc, "ANCHOR_READ_TIMEOUT_SECONDS", 0.05)
+        self._mock(
+            monkeypatch,
+            facts={"facts": {}},
+            normalised=_Normalised("annual", 2025, "2025-11-28"),
+            delay=1.0,
+        )
+        assert await pc.load_fiscal_year_anchor("VXM", "US") is None
+
+    async def test_a_subject_sec_does_not_cover_has_no_anchor(self) -> None:
+        # The real reader: the exchange gate answers before any network call.
         assert await pc.load_fiscal_year_anchor("ALCLS", "PA") is None
 
     async def test_no_ticker_has_no_anchor(self) -> None:

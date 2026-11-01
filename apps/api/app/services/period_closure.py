@@ -6,24 +6,26 @@ fact. Adobe's FY2026 ends around 2026-11-27, and the report ran on 2026-11-01. N
 actual could exist yet: the figure was an estimate shown as a reported result. No layer
 asked whether a stated period had closed.
 
-This module answers that one question for one statement, and nothing else:
+This module answers that one question for one statement, narrowly. A miss is
+acceptable; dropping a true statement is not (review of PR #309):
 
 1. The PERIODS a statement names: a fiscal year (``FY2026``, ``fiscal 2026``), a fiscal
-   or platform-keyed quarter (``Q4 FY2026``, ``Q4 2026``, ``2026-Q4``), an explicit
-   calendar year or quarter (``CY2026``, ``calendar Q4 2026``), or a period ended on a
-   printed date ("the quarter ending November 27, 2026").
+   or platform-keyed quarter (``Q4 FY2026``, ``fiscal 2026 third quarter``, ``Q4 2026``,
+   ``2026-Q4``, ``3Q26``), an explicit calendar year or quarter (``CY2026``,
+   ``calendar Q4 2026``), or a period ended on a printed date.
 2. When each one ENDS. A calendar period and a dated period end on a known date. A fiscal
-   period ends on a date only the issuer's fiscal calendar gives, so it needs a
-   :class:`FiscalYearAnchor` (one observed fiscal year and the date it ended, read from
-   the issuer's own SEC statements). Without one, a fiscal period has no known end and is
-   never judged: a miss, never a false drop.
-3. Whether the statement presents a FIGURE for it as an actual. Forward-looking words
-   (guidance, outlook, expects, forecast, estimate, consensus, target, "will", …) and
-   part-period words (year-to-date, nine months, so far, trailing) keep it.
+   period needs a :class:`FiscalYearAnchor` (one observed fiscal year and the date it
+   ended, from the issuer's own SEC statements). Without one, a fiscal period has no
+   known end and the statement is never judged.
+3. The SHAPE of the statement. It is judged only when it reports a period's result
+   ("revenue was", "reports … revenue") with a figure, carries no forward, estimate,
+   part-period or event wording, names no quarter or half it does not place, and EVERY
+   period it names is known and still open. One closed or unknown period keeps it.
 
-A bare ``2026-Q4`` / ``Q4 2026`` is the platform's FISCAL-keyed quarter (ADR-065: a
-quarter is keyed by the year its fiscal year ends), not a calendar quarter, so it is
-judged only on a known fiscal calendar. For a December year-end the two are the same.
+A bare ``2026-Q4`` / ``Q4 2026`` is the platform's FISCAL-keyed quarter (ADR-065), so it
+is judged only on a known fiscal calendar. For a fiscal year ending January–March no
+quarter is judged at all, and a full fiscal year is judged on the earlier of the two
+naming readings (Walmart's and Target's conventions differ by a year).
 
 Pure functions apart from :func:`load_fiscal_year_anchor`, which reads the issuer's SEC
 companyfacts through the same cached, allowlisted reader as ``get_sec_statements``.
@@ -78,10 +80,37 @@ class FiscalYearAnchor:
     fiscal_year: int
     period_end: date
 
+    @property
+    def ends_early_in_the_year(self) -> bool:
+        """A fiscal year ending January–March (a 52/53-week end on day 1–7 counts as the
+        month before, so 2 January is a December year-end). Such years are named both
+        ways in the wild: Walmart's "fiscal 2027" ends January 2027, Target's "fiscal
+        2025" ends January 2026 (ADR-065)."""
+        month = self.period_end.month if self.period_end.day > 7 else (
+            (self.period_end.month - 2) % 12 + 1
+        )
+        return month in (1, 2, 3)
+
     def year_end(self, fiscal_year: int) -> date:
+        """FY(N)'s end under the issuer's own label convention (companyfacts ``fy``)."""
         return _add_months(self.period_end, 12 * (fiscal_year - self.fiscal_year))
 
-    def quarter_end(self, fiscal_year: int, quarter: int) -> date:
+    def judged_year_end(self, fiscal_year: int) -> date:
+        """The end used to JUDGE a statement naming FY(N). For a January–March year-end a
+        writer may use either convention, so the EARLIER reading is used: the year that
+        ends in calendar year N. A statement is judged open only if it is open under both
+        readings."""
+        end = self.year_end(fiscal_year)
+        if self.ends_early_in_the_year and end.year > fiscal_year:
+            return _add_months(end, -12)
+        return end
+
+    def quarter_end(self, fiscal_year: int, quarter: int) -> date | None:
+        """FY(N) Qn's end, or ``None`` for a January–March year-end: there the issuer's
+        label and the platform's ``2026-Q4`` keying (ADR-065) disagree, so no quarter is
+        judged."""
+        if self.ends_early_in_the_year:
+            return None
         return _add_months(self.year_end(fiscal_year), -3 * (4 - quarter))
 
 
@@ -115,7 +144,7 @@ class StatedPeriod:
         if anchor is None:
             return None
         if self.kind == KIND_FISCAL_YEAR:
-            return anchor.year_end(self.year)
+            return anchor.judged_year_end(self.year)
         if self.kind == KIND_FISCAL_QUARTER and self.ordinal:
             return anchor.quarter_end(self.year, self.ordinal)
         return None
@@ -181,7 +210,14 @@ _PERIOD_RE = re.compile(
             rf"|\b(?P<fqw3>{_ORD})[\s-]+quarter\s+(?:of\s+)?(?:{_FY})?(?P<fqy3>{_Y4})\b"
             rf"|\bq(?P<fq4>[1-4])[\s'-]*(?P<fqy4>{_Y4})\b"
             rf"|\bfy\s?'?(?P<fqy5>{_Y4}|\d{{2}})[\s-]?q(?P<fq5>[1-4])\b"
-            rf"|\b(?P<fqy6>{_Y4})[\s-]q(?P<fq6>[1-4])\b)",
+            rf"|\b(?P<fqy6>{_Y4})[\s-]q(?P<fq6>[1-4])\b"
+            # The year BEFORE the quarter: "fiscal 2026 third quarter", "fiscal-year
+            # 2026 third-quarter", "FY2026 third quarter", "2026 third-quarter".
+            rf"|\b{_FY}(?P<fqy7>{_Y4}|\d{{2}})[\s-]+(?:q(?P<fq7>[1-4])|(?P<fqw7>{_ORD})"
+            rf"[\s-]+quarter)\b"
+            rf"|\b(?P<fqy8>{_Y4})[\s-]+(?P<fqw8>{_ORD})[\s-]+quarter\b"
+            # "3Q26", "3Q 2026".
+            rf"|\b(?P<fq9>[1-4])q\s?'?(?P<fqy9>{_Y4}|\d{{2}})\b)",
             # An explicit calendar year.
             rf"(?P<caly>\b(?:cy\s?|calendar(?:[\s-]+year)?\s+)(?P<cy>{_Y4})\b)",
             # A fiscal year.
@@ -227,12 +263,14 @@ def stated_periods(statement: str | None) -> list[StatedPeriod]:
             year = _first(match, "cqy1", "cqy2") or "0"
             out.append(StatedPeriod(KIND_CALENDAR_QUARTER, text, _year(year), quarter))
         elif match.group("fq"):
-            word = _first(match, "fqw1", "fqw3")
+            word = _first(match, "fqw1", "fqw3", "fqw7", "fqw8")
             quarter = (
                 _ORDINALS[word.lower()] if word
-                else int(_first(match, "fq1", "fq2", "fq4", "fq5", "fq6") or 0)
+                else int(_first(match, "fq1", "fq2", "fq4", "fq5", "fq6", "fq7", "fq9") or 0)
             )
-            year = _first(match, "fqy1", "fqy2", "fqy3", "fqy4", "fqy5", "fqy6") or "0"
+            year = _first(
+                match, "fqy1", "fqy2", "fqy3", "fqy4", "fqy5", "fqy6", "fqy7", "fqy8", "fqy9"
+            ) or "0"
             out.append(StatedPeriod(KIND_FISCAL_QUARTER, text, _year(year), quarter))
         elif match.group("caly"):
             out.append(StatedPeriod(KIND_CALENDAR_YEAR, text, _year(match.group("cy"))))
@@ -242,77 +280,128 @@ def stated_periods(statement: str | None) -> list[StatedPeriod]:
     return out
 
 
-#: Words that make a statement about a period that has not ended legitimate: what is
-#: expected, guided, estimated or modelled, and part-period actuals ("year-to-date").
-_FORWARD_OR_PARTIAL_RE = re.compile(
+#: Words that make a statement about a period that has not ended legitimate, or that
+#: make it something other than "the period's result was X". Any one of them keeps the
+#: statement: the rule is narrow on purpose (review of PR #309: a miss is acceptable, a
+#: false drop of a true statement is not).
+_PROTECTED_RE = re.compile(
+    # What is expected, guided, estimated or modelled — and whose estimate it is.
     r"\b(?:guidance|guided?|guides|outlook|expect(?:s|ed|ing|ations?)?|anticipat\w*|"
-    r"forecast\w*|project(?:s|ed|ing|ions?)|target\w*|estimat\w*|consensus|analysts?|"
+    r"forecast\w*|project(?:s|ed|ing|ions?)|estimat\w*|consensus|analysts?|"
     r"predict\w*|model(?:s|led|ed|ling|ing)?|plan(?:s|ned)?|aims?|intends?|goals?|"
     r"budget(?:s|ed)?|on\s+(?:track|pace|course)|run[\s-]?rate|exit\s+rate|implie[sd]|"
     r"pro\s+forma|scenario|assum\w*|potential(?:ly)?|likely|sees|seeing|"
-    r"reaffirm\w*|reiterat\w*|rais(?:e|es|ed|ing)|lower(?:s|ed|ing)?|narrow(?:s|ed|ing)?|"
-    r"will|would|could|should|may|might|shall|can|"
-    r"year[\s-]to[\s-]date|ytd|so\s+far|to\s+date|through\s+(?:the\s+)?(?:first|q[1-3])|"
-    r"first\s+(?:two|three|half|nine|six)|(?:three|six|nine)\s+months|"
-    r"trailing|ttm|ltm|last\s+twelve|annuali[sz]ed|preliminary)\b",
+    r"reaffirm\w*|reiterat\w*|lower(?:s|ed|ing)?|narrow(?:s|ed|ing)?|preliminary|"
+    r"will|would|could|should|might|shall|can|price\s+target|"
+    r"wall\s+street|street|factset|lseg|refinitiv|visible\s+alpha|mean|median|"
+    # Part of a period, or something that happened DURING the period.
+    r"year[\s-]to[\s-]date|ytd|so\s+far|to\s+date|through|during|in\s+fiscal|"
+    r"trailing|ttm|ltm|last\s+twelve|annuali[sz]ed|first\s+(?:two|three|half|nine|six)|"
+    r"(?:three|six|nine)[\s-]months?|[369]m|h[12]|halves|half|interim|"
+    # Events, not a period's result.
+    r"repurchas\w*|buy[\s-]?backs?|bought|acqui\w*|complet\w*|announc\w*|signed|"
+    r"rais(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|fell|fall(?:s|en|ing)?|rose|ris(?:e|es|en|ing)|"
+    r"declin\w*|gain\w*|jump\w*|drop\w*|climb\w*|slid|slump\w*|plung\w*|soar\w*|"
+    r"surg\w*|tumbl\w*|paid|pays|paying|spent|spend\w*|invest\w*|launch\w*|closed|"
+    r"closing|divest\w*|sold|hired|agreed|approved|settled|received|won|awarded|opened)\b",
+    re.IGNORECASE,
+)
+#: Lower-case only, so a company name ("Target Corp", the month "May") never protects.
+_PROTECTED_LOWER_RE = re.compile(r"\b(?:targets?|targeted|targeting|may)\b")
+
+#: A quarter or half named WITHOUT a year the reader could place ("through the third
+#: quarter", "Q3", "quarterly"): the statement is about part of a period.
+_UNPLACED_SUBPERIOD_RE = re.compile(
+    r"\b(?:quarters?|quarterly|q[1-4]|[1-4]q|semester)\b", re.IGNORECASE
+)
+
+#: "the period's result WAS X": a result metric and a verb that reports it.
+_RESULT_METRIC_RE = re.compile(
+    r"\b(?:revenues?|sales|turnover|net\s+(?:income|profit|loss|earnings)|earnings|eps|"
+    r"arr|annual\s+recurring\s+revenue|operating\s+(?:income|profit|loss|margin|cash\s+flow)|"
+    r"gross\s+(?:profit|margin)|free\s+cash\s+flow|cash\s+flow|ebitda|ebit|bookings|"
+    r"billings|rpo|profit|margins?)\b",
+    re.IGNORECASE,
+)
+_RESULT_VERB_RE = re.compile(
+    r"\b(?:was|were|reported|reports|totall?ed|totals|came\s+in\s+at|amounted\s+to|"
+    r"stood\s+at|posted|recorded|generated|delivered|achieved|booked)\b",
     re.IGNORECASE,
 )
 
 
 def is_forward_or_partial(statement: str | None) -> bool:
-    """A statement that speaks of what is expected, or of part of a period: legitimate
-    for a period that has not ended."""
+    """A statement that speaks of what is expected or estimated, of part of a period, or
+    of an event in it: never judged."""
     text = statement or ""
-    return bool(_FORWARD_OR_PARTIAL_RE.search(text)) or bool(
+    return bool(_PROTECTED_RE.search(text) or _PROTECTED_LOWER_RE.search(text)) or bool(
         set(rf.fields_stated(text)) & rf.SUPERSEDABLE_FIELDS
     )
 
 
-def _states_a_figure(statement: str, periods: list[StatedPeriod]) -> bool:
-    """A money or metric figure, once the period labels and dates are taken out (an
-    ISO date and "Q4" are numbers too)."""
+def _residue(statement: str, periods: list[StatedPeriod]) -> str:
+    """The statement with its period labels and dates taken out (an ISO date and "Q4" are
+    numbers too)."""
     residue = statement
     for period in periods:
         residue = residue.replace(period.text, " ")
-    residue = _ISO_DATE_RE.sub(" ", residue)
+    return _ISO_DATE_RE.sub(" ", residue)
+
+
+def _judgeable(statement: str | None) -> list[StatedPeriod] | None:
+    """The periods of a statement that states a period's RESULT as an actual, or ``None``
+    when the statement is not of that shape (and so is never judged)."""
+    text = (statement or "").strip()
+    if not text or is_forward_or_partial(text):
+        return None
+    periods = stated_periods(text)
+    if not periods:
+        return None
+    residue = _residue(text, periods)
+    if _UNPLACED_SUBPERIOD_RE.search(residue):
+        return None
+    if not (_RESULT_METRIC_RE.search(residue) and _RESULT_VERB_RE.search(residue)):
+        return None
     if not rf.has_figure(residue):
-        return False
-    return bool("%" in residue or rf.has_money(residue) or rf.fields_mentioned(residue))
+        return None
+    if not ("%" in residue or rf.has_money(residue) or rf.fields_mentioned(residue)):
+        return None
+    return periods
 
 
 def unended_actual(
     statement: str | None, *, as_of: date, anchor: FiscalYearAnchor | None
 ) -> UnendedPeriod | None:
-    """The period a statement gives a figure for as an ACTUAL, when that period had not
+    """The period a statement gives a RESULT for as an actual, when that period had not
     ended on ``as_of``; else ``None``.
 
-    ``None`` too whenever the answer is not certain: forward-looking or part-period
-    words, no figure, or no known end for any period named (a fiscal period with no
-    ``anchor``).
+    Narrow by design. The statement must report a result metric with a reporting verb
+    ("revenue was", "reports … revenue") and a figure, carry no forward, estimate,
+    part-period or event wording, and EVERY period it names must have a known end that is
+    still ahead. One period that has ended, or whose end is unknown (a fiscal period with
+    no ``anchor``, a quarter of a January–March year-end), keeps it: "FY2025 revenue was
+    $23.8B; Q4 FY2026 results are due in December" is true.
     """
-    text = (statement or "").strip()
-    if not text or is_forward_or_partial(text):
+    periods = _judgeable(statement)
+    if not periods:
         return None
-    periods = stated_periods(text)
-    if not periods or not _states_a_figure(text, periods):
-        return None
+    open_periods: list[tuple[StatedPeriod, date]] = []
     for period in periods:
-        if period.has_ended_by(as_of, anchor) is False:
-            end = period.end_date(anchor)
-            if end is not None:
-                return UnendedPeriod(period, end)
-    return None
+        end = period.end_date(anchor)
+        if end is None or period.has_ended_by(as_of, anchor) is not False:
+            return None
+        open_periods.append((period, end))
+    # Report the longest period named: the year, when a year and its quarter are both open.
+    period, end = max(open_periods, key=lambda pair: pair[1])
+    return UnendedPeriod(period, end)
 
 
 def wants_fiscal_calendar(statement: str | None) -> bool:
-    """Would the issuer's fiscal calendar decide this statement? True only for a figure
+    """Would the issuer's fiscal calendar decide this statement? True only for a result
     stated as an actual for a FISCAL period — so the calendar is read when it can matter,
     never for every statement."""
-    text = (statement or "").strip()
-    if not text or is_forward_or_partial(text):
-        return False
-    periods = stated_periods(text)
-    return any(p.is_fiscal for p in periods) and _states_a_figure(text, periods)
+    periods = _judgeable(statement)
+    return bool(periods) and any(p.is_fiscal for p in periods or ())
 
 
 # ── The issuer's fiscal calendar, from its own SEC statements ──────────────── #
@@ -322,6 +411,9 @@ ANCHOR_CACHE_TTL = timedelta(hours=12)
 #: A failed read is retried sooner: an SEC timeout must not switch the check off all day.
 ANCHOR_FAILURE_TTL = timedelta(minutes=15)
 ANCHOR_CACHE_MAX = 256
+#: The whole read — CIK resolution, companyfacts download, normalisation — is bounded, so
+#: a slow data.sec.gov costs one write-up a few seconds, never a question's time budget.
+ANCHOR_READ_TIMEOUT_SECONDS = 5.0
 
 
 def anchor_from_normalised(fiscal_year: object, period_end: object) -> FiscalYearAnchor | None:
@@ -359,23 +451,33 @@ async def load_fiscal_year_anchor(
         return cached[1]
     anchor: FiscalYearAnchor | None = None
     try:
-        from app.integrations.providers.sec_edgar_fundamentals import (
-            SecEdgarFundamentalsProvider,
+        anchor = await asyncio.wait_for(
+            _read_anchor(ticker, exchange), timeout=ANCHOR_READ_TIMEOUT_SECONDS
         )
-        from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
-        from app.services.agent_tools.peers import _facts_for  # noqa: PLC2701
-
-        facts, _reason = await _facts_for(ticker, exchange, SecEdgarFundamentalsProvider())
-        if facts is not None:
-            n = await asyncio.to_thread(normalize_company_facts, facts, ticker)
-            if n.period_basis == "annual":
-                anchor = anchor_from_normalised(n.fiscal_year, n.reporting_period_end)
     except Exception:  # noqa: BLE001 - no calendar means no verdict, never a failure
         anchor = None
     if len(_ANCHOR_CACHE) >= ANCHOR_CACHE_MAX:
         _ANCHOR_CACHE.pop(next(iter(_ANCHOR_CACHE)))
     _ANCHOR_CACHE[key] = (now, anchor)
     return anchor
+
+
+async def _read_anchor(ticker: str, exchange: str | None) -> FiscalYearAnchor | None:
+    from app.integrations import sec_fundamentals_normalizer
+    from app.integrations.providers.sec_edgar_fundamentals import SecEdgarFundamentalsProvider
+    from app.services.agent_tools import peers
+
+    facts, _reason = await peers._facts_for(  # noqa: SLF001
+        ticker, exchange, SecEdgarFundamentalsProvider()
+    )
+    if facts is None:
+        return None
+    n = await asyncio.to_thread(
+        sec_fundamentals_normalizer.normalize_company_facts, facts, ticker
+    )
+    if n.period_basis != "annual":
+        return None
+    return anchor_from_normalised(n.fiscal_year, n.reporting_period_end)
 
 
 def reset_cache() -> None:
