@@ -540,8 +540,16 @@ def _dedup(seq: list[str]) -> list[str]:
 
 
 def _contains(haystack: str, phrase: str) -> bool:
-    """Whole-word/phrase containment on a space-padded lowercased string."""
-    return f" {phrase.strip()} " in haystack
+    """Whole-word/phrase containment on a lowercased string.
+
+    Bounded by any non-alphanumeric character, not only a space: "Banks, payments and
+    fintech" and "Utilities, grid …" put a comma straight after the phrase, and the
+    space-only test never matched it (QA campaign 2026-11, independent review).
+    """
+    needle = phrase.strip()
+    if not needle:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", haystack) is not None
 
 
 def _extract_exclusions(text: str) -> list[str]:
@@ -665,16 +673,29 @@ def parse_thesis(
         else (text_regions[0] if text_regions else None)
     )
     detected_theme = themes[0] if themes else None
-    detected_sector = next(
-        (cs for cs in (normalize_sector(s) for s in text_theme_sectors) if cs),
-        None,
-    )
     # Prefer an industry implied by a matched keyword (more specific than the
     # theme's first industry, e.g. "watch" -> "Watches & Jewelry").
+    # Keywords are taken in the order the TEXT states them, not the theme table's order:
+    # "utilities with grid exposure" names utilities first.
+    def _text_position(phrase: str) -> int:
+        # Word boundaries, not padded spaces: "Utilities, grid equipment …" puts a comma
+        # after the first keyword (independent review).
+        m = re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", padded)
+        return m.start() if m else len(padded)
+
+    text_ordered_keywords = sorted(keywords, key=_text_position)
     detected_industry = next(
-        (ci for ci in (normalize_industry(k) for k in keywords) if ci), None
+        (ci for ci in (normalize_industry(k) for k in text_ordered_keywords) if ci), None
     ) or next(
         (normalize_industry(i) or i for i in text_theme_industries if i), None
+    )
+    # The sector is the detected industry's own sector, so the pair can never contradict
+    # itself (live QA 2026-11: "Electrical Equipment" was auto-filled under "Utilities",
+    # the grid theme's first sector). Only without an industry does the theme's first
+    # sector stand.
+    detected_sector = normalize_sector(detected_industry) or next(
+        (cs for cs in (normalize_sector(s) for s in text_theme_sectors) if cs),
+        None,
     )
 
     # ── Precedence: an explicit form value overrides the prompt detection ──

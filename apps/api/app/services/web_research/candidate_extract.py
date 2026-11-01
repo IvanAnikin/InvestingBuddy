@@ -510,6 +510,69 @@ def _is_name_token(token: str) -> bool:
     return t[0].isupper() or t[0].isdigit()
 
 
+#: A security identifier printed beside an issuer: a German WKN (``A0NFN3``, ``840400``), a
+#: SEDOL, a CUSIP, an ISIN, a Swiss Valor. Never part of a company's name. Live run d15a74c4
+#: read "A0NFN3" as the name of BB Biotech (SIX: BION) and rejected the listing as a name
+#: mismatch. Shape: upper-case alphanumerics with at least one digit and one letter, 6-12
+#: characters, or a run of 5-9 digits.
+_SECURITY_CODE_RE = re.compile(r"(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,12}|\d{5,9}")
+#: Without a label, a mixed token is a code only when it is ISIN-shaped, all digits, or
+#: carries at least two digits: "B2GOLD", "E2OPEN", "4IMPRINT", "1COMMS" are names
+#: (independent review), "A0NFN3" and "B0YBKJ7" are not.
+_BARE_CODE_RE = re.compile(
+    r"[A-Z]{2}[A-Z0-9]{9}\d|\d{5,9}|(?=(?:[A-Z]*\d){2})(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,12}"
+)
+_SECURITY_CODE_LABEL = r"(?:WKN|ISIN|CUSIP|SEDOL|Valor(?:en)?|Valoren-?Nr\.?|LEI|FIGI|RIC)"
+_CODE_ITEM = rf"(?:{_SECURITY_CODE_LABEL}\s*[:#.]?\s*)?[A-Z0-9]{{5,12}}"
+#: Trailing identifiers between a name and its listing: ``BB Biotech AG WKN A0NFN3``,
+#: ``BB Biotech AG (WKN: A0NFN3, ISIN CH0038389992)``, ``… | A0NFN3 |``.
+_TRAILING_CODES_RE = re.compile(
+    rf"(?:\s*[,;|/]?\s*\(\s*{_CODE_ITEM}(?:\s*[,;/]\s*{_CODE_ITEM})*\s*\)"
+    rf"|\s*[,;|/]?\s*{_CODE_ITEM})\s*[,;|/]?\s*$"
+)
+
+
+def is_security_code(token: str) -> bool:
+    """True for a token shaped like a security identifier rather than a word of a name."""
+    return bool(_BARE_CODE_RE.fullmatch(_clean_token(token).rstrip(",;:")))
+
+
+#: Only the end of the text before a listing can hold its trailing identifiers.
+_CODE_TAIL_CHARS = 120
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+
+def _strip_trailing_codes(before: str) -> str:
+    """``before`` without the security identifiers printed at its end.
+
+    The pattern runs only on the last :data:`_CODE_TAIL_CHARS` characters, with every
+    whitespace run (any Unicode space: a PDF block can carry U+3000 or U+2000-U+200A
+    that the PDF normaliser keeps) collapsed to one space first. Over a whole
+    paragraph, a long whitespace run made the optional separators backtrack in cubic
+    time and held the worker for minutes (security review of ADR-063). The caller only
+    splits the result into tokens, so collapsing whitespace changes nothing it reads.
+    """
+    head = before[:-_CODE_TAIL_CHARS] if len(before) > _CODE_TAIL_CHARS else ""
+    tail = _WHITESPACE_RUN_RE.sub(" ", before[len(head):])
+    for _ in range(4):
+        m = _TRAILING_CODES_RE.search(tail)
+        if m is None:
+            break
+        found = m.group(0)
+        labelled = re.search(rf"\b{_SECURITY_CODE_LABEL}", found) is not None
+        codes = [
+            c for c in re.findall(r"[A-Z0-9]{5,12}", found)
+            if not re.fullmatch(_SECURITY_CODE_LABEL, c)
+        ]
+        if not codes or not all(
+            is_security_code(c) or (labelled and _SECURITY_CODE_RE.fullmatch(c))
+            for c in codes
+        ):
+            break
+        tail = tail[: m.start()]
+    return head + tail
+
+
 def name_before(text: str, end: int) -> str | None:
     """The capitalised-token run that ends right before ``text[end]`` — the company name.
 
@@ -518,7 +581,7 @@ def name_before(text: str, end: int) -> str | None:
     run, exclusive. At most :data:`MAX_NAME_TOKENS` tokens. Leading sentence-starters and
     connectors are trimmed.
     """
-    before = text[:end].rstrip(" ([,–—-\t")
+    before = _strip_trailing_codes(text[:end].rstrip(" ([,–—-\t")).rstrip(" ([,–—-\t")
     tokens = before.split()
     run: list[str] = []
     for token in reversed(tokens):
@@ -614,6 +677,9 @@ def _name_ok(name: str | None, *, has_identifier: bool) -> bool:
         return False
     low = name.lower()
     if low in _BAD_NAMES:
+        return False
+    # A name made only of security identifiers ("A0NFN3", "CH0038389992") is no name.
+    if all(is_security_code(w) for w in name.split()):
         return False
     words = low.split()
     if all(w in _LEGAL_FORM_WORDS or w in _CONNECTORS for w in words):
