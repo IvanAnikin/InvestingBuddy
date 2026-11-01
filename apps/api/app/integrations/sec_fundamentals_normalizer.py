@@ -42,6 +42,7 @@ Scaling:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -54,6 +55,9 @@ from app.integrations.financial_data_provider import (
 from app.integrations.providers.sec_edgar_provider import _EDGAR_BASE_URL, _pad_cik
 
 _COMPANY_FACTS_URL = f"{_EDGAR_BASE_URL}/api/xbrl/companyfacts/CIK{{cik}}.json"
+_EDGAR_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
+#: An EDGAR accession number; anything else never becomes part of a URL.
+_ACCESSION_RE = re.compile(r"\d{10}-\d{2}-\d{6}", re.ASCII)
 
 # Annual and quarterly form types accepted for period selection.
 _ANNUAL_FORMS = {"10-K", "20-F", "10-K/A", "20-F/A", "40-F", "40-F/A"}
@@ -187,6 +191,50 @@ def _is_single_quarter_period(entry: dict) -> bool:
     return (end - start).days <= 100
 
 
+#: How far before the current period's end the prior fiscal year's end may fall: a
+#: 52/53-week year moves the end by a few days, a changed fiscal year-end by more.
+_PRIOR_YEAR_END_DAYS = (330, 400)
+
+
+def _prior_year_entry(latest: dict, candidates: list[dict]) -> dict | None:
+    """The prior fiscal year's value AS THE LATEST FILING PRESENTS IT.
+
+    The prior year is identified by its PERIOD (an end date about one year before the
+    current period's end), never by the XBRL ``fy`` field: ``fy`` is the fiscal year of the
+    FILING, so the restated comparative inside this year's 10-K carries this year's ``fy``.
+    Matching ``fy == latest_fy - 1`` therefore selected the value AS ORIGINALLY FILED a year
+    earlier — before any recast for a discontinued operation, spin-off or restatement.
+    Live QA campaign 2026-11: Honeywell FY2025 revenue (37,442m, Solstice discontinued)
+    was compared with the ORIGINAL FY2024 figure (38,498m) instead of the recast 34,717m in
+    the same 10-K, and the report said revenue fell 2.7% when it grew 7.9%.
+
+    Preference: the comparative in the SAME filing as the current value (same accession),
+    then the most recently filed value for that period.
+    """
+    latest_end = _parse_end(latest.get("end"))
+    if latest_end is None:
+        return None
+    low, high = _PRIOR_YEAR_END_DAYS
+    pool = []
+    for entry in candidates:
+        end = _parse_end(entry.get("end"))
+        if end is None or not _is_full_year_period(entry):
+            continue
+        if low <= (latest_end - end).days <= high:
+            pool.append(entry)
+    if not pool:
+        return None
+    accn = latest.get("accn")
+    return max(
+        pool,
+        key=lambda e: (
+            bool(accn) and e.get("accn") == accn,
+            e.get("filed") or "",
+            e.get("end") or "",
+        ),
+    )
+
+
 def _select_metric(
     facts: dict[str, Any],
     concepts: list[str],
@@ -276,23 +324,12 @@ def _select_metric(
 
     prior_value: float | None = None
     if period_type == "annual":
-        latest_fy = _fy_of(latest)
-        if latest_fy is not None:
-            prior_entries = [
-                e
-                for c, e in annual_candidates
-                if c == concept
-                and _fy_of(e) == latest_fy - 1
-                and _is_full_year_period(e)
-            ]
-            if prior_entries:
-                prior_raw = max(prior_entries, key=_freshness_key).get("val")
-                if prior_raw is not None:
-                    prior_value = (
-                        float(prior_raw) / _MILLION
-                        if scale_to_millions
-                        else float(prior_raw)
-                    )
+        prior = _prior_year_entry(latest, [e for c, e in annual_candidates if c == concept])
+        if prior is not None and prior.get("val") is not None:
+            prior_raw = prior["val"]
+            prior_value = (
+                float(prior_raw) / _MILLION if scale_to_millions else float(prior_raw)
+            )
 
     return _Metric(
         value=round(value, 2),
@@ -405,6 +442,15 @@ class NormalizedSecFinancials:
     #: "reason"}}``. The value is kept here for audit and is on NO reporting field:
     #: a figure for another period is missing for this one, never carried into it.
     withheld_fields: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The latest 10-Q's own figures, when that 10-Q is newer than the annual bundle —
+    #: single-quarter flows and quarter-end balances, in the primary-fact shape the
+    #: report's current-period slots read. See ``latest_quarter_facts``.
+    current_period_facts: list[dict[str, Any]] = field(default_factory=list)
+    #: Restatements a 10-Q filed AFTER the annual bundle applies to earlier periods: a
+    #: perimeter recast (discontinued operation, spin-off) or a share split. Each says
+    #: the annual bundle is on a basis the issuer no longer reports. See
+    #: ``basis_changes_since_annual``.
+    basis_changes: list[dict[str, Any]] = field(default_factory=list)
     #: V3.18.1 — relationships between this bundle's own lines that do not hold.
     #: ``ConsistencyReport.to_dict()``; empty when nothing was found.
     consistency: dict[str, Any] = field(default_factory=dict)
@@ -600,6 +646,13 @@ class NormalizedSecFinancials:
             _add("statement_consistency", self.consistency, None,
                  DataQuality.B_single_credible,
                  "Relationships between this bundle's own statement lines that do not hold.")
+        if self.basis_changes:
+            _add("basis_changes", self.basis_changes, None, DataQuality.B_single_credible,
+                 "Restatements of earlier periods in a filing newer than the annual bundle.")
+        if self.current_period_facts:
+            _add("current_period_facts", self.current_period_facts, None,
+                 DataQuality.B_single_credible,
+                 "The latest 10-Q's single-quarter figures, newer than the annual bundle.")
         if self.withheld_fields:
             _add(
                 "withheld_fields",
@@ -892,6 +945,33 @@ def normalize_company_facts(
             "is never carried in or relabelled."
         )
 
+    # ── QA campaign 2026-11 — is "operating income" operating income? ───
+    if operating_income.value is not None and revenue.value is not None:
+        excess = operating_income_excess(
+            us_gaap,
+            accn=operating_income.accn,
+            end=operating_income.end,
+            duration_days=operating_income.duration_days,
+            revenue_m=revenue.value,
+            operating_income_m=operating_income.value,
+        )
+        if excess is not None:
+            result.withheld_fields["operating_income"] = {
+                "value": operating_income.value,
+                "end": operating_income.end,
+                "fy": operating_income.fy,
+                "concept": operating_income.concept,
+                "period_type": operating_income.period_type,
+                "reason": excess,
+            }
+            result.operating_income = None
+            operating_income.value = None
+            operating_income.prior_value = None
+            warnings.append(
+                "SEC EDGAR: operating income withheld — " + excess + ". The figure is kept "
+                "in withheld_fields; no operating margin is computed from it."
+            )
+
     # Each metric's OWN period, kept so a consumer can label the fact honestly
     # instead of inheriting a single headline fiscal year.
     for name, metric in (
@@ -1099,5 +1179,588 @@ def normalize_company_facts(
             "market capitalization cannot be computed."
         )
 
+    if result.period_basis == "annual":
+        result.current_period_facts = latest_quarter_facts(
+            us_gaap, annual_filed=result.filed_date, cik=resolved_cik,
+            annual_end=result.reporting_period_end,
+        )
+        result.basis_changes = basis_changes_since_annual(
+            us_gaap, annual_filed=result.filed_date,
+            annual_accn=result.accession_number,
+            annual_end=result.reporting_period_end, dei=dei,
+        )
+        for change in result.basis_changes:
+            warnings.append("SEC EDGAR: " + change["sentence"])
+            if change["kind"] in (BASIS_SHARE_CONSOLIDATION, BASIS_SHARE_SPLIT):
+                # A per-share figure from before a split is on a different share count
+                # from every price and every later per-share figure: withheld, never
+                # silently compared.
+                for name in ("eps_basic", "eps_diluted"):
+                    value = getattr(result, name)
+                    if value is None:
+                        continue
+                    own = result.field_periods.get(name) or {}
+                    result.withheld_fields[name] = {
+                        "value": value,
+                        "end": own.get("end"),
+                        "fy": own.get("fy"),
+                        "concept": own.get("concept"),
+                        "period_type": own.get("period_type"),
+                        "reason": "predates_share_count_change: " + change["sentence"],
+                    }
+                    setattr(result, name, None)
+
     result.warnings = warnings
     return result
+
+
+# ---------------------------------------------------------------------------
+# A basis the issuer no longer reports — QA campaign 2026-11
+# ---------------------------------------------------------------------------
+
+BASIS_RECAST = "perimeter_recast"
+BASIS_SHARE_CONSOLIDATION = "share_consolidation"
+BASIS_SHARE_SPLIT = "share_split"
+#: A comparative restated by more than this is a different perimeter, not a rounding or
+#: an immaterial reclassification.
+_RECAST_THRESHOLD = 0.05
+#: How close a per-share ratio must be to a whole number to be read as a split.
+_SPLIT_TOLERANCE = 0.02
+
+
+def _comparatives(us_gaap: dict[str, Any], concept: str, unit: str, accn: str,
+                  period_end: str) -> list[dict]:
+    rows = (us_gaap.get(concept) or {}).get("units", {}).get(unit, []) or []
+    return [
+        e for e in rows
+        if e.get("accn") == accn and (e.get("end") or "") < period_end
+        and e.get("start") and 80 <= (_duration_days(e) or 0) <= 100
+    ]
+
+
+def _as_filed_in(us_gaap: dict[str, Any], concept: str, unit: str, entry: dict,
+                 annual_accn: str) -> dict | None:
+    """The same concept and period as the annual report ITSELF tagged it, or None.
+
+    Only the annual filing's own accession is a baseline. A value from an earlier 10-Q
+    can differ from the annual report for reasons that are already inside the annual
+    figures — a split made before the 10-K (retroactively adjusted in it), a disposal
+    already recast in it — and comparing against it would announce a change of basis
+    that the annual figures do not have. When the 10-K does not tag the period, nothing
+    is concluded.
+    """
+    rows = (us_gaap.get(concept) or {}).get("units", {}).get(unit, []) or []
+    same = [
+        e for e in rows
+        if e.get("accn") == annual_accn
+        and e.get("start") == entry.get("start") and e.get("end") == entry.get("end")
+        and e.get("val") is not None
+    ]
+    return same[0] if same else None
+
+
+#: How close a cover-page share-count ratio must be to a whole number to be read as a
+#: split: wider than the per-share tolerance because months of buybacks or issuance sit
+#: between the two cover dates.
+_COVER_SPLIT_TOLERANCE = 0.04
+
+
+def _cover_shares(dei: dict[str, Any] | None, accn: str) -> float | None:
+    """Cover-page shares outstanding in one filing, summed across its rows at one date."""
+    rows = [
+        e for e in ((dei or {}).get("EntityCommonStockSharesOutstanding") or {})
+        .get("units", {}).get("shares", []) or []
+        if e.get("accn") == accn and e.get("val") is not None
+    ]
+    if not rows:
+        return None
+    latest = max(e.get("end") or "" for e in rows)
+    total = sum(float(e["val"]) for e in rows if (e.get("end") or "") == latest)
+    return total or None
+
+
+def _whole_ratio(ratio: float, tolerance: float) -> tuple[str, int] | None:
+    """(kind, k) when ``ratio`` (new per-share / old per-share) is k or 1/k, k >= 2."""
+    if ratio <= 0:
+        return None
+    for k in range(2, 51):
+        if abs(ratio - k) / k < tolerance:
+            return BASIS_SHARE_CONSOLIDATION, k
+        if abs(1.0 / ratio - k) / k < tolerance:
+            return BASIS_SHARE_SPLIT, k
+    return None
+
+
+def _prior_quarterly(us_gaap: dict[str, Any], concept: str, unit: str, entry: dict,
+                     *, filed_by: str, exclude_accn: str) -> dict | None:
+    """The same concept and period as a 10-Q reported it on or before ``filed_by``."""
+    rows = (us_gaap.get(concept) or {}).get("units", {}).get(unit, []) or []
+    same = [
+        e for e in rows
+        if e.get("form") in _QUARTERLY_FORMS and e.get("accn") != exclude_accn
+        and e.get("start") == entry.get("start") and e.get("end") == entry.get("end")
+        and (e.get("filed") or "") <= filed_by and e.get("val") is not None
+    ]
+    return max(same, key=lambda e: e.get("filed") or "") if same else None
+
+
+def _annual_recast_nothing(us_gaap: dict[str, Any], concept: str, *, annual_accn: str,
+                           annual_end: str | None, annual_filed: str) -> bool:
+    """True when the annual report restated NOTHING of its prior year for ``concept``.
+
+    Its prior-year comparative must equal that year's figure as the previous annual
+    report filed it (within 1%). Then a quarter that a later 10-Q restates was not
+    already restated in the annual report, and last year's 10-Q is a fair baseline for
+    it. Anything missing answers False.
+    """
+    if not annual_end:
+        return False
+    rows = (us_gaap.get(concept) or {}).get("units", {}).get("USD", []) or []
+    comparatives = [
+        e for e in rows
+        if e.get("accn") == annual_accn and (e.get("end") or "") < annual_end
+        and 350 <= (_duration_days(e) or 0) <= 380 and e.get("val")
+    ]
+    if not comparatives:
+        return False
+    restated = max(comparatives, key=lambda e: e.get("end") or "")
+    originals = [
+        e for e in rows
+        if str(e.get("form") or "").startswith("10-K") and e.get("accn") != annual_accn
+        and e.get("start") == restated.get("start") and e.get("end") == restated.get("end")
+        and (e.get("filed") or "") < annual_filed and e.get("val")
+    ]
+    if not originals:
+        return False
+    original = min(originals, key=lambda e: e.get("filed") or "")
+    return abs(float(restated["val"]) / float(original["val"]) - 1.0) <= 0.01
+
+
+def _newest_quarterly_accession(
+    us_gaap: dict[str, Any], concepts: list[str], *, filed_after: str | None = None,
+) -> dict | None:
+    """The entry of the 10-Q (or 10-Q/A) covering the LATEST period, latest filing first.
+
+    Chosen by period end, then filing date: an amendment of an older quarter filed after
+    the newest 10-Q is not the latest quarter, and never hides it.
+    """
+    newest: dict | None = None
+    for concept in concepts:
+        unit = "USD/shares" if concept in _EPS_DILUTED + _EPS_BASIC else "USD"
+        for e in (us_gaap.get(concept) or {}).get("units", {}).get(unit, []) or []:
+            if e.get("form") not in _QUARTERLY_FORMS or not e.get("accn"):
+                continue
+            if filed_after and (e.get("filed") or "") <= filed_after:
+                continue
+            key = (e.get("end") or "", e.get("filed") or "")
+            if newest is None or key > (newest.get("end") or "", newest.get("filed") or ""):
+                newest = e
+    return newest
+
+
+def _eps_whole_ratio(restated: float, original: float) -> tuple[str, int] | None:
+    """(kind, k) when a restated EPS is k times (or 1/k of) the original, allowing for
+    cent rounding.
+
+    Per-share figures are printed to the cent, so a small EPS restated by a large ratio
+    misses a pure 2% test. Live replay of GE's 1-for-8 reverse split (2021): Q3 2020 EPS
+    -0.14 → -1.09 is 7.79x, 2.7% off 8. The check therefore accepts half a cent of
+    rounding on each side (|restated − k·original| ≤ 0.005·(k+1)), but only for a move of
+    at least 1.5x, so an unchanged cent figure is never read as a ratio.
+    """
+    if not original or not restated or (restated > 0) != (original > 0):
+        return None
+    ratio = restated / original
+    if 1 / 1.5 < ratio < 1.5:
+        return None
+    best: tuple[float, str, int] | None = None
+    for k in range(2, 51):
+        for kind, gap, scale in (
+            (BASIS_SHARE_CONSOLIDATION, abs(restated - k * original), abs(k * original)),
+            (BASIS_SHARE_SPLIT, abs(original - k * restated), abs(original)),
+        ):
+            if gap <= max(_SPLIT_TOLERANCE * scale, 0.005 * (k + 1)):
+                score = gap / max(scale, 1e-9)
+                if best is None or score < best[0]:
+                    best = (score, kind, k)
+    return (best[1], best[2]) if best else None
+
+
+def basis_changes_since_annual(
+    us_gaap: dict[str, Any], *, annual_filed: str | None, annual_accn: str | None = None,
+    annual_end: str | None = None, dei: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Restatements, in a 10-Q filed after the annual bundle, of periods that bundle saw.
+
+    Every 10-Q restates last year's quarter beside this year's. When that comparative
+    differs from the value as it stood when the annual report was filed, the issuer has
+    changed basis since — and the annual figures are on the OLD basis:
+
+    * revenue restated by more than 5% — a perimeter recast (a discontinued operation,
+      a spin-off, a disposal);
+    * per-share figures restated by a whole-number ratio while net income is unchanged —
+      a share split or consolidation.
+
+    Live QA campaign 2026-11: Honeywell spun off Aerospace and consolidated its shares
+    1-for-2 on 2026-06-29. Its Q3 2026 10-Q restates Q3 2025 revenue from 9,437m to 4,929m
+    and diluted EPS from 2.86 to 5.71. The report presented FY2025 revenue of 37,442m and
+    EPS of 7.36 as current, beside a post-consolidation share price.
+
+    The baseline is, in order:
+
+    1. the annual report's OWN tagging of the quarter (Honeywell's 10-K tags Q3 2025);
+    2. otherwise last year's 10-Q — but only when nothing since could already be inside
+       the annual figures: for revenue, the annual report restated nothing of its prior
+       year; for per-share figures, the cover-page share count moved by the SAME whole
+       ratio between the annual report's cover and the restating 10-Q's (a split made
+       before the 10-K leaves the covers equal). Most 10-Ks have not tagged quarters since
+       Item 302(a) was dropped in 2021, so without (2) the check would rarely run.
+
+    A cover-page share count change on its own is never a split: an issuance, an ATM
+    programme or an all-stock merger moves it too, and none of them restates past EPS.
+    """
+    if not annual_filed or not annual_accn:
+        return []
+    newest = _newest_quarterly_accession(
+        us_gaap, [*_REVENUE, *_NET_INCOME, *_EPS_DILUTED], filed_after=annual_filed
+    )
+    if newest is None:
+        return []
+    accn, filed = newest.get("accn") or "", newest.get("filed") or ""
+    period_end = max(
+        (e.get("end") or "" for c in [*_REVENUE, *_NET_INCOME]
+         for e in (us_gaap.get(c) or {}).get("units", {}).get("USD", []) or []
+         if e.get("accn") == accn),
+        default="",
+    )
+    if not accn or not period_end or (annual_end and period_end <= annual_end):
+        return []
+    out: list[dict[str, Any]] = []
+
+    for concept in _REVENUE:
+        found = False
+        for restated in sorted(_comparatives(us_gaap, concept, "USD", accn, period_end),
+                               key=lambda e: e.get("end") or "", reverse=True):
+            original = _as_filed_in(us_gaap, concept, "USD", restated, annual_accn)
+            if original is None and _annual_recast_nothing(
+                us_gaap, concept, annual_accn=annual_accn, annual_end=annual_end,
+                annual_filed=annual_filed,
+            ):
+                original = _prior_quarterly(us_gaap, concept, "USD", restated,
+                                            filed_by=annual_filed, exclude_accn=accn)
+            if original is None or not original["val"] or restated.get("val") is None:
+                continue
+            change = float(restated["val"]) / float(original["val"]) - 1.0
+            found = True
+            if abs(change) > _RECAST_THRESHOLD:
+                out.append({
+                    "kind": BASIS_RECAST,
+                    "metric": "revenue",
+                    "period_start": restated.get("start"),
+                    "period_end": restated.get("end"),
+                    "as_filed": round(float(original["val"]) / _MILLION, 2),
+                    "restated": round(float(restated["val"]) / _MILLION, 2),
+                    "change_pct": round(change * 100.0, 1),
+                    "restating_filing": accn,
+                    "restating_filed": filed,
+                    "sentence": (
+                        f"the 10-Q filed {filed} restates revenue for the quarter ending "
+                        f"{restated.get('end')} from {float(original['val']) / _MILLION:,.0f}m "
+                        f"(as it stood when the annual report was filed) to "
+                        f"{float(restated['val']) / _MILLION:,.0f}m ({change * 100.0:+.1f}%): "
+                        "the annual figures predate a change of perimeter (a discontinued "
+                        "operation, spin-off or disposal) and are not comparable with the "
+                        "current period"
+                    ),
+                })
+            break
+        if found:
+            break
+
+    before, after = _cover_shares(dei, annual_accn), _cover_shares(dei, accn)
+    cover_whole = (
+        _whole_ratio(before / after, _COVER_SPLIT_TOLERANCE)
+        if before is not None and after is not None else None
+    )
+    for eps_concept in _EPS_DILUTED + _EPS_BASIC:
+        decided = False
+        for restated in _comparatives(us_gaap, eps_concept, "USD/shares", accn, period_end):
+            original = _as_filed_in(
+                us_gaap, eps_concept, "USD/shares", restated, annual_accn
+            )
+            via_annual = original is not None
+            if original is None and cover_whole is not None:
+                original = _prior_quarterly(us_gaap, eps_concept, "USD/shares", restated,
+                                            filed_by=annual_filed, exclude_accn=accn)
+            if original is None or not original["val"] or not restated.get("val"):
+                continue
+            # Net income for the same period must be unchanged: a per-share move with
+            # unchanged earnings is a share-count change, nothing else.
+            same_period = (restated.get("start"), restated.get("end"))
+            ni_concept, ni_now = next(
+                (
+                    (c, e)
+                    for c in _NET_INCOME
+                    for e in _comparatives(us_gaap, c, "USD", accn, period_end)
+                    if (e.get("start"), e.get("end")) == same_period
+                ),
+                ("", None),
+            )
+            # The same concept, from the same kind of baseline, on both sides.
+            ni_then: dict | None = None
+            if ni_now is not None:
+                ni_then = (
+                    _as_filed_in(us_gaap, ni_concept, "USD", ni_now, annual_accn)
+                    if via_annual
+                    else _prior_quarterly(us_gaap, ni_concept, "USD", ni_now,
+                                          filed_by=annual_filed, exclude_accn=accn)
+                )
+            if not ni_now or not ni_then or not ni_then["val"]:
+                continue
+            decided = True
+            if abs(float(ni_now["val"]) / float(ni_then["val"]) - 1.0) > 0.01:
+                break
+            whole = _eps_whole_ratio(float(restated["val"]), float(original["val"]))
+            # Without the annual report's own figure, the cover pages must show the SAME
+            # change since the annual report, or it may predate it.
+            if whole is not None and (via_annual or whole == cover_whole):
+                kind, k = whole
+                words = _split_words(kind, k)
+                cover = (
+                    f" (cover-page shares outstanding {before / 1e6:,.1f}m on the annual "
+                    f"report, {after / 1e6:,.1f}m on the 10-Q)"
+                    if not via_annual and before is not None and after is not None else ""
+                )
+                out.append({
+                    "kind": kind,
+                    "metric": "eps",
+                    "ratio": k,
+                    "period_end": restated.get("end"),
+                    "as_filed": original["val"],
+                    "restated": restated["val"],
+                    "restating_filing": accn,
+                    "restating_filed": filed,
+                    "sentence": (
+                        f"the 10-Q filed {filed} restates earnings per share for the quarter "
+                        f"ending {restated.get('end')} from {original['val']} to "
+                        f"{restated['val']} with net income unchanged{cover} — {words} since "
+                        "the annual report; per-share figures from before it are not "
+                        "comparable with the current share count or price"
+                    ),
+                })
+            break
+        if decided:
+            break
+    return out
+
+
+def _split_words(kind: str, k: int) -> str:
+    if kind == BASIS_SHARE_CONSOLIDATION:
+        return f"a 1-for-{k} share consolidation"
+    return f"a {k}-for-1 share split"
+
+
+# ---------------------------------------------------------------------------
+# Operating income that is not operating income — QA campaign 2026-11
+# ---------------------------------------------------------------------------
+
+_COST_OF_REVENUE = ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfGoodsSold"]
+_SGA = ["SellingGeneralAndAdministrativeExpense"]
+_SGA_PARTS = ["SellingAndMarketingExpense", "GeneralAndAdministrativeExpense"]
+_RND = [
+    "ResearchAndDevelopmentExpense",
+    "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
+]
+#: How far a tagged operating income may exceed revenue less the filing's own cost of
+#: revenue, SG&A and R&D before it is not read as operating income: both a share of
+#: revenue and a share of the figure itself, so a small other-operating-income line (a
+#: disposal gain inside operating income) is never mistaken for a different measure.
+_OPERATING_EXCESS_OF_REVENUE = 0.03
+_OPERATING_EXCESS_OF_VALUE = 0.10
+
+
+def _same_filing_value(
+    us_gaap: dict[str, Any], aliases: list[str], *, accn: str | None, end: str | None,
+    duration_days: int | None,
+) -> float | None:
+    for concept in aliases:
+        for entry in (us_gaap.get(concept) or {}).get("units", {}).get("USD", []) or []:
+            if entry.get("accn") != accn or entry.get("end") != end:
+                continue
+            if duration_days is not None and _duration_days(entry) != duration_days:
+                continue
+            if entry.get("val") is not None:
+                return float(entry["val"]) / _MILLION
+    return None
+
+
+def operating_income_excess(
+    us_gaap: dict[str, Any], *, accn: str | None, end: str | None,
+    duration_days: int | None, revenue_m: float, operating_income_m: float,
+) -> str | None:
+    """Why a tagged ``OperatingIncomeLoss`` is not the group's operating income, or None.
+
+    A true operating income cannot exceed revenue less a SUBSET of the same filing's own
+    operating expenses (cost of revenue, SG&A, R&D): every expense line left out only
+    lowers it further. A filer that presents no operating-income line can still tag its
+    TOTAL SEGMENT PROFIT as ``OperatingIncomeLoss`` in the segment note. Live QA campaign
+    2026-11: Honeywell's "operating income" (FY2025 8,127m, Q3 2026 1,062m) is its total
+    segment profit — before corporate costs, intangible amortisation, repositioning and
+    pension items — and the report printed a 21.7% "group operating margin" from it.
+    Revenue less cost of sales, SG&A and R&D was 6,567m for that year.
+
+    Checked only when cost of revenue and SG&A are both tagged for the same filing and
+    period; otherwise nothing can be said and None is returned.
+    """
+    if not accn or not end:
+        return None
+    def value(aliases: list[str]) -> float | None:
+        return _same_filing_value(
+            us_gaap, aliases, accn=accn, end=end, duration_days=duration_days
+        )
+
+    cost = value(_COST_OF_REVENUE)
+    sga = value(_SGA)
+    if sga is None:
+        parts = [value([c]) for c in _SGA_PARTS]
+        sga = sum(p for p in parts if p is not None) if None not in parts else None
+    if cost is None or sga is None:
+        return None
+    rnd = value(_RND) or 0.0
+    bound = revenue_m - cost - sga - rnd
+    excess = operating_income_m - bound
+    if (
+        excess > _OPERATING_EXCESS_OF_REVENUE * abs(revenue_m)
+        and excess > _OPERATING_EXCESS_OF_VALUE * abs(operating_income_m)
+    ):
+        return (
+            f"tagged OperatingIncomeLoss {operating_income_m:,.0f}m exceeds revenue less the "
+            f"filing's own cost of revenue, SG&A and R&D ({bound:,.0f}m), so it is not group "
+            "operating income as reported — possibly a total of segment profit or a "
+            "non-GAAP measure (or R&D is already inside cost of revenue); withheld rather "
+            "than presented as operating income"
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The latest quarter — QA campaign 2026-11
+# ---------------------------------------------------------------------------
+
+#: (report field, concept aliases, kind). Flows are taken for the single quarter only;
+#: a year-to-date figure is never presented as a quarter.
+_QUARTER_FACT_FIELDS: tuple[tuple[str, list[str], str], ...] = (
+    ("revenue", _REVENUE, "flow"),
+    ("operating_profit", _OPERATING_INCOME, "flow"),
+    ("net_income", _NET_INCOME, "flow"),
+    ("cash_and_equivalents", _CASH, "instant"),
+    ("total_assets", _TOTAL_ASSETS, "instant"),
+    ("total_equity", _SHAREHOLDERS_EQUITY, "instant"),
+)
+_QUARTER_LABELS = {"Q1", "Q2", "Q3"}
+
+
+def latest_quarter_facts(
+    us_gaap: dict[str, Any], *, annual_filed: str | None, cik: str | None,
+    annual_end: str | None = None,
+) -> list[dict[str, Any]]:
+    """The newest 10-Q's figures, as primary-fact dicts, when it is newer than the 10-K.
+
+    Live QA campaign 2026-11: every US report said "Interim report acquired — figures not
+    yet extracted" and showed only the annual bundle, although the 10-Q's XBRL was in hand.
+    For Honeywell that meant every figure was the pre-spin-off FY2025 perimeter, while
+    the Q3 2026 10-Q — continuing operations, after the Aerospace spin — was ignored.
+
+    Rules, all fail-closed:
+      * only the single newest 10-Q filing (one accession), and only when it was filed
+        after the annual bundle's filing;
+      * only that filing's OWN current period (its latest period end) — never the
+        prior-year comparatives it also carries;
+      * a flow only when it spans one quarter (80-100 days); a year-to-date figure is not
+        a quarter and is skipped;
+      * consolidated values only (companyfacts carries no segment dimensions).
+    """
+    entries: list[tuple[str, str, dict]] = []
+    for field_name, aliases, kind in _QUARTER_FACT_FIELDS:
+        for concept in aliases:
+            for entry in (us_gaap.get(concept) or {}).get("units", {}).get("USD", []) or []:
+                if entry.get("form") in _QUARTERLY_FORMS and entry.get("accn"):
+                    entries.append((field_name, concept, entry))
+    if not entries:
+        return []
+    # The latest PERIOD first, then the latest filing of it: a 10-Q/A for an older
+    # quarter filed after the newest 10-Q never stands in for it.
+    newest = max(entries, key=lambda t: (t[2].get("end") or "", t[2].get("filed") or ""))[2]
+    accn, filed = newest.get("accn") or "", newest.get("filed") or ""
+    if not accn or (annual_filed and filed <= annual_filed):
+        return []
+    own = [(f, c, e) for f, c, e in entries if e.get("accn") == accn]
+    period_end = max((e.get("end") or "" for _f, _c, e in own), default="")
+    # A 10-Q (or 10-Q/A) filed late for a quarter the annual report already covers is
+    # not the latest period.
+    if not period_end or (annual_end and period_end <= annual_end):
+        return []
+    cik_digits = (
+        str(int(cik)) if cik and str(cik).isascii() and str(cik).isdigit() else None
+    )
+    url = (
+        f"{_EDGAR_ARCHIVES_URL}/{cik_digits}/{accn.replace('-', '')}/"
+        if cik_digits and _ACCESSION_RE.fullmatch(accn)
+        else None
+    )
+    out: list[dict[str, Any]] = []
+    for field_name, aliases, kind in _QUARTER_FACT_FIELDS:
+        chosen: dict | None = None
+        chosen_concept = ""
+        for concept in aliases:
+            for _f, c, e in own:
+                if c != concept or _f != field_name or e.get("end") != period_end:
+                    continue
+                days = _duration_days(e)
+                if kind == "flow" and (days is None or not 80 <= days <= 100):
+                    continue
+                if kind == "instant" and e.get("start"):
+                    continue
+                chosen, chosen_concept = e, concept
+                break
+            if chosen is not None:
+                break
+        if chosen is None or chosen.get("val") is None:
+            continue
+        if field_name == "operating_profit":
+            revenue_fact = next((f for f in out if f["field"] == "revenue"), None)
+            if revenue_fact is None or operating_income_excess(
+                us_gaap, accn=accn, end=period_end, duration_days=_duration_days(chosen),
+                revenue_m=revenue_fact["numeric_value"],
+                operating_income_m=float(chosen["val"]) / _MILLION,
+            ):
+                continue
+        fp = str(chosen.get("fp") or "").upper()
+        fy = chosen.get("fy")
+        if fp not in _QUARTER_LABELS or not isinstance(fy, int):
+            continue
+        label = f"{fp} {fy}"
+        millions = round(float(chosen["val"]) / _MILLION, 2)
+        out.append(
+            {
+                "field": field_name,
+                "value": f"{millions:,.2f}",
+                "numeric_value": millions,
+                "unit": None,
+                "currency": "USD",
+                "scale": "million",
+                "period": label,
+                "period_end": period_end,
+                "scope": "Group",
+                "source_url": url,
+                "page_number": None,
+                "excerpt_id": f"xbrl:{chosen_concept}",
+                "confidence": "high",
+                "document_title": f"Form 10-Q ({label}), SEC EDGAR XBRL",
+                "document_date": filed,
+                "document_source_type": "sec_edgar_xbrl",
+                "source": "sec_edgar_xbrl",
+                "source_tier": "T2_regulator_or_gov",
+            }
+        )
+    return out
