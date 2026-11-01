@@ -308,7 +308,14 @@ def resolve_classification(
         )
 
     # ── 3. Keyword inference, plainly labelled an estimate ───────────────
-    inferred = _industry_from_text(stored_industry or sic_description)
+    # The table above says it: ONLY when no SIC code is available. A filer under SIC
+    # 6211 (broker-dealers) whose vendor label reads "Investment Banking & Brokerage"
+    # is not a deposit-taking bank because the label contains "banking" — the
+    # regulator's code placed it elsewhere, and an unmapped code is not a licence to
+    # guess (QA campaign 2026-11, ADR-069).
+    inferred = (
+        None if out.sic_code else _industry_from_text(stored_industry or sic_description)
+    )
     if inferred:
         candidates.append(
             (tier_rank(T6), T6, inferred, INDUSTRY_TO_SECTOR.get(inferred),

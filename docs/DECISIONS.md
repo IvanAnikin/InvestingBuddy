@@ -5352,10 +5352,29 @@ sector-agnostic, and none of them could ask a playbook anything:
     - records "DCF on free cash flow is not meaningful for this business model" as a
       blocker;
     - requires book value per share and ROE for relative valuation (labelled P/B, P/E);
-    - no longer says EBITDA is unavailable.
+    - no longer says EBITDA is unavailable;
+    - does not count free cash flow among the core statement inputs that make
+      readiness "partial".
 
     No platform source produces book value per share yet, so it is an honest missing
     input.
+- **Total debt stays meaningful for a bank (after ADR-067).** A bank's total debt is a
+  real, disclosed figure. For JPM it is 499,982: long-term debt including the current
+  portion (435,206) plus `ShortTermBorrowings` (64,776). It is neither declared nor
+  filtered, and it resolves as a financial category. What is not meaningful is net debt
+  and everything derived from it: net debt/EBITDA and the EV-based industrial
+  multiples. A test on real JPM companyfacts rows (a trimmed fixture with an identical
+  normalised record) asserts all of this:
+  - total debt is 499,982;
+  - no net debt is computed or refused;
+  - no valuation blocker mentions net debt;
+  - `total_debt` is not an open category.
+- **SIC wins over a vendor label.** `resolve_classification` now uses keyword
+  inference only when no SIC code is present, which is what its table already
+  documented. Before, a broker-dealer under SIC 6211 whose vendor label read
+  "Investment Banking & Brokerage" was inferred to be "Banks" from the word "banking",
+  and so lost its metrics. The only other code the change was seen to affect is SIC
+  5094 (jewelry wholesale), which no longer infers "Watches & Jewelry".
 - **Recorded once, as not meaningful, never as a gap.**
   - The record appears as `v3_research.not_meaningful_metrics`, with status
     `not_meaningful_for_business_model`, the playbook, reason, reader note, narrowed
@@ -5384,7 +5403,11 @@ sector-agnostic, and none of them could ask a playbook anything:
   withhold them. The V2 snapshot also keeps the raw OCF line for non-council uses.
 - No bank metric is added. NIM, CET1, NCO rate and provisions extraction remain open
   (JPM-11: blocking bank questions can be "satisfied" without the metric they ask for).
-  Book value per share has no producer.
+- **Book value per share is never produced.** It could be derived as an estimate from
+  `shareholders_equity_usd_m / shares_outstanding_mln`, but this PR does not do that.
+  The derivation needs the period of the share count matched to the balance-sheet date,
+  and an estimate label. Until then the valuation guard reports it as missing, and P/B
+  for a bank stays blocked.
 - `balance_sheet_risk` is still asked of a bank. It requires no calculation, and on JPM
   it produced supplementary-leverage-ratio findings, which are capital facts. The same
   question produced "liabilities exceeding eleven times equity" (neutral). That
@@ -5399,4 +5422,7 @@ sector-agnostic, and none of them could ask a playbook anything:
   keeps the metrics. Examples: AXP and SOFI under 6199.
 - The V2 snapshot path depends on the provider's profile words. A bank whose profile
   carries neither a recognised industry nor a bank-like SIC description keeps the
-  generic metrics in the V2 surfaces, though not in V3.
+  generic metrics in the V2 surfaces, though not in V3. The reverse case also exists:
+  a V2 profile with no SIC code and a vendor label such as "Investment Banking &
+  Brokerage" is still inferred to be Banks (T6 estimate). SIC wins only where a code
+  is present.

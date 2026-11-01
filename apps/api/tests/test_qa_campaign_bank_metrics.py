@@ -13,6 +13,8 @@ read anywhere — the company is a bank because its classification says so.
 
 from __future__ import annotations
 
+import json
+import pathlib
 from types import SimpleNamespace
 
 import pytest
@@ -234,6 +236,23 @@ def _resolve_by_sic(sic: str):
 @pytest.mark.parametrize(("ticker", "sic"), KEEPS_METRICS_BY_SIC)
 def test_non_bank_financials_keep_every_generic_metric(ticker, sic):
     assert _resolve_by_sic(sic).is_empty, ticker
+
+
+def test_a_broker_dealers_vendor_label_does_not_override_its_sic_code():
+    """SIC 6211 plus a vendor label "Investment Banking & Brokerage" used to infer Banks
+    from the word "banking". When a SIC code is present, the code wins."""
+    from app.services.classification.resolver import resolve_classification
+
+    c = resolve_classification(
+        sic_code="6211",
+        sic_description="Security Brokers, Dealers & Flotation Companies",
+        stored_industry="Investment Banking & Brokerage",
+    )
+    assert c.industry != "Banks"
+    selection = select(sector=c.matching_sector, industry=c.industry)
+    assert resolve(selection, sector=c.matching_sector, industry=c.industry).is_empty
+    # With no code at all, the keyword estimate (T6) still applies, as before.
+    assert resolve_classification(stored_industry="Commercial Banking").industry == "Banks"
 
 
 @pytest.mark.parametrize("sic", ["6021", "6022", "6035"])
@@ -646,3 +665,83 @@ def test_the_report_tells_the_investor_why_the_metrics_are_absent():
     assert by_key["competitive_position"]["metrics_note"] == note
     plain = pr.assemble(pr.ReportInputs(subject={"ticker": "X"}, questions=[], findings=[]))
     assert not any("metrics_note" in s for s in plain["sections"])
+
+
+def test_a_banks_free_cash_flow_is_not_counted_as_a_core_valuation_input():
+    """The `core_statement_inputs` gate. A summary written before ADR-069 can still
+    list FCF as available. For a bank, FCF is not counted towards "partial" readiness."""
+    summary = financial_data_agent_output_to_dict(run_financial_data_agent(BANK))
+    summary["available_fields"] = [*summary["available_fields"], "financials.free_cash_flow"]
+    out = run_valuation_guard_agent(BANK, summary, {"overall_source_quality": "strong"})
+    withheld = [b for b in out.valuation_blockers if "Valuation conclusion withheld" in b]
+    assert withheld, out.valuation_blockers
+    assert not any("free_cash_flow" in b for b in withheld)
+
+
+# ── After ADR-067: a bank's total debt is a real figure; its net debt is not ──── #
+
+#: REAL JPMorgan Chase companyfacts rows (SEC EDGAR), cut to the concepts the SEC
+#: normaliser reads and to FY2025+ rows. The normalised record is identical to the one
+#: from the full 8 MB payload. Values are as filed (USD millions after normalising).
+JPM_FACTS = pathlib.Path(__file__).parent / "fixtures" / "sec_companyfacts_jpm_fy2025_trimmed.json"
+
+
+def _jpm_summary(n) -> dict:  # noqa: ANN001
+    from app.workflows.snapshot_builder import _SEC_STATEMENT_SLOTS
+
+    fs = {key: getattr(n, field) for key, field in _SEC_STATEMENT_SLOTS.items()}
+    fs.update(
+        total_debt_usd_m=n.total_debt,
+        fiscal_year=n.fiscal_year,
+        period_basis=n.period_basis,
+        withheld_fields=[{"field": f} for f in n.withheld_fields],
+        statement_consistency=n.consistency or {},
+    )
+    return fs
+
+
+def test_jpm_total_debt_is_meaningful_and_its_net_debt_is_not():
+    from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
+
+    facts = json.loads(JPM_FACTS.read_text())
+    n = normalize_company_facts(facts, "JPM")
+    # ADR-067: incl-current long-term debt 435,206 + ShortTermBorrowings 64,776.
+    assert n.fiscal_year == 2025
+    assert n.total_debt == 499_982.0
+
+    bank = for_classification(industry="Banks")
+    assert "total_debt" not in bank.financial_categories
+    assert bank.keeps_fact_label("total_debt")
+
+    # The statement tool hands out the total, computes no net debt and refuses nothing.
+    items, gaps = peers.statement_items("JPM", facts, bank.calculations, bank.financial_categories)
+    by_metric = {i["metric_id"]: i for i in items}
+    assert by_metric["total_debt"]["value"] == 499_982.0
+    assert not {"net_debt", "net_debt_to_ebitda"} & set(by_metric)
+    assert not any("net_debt" in g or "net debt" in g.lower() for g in gaps)
+
+    peer_items, peer_gaps = peers._peer_metrics("JPM", facts, bank.calculations)
+    assert "net_debt" not in {i["metric_id"] for i in peer_items}
+    assert not any("net_debt" in g for g in peer_gaps)
+
+    fs = _jpm_summary(n)
+    # Before: the summary helper alone WOULD compute net debt from the complete total.
+    assert "net_debt" in {r.key for r in metrics_from_sec_summary(fs)[0]}
+    readings, refusals = metrics_from_sec_summary(fs, bank.calculations)
+    assert "net_debt" not in {r.key for r in readings}
+    assert "net_debt" not in {r.key for r in refusals}
+
+    snapshot = _snapshot(sector="Financials", industry="National Commercial Banks", fs=fs)
+    summary = financial_data_agent_output_to_dict(run_financial_data_agent(snapshot))
+    assert "financials.total_debt" in summary["available_fields"]
+    state = build_final_research_state(
+        company_snapshot=snapshot,
+        fundamentals_data=None,
+        primary_facts=None,
+        financial_data_summary=summary,
+    ).to_payload()
+    assert "total_debt" not in state["open_financial_categories"]
+    assert "total_debt" in state["resolved_financial_categories"]
+    out = run_valuation_guard_agent(snapshot, summary, {"overall_source_quality": "strong"})
+    assert "financials.total_debt" not in out.missing_valuation_inputs
+    assert not any("net debt" in b.lower() for b in out.valuation_blockers)

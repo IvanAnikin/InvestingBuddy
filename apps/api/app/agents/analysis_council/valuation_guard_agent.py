@@ -299,6 +299,11 @@ def run_valuation_guard_agent(
         "financials.total_debt",
         "financials.cash_and_equivalents",
     ]
+    # ADR-069 — a category the playbook declares not meaningful (a bank's free cash
+    # flow) is not counted as a core input it has.
+    core_statement_inputs = [
+        f for f in core_statement_inputs if f not in not_meaningful_inputs
+    ]
     core_available = [f for f in core_statement_inputs if f in available_financial_data]
     has_core_financials = (
         not is_mock and primary_source and len(core_available) >= 4
