@@ -4319,6 +4319,9 @@ of the two. The geography constraint read the listing venue's country.
    - When a domicile is known, the geography constraint judges the issuer's domicile and HQ
      (a screened HQ is kept, never replaced), not the venue. A Dutch issuer seen through its
      Nasdaq line is "non-US".
+   - An offshore holding jurisdiction with no region (Jersey, Cayman, Bermuda) places a
+     company nowhere. Unless its HQ does, the listing is judged too, so a Jersey-incorporated
+     London company stays European.
    - Without a domicile, the listing country and HQ are judged as before.
    - The shortlist `country`/`region` follow the domicile. The venue's country stays in
      `identity.listing_country`.

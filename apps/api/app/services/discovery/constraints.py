@@ -388,15 +388,18 @@ def verify_geography(
 
     ADR-061: with a known legal domicile, the issuer — its domicile and headquarters — is
     judged, not the venue a line trades on: a French issuer seen through its Nasdaq ADS is
-    in Europe, and a Dutch one is "non-US". Without a domicile the listing country and the
-    headquarters are judged, as before.
+    in Europe, and a Dutch one is "non-US". An offshore holding jurisdiction (Jersey,
+    Cayman, Bermuda) places a company nowhere: unless its headquarters does, the listing
+    is judged too, as it was without a domicile.
     """
     from app.services.exchange_registry import region_for_country
 
-    if domicile_country:
-        observed = list(dict.fromkeys(c for c in (domicile_country, hq_country) if c))
+    issuer = list(dict.fromkeys(c for c in (domicile_country, hq_country) if c))
+    if domicile_country and any(region_for_country(c) for c in issuer):
+        observed = issuer
     else:
-        observed = [c for c in (listing_country, hq_country) if c]
+        observed = list(dict.fromkeys(
+            c for c in (listing_country, hq_country, domicile_country) if c))
     if constraint is None:
         return ConstraintResult(
             "geography", [], HARD, NOT_REQUESTED,

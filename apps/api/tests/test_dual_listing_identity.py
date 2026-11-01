@@ -517,3 +517,19 @@ async def test_d_two_namesakes_on_two_listings_stay_two_companies(
             if r.identity.ticker in {"ORNX", "ORN"}} == {("ORNX", "PA"), ("ORN", "US")}
     assert not [r for r in stage.to_dict()["rejected_leads"]
                 if r.get("rejection_reason") == "duplicate"]
+
+
+def test_an_offshore_holding_domicile_does_not_take_a_london_company_out_of_europe():
+    """A Jersey-incorporated company listed in London (a JE ISIN) is placed by its listing:
+    the holding jurisdiction says nothing about where it is."""
+    europe = build_intent("European mining companies").geography
+    src = {"url": "x", "tier": "exchange"}
+    geo = cons.verify_geography(europe, listing_country="United Kingdom", listing_source=src,
+                                domicile_country="Jersey", domicile_source=src)
+    assert geo.status == cons.PASS, geo.basis
+    no_uk = build_intent("European mining companies excluding the UK").geography
+    if no_uk is not None and no_uk.excluded:
+        excluded = cons.verify_geography(no_uk, listing_country="United Kingdom",
+                                         listing_source=src, domicile_country="Jersey",
+                                         domicile_source=src)
+        assert excluded.status == cons.FAIL
