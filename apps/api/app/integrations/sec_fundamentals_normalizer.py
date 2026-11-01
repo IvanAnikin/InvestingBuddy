@@ -406,8 +406,9 @@ class NormalizedSecFinancials:
     long_term_debt: float | None = None
     #: ADR-067 — total debt from ONE compatible combination of concepts at the reporting
     #: period (see ``debt_basis``); ``None`` when no long-term debt concept is tagged for
-    #: the period. Never a partial sum. Equals ``short_term_debt + long_term_debt``
-    #: whenever both legs are set.
+    #: the period, or when the total is known to be partial or double counted
+    #: (``debt_basis["withheld_reason"]``). Never a partial sum. Equals
+    #: ``short_term_debt + long_term_debt`` whenever both legs are set.
     total_debt: float | None = None
     shares_outstanding: float | None = None
 
@@ -890,6 +891,27 @@ def _apply_total_debt(
             "period_type": latest.period_type,
             "reason": reason,
         }
+
+    if debt.withheld_reason is not None:
+        # Computable, but known to be incomplete or double counted (a maturity schedule
+        # shows principal due within a year that no current concept carries; or the
+        # total exceeds the filer's own total-debt concept). The noncurrent line is a
+        # reported figure and is kept; the total, and every ratio on it, is not.
+        result.long_term_debt = debt.noncurrent
+        result.debt_basis = debt.to_dict()
+        noncurrent = [c for c in debt.components if c.role == "long_term_debt_noncurrent"]
+        if result.long_term_debt is not None and noncurrent:
+            first = noncurrent[0]
+            result.field_periods["long_term_debt"] = {
+                "fy": first.fy, "fp": first.fp, "end": first.end, "form": first.form,
+                "concept": first.concept, "period_type": basis, "duration_days": None,
+            }
+        warnings.append(
+            "SEC EDGAR: total_debt, debt_to_equity and net debt withheld — "
+            + debt.withheld_reason
+            + ". A partial or double-counted total is never published."
+        )
+        return
 
     if debt.long_term_missing or debt.total is None:
         withhold("long_term_debt", ALL_LONG_TERM)

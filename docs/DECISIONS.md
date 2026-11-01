@@ -5006,7 +5006,7 @@ from the counts.
 - No stored run is re-ranked. The replay needs a new run, because the payload of a
   past run does not hold the names that were cut.
 
-## ADR-067: Total Debt Is One Compatible Combination of Concepts, or Nothing
+## ADR-067: Total Debt Is One Complete, Compatible Combination of Concepts, or Nothing
 
 **Status:** Accepted (cross-sector QA campaign 2026-11, defect JPM-1)
 
@@ -5027,7 +5027,8 @@ them. In the US-GAAP taxonomy these concepts overlap:
   include the current portion of long-term debt.
 - `LongTermDebtNoncurrent` and `LongTermDebtAndCapitalLeaseObligations` exclude it.
 - `LongTermDebtCurrent` (and `…CapitalLeaseObligationsCurrent`) is the current portion.
-- `ShortTermBorrowings` excludes the current portion. `CommercialPaper` is part of it.
+- `ShortTermBorrowings` excludes the current portion. `CommercialPaper` and
+  `OtherShortTermBorrowings` are its parts.
 - `DebtCurrent` is short-term borrowings plus the current portion.
 
 `LongTermDebt + LongTermDebtCurrent` and `LongTermDebt + DebtCurrent` both count the
@@ -5040,20 +5041,35 @@ current maturities twice.
    accession where one exists. Total debt is published only as one of these sums, tried
    in this order:
    - (b) noncurrent LTD + `DebtCurrent`. This is skipped when `DebtCurrent` is smaller
-     than a component of it.
+     than current LTD + short-term borrowings combined (with a rounding allowance of
+     max(1m, 0.1%)).
    - (c) noncurrent LTD + current LTD + short-term borrowings.
    - (a) LTD including current maturities + short-term borrowings.
    - Then the same sums with a short-term term missing, each with a basis note: "no
      short-term borrowings tagged for the period (last tagged as … for …)", "no current
      maturities…", or "no current debt…".
 
-   Noncurrent LTD may be derived as (including current − current) when both are tagged
-   and the noncurrent concept is not. `DebtCurrent` is never added to an
-   including-current concept.
-2. **Same line, two concepts.** When `ShortTermBorrowings` equals the current-maturities
+   Short-term borrowings are `ShortTermBorrowings`, else `CommercialPaper` +
+   `OtherShortTermBorrowings` (whichever are tagged). Noncurrent LTD may be derived as
+   (including current − current) when both are tagged and the noncurrent concept is not.
+   `DebtCurrent` is never added to an including-current concept.
+   A total without current maturities (noncurrent alone, or noncurrent + short-term
+   borrowings) is published only when nothing is known to be missing. When the filer's
+   maturity schedule (`LongTermDebtMaturitiesRepaymentsOfPrincipalInNext(Rolling)TwelveMonths`)
+   shows principal due within a year, the total is withheld, with the reason in
+   `debt_basis.withheld_reason`. The noncurrent line is still published as
+   `long_term_debt`.
+2. **Same line, two concepts.** When short-term borrowings equal the current-maturities
    concept (within 0.5m), it is one balance-sheet line tagged twice, and it is counted
    once. IBM and AMD do this. Without the rule, adding the lease-inclusive current concept
-   would have overstated IBM by 6,424m.
+   would have overstated IBM by 6,424m. Where both an including-current and a noncurrent
+   concept are tagged, their difference must also equal the current maturities.
+   Otherwise the total is withheld as ambiguous.
+2a. **The filer's own total is a check.** `DebtAndCapitalLeaseObligations` and
+   `DebtLongtermAndShorttermCombinedAmount` are never the total, because filers use them
+   loosely. A total above one of them is withheld as double counted, unless that concept
+   equals the long-term debt including current maturities (HON: 28,687m, with its 5,893m
+   of borrowings outside it). A total below one of them is kept, with a note.
 3. **Fail closed.** If no long-term debt concept is tagged for the period, `total_debt`,
    `short_term_debt`, `long_term_debt` and `debt_to_equity` are all `None`. The filer's
    latest long-term concept goes to `withheld_fields["long_term_debt"]` with its own
@@ -5073,41 +5089,54 @@ current maturities twice.
      "a short leg with no long leg".
    - `metrics_from_sec_summary` refuses net debt for a persisted summary of that last
      shape too.
-   - Enterprise value already requires `total_debt`, so it inherits the rule.
+   - `statement_metrics.summary_total_debt_is_usable` is the same rule for a persisted
+     summary. Both `metrics_from_sec_summary` (net debt) and
+     `market_metrics_enrichment` (enterprise value) apply it. An EV beside a withheld
+     debt leg would understate what debt holders are owed.
 
-### Replay on 19 filers' cached companyfacts (before → after, USD m)
-11 of 19 totals changed. 7 were double counts of current maturities:
+### Replay on 24 filers' cached companyfacts (before → after, USD m)
+Before is `main` at the time of the PR; after is this ADR with the PR #307 review fixes.
 
 | Filer | Before | After | Why |
 |---|---|---|---|
-| AAPL | 103,028 | 98,657 | `LongTermDebt` + `LongTermDebtCurrent` → noncurrent 78,328 + current 12,350 + CP 7,979 |
+| AAPL | 103,028 | 98,657 | `LongTermDebt` + `LongTermDebtCurrent` double count → noncurrent 78,328 + current 12,350 + CP 7,979 |
 | ABT | 15,962 | 12,929 | same double count; no STB for 2025 (noted) |
 | DIS | 48,737 | 42,026 | same double count |
 | MSFT | 49,521 | 40,294 | same double count |
-| MMM | 14,272 | 12,602 | `LongTermDebt` + `DebtCurrent` → noncurrent 10,932 + `DebtCurrent` 1,670 |
+| MMM | 14,272 | 12,602 | `LongTermDebt` + `DebtCurrent` double count → noncurrent 10,932 + `DebtCurrent` 1,670 |
 | GE | 22,155 | 20,494 | same; equals GE's own `DebtLongtermAndShorttermCombinedAmount` |
 | UPS | 24,193 | 24,127 | same; equals UPS's own `DebtAndCapitalLeaseObligations` |
 | AMZN | 69,291 | 68,851 | `LongTermDebt` (68,836, face value) → balance-sheet carrying lines |
-| HON | 34,939 | 34,580 | `LongTermDebt` 29,046 → balance-sheet 27,141 + 1,546 + STB 5,893 |
+| HON | 34,939 | 34,580 | balance-sheet 27,141 + 1,546 + STB 5,893 |
 | JPM | 64,776 | 499,982 | including-current 435,206 + STB 64,776; d/e 0.179 → 1.379 |
 | GM | — | 131,574 | including-current concept was unknown; no STB tagged (noted) |
+| BAC | 317,816 | 386,304 | `LongTermDebt` 317,816 + CP 20,400 + other short-term borrowings 48,088 |
+| KO | — | 45,492 | 42,119 + current 1,822 + CP 1,495 + other STB 56 |
+| NEE | 93,056 | 95,619 | 89,556 + current 3,500 + CP 1,955 + other STB 608 |
+| CAT | 36,210 | withheld | noncurrent 30,696 + STB 5,514; the schedule shows 7,120 due in 12 months |
+| PYPL | 9,987 | withheld | noncurrent 9,987 only; the schedule shows 1,397 due in 12 months |
 
-These were unchanged: ADBE 6,210, AMD 3,222, CAT 36,210, DUK 89,836, IBM 61,260, MRNA 590,
-PYPL 9,987 and WMT 44,762. CAT, MRNA and PYPL now carry a basis note.
+These were unchanged: ADBE 6,210, AMD 3,222, DUK 89,836, IBM 61,260, MRNA 590 (noted),
+PG 34,138, WFC 193,035 and WMT 44,762. In the first 19 filers, 7 totals were double
+counts of current maturities.
 
 ### Not changed / known limits
-- A short-term term that is not tagged is assumed absent, with a note. CAT tags no
-  balance-sheet current maturities (its debt note shows 7,120m due within a year), so its
-  total is understated by that amount. PYPL's 10-K tags no current debt for 2025. A
-  stale current concept still goes to `withheld_fields["short_term_debt"]`, which makes
-  net-debt consumers refuse net debt, as before.
+- A short-term term that is not tagged is assumed absent, with a note, when nothing
+  says otherwise. The maturity schedule is the only evidence read. A filer that tags
+  neither current maturities nor a schedule (MRNA) keeps its noted total.
+- A stale current concept still goes to `withheld_fields["short_term_debt"]`, which makes
+  net-debt and EV consumers refuse the total, as before.
+- `CommercialPaper` + `OtherShortTermBorrowings` assumes the two are separate lines, as
+  the taxonomy defines them. A filer whose "other" line already contains its commercial
+  paper would be overstated, and no filer-total cross-check is available to catch it.
+  BAC tags no total concept.
 - Debt carried only on dimensional (segment) facts, and concepts outside the roles above
-  (`NotesPayableCurrent`, `OtherShortTermBorrowings`, finance leases tagged on their own,
-  `DebtLongtermAndShorttermCombinedAmount`), are not read. HON's combined amount is long-
-  term debt only, so it is not a safe total.
+  (`NotesPayableCurrent`, finance leases tagged on their own, `OtherLongTermDebt`), are
+  not read.
 - For a bank, total debt from these concepts excludes deposits and is not a leverage
   measure. The banking playbook does not ask for net debt / EBITDA, but the normalizer
-  still emits `debt_to_equity` for a bank (JPM now shows 1.379, not 0.179). Suppressing
+  still emits `debt_to_equity` for a bank (JPM 1.379, BAC 1.274, WFC 1.066). Suppressing
   it by industry is out of scope here.
 - Persisted snapshots written before this change keep their old totals until research is
-  rerun. Only the "short leg with no long leg" shape is detectable after the fact.
+  rerun. Only the "short leg with no long leg" and "withheld leg" shapes are detectable
+  after the fact.

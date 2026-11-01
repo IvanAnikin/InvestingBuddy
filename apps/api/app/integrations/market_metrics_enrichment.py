@@ -203,7 +203,11 @@ def derive_market_metrics(
         )
 
     # ── Enterprise value = market cap + total debt − cash (derived, T6) ──
-    total_debt = fs.get("total_debt_usd_m")
+    from app.services.calculations.statement_metrics import summary_total_debt_is_usable
+
+    # ADR-067: the same rule net debt follows. A total beside a withheld debt leg is
+    # partial, and an EV built on it would understate the claim of debt holders.
+    total_debt = fs.get("total_debt_usd_m") if summary_total_debt_is_usable(fs) else None
     cash = fs.get("cash_and_equivalents_usd_m")
     if out.market_cap_mln is not None and total_debt is not None and cash is not None:
         out.enterprise_value_mln = round(

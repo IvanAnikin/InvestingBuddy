@@ -353,3 +353,154 @@ class TestConsumersDoNotRebuildAPartialSum:
         }
         readings, _ = metrics_from_sec_summary(fs)
         assert {r.key: r.value for r in readings}["net_debt"] == pytest.approx(245.0)
+
+
+DUE_12M = "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths"
+
+
+def _ev(fs: dict) -> float | None:
+    from app.integrations.market_metrics_enrichment import derive_market_metrics
+    from tests.test_phase19_4_identity_sector_market_metrics import _build_prices
+
+    mm = derive_market_metrics("ANY", fs, _build_prices(), "USD")
+    assert mm.market_cap_mln is not None
+    return mm.enterprise_value_mln
+
+
+class TestAKnownPartialIsWithheld:
+    """PR #307 review: a total without current maturities was published although the
+    filer's own maturity schedule showed principal due within twelve months (one
+    industrial: 7,120m, ~20% of its debt; one payments company: 1,397m)."""
+
+    def test_noncurrent_plus_borrowings_with_principal_due_is_withheld(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, ShortTermBorrowings=55.0, **{DUE_12M: 70.0})
+        assert n.total_debt is None and n.debt_to_equity is None
+        assert n.short_term_debt is None, "borrowings alone are not 'due within a year'"
+        assert n.long_term_debt == 300.0, "the noncurrent line is a reported figure"
+        assert "principal due within twelve months" in n.debt_basis["withheld_reason"]
+        assert any("total_debt, debt_to_equity and net debt withheld" in w
+                   and "70.00m" in w for w in n.warnings)
+
+    def test_noncurrent_alone_with_principal_due_is_withheld(self) -> None:
+        n = _n(LongTermDebtNoncurrent=100.0, **{DUE_12M: 14.0})
+        assert n.total_debt is None and n.debt_to_equity is None
+        names = {d.field_name for d in n.to_datapoints()}
+        assert "sec_edgar.total_debt" not in names and "sec_edgar.debt_to_equity" not in names
+
+    def test_a_zero_or_absent_schedule_keeps_the_noted_total(self) -> None:
+        assert _n(LongTermDebtNoncurrent=100.0, **{DUE_12M: 0.0}).total_debt == 100.0
+        assert _n(LongTermDebtNoncurrent=100.0).total_debt == 100.0
+
+    def test_a_basis_that_contains_current_maturities_ignores_the_schedule(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0, **{DUE_12M: 30.0})
+        assert n.total_debt == 330.0
+
+    def test_net_debt_and_enterprise_value_are_refused(self) -> None:
+        facts = _facts(LongTermDebtNoncurrent=300.0, ShortTermBorrowings=55.0,
+                       **{DUE_12M: 70.0})
+        items, _ = peers._peer_metrics("ANY", facts)
+        assert "net_debt" not in {i["metric_id"] for i in items}
+        statement, _ = peers.statement_items("ANY", facts)
+        assert "total_debt" not in {i["metric_id"] for i in statement}
+        n = normalize_company_facts(facts, "ANY", "1")
+        assert _ev({"total_debt_usd_m": n.total_debt,
+                    "long_term_debt_usd_m": n.long_term_debt,
+                    "cash_and_equivalents_usd_m": 300.0,
+                    "shares_outstanding_mln": 10.0}) is None
+
+
+class TestEnterpriseValueFollowsTheNetDebtRule:
+    def test_a_total_beside_a_withheld_leg_gives_no_ev(self) -> None:
+        fs: dict[str, Any] = {
+            "total_debt_usd_m": 300.0, "long_term_debt_usd_m": 300.0,
+            "cash_and_equivalents_usd_m": 50.0, "shares_outstanding_mln": 10.0,
+            "withheld_fields": [{"field": "short_term_debt", "end": "2019-12-31"}],
+        }
+        assert _ev(fs) is None
+        fs.pop("withheld_fields")
+        assert _ev(fs) == pytest.approx(10.0 * 190.0 + 300.0 - 50.0)
+
+    def test_a_short_leg_without_a_long_leg_gives_no_ev(self) -> None:
+        assert _ev({"total_debt_usd_m": 65.0, "short_term_debt_usd_m": 65.0,
+                    "cash_and_equivalents_usd_m": 50.0,
+                    "shares_outstanding_mln": 10.0}) is None
+
+
+class TestShortTermBorrowingsParts:
+    def test_commercial_paper_plus_other_short_term_borrowings(self) -> None:
+        """The bank shape: no ShortTermBorrowings total, but commercial paper and other
+        short-term borrowings tagged as two lines. CP alone dropped 48.1bn."""
+        n = _n(LongTermDebt=320.0, CommercialPaper=20.0, OtherShortTermBorrowings=48.0)
+        assert n.total_debt == 388.0
+        assert "CommercialPaper (20.00m) + OtherShortTermBorrowings (48.00m)" in (
+            n.debt_basis["formula"]
+        )
+
+    def test_other_short_term_borrowings_alone(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0,
+               OtherShortTermBorrowings=6.0)
+        assert n.total_debt == 336.0
+        _legs_add_up(n)
+
+    def test_the_total_wins_over_its_parts(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0,
+               ShortTermBorrowings=15.0, CommercialPaper=8.0, OtherShortTermBorrowings=7.0)
+        assert n.total_debt == 345.0
+
+
+class TestTheFilersOwnTotalIsACheck:
+    def test_a_total_above_the_filers_own_is_withheld(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0,
+               ShortTermBorrowings=15.0, DebtAndCapitalLeaseObligations=338.0)
+        assert n.total_debt is None and n.debt_to_equity is None
+        assert "exceeds the filer's own DebtAndCapitalLeaseObligations" in (
+            n.debt_basis["withheld_reason"]
+        )
+
+    def test_agreement_within_rounding_keeps_the_total(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, DebtCurrent=45.0,
+               DebtLongtermAndShorttermCombinedAmount=346.0)
+        assert n.total_debt == 345.0
+        assert not any("total_debt" in w for w in n.warnings)
+
+    def test_a_filer_total_that_is_long_term_debt_only_is_recognised(self) -> None:
+        """One real filer tags noncurrent + current maturities (28,687m) as
+        DebtLongtermAndShorttermCombinedAmount; its 5,893m of borrowings sit outside."""
+        n = _n(LongTermDebtAndCapitalLeaseObligations=270.0,
+               LongTermDebtAndCapitalLeaseObligationsCurrent=15.0,
+               ShortTermBorrowings=60.0, DebtLongtermAndShorttermCombinedAmount=285.0)
+        assert n.total_debt == 345.0
+        assert any("equals its long-term debt including current maturities" in note
+                   for note in n.debt_basis["notes"])
+
+    def test_a_total_below_the_filers_own_is_kept_and_noted(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, DebtCurrent=45.0,
+               DebtAndCapitalLeaseObligations=360.0)
+        assert n.total_debt == 345.0
+        assert any("below the filer's own" in note for note in n.debt_basis["notes"])
+
+
+class TestTheSameLineRuleNeedsAgreement:
+    def test_equal_lines_with_disagreeing_long_term_concepts_withhold(self) -> None:
+        n = _n(LongTermDebt=345.0, LongTermDebtNoncurrent=300.0,
+               LongTermDebtCurrent=40.0, ShortTermBorrowings=40.0)
+        assert n.total_debt is None
+        assert "cannot be told" in n.debt_basis["withheld_reason"]
+
+    def test_equal_lines_with_agreeing_long_term_concepts_count_once(self) -> None:
+        n = _n(LongTermDebt=340.0, LongTermDebtNoncurrent=300.0,
+               LongTermDebtCurrent=40.0, ShortTermBorrowings=40.0)
+        assert n.total_debt == 340.0
+
+
+class TestDebtCurrentMustContainBothParts:
+    def test_debt_current_below_maturities_plus_borrowings_is_not_used(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0,
+               ShortTermBorrowings=15.0, DebtCurrent=35.0)
+        assert n.total_debt == 345.0
+        assert n.debt_basis["combination"] == "noncurrent+current_ltd+short_term_borrowings"
+
+    def test_rounding_between_debt_current_and_its_parts_is_tolerated(self) -> None:
+        n = _n(LongTermDebtNoncurrent=300.0, LongTermDebtCurrent=30.0,
+               ShortTermBorrowings=15.0, DebtCurrent=44.0)
+        assert n.debt_basis["combination"] == "noncurrent+debt_current"
