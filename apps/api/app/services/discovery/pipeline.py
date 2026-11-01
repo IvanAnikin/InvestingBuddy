@@ -407,9 +407,10 @@ async def evaluate(
             listing_source=listing_source,
             hq_country=screened_hq or identity.hq_country,
             hq_source=(screening.hq_source if screened_hq and screening
-                       else identity.domicile_source if identity.hq_country else None),
+                       else identity.hq_source),
             domicile_country=identity.domicile_country,
             domicile_source=identity.domicile_source,
+            other_listing_countries=identity.other_listing_countries,
         )
     )
     results.append(
@@ -727,6 +728,25 @@ async def run_dynamic_stage(
                             name=lead.name, rejection_reason=REJECT_BUDGET,
                             detail=f"beyond the {limit}-verification bound")
         )
+    # ADR-061 — two leads that resolve to ONE issuer (a search's ``ALCLS`` and a recalled
+    # ``CLLS``; a held ``SHEL`` on LSE and a searched ``SHEL`` on NYSE) are one candidate.
+    # Settled before any official-page, regulated-document or candidate-search budget is
+    # spent; the later one is recorded as the same issuer's other listing.
+    kept: list[IdentityOutcome] = []
+    for outcome in verified_external:
+        same = next((e for e in [*identities, *kept]
+                     if outcome.verified and _same_issuer_in_run(outcome, e)), None)
+        if same is None:
+            kept.append(outcome)
+            continue
+        outcome.status = IDENTITY_REJECTED
+        outcome.rejection_reason = REJECT_DUPLICATE
+        outcome.detail = (f"{same.ticker} on {same.exchange} is already in this run "
+                          "(the same issuer's other listing)")
+        if web_on and outcome.lead.discovery_mode in ("search", "model_recall"):
+            _attach_admission(outcome.lead, {"state": "rejected", "codes": [REJECT_DUPLICATE]})
+        stage.rejected.append(outcome)
+    verified_external = kept
     if web_on:
         from app.services.web_research.discovery_stage import DiscoveryWebContext as _Ctx
 
@@ -761,22 +781,6 @@ async def run_dynamic_stage(
         )
     unverifiable: list[IdentityOutcome] = []
     for outcome in verified_external:
-        if outcome.verified:
-            # ADR-061 — two leads that resolve to ONE issuer (a search's ``ALCLS`` and a
-            # recalled ``CLLS``) are one candidate; the later is the same issuer's other
-            # listing. Its own record keeps its provenance.
-            in_run = {k for i in identities for k in _issuer_keys(i)}
-            overlap = sorted(_issuer_keys(outcome) & in_run)
-            if overlap:
-                outcome.status = IDENTITY_REJECTED
-                outcome.rejection_reason = REJECT_DUPLICATE
-                outcome.detail = (f"{overlap[0]} is already in this run (the same issuer's "
-                                  "other listing)")
-                if web_on and outcome.lead.discovery_mode in ("search", "model_recall"):
-                    _attach_admission(outcome.lead,
-                                      {"state": "rejected", "codes": [REJECT_DUPLICATE]})
-                stage.rejected.append(outcome)
-                continue
         if web_on and outcome.lead.discovery_mode == "search":
             from app.services.discovery import admission as adm
 
@@ -844,10 +848,10 @@ async def run_dynamic_stage(
         geo = cons.verify_geography(
             intent.geography, listing_country=identity.listing_country,
             listing_source=identity.listing_source,
-            hq_country=identity.hq_country,
-            hq_source=identity.domicile_source if identity.hq_country else None,
+            hq_country=identity.hq_country, hq_source=identity.hq_source,
             domicile_country=identity.domicile_country,
             domicile_source=identity.domicile_source,
+            other_listing_countries=identity.other_listing_countries,
         )
         claimed = cons.verify_geography(
             intent.geography, listing_country=identity.lead.country,
@@ -1088,6 +1092,30 @@ def _issuer_keys(identity: IdentityOutcome) -> set[str]:
         if row.get("status") == "verified" and row.get("role") != ROLE_UNLINKED
     }
     return {k for k in keys if k}
+
+
+def _same_issuer_in_run(outcome: IdentityOutcome, earlier: IdentityOutcome) -> bool:
+    """The same issuer as an identity already in the run.
+
+    Either they share a linked line, or — for a home exchange with no directory to link
+    through (LSE, Xetra, Tokyo) — the exact same normalised name AND the regulator- or
+    ISIN-stated place of one equals the other's domicile (its listing country when it has
+    none). The standard ``_home_sibling`` applies; namesakes from two countries stay apart.
+    """
+    if _issuer_keys(outcome) & _issuer_keys(earlier):
+        return True
+    names = {normalised_name(n) for n in (outcome.name, outcome.lead.name) if n}
+    if not names & {normalised_name(n) for n in (earlier.name, earlier.lead.name) if n}:
+        return False
+
+    def placed_with(a: IdentityOutcome, b: IdentityOutcome) -> bool:
+        home = a.domicile_country
+        if not home:
+            return False
+        return (b.domicile_country == home) if b.domicile_country else (
+            b.listing_country == home)
+
+    return placed_with(outcome, earlier) or placed_with(earlier, outcome)
 
 
 def _line_on(identity: IdentityOutcome, venues: tuple[str, ...]) -> tuple[str | None, str]:

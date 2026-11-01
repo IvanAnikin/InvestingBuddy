@@ -418,6 +418,19 @@ class IdentityOutcome:
         """The regulator-recorded business address country, when known."""
         return (self.issuer or {}).get("hq_country")
 
+    @property
+    def hq_source(self) -> dict[str, Any] | None:
+        return (self.issuer or {}).get("hq_source")
+
+    @property
+    def other_listing_countries(self) -> tuple[str, ...]:
+        """Countries of the issuer's OTHER verified lines (never an unlinked company's)."""
+        return tuple(
+            row["listing_country"] for row in self.securities
+            if row.get("status") == "verified" and row.get("role") == ROLE_SECONDARY
+            and row.get("listing_country")
+        )
+
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["lead"] = self.lead.to_dict()
@@ -673,8 +686,11 @@ async def _resolve_issuer(
     basis, source = (chosen[1], chosen[2]) if chosen else (None, None)
     # Where the regulator's record says the business is run (NIO: a Cayman company run
     # from China) — a headquarters, kept apart from the legal domicile.
-    hq_country = next((sig[2].get("business_country") for _o, sig in members
-                       if sig and sig[2].get("business_country")), None)
+    hq_signal = next((sig for _o, sig in members if sig and sig[2].get("business_country")),
+                     None)
+    hq_country = hq_signal[2]["business_country"] if hq_signal else None
+    hq_source = ({k: v for k, v in hq_signal[2].items() if k != "business_country"}
+                 if hq_signal else None)
     linked_by = "named together by one source; the exchanges' names agree"
     if len(linked) == 1 and country and primary == PRIMARY_HOME:
         # A single verified line of a foreign issuer: its home listing, when the home
@@ -712,6 +728,7 @@ async def _resolve_issuer(
         "domicile_basis": basis,
         "domicile_source": source,
         "hq_country": hq_country,
+        "hq_source": hq_source,
         "linked_by": linked_by if len(linked) > 1 else None,
     }
     chosen_line.securities = rows if len(rows) > 1 else []

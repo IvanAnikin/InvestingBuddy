@@ -573,9 +573,15 @@ def listing_name(text: str, start: int) -> str | None:
     return name
 
 
+#: How far back an open bracket may be for a listing to sit inside it.
+MAX_LISTING_BLOCK_CHARS = 120
+
+
 def _in_parentheses(text: str, index: int) -> bool:
-    """True when ``index`` sits inside an open ``(`` on its line of text."""
-    return text.rfind("(", 0, index) > max(text.rfind(")", 0, index), text.rfind("\n", 0, index))
+    """True when ``index`` sits inside an open ``(`` or ``[`` — the issuer's own listing
+    block, even when a PDF wrapped it across lines."""
+    window = text[max(0, index - MAX_LISTING_BLOCK_CHARS) : index]
+    return max(window.rfind("("), window.rfind("[")) > max(window.rfind(")"), window.rfind("]"))
 
 
 def listing_groups(text: str, matches: list[re.Match[str]]) -> list[list[re.Match[str]]]:

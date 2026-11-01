@@ -4315,16 +4315,19 @@ of the two. The geography constraint read the listing venue's country.
      "Ontario, Canada" become Canada, "Korea, Republic of" becomes South Korea.
    - The business address is also kept as `hq_country`: NIO is incorporated in the Cayman
      Islands and run from China.
-5. **Geography follows the issuer.**
-   - When a domicile is known, the geography constraint judges the issuer's domicile and HQ
-     (a screened HQ is kept, never replaced), not the venue. A Dutch issuer seen through its
-     Nasdaq line is "non-US".
-   - An offshore holding jurisdiction with no region (Jersey, Cayman, Bermuda) places a
-     company nowhere. Unless its HQ does, the listing is judged too, so a Jersey-incorporated
-     London company stays European.
-   - Without a domicile, the listing country and HQ are judged as before.
+5. **Geography: where the company is, and where it trades.**
+   - The issuer's place is its HQ (a screened HQ, else the SEC business address), else its
+     legal domicile. An offshore holding jurisdiction with no region (Jersey, Cayman,
+     Bermuda) places a company nowhere.
+   - A requested geography matches the place **or any verified listing of the issuer**.
+     Cellectis is "European" through Paris and "US-listed" through its Nasdaq line, even
+     though its home line is primary.
+   - An excluded geography is judged on the place when one is known: "non-US" names the
+     company, so a Dutch issuer with a US line passes. A Jersey-incorporated London company is
+     judged on its listing.
+   - A UK plc run from New York (Royalty Pharma) is placed in the US: not "European".
    - The shortlist `country`/`region` follow the domicile. The venue's country stays in
-     `identity.listing_country`.
+     `identity.listing_country`. The HQ is cited to its own regulator record (`hq_source`).
 6. **Primary listing.**
    - Discovery uses `primary="home"`: the home-country line leads.
    - A venue a caller chose wins (`primary="given"`), and no home-line scan is spent. The peer
@@ -4341,8 +4344,14 @@ of the two. The geography constraint read the listing venue's country.
      - their venues differ.
    - A bare `NASDAQ: FOO, TSX: BAR` run is a list of companies.
    - The name before a group skips up to two alias parentheticals.
-8. **Dedup.** Two leads that resolve to one issuer (any shared linked line) are one candidate.
-   The later one is recorded as a duplicate: "the same issuer's other listing".
+8. **Dedup.** Two leads that resolve to one issuer are one candidate. The later one is recorded
+   as a duplicate, "the same issuer's other listing", before any official-page,
+   regulated-document or candidate-search budget is spent. One issuer means:
+   - the two leads share a linked line; or
+   - where no directory links the venues (LSE, Xetra, Tokyo), the exact same normalised name
+     plus one side's regulator- or ISIN-stated place equal to the other's domicile, or to its
+     listing country when it has none. A held `SHEL` on LSE and a searched `SHEL` on NYSE are
+     one company; namesakes from two countries stay apart.
 9. Dotted legal forms (`S.A.`, `N.V.`, `S.p.A.`) normalise as one word, so `Cellectis S.A.`
    matches the exchange's `CELLECTIS`.
 

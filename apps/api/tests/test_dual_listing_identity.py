@@ -48,6 +48,8 @@ SEC_JSON = json.dumps({"fields": ["cik", "name", "ticker", "exchange"], "data": 
     [1111111, "Orion", "ORN", "Nasdaq"],
     [2222222, "Acme Therapeutics Inc", "ACMT", "Nasdaq"],
     [1736541, "NIO Inc.", "NIO", "NYSE"],
+    [1306965, "Shell plc", "SHEL", "NYSE"],
+    [1802768, "Royalty Pharma plc", "RPRX", "Nasdaq"],
 ]})
 SUBMISSIONS = {
     1627281: ("I0", "France"),
@@ -74,6 +76,9 @@ RAW_SUBMISSIONS: dict[int, dict[str, Any]] = {
     1736541: {"stateOfIncorporation": "E9", "stateOfIncorporationDescription": "Cayman Islands",
               "addresses": {"business": {"isForeignLocation": 1, "country": "China",
                                          "countryCode": "F4"}}},
+    1802768: {"stateOfIncorporation": "X0", "stateOfIncorporationDescription": "United Kingdom",
+              "addresses": {"business": {"stateOrCountry": "NY",
+                                         "stateOrCountryDescription": "NY"}}},
     320193: {"stateOfIncorporation": "CA", "stateOfIncorporationDescription": "CA",
              "addresses": {"business": {"stateOrCountry": "CA",
                                         "stateOrCountryDescription": "CA"}}},
@@ -533,3 +538,71 @@ def test_an_offshore_holding_domicile_does_not_take_a_london_company_out_of_euro
                                          listing_source=src, domicile_country="Jersey",
                                          domicile_source=src)
         assert excluded.status == cons.FAIL
+
+
+
+# ── Second review: listings still count for "US-listed"; one company is one candidate ── #
+
+
+async def _geo(out: Any, thesis: str) -> Any:
+    results, _ = await evaluate(out, None, build_intent(thesis), cfg=settings, fx_fetcher=fetcher)
+    return next(r for r in results if r.key == "geography")
+
+
+async def test_a_foreign_issuers_us_line_still_satisfies_a_us_listed_thesis():
+    """Its home line is primary, yet the issuer TRADES in the US: "US-listed" matches its
+    verified Nasdaq line."""
+    out = await verify_identity(_lead("Cellectis S.A.", ("CLLS", "NASDAQ")), fetcher=fetcher)
+    assert (out.ticker, out.exchange) == ("ALCLS", "PA")
+    assert (await _geo(out, "US-listed biotech small caps")).status == cons.PASS
+    assert (await _geo(out, "European biotechnology companies")).status == cons.PASS
+    assert (await _geo(out, "non-US biotechnology companies")).status == cons.PASS
+
+
+async def test_a_uk_plc_run_from_new_york_is_not_european_by_its_legal_form():
+    out = await verify_identity(_lead("Royalty Pharma", ("RPRX", "NASDAQ")), fetcher=fetcher)
+    assert out.issuer["domicile_country"] == "United Kingdom"
+    assert out.issuer["hq_country"] == "United States"
+    assert (await _geo(out, "European biotechnology companies")).status == cons.FAIL
+    assert (await _geo(out, "non-US biotechnology companies")).status == cons.FAIL
+
+
+async def test_the_headquarters_is_cited_to_the_regulator_record_it_came_from():
+    out = await verify_identity(
+        _lead("Cellectis", ("ALCLS", "Euronext Growth Paris"), ("CLLS", "NASDAQ")),
+        fetcher=fetcher)
+    if out.issuer.get("hq_country"):
+        assert "data.sec.gov" in out.issuer["hq_source"]["url"]
+    out = await verify_identity(_lead("NIO Inc.", ("NIO", "NYSE")), fetcher=fetcher)
+    assert out.issuer["hq_source"]["url"].startswith("https://data.sec.gov/submissions/")
+    assert "business_country" not in out.issuer["hq_source"]
+
+
+async def test_a_held_london_line_and_a_searched_nyse_line_are_one_company():
+    """No directory links LSE to NYSE; the exact name plus the SEC record's UK place (Shell
+    reads "DC" for incorporation, a UK business address) is the evidence."""
+    from app.services.discovery.identity import platform_identity
+    from app.services.discovery.pipeline import _same_issuer_in_run
+
+    held = platform_identity(
+        CompanyLead(name="Shell plc", ticker="SHEL", exchange_raw="LSE", country=None,
+                    listing_source_url=None, evidence_url=None, why=None,
+                    source="platform_registry"),
+        exchange="LSE")
+    nyse = await verify_identity(_lead("Shell", ("SHEL", "NYSE")), fetcher=fetcher)
+    assert nyse.issuer["domicile_country"] == "United Kingdom"
+    assert held.listing_country == "United Kingdom"
+    assert _same_issuer_in_run(nyse, held)
+    paris = await verify_identity(_lead("Orion", ("ORNX", "Euronext Paris")), fetcher=fetcher)
+    us = await verify_identity(_lead("Orion", ("ORN", "NASDAQ")), fetcher=fetcher)
+    assert not _same_issuer_in_run(us, paris), "namesakes from two countries stay apart"
+
+
+@pytest.mark.parametrize("text", [
+    "Cellectis (Euronext Growth: ALCLS –\nNASDAQ: CLLS), a biotechnology company.",
+    "Pensana Plc [LSE: PRE, ASX: PM8] is building a rare earth refinery.",
+])
+def test_a_wrapped_or_bracketed_listing_block_is_still_one_issuer(text: str) -> None:
+    mentions, _ = ce.extract_mentions(
+        [text], [], ce.ThemeVocabulary(("biotechnology", "rare earth")))
+    assert len(mentions) == 2 and all(m.co_listings for m in mentions)

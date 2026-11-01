@@ -383,23 +383,25 @@ def verify_geography(
     hq_source: dict[str, Any] | None = None,
     domicile_country: str | None = None,
     domicile_source: dict[str, Any] | None = None,
+    other_listing_countries: tuple[str, ...] = (),
 ) -> ConstraintResult:
-    """Where the COMPANY is, against the thesis's geography.
+    """Where the COMPANY is and where it TRADES, against the thesis's geography.
 
-    ADR-061: with a known legal domicile, the issuer — its domicile and headquarters — is
-    judged, not the venue a line trades on: a French issuer seen through its Nasdaq ADS is
-    in Europe, and a Dutch one is "non-US". An offshore holding jurisdiction (Jersey,
-    Cayman, Bermuda) places a company nowhere: unless its headquarters does, the listing
-    is judged too, as it was without a domicile.
+    ADR-061 — the issuer is placed by its headquarters, else its legal domicile (an
+    offshore holding jurisdiction with no region — Jersey, Cayman — places it nowhere). A
+    requested geography matches the place OR any of the issuer's verified listings (a
+    French issuer's Nasdaq ADS line is "US-listed"; its Paris line is "European"). An
+    EXCLUDED geography is judged on the place when one is known — "non-US" names the
+    company — and on the listings otherwise.
     """
     from app.services.exchange_registry import region_for_country
 
-    issuer = list(dict.fromkeys(c for c in (domicile_country, hq_country) if c))
-    if domicile_country and any(region_for_country(c) for c in issuer):
-        observed = issuer
-    else:
-        observed = list(dict.fromkeys(
-            c for c in (listing_country, hq_country, domicile_country) if c))
+    listings = list(dict.fromkeys(c for c in (listing_country, *other_listing_countries) if c))
+    place = next((c for c in (hq_country, domicile_country) if c and region_for_country(c)),
+                 None)
+    unplaced = [c for c in (hq_country, domicile_country) if c and c != place]
+    observed = list(dict.fromkeys([*listings, *([place] if place else unplaced)]))
+    judged_for_exclusion = [place] if place else observed
     if constraint is None:
         return ConstraintResult(
             "geography", [], HARD, NOT_REQUESTED,
@@ -422,11 +424,14 @@ def verify_geography(
         "listing_region": region_for_country(listing_country) if listing_country else None,
         "hq_country": hq_country,
         **({"domicile_country": domicile_country} if domicile_country else {}),
+        **({"other_listing_countries": list(other_listing_countries)}
+           if other_listing_countries else {}),
     }
     # V3.19.2 — what the user EXCLUDED ("non-US", "Europe excluding the UK") fails,
     # whatever else matches: a UK company is in Europe and still not wanted.
     excluded = set(constraint.excluded)
-    hit = [c for c in observed if c in excluded or region_for_country(c) in excluded]
+    hit = [c for c in judged_for_exclusion
+           if c in excluded or region_for_country(c) in excluded]
     if hit:
         return ConstraintResult(
             "geography", list(constraint.requested), constraint.hardness, FAIL,
