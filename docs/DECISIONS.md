@@ -5042,6 +5042,28 @@ quarter's results.
   `SecFilingDocument.item_codes` and `SecPreflightFailure.item_codes`, so the fetched,
   budget-skipped and preflight artifacts all carry the same label.
 - **Plumbing.** Both filing-dict adapters now carry `item_numbers`.
+- **The press release, not the cover page.** An Item 2.02 8-K's primary document is a
+  cover page of a few KB. It only refers to the earnings release filed as Exhibit 99.1.
+  EDGAR's `index.json` types every file by its icon (`text.gif`), so it cannot identify
+  that exhibit. For an Item 2.02 8-K, the resolver therefore also reads the filing's
+  `<accession>-index.htm` page (`fetch_filing_index_page`), whose "Document Format
+  Files" table gives each document's EDGAR type. It resolves the `.htm` document typed
+  `EX-99.1`, or else the first `EX-99*` (`select_results_exhibit`).
+  - Same host (`www.sec.gov/Archives`), same guarded, pinned, throttled, byte-capped
+    network leg as `index.json` (one shared `_fetch_sec_archive_bytes`). No new host
+    and no caller-supplied URL. The filename is the anchor text and is re-validated by
+    `build_document_url`.
+  - The page fetch counts against the existing attempt cap (`max_documents × 3`) and
+    deadline. The two-body cap is unchanged.
+  - Degrades, never fails. If the page cannot be read, names no `EX-99*` document, or
+    the budget is spent, the primary document is kept. An 8-K with missing or non-2.02
+    items never triggers the page fetch.
+  - Downstream is unchanged. The document keeps form `8-K` and its item codes, so the
+    artifact is still labelled `results_release`. `SecFilingDocument.is_exhibit` is
+    `True`.
+  - JPM replay (real index pages, offline): accession 0001628280-26-065582 now resolves
+    to `…/19617/000162828026065582/a3q26erfexhibit991narrative.htm`, not
+    `jpm-20261013.htm`.
 - **Offline replay** on cached EDGAR submissions (90-day window, first 8-K visited):
   - JPM before: 2026-10-20 8.01/9.01. After: 2026-10-13 2.02/9.01.
   - ADBE: 2026-09-10 (2.02) before and after.
@@ -5057,13 +5079,17 @@ quarter's results.
   apart from the old behaviour. Such an 8-K never outranks a known Item 2.02 8-K. The V3
   filing bridge (`ensure_filing_corpus_evidence` → `acquire_sec_filing`) passes only
   accession and form, so 8-Ks it acquires keep that legacy label.
-- **The 8-K body is a cover page.** The resolver still reads the 8-K's primary
-  document. That is a cover page with a few KB of text, which only refers to exhibit 99.1, where
-  the figures are. Exhibits stay excluded (`allow_exhibits=False`), and EDGAR's
-  `index.json` does not type exhibits (PayPal's release is
-  `pypl3q-26earningsrelease.htm`, typed `text.gif`). So the right 8-K being chosen does
-  not by itself bring Q3 figures into the report. Reading exhibit 99.1 is a separate
-  slice.
+- **One exhibit only.** The financial supplement (JPM's EX-99.2, 3.4 MB) is not read.
+  Neither is any exhibit of a non-2.02 8-K. `allow_exhibits` is unchanged for every
+  other form.
+- **V3 bridge sees an exhibit URL.** A press release persisted by this path has an
+  exhibit-shaped URL when the issuer names it so (JPM's `…exhibit991…`; PayPal's
+  `pypl3q-26earningsrelease.htm` is not). If the V3 filing bridge later asks whether
+  that accession is searchable, `filing_evidence_state` treats an exhibit-only version
+  as "not the filing" and reacquires the cover page beside it. Nothing is lost, but
+  the bridge never prefers the release.
+- **An extra request per results 8-K.** Reading the `-index.htm` page (~12 KB) costs
+  one more throttled SEC request.
 - **V3 core filings.** `ensure_core_filings` still secures only the latest 10-K and
   10-Q. A quarter reported by 8-K but not yet in a 10-Q is not secured into the corpus
   by that step.

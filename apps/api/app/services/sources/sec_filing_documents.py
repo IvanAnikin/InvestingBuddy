@@ -42,6 +42,7 @@ Safety properties:
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -246,6 +247,22 @@ def build_filing_index_url(cik: str | int | None, accession: str | None) -> str 
     if padded is None or normalized is None:
         return None
     return f"{SEC_ARCHIVES_BASE}/{int(padded)}/{normalized}/index.json"
+
+
+def build_filing_index_page_url(cik: str | int | None, accession: str | None) -> str | None:
+    """Return the ``<accession>-index.htm`` page URL for one filing, or None.
+
+    ``index.json`` lists the files in an accession folder but types every one by its
+    icon (``text.gif``); only this page carries each document's EDGAR type
+    (``EX-99.1``), which is how a results 8-K's press release is found (ADR-068).
+    Same host, same unpadded-CIK Archives path as :func:`build_filing_index_url`.
+    """
+    padded = normalize_cik(cik)
+    normalized = normalize_accession(accession)
+    if padded is None or normalized is None:
+        return None
+    dashed = format_accession(normalized)
+    return f"{SEC_ARCHIVES_BASE}/{int(padded)}/{normalized}/{dashed}-index.htm"
 
 
 def build_document_url(
@@ -524,6 +541,84 @@ def select_primary_document(
     return None
 
 
+_DOC_TABLE_RE = re.compile(
+    r"<table[^>]*summary=\"Document Format Files\"[^>]*>(.*?)</table>",
+    re.IGNORECASE | re.DOTALL,
+)
+_ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_CELL_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.IGNORECASE | re.DOTALL)
+_ANCHOR_TEXT_RE = re.compile(r"<a\b[^>]*>(.*?)</a>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+_PRESS_RELEASE_EXHIBIT_RE = re.compile(r"^EX-99\.0*1$")
+
+
+def _cell_text(raw: str) -> str:
+    return html.unescape(_TAG_RE.sub(" ", raw)).replace("\xa0", " ").strip()
+
+
+def _exhibit_type(entry: dict[str, Any]) -> str:
+    return _entry_type(entry).upper().replace(" ", "")
+
+
+def parse_filing_index_page(page: str | bytes | None) -> list[dict[str, Any]]:
+    """Rows of the ``Document Format Files`` table on a ``-index.htm`` page. Pure + total.
+
+    Each row becomes ``{"name", "type", "size", "description"}``, in the filing's own
+    sequence order. Only that FIRST table is read: the "Data Files" table below it
+    holds XBRL files, never a press release. Any shape mismatch returns ``[]``. A name
+    is the anchor TEXT (never the link target) and is re-validated by
+    :func:`build_document_url` before it can become a URL.
+    """
+    if isinstance(page, bytes):
+        page = page.decode("utf-8", errors="replace")
+    if not isinstance(page, str):
+        return []
+    table = _DOC_TABLE_RE.search(page)
+    if table is None:
+        return []
+    entries: list[dict[str, Any]] = []
+    for row in _ROW_RE.findall(table.group(1)):
+        cells = _CELL_RE.findall(row)
+        if len(cells) < 5:
+            continue
+        anchor = _ANCHOR_TEXT_RE.search(cells[2])
+        text = _cell_text(anchor.group(1) if anchor else cells[2])
+        name = text.split()[0] if text.split() else ""
+        if not name:
+            continue
+        entries.append(
+            {
+                "name": name,
+                "type": _cell_text(cells[3]),
+                "size": _cell_text(cells[4]),
+                "description": _cell_text(cells[1]),
+            }
+        )
+    return entries
+
+
+def select_results_exhibit(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The press-release exhibit of a results 8-K, or None. Pure + total.
+
+    An ``.htm`` / ``.html`` document typed ``EX-99.1`` wins; otherwise the first
+    ``EX-99*`` document in filing order. A filename that could never be a safe URL is
+    skipped. None means "no press-release exhibit here", and the caller keeps the
+    8-K's primary document (ADR-068).
+    """
+    candidates = [
+        e
+        for e in entries
+        if isinstance(e, dict)
+        and _is_html_entry(e)
+        and not _is_unsafe_filename(_entry_name(e))
+        and _exhibit_type(e).startswith("EX-99")
+    ]
+    for entry in candidates:
+        if _PRESS_RELEASE_EXHIBIT_RE.match(_exhibit_type(entry)):
+            return entry
+    return candidates[0] if candidates else None
+
+
 # --------------------------------------------------------------------------- #
 # Result type
 # --------------------------------------------------------------------------- #
@@ -630,6 +725,116 @@ def _index_max_bytes(cfg: Settings | None) -> int:
 # --------------------------------------------------------------------------- #
 
 
+async def _fetch_sec_archive_bytes(
+    url: str,
+    accession: str | None,
+    *,
+    accept: str,
+    cfg: Settings | None,
+    client_factory: Callable[..., Any] | None,
+    limiter: SecRateLimiter | None,
+    resolver: Resolver | None,
+) -> bytes | None:
+    """GET one small SEC Archives listing; ``None`` on any failure. Never raises.
+
+    The single network leg shared by ``index.json`` and the ``-index.htm`` page: the
+    same allowlist re-check with ``resolve_ip=True``, address pinning, declared
+    User-Agent, config timeout, byte cap, no redirects, 2xx only. A truncated
+    (over-cap) body is discarded rather than half-parsed.
+    """
+    cfg = cfg or default_settings
+    limiter = limiter or SecRateLimiter(cfg=cfg)
+    max_bytes = _index_max_bytes(cfg)
+
+    try:
+        import httpx
+    except Exception as exc:  # noqa: BLE001 - degrade, never crash a run
+        log_event(
+            _logger,
+            "sec_filing_index_unavailable",
+            reason=type(exc).__name__,
+        )
+        return None
+
+    # Same guard chain as ``safe_fetch_document``: an unvalidated address is never
+    # connected to, even though the host here is a code-defined constant.
+    try:
+        check_kwargs: dict[str, Any] = {"cfg": cfg, "resolve_ip": True}
+        if resolver is not None:
+            check_kwargs["resolver"] = resolver
+        reason, pinned_ip = await async_check_fetch_url(
+            url, SEC_ALLOWED_DOMAINS, **check_kwargs
+        )
+    except Exception as exc:  # noqa: BLE001 - a guard failure is a block, never a crash
+        reason, pinned_ip = f"guard failed: {type(exc).__name__}", None
+    if reason:
+        log_event(
+            _logger,
+            "sec_filing_index_blocked",
+            reason=failure_code_for_block(reason),
+            accession=format_accession(str(accession or "")),
+        )
+        return None
+
+    transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
+    client_kwargs: dict[str, Any] = {
+        "follow_redirects": False,
+        "timeout": _index_timeout_seconds(cfg),
+        "cookies": None,
+        # W0 / D6: no environment proxy may reroute a guarded fetch.
+        "trust_env": False,
+        "headers": {
+            "User-Agent": SEC_USER_AGENT,
+            "Accept": accept,
+        },
+    }
+    if transport is not None:
+        client_kwargs["transport"] = transport
+
+    factory = client_factory or httpx.AsyncClient
+    try:
+        await limiter.acquire()
+        async with factory(**client_kwargs) as client:
+            async with client.stream("GET", url) as resp:
+                status = int(getattr(resp, "status_code", 0) or 0)
+                if not 200 <= status < 300:
+                    # Only the status CLASS is logged — never the exact code.
+                    log_event(
+                        _logger,
+                        "sec_filing_index_rejected",
+                        status_class=http_status_class(status),
+                        accession=format_accession(str(accession or "")),
+                    )
+                    return None
+                chunks: list[bytes] = []
+                total = 0
+                truncated = False
+                async for chunk in resp.aiter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > max_bytes:
+                        truncated = True
+                        break
+                if truncated:
+                    log_event(
+                        _logger,
+                        "sec_filing_index_over_cap",
+                        max_bytes=max_bytes,
+                        accession=format_accession(str(accession or "")),
+                    )
+                    return None
+                body = b"".join(chunks)
+    except Exception as exc:  # noqa: BLE001 - transport must never crash a run
+        log_event(
+            _logger,
+            "sec_filing_index_fetch_failed",
+            reason=type(exc).__name__,
+            accession=format_accession(str(accession or "")),
+        )
+        return None
+    return body
+
+
 async def fetch_filing_index(
     cik: str | int | None,
     accession: str | None,
@@ -653,96 +858,16 @@ async def fetch_filing_index(
     url = build_filing_index_url(cik, accession)
     if url is None:
         return []
-
-    cfg = cfg or default_settings
-    limiter = limiter or SecRateLimiter(cfg=cfg)
-    max_bytes = _index_max_bytes(cfg)
-
-    try:
-        import httpx
-    except Exception as exc:  # noqa: BLE001 - degrade, never crash a run
-        log_event(
-            _logger,
-            "sec_filing_index_unavailable",
-            reason=type(exc).__name__,
-        )
-        return []
-
-    # Same guard chain as ``safe_fetch_document``: an unvalidated address is never
-    # connected to, even though the host here is a code-defined constant.
-    try:
-        check_kwargs: dict[str, Any] = {"cfg": cfg, "resolve_ip": True}
-        if resolver is not None:
-            check_kwargs["resolver"] = resolver
-        reason, pinned_ip = await async_check_fetch_url(
-            url, SEC_ALLOWED_DOMAINS, **check_kwargs
-        )
-    except Exception as exc:  # noqa: BLE001 - a guard failure is a block, never a crash
-        reason, pinned_ip = f"guard failed: {type(exc).__name__}", None
-    if reason:
-        log_event(
-            _logger,
-            "sec_filing_index_blocked",
-            reason=failure_code_for_block(reason),
-            accession=format_accession(str(accession or "")),
-        )
-        return []
-
-    transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
-    client_kwargs: dict[str, Any] = {
-        "follow_redirects": False,
-        "timeout": _index_timeout_seconds(cfg),
-        "cookies": None,
-        # W0 / D6: no environment proxy may reroute a guarded fetch.
-        "trust_env": False,
-        "headers": {
-            "User-Agent": SEC_USER_AGENT,
-            "Accept": "application/json",
-        },
-    }
-    if transport is not None:
-        client_kwargs["transport"] = transport
-
-    factory = client_factory or httpx.AsyncClient
-    try:
-        await limiter.acquire()
-        async with factory(**client_kwargs) as client:
-            async with client.stream("GET", url) as resp:
-                status = int(getattr(resp, "status_code", 0) or 0)
-                if not 200 <= status < 300:
-                    # Only the status CLASS is logged — never the exact code.
-                    log_event(
-                        _logger,
-                        "sec_filing_index_rejected",
-                        status_class=http_status_class(status),
-                        accession=format_accession(str(accession or "")),
-                    )
-                    return []
-                chunks: list[bytes] = []
-                total = 0
-                truncated = False
-                async for chunk in resp.aiter_bytes():
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > max_bytes:
-                        truncated = True
-                        break
-                if truncated:
-                    log_event(
-                        _logger,
-                        "sec_filing_index_over_cap",
-                        max_bytes=max_bytes,
-                        accession=format_accession(str(accession or "")),
-                    )
-                    return []
-                body = b"".join(chunks)
-    except Exception as exc:  # noqa: BLE001 - transport must never crash a run
-        log_event(
-            _logger,
-            "sec_filing_index_fetch_failed",
-            reason=type(exc).__name__,
-            accession=format_accession(str(accession or "")),
-        )
+    body = await _fetch_sec_archive_bytes(
+        url,
+        accession,
+        accept="application/json",
+        cfg=cfg,
+        client_factory=client_factory,
+        limiter=limiter,
+        resolver=resolver,
+    )
+    if body is None:
         return []
 
     try:
@@ -759,6 +884,45 @@ async def fetch_filing_index(
     log_event(
         _logger,
         "sec_filing_index_fetched",
+        accession=format_accession(str(accession or "")),
+        entry_count=len(entries),
+    )
+    return entries
+
+
+async def fetch_filing_index_page(
+    cik: str | int | None,
+    accession: str | None,
+    *,
+    cfg: Settings | None = None,
+    client_factory: Callable[..., Any] | None = None,
+    limiter: SecRateLimiter | None = None,
+    resolver: Resolver | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch and parse one filing's ``-index.htm`` page. ``[]`` on any failure.
+
+    Same hardened, throttled, byte-capped network leg as :func:`fetch_filing_index`
+    (one shared helper) and the same official host: no new host and no
+    caller-supplied URL.
+    """
+    url = build_filing_index_page_url(cik, accession)
+    if url is None:
+        return []
+    body = await _fetch_sec_archive_bytes(
+        url,
+        accession,
+        accept="text/html",
+        cfg=cfg,
+        client_factory=client_factory,
+        limiter=limiter,
+        resolver=resolver,
+    )
+    if body is None:
+        return []
+    entries = parse_filing_index_page(body)
+    log_event(
+        _logger,
+        "sec_filing_index_page_fetched",
         accession=format_accession(str(accession or "")),
         entry_count=len(entries),
     )
@@ -1071,6 +1235,7 @@ async def resolve_filing_documents(
     client_factory: Callable[..., Any] | None = None,
     limiter: SecRateLimiter | None = None,
     index_fetcher: IndexFetcher | None = None,
+    exhibit_index_fetcher: IndexFetcher | None = None,
     allow_exhibits: bool = False,
     deadline: float | None = None,
     clock: ClockFn = time.monotonic,
@@ -1095,6 +1260,14 @@ async def resolve_filing_documents(
         returns whatever resolved so far (never a fabricated document).
       * ``max_documents * 3`` index attempts, enforced regardless of the
         deadline, so a filings list full of index misses still terminates.
+
+    RESULTS 8-K -> PRESS-RELEASE EXHIBIT (ADR-068). An Item 2.02 8-K's primary
+    document is a cover page that only points at the earnings release filed as
+    Exhibit 99.1. For such a filing the ``-index.htm`` page is read (one more index
+    fetch, counted against the same attempt cap and deadline) and the ``EX-99.1``
+    document, else the first ``EX-99*``, is resolved instead. If the page cannot be
+    read, names no such exhibit, or the budget is spent, the primary document is kept.
+    ``exhibit_index_fetcher`` is the injectable seam for that page.
 
     ``preflight_sink``, when given, collects one :class:`SecPreflightFailure` for
     every KNOWN candidate that never reached a network fetch (unresolvable
@@ -1137,6 +1310,7 @@ async def resolve_filing_documents(
     cfg = cfg or default_settings
     limiter = limiter or SecRateLimiter(cfg=cfg)
     fetch_index = index_fetcher or fetch_filing_index
+    fetch_exhibit_index = exhibit_index_fetcher or fetch_filing_index_page
     # Hard ceiling on index fetches: enough headroom for filings whose index has
     # no usable body document, but never unbounded.
     max_attempts = cap * _INDEX_ATTEMPTS_PER_DOCUMENT
@@ -1233,6 +1407,39 @@ async def resolve_filing_documents(
                     preflight_sink.append(failure)
             continue
 
+        item_codes = filing_item_codes(filing)
+        if is_results_release_8k(form, item_codes) and not _is_exhibit_entry(entry):
+            if attempts < max_attempts and (deadline is None or clock() < deadline):
+                attempts += 1
+                try:
+                    page_entries = await fetch_exhibit_index(
+                        padded,
+                        accession,
+                        cfg=cfg,
+                        client_factory=client_factory,
+                        limiter=limiter,
+                        resolver=resolver,
+                    )
+                except Exception as exc:  # noqa: BLE001 - degrade to the primary document
+                    log_event(
+                        _logger,
+                        "sec_filing_index_page_error",
+                        reason=type(exc).__name__,
+                        accession=format_accession(accession),
+                    )
+                    page_entries = []
+                exhibit = select_results_exhibit(page_entries)
+                chosen = exhibit is not None and bool(
+                    build_document_url(padded, accession, _entry_name(exhibit))
+                )
+                if chosen and exhibit is not None:
+                    entry = exhibit
+                log_event(
+                    _logger,
+                    "sec_results_exhibit_selected" if chosen else "sec_results_exhibit_not_found",
+                    accession=format_accession(accession),
+                )
+
         name = _entry_name(entry)
         url = build_document_url(padded, accession, name)
         if url is None:
@@ -1264,7 +1471,7 @@ async def resolve_filing_documents(
                 cik=padded,
                 title=title,
                 is_exhibit=_is_exhibit_entry(entry),
-                item_codes=filing_item_codes(filing),
+                item_codes=item_codes,
             )
         )
 
@@ -1370,7 +1577,11 @@ __all__ = [
     "build_filing_index_url",
     "cik_from_accession",
     "cik_from_archives_url",
+    "build_filing_index_page_url",
     "doc_kind_for_form",
+    "fetch_filing_index_page",
+    "parse_filing_index_page",
+    "select_results_exhibit",
     "filing_item_codes",
     "is_results_release_8k",
     "parse_item_codes",
