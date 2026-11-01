@@ -61,6 +61,21 @@ def _pin_process_boot_at(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_sec_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the investigator's name-sharing-registrant guard read an EMPTY SEC directory.
+
+    In production it downloads the SEC company-tickers list once per process per day; a
+    unit suite must not depend on sec.gov. Tests of the guard patch it themselves.
+    """
+    from app.services.agents import investigator
+
+    async def _empty() -> list:  # noqa: ANN202
+        return []
+
+    monkeypatch.setattr(investigator, "_load_sec_directory", _empty)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_sec_classification(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the classification layer's SEC lookup inert for every test by default.
 

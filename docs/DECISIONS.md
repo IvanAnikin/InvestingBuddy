@@ -4698,3 +4698,72 @@ a filing]", although their only source was the issuer's own release.
   until a new version of it (new content) is ingested.
 - Why the release carried a published date of 2025-11-21 is not explained by this change.
   It is recorded as open in the QA report.
+
+---
+
+## ADR-066: A Separately Registered Company Carrying the Issuer's Name Is Not the Issuer
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect H3)
+
+### Context
+Honeywell's deep report (run e50cb267) filed four statements about Honeywell Aerospace
+as Honeywell findings, in growth, competitive and risk sections: "Honeywell Aerospace
+backlog was $18.2 billion", a $500M Tempe facility (twice), and a False Claims Act
+settlement. Honeywell Aerospace Inc. (HONA) files with the SEC under its own CIK. Two
+guards exist, and neither can see this:
+
+- the publisher firewall (`foreign_publisher`) is keyed on the publisher domain, and
+  HONA's releases are published on honeywell.com;
+- the registered-companies guard skips any name whose first distinctive word is in the
+  subject's name, so "Honeywell Aerospace" is never treated as another company.
+
+### Decision
+The regulator's ticker list decides which names are separate registrants.
+
+1. `related_registrants(listings, ticker, name)` reads the SEC company-tickers directory
+   (`discovery.directories.SEC`, already used by Discovery; cached per process per day).
+   It finds the subject by ticker AND by its first distinctive name word, so a ticker
+   another venue reuses (Richemont's SIX `CFR` is Cullen/Frost on the SEC list) never
+   stands in. It returns every registrant with a different CIK whose name starts with
+   the same word followed by a word that is not in the subject's name and is not generic.
+   A generic or short first word (First, American, GE) names no family.
+2. `statement_about_related_registrant` assigns a statement to a registrant only when
+   the registrant is the sentence's grammatical SUBJECT and the subject company is never
+   named on its own. The registrant's name must open the sentence, optionally after "The"
+   or one short lead-in clause ("In March 2026, "). These stay the subject's:
+   - "Honeywell completed the spin-off of Honeywell Aerospace";
+   - "Honeywell's Aerospace Technologies segment…";
+   - any statement where the registrant is only an object: "The company sold its stake
+     to Honeywell Aerospace", "SCCO signed a power contract with Southern California
+     Edison". A customer, buyer or counterparty of the subject is the subject's fact.
+3. The investigator applies the rule beside the other-company guard (outside peer
+   domains), but only to a statement that rests ENTIRELY on web text. The issuer's own
+   filing speaks for the issuer. A dropped statement is counted in
+   `statements_about_related_registrant`, and the question gets one `entity_ambiguous`
+   gap naming the registrant and its ticker.
+4. The rule applies only to an SEC-eligible subject. For any other subject, or when the
+   directory cannot be read, the guard fails open and changes nothing.
+5. The test suite makes the directory read inert by default (`conftest`), as it does
+   every other live SEC lookup.
+
+### Replay on the live SEC directory (2026-11-01, 7,684 rows)
+959 of 6,069 registrants have at least one name-sharing registrant. Most are unrelated
+namesakes (Southern Copper / Southern California Edison, the Canadian, China and Alpha
+names, fund families such as Nuveen and BlackRock). That is why the rule asks for the
+subject position. "Southern California Edison raised rates" is not a Southern Copper fact,
+but "SCCO signed a contract with Southern California Edison" is. Of the campaign
+companies, only HON → HONA is flagged; ADBE, JPM, PYPL, CLLS, GE, MMM, AMZN, GOOGL, BRK-B,
+MRNA and MP have none.
+
+### Not changed / known limits
+- A statement where the registrant opens a longer sentence after a lead-in of more than
+  60 characters, or after a comma-separated appositive, is not judged. That is a miss,
+  not a false drop.
+- Non-US families (a namesake listed only on the LSE or ASX) are not covered. No other
+  directory carries a registrant id the platform can compare.
+- Names whose second word is generic (e.g. "X Energy Partners") are not treated as
+  separate. Nothing in such a name tells a reader that it is not the subject.
+- History is lost on purpose. A pre-spin statement about the business under its brand
+  ("Honeywell Aerospace backlog" while it was still a segment) is dropped too. The
+  segment's filed figures still come from the issuer's 10-K, which the guard never
+  judges.
