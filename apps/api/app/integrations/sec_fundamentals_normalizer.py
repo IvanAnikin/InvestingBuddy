@@ -57,7 +57,7 @@ from app.integrations.providers.sec_edgar_provider import _EDGAR_BASE_URL, _pad_
 _COMPANY_FACTS_URL = f"{_EDGAR_BASE_URL}/api/xbrl/companyfacts/CIK{{cik}}.json"
 _EDGAR_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
 #: An EDGAR accession number; anything else never becomes part of a URL.
-_ACCESSION_RE = re.compile(r"\d{10}-\d{2}-\d{6}")
+_ACCESSION_RE = re.compile(r"\d{10}-\d{2}-\d{6}", re.ASCII)
 
 # Annual and quarterly form types accepted for period selection.
 _ANNUAL_FORMS = {"10-K", "20-F", "10-K/A", "20-F/A", "40-F", "40-F/A"}
@@ -1291,6 +1291,73 @@ def _whole_ratio(ratio: float, tolerance: float) -> tuple[str, int] | None:
     return None
 
 
+def _prior_quarterly(us_gaap: dict[str, Any], concept: str, unit: str, entry: dict,
+                     *, filed_by: str, exclude_accn: str) -> dict | None:
+    """The same concept and period as a 10-Q reported it on or before ``filed_by``."""
+    rows = (us_gaap.get(concept) or {}).get("units", {}).get(unit, []) or []
+    same = [
+        e for e in rows
+        if e.get("form") in _QUARTERLY_FORMS and e.get("accn") != exclude_accn
+        and e.get("start") == entry.get("start") and e.get("end") == entry.get("end")
+        and (e.get("filed") or "") <= filed_by and e.get("val") is not None
+    ]
+    return max(same, key=lambda e: e.get("filed") or "") if same else None
+
+
+def _annual_recast_nothing(us_gaap: dict[str, Any], concept: str, *, annual_accn: str,
+                           annual_end: str | None, annual_filed: str) -> bool:
+    """True when the annual report restated NOTHING of its prior year for ``concept``.
+
+    Its prior-year comparative must equal that year's figure as the previous annual
+    report filed it (within 1%). Then a quarter that a later 10-Q restates was not
+    already restated in the annual report, and last year's 10-Q is a fair baseline for
+    it. Anything missing answers False.
+    """
+    if not annual_end:
+        return False
+    rows = (us_gaap.get(concept) or {}).get("units", {}).get("USD", []) or []
+    comparatives = [
+        e for e in rows
+        if e.get("accn") == annual_accn and (e.get("end") or "") < annual_end
+        and 350 <= (_duration_days(e) or 0) <= 380 and e.get("val")
+    ]
+    if not comparatives:
+        return False
+    restated = max(comparatives, key=lambda e: e.get("end") or "")
+    originals = [
+        e for e in rows
+        if str(e.get("form") or "").startswith("10-K") and e.get("accn") != annual_accn
+        and e.get("start") == restated.get("start") and e.get("end") == restated.get("end")
+        and (e.get("filed") or "") < annual_filed and e.get("val")
+    ]
+    if not originals:
+        return False
+    original = min(originals, key=lambda e: e.get("filed") or "")
+    return abs(float(restated["val"]) / float(original["val"]) - 1.0) <= 0.01
+
+
+def _newest_quarterly_accession(
+    us_gaap: dict[str, Any], concepts: list[str], *, filed_after: str | None = None,
+) -> dict | None:
+    """The entry of the 10-Q (or 10-Q/A) covering the LATEST period, latest filing first.
+
+    Chosen by period end, then filing date: an amendment of an older quarter filed after
+    the newest 10-Q is not the latest quarter, and never hides it.
+    """
+    newest: dict | None = None
+    for concept in concepts:
+        unit = "USD/shares" if concept in _EPS_DILUTED + _EPS_BASIC else "USD"
+        for e in (us_gaap.get(concept) or {}).get("units", {}).get(unit, []) or []:
+            if e.get("form") not in _QUARTERLY_FORMS or not e.get("accn"):
+                continue
+            if filed_after and (e.get("filed") or "") <= filed_after:
+                continue
+            key = (e.get("end") or "", e.get("filed") or "")
+            if newest is None or key > (newest.get("end") or "", newest.get("filed") or ""):
+                newest = e
+    return newest
+
+
 def basis_changes_since_annual(
     us_gaap: dict[str, Any], *, annual_filed: str | None, annual_accn: str | None = None,
     annual_end: str | None = None, dei: dict[str, Any] | None = None,
@@ -1311,25 +1378,27 @@ def basis_changes_since_annual(
     and diluted EPS from 2.86 to 5.71. The report presented FY2025 revenue of 37,442m and
     EPS of 7.36 as current, beside a post-consolidation share price.
 
-    The baseline is the annual filing's own tagging of the period (never an earlier
-    10-Q), and the restating 10-Q must cover a period after the annual one. A share
-    count change is also read straight from the cover pages: shares outstanding on the
-    10-K cover against the newest 10-Q cover (Honeywell 633.7m -> 316.9m).
+    The baseline is, in order:
+
+    1. the annual report's OWN tagging of the quarter (Honeywell's 10-K tags Q3 2025);
+    2. otherwise last year's 10-Q — but only when nothing since could already be inside
+       the annual figures: for revenue, the annual report restated nothing of its prior
+       year; for per-share figures, the cover-page share count moved by the SAME whole
+       ratio between the annual report's cover and the restating 10-Q's (a split made
+       before the 10-K leaves the covers equal). Most 10-Ks have not tagged quarters since
+       Item 302(a) was dropped in 2021, so without (2) the check would rarely run.
+
+    A cover-page share count change on its own is never a split: an issuance, an ATM
+    programme or an all-stock merger moves it too, and none of them restates past EPS.
     """
     if not annual_filed or not annual_accn:
         return []
-    newest: dict | None = None
-    for concept in [*_REVENUE, *_NET_INCOME, *_EPS_DILUTED]:
-        unit = "USD/shares" if concept in _EPS_DILUTED else "USD"
-        for e in (us_gaap.get(concept) or {}).get("units", {}).get(unit, []) or []:
-            if e.get("form") in _QUARTERLY_FORMS and (e.get("filed") or "") > annual_filed:
-                if newest is None or (e.get("filed") or "", e.get("end") or "") > (
-                    newest.get("filed") or "", newest.get("end") or ""
-                ):
-                    newest = e
+    newest = _newest_quarterly_accession(
+        us_gaap, [*_REVENUE, *_NET_INCOME, *_EPS_DILUTED], filed_after=annual_filed
+    )
     if newest is None:
         return []
-    accn, filed = newest.get("accn"), newest.get("filed")
+    accn, filed = newest.get("accn") or "", newest.get("filed") or ""
     period_end = max(
         (e.get("end") or "" for c in [*_REVENUE, *_NET_INCOME]
          for e in (us_gaap.get(c) or {}).get("units", {}).get("USD", []) or []
@@ -1345,6 +1414,12 @@ def basis_changes_since_annual(
         for restated in sorted(_comparatives(us_gaap, concept, "USD", accn, period_end),
                                key=lambda e: e.get("end") or "", reverse=True):
             original = _as_filed_in(us_gaap, concept, "USD", restated, annual_accn)
+            if original is None and _annual_recast_nothing(
+                us_gaap, concept, annual_accn=annual_accn, annual_end=annual_end,
+                annual_filed=annual_filed,
+            ):
+                original = _prior_quarterly(us_gaap, concept, "USD", restated,
+                                            filed_by=annual_filed, exclude_accn=accn)
             if original is None or not original["val"] or restated.get("val") is None:
                 continue
             change = float(restated["val"]) / float(original["val"]) - 1.0
@@ -1374,12 +1449,21 @@ def basis_changes_since_annual(
         if found:
             break
 
+    before, after = _cover_shares(dei, annual_accn), _cover_shares(dei, accn)
+    cover_whole = (
+        _whole_ratio(before / after, _COVER_SPLIT_TOLERANCE)
+        if before is not None and after is not None else None
+    )
     for eps_concept in _EPS_DILUTED + _EPS_BASIC:
         decided = False
         for restated in _comparatives(us_gaap, eps_concept, "USD/shares", accn, period_end):
             original = _as_filed_in(
                 us_gaap, eps_concept, "USD/shares", restated, annual_accn
             )
+            via_annual = original is not None
+            if original is None and cover_whole is not None:
+                original = _prior_quarterly(us_gaap, eps_concept, "USD/shares", restated,
+                                            filed_by=annual_filed, exclude_accn=accn)
             if original is None or not original["val"] or not restated.get("val"):
                 continue
             # Net income for the same period must be unchanged: a per-share move with
@@ -1394,12 +1478,15 @@ def basis_changes_since_annual(
                 ),
                 ("", None),
             )
-            # The same concept on both sides: a different net-income concept is a
-            # different number, not the same one as filed.
-            ni_then = (
-                _as_filed_in(us_gaap, ni_concept, "USD", ni_now, annual_accn)
-                if ni_now else None
-            )
+            # The same concept, from the same kind of baseline, on both sides.
+            ni_then: dict | None = None
+            if ni_now is not None:
+                ni_then = (
+                    _as_filed_in(us_gaap, ni_concept, "USD", ni_now, annual_accn)
+                    if via_annual
+                    else _prior_quarterly(us_gaap, ni_concept, "USD", ni_now,
+                                          filed_by=annual_filed, exclude_accn=accn)
+                )
             if not ni_now or not ni_then or not ni_then["val"]:
                 continue
             decided = True
@@ -1408,9 +1495,16 @@ def basis_changes_since_annual(
             whole = _whole_ratio(
                 float(restated["val"]) / float(original["val"]), _SPLIT_TOLERANCE
             )
-            if whole is not None:
+            # Without the annual report's own figure, the cover pages must show the SAME
+            # change since the annual report, or it may predate it.
+            if whole is not None and (via_annual or whole == cover_whole):
                 kind, k = whole
                 words = _split_words(kind, k)
+                cover = (
+                    f" (cover-page shares outstanding {before / 1e6:,.1f}m on the annual "
+                    f"report, {after / 1e6:,.1f}m on the 10-Q)"
+                    if not via_annual and before is not None and after is not None else ""
+                )
                 out.append({
                     "kind": kind,
                     "metric": "eps",
@@ -1423,41 +1517,14 @@ def basis_changes_since_annual(
                     "sentence": (
                         f"the 10-Q filed {filed} restates earnings per share for the quarter "
                         f"ending {restated.get('end')} from {original['val']} to "
-                        f"{restated['val']} with net income unchanged — {words} since the "
-                        "annual report; per-share figures from before it are not comparable "
-                        "with the current share count or price"
+                        f"{restated['val']} with net income unchanged{cover} — {words} since "
+                        "the annual report; per-share figures from before it are not "
+                        "comparable with the current share count or price"
                     ),
                 })
             break
         if decided:
             break
-
-    if not any(c["kind"] in (BASIS_SHARE_CONSOLIDATION, BASIS_SHARE_SPLIT) for c in out):
-        before, after = _cover_shares(dei, annual_accn), _cover_shares(dei, accn)
-        whole = (
-            _whole_ratio(before / after, _COVER_SPLIT_TOLERANCE)
-            if before is not None and after is not None else None
-        )
-        if whole is not None and before is not None and after is not None:
-            kind, k = whole
-            moved = "fell" if after < before else "rose"
-            out.append({
-                "kind": kind,
-                "metric": "shares_outstanding",
-                "ratio": k,
-                "period_end": period_end,
-                "as_filed": before,
-                "restated": after,
-                "restating_filing": accn,
-                "restating_filed": filed,
-                "sentence": (
-                    f"shares outstanding {moved} from {before / 1e6:,.1f}m on the annual "
-                    f"report's cover to {after / 1e6:,.1f}m on the cover of the 10-Q filed "
-                    f"{filed} — {_split_words(kind, k)} since the annual report; per-share "
-                    "figures from before it are not comparable with the current share "
-                    "count or price"
-                ),
-            })
     return out
 
 
@@ -1595,7 +1662,9 @@ def latest_quarter_facts(
                     entries.append((field_name, concept, entry))
     if not entries:
         return []
-    newest = max(entries, key=lambda t: (t[2].get("filed") or "", t[2].get("end") or ""))[2]
+    # The latest PERIOD first, then the latest filing of it: a 10-Q/A for an older
+    # quarter filed after the newest 10-Q never stands in for it.
+    newest = max(entries, key=lambda t: (t[2].get("end") or "", t[2].get("filed") or ""))[2]
     accn, filed = newest.get("accn") or "", newest.get("filed") or ""
     if not accn or (annual_filed and filed <= annual_filed):
         return []
@@ -1605,7 +1674,9 @@ def latest_quarter_facts(
     # not the latest period.
     if not period_end or (annual_end and period_end <= annual_end):
         return []
-    cik_digits = str(int(cik)) if cik and str(cik).isdigit() else None
+    cik_digits = (
+        str(int(cik)) if cik and str(cik).isascii() and str(cik).isdigit() else None
+    )
     url = (
         f"{_EDGAR_ARCHIVES_URL}/{cik_digits}/{accn.replace('-', '')}/"
         if cik_digits and _ACCESSION_RE.fullmatch(accn)

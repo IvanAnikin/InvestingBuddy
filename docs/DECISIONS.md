@@ -4475,3 +4475,21 @@ An independent review found false basis changes and a stale-quarter path. Fixes:
   quarter fact dicts. Annual statement items stay `T1_primary_filing`.
 Re-verified on the 19 cached filers: HON alone shows a recast and a 1-for-2 consolidation,
 and no other filer gains a withholding or a basis change.
+
+### Review round 2
+- **A cover-page share count is never a split on its own.** An issuance, an ATM programme
+  or an all-stock merger moves the count too. A doubled MRNA cover was reported as "a
+  2-for-1 split" and its EPS withheld; with ±4% bands, any rise above about 12.5x was always
+  "a split". The cover pages now only CORROBORATE an EPS restatement: when the 10-K does not
+  tag the quarter, last year's 10-Q is the EPS baseline, and only if the cover count moved
+  by the same whole ratio since the annual report. A split made before the 10-K leaves the
+  covers equal, so it is never reported.
+- **The checks run without the 10-K's quarterly tags.** Since Item 302(a) was dropped in
+  2021, 18 of the 19 cached filers tag no quarter in their 10-K, so the round-1 baseline
+  almost never existed. Revenue now falls back to last year's 10-Q when the annual report
+  restated nothing of its prior year (its prior-year comparative equals the previous 10-K
+  within 1%). The fallback is usable for 18 of 19 filers, and none is falsely flagged.
+- **The newest 10-Q is chosen by period end, then filing date.** A Q1 10-Q/A filed after
+  the Q2 10-Q is no longer "the latest quarter", and an old-quarter amendment no longer
+  hides the real latest one.
+- The accession regex is ASCII-only, and the CIK must be ASCII digits.

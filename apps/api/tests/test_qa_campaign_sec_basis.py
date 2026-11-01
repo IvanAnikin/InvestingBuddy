@@ -317,19 +317,56 @@ def test_without_the_10k_tagging_the_quarter_nothing_is_concluded() -> None:
     assert _changes(rows) == []
 
 
-def test_a_consolidation_is_read_from_the_cover_pages_alone() -> None:
+def test_without_the_10k_figure_the_covers_must_agree_with_last_years_10q() -> None:
+    # Most 10-Ks no longer tag quarters. Then last year's 10-Q is the EPS baseline, but
+    # only when the cover pages show the SAME 1-for-2 change since the annual report.
     rows = _quarter_rows()
-    del rows["EarningsPerShareDiluted"][4]  # the EPS route is closed
+    del rows["EarningsPerShareDiluted"][4]  # the 10-K's own Q3 EPS
+    del rows["NetIncomeLoss"][4]
     dei = [
         _cover(635.7e6, "2026-01-23", K25, "2026-02-17", "10-K"),
         _cover(317.4e6, "2026-10-20", Q326, "2026-10-22", "10-Q"),
     ]
-    shares = [c for c in _changes(rows, dei) if c["metric"] == "shares_outstanding"]
-    assert shares and shares[0]["kind"] == BASIS_SHARE_CONSOLIDATION
-    assert shares[0]["ratio"] == 2
-    assert "635.7m" in shares[0]["sentence"] and "317.4m" in shares[0]["sentence"]
+    eps = [c for c in _changes(rows, dei) if c["metric"] == "eps"]
+    assert eps and eps[0]["kind"] == BASIS_SHARE_CONSOLIDATION and eps[0]["ratio"] == 2
+    assert "635.7m" in eps[0]["sentence"] and "317.4m" in eps[0]["sentence"]
     result = normalize_company_facts(_facts(dei=dei, **rows), "XYZ", "1")
     assert result.eps_diluted is None
+
+
+def test_a_share_issuance_is_never_a_split() -> None:
+    # A follow-on or an all-stock merger doubles the cover count; past EPS is not
+    # restated, so nothing is said and EPS is kept.
+    rows = _quarter_rows()
+    del rows["EarningsPerShareDiluted"][4]
+    del rows["NetIncomeLoss"][4]
+    rows["EarningsPerShareDiluted"][2]["val"] = 2.86  # comparative as first reported
+    dei = [
+        _cover(300e6, "2026-01-23", K25, "2026-02-17", "10-K"),
+        _cover(600e6, "2026-10-20", Q326, "2026-10-22", "10-Q"),
+    ]
+    assert not [c for c in _changes(rows, dei) if c["metric"] in ("eps", "shares_outstanding")]
+    result = normalize_company_facts(_facts(dei=dei, **rows), "XYZ", "1")
+    assert result.eps_diluted == 7.36
+
+
+def test_cover_pages_alone_are_never_a_split() -> None:
+    rows = _quarter_rows()
+    for name in ("EarningsPerShareDiluted", "NetIncomeLoss"):
+        del rows[name]
+    dei = [
+        _cover(635.7e6, "2026-01-23", K25, "2026-02-17", "10-K"),
+        _cover(317.4e6, "2026-10-20", Q326, "2026-10-22", "10-Q"),
+    ]
+    assert not [c for c in _changes(rows, dei) if c["kind"] != BASIS_RECAST]
+
+
+def test_a_recast_is_found_against_last_years_10q_when_the_10k_restated_nothing() -> None:
+    rows = _quarter_rows()
+    del rows["Revenues"][7]  # the 10-K does not tag Q3 2025
+    rows["Revenues"][2]["val"] = 38498 * M  # the 10-K restated nothing of FY2024
+    recast = [c for c in _changes(rows) if c["kind"] == BASIS_RECAST]
+    assert recast and recast[0]["as_filed"] == 10408.0 and recast[0]["restated"] == 4929.0
 
 
 def test_cover_pages_with_two_share_classes_are_summed() -> None:
@@ -390,3 +427,35 @@ def test_r_and_d_inside_cost_of_revenue_is_withheld_with_the_alternative_named()
     assert "R&D is already inside cost of revenue" in (
         result.withheld_fields["operating_income"]["reason"]
     )
+
+
+Q126 = "0000000001-26-000040"  # Q1 2026 10-Q
+Q226 = "0000000001-26-000070"  # Q2 2026 10-Q
+Q126A = "0000000001-26-000080"  # Q1 2026 10-Q/A, filed AFTER the Q2 10-Q
+
+
+def _two_quarters(amendment_period: str) -> dict[str, list]:
+    rows = _annual_rows({"Revenues": (37442 * M, 34717 * M, 38498 * M)})
+    rows["Revenues"] += [
+        _e(4800 * M, "2026-03-31", Q126, "2026-04-23", "10-Q", 2026, "Q1", "2026-01-01"),
+        _e(4900 * M, "2026-06-30", Q226, "2026-07-23", "10-Q", 2026, "Q2", "2026-04-01"),
+    ]
+    if amendment_period == "Q1 2026":
+        rows["Revenues"].append(
+            _e(4810 * M, "2026-03-31", Q126A, "2026-08-10", "10-Q/A", 2026, "Q1",
+               "2026-01-01"))
+    else:  # an amendment of a quarter the annual report already covers
+        rows["Revenues"].append(
+            _e(9000 * M, "2025-09-30", Q126A, "2026-08-10", "10-Q/A", 2025, "Q3",
+               "2025-07-01"))
+    return rows
+
+
+def test_an_amended_older_quarter_never_stands_in_for_the_latest() -> None:
+    for amended in ("Q1 2026", "Q3 2025"):
+        us_gaap = _facts(**_two_quarters(amended))["facts"]["us-gaap"]
+        out = latest_quarter_facts(
+            us_gaap, annual_filed="2026-02-17", cik="1", annual_end="2025-12-31"
+        )
+        revenue = next(f for f in out if f["field"] == "revenue")
+        assert revenue["period"] == "Q2 2026" and revenue["numeric_value"] == 4900.0, amended
