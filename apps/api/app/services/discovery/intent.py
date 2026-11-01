@@ -105,8 +105,15 @@ _HORIZON_SINGLE = re.compile(
 
 # ── Themes the intent adds to the parser's ────────────────────────────────── #
 
+#: "critical materials", and the coordinated forms a thesis actually writes: "critical or
+#: specialty materials", "critical and strategic minerals", "advanced materials". Live QA
+#: campaign 2026-11: "supplying critical or specialty materials required by semiconductors,
+#: electrification, defence" matched none of the old contiguous forms, so the thesis was read
+#: as a DEFENCE thesis with a hard industry constraint.
+_MATERIAL_ADJECTIVE = r"(?:critical|strategic|specialty|speciality|advanced|engineered)"
 _CRITICAL_MATERIALS = re.compile(
-    r"critical[\s-]+(?:materials?|minerals?|metals?)|strategic[\s-]+(?:materials?|minerals?|metals?)",
+    rf"\b{_MATERIAL_ADJECTIVE}(?:\s*(?:,|/|\bor\b|\band\b|&)\s*(?:{_MATERIAL_ADJECTIVE}|rare))*"
+    r"[\s-]+(?:materials?|minerals?|metals?)\b",
     re.IGNORECASE,
 )
 #: Parser themes that describe what a company's products are USED IN. When the thesis
@@ -623,9 +630,13 @@ def build_intent(
         if t not in ("mining_materials", "critical_materials")
         and re.search(rf"\b(?:{_THEME_WORDS_RE.get(t, '$^')})\b{_COMPANY_NOUN}", text)
     ]
-    if materials and company_kind_themes:
+    # A thesis that names materials by class ("critical or specialty materials") without a
+    # specific commodity is still a materials thesis: the company kind is the materials
+    # supplier, and "semiconductors, electrification, defence" are where the materials go.
+    materials_kind = bool(materials) or "critical_materials" in themes
+    if materials_kind and company_kind_themes:
         materials_role = "input"
-    elif materials:
+    elif materials_kind:
         materials_role = "product"
         # Industry themes that are really END MARKETS of the materials are demoted,
         # unless the text asks for companies OF that kind.

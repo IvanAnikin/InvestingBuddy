@@ -665,16 +665,27 @@ def parse_thesis(
         else (text_regions[0] if text_regions else None)
     )
     detected_theme = themes[0] if themes else None
-    detected_sector = next(
-        (cs for cs in (normalize_sector(s) for s in text_theme_sectors) if cs),
-        None,
-    )
     # Prefer an industry implied by a matched keyword (more specific than the
     # theme's first industry, e.g. "watch" -> "Watches & Jewelry").
+    # Keywords are taken in the order the TEXT states them, not the theme table's order:
+    # "utilities with grid exposure" names utilities first.
+    def _text_position(phrase: str) -> int:
+        at = padded.find(f" {phrase} ")
+        return at if at >= 0 else len(padded)
+
+    text_ordered_keywords = sorted(keywords, key=_text_position)
     detected_industry = next(
-        (ci for ci in (normalize_industry(k) for k in keywords) if ci), None
+        (ci for ci in (normalize_industry(k) for k in text_ordered_keywords) if ci), None
     ) or next(
         (normalize_industry(i) or i for i in text_theme_industries if i), None
+    )
+    # The sector is the detected industry's own sector, so the pair can never contradict
+    # itself (live QA 2026-11: "Electrical Equipment" was auto-filled under "Utilities",
+    # the grid theme's first sector). Only without an industry does the theme's first
+    # sector stand.
+    detected_sector = normalize_sector(detected_industry) or next(
+        (cs for cs in (normalize_sector(s) for s in text_theme_sectors) if cs),
+        None,
     )
 
     # ── Precedence: an explicit form value overrides the prompt detection ──

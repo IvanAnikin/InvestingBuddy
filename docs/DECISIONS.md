@@ -4373,3 +4373,39 @@ of the two. The geography constraint read the listing venue's country.
 - Only SEC registrants have a regulator-recorded domicile.
 - ISINs are printed by the Euronext list only. On other venues, the name and the registrant
   domicile carry the link.
+
+---
+
+## ADR-063: Discovery Intent Follows the Thesis Text; a Security Code Is Never a Name
+
+**Date:** 2026-11-01 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11. Five owner theses were run against production,
+and the rerun `d15a74c4` was replayed.
+
+### Context
+1. The materials thesis read: "Listed smaller companies supplying critical or specialty
+   materials required by semiconductors, electrification, defence or advanced manufacturing…".
+   Only a contiguous "critical materials" was recognised, so the thesis became a DEFENCE thesis
+   with a hard `industry: defense` constraint.
+2. Selector auto-fill took a theme's FIRST sector or industry, not what the text said.
+   "Payments or fintech" filled "Banks", and "electrical equipment … grid" was paired with
+   "Utilities". The owner workbench sends the auto-filled sector as an explicit filter.
+3. A German WKN printed beside an issuer (`BB Biotech AG WKN A0NFN3 (SIX: BION)`) was taken as
+   the issuer name, and the real SIX listing was rejected as a name mismatch.
+
+### Decision
+1. A material class may be named with coordinated adjectives: critical, strategic, specialty,
+   advanced, engineered or rare, joined by "or", "and", "/" or ",". It makes the thesis a
+   materials thesis. The applications it names stay end markets, never the industry, unless a
+   company-kind theme is also present: then materials are its input.
+2. Industry keywords are ranked by where they appear in the text. Aliases cover fintech,
+   payments, banking, grid and electrification. The auto-filled sector is the detected
+   industry's own sector. A theme the intent demoted does not auto-fill its sector.
+3. `is_security_code()` recognises WKN, ISIN, CUSIP, SEDOL and Valor shapes: 6–12 alphanumerics
+   with at least one digit and one letter, or 5–9 digits. Trailing codes (with or without a
+   label) are stripped from the name before a listing, and a name made only of codes is
+   rejected. Short tickers (`PH1`, `3M`) and years are not codes.
+
+### Not changed / known limits
+- No issuer or thesis is special-cased.
+- A six-letter all-alphabetic code cannot be told from a word, so it is not stripped.

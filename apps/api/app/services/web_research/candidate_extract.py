@@ -510,6 +510,40 @@ def _is_name_token(token: str) -> bool:
     return t[0].isupper() or t[0].isdigit()
 
 
+#: A security identifier printed beside an issuer: a German WKN (``A0NFN3``, ``840400``), a
+#: SEDOL, a CUSIP, an ISIN, a Swiss Valor. Never part of a company's name. Live run d15a74c4
+#: read "A0NFN3" as the name of BB Biotech (SIX: BION) and rejected the listing as a name
+#: mismatch. Shape: upper-case alphanumerics with at least one digit and one letter, 6-12
+#: characters, or a run of 5-9 digits.
+_SECURITY_CODE_RE = re.compile(r"(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,12}|\d{5,9}")
+_SECURITY_CODE_LABEL = r"(?:WKN|ISIN|CUSIP|SEDOL|Valor(?:en)?|Valoren-?Nr\.?|LEI|FIGI|RIC)"
+_CODE_ITEM = rf"(?:{_SECURITY_CODE_LABEL}\s*[:#.]?\s*)?[A-Z0-9]{{5,12}}"
+#: Trailing identifiers between a name and its listing: ``BB Biotech AG WKN A0NFN3``,
+#: ``BB Biotech AG (WKN: A0NFN3, ISIN CH0038389992)``, ``… | A0NFN3 |``.
+_TRAILING_CODES_RE = re.compile(
+    rf"(?:\s*[,;|/]?\s*\(\s*{_CODE_ITEM}(?:\s*[,;/]\s*{_CODE_ITEM})*\s*\)"
+    rf"|\s*[,;|/]?\s*{_CODE_ITEM})\s*[,;|/]?\s*$"
+)
+
+
+def is_security_code(token: str) -> bool:
+    """True for a token shaped like a security identifier rather than a word of a name."""
+    return bool(_SECURITY_CODE_RE.fullmatch(_clean_token(token).rstrip(",;:")))
+
+
+def _strip_trailing_codes(before: str) -> str:
+    """``before`` without the security identifiers printed at its end."""
+    for _ in range(4):
+        m = _TRAILING_CODES_RE.search(before)
+        if m is None:
+            break
+        codes = re.findall(r"[A-Z0-9]{5,12}", m.group(0))
+        if not codes or not all(is_security_code(c) for c in codes):
+            break
+        before = before[: m.start()]
+    return before
+
+
 def name_before(text: str, end: int) -> str | None:
     """The capitalised-token run that ends right before ``text[end]`` — the company name.
 
@@ -518,7 +552,7 @@ def name_before(text: str, end: int) -> str | None:
     run, exclusive. At most :data:`MAX_NAME_TOKENS` tokens. Leading sentence-starters and
     connectors are trimmed.
     """
-    before = text[:end].rstrip(" ([,–—-\t")
+    before = _strip_trailing_codes(text[:end].rstrip(" ([,–—-\t")).rstrip(" ([,–—-\t")
     tokens = before.split()
     run: list[str] = []
     for token in reversed(tokens):
@@ -614,6 +648,9 @@ def _name_ok(name: str | None, *, has_identifier: bool) -> bool:
         return False
     low = name.lower()
     if low in _BAD_NAMES:
+        return False
+    # A name made only of security identifiers ("A0NFN3", "CH0038389992") is no name.
+    if all(is_security_code(w) for w in name.split()):
         return False
     words = low.split()
     if all(w in _LEGAL_FORM_WORDS or w in _CONNECTORS for w in words):

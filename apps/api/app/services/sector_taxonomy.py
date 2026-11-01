@@ -189,6 +189,24 @@ _INDUSTRY_ALIASES: dict[str, str] = {
     "automation": "Robotics & Automation",
     "data centres": "Data Centers",
     "data centers": "Data Centers",
+    # The words a thesis uses for an industry, so selector auto-fill follows the TEXT
+    # rather than a theme's first industry. Live QA campaign 2026-11: "payments or fintech
+    # infrastructure companies" auto-filled "Banks".
+    "fintech": "Financial Technology",
+    "payments": "Financial Technology",
+    "bank": "Banks",
+    "banks": "Banks",
+    "banking": "Banks",
+    "neobank": "Banks",
+    "lender": "Banks",
+    "grid": "Electrical Equipment",
+    "power grid": "Electrical Equipment",
+    "electrical grid": "Electrical Equipment",
+    "transmission": "Electrical Equipment",
+    "substation": "Electrical Equipment",
+    "transformer": "Electrical Equipment",
+    "electrification": "Electrical Equipment",
+    "utility": "Utilities",
 }
 
 

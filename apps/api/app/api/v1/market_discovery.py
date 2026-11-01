@@ -207,6 +207,26 @@ async def list_supported_filters() -> SupportedFiltersResponse:
     return SupportedFiltersResponse.model_validate(svc.get_supported_filters())
 
 
+def _autofill_from_intent(parsed, intent) -> tuple[str | None, str | None, str | None]:
+    """The (theme, sector, industry) auto-fill, consistent with the run's own intent.
+
+    The parser picks a theme from keywords alone; the intent then reads the sentence and may
+    DEMOTE that theme to an end market ("materials required by ... defence" is a materials
+    thesis, not a defence one). The selectors are sent back as explicit filters, so an
+    auto-fill that disagrees with the intent narrows the run to the wrong sector. Live QA
+    campaign 2026-11: thesis E auto-filled Industrials / Aerospace & Defense.
+    """
+    from app.services.sector_taxonomy import normalize_sector
+
+    if not parsed.theme or parsed.theme in intent.themes:
+        return parsed.theme, parsed.sector, parsed.industry
+    theme = intent.themes[0] if intent.themes else None
+    sector = next((c for c in (normalize_sector(s) for s in intent.sectors) if c), None)
+    # The demoted theme's industry is wrong, and no single industry of the intent is
+    # safe to impose as a filter: the industry selector is left for the reader.
+    return theme, sector, None
+
+
 @router.post(
     "/parse-thesis",
     response_model=ParseThesisResponse,
@@ -223,16 +243,17 @@ async def list_supported_filters() -> SupportedFiltersResponse:
 async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisResponse:
     parsed = parse_thesis(payload.thesis)
     intent = build_intent(payload.thesis, parsed=parsed)
+    theme, sector, industry = _autofill_from_intent(parsed, intent)
     return ParseThesisResponse(
         discovery_intent=intent.to_dict(),
         dynamic_discovery_enabled=svc.dynamic_discovery_enabled(),
         open_discovery_sources=svc.open_discovery_sources(),
-        themes=parsed.themes,
+        themes=list(intent.themes),
         region=parsed.region,
         country=parsed.country,
-        sector=parsed.sector,
-        industry=parsed.industry,
-        theme=parsed.theme,
+        sector=sector,
+        industry=industry,
+        theme=theme,
         confidence=parsed.confidence,
         extraction_source=parsed.extraction_source,
         needs_narrowing=intent.needs_narrowing,
