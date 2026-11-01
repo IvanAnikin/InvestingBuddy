@@ -1595,10 +1595,34 @@ def _money_disagree(a: ClaimSide, b: ClaimSide, field_key: str) -> bool:
     vb = rf.money_values(rf.field_clause(b.statement, field_key) or b.statement)
     if not va or not vb:
         return False
+    # A contradiction is two SINGLE claims about one field (ADR-071). A statement that
+    # states several amounts for it — a segment breakdown ("Digital Media $17,649,
+    # Digital Experience $5,864 … total $23,769"), a margin sentence naming operating
+    # income, net income and revenue, a this-year-versus-last comparison — is not one
+    # value, and comparing its set against a single figure manufactured "conflicts"
+    # that relabelled true filing-matching statements as press (live Adobe report).
+    if len({(cur, value) for cur, value, _tol in va}) != 1 or len(
+        {(cur, value) for cur, value, _tol in vb}
+    ) != 1:
+        return False
     return (
         compare_values(_Value("money", tuple(sorted(va))), _Value("money", tuple(sorted(vb))))
         == DIFFERENT
     )
+
+
+#: Words that put an amount inside one part of the group. A statement's scope key is
+#: inherited from its evidence (a group-level page can describe one segment), so the
+#: words themselves are checked too (ADR-071).
+_PART_OF_GROUP_RE = re.compile(
+    r"\b(?:segments?|divisions?|business units?|reportable|maisons?|regions?)\b",
+    re.IGNORECASE,
+)
+
+
+def _part_of_group(side: ClaimSide, field_key: str) -> bool:
+    clause = rf.field_clause(side.statement, field_key) or side.statement
+    return bool(_PART_OF_GROUP_RE.search(clause))
 
 
 def _same_frame(a: ClaimSide, b: ClaimSide) -> bool:
@@ -1628,6 +1652,11 @@ def find_contradictions(new: ClaimSide, existing: Sequence[ClaimSide]) -> list[C
         if new.publishers and other.publishers and new.publishers & other.publishers:
             continue
         for field_key in shared:
+            if _part_of_group(new, field_key) != _part_of_group(other, field_key):
+                # One side states a segment's figure, the other the group's: not the same
+                # quantity, whatever scope key each inherited (Jewellery Maisons' €5bn
+                # against Group operating profit; Digital Media against Adobe revenue).
+                continue
             if not _money_disagree(new, other, field_key):
                 continue
             canonical = None

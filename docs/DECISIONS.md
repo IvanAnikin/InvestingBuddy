@@ -4893,3 +4893,60 @@ ETM, whose own issuer text verified the rare-earths theme, scored 20, while Clev
   verified the theme (ETM) can still show "no verified statement of what the company
   does names the requested theme" from the industry classifier, beside "matches theme".
   The two checks read different evidence.
+
+## ADR-071: A Contradiction Is Two Single Claims About One Quantity
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect ADBE-2)
+
+### Context
+In Adobe's deep report (7b401826) two statements matched the FY2025 10-K but were
+relabelled "[reported in the press; a filing figure differs]":
+
+- a segment breakdown: "Digital Media $17,649, Digital Experience $5,864, Publishing and
+  Advertising $256, total $23,769";
+- a geography breakdown: "United States $12,529M … APAC $3,360M".
+
+Four `conflicting_sources` gaps called the group figure "canonical" against them. In
+two of those gaps the group figure was "USD 8,706m", which is the **operating income**
+read out of a margin sentence ("operating income USD 8,706m, net income USD 7,130m and
+revenue USD 23,769m").
+
+`find_contradictions` compared the set of amounts in a clause with the set in another
+clause. Any set with more than one amount is "different" from a single figure. Scope
+keys did not help, because each statement inherited `group` from the evidence it cited.
+
+### Decision
+`trust.find_contradictions` now needs two things before it records a conflict:
+
+1. **Each side states exactly one amount for the field** (`_money_disagree`). A
+   breakdown, a sentence that names several amounts, or a this-year-versus-last
+   comparison is not one value.
+2. **Both sides speak about the same part of the group** (`_part_of_group`). A clause
+   that names a segment, division, business unit, reportable segment, Maison or region
+   is not compared with a clause that names none. This rule reads the words themselves,
+   because the inherited scope key cannot be trusted.
+
+Two single group figures that differ still conflict, and so do two single figures for
+the same segment. The filing figure stays canonical in that case.
+
+### Replay (live Adobe statements, synthetic issuer)
+`tests/test_qa_campaign_manufactured_conflicts.py`:
+
+| Pair | Before | After |
+|---|---|---|
+| Segment breakdown vs group revenue 23,769 | conflict | none |
+| Segment breakdown vs margin sentence | conflict (8,706 "revenue") | none |
+| Geography breakdown vs either | conflict | none |
+| "Digital Media segment revenue $17.6bn" vs group revenue | conflict | none |
+| Group revenue $31.2bn vs filing 23,769 | conflict | conflict (filing canonical) |
+| One segment, two different values | conflict | conflict |
+
+### Not changed / known limits
+- When a breakdown disagrees with the filing (for example a wrong segment total), no
+  conflict is recorded. The numeric verifier still checks each amount against facts.
+- A single group statement that happens to contain "region" or "segment" ("revenue in
+  every region rose to $X") is treated as part of the group, so a real conflict with it
+  is missed. That is a miss, not a false relabel.
+- The margin sentence is still read as "revenue USD 8,706m" by the field extractor
+  (`rf.field_clause` takes the clause that names the field). Only the contradiction
+  step now ignores it. Other consumers of that reading were not audited in this slice.
