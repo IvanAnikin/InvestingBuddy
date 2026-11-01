@@ -1595,10 +1595,70 @@ def _money_disagree(a: ClaimSide, b: ClaimSide, field_key: str) -> bool:
     vb = rf.money_values(rf.field_clause(b.statement, field_key) or b.statement)
     if not va or not vb:
         return False
+    # A contradiction is two SINGLE claims about one field (ADR-071). A statement that
+    # states several amounts for it — a segment breakdown ("Digital Media $17,649,
+    # Digital Experience $5,864 … total $23,769"), a margin sentence naming operating
+    # income, net income and revenue, a this-year-versus-last comparison — is not one
+    # value, and comparing its set against a single figure manufactured "conflicts"
+    # that relabelled true filing-matching statements as press (live Adobe report).
+    # Distinct to six significant figures: "$4.1bn (US$4,100m)" is one value, whatever
+    # the float arithmetic of its two scales.
+    if len({(cur, f"{value:.6g}") for cur, value, _tol in va}) != 1 or len(
+        {(cur, f"{value:.6g}") for cur, value, _tol in vb}
+    ) != 1:
+        return False
     return (
         compare_values(_Value("money", tuple(sorted(va))), _Value("money", tuple(sorted(vb))))
         == DIFFERENT
     )
+
+
+#: Words that put an amount inside one part of the group. A statement's scope key is
+#: inherited from its evidence (a group-level page can describe one segment), so the
+#: words themselves are checked too (ADR-071).
+_PART_OF_GROUP_RE = re.compile(
+    r"\b(?:segments?|divisions?|business units?|reportable|maisons?|regions?)\b",
+    re.IGNORECASE,
+)
+
+
+#: The capitalised name just before a part word: "Digital Media segment", "the
+#: Americas region", "Jewellery Maisons".
+_PART_NAME_RE = re.compile(
+    r"((?:[A-Z][\w&'-]*\s+){0,3}[A-Z][\w&'-]*)\s+(?=(?:segments?|divisions?|business units?|"
+    r"reportable|maisons?|regions?)\b)",
+    re.IGNORECASE,
+)
+_PART_NAME_WORD_RE = re.compile(r"[A-Z][\w&'-]*")
+_NOT_A_PART_NAME = frozenset({"the", "its", "our", "each", "every", "all", "three", "two",
+                              "four", "five", "in", "by", "per", "of", "across"})
+
+
+def _part_of_group(side: ClaimSide, field_key: str) -> tuple[bool, frozenset[str]]:
+    """Whether the clause speaks about a part of the group, and the part's name words
+    (empty when the part is unnamed)."""
+    clause = rf.field_clause(side.statement, field_key) or side.statement
+    if not _PART_OF_GROUP_RE.search(clause):
+        return False, frozenset()
+    # field_clause lower-cases; the part's NAME is read from the statement's own casing.
+    at = side.statement.lower().find(clause.lower())
+    clause = side.statement[at:at + len(clause)] if at >= 0 else side.statement
+    names: set[str] = set()
+    for match in _PART_NAME_RE.finditer(clause):
+        for word in _PART_NAME_WORD_RE.findall(match.group(1)):
+            if word[0].isupper() and word.lower() not in _NOT_A_PART_NAME:
+                names.add(word.lower())
+    return True, frozenset(names)
+
+
+def _same_part(a: ClaimSide, b: ClaimSide, field_key: str) -> bool:
+    """Both sides speak about the group, or both about one NAMED part of it. Two parts
+    whose names differ, or a part with no name, are never the same quantity."""
+    part_a, names_a = _part_of_group(a, field_key)
+    part_b, names_b = _part_of_group(b, field_key)
+    if not part_a and not part_b:
+        return True
+    return part_a and part_b and bool(names_a) and names_a == names_b
 
 
 def _same_frame(a: ClaimSide, b: ClaimSide) -> bool:
@@ -1628,6 +1688,12 @@ def find_contradictions(new: ClaimSide, existing: Sequence[ClaimSide]) -> list[C
         if new.publishers and other.publishers and new.publishers & other.publishers:
             continue
         for field_key in shared:
+            if not _same_part(new, other, field_key):
+                # A segment's figure against the group's, or against another segment's:
+                # not the same quantity, whatever scope key each inherited (Jewellery
+                # Maisons' €5bn against Group operating profit; Digital Media against
+                # Adobe revenue or against the Americas region).
+                continue
             if not _money_disagree(new, other, field_key):
                 continue
             canonical = None
