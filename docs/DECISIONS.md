@@ -4698,3 +4698,134 @@ a filing]", although their only source was the issuer's own release.
   until a new version of it (new content) is ingested.
 - Why the release carried a published date of 2025-11-21 is not explained by this change.
   It is recorded as open in the QA report.
+
+---
+
+## ADR-066: A Separately Registered Company Carrying the Issuer's Name Is Not the Issuer
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, defect H3)
+
+### Context
+Honeywell's deep report (run e50cb267) filed four statements about Honeywell Aerospace
+as Honeywell findings, in growth, competitive and risk sections: "Honeywell Aerospace
+backlog was $18.2 billion", a $500M Tempe facility (twice), and a False Claims Act
+settlement. Honeywell Aerospace Inc. (HONA) files with the SEC under its own CIK. Two
+guards exist, and neither can see this:
+
+- the publisher firewall (`foreign_publisher`) is keyed on the publisher domain, and
+  HONA's releases are published on honeywell.com;
+- the registered-companies guard skips any name whose first distinctive word is in the
+  subject's name, so "Honeywell Aerospace" is never treated as another company.
+
+### Decision
+The regulator's ticker list decides which names are separate registrants.
+
+1. `related_registrants(listings, ticker, name)` reads the SEC company-tickers directory
+   (`discovery.directories.SEC`, already used by Discovery; cached per process per day).
+   It finds the subject by ticker AND by its first distinctive name word, so a ticker
+   another venue reuses (Richemont's SIX `CFR` is Cullen/Frost on the SEC list) never
+   stands in. It returns every registrant with a different CIK whose name starts with
+   the same word followed by a word that is not in the subject's name and is not generic.
+   A generic or short first word (First, American, GE) names no family.
+2. `statement_about_related_registrant` assigns a statement to a registrant only when
+   the registrant is the sentence's grammatical SUBJECT and the subject company is never
+   named on its own. The registrant's name must open the sentence, optionally after "The"
+   or one short lead-in clause ("In March 2026, "). These stay the subject's:
+   - "Honeywell completed the spin-off of Honeywell Aerospace";
+   - "Honeywell's Aerospace Technologies segment…";
+   - any statement where the registrant is only an object: "The company sold its stake
+     to Honeywell Aerospace", "SCCO signed a power contract with Southern California
+     Edison". A customer, buyer or counterparty of the subject is the subject's fact.
+3. The investigator applies the rule beside the other-company guard (outside peer
+   domains), but only to a statement that rests ENTIRELY on web text. The issuer's own
+   filing speaks for the issuer. A dropped statement is counted in
+   `statements_about_related_registrant`, and the question gets one `entity_ambiguous`
+   gap naming the registrant and its ticker.
+4. The rule applies only to an SEC-eligible subject (an absent exchange counts as
+   eligible; the ticker-and-name match keeps that safe). For any other subject, or when the
+   directory cannot be read, the guard fails open and changes nothing.
+5. The test suite makes the directory read inert by default (`conftest`), as it does
+   every other live SEC lookup.
+
+### Replay on the live SEC directory (2026-11-01, 7,684 rows)
+959 of 6,069 registrants have at least one name-sharing registrant. Most are unrelated
+namesakes (Southern Copper / Southern California Edison, the Canadian, China and Alpha
+names, fund families such as Nuveen and BlackRock). That is why the rule asks for the
+subject position. "Southern California Edison raised rates" is not a Southern Copper fact,
+but "SCCO signed a contract with Southern California Edison" is. Of the campaign
+companies, only HON → HONA is flagged; ADBE, JPM, PYPL, CLLS, GE, MMM, AMZN, GOOGL, BRK-B,
+MRNA and MP have none.
+
+### Review round 1
+- **One reporting group is not separate.** A consolidated subsidiary that registers its
+  own debt or preferred stock (Entergy Arkansas, Louisiana, Mississippi and Texas beside
+  Entergy) files a COMBINED 10-K with its parent, under the parent's accession number. A
+  statement is dropped only when `directories.sec_annual_accessions` shows that the
+  registrant's annual-report accessions and the subject's do not overlap. If either
+  record is unreadable, nothing is dropped. Live check: HONA (no 10-K yet) is separate;
+  all four Entergy subsidiaries share Entergy's accessions; Southern California Edison is
+  separate from Southern Co; BlackRock's closed-end funds (no 10-K) are separate.
+- **Appositive, dated lead-in, spacing.** The registrant's name is tested at the very
+  start (after "The") as well as after one lead-in clause. "Honeywell Aerospace, based in
+  Phoenix, announced…" and "On Oct. 30, 2026, Honeywell Aerospace began trading…" are now
+  judged, and the name's words may be separated by any whitespace.
+- **The subject's ticker counts as naming it.** It is matched case-sensitively as a whole
+  token on the original text: "Per HON's 10-Q, Honeywell Aerospace sales…" is kept, while
+  "HONDA" is not "HON".
+- **The subject's own words include its SEC name.** A short platform name ("Western")
+  no longer makes "Western Digital" look like another company.
+- **The phrase is the name as written.** The registrant's first two raw words must be
+  its first two distinctive words, so "Southern Company Gas" no longer yields the phrase
+  "southern gas".
+- **One gap per write-up names every registrant dropped**, not just the first.
+
+### Review round 2
+- **Only the sentence's own subject is judged.** A first attempt judged every
+  `;`-separated clause, and the lead-in could cross a sentence end. Both dropped facts
+  that belong to the subject when the subject is implicit: "Organic sales grew 6% in Q3;
+  Honeywell Aerospace led with 12% growth" and "Organic sales grew 6%. Separately,
+  Honeywell Aerospace won…". A registrant in a later clause is now a miss, never a drop.
+  A lead-in may contain ". " only after a month abbreviation ("On Oct. 30, 2026, ").
+- **No annual report of the subject's own → no drop.** Two empty sets would have made
+  "separate" out of no evidence. 10-KT and 10-KT/A count as annual reports.
+- **One question to the regulator per registrant.** The verdict is remembered on the
+  investigator, failures included. A failed submissions read backs off for 15 minutes
+  (`FAILURE_RETRY_SECONDS`), so a hanging data.sec.gov costs one timeout, not two per
+  statement. `reset_cache()` clears the new caches.
+- **Security review.** The backoff is set when the host does not serve the record
+  (`ok=False`: a timeout, 403, 429 or 5xx, which the fetcher returns rather than raises).
+  One malformed record is "no verdict" for that record alone and does not back off the
+  host.
+- **Replay of both live HON reports:**
+  - e50cb267 (44 findings): 3 of the 4 H3 findings are dropped (Tempe twice, False Claims
+    Act). All cite web corpus chunks (`secondary_web`, `government_or_regulator`).
+  - f0be3c4f (43 findings): 1 is dropped (Tempe).
+  - Kept in both: the spin-off itself, the reaffirmed outlook, the directors' move, and
+    the 10-K segment facts.
+
+### Not changed / known limits
+- A registrant that is the subject of a LATER clause or sentence is not judged. The live
+  e50cb267 F15 "The Tempe plant is tied to US$15 billion …; Honeywell Aerospace backlog
+  was $18.2 billion" stays. A statement that also names the subject by its current name
+  stays too: f0be3c4f F17 "Honeywell Aerospace completed its spin-off from Honeywell
+  Technologies … reported standalone Q3 results … $0.40 dividend" mixes the subject's
+  event with the registrant's results. Both are misses, chosen over false drops of the
+  subject's own facts.
+- A registrant name after a lead-in of more than 60 characters, or after two lead-in
+  clauses, is not judged. That is a miss, not a false drop.
+- A wholly owned subsidiary that registers securities but files its OWN annual report
+  (not a combined one) is treated as separate. No such pair was found among the
+  campaign's companies or the utility and bank parents probed.
+- When the subject is a fund sponsor, statements about its listed funds are dropped
+  (BlackRock / a BlackRock trust). This is intended: a fund's distribution or NAV is not
+  the sponsor's result.
+- Only web-text statements are judged. HONA text that arrives as a non-web item (an IR
+  event, a non-web corpus chunk) is not.
+- Non-US families (a namesake listed only on the LSE or ASX) are not covered. No other
+  directory carries a registrant id the platform can compare.
+- Names whose second word is generic (e.g. "X Energy Partners") are not treated as
+  separate. Nothing in such a name tells a reader that it is not the subject.
+- History is lost on purpose. A pre-spin statement about the business under its brand
+  ("Honeywell Aerospace backlog" while it was still a segment) is dropped too. The
+  segment's filed figures still come from the issuer's 10-K, which the guard never
+  judges.

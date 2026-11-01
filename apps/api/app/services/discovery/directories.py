@@ -140,6 +140,8 @@ def reset_cache() -> None:
     """Forget every cached directory and failure (tests; a manual refresh)."""
     _CACHE.clear()
     _DOMICILE_CACHE.clear()
+    _ANNUAL_ACCESSIONS_CACHE.clear()
+    _ACCESSIONS_FAILED_AT.clear()
     _FAILED_AT.clear()
     _LOCKS.clear()
 
@@ -652,6 +654,65 @@ async def sec_registrant_domicile(
     found = (RegistrantDomicile(incorporation, business, url)
              if incorporation or business else None)
     _DOMICILE_CACHE[key] = found
+    return found
+
+
+_ANNUAL_ACCESSIONS_CACHE: dict[tuple[str, str], frozenset[str] | None] = {}
+#: monotonic time of the last failed submissions read; no retry before FAILURE_RETRY_SECONDS,
+#: so a slow or refusing data.sec.gov costs one timeout, not one per statement.
+_ACCESSIONS_FAILED_AT: dict[str, float] = {}
+_ANNUAL_FORMS = frozenset({
+    "10-K", "10-K/A", "10-KT", "10-KT/A", "20-F", "20-F/A", "40-F", "40-F/A",
+})
+
+
+async def sec_annual_accessions(
+    cik: str | None, *, cfg: Any = None, fetcher: Any = None
+) -> frozenset[str] | None:
+    """Accession numbers of the annual reports in an SEC registrant's recent filings, or
+    None when the record cannot be read. Never raises.
+
+    A consolidated subsidiary that registers its own debt or preferred stock usually files
+    a COMBINED annual report with its parent (Entergy Louisiana inside Entergy's 10-K),
+    under the parent's accession number. Two registrants sharing one is one reporting group.
+    """
+    from app.services.sources.document_fetcher import safe_fetch_document
+
+    if not cik or not re.fullmatch(r"[0-9]{1,10}", str(cik)):
+        return None
+    key = (str(int(cik)), _today())
+    if key in _ANNUAL_ACCESSIONS_CACHE:
+        return _ANNUAL_ACCESSIONS_CACHE[key]
+    failed = _ACCESSIONS_FAILED_AT.get(SEC_DATA_HOST)
+    if failed is not None and time.monotonic() - failed < FAILURE_RETRY_SECONDS:
+        return None
+    url = f"https://{SEC_DATA_HOST}/submissions/CIK{int(cik):010d}.json"
+    try:
+        result = await (fetcher or safe_fetch_document)(
+            url, allowed_domains=(SEC_DATA_HOST,), cfg=cfg, resolve_ip=True,
+            extra_text_content_types=("application/json",),
+        )
+    except Exception:  # noqa: BLE001 - the fetcher is documented never to raise; belt and braces
+        result = None
+    content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+    if not content:
+        # The HOST did not serve the record (timeout, 403/429, 5xx — returned as ok=False,
+        # never raised): back off, so a slow data.sec.gov costs one deadline per window.
+        _ACCESSIONS_FAILED_AT[SEC_DATA_HOST] = time.monotonic()
+        return None
+    try:
+        data = json.loads(content)
+        recent = data["filings"]["recent"]
+        forms, accessions = recent["form"], recent["accessionNumber"]
+    except Exception:  # noqa: BLE001 - one malformed RECORD is no verdict for it alone (not cached)
+        return None
+    if not isinstance(forms, list) or not isinstance(accessions, list):
+        return None
+    found = frozenset(
+        str(accn) for form, accn in zip(forms, accessions, strict=False)
+        if str(form) in _ANNUAL_FORMS
+    )
+    _ANNUAL_ACCESSIONS_CACHE[key] = found
     return found
 
 

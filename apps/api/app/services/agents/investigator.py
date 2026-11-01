@@ -930,6 +930,156 @@ def other_company_labels(names: "Sequence[str]", subject_name: str | None) -> di
     return out
 
 
+@dataclass(frozen=True)
+class RelatedRegistrant:
+    """A SEPARATELY registered company whose name begins with the subject's name.
+
+    ``Honeywell Aerospace Inc.`` (HONA, its own CIK) beside ``Honeywell International
+    Inc.`` (HON): a spin-off, a listed subsidiary, or an unrelated namesake. Its news is
+    published on the same domain and under the same first word, so neither the publisher
+    firewall nor the registered-companies guard can tell it from the subject's own.
+    """
+
+    phrase: str  # folded, e.g. "honeywell aerospace"
+    name: str
+    ticker: str
+    cik: str = ""
+    #: The subject's own CIK, for the combined-annual-report check.
+    subject_cik: str = ""
+
+
+def _raw_words(name: str | None) -> list[str]:
+    from app.services.discovery.identity import _fold  # noqa: PLC2701
+
+    return re.findall(r"[a-z0-9&]+", _fold(name))
+
+
+def related_registrants(
+    listings: "Sequence[Any]", subject_ticker: str | None, subject_name: str | None
+) -> tuple[RelatedRegistrant, ...]:
+    """Registrants in a regulator's ticker directory that share the subject's first name
+    word but are not the subject.
+
+    The subject is found by its ticker AND its first distinctive name word, so a ticker
+    another venue reuses (Richemont's ``CFR`` is Cullen/Frost's on the SEC list) never
+    stands in for it. A generic or short first word (``First``, ``American``, ``GE``)
+    names no family and returns nothing, as does a subject the directory does not hold.
+    The phrase is the registrant's name AS WRITTEN: its first two words must be
+    distinctive ones (``Southern Company Gas`` would otherwise become "southern gas").
+    """
+    from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+    own = name_tokens(subject_name or "")
+    ticker = (subject_ticker or "").strip().upper()
+    if not own or not ticker or own[0] in _GENERIC_TOKENS or len(own[0]) < 5:
+        return ()
+    key = own[0]
+    subject_rows = [
+        row for row in listings
+        if (getattr(row, "ticker", "") or "").upper() == ticker
+        and getattr(row, "cik", None)
+        and name_tokens(getattr(row, "name", ""))[:1] == [key]
+    ]
+    if not subject_rows:
+        return ()
+    subject_ciks = {str(row.cik) for row in subject_rows}
+    subject_cik = sorted(subject_ciks)[0]
+    # The subject's words as the regulator writes them too: a short name in the platform's
+    # own table ("Western") must not make "Western Digital" look like someone else.
+    own_set = set(own).union(*(name_tokens(row.name) for row in subject_rows))
+    out: dict[str, RelatedRegistrant] = {}
+    for row in listings:
+        cik = str(getattr(row, "cik", None) or "")
+        words = name_tokens(getattr(row, "name", ""))
+        if not cik or cik in subject_ciks or len(words) < 2 or words[0] != key:
+            continue
+        if _raw_words(row.name)[:2] != words[:2]:
+            continue
+        if words[1] in own_set or words[1] in _GENERIC_TOKENS:
+            # "Honeywell International Trust", "Honeywell Group": nothing in the name
+            # tells a reader it is not the subject.
+            continue
+        phrase = f"{key} {words[1]}"
+        out.setdefault(
+            phrase, RelatedRegistrant(phrase, row.name, row.ticker, cik, subject_cik)
+        )
+    return tuple(out[k] for k in sorted(out))
+
+
+#: What may precede the grammatical subject: one short lead-in clause ("In March 2026, ",
+#: "On Oct. 30, 2026, ") and an article. Anything longer and the registrant is no longer
+#: what the sentence is about. A lead-in never crosses a sentence end: only a month's
+#: abbreviation may be followed by ". " ("Organic sales grew 6%. Separately, X won…" is
+#: two sentences, and the first one's subject is implicit).
+_LEAD_IN_RE = re.compile(
+    r"^(?:(?:jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)\.\s|[^,;:.]|\.(?!\s)){1,60}?"
+    r"(?:,\s*[0-9]{4})?,\s*"
+)
+_ARTICLE_RE = re.compile(r"^the\s+")
+
+
+def statement_about_related_registrant(
+    statement: str,
+    related: "Sequence[RelatedRegistrant]",
+    subject_ticker: str | None = None,
+) -> RelatedRegistrant | None:
+    """The related registrant a statement is ABOUT: its name is the sentence's subject
+    and the subject company is never named on its own (by name word or by ticker).
+
+    "Honeywell Aerospace announced a $500M facility" is HONA's news. Kept as the
+    subject's: "Honeywell completed the spin-off of Honeywell Aerospace", "Honeywell's
+    Aerospace Technologies segment…", "Per HON's 10-Q, Honeywell Aerospace sales…", and
+    any statement where the registrant is only an object ("The company sold its stake to
+    Honeywell Aerospace", "SCCO signed a power contract with Southern California
+    Edison") — a customer, buyer or counterparty of the subject is the subject's fact.
+    """
+    if not related:
+        return None
+    from app.services.discovery.identity import _fold  # noqa: PLC2701
+
+    ticker = (subject_ticker or "").strip()
+    if ticker and re.search(rf"(?<![A-Za-z0-9.-]){re.escape(ticker)}(?![A-Za-z0-9-])", statement):
+        return None  # the subject is named by its ticker
+    text = _fold(statement).strip()
+    key = related[0].phrase.split(" ", 1)[0]
+
+    def _opens(head: str) -> RelatedRegistrant | None:
+        head = _ARTICLE_RE.sub("", head)
+        return next(
+            (
+                r for r in related
+                if re.match(rf"{re.escape(key)}\s+{re.escape(r.phrase.split(' ', 1)[1])}\b", head)
+            ),
+            None,
+        )
+
+    # Only the sentence's OWN subject. A later clause ("Organic sales grew 6%; Honeywell
+    # Aerospace led with 12%") may be about the registrant while the first clause is the
+    # subject's fact with the subject implicit — dropping it would lose that fact (review
+    # round 2). A registrant in a later clause is therefore a miss, never a drop.
+    found = _opens(text)
+    if found is None:
+        lead = _LEAD_IN_RE.match(text)
+        found = _opens(text[lead.end():]) if lead else None
+    if found is None:
+        return None
+    for match in re.finditer(rf"\b{re.escape(key)}\b", text):
+        rest = text[match.end():]
+        if not any(
+            re.match(rf"\s+{re.escape(r.phrase.split(' ', 1)[1])}\b", rest) for r in related
+        ):
+            return None  # the subject is named on its own
+    return found
+
+
+async def _load_sec_directory() -> "list[Any]":
+    """The SEC company-tickers directory (cached per process per day; [] when unreadable).
+    A seam: the test suite makes it inert, as it does every other live SEC lookup."""
+    from app.services.discovery import directories
+
+    return await directories.load(directories.SEC)
+
+
 def foreign_publisher(
     cited: "Sequence[str]", evidence: "Sequence[_Evidence]", others: dict[str, str]
 ) -> str | None:
@@ -1362,6 +1512,9 @@ class InvestigatorDiagnostics:
     #: A statement resting only on ANOTHER registered company's own website, dropped
     #: because it would have been filed under the issuer (live QA, 2026-10-29).
     statements_about_another_company: int = 0
+    #: A statement about a SEPARATELY registered company that carries the issuer's name
+    #: (Honeywell Aerospace beside Honeywell), resting only on web text (QA, 2026-11-01).
+    statements_about_related_registrant: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -1386,6 +1539,9 @@ class InvestigatorDiagnostics:
         self.statements_dropped_uncited += other.statements_dropped_uncited
         self.statements_about_evidence += other.statements_about_evidence
         self.statements_about_another_company += other.statements_about_another_company
+        self.statements_about_related_registrant += (
+            other.statements_about_related_registrant
+        )
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -1403,6 +1559,9 @@ class InvestigatorDiagnostics:
             "statements_dropped_uncited": self.statements_dropped_uncited,
             "statements_about_evidence": self.statements_about_evidence,
             "statements_about_another_company": self.statements_about_another_company,
+            "statements_about_related_registrant": (
+                self.statements_about_related_registrant
+            ),
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -1478,6 +1637,11 @@ class LLMInvestigator:
     primary_commodity: str | None = None
     #: Lazily-loaded ``other_company_labels`` for the other-company guard.
     _other_names: "dict[str, str] | None" = field(default=None, repr=False)
+    #: Lazily-loaded ``related_registrants`` for the name-sharing-registrant guard.
+    _related: "tuple[RelatedRegistrant, ...] | None" = field(default=None, repr=False)
+    #: registrant CIK → does it report separately? Remembered, failures included, so one
+    #: write-up never asks the regulator about the same registrant twice (review round 2).
+    _separate: "dict[str, bool]" = field(default_factory=dict, repr=False)
     #: Open-web W7 — ``async (question_key, candidates, round_index, max_fetches, terms)
     #: -> CandidateFetchResult`` (``WebFollowup.fetch_candidates``). When set, the
     #: candidates a ``search_web`` call returns are fetched and ingested DETERMINISTICALLY
@@ -2162,6 +2326,43 @@ class LLMInvestigator:
                 self._other_names = {}
         return self._other_names
 
+    async def _related_registrants(self) -> "tuple[RelatedRegistrant, ...]":
+        """Separately registered companies carrying the subject's name, once per
+        investigator. Only for a subject the SEC directory holds; never raises."""
+        if self._related is None:
+            try:
+                from app.services.exchange_registry import is_sec_eligible
+
+                if not self.ticker or not is_sec_eligible(self.exchange):
+                    self._related = ()
+                else:
+                    self._related = related_registrants(
+                        await _load_sec_directory(), self.ticker, self.company_name
+                    )
+            except Exception:  # noqa: BLE001 - a guard that cannot read must not block research
+                self._related = ()
+        return self._related
+
+    async def _reports_separately(self, related: RelatedRegistrant) -> bool:
+        """True when the registrant does NOT file a combined annual report with the
+        subject. A consolidated subsidiary with its own registered debt (Entergy
+        Louisiana in Entergy's 10-K) shares the parent's accession and is the parent's
+        fact. Either record unreadable → False: no verdict means no drop. A subject with no
+        annual report of its own in the record → False: nothing to compare against."""
+        if related.cik in self._separate:
+            return self._separate[related.cik]
+        verdict = False
+        try:
+            from app.services.discovery.directories import sec_annual_accessions
+
+            ours = await sec_annual_accessions(related.subject_cik)
+            theirs = await sec_annual_accessions(related.cik) if ours else None
+            verdict = bool(ours and theirs is not None and not (theirs & ours))
+        except Exception:  # noqa: BLE001 - a guard that cannot read must not block research
+            verdict = False
+        self._separate[related.cik] = verdict
+        return verdict
+
     async def _write_up(
         self,
         role_id: str,
@@ -2256,6 +2457,7 @@ class LLMInvestigator:
         payload = reply.payload
         findings: list[FindingDraft] = []
         gaps: list[GapDraft] = []
+        related_dropped: dict[str, RelatedRegistrant] = {}
         for raw in (payload.get("findings") or [])[:MAX_FINDINGS_PER_QUESTION]:
             if not isinstance(raw, dict):
                 continue
@@ -2322,6 +2524,22 @@ class LLMInvestigator:
                     # stood in the subject's capital-allocation section).
                     self.diagnostics.statements_about_another_company += 1
                     continue
+                cited_items = [e for e in evidence if e.citation_id in set(real)]
+                related = (
+                    statement_about_related_registrant(
+                        statement, await self._related_registrants(), self.ticker
+                    )
+                    if cited_items and all(e.web for e in cited_items)
+                    else None
+                )
+                if related is not None and await self._reports_separately(related):
+                    # The statement is about a company that shares the issuer's name but
+                    # reports on its own (a spin-off, a separately listed company):
+                    # "Honeywell Aerospace announced…" stood in Honeywell's catalysts. Its
+                    # news comes from the same domain, so only the regulator separates them.
+                    self.diagnostics.statements_about_related_registrant += 1
+                    related_dropped.setdefault(related.phrase, related)
+                    continue
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
                 direction = None
@@ -2384,6 +2602,28 @@ class LLMInvestigator:
                         str(r) for r in (raw.get("references") or [])
                         if str(r) in {fid for fid, _s, _d in established}
                     ),
+                )
+            )
+
+        if related_dropped:
+            names = "; ".join(
+                f"{r.name} ({r.ticker})" for r in related_dropped.values()
+            )
+            gaps.append(
+                GapDraft(
+                    gap_type=ledger.GAP_ENTITY_AMBIGUOUS,
+                    description=(
+                        f"Web statements about {names} — separately registered and "
+                        "separately reporting, though carrying the issuer's name — were "
+                        "not filed under the issuer."
+                    )[:600],
+                    question_key=question.key,
+                    why_it_matters=(
+                        "A company that files on its own reports its own results, "
+                        "backlog and events; filing them under the issuer attributes "
+                        "another company's facts."
+                    ),
+                    sources_tried=tuple(sorted({e.kind for e in evidence})),
                 )
             )
 
