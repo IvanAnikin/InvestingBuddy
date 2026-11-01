@@ -269,6 +269,22 @@ NOT_MEANINGFUL_CATEGORY_VOCABULARY: frozenset[str] = frozenset(
 )
 
 
+#: Financial categories the FinancialDataAgent already tracks that a declaration may
+#: name as what a business model is analysed by instead. Nothing new is invented.
+ANALYSED_BY_VOCABULARY: frozenset[str] = frozenset(
+    {
+        "revenue",
+        "net_income",
+        "total_assets",
+        "earnings_per_share",
+        "book_value_per_share",
+        "return_on_equity",
+        "price_to_earnings",
+        "dividend_yield",
+    }
+)
+
+
 @dataclass(frozen=True)
 class NotMeaningfulMetrics:
     """Generic metrics that carry no economic meaning for a business model — ADR-069.
@@ -291,8 +307,18 @@ class NotMeaningfulMetrics:
     calculations: tuple[str, ...] = ()
     #: Names from :data:`NOT_MEANINGFUL_CATEGORY_VOCABULARY`.
     financial_categories: tuple[str, ...] = ()
+    #: Base research-model question keys that are not meaningful for a matching company
+    #: and are not asked of it. Unlike a question's ``replaces``, which applies to every
+    #: company the playbook matches, this applies only under ``applies_to`` above.
+    questions: tuple[str, ...] = ()
+    #: Generic financial categories (:data:`ANALYSED_BY_VOCABULARY`) the business model
+    #: is analysed by INSTEAD — required by the valuation-input and completeness checks
+    #: in place of what was removed, so a bank is held to P/B and ROE, not to nothing.
+    analysed_by: tuple[str, ...] = ()
     #: Why, in one sentence a reader sees beside the list.
     reason: str = ""
+    #: The short note an investor sees where the financials and the peer table render.
+    reader_note: str = ""
 
     def __post_init__(self) -> None:
         if self.applies_to.sectors or not (
@@ -319,6 +345,15 @@ class NotMeaningfulMetrics:
             )
         if not self.reason.strip():
             raise ValueError("a not-meaningful declaration must say why.")
+        unknown_analysed = set(self.analysed_by) - ANALYSED_BY_VOCABULARY
+        if unknown_analysed:
+            raise ValueError(
+                f"analysed_by {sorted(unknown_analysed)} are not financial categories "
+                "the platform tracks; nothing could ever satisfy them."
+            )
+        # `questions` naming a real base question is asserted by the test suite
+        # (test_qa_campaign_bank_metrics): checking it here would import the base
+        # model, which imports this module — a cycle at playbook registration.
 
 
 def _fold(value: str | None) -> str:
@@ -472,6 +507,8 @@ class Playbook:
             out["not_meaningful"] = {
                 "calculations": list(self.not_meaningful.calculations),
                 "financial_categories": list(self.not_meaningful.financial_categories),
+                "questions": list(self.not_meaningful.questions),
+                "analysed_by": list(self.not_meaningful.analysed_by),
                 "reason": self.not_meaningful.reason,
             }
         return out

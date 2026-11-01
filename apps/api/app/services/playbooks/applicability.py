@@ -43,6 +43,19 @@ from app.services.playbooks.schema import PlaybookSelection
 #: The status a not-meaningful metric carries wherever it is recorded. Never "missing".
 STATUS_NOT_MEANINGFUL = "not_meaningful_for_business_model"
 
+#: Extracted-fact labels (the calculation vocabulary's input labels and the issuer-
+#: printed equivalents) that ARE a generic metric a playbook may declare not meaningful.
+#: "operating_profit" is deliberately absent: a European bank prints an operating profit
+#: of its own (before impairments), and that is a bank figure, not an industrial EBIT.
+FACT_LABEL_METRIC: dict[str, str] = {
+    "operating_cash_flow": "operating_cash_flow",
+    "capital_expenditure": "capital_expenditure",
+    "capital_expenditures": "capital_expenditure",
+    "free_cash_flow": "free_cash_flow",
+    "ebitda": "ebitda",
+    "net_debt": "net_debt",
+}
+
 
 @dataclass(frozen=True)
 class MetricApplicability:
@@ -50,18 +63,45 @@ class MetricApplicability:
 
     calculations: frozenset[str] = frozenset()
     financial_categories: frozenset[str] = frozenset()
+    #: Base research-model questions not asked of this company.
+    questions: frozenset[str] = frozenset()
+    #: Financial categories the business model is analysed by instead (in order).
+    analysed_by: tuple[str, ...] = ()
     playbook_ids: tuple[str, ...] = ()
     reason: str = ""
+    #: What an investor is told where the financials render (ADR-069). Empty ⇒ nothing.
+    reader_note: str = ""
 
     @property
     def is_empty(self) -> bool:
-        return not (self.calculations or self.financial_categories)
+        return not (self.calculations or self.financial_categories or self.questions)
 
     def keeps_calculation(self, key: str) -> bool:
         return key not in self.calculations
 
     def keeps_category(self, category: str) -> bool:
         return category not in self.financial_categories
+
+    @property
+    def declared(self) -> frozenset[str]:
+        """Calculation keys and categories together — the two share no name."""
+        return self.calculations | self.financial_categories
+
+    def keeps_fact_label(self, label: str | None) -> bool:
+        """False for an extracted-fact label that IS a not-meaningful metric."""
+        metric = FACT_LABEL_METRIC.get((label or "").strip().lower())
+        return metric is None or metric not in self.declared
+
+    def filter_fundamentals(self, fs: "Mapping[str, Any]") -> dict[str, Any]:
+        """A ``fundamentals_summary`` without the keys that are not-meaningful metrics."""
+        if self.is_empty:
+            return dict(fs)
+        from app.services.calculations.statement_metrics import SEC_SUMMARY_KEY_METRIC
+
+        declared = self.declared
+        return {
+            k: v for k, v in fs.items() if SEC_SUMMARY_KEY_METRIC.get(k) not in declared
+        }
 
     def to_dict(self) -> dict[str, Any]:
         """The ONE record of what was not computed, and why. Empty dict when nothing."""
@@ -71,8 +111,11 @@ class MetricApplicability:
             "status": STATUS_NOT_MEANINGFUL,
             "calculations": sorted(self.calculations),
             "financial_categories": sorted(self.financial_categories),
+            "questions": sorted(self.questions),
+            "analysed_by": list(self.analysed_by),
             "playbooks": list(self.playbook_ids),
             "reason": self.reason,
+            "reader_note": self.reader_note,
         }
 
 
@@ -93,7 +136,9 @@ def resolve(
         return NONE
     calculations: set[str] | None = None
     categories: set[str] | None = None
+    questions: set[str] | None = None
     reasons: list[str] = []
+    analysed_by: list[str] = []
     for playbook in methodologies:
         declared = playbook.not_meaningful
         if declared is None or not declared.applies_to.matches(
@@ -106,12 +151,24 @@ def resolve(
         own_cats = set(declared.financial_categories)
         calculations = own_calcs if calculations is None else calculations & own_calcs
         categories = own_cats if categories is None else categories & own_cats
+        own_qs = set(declared.questions)
+        questions = own_qs if questions is None else questions & own_qs
         reasons.append(declared.reason)
+        analysed_by.extend(c for c in declared.analysed_by if c not in analysed_by)
     return MetricApplicability(
         calculations=frozenset(calculations or ()),
         financial_categories=frozenset(categories or ()),
+        questions=frozenset(questions or ()),
+        analysed_by=tuple(analysed_by),
         playbook_ids=tuple(p.playbook_id for p in methodologies),
         reason=" ".join(dict.fromkeys(reasons)),
+        reader_note=" ".join(
+            dict.fromkeys(
+                p.not_meaningful.reader_note
+                for p in methodologies
+                if p.not_meaningful is not None and p.not_meaningful.reader_note
+            )
+        ),
     )
 
 

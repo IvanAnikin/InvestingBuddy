@@ -216,6 +216,9 @@ class ResearchPlan:
     #: have required and the company's playbooks declare not meaningful for its business
     #: model. Not computed, not required, not a gap. Empty for most companies.
     not_meaningful: dict[str, list[str]] = field(default_factory=dict)
+    #: ADR-069 — base questions not asked because the company's playbooks declare them
+    #: not meaningful for its business model (a bank's cash-generation question).
+    not_meaningful_questions: list[str] = field(default_factory=list)
 
     @property
     def blocking_questions(self) -> list[PlannedQuestion]:
@@ -239,6 +242,8 @@ class ResearchPlan:
                if self.blocking_demoted else {}),
             **({"not_meaningful_calculations": dict(self.not_meaningful)}
                if self.not_meaningful else {}),
+            **({"not_meaningful_questions": list(self.not_meaningful_questions)}
+               if self.not_meaningful_questions else {}),
             "limits": {
                 "max_rounds": self.limits.max_rounds,
                 "max_tasks": self.limits.max_tasks,
@@ -319,6 +324,7 @@ async def plan_research(
     commodities: "Sequence[Any]" = (),
     extra_questions: "Sequence[PlannedQuestion]" = (),
     not_meaningful_calculations: "frozenset[str] | Sequence[str]" = (),
+    not_meaningful_questions: "frozenset[str] | Sequence[str]" = (),
 ) -> ResearchPlan:
     """Build a bounded plan. Never raises on a model failure.
 
@@ -331,6 +337,8 @@ async def plan_research(
     plan = ResearchPlan(subject=subject, mode=resolved, limits=limits)
 
     questions: dict[str, PlannedQuestion] = {}
+    # ADR-069 — base questions the company's playbooks declare not meaningful for it.
+    skipped_questions = frozenset(not_meaningful_questions)
 
     # 1. Playbook questions first: they are the methodology, and they are the only
     #    source permitted to mark a question blocking.
@@ -379,7 +387,7 @@ async def plan_research(
     from app.services.director.base_model import RETIRED_QUESTION_KEYS
 
     for key, text in prior_open_gaps:
-        if key in RETIRED_QUESTION_KEYS:
+        if key in RETIRED_QUESTION_KEYS or key in skipped_questions:
             # A question this platform no longer asks, because nothing can answer it
             # with a citable item. Re-asking it from a gap would re-plan the noise.
             continue
@@ -398,6 +406,9 @@ async def plan_research(
     #    not asked at all: the sector version is the same question asked properly.
     for question in _baseline_questions():
         if question.key in replaced:
+            continue
+        if question.key in skipped_questions:
+            plan.not_meaningful_questions.append(question.key)
             continue
         questions.setdefault(question.key, question)
 

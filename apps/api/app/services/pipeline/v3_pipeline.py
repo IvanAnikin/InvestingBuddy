@@ -750,9 +750,14 @@ async def _run(
         commodities=[m.commodity for m in profile.commodities],
         extra_questions=thesis_questions(thesis),
         not_meaningful_calculations=applicability.calculations,
+        not_meaningful_questions=applicability.questions,
     )
     if plan.not_meaningful and outcome.not_meaningful_metrics:
         outcome.not_meaningful_metrics["narrowed_questions"] = dict(plan.not_meaningful)
+    if plan.not_meaningful_questions and outcome.not_meaningful_metrics:
+        outcome.not_meaningful_metrics["skipped_questions"] = list(
+            plan.not_meaningful_questions
+        )
     # A plan that will answer a question with less than it asks for says so on the run,
     # where a reader sees it — not only in the planner's own record.
     for reason in plan.degraded:
@@ -1121,6 +1126,7 @@ async def _run(
             stage=(outcome.stage or {}).get("stage"),
             web_context=outcome.web_context or None,
             not_meaningful_calculations=applicability.calculations,
+            not_meaningful_note=applicability.reader_note or None,
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1185,6 +1191,7 @@ async def _professional_report(
     stage: str | None = None,
     web_context: dict[str, Any] | None = None,
     not_meaningful_calculations: "frozenset[str]" = frozenset(),
+    not_meaningful_note: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1365,6 +1372,7 @@ async def _professional_report(
         ),
         web_support=web_support,
         web_context=web_context or None,
+        not_meaningful_note=not_meaningful_note,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

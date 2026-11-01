@@ -176,7 +176,21 @@ def run_valuation_guard_agent(
     # ADR-069 — inputs the company's playbooks declare not meaningful for its business
     # model (a bank's free cash flow and EBITDA). A method built on one is not
     # meaningful either, which is a different statement from "blocked by missing data".
-    not_meaningful_inputs = set(_fds.not_meaningful_fields)
+    from app.services.playbooks.applicability import for_snapshot
+
+    applicability = for_snapshot(company_snapshot)
+    not_meaningful_inputs = set(_fds.not_meaningful_fields) | {
+        f"financials.{c}" for c in applicability.financial_categories
+    }
+    ebitda_meaningful = "financials.ebitda" not in not_meaningful_inputs
+    # What the business model IS valued by instead (a bank: book value and ROE, i.e.
+    # P/B with ROE). Required in place of what was removed — never nothing.
+    replacement_inputs = (
+        [f"financials.{c}" for c in applicability.analysed_by]
+        if not_meaningful_inputs
+        else []
+    )
+    relative_label = "P/E, EV/EBITDA" if ebitda_meaningful else "P/B, P/E"
 
     # ── Check DCF inputs ──────────────────────────────────────────────────
     dcf_not_meaningful = [f for f in _DCF_REQUIRED if f in not_meaningful_inputs]
@@ -203,6 +217,7 @@ def run_valuation_guard_agent(
 
     # ── Check relative valuation inputs ───────────────────────────────────
     rel_required = [f for f in _RELATIVE_REQUIRED if f not in not_meaningful_inputs]
+    rel_required += [f for f in replacement_inputs if f not in rel_required]
     rel_available = [f for f in rel_required if f in available_financial_data]
     rel_missing = [f for f in rel_required if f not in available_financial_data]
 
@@ -217,7 +232,7 @@ def run_valuation_guard_agent(
         available_valuation_inputs.append("price_history.latest_close (available)")
     else:
         valuation_blockers.append(
-            "Relative valuation (P/E, EV/EBITDA) blocked: no price data available."
+            f"Relative valuation ({relative_label}) blocked: no price data available."
         )
 
     if rel_missing:
@@ -312,8 +327,8 @@ def run_valuation_guard_agent(
                 f"({', '.join(core_available)}) are available and "
                 f"{', '.join(derived_bits)} is present only as a DERIVED "
                 "ESTIMATE (T6, from free price data plus those statements). "
-                "EBITDA, EV/EBITDA and "
-                "validated market inputs remain unavailable — no valuation "
+                + ("EBITDA, EV/EBITDA and " if ebitda_meaningful else "")
+                + "validated market inputs remain unavailable — no valuation "
                 "multiple or DCF conclusion is produced at this phase."
             )
         else:
@@ -321,7 +336,8 @@ def run_valuation_guard_agent(
                 f"Valuation conclusion withheld: {_statement_source_label(fin_ev)} "
                 f"({', '.join(core_available)}) are available, but market-based "
                 "inputs (market capitalization, shares outstanding, enterprise value) "
-                "and EBITDA are not — no valuation multiple or DCF conclusion is "
+                + ("and EBITDA are not" if ebitda_meaningful else "are not")
+                + " — no valuation multiple or DCF conclusion is "
                 "produced at this phase."
             )
 

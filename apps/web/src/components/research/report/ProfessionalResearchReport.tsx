@@ -787,6 +787,14 @@ function DomainBody({
 
       {section.commodityTable.length > 0 && <CommodityTable rows={section.commodityTable} />}
       {section.peerTable.length > 0 && <PeerTable rows={section.peerTable} />}
+      {section.metricsNote && (
+        <p
+          className="mt-3 max-w-2xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
+          data-testid="metrics-not-meaningful-note"
+        >
+          {section.metricsNote}
+        </p>
+      )}
 
       {/* Open-web W5/W8b: which findings here rest on web documents, by source class,
           with publisher, date, corroboration and the trust label. Absent on old reports. */}

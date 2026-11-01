@@ -277,6 +277,10 @@ def _enriched_present_fields(
         present.add("snapshot_financials.total_debt")
     if _first_present(fundamentals, "cash_and_equivalents_usd_m"):
         present.add("snapshot_financials.cash")
+    # ADR-069 — the fields a bank is analysed by instead, when the snapshot has them.
+    # (No platform source produces book value per share yet; it stays honestly absent.)
+    if _first_present(fundamentals, "return_on_equity_pct", "return_on_equity_ttm"):
+        present.add("financials_deep.return_on_equity")
 
     # Phase 29B.3 — real high-confidence T1 primary-filing facts (revenue, …)
     # satisfy their schema field so a genuinely-sourced field is not reported as
@@ -402,6 +406,10 @@ def run_research_completeness_agent(
         sub_fields = [
             f for f in meta["fields"] if f"{section_key}.{f}" not in not_meaningful
         ]
+        if section_key == "financials_deep" and not_meaningful:
+            # What the business model is analysed by instead (a bank: book value per
+            # share and ROE) takes the removed fields' place — never nothing.
+            sub_fields += [c for c in applicability.analysed_by if c not in sub_fields]
         section_data = draft.get(section_key, {}) if in_draft else {}
 
         # A field counts as present when it is in the draft section OR the

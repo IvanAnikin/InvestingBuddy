@@ -167,6 +167,9 @@ class ReportInputs:
     web_support: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     #: Open-web W5: the company web stage's summary (state, counts, not-accessible list).
     web_context: Mapping[str, Any] | None = None
+    #: ADR-069 — the playbook's reader note when generic metrics are not meaningful for
+    #: this company (a deposit-taking bank). Shown beside the financials and the peers.
+    not_meaningful_note: str | None = None
 
 
 
@@ -764,6 +767,12 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
     industry["commodity_table"] = [dict(row) for row in inputs.commodity_rows]
     competitive = next(s for s in sections if s["key"] == "competitive_position")
     competitive["peer_table"] = [dict(row) for row in inputs.peer_rows]
+    if inputs.not_meaningful_note:
+        # Only when declared, so every other report is byte-identical.
+        for key in ("financial_capacity", "competitive_position"):
+            section = next((s for s in sections if s["key"] == key), None)
+            if section is not None:
+                section["metrics_note"] = inputs.not_meaningful_note
 
     # What would change the thesis: REFERENCES, never restatements (ownership).
     change = {

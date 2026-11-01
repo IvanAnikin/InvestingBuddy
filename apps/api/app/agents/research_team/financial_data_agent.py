@@ -121,7 +121,9 @@ def _fmt_m(value: float | None) -> str | None:
     return f"{value:,.0f} USD_m"
 
 
-def _summarize_fundamentals(fs: dict, legal_name: str) -> str:
+def _summarize_fundamentals(
+    fs: dict, legal_name: str, not_meaningful: frozenset[str] = frozenset()
+) -> str:
     """
     Build a factual, internal narrative from normalized fundamentals.
 
@@ -224,8 +226,13 @@ def _summarize_fundamentals(fs: dict, legal_name: str) -> str:
 
     # ── Honest remaining gaps (annual vs TTM, EBITDA, beta) ──────────────
     remaining: list[str] = []
-    if fs.get("ebitda_usd_m") is None:
+    if fs.get("ebitda_usd_m") is None and "ebitda" not in not_meaningful:
         remaining.append("EBITDA and EV/EBITDA")
+    if not_meaningful:
+        parts.append(
+            "Operating cash flow, free cash flow, EBITDA and leverage ratios are not "
+            "shown: they are not meaningful for this business model under its playbook."
+        )
     if mktcap is None:
         remaining.append("market capitalization")
     remaining.append("beta and validated TTM figures")
@@ -386,8 +393,12 @@ def run_financial_data_agent(
     )
 
     if available_categories:
+        # ADR-069 — the narrative reaches the council (`_add_financial_context`), so it
+        # carries no metric the company's playbooks declare not meaningful.
         financial_context_summary = header + _summarize_fundamentals(
-            fundamentals_summary, legal_name
+            applicability.filter_fundamentals(fundamentals_summary),
+            legal_name,
+            not_meaningful=applicability.declared,
         )
     else:
         financial_context_summary = (

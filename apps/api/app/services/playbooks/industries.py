@@ -344,14 +344,15 @@ SEMICONDUCTORS = Playbook(
 # --------------------------------------------------------------------------- #
 
 #: ADR-069. What the generic methodology computes and demands that means nothing for a
-#: deposit-taker or insurer. Matched by INDUSTRY (or the regulated-capital signal), not by
-#: the playbook's sector arm: a payments network this playbook matches only as
-#: "Financials" keeps free cash flow, which is its analysis.
+#: DEPOSIT-TAKING BANK. Matched by the "Banks" industry only (SIC 6020-6036 and the
+#: canonical label), never by the playbook's sector arm or its other industries:
+#: - an insurer is deliberately NOT covered. SIC 6311-6411 maps to "Insurance" and
+#:   holds managed care (UNH 6324), brokers (MMC, AON 6411) and conglomerates (BRK
+#:   6331), for which operating margin, FCF and net debt are the analysis;
+#: - "Diversified Financials" is not produced by any classifier, and payments, exchanges
+#:   and asset managers (V, PYPL, ICE, CME, BLK) keep every generic metric.
 BANK_NOT_MEANINGFUL = NotMeaningfulMetrics(
-    applies_to=AppliesTo(
-        industries=("Banks", "Diversified Financials", "Insurance"),
-        business_model_signals=("regulated_capital",),
-    ),
+    applies_to=AppliesTo(industries=("Banks",)),
     calculations=(
         "cash_conversion",
         "capex_to_ocf",
@@ -375,9 +376,22 @@ BANK_NOT_MEANINGFUL = NotMeaningfulMetrics(
         "operating_cash_flow",
         "capital_expenditure",
     ),
+    # "How much cash does the business generate after capital spending" has no reading
+    # for a deposit-taker; `funding_and_deposits` asks how it is funded. Declared HERE,
+    # not as that question's `replaces`, because the playbook also matches insurers and
+    # payments companies, for which the base question is the right one.
+    questions=("cash_generation_and_funding",),
+    # A bank is valued on its book and the return it earns on it (P/B with ROE).
+    analysed_by=("book_value_per_share", "return_on_equity"),
+    reader_note=(
+        "Cash conversion, free cash flow, net debt and EBITDA are not shown: they are "
+        "not meaningful for a deposit-taking bank, whose operating cash flow moves with "
+        "deposits and trading assets and whose debt is funding."
+    ),
     reason=(
-        "For a bank or insurer, operating cash flow swings with trading assets, loans "
-        "and deposits, debt is funding rather than leverage, and there is no EBITDA, "
+        "For a deposit-taking bank, operating cash flow swings with trading assets, "
+        "loans and deposits, debt is funding rather than leverage, and there is no "
+        "EBITDA, "
         "gross margin or current ratio: these generic metrics are not computed and a "
         "missing one is not a research gap."
     ),
@@ -385,8 +399,8 @@ BANK_NOT_MEANINGFUL = NotMeaningfulMetrics(
 
 BANKS_FINANCIALS = Playbook(
     playbook_id="banks_financials",
-    # v2 (ADR-069): declares the generic metrics it does not use, and its funding
-    # question replaces the base model's cash-generation question.
+    # v2 (ADR-069): declares, for deposit-taking banks, the generic metrics and the
+    # base cash-generation question it does not use.
     version=2,
     display_name="Banks and financials",
     applies_to=AppliesTo(
@@ -425,9 +439,6 @@ BANKS_FINANCIALS = Playbook(
             ),
             required_tools=frozenset({"get_financial_facts", "search_company_corpus"}),
             priority=1,
-            # "How much cash does the business generate after capital spending" has no
-            # reading for a deposit-taker; how it is funded does.
-            replaces=("cash_generation_and_funding",),
         ),
         PlaybookQuestion(
             key="net_interest_margin",

@@ -279,7 +279,9 @@ async def _get_calculated_metrics(
     # ADR-069 — a metric the company's playbooks declare not meaningful for its business
     # model is not computed, not persisted and not refused: a refusal reads as a gap,
     # and a bank's missing cash conversion is not one.
-    excluded = getattr(context, "not_meaningful_calculations", frozenset()) or frozenset()
+    excluded: frozenset[str] = frozenset(
+        getattr(context, "not_meaningful_calculations", None) or ()
+    )
     not_meaningful = [key for key in arguments["metrics"] if key in excluded]
     definitions = [
         definition_for(key) for key in arguments["metrics"] if key not in excluded

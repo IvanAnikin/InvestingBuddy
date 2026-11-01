@@ -60,8 +60,15 @@ CFG = SimpleNamespace(
 )
 
 #: The industrial calculations the defect computed for a bank.
-INDUSTRIAL = {"cash_conversion", "capex_to_ocf", "capex_intensity", "net_debt",
-              "fcf_conversion", "fcf_margin", "dividend_cover_by_fcf"}
+INDUSTRIAL = {
+    "cash_conversion",
+    "capex_to_ocf",
+    "capex_intensity",
+    "net_debt",
+    "fcf_conversion",
+    "fcf_margin",
+    "dividend_cover_by_fcf",
+}
 #: The categories the defect recorded as open for a bank.
 INDUSTRIAL_CATEGORIES = {"ebitda", "ebit", "free_cash_flow", "ev_ebitda", "current_ratio"}
 
@@ -89,13 +96,20 @@ BANK_FS = {
 
 def _snapshot(*, sector: str | None, industry: str | None, fs: dict | None = None) -> dict:
     return {
-        "company_identity": {"legal_name": "Example Holdings", "ticker": "EXB",
-                             "exchange": "NYSE", "country_domicile": "US"},
-        "profile": {"sector": sector, "industry": industry,
-                    "reporting_currency": "USD", "fiscal_year_end": "12-31"},
+        "company_identity": {
+            "legal_name": "Example Holdings",
+            "ticker": "EXB",
+            "exchange": "NYSE",
+            "country_domicile": "US",
+        },
+        "profile": {
+            "sector": sector,
+            "industry": industry,
+            "reporting_currency": "USD",
+            "fiscal_year_end": "12-31",
+        },
         "price_history_summary": {"available": True},
-        "provider_metadata": {"provider_name": "sec_edgar", "source_tier":
-                              "T2_regulator_or_gov"},
+        "provider_metadata": {"provider_name": "sec_edgar", "source_tier": "T2_regulator_or_gov"},
         "fundamentals_summary": dict(fs if fs is not None else BANK_FS),
         "missing_fields": [],
         "is_mock": False,
@@ -121,14 +135,34 @@ def test_the_bank_playbook_declares_the_industrial_metrics_not_meaningful():
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        (dict(applies_to=AppliesTo(sectors=("Financials",)), calculations=("net_debt",),
-              reason="x"), "sector alone"),
-        (dict(applies_to=AppliesTo(industries=("Banks",)), calculations=("no_such",),
-              reason="x"), "not calculation definitions"),
-        (dict(applies_to=AppliesTo(industries=("Banks",)),
-              financial_categories=("no_such",), reason="x"), "category vocabulary"),
-        (dict(applies_to=AppliesTo(industries=("Banks",)), calculations=("net_debt",),
-              reason=" "), "say why"),
+        (
+            dict(
+                applies_to=AppliesTo(sectors=("Financials",)),
+                calculations=("net_debt",),
+                reason="x",
+            ),
+            "sector alone",
+        ),
+        (
+            dict(
+                applies_to=AppliesTo(industries=("Banks",)), calculations=("no_such",), reason="x"
+            ),
+            "not calculation definitions",
+        ),
+        (
+            dict(
+                applies_to=AppliesTo(industries=("Banks",)),
+                financial_categories=("no_such",),
+                reason="x",
+            ),
+            "category vocabulary",
+        ),
+        (
+            dict(
+                applies_to=AppliesTo(industries=("Banks",)), calculations=("net_debt",), reason=" "
+            ),
+            "say why",
+        ),
     ],
 )
 def test_a_declaration_that_could_filter_nothing_or_too_much_is_refused(kwargs, message):
@@ -139,15 +173,22 @@ def test_a_declaration_that_could_filter_nothing_or_too_much_is_refused(kwargs, 
 def test_a_playbook_cannot_require_a_metric_it_declares_meaningless():
     with pytest.raises(ValueError, match="cannot both demand"):
         Playbook(
-            playbook_id="contradiction", version=1, display_name="x",
+            playbook_id="contradiction",
+            version=1,
+            display_name="x",
             applies_to=AppliesTo(industries=("Banks",)),
-            questions=(PlaybookQuestion(
-                key="q", text="?", required_tools=frozenset({"get_calculated_metrics"}),
-                required_calculations=("net_debt",)),),
+            questions=(
+                PlaybookQuestion(
+                    key="q",
+                    text="?",
+                    required_tools=frozenset({"get_calculated_metrics"}),
+                    required_calculations=("net_debt",),
+                ),
+            ),
             risk_framework=("r",),
             not_meaningful=NotMeaningfulMetrics(
-                applies_to=AppliesTo(industries=("Banks",)),
-                calculations=("net_debt",), reason="x"),
+                applies_to=AppliesTo(industries=("Banks",)), calculations=("net_debt",), reason="x"
+            ),
         )
 
 
@@ -163,14 +204,68 @@ def test_a_bank_resolves_to_not_meaningful_and_records_it_once():
     assert record["playbooks"] == ["banks_financials"]
 
 
-def test_an_insurer_resolves_the_same_way():
-    assert "cash_conversion" in for_classification(industry="Insurance").calculations
+#: Real SIC codes of financial companies that are NOT deposit-taking banks. Each keeps
+#: every generic metric (review of PR #308: SIC 6311-6411 maps to "Insurance").
+KEEPS_METRICS_BY_SIC = [
+    ("UNH", "6324"),  # managed care
+    ("MMC", "6411"),  # insurance broker
+    ("AON", "6411"),  # insurance broker
+    ("BRK", "6331"),  # conglomerate filed as fire/marine/casualty insurer
+    ("PYPL", "7389"),  # payments
+    ("V", "7389"),  # payments network
+    ("ICE", "6200"),  # exchange
+    ("CME", "6200"),  # exchange
+    ("BLK", "6211"),  # asset manager
+    ("SCHW", "6211"),  # broker-dealer
+    ("AXP", "6199"),  # card issuer
+    ("SOFI", "6199"),  # consumer finance
+]
+
+
+def _resolve_by_sic(sic: str):
+    """The pipeline's own path: classify from the SIC code, select, resolve."""
+    from app.services.classification.resolver import resolve_classification
+
+    c = resolve_classification(sic_code=sic)
+    selection = select(sector=c.matching_sector, industry=c.industry)
+    return resolve(selection, sector=c.matching_sector, industry=c.industry)
+
+
+@pytest.mark.parametrize(("ticker", "sic"), KEEPS_METRICS_BY_SIC)
+def test_non_bank_financials_keep_every_generic_metric(ticker, sic):
+    assert _resolve_by_sic(sic).is_empty, ticker
+
+
+@pytest.mark.parametrize("sic", ["6021", "6022", "6035"])
+def test_a_deposit_taking_bank_by_sic_resolves_to_not_meaningful(sic):
+    found = _resolve_by_sic(sic)
+    assert INDUSTRIAL <= found.calculations
+    assert found.questions == frozenset({"cash_generation_and_funding"})
+    assert found.analysed_by == ("book_value_per_share", "return_on_equity")
+    assert "deposit-taking bank" in found.reader_note
+
+
+def test_every_declared_not_meaningful_question_is_a_base_question():
+    from app.services.director.base_model import BASE_QUESTIONS
+    from app.services.playbooks import all_playbooks
+
+    base = {q.key for q in BASE_QUESTIONS}
+    for playbook in all_playbooks():
+        if playbook.not_meaningful is not None:
+            assert set(playbook.not_meaningful.questions) <= base, playbook.playbook_id
+
+
+def test_insurance_is_not_declared():
+    assert for_classification(industry="Insurance").is_empty
+    assert BANKS_FINANCIALS.not_meaningful is not None
+    assert BANKS_FINANCIALS.not_meaningful.applies_to.industries == ("Banks",)
+    assert not BANKS_FINANCIALS.not_meaningful.applies_to.business_model_signals
 
 
 @pytest.mark.parametrize(
     ("sector", "industry"),
     [
-        ("Financials", None),                    # a sector-only match
+        ("Financials", None),  # a sector-only match
         ("Financials", "Financial Technology"),  # a payments network
         (None, "Semiconductors"),
         (None, "Aerospace & Defense"),
@@ -190,6 +285,9 @@ def test_the_snapshot_path_reads_the_providers_words_through_the_classifier():
     """A US filer's profile carries the SIC description, not the canonical industry."""
     assert "cash_conversion" in for_snapshot(BANK).calculations
     assert for_snapshot(INDUSTRIAL_CO).is_empty
+    assert for_snapshot(
+        _snapshot(sector="Financials", industry="Accident & Health Insurance")
+    ).is_empty
     assert for_snapshot({}).is_empty
     assert for_snapshot({"profile": None}).is_empty
 
@@ -197,48 +295,54 @@ def test_the_snapshot_path_reads_the_providers_words_through_the_classifier():
 # ── V3: the plan ────────────────────────────────────────────────────────────── #
 
 
-async def _bank_plan(*, with_declaration: bool):
-    selection = select(industry="Banks")
-    found = resolve(selection, industry="Banks")
+async def _plan_for(industry: str):
+    selection = select(industry=industry)
+    found = resolve(selection, industry=industry)
     return await plan_research(
-        subject="EXB:NYSE", mode="deep",
-        playbooks=[_PlaybookAdapter(p) for p in selection.playbooks], cfg=CFG,
-        not_meaningful_calculations=found.calculations if with_declaration else (),
+        subject="EXB:NYSE",
+        mode="deep",
+        playbooks=[_PlaybookAdapter(p) for p in selection.playbooks],
+        cfg=CFG,
+        not_meaningful_calculations=found.calculations,
+        not_meaningful_questions=found.questions,
     )
 
 
 async def test_no_question_of_a_bank_plan_requires_an_industrial_calculation():
-    plan = await _bank_plan(with_declaration=True)
+    plan = await _plan_for("Banks")
     required = {c for q in plan.questions for c in q.required_calculations}
     assert not required & INDUSTRIAL
     keys = {q.key for q in plan.questions}
-    # The bank's funding question replaces the industrial cash-generation one. The
-    # leverage question stays: for a bank it is answered with the supplementary leverage
-    # ratio, which is a capital fact, and it requires no calculation.
+    # The cash-generation question is not asked of a deposit-taker. The leverage
+    # question stays: for a bank it is answered with the supplementary leverage ratio,
+    # which is a capital fact, and it requires no calculation.
     assert "cash_generation_and_funding" not in keys
     assert {"funding_and_deposits", "capital_adequacy", "balance_sheet_risk"} <= keys
     by_key = {q.key: q for q in plan.questions}
     assert by_key["profitability"].required_calculations == ("net_margin",)
     assert by_key["capital_allocation"].required_calculations == ()
-    # Recorded once on the plan, by question — not as a gap.
-    record = plan.to_dict()["not_meaningful_calculations"]
-    assert record["profitability"] == ["operating_margin", "gross_margin"]
-    assert record["capital_allocation"] == ["dividend_cover_by_fcf"]
+    # Recorded once on the plan — not as a gap.
+    record = plan.to_dict()
+    assert record["not_meaningful_calculations"]["profitability"] == [
+        "operating_margin",
+        "gross_margin",
+    ]
+    assert record["not_meaningful_questions"] == ["cash_generation_and_funding"]
     assert not any("not meaningful" in reason for _, reason in plan.unassignable)
 
 
-async def test_an_industrial_plan_is_unchanged():
-    selection = select(industry="Aerospace & Defense")
-    plan = await plan_research(
-        subject="ANY:US", mode="deep",
-        playbooks=[_PlaybookAdapter(p) for p in selection.playbooks], cfg=CFG,
-        not_meaningful_calculations=resolve(
-            selection, industry="Aerospace & Defense").calculations,
-    )
+@pytest.mark.parametrize("industry", ["Insurance", "Aerospace & Defense"])
+async def test_an_insurer_or_industrial_plan_is_unchanged(industry):
+    """The bank playbook still MATCHES an insurer; its declaration does not."""
+    plan = await _plan_for(industry)
     by_key = {q.key: q for q in plan.questions}
     assert by_key["cash_generation_and_funding"].required_calculations == (
-        "cash_conversion", "capex_to_ocf", "net_debt")
+        "cash_conversion",
+        "capex_to_ocf",
+        "net_debt",
+    )
     assert "not_meaningful_calculations" not in plan.to_dict()
+    assert "not_meaningful_questions" not in plan.to_dict()
 
 
 # ── V3: the statement and calculation tools ─────────────────────────────────── #
@@ -246,16 +350,34 @@ async def test_an_industrial_plan_is_unchanged():
 
 def _bank_normalised() -> SimpleNamespace:
     return SimpleNamespace(
-        fiscal_year=2025, period_basis="annual", withheld_fields=[], consistency={},
-        revenue=182_447.0, gross_profit=None, operating_income=None, net_income=57_048.0,
-        ebitda=None, operating_cash_flow=-147_782.0, capital_expenditures=0.0,
-        free_cash_flow=-147_782.0, dividends_paid=16_625.0, total_assets=4_424_900.0,
-        total_liabilities=4_062_462.0, shareholders_equity=362_438.0,
-        cash_and_equivalents=300_000.0, short_term_debt=50_000.0,
-        long_term_debt=400_000.0, total_debt=450_000.0, eps_diluted=20.02,
-        field_periods={}, reporting_period_end="2025-12-31", form_type="10-K",
-        accession_number="0000000000-26-000001", filed_date="2026-02-13",
-        source_url="https://www.sec.gov/example", current_period_facts=[],
+        fiscal_year=2025,
+        period_basis="annual",
+        withheld_fields=[],
+        consistency={},
+        revenue=182_447.0,
+        gross_profit=None,
+        operating_income=None,
+        net_income=57_048.0,
+        ebitda=None,
+        operating_cash_flow=-147_782.0,
+        capital_expenditures=0.0,
+        free_cash_flow=-147_782.0,
+        dividends_paid=16_625.0,
+        total_assets=4_424_900.0,
+        total_liabilities=4_062_462.0,
+        shareholders_equity=362_438.0,
+        cash_and_equivalents=300_000.0,
+        short_term_debt=50_000.0,
+        long_term_debt=400_000.0,
+        total_debt=450_000.0,
+        eps_diluted=20.02,
+        field_periods={},
+        reporting_period_end="2025-12-31",
+        form_type="10-K",
+        accession_number="0000000000-26-000001",
+        filed_date="2026-02-13",
+        source_url="https://www.sec.gov/example",
+        current_period_facts=[],
         basis_changes=[],
     )
 
@@ -264,8 +386,9 @@ def _bank_normalised() -> SimpleNamespace:
 def bank_facts(monkeypatch):
     import app.integrations.sec_fundamentals_normalizer as normalizer
 
-    monkeypatch.setattr(normalizer, "normalize_company_facts",
-                        lambda facts, ticker: _bank_normalised())
+    monkeypatch.setattr(
+        normalizer, "normalize_company_facts", lambda facts, ticker: _bank_normalised()
+    )
     return {}
 
 
@@ -280,7 +403,8 @@ def test_before_the_statement_tool_hands_a_bank_its_cash_conversion(bank_facts):
 def test_after_the_statement_tool_does_not_compute_or_hand_them_out(bank_facts):
     found = for_classification(industry="Banks")
     items, gaps = peers.statement_items(
-        "EXB", bank_facts, found.calculations, found.financial_categories)
+        "EXB", bank_facts, found.calculations, found.financial_categories
+    )
     metrics = {i["metric_id"] for i in items}
     assert not metrics & INDUSTRIAL
     assert not metrics & {"operating_cash_flow", "capital_expenditures", "free_cash_flow"}
@@ -290,22 +414,28 @@ def test_after_the_statement_tool_does_not_compute_or_hand_them_out(bank_facts):
 
 
 async def test_the_calculation_tool_does_not_compute_a_not_meaningful_metric():
-    arguments = validate_get_calculated_metrics({
-        "company_id": "00000000-0000-0000-0000-000000000001",
-        "metrics": ["cash_conversion", "net_debt"], "scope": "group",
-    })
+    arguments = validate_get_calculated_metrics(
+        {
+            "company_id": "00000000-0000-0000-0000-000000000001",
+            "metrics": ["cash_conversion", "net_debt"],
+            "scope": "group",
+        }
+    )
     context = SimpleNamespace(
-        session=None, not_meaningful_calculations=frozenset({"cash_conversion", "net_debt"}))
+        session=None, not_meaningful_calculations=frozenset({"cash_conversion", "net_debt"})
+    )
     payload = await _get_calculated_metrics(context, arguments)
     assert payload["items"] == [] and payload["refused"] == []
     assert payload["not_meaningful_for_business_model"] == ["cash_conversion", "net_debt"]
 
 
 def test_the_peer_table_has_no_column_of_a_not_meaningful_metric():
-    payload = {"items": [
-        {"ticker": "EXB", "metric_id": "net_margin", "value": 31.3, "period": "FY2025"},
-        {"ticker": "EXB", "metric_id": "cash_conversion", "value": -259.1},
-    ]}
+    payload = {
+        "items": [
+            {"ticker": "EXB", "metric_id": "net_margin", "value": 31.3, "period": "FY2025"},
+            {"ticker": "EXB", "metric_id": "cash_conversion", "value": -259.1},
+        ]
+    }
     before = peer_rows([payload], "EXB")
     after = peer_rows([payload], "EXB", not_meaningful=INDUSTRIAL)
     assert before[0]["cash_conversion"] == -259.1
@@ -323,11 +453,17 @@ def _pack_text(snapshot: dict) -> str:
 
 
 def test_the_council_is_not_handed_a_banks_cash_conversion():
-    assert "cash_conversion" in _pack_text(_snapshot(sector="Financials",
-                                                     industry="Semiconductors"))
+    assert "cash_conversion" in _pack_text(
+        _snapshot(sector="Financials", industry="Semiconductors")
+    )
     text = _pack_text(BANK)
-    for absent in ("cash_conversion", "operating_cash_flow_usd_m",
-                   "free_cash_flow_usd_m", "debt_to_equity", "[net_debt]"):
+    for absent in (
+        "cash_conversion",
+        "operating_cash_flow_usd_m",
+        "free_cash_flow_usd_m",
+        "debt_to_equity",
+        "[net_debt]",
+    ):
         assert absent not in text
     assert "net_income_usd_m" in text
 
@@ -345,14 +481,16 @@ def test_the_statement_metric_helper_honours_the_declaration():
 def test_a_bank_has_no_open_industrial_financial_category():
     output = run_financial_data_agent(BANK)
     summary = financial_data_agent_output_to_dict(output)
-    assert not {f"financials.{c}" for c in INDUSTRIAL_CATEGORIES} & set(
-        summary["missing_fields"])
+    assert not {f"financials.{c}" for c in INDUSTRIAL_CATEGORIES} & set(summary["missing_fields"])
     assert "financials.debt_to_equity" not in summary["available_fields"]
     assert set(summary["not_meaningful_fields"]) >= {
-        f"financials.{c}" for c in INDUSTRIAL_CATEGORIES}
+        f"financials.{c}" for c in INDUSTRIAL_CATEGORIES
+    }
 
     state = build_final_research_state(
-        company_snapshot=BANK, fundamentals_data=None, primary_facts=None,
+        company_snapshot=BANK,
+        fundamentals_data=None,
+        primary_facts=None,
         financial_data_summary=summary,
     ).to_payload()
     assert not set(state["open_financial_categories"]) & INDUSTRIAL_CATEGORIES
@@ -365,7 +503,9 @@ def test_an_industrial_still_reports_its_missing_ebitda():
     assert "financials.ebitda" in summary["missing_fields"]
     assert "not_meaningful_fields" not in summary
     state = build_final_research_state(
-        company_snapshot=INDUSTRIAL_CO, fundamentals_data=None, primary_facts=None,
+        company_snapshot=INDUSTRIAL_CO,
+        fundamentals_data=None,
+        primary_facts=None,
         financial_data_summary=summary,
     ).to_payload()
     assert "ebitda" in state["open_financial_categories"]
@@ -374,8 +514,7 @@ def test_an_industrial_still_reports_its_missing_ebitda():
 
 def test_a_banks_missing_ebitda_is_not_a_blocking_gap():
     bank = research_completeness_output_to_dict(run_research_completeness_agent(BANK))
-    other = research_completeness_output_to_dict(
-        run_research_completeness_agent(INDUSTRIAL_CO))
+    other = research_completeness_output_to_dict(run_research_completeness_agent(INDUSTRIAL_CO))
     assert not any("snapshot_financials.ebitda" in g for g in bank["blocking_gaps"])
     assert "snapshot_financials.ebitda" in bank["not_meaningful_fields"]
     assert any("snapshot_financials.ebitda" in g for g in other["blocking_gaps"])
@@ -386,10 +525,124 @@ def test_a_bank_is_not_told_its_valuation_is_blocked_by_missing_ebitda_or_fcf():
     out = run_valuation_guard_agent(BANK, summary, {"overall_source_quality": "strong"})
     assert "financials.free_cash_flow" not in out.missing_valuation_inputs
     assert "financials.ebitda" not in out.missing_valuation_inputs
-    assert any("not meaningful for this business model" in b
-               for b in out.valuation_blockers)
+    assert any("not meaningful for this business model" in b for b in out.valuation_blockers)
 
     other = financial_data_agent_output_to_dict(run_financial_data_agent(INDUSTRIAL_CO))
-    out = run_valuation_guard_agent(INDUSTRIAL_CO, other,
-                                    {"overall_source_quality": "strong"})
+    out = run_valuation_guard_agent(INDUSTRIAL_CO, other, {"overall_source_quality": "strong"})
     assert "financials.ebitda" in out.missing_valuation_inputs
+
+
+# ── Review of PR #308: leftover industrial signals and replacements ─────────── #
+
+
+def test_the_financial_context_narrative_carries_no_industrial_metric_for_a_bank():
+    bank = run_financial_data_agent(BANK).financial_context_summary
+    for absent in (
+        "Operating cash flow -",
+        "free cash flow -",
+        "debt/equity",
+        "EBITDA and EV/EBITDA",
+    ):
+        assert absent not in bank
+    assert "not meaningful for this business model" in bank
+    other = run_financial_data_agent(INDUSTRIAL_CO).financial_context_summary
+    assert "Operating cash flow" in other and "debt/equity" in other
+
+
+def test_the_facts_tool_does_not_hand_out_a_not_meaningful_label():
+    from app.services.agent_tools.facts import _label_filter
+
+    found = for_classification(industry="Banks")
+    keeps = _label_filter(
+        SimpleNamespace(
+            not_meaningful_calculations=found.calculations,
+            not_meaningful_categories=found.financial_categories,
+        )
+    )
+    for label in (
+        "operating_cash_flow",
+        "capital_expenditure",
+        "free_cash_flow",
+        "ebitda",
+        "net_debt",
+    ):
+        assert not keeps(label), label
+    # A European bank's own operating profit is a bank figure, not an industrial EBIT.
+    for label in ("net_income", "revenue", "total_equity", "operating_profit"):
+        assert keeps(label), label
+    assert _label_filter(SimpleNamespace())("operating_cash_flow")
+
+
+def _history(metric: str) -> list[dict]:
+    return [
+        {
+            "field": metric,
+            "value": str(v),
+            "numeric_value": v,
+            "period": str(y),
+            "scope": "group",
+            "currency": "USD",
+            "scale": "million",
+            "unit": None,
+            "confidence": "high",
+            "source_url": "https://issuer.test/10k.pdf",
+            "page_number": 1,
+            "table_location": "page=1;table=1;row=1;col=2",
+        }
+        for y, v in zip(range(2021, 2026), (-50.0, 20.0, -90.0, 10.0, -147.0))
+    ]
+
+
+def _series_titles(snapshot: dict) -> list[str]:
+    from app.services.llm.evidence_pack import build_evidence_pack
+
+    pack = build_evidence_pack(
+        report_content={},
+        company_snapshot=snapshot,
+        historical_facts=_history("operating_cash_flow") + _history("net_income"),
+    )
+    return [
+        i.title or "" for i in pack.evidence_items if i.source_type == "historical_financial_series"
+    ]
+
+
+def test_the_council_gets_no_operating_cash_flow_history_for_a_bank():
+    assert any("operating_cash_flow" in t for t in _series_titles(INDUSTRIAL_CO))
+    titles = _series_titles(BANK)
+    assert not any("operating_cash_flow" in t for t in titles)
+    assert any("net_income" in t for t in titles)
+
+
+def test_a_banks_valuation_inputs_are_book_value_and_roe_not_nothing():
+    summary = financial_data_agent_output_to_dict(run_financial_data_agent(BANK))
+    out = run_valuation_guard_agent(BANK, summary, {"overall_source_quality": "strong"})
+    # No platform source yields book value per share yet: an honest missing input.
+    assert "financials.book_value_per_share" in out.missing_valuation_inputs
+    assert "financials.return_on_equity" in out.available_valuation_inputs
+    assert not any(
+        "EBITDA" in b for b in out.valuation_blockers if "Valuation conclusion withheld" in b
+    )
+
+
+def test_a_banks_completeness_schema_asks_for_bank_fields_instead():
+    bank = research_completeness_output_to_dict(run_research_completeness_agent(BANK))
+    gaps = " ".join(bank["non_blocking_gaps"])
+    assert "financials_deep.book_value_per_share" in gaps
+    assert "financials_deep.return_on_equity" not in gaps  # the snapshot has ROE
+    assert "financials_deep.free_cash_flow" not in gaps
+
+
+def test_the_report_tells_the_investor_why_the_metrics_are_absent():
+    from app.services.pipeline import professional_research as pr
+
+    note = for_classification(industry="Banks").reader_note
+    report = pr.assemble(
+        pr.ReportInputs(
+            subject={"ticker": "EXB"}, questions=[], findings=[], not_meaningful_note=note
+        )
+    )
+    by_key = {s["key"]: s for s in report["sections"]}
+    assert by_key["financial_capacity"]["metrics_note"] == note
+    assert by_key["competitive_position"]["metrics_note"] == note
+    plain = pr.assemble(pr.ReportInputs(subject={"ticker": "X"}, questions=[], findings=[]))
+    assert not any("metrics_note" in s for s in plain["sections"])
