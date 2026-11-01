@@ -4964,3 +4964,44 @@ the same segment. The filing figure stays canonical in that case.
 - The margin sentence is still read as "revenue USD 8,706m" by the field extractor
   (`rf.field_clause` takes the clause that names the field). Only the contradiction
   step now ignores it. Other consumers of that reading were not audited in this slice.
+
+## ADR-073: The Shortlist Cap Keeps the Best-Fitting Names, and Says Which It Cut
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, Hypothesis J)
+
+### Context
+Discovery run E2 (d6f5d2c6) had 23 candidates that met the hard requirements, against a
+shortlist cap of 15. `run_dynamic_stage` sorted them with
+`constraints.ranking_key(eligibility)` and passed no thesis relevance, although the key
+accepts one. Ties within an eligibility tier therefore fell to insertion order:
+curated, then held, then web. Eight `eligible_unverified` names were cut, including six
+of the seven web candidates whose theme evidence the open-web admission had verified.
+Nothing in the run said so; the campaign's Discovery review could only infer the cut
+from the counts.
+
+### Decision
+- `run_dynamic_stage(relevance=...)` takes a scorer. The service passes the same scorer
+  that scores the shortlist afterwards (`score_dynamic_items`, ADR-070). The scorer's
+  value is the tie-break inside `ranking_key`, so it applies before the cap. The order
+  is unchanged otherwise: eligibility first, then verified hard passes, then soft
+  passes. Fit never lifts an unverified company over an eligible one.
+- If the scorer raises for a record, that record scores 0 and ranks below its scored
+  tier-mates. The stage never fails because of it. If every record fails, the old
+  insertion order is kept.
+- **Never silent.** `funnel.beyond_cap` counts the names the cap cut. A stage warning
+  names up to 20 of them (`VENUE:TICKER`) and is placed first, so the run's truncated
+  warning list keeps it. The admin funnel shows "N met the requirements but were beyond
+  the shortlist cap".
+
+### Not changed / known limits
+- **Uncapped runs change too.** Within a tier, the shortlist is now ordered by fit, so
+  `items`, `requested_tickers` and the scan order change for every dynamic run, not
+  only for capped ones. Ties in the final `_eligibility_rank_key` keep that order.
+- Relevance remains the LAST key. A curated name with more verified soft passes still
+  outranks a better-fitting web lead with fewer. Passes measure how much was verified,
+  not fit, and reordering the tiers is a policy decision this slice does not take.
+- The cap value is unchanged (`max_candidates`, default 10, 15 in the campaign runs).
+- The names beyond the cap are not persisted as candidates; only the warning names
+  them.
+- No stored run is re-ranked. The replay needs a new run, because the payload of a
+  past run does not hold the names that were cut.

@@ -1290,6 +1290,11 @@ async def _run_dynamic_discovery(
             # The durable job's checkpoint: the web stage reports its phases and a lost
             # lease or a cancellation raised by it STOPS the run (see below).
             progress=progress,
+            # Thesis fit breaks ties before the shortlist cap (ADR-073), on the same
+            # reading of the thesis the shortlist is then scored with (ADR-070).
+            relevance=lambda record: score_dynamic_items(
+                [record], run.parsed_thesis_json, intent
+            )[0].get("relevance_score_pre_scan"),
         )
     except Exception as exc:  # noqa: BLE001 - the run continues on the curated universe
         if _is_job_abort(exc):
