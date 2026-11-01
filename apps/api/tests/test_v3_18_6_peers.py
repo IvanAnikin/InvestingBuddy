@@ -242,7 +242,15 @@ class TestTheSubjectsOwnStatements:
         assert by_metric["revenue"]["id"] == "secfin:SCCO:FY2025:revenue"
         assert by_metric["operating_margin"]["id"].startswith("secfin:SCCO:")
         assert "gross_profit" not in by_metric, "last tagged FY2019: withheld, never shown"
-        assert all(i["source_tier"] == "T1_primary_filing" for i in items)
+        # The annual statements are the filing (T1); the latest-quarter items carry the
+        # regulator-XBRL tier their fact dicts carry (QA campaign 2026-11).
+        assert all(
+            i["source_tier"] == (
+                "T2_regulator_or_gov" if i["metric_id"].endswith("_latest_quarter")
+                else "T1_primary_filing"
+            )
+            for i in items
+        )
 
     def test_they_are_the_issuers_own_filing(self) -> None:
         ref = c.evidence_ref_for("get_sec_statements", "secfin:SCCO:FY2025:revenue",
