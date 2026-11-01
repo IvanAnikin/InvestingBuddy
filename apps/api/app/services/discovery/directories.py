@@ -497,9 +497,18 @@ async def official_market_cap(
 
 
 SEC_DATA_HOST = "data.sec.gov"
-#: The 10-K float is as of the last Q2 end, so a current filer's is at most ~15 months
-#: old; anything older than this is stale.
-MAX_FLOAT_AGE_DAYS = 548
+#: The 10-K float is as of the last business day of the issuer's second fiscal quarter.
+#: The next 10-K, which replaces it, is due up to 90 days after the NEXT fiscal year-end
+#: (plus a 15-day NT 10-K extension): 6 + 12 months + 105 days ≈ 652 days. A current
+#: filer's float is therefore up to ~21.5 months old just before its next 10-K; anything
+#: older than this belongs to a lapsed filer.
+#:
+#: QA campaign 2026-11: this was 548 days (18 months). Rockwell Automation (September
+#: year-end, float dated 2025-03-31, 10-K filed 2025-11-12) and Symbotic fell outside it
+#: in November 2026, so a USD 29bn company passed a "small and mid-cap" thesis as "size:
+#: not verified". Every December year-end filer would fall outside it each January until
+#: its February 10-K.
+MAX_FLOAT_AGE_DAYS = 670
 
 
 async def sec_public_float(
