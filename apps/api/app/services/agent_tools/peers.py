@@ -532,6 +532,14 @@ def validate_get_sec_statements(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"company_id": company_id}
 
 
+#: The normaliser's quarter-fact field names, as this tool's metric ids.
+_QUARTER_METRIC_IDS = {
+    "operating_profit": "operating_income",
+    "total_equity": "shareholders_equity",
+}
+_FLOW_IDS = frozenset({"revenue", "operating_income", "net_income"})
+
+
 def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], list[str]]:
     """The subject's latest annual statements and defined metrics, from SEC XBRL.
 
@@ -576,7 +584,42 @@ def statement_items(ticker: str, facts: dict) -> tuple[list[dict[str, Any]], lis
                 "source_ref": n.source_url,
             }
         )
+    # QA campaign 2026-11 — the latest 10-Q's own single-quarter figures, when that
+    # 10-Q is newer than the annual statements. Labelled with their quarter, never with
+    # the fiscal year, so an investigator can state the current period instead of
+    # writing "revenue evidence is annual only" about a company with a fresh 10-Q.
+    labels = {name: (label, unit) for name, label, unit in STATEMENT_LINES}
+    for fact in n.current_period_facts:
+        metric_id = _QUARTER_METRIC_IDS.get(fact["field"], fact["field"])
+        label, unit = labels.get(metric_id, (metric_id, "USD millions"))
+        quarter, year = str(fact["period"]).split(" ", 1)
+        q_period = f"{year}-{quarter}"
+        items.append(
+            {
+                "id": f"secfin:{ticker}:{q_period}:{metric_id}",
+                "ticker": ticker,
+                "line": f"{label} (single quarter)" if metric_id in _FLOW_IDS else label,
+                # Its own id: anything keyed by metric id (the peer table) must never
+                # take a quarter for the annual line of the same name.
+                "metric_id": f"{metric_id}_latest_quarter",
+                "value": fact["numeric_value"],
+                "unit": unit,
+                "period": q_period,
+                "period_end": fact.get("period_end"),
+                "scope": "group",
+                "form": "10-Q",
+                "filed": fact.get("document_date"),
+                "source_tier": "T2_regulator_or_gov",
+                "source_ref": fact.get("source_url"),
+            }
+        )
     metrics, gaps = _peer_metrics(ticker, facts)
+    # A change of basis since the annual statements is stated to the investigator, so it
+    # never builds a trend or a per-share comparison across it.
+    gaps = [
+        *(f"{ticker}: basis change — {b['sentence']}" for b in n.basis_changes),
+        *gaps,
+    ]
     for item in metrics:
         if item.get("metric_id") == "revenue":
             continue  # already a statement line

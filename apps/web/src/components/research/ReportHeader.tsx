@@ -2,6 +2,7 @@ import Link from "next/link";
 import Surface from "@/components/product/Surface";
 import { formatDate } from "@/lib/format";
 import {
+  councilStatusText,
   periodText,
   type CouncilView,
   type IdentityView,
@@ -54,12 +55,7 @@ export default function ReportHeader({
     ["Latest annual", periodText(periods?.latestAnnual, annualState)],
     ["Current period", periodText(periods?.latestCurrent, currentState)],
     ["Evidence", evidenceWordLabel ?? "Not assessed"],
-    [
-      "Council",
-      council.used
-        ? `${council.completed} agent${council.completed === 1 ? "" : "s"} completed`
-        : "Not run",
-    ],
+    ["Council", councilStatusText(council)],
     ["Last researched", formatDate(updatedAt)],
   ];
 
