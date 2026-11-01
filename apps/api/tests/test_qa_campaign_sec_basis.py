@@ -459,3 +459,18 @@ def test_an_amended_older_quarter_never_stands_in_for_the_latest() -> None:
         )
         revenue = next(f for f in out if f["field"] == "revenue")
         assert revenue["period"] == "Q2 2026" and revenue["numeric_value"] == 4900.0, amended
+
+
+def test_a_reverse_split_is_found_despite_cent_rounding() -> None:
+    """Replay of GE's 1-for-8 reverse split: -0.14 → -1.09 is 7.79x, 2.7% off 8."""
+    from app.integrations.sec_fundamentals_normalizer import _eps_whole_ratio
+
+    assert _eps_whole_ratio(-1.09, -0.14) == (BASIS_SHARE_CONSOLIDATION, 8)
+    assert _eps_whole_ratio(5.71, 2.86) == (BASIS_SHARE_CONSOLIDATION, 2)
+    assert _eps_whole_ratio(0.72, 2.86) == (BASIS_SHARE_SPLIT, 4)
+    # An unchanged or barely moved cent figure is never a ratio.
+    assert _eps_whole_ratio(0.01, 0.01) is None
+    assert _eps_whole_ratio(0.02, 0.01) == (BASIS_SHARE_CONSOLIDATION, 2)
+    assert _eps_whole_ratio(1.30, 1.00) is None
+    # A sign change is a different number, not a split.
+    assert _eps_whole_ratio(-0.30, 0.15) is None

@@ -1358,6 +1358,34 @@ def _newest_quarterly_accession(
     return newest
 
 
+def _eps_whole_ratio(restated: float, original: float) -> tuple[str, int] | None:
+    """(kind, k) when a restated EPS is k times (or 1/k of) the original, allowing for
+    cent rounding.
+
+    Per-share figures are printed to the cent, so a small EPS restated by a large ratio
+    misses a pure 2% test. Live replay of GE's 1-for-8 reverse split (2021): Q3 2020 EPS
+    -0.14 → -1.09 is 7.79x, 2.7% off 8. The check therefore accepts half a cent of
+    rounding on each side (|restated − k·original| ≤ 0.005·(k+1)), but only for a move of
+    at least 1.5x, so an unchanged cent figure is never read as a ratio.
+    """
+    if not original or not restated or (restated > 0) != (original > 0):
+        return None
+    ratio = restated / original
+    if 1 / 1.5 < ratio < 1.5:
+        return None
+    best: tuple[float, str, int] | None = None
+    for k in range(2, 51):
+        for kind, gap, scale in (
+            (BASIS_SHARE_CONSOLIDATION, abs(restated - k * original), abs(k * original)),
+            (BASIS_SHARE_SPLIT, abs(original - k * restated), abs(original)),
+        ):
+            if gap <= max(_SPLIT_TOLERANCE * scale, 0.005 * (k + 1)):
+                score = gap / max(scale, 1e-9)
+                if best is None or score < best[0]:
+                    best = (score, kind, k)
+    return (best[1], best[2]) if best else None
+
+
 def basis_changes_since_annual(
     us_gaap: dict[str, Any], *, annual_filed: str | None, annual_accn: str | None = None,
     annual_end: str | None = None, dei: dict[str, Any] | None = None,
@@ -1492,9 +1520,7 @@ def basis_changes_since_annual(
             decided = True
             if abs(float(ni_now["val"]) / float(ni_then["val"]) - 1.0) > 0.01:
                 break
-            whole = _whole_ratio(
-                float(restated["val"]) / float(original["val"]), _SPLIT_TOLERANCE
-            )
+            whole = _eps_whole_ratio(float(restated["val"]), float(original["val"]))
             # Without the annual report's own figure, the cover pages must show the SAME
             # change since the annual report, or it may predate it.
             if whole is not None and (via_annual or whole == cover_whole):

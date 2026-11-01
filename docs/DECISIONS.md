@@ -4493,3 +4493,7 @@ and no other filer gains a withholding or a basis change.
   the Q2 10-Q is no longer "the latest quarter", and an old-quarter amendment no longer
   hides the real latest one.
 - The accession regex is ASCII-only, and the CIK must be ASCII digits.
+- **EPS ratios allow for cent rounding.** A replay of GE's 1-for-8 reverse split (2021)
+  was missed: −0.14 → −1.09 is 7.79x, 2.7% off 8. The check now accepts half a cent of
+  rounding on each side, but only for a move of at least 1.5x and never across a sign
+  change.
