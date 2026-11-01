@@ -1601,8 +1601,10 @@ def _money_disagree(a: ClaimSide, b: ClaimSide, field_key: str) -> bool:
     # income, net income and revenue, a this-year-versus-last comparison — is not one
     # value, and comparing its set against a single figure manufactured "conflicts"
     # that relabelled true filing-matching statements as press (live Adobe report).
-    if len({(cur, value) for cur, value, _tol in va}) != 1 or len(
-        {(cur, value) for cur, value, _tol in vb}
+    # Distinct to six significant figures: "$4.1bn (US$4,100m)" is one value, whatever
+    # the float arithmetic of its two scales.
+    if len({(cur, f"{value:.6g}") for cur, value, _tol in va}) != 1 or len(
+        {(cur, f"{value:.6g}") for cur, value, _tol in vb}
     ) != 1:
         return False
     return (
@@ -1620,9 +1622,43 @@ _PART_OF_GROUP_RE = re.compile(
 )
 
 
-def _part_of_group(side: ClaimSide, field_key: str) -> bool:
+#: The capitalised name just before a part word: "Digital Media segment", "the
+#: Americas region", "Jewellery Maisons".
+_PART_NAME_RE = re.compile(
+    r"((?:[A-Z][\w&'-]*\s+){0,3}[A-Z][\w&'-]*)\s+(?=(?:segments?|divisions?|business units?|"
+    r"reportable|maisons?|regions?)\b)",
+    re.IGNORECASE,
+)
+_PART_NAME_WORD_RE = re.compile(r"[A-Z][\w&'-]*")
+_NOT_A_PART_NAME = frozenset({"the", "its", "our", "each", "every", "all", "three", "two",
+                              "four", "five", "in", "by", "per", "of", "across"})
+
+
+def _part_of_group(side: ClaimSide, field_key: str) -> tuple[bool, frozenset[str]]:
+    """Whether the clause speaks about a part of the group, and the part's name words
+    (empty when the part is unnamed)."""
     clause = rf.field_clause(side.statement, field_key) or side.statement
-    return bool(_PART_OF_GROUP_RE.search(clause))
+    if not _PART_OF_GROUP_RE.search(clause):
+        return False, frozenset()
+    # field_clause lower-cases; the part's NAME is read from the statement's own casing.
+    at = side.statement.lower().find(clause.lower())
+    clause = side.statement[at:at + len(clause)] if at >= 0 else side.statement
+    names: set[str] = set()
+    for match in _PART_NAME_RE.finditer(clause):
+        for word in _PART_NAME_WORD_RE.findall(match.group(1)):
+            if word[0].isupper() and word.lower() not in _NOT_A_PART_NAME:
+                names.add(word.lower())
+    return True, frozenset(names)
+
+
+def _same_part(a: ClaimSide, b: ClaimSide, field_key: str) -> bool:
+    """Both sides speak about the group, or both about one NAMED part of it. Two parts
+    whose names differ, or a part with no name, are never the same quantity."""
+    part_a, names_a = _part_of_group(a, field_key)
+    part_b, names_b = _part_of_group(b, field_key)
+    if not part_a and not part_b:
+        return True
+    return part_a and part_b and bool(names_a) and names_a == names_b
 
 
 def _same_frame(a: ClaimSide, b: ClaimSide) -> bool:
@@ -1652,10 +1688,11 @@ def find_contradictions(new: ClaimSide, existing: Sequence[ClaimSide]) -> list[C
         if new.publishers and other.publishers and new.publishers & other.publishers:
             continue
         for field_key in shared:
-            if _part_of_group(new, field_key) != _part_of_group(other, field_key):
-                # One side states a segment's figure, the other the group's: not the same
-                # quantity, whatever scope key each inherited (Jewellery Maisons' €5bn
-                # against Group operating profit; Digital Media against Adobe revenue).
+            if not _same_part(new, other, field_key):
+                # A segment's figure against the group's, or against another segment's:
+                # not the same quantity, whatever scope key each inherited (Jewellery
+                # Maisons' €5bn against Group operating profit; Digital Media against
+                # Adobe revenue or against the Americas region).
                 continue
             if not _money_disagree(new, other, field_key):
                 continue

@@ -4921,10 +4921,13 @@ keys did not help, because each statement inherited `group` from the evidence it
 1. **Each side states exactly one amount for the field** (`_money_disagree`). A
    breakdown, a sentence that names several amounts, or a this-year-versus-last
    comparison is not one value.
-2. **Both sides speak about the same part of the group** (`_part_of_group`). A clause
-   that names a segment, division, business unit, reportable segment, Maison or region
-   is not compared with a clause that names none. This rule reads the words themselves,
-   because the inherited scope key cannot be trusted.
+2. **Both sides speak about the same part of the group** (`_same_part`). Either neither
+   clause names a segment, division, business unit, reportable segment, Maison or
+   region, or both do and the capitalised name in front of the part word is the same
+   ("Digital Media segment" against "Digital Media segment"). A part with no name never
+   conflicts. This rule reads the words themselves, because the inherited scope key
+   cannot be trusted. Values that agree to six significant figures count as one value,
+   so "$4.1bn (US$4,100m)" is still a single claim.
 
 Two single group figures that differ still conflict, and so do two single figures for
 the same segment. The filing figure stays canonical in that case.
@@ -4938,12 +4941,23 @@ the same segment. The filing figure stays canonical in that case.
 | Segment breakdown vs margin sentence | conflict (8,706 "revenue") | none |
 | Geography breakdown vs either | conflict | none |
 | "Digital Media segment revenue $17.6bn" vs group revenue | conflict | none |
+| "Digital Media segment $17.6bn" vs "Digital Experience segment $5.9bn" / "Americas region $14.1bn" | conflict | none |
+| Rounded "$23.8 billion" vs filing USD 23,769m | none | none |
 | Group revenue $31.2bn vs filing 23,769 | conflict | conflict (filing canonical) |
 | One segment, two different values | conflict | conflict |
 
 ### Not changed / known limits
-- When a breakdown disagrees with the filing (for example a wrong segment total), no
-  conflict is recorded. The numeric verifier still checks each amount against facts.
+- Some real conflicts are now lost, because a side that states more than one amount
+  never conflicts: "$1.5bn (2024: $1.0bn)" vs a filing of $1.2bn; "$1.5bn, of which
+  $0.9bn US"; "$1.5bn to $1.6bn"; and a breakdown whose total is wrong. Before this ADR
+  such pairs always conflicted (the sets differed in length), so a CORRECT "$1.2bn
+  (2024: $1.0bn)" was relabelled too. The numeric verifier still checks each amount
+  against facts.
+- The part name is the capitalised words in front of the part word. "Jewellery
+  Maisons" and "Jewellery" are different names, so a conflict between them is missed.
+- `rf.money_values` reads "23,769 USD millions" (scale word after the currency) as
+  USD 23,769 (review). That is a separate parser defect, not fixed here; the peers tool
+  emits that unit (`agent_tools/peers.py`).
 - A single group statement that happens to contain "region" or "segment" ("revenue in
   every region rose to $X") is treated as part of the group, so a real conflict with it
   is missed. That is a miss, not a false relabel.

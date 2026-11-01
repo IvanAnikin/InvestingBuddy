@@ -36,7 +36,7 @@ MARGIN_SENTENCE = _filing(
     "Synthetic Group FY2025: operating margin 36.63% and net margin 30.00%, computed from "
     "operating income USD 8,706m, net income USD 7,130m and revenue USD 23,769m.",
 )
-GROUP_REVENUE = _filing("b", "Synthetic Group revenue for FY2025 was 23,769 USD millions.")
+GROUP_REVENUE = _filing("b", "Synthetic Group revenue for FY2025 was USD 23,769m.")
 SEGMENTS = _web(
     "c",
     "FY2025 revenue was split across three reportable segments (dollars in millions): "
@@ -82,3 +82,23 @@ def test_two_segment_figures_that_differ_still_contradict() -> None:
     a = _web("i", "Digital Media segment revenue for FY2025 was $17.6 billion.", "a.example")
     b = _web("j", "Digital Media segment revenue for FY2025 was $21.0 billion.", "b.example")
     assert len(trust.find_contradictions(a, [b])) == 1
+
+
+def test_a_rounded_restatement_of_the_filing_is_not_a_conflict() -> None:
+    rounded = _web("k", "Synthetic Group revenue for FY2025 was $23.8 billion.")
+    assert trust.find_contradictions(rounded, [GROUP_REVENUE]) == []
+
+
+def test_two_different_parts_are_not_one_quantity() -> None:
+    media = _web("l", "Digital Media segment revenue for FY2025 was $17.6 billion.", "a.example")
+    experience = _web(
+        "m", "Digital Experience segment revenue for FY2025 was $5.9 billion.", "b.example")
+    americas = _web("n", "Revenue in the Americas region for FY2025 was $14.1 billion.",
+                    "c.example")
+    assert trust.find_contradictions(media, [experience, americas]) == []
+
+
+def test_one_amount_in_two_scales_is_one_value() -> None:
+    twice = _web("o", "Synthetic Group revenue for FY2025 was $4.1bn (US$4,100m).")
+    (conflict,) = trust.find_contradictions(twice, [GROUP_REVENUE])
+    assert conflict.canonical_finding_id == GROUP_REVENUE.finding_id
