@@ -271,6 +271,10 @@ class ReconstructedFinancialTable(BaseModel):
     # The header row's own label-zone text, which is where a borderless
     # financial table states its unit ("DKK million", "€m").
     unit_label: str | None = None
+    # True when ``unit_label`` was read from the VALUE zone (beside the figures, or a
+    # units row under the periods) rather than the header's label zone. The validator
+    # then checks it against a unit the page declares (ADR-064 review 2).
+    unit_from_values: bool = False
     # The FIRST heading-like line found inside this region's own x-window
     # (display/diagnostics). Never a guess — None when absent.
     region_heading: str | None = None
@@ -1129,6 +1133,7 @@ def _walk_region(
     # table's unit — declared by a units row under the periods, or printed beside the
     # figures of at least two thirds of the money rows. One row's "€ 2.1 bn" in a
     # table of unlabelled millions is that row's, not the table's.
+    unit_from_values = False
     covered = bool(units_row_scales) or (
         money_rows > 0 and money_rows_with_unit >= _VALUE_ZONE_MIN_COVERAGE * money_rows
     )
@@ -1139,6 +1144,7 @@ def _walk_region(
         and len(value_zone_scales) == 1
     ):
         unit_label = f"{next(iter(value_zone_currencies))} {next(iter(value_zone_scales))}"
+        unit_from_values = True
 
     return ReconstructedFinancialTable(
         page_number=page_number,
@@ -1157,6 +1163,7 @@ def _walk_region(
         ],
         rows=out_rows,
         unit_label=unit_label,
+        unit_from_values=unit_from_values,
         region_heading=heading_candidates[0] if heading_candidates else None,
         heading_candidates=heading_candidates,
         preceding_headings=preceding_headings,

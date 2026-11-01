@@ -4444,3 +4444,16 @@ than the rows that print it. Fixes:
   "31 March 2026 € million" are declarations, not an amount "2024 million".
 Re-verified on the real Richemont FY26 results PDF: tables p1, p12 and p13 are "€ million".
 Net cash is 8,496m and operating cash flow 4,880m, both validated in millions.
+
+### Review round 2 (ADR-064)
+- **The page check now covers reconstructed tables.** The reconstructor writes a value-zone
+  unit into the header cell, so the validator read it as a header unit and never compared
+  it with the page. The reconstructed table now carries `unit_from_values`, passed on as
+  `ExtractedTable.unit_from_values`. Such a unit is checked against a unit the page
+  declares exactly like a raw cell table's: when they disagree, the scale is None. A unit
+  printed in the header's own label zone still wins outright.
+- **One bare year-like number is an amount.** "€ 1950 million" no longer reads as column
+  years. Only two or more years, or a month before the year ("At 30 June 2026 € million"),
+  are headings.
+Re-verified on the real Richemont FY26 PDF: unchanged (tables "€ million", net cash
+8,496m, operating cash flow 4,880m).

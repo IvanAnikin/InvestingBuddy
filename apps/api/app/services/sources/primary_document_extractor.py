@@ -199,6 +199,9 @@ class ExtractedTable(BaseModel):
     # The period of each value column, in column order (reconstructed tables
     # only) — the same strings that appear in the grid's header row.
     column_periods: list[str] = Field(default_factory=list)
+    # Reconstructed tables only: the unit in the header cell was read beside the
+    # figures, not printed in the header (see ``ReconstructedFinancialTable``).
+    unit_from_values: bool = False
 
 
 class ExtractedBlock(BaseModel):
@@ -1757,6 +1760,7 @@ def extract_pdf(
                         scope=resolve_reconstructed_table_scope(rebuilt_table),
                         reconstructed=True,
                         column_periods=[c.period for c in rebuilt_table.columns],
+                        unit_from_values=rebuilt_table.unit_from_values,
                     )
                 )
                 result.warnings.append(

@@ -303,3 +303,26 @@ def test_value_cells_never_override_a_declared_page_unit() -> None:
 def test_column_years_before_a_unit_still_declare_it() -> None:
     assert _declared_scale("2025 2024 million CHF") == "million"
     assert _declared_scale("31 March 2026 31 March 2025 € million") == "million"
+    assert _declared_scale("At 30 June 2026 € million") == "million"
+    # One bare year-like number before a unit is an amount, never column years.
+    assert _declared_scale("land was valued at € 1950 million") is None
+
+
+def test_a_reconstructed_value_zone_unit_never_overrides_a_declared_page_unit() -> None:
+    """Review round 2: the reconstructor writes a value-zone unit into the header cell,
+    where the validator read it as a HEADER unit and skipped the page check."""
+    words = _header()
+    words += _row("Revenue", ["22 420", "21 399"], 135, before="CHF", after="m")
+    words += _row("Operating profit", ["4 492", "4 467"], 149, before="CHF", after="m")
+    rebuilt = _rebuild(words)
+    assert rebuilt and rebuilt[0].unit_from_values
+    table = _cell_table(rebuilt[0].to_grid())
+    table.unit_from_values = True
+    issuer = IssuerContext(company_name="TEST LUXURY SA", reporting_currency="CHF")
+    declared = {1: ["All amounts in CHF thousands unless otherwise stated."]}
+    assert _table_currency_scale(table, declared, issuer)[1] is None
+    agreeing = {1: ["All amounts in CHF millions unless otherwise stated."]}
+    assert _table_currency_scale(table, agreeing, issuer)[1] == "million"
+    # A unit printed in the header's own label zone still wins outright.
+    table.unit_from_values = False
+    assert _table_currency_scale(table, declared, issuer)[1] == "million"

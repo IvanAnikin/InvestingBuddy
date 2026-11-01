@@ -748,7 +748,13 @@ def _find_scale(text: str) -> str | None:
 _INLINE_AMOUNT_TAIL_RE = re.compile(r"\d[\d.,\u00a0\u202f ]*$")
 #: Column years or a date before a unit ("2025 2024 million CHF", "31 March 2025 €m")
 #: head the columns; they are not an amount the unit belongs to.
-_YEARS_TAIL_RE = re.compile(r"(?:(?<!\d)(?:19|20)\d{2}[\s,]*)+$")
+#: Two or more years, or a month before the year: one bare year-like number ("€ 1950
+#: million") is an amount.
+_YEARS_TAIL_RE = re.compile(
+    r"(?:(?<!\d)(?:19|20)\d{2}[\s,]+){1,}(?:19|20)\d{2}[\s,]*$"
+    r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(?:19|20)\d{2}[\s,]*$",
+    re.IGNORECASE,
+)
 
 
 def _declared_scale(text: str) -> str | None:
@@ -989,8 +995,13 @@ def _table_currency_scale(
             break
         header_rows.append(row)
     scale = _find_scale(" ".join(cell for row in header_rows for cell in row))
-    # Then the unit printed beside the figures themselves ("€ 8 496 m").
-    cell_scale = None if scale else _value_cell_scale(table)
+    # Then the unit printed beside the figures themselves ("€ 8 496 m"). A reconstructed
+    # table's header unit may itself have been read beside the figures: it is held to
+    # the same check against the page's declared unit.
+    if scale and getattr(table, "unit_from_values", False):
+        cell_scale: str | None = scale
+    else:
+        cell_scale = None if scale else _value_cell_scale(table)
     scale = scale or cell_scale
 
     page_scale: str | None = None
