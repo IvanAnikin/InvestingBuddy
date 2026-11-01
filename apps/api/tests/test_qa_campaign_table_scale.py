@@ -175,3 +175,54 @@ def test_a_header_unit_still_wins() -> None:
     words += _row("Revenue", ["22 420", "21 399"], 135, before="CHF", after="bn")
     tables = _rebuild(words)
     assert tables and tables[0].unit_label == "DKK million"
+
+
+# ── A justified two-column page with a narrow gutter ────────────────────── #
+
+from app.services.sources.primary_document_extractor import (  # noqa: E402
+    _reconstruct_two_column_text,
+)
+
+A4 = 595.32
+
+
+def _line(words: list[str], x0: float, x1: float, top: float) -> list[dict]:
+    """Words spread evenly (justified) between x0 and x1 on one line."""
+    step = (x1 - x0) / len(words)
+    return [
+        {"text": w, "x0": x0 + i * step, "x1": x0 + (i + 1) * step - (0 if i == len(words) - 1 else 2.0),
+         "top": top}
+        for i, w in enumerate(words)
+    ]
+
+
+def _two_columns(n: int, *, left_x1: float, long_left_x1: float, right_x0: float) -> list[dict]:
+    """``n`` rows of two justified columns. The last left line is a paragraph line that
+    runs further right (to ``long_left_x1``) and has no right-hand neighbour."""
+    words: list[dict] = []
+    for i in range(n):
+        top = 100.0 + i * 11.0
+        words += _line([f"L{i}a", f"L{i}b", f"L{i}c", f"L{i}d"], 57.0, left_x1, top)
+        words += _line([f"R{i}a", f"R{i}b", f"R{i}c", f"R{i}d"], right_x0, 539.0, top)
+    words += _line(["Lzz", "Lzy", "Lzx", "Lzw"], 57.0, long_left_x1, 100.0 + n * 11.0)
+    return words
+
+
+def test_a_narrow_gutter_between_two_text_columns_is_still_a_gutter() -> None:
+    # Richemont, page 2: left lines end at ~284pt, the longest at 293.4pt; the right
+    # column starts at 297.6pt — a 4.3pt gutter.
+    words = _two_columns(12, left_x1=284.0, long_left_x1=293.4, right_x0=297.7)
+    text = _reconstruct_two_column_text(words, A4)
+    assert text is not None
+    assert text.index("L11d") < text.index("R0a")  # the whole left column first
+    assert "L0d R0a" not in text  # never one line across both columns
+
+
+def test_a_narrow_gap_with_few_lines_is_not_trusted() -> None:
+    words = _two_columns(4, left_x1=284.0, long_left_x1=293.4, right_x0=297.7)
+    assert _reconstruct_two_column_text(words, A4) is None
+
+
+def test_a_gap_below_the_narrow_floor_is_not_a_gutter() -> None:
+    words = _two_columns(12, left_x1=284.0, long_left_x1=296.0, right_x0=297.7)
+    assert _reconstruct_two_column_text(words, A4) is None

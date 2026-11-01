@@ -4402,7 +4402,15 @@ cash "8,496 bn EUR" and operating cash flow "4,880 bn EUR", a thousand times the
 2. **Declared units only from prose.** The page fallback uses `_declared_scale()`. A scale
    word or abbreviation directly after a number ("€ 22.4 billion", "5.2m", "€ 8 496 million")
    belongs to that amount and is skipped. "in € millions", "€m" and "$'000" still declare.
-3. Extraction pipeline version 19 → 20, so held documents are re-read (DEPLOYMENT.md).
+3. **Narrow column gutters.** A justified two-column page may leave only ~4pt between its
+   columns: Richemont's announcement, page 2, has the left column's longest line ending at
+   293.4pt and the right column starting at 297.6pt. The page was read interleaved, and
+   "the Jewellery Maisons … grow their operating profit to € 5 billion" absorbed "the Group
+   maintained …" from the other column. The segment figure was scoped to the Group, and the
+   report invented a conflict with the €4.5bn group operating profit. A gutter of 3–10pt is
+   now trusted only when BOTH sides carry at least 8 column-body lines, each at least 30% of
+   the page width.
+4. Extraction pipeline version 19 → 20, so held documents are re-read (DEPLOYMENT.md).
 
 ### Verified
 - Re-extracting the real Richemont announcement gives tables p1/p12/p13 the unit

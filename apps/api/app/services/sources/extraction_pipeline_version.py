@@ -350,7 +350,9 @@ from __future__ import annotations
 # among its VALUES (Richemont prints "€ 8 496 m" in each cell, and "€m €m" under the
 # years of its cash-flow statement) when every row that prints one agrees; and page prose
 # lends a table only a DECLARED unit ("in € millions", "€m"), never the scale of an
-# inline amount ("sales reached € 22.4 billion" made net cash "8,496 bn EUR"). Every
+# inline amount ("sales reached € 22.4 billion" made net cash "8,496 bn EUR"); and a
+# two-column page with a 3–10pt gutter is read column by column when both sides carry
+# many wide text lines (a segment sentence absorbed "the Group" from the next column). Every
 # version-19 row may carry the old readings.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
 CURRENT_EXTRACTION_PIPELINE_VERSION = 20

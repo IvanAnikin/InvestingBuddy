@@ -733,7 +733,8 @@ were already on.
 
 Version 20 changes how a reconstructed PDF table gets its unit. A unit printed among
 the values ("€ 8 496 m", or "€m €m" under the years) is kept. Page prose lends a
-table only a declared unit, never an inline amount's scale. The re-read cost and paths
+table only a declared unit, never an inline amount's scale. A two-column page with a
+narrow (3–10pt) gutter is read column by column when both sides are text columns. The re-read cost and paths
 are the same as version 19 (below). A table whose only unit clue was an inline amount
 in the page prose now has NO scale: its money facts stay excerpt-only rather than
 being scaled by the wrong sentence. Rolling back to 19 is safe.

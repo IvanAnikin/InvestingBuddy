@@ -988,6 +988,19 @@ _LAYOUT_MIN_GUTTER_FRACTION = 0.015
 # trusted — avoids misreading a single stray indented line/footnote as a
 # whole second column.
 _LAYOUT_MIN_COLUMN_LINES = 3
+# QA campaign 2026-11 (ADR-064): a justified two-column page can leave only a few
+# points between its columns. Richemont's FY2026 results announcement, page 2: the
+# left column's longest line ends at 293.4pt and the right column starts at 297.6pt,
+# so the gutter is 4.3pt. Read in pdfplumber's default order, "the Jewellery Maisons
+# were therefore able to grow their operating profit to € 5 billion" ran into "the
+# Group maintained a strong net cash position" from the other column. The
+# segment-level fact was then scoped to the Group and contradicted the €4.5bn group
+# figure. A gutter that narrow is trusted only when BOTH sides carry many wide
+# column-body lines, i.e. text columns rather than table cells or an indented
+# note.
+_LAYOUT_NARROW_GUTTER_PT = 3.0
+_LAYOUT_NARROW_MIN_COLUMN_LINES = 8
+_LAYOUT_COLUMN_BODY_WIDTH_FRACTION = 0.30
 
 
 def _layout_f(w: Mapping[str, object], key: str) -> float:
@@ -1109,7 +1122,15 @@ def _detect_two_column_gutter(
     gutter_width = gutter_end - gutter_start
     min_gutter = max(_LAYOUT_MIN_GUTTER_PT, page_width * _LAYOUT_MIN_GUTTER_FRACTION)
     if gutter_width < min_gutter:
-        return None
+        body = page_width * _LAYOUT_COLUMN_BODY_WIDTH_FRACTION
+        wide_left = sum(1 for ln in left if ln["x1"] - ln["x0"] >= body)
+        wide_right = sum(1 for ln in right if ln["x1"] - ln["x0"] >= body)
+        if not (
+            gutter_width >= _LAYOUT_NARROW_GUTTER_PT
+            and wide_left >= _LAYOUT_NARROW_MIN_COLUMN_LINES
+            and wide_right >= _LAYOUT_NARROW_MIN_COLUMN_LINES
+        ):
+            return None
     return (gutter_start, gutter_end)
 
 
