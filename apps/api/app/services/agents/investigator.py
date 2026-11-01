@@ -1048,10 +1048,16 @@ def statement_about_related_registrant(
             None,
         )
 
-    found = _opens(text)
-    if found is None:
-        lead = _LEAD_IN_RE.match(text)
-        found = _opens(text[lead.end():]) if lead else None
+    found: RelatedRegistrant | None = None
+    # Each independent clause has its own subject: "The Tempe plant is tied to $15B of
+    # wins; Honeywell Aerospace backlog was $18.2B" is about the registrant twice over.
+    for clause in (c.strip() for c in text.split(";")):
+        found = _opens(clause)
+        if found is None:
+            lead = _LEAD_IN_RE.match(clause)
+            found = _opens(clause[lead.end():]) if lead else None
+        if found is not None:
+            break
     if found is None:
         return None
     for match in re.finditer(rf"\b{re.escape(key)}\b", text):

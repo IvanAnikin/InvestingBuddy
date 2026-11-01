@@ -4778,6 +4778,14 @@ MRNA and MP have none.
   its first two distinctive words, so "Southern Company Gas" no longer yields the phrase
   "southern gas".
 - **One gap per write-up names every registrant dropped**, not just the first.
+- **Each `;`-separated clause has its own subject.** The live finding "The Tempe plant is
+  tied to US$15 billion in new Control Systems programme wins; Honeywell Aerospace
+  backlog was $18.2 billion" was missed by a whole-sentence rule.
+- **Replay of the live HON report (e50cb267, 44 findings):** exactly the four H3 findings
+  are dropped (backlog, Tempe twice, False Claims Act). All four cite web corpus chunks
+  (`secondary_web`, `government_or_regulator`). Kept: the spin-off itself ("Honeywell
+  completed the spin-off of Honeywell Aerospace"), the reaffirmed outlook, and the 10-K
+  segment facts.
 
 ### Not changed / known limits
 - A registrant name after a lead-in of more than 60 characters, or after two lead-in

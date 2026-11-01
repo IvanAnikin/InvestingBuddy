@@ -109,6 +109,9 @@ class TestStatementAboutRelatedRegistrant:
             "On Oct. 30, 2026, Honeywell Aerospace began trading on Nasdaq.",
             "Honeywell  Aerospace announced a new contract.",
             "Honeywell\nAerospace announced a new contract.",
+            # The live finding: the registrant is the subject of the second clause.
+            "The Tempe plant is tied to US$15 billion in new Control Systems programme "
+            "wins; Honeywell Aerospace backlog was $18.2 billion.",
         ],
     )
     def test_the_registrants_own_news_is_its_own(self, statement: str) -> None:
@@ -129,6 +132,7 @@ class TestStatementAboutRelatedRegistrant:
             "since, Honeywell Aerospace buys sensors.",
             # The subject named by its ticker, even in a lead-in.
             "Per HON's 10-Q, Honeywell Aerospace sales were $4B.",
+            "Honeywell kept its avionics unit; Honeywell Aerospace took the engines.",
         ],
     )
     def test_a_statement_naming_the_subject_on_its_own_is_kept(self, statement: str) -> None:
