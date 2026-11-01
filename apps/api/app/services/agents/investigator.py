@@ -1008,8 +1008,13 @@ def related_registrants(
 
 #: What may precede the grammatical subject: one short lead-in clause ("In March 2026, ",
 #: "On Oct. 30, 2026, ") and an article. Anything longer and the registrant is no longer
-#: what the sentence is about.
-_LEAD_IN_RE = re.compile(r"^[^,;:]{1,60}?(?:,\s*[0-9]{4})?,\s*")
+#: what the sentence is about. A lead-in never crosses a sentence end: only a month's
+#: abbreviation may be followed by ". " ("Organic sales grew 6%. Separately, X won…" is
+#: two sentences, and the first one's subject is implicit).
+_LEAD_IN_RE = re.compile(
+    r"^(?:(?:jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)\.\s|[^,;:.]|\.(?!\s)){1,60}?"
+    r"(?:,\s*[0-9]{4})?,\s*"
+)
 _ARTICLE_RE = re.compile(r"^the\s+")
 
 
@@ -1048,16 +1053,14 @@ def statement_about_related_registrant(
             None,
         )
 
-    found: RelatedRegistrant | None = None
-    # Each independent clause has its own subject: "The Tempe plant is tied to $15B of
-    # wins; Honeywell Aerospace backlog was $18.2B" is about the registrant twice over.
-    for clause in (c.strip() for c in text.split(";")):
-        found = _opens(clause)
-        if found is None:
-            lead = _LEAD_IN_RE.match(clause)
-            found = _opens(clause[lead.end():]) if lead else None
-        if found is not None:
-            break
+    # Only the sentence's OWN subject. A later clause ("Organic sales grew 6%; Honeywell
+    # Aerospace led with 12%") may be about the registrant while the first clause is the
+    # subject's fact with the subject implicit — dropping it would lose that fact (review
+    # round 2). A registrant in a later clause is therefore a miss, never a drop.
+    found = _opens(text)
+    if found is None:
+        lead = _LEAD_IN_RE.match(text)
+        found = _opens(text[lead.end():]) if lead else None
     if found is None:
         return None
     for match in re.finditer(rf"\b{re.escape(key)}\b", text):
@@ -1636,6 +1639,9 @@ class LLMInvestigator:
     _other_names: "dict[str, str] | None" = field(default=None, repr=False)
     #: Lazily-loaded ``related_registrants`` for the name-sharing-registrant guard.
     _related: "tuple[RelatedRegistrant, ...] | None" = field(default=None, repr=False)
+    #: registrant CIK → does it report separately? Remembered, failures included, so one
+    #: write-up never asks the regulator about the same registrant twice (review round 2).
+    _separate: "dict[str, bool]" = field(default_factory=dict, repr=False)
     #: Open-web W7 — ``async (question_key, candidates, round_index, max_fetches, terms)
     #: -> CandidateFetchResult`` (``WebFollowup.fetch_candidates``). When set, the
     #: candidates a ``search_web`` call returns are fetched and ingested DETERMINISTICALLY
@@ -2341,17 +2347,21 @@ class LLMInvestigator:
         """True when the registrant does NOT file a combined annual report with the
         subject. A consolidated subsidiary with its own registered debt (Entergy
         Louisiana in Entergy's 10-K) shares the parent's accession and is the parent's
-        fact. Either record unreadable → False: no verdict means no drop."""
+        fact. Either record unreadable → False: no verdict means no drop. A subject with no
+        annual report of its own in the record → False: nothing to compare against."""
+        if related.cik in self._separate:
+            return self._separate[related.cik]
+        verdict = False
         try:
             from app.services.discovery.directories import sec_annual_accessions
 
-            theirs = await sec_annual_accessions(related.cik)
             ours = await sec_annual_accessions(related.subject_cik)
+            theirs = await sec_annual_accessions(related.cik) if ours else None
+            verdict = bool(ours and theirs is not None and not (theirs & ours))
         except Exception:  # noqa: BLE001 - a guard that cannot read must not block research
-            return False
-        if theirs is None or ours is None:
-            return False
-        return not (theirs & ours)
+            verdict = False
+        self._separate[related.cik] = verdict
+        return verdict
 
     async def _write_up(
         self,

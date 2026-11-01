@@ -109,9 +109,6 @@ class TestStatementAboutRelatedRegistrant:
             "On Oct. 30, 2026, Honeywell Aerospace began trading on Nasdaq.",
             "Honeywell  Aerospace announced a new contract.",
             "Honeywell\nAerospace announced a new contract.",
-            # The live finding: the registrant is the subject of the second clause.
-            "The Tempe plant is tied to US$15 billion in new Control Systems programme "
-            "wins; Honeywell Aerospace backlog was $18.2 billion.",
         ],
     )
     def test_the_registrants_own_news_is_its_own(self, statement: str) -> None:
@@ -133,6 +130,15 @@ class TestStatementAboutRelatedRegistrant:
             # The subject named by its ticker, even in a lead-in.
             "Per HON's 10-Q, Honeywell Aerospace sales were $4B.",
             "Honeywell kept its avionics unit; Honeywell Aerospace took the engines.",
+            # Review round 2: the subject implicit in the first clause or sentence. A
+            # registrant in a later clause is a miss, never a drop — including the live
+            # finding F15 (documented in ADR-066).
+            "Organic sales grew 6% in Q3; Honeywell Aerospace led with 12% growth.",
+            "Organic sales grew 6% in Q3. Separately, Honeywell Aerospace won a $1B contract.",
+            "Key catalysts include the Solstice spin-off completed in 2025; Honeywell "
+            "Aerospace separation expected in 2H 2026.",
+            "The Tempe plant is tied to US$15 billion in new Control Systems programme "
+            "wins; Honeywell Aerospace backlog was $18.2 billion.",
         ],
     )
     def test_a_statement_naming_the_subject_on_its_own_is_kept(self, statement: str) -> None:
@@ -365,3 +371,74 @@ class TestSecAnnualAccessions:
 
     async def test_a_malformed_cik_never_reaches_the_network(self) -> None:
         assert await _REAL_SEC_ANNUAL_ACCESSIONS("../etc", fetcher=None) is None
+
+
+class TestReviewRound2:
+    async def test_a_subject_with_no_annual_report_of_its_own_drops_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Newly listed, or last report a form the record does not carry: no comparison.
+        inv, findings, _gaps = await _run(
+            monkeypatch,
+            ["Honeywell Aerospace backlog was $18.2 billion."],
+            accessions={"2089271": frozenset(), "773840": frozenset()},
+        )
+        assert len(findings) == 1
+        assert inv.diagnostics.statements_about_related_registrant == 0
+
+    async def test_the_regulator_is_asked_once_per_registrant_failures_included(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+
+        async def _directory() -> list[_Listing]:
+            return DIRECTORY
+
+        async def _unreadable(cik: str | None, **_kw: Any) -> None:  # noqa: ANN401
+            calls.append(str(cik))
+            return None
+
+        monkeypatch.setattr(inv_mod, "_load_sec_directory", _directory)
+        monkeypatch.setattr(directories, "sec_annual_accessions", _unreadable)
+        inv = LLMInvestigator(
+            session=object(), company_id=uuid.uuid4(), ticker="HON", exchange="US",
+            client=_Client([
+                "Honeywell Aerospace backlog was $18.2 billion.",
+                "Honeywell Aerospace opened a plant.",
+                "Honeywell Aerospace won a contract.",
+                "Honeywell Aerospace hired a CFO.",
+            ]),
+            company_name="Honeywell International Inc.",
+        )
+        findings, _g, _a = await inv._write_up("event_analyst", _question(), _evidence(web=True))
+        assert len(findings) == 4  # fails open
+        assert calls == ["773840"]  # one read, remembered
+
+    async def test_a_failed_read_backs_off_instead_of_retrying_per_statement(self) -> None:
+        directories.reset_cache()
+        attempts: list[str] = []
+
+        async def _refusing(url: str, **_kw: Any) -> Any:  # noqa: ANN401
+            attempts.append(url)
+            raise TimeoutError("data.sec.gov did not answer")
+
+        assert await _REAL_SEC_ANNUAL_ACCESSIONS("773840", fetcher=_refusing) is None
+        assert await _REAL_SEC_ANNUAL_ACCESSIONS("2089271", fetcher=_refusing) is None
+        assert len(attempts) == 1
+        directories.reset_cache()
+
+    async def test_a_transition_report_is_an_annual_report(self) -> None:
+        directories.reset_cache()
+
+        class _R:
+            ok = True
+            content = (
+                b'{"filings": {"recent": {"form": ["10-KT"], "accessionNumber": ["t-1"]}}}'
+            )
+
+        async def _fetch(url: str, **_kw: Any) -> _R:  # noqa: ANN401
+            return _R()
+
+        assert await _REAL_SEC_ANNUAL_ACCESSIONS("1", fetcher=_fetch) == frozenset({"t-1"})
+        directories.reset_cache()
+

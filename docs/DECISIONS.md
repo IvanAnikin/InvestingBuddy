@@ -4778,16 +4778,35 @@ MRNA and MP have none.
   its first two distinctive words, so "Southern Company Gas" no longer yields the phrase
   "southern gas".
 - **One gap per write-up names every registrant dropped**, not just the first.
-- **Each `;`-separated clause has its own subject.** The live finding "The Tempe plant is
-  tied to US$15 billion in new Control Systems programme wins; Honeywell Aerospace
-  backlog was $18.2 billion" was missed by a whole-sentence rule.
-- **Replay of the live HON report (e50cb267, 44 findings):** exactly the four H3 findings
-  are dropped (backlog, Tempe twice, False Claims Act). All four cite web corpus chunks
-  (`secondary_web`, `government_or_regulator`). Kept: the spin-off itself ("Honeywell
-  completed the spin-off of Honeywell Aerospace"), the reaffirmed outlook, and the 10-K
-  segment facts.
+
+### Review round 2
+- **Only the sentence's own subject is judged.** A first attempt judged every
+  `;`-separated clause, and the lead-in could cross a sentence end. Both dropped facts
+  that belong to the subject when the subject is implicit: "Organic sales grew 6% in Q3;
+  Honeywell Aerospace led with 12% growth" and "Organic sales grew 6%. Separately,
+  Honeywell Aerospace won…". A registrant in a later clause is now a miss, never a drop.
+  A lead-in may contain ". " only after a month abbreviation ("On Oct. 30, 2026, ").
+- **No annual report of the subject's own → no drop.** Two empty sets would have made
+  "separate" out of no evidence. 10-KT and 10-KT/A count as annual reports.
+- **One question to the regulator per registrant.** The verdict is remembered on the
+  investigator, failures included. A failed submissions read backs off for 15 minutes
+  (`FAILURE_RETRY_SECONDS`), so a hanging data.sec.gov costs one timeout, not two per
+  statement. `reset_cache()` clears the new caches.
+- **Replay of both live HON reports:**
+  - e50cb267 (44 findings): 3 of the 4 H3 findings are dropped (Tempe twice, False Claims
+    Act). All cite web corpus chunks (`secondary_web`, `government_or_regulator`).
+  - f0be3c4f (43 findings): 1 is dropped (Tempe).
+  - Kept in both: the spin-off itself, the reaffirmed outlook, the directors' move, and
+    the 10-K segment facts.
 
 ### Not changed / known limits
+- A registrant that is the subject of a LATER clause or sentence is not judged. The live
+  e50cb267 F15 "The Tempe plant is tied to US$15 billion …; Honeywell Aerospace backlog
+  was $18.2 billion" stays. A statement that also names the subject by its current name
+  stays too: f0be3c4f F17 "Honeywell Aerospace completed its spin-off from Honeywell
+  Technologies … reported standalone Q3 results … $0.40 dividend" mixes the subject's
+  event with the registrant's results. Both are misses, chosen over false drops of the
+  subject's own facts.
 - A registrant name after a lead-in of more than 60 characters, or after two lead-in
   clauses, is not judged. That is a miss, not a false drop.
 - A wholly owned subsidiary that registers securities but files its OWN annual report

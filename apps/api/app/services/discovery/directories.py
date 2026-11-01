@@ -140,6 +140,8 @@ def reset_cache() -> None:
     """Forget every cached directory and failure (tests; a manual refresh)."""
     _CACHE.clear()
     _DOMICILE_CACHE.clear()
+    _ANNUAL_ACCESSIONS_CACHE.clear()
+    _ACCESSIONS_FAILED_AT.clear()
     _FAILED_AT.clear()
     _LOCKS.clear()
 
@@ -656,7 +658,12 @@ async def sec_registrant_domicile(
 
 
 _ANNUAL_ACCESSIONS_CACHE: dict[tuple[str, str], frozenset[str] | None] = {}
-_ANNUAL_FORMS = frozenset({"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"})
+#: monotonic time of the last failed submissions read; no retry before FAILURE_RETRY_SECONDS,
+#: so a slow or refusing data.sec.gov costs one timeout, not one per statement.
+_ACCESSIONS_FAILED_AT: dict[str, float] = {}
+_ANNUAL_FORMS = frozenset({
+    "10-K", "10-K/A", "10-KT", "10-KT/A", "20-F", "20-F/A", "40-F", "40-F/A",
+})
 
 
 async def sec_annual_accessions(
@@ -676,6 +683,9 @@ async def sec_annual_accessions(
     key = (str(int(cik)), _today())
     if key in _ANNUAL_ACCESSIONS_CACHE:
         return _ANNUAL_ACCESSIONS_CACHE[key]
+    failed = _ACCESSIONS_FAILED_AT.get(SEC_DATA_HOST)
+    if failed is not None and time.monotonic() - failed < FAILURE_RETRY_SECONDS:
+        return None
     url = f"https://{SEC_DATA_HOST}/submissions/CIK{int(cik):010d}.json"
     try:
         result = await (fetcher or safe_fetch_document)(
@@ -689,6 +699,7 @@ async def sec_annual_accessions(
         recent = data["filings"]["recent"]
         forms, accessions = recent["form"], recent["accessionNumber"]
     except Exception:  # noqa: BLE001 - an unreadable record is no verdict (not cached)
+        _ACCESSIONS_FAILED_AT[SEC_DATA_HOST] = time.monotonic()
         return None
     if not isinstance(forms, list) or not isinstance(accessions, list):
         return None
