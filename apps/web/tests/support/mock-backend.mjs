@@ -2440,7 +2440,7 @@ function mockDevStageReport(id) {
   return base;
 }
 
-function mockScopeReport(id) {
+function mockScopeReport(id, { basisChangeNote = null, agentsFailed = 0 } = {}) {
   const base = mockReport(id);
   base.title =
     "LLM Council Analysis Draft — CFRTEST — Segment Reporting Test Issuer [MOCK DATA]";
@@ -2583,6 +2583,7 @@ function mockScopeReport(id) {
     human_review_required: true,
   };
 
+  if (basisChangeNote) rc.financial_snapshot.basis_change_note = basisChangeNote;
   base.content_markdown = finalReportMarkdown(rc);
   base.source_summary_json = {
     total_sources: 3,
@@ -2594,8 +2595,8 @@ function mockScopeReport(id) {
       model: "fake-council-model",
       evidence_pack_version: "v1",
       evidence_item_count: 6,
-      agents_completed: 8,
-      agents_failed: 0,
+      agents_completed: 8 - agentsFailed,
+      agents_failed: agentsFailed,
       agents_skipped: 0,
       committee_label: "requires_more_evidence",
       agents: [
@@ -2667,6 +2668,21 @@ function mockScopeReport(id) {
     },
   };
   return base;
+}
+
+// QA campaign 2026-11: a report whose annual figures predate a change of basis (a
+// spin-off recast and a share consolidation) and whose council lost one agent.
+const BASIS_REPORT_ID = "00000000-0000-0000-0000-0000000000b7";
+
+function mockBasisChangeReport(id) {
+  return mockScopeReport(id, {
+    agentsFailed: 1,
+    basisChangeNote:
+      "The annual figures predate a change of basis. The latest 10-Q restates revenue " +
+      "for 2025-07-01 to 2025-09-30 from 9,437m to 4,929m (-47.8%): a recast perimeter. " +
+      "Diluted EPS for the same quarter moved from 2.86 to 5.71 with net income " +
+      "unchanged: a 1-for-2 share consolidation.",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3674,6 +3690,9 @@ const server = createServer((req, res) => {
     }
     if (rid === SCOPE_REPORT_ID) {
       return send(res, 200, mockScopeReport(rid));
+    }
+    if (rid === BASIS_REPORT_ID) {
+      return send(res, 200, mockBasisChangeReport(rid));
     }
     if (rid === V3_REPORT_ID) {
       return send(res, 200, mockV3Report(rid));

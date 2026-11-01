@@ -1190,8 +1190,10 @@ def _primary_fact_dp(fact: dict[str, Any]) -> dict[str, Any]:
         # absent scope reads as the implicit-Group convention.
         "scope": fact.get("scope"),
         "provenance": "sourced_fact" if source_url else "missing_data",
-        "source_tier": "T1_primary_filing",
-        "source": "company_ir_primary_document",
+        # A fact may name its own channel (an SEC XBRL 10-Q figure is a regulator
+        # dataset, not an issuer document); otherwise it is a primary issuer document.
+        "source_tier": fact.get("source_tier") or "T1_primary_filing",
+        "source": fact.get("source") or "company_ir_primary_document",
         "source_url": source_url,
         "fact_provenance": prov_bits,
         "confidence": fact.get("confidence"),
@@ -2100,9 +2102,39 @@ def _build_financial_snapshot(
     # overwrite the annual one: FY2025 revenue and H1 2026 revenue are both
     # true and answer different questions. The suffix, the period on every
     # datapoint, and the note below all say which is which.
+    # QA campaign 2026-11 — an SEC filer's latest 10-Q figures (XBRL, consolidated,
+    # single quarter) compete for the current-period slots beside document-extracted
+    # facts. Without them every US report said "interim report acquired — figures not yet
+    # extracted" and showed only the annual bundle, which for a company that has since
+    # spun off a business is a different perimeter.
+    _fs_current = (company_snapshot or {}).get("fundamentals_summary") or {}
+    _sec_quarter_facts = [
+        f for f in (
+            _fs_current.get("current_period_facts") if isinstance(_fs_current, dict) else None
+        ) or []
+        if isinstance(f, dict)
+    ]
     current_period = _current_period_facts_for(
-        primary_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
+        list(primary_facts or []) + _sec_quarter_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
     )
+    # QA campaign 2026-11 — a filing newer than the annual bundle restates earlier
+    # periods (a spin-off, a discontinued operation, a share split). The annual figures
+    # are then on a basis the issuer no longer reports; the reader is told so beside them.
+    _basis_changes = [
+        b for b in (
+            _fs_current.get("basis_changes") if isinstance(_fs_current, dict) else None
+        ) or []
+        if isinstance(b, dict) and b.get("sentence")
+    ]
+    if _basis_changes:
+        section["basis_change_note"] = (
+            "The annual figures predate a change of basis. "
+            + " ".join(
+                str(b["sentence"])[0].upper() + str(b["sentence"])[1:] + "."
+                for b in _basis_changes
+            )
+        )
+        section["basis_changes"] = _basis_changes
     for field, fact in current_period:
         dp = _primary_fact_dp(fact)
         dp["period_basis"] = "interim"

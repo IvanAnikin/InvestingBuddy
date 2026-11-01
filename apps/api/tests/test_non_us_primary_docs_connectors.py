@@ -1613,5 +1613,6 @@ def test_an_announcement_table_takes_its_scale_from_the_table_alone():
 
     assert cash(True) and all(f.scale is None and f.validation_status != "validated"
                               for f in cash(True))
-    # Control: the existing path borrows the page's "million".
-    assert any(f.scale == "million" for f in cash(False))
+    # QA campaign 2026-11 (ADR-064): the general path no longer borrows it either. The
+    # "million" of "US$268 million" belongs to that amount; it declares no table unit.
+    assert all(f.scale is None for f in cash(False))

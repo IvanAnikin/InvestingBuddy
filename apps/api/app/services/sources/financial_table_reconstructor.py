@@ -417,6 +417,53 @@ def _join_space_separated_thousands(
     return out
 
 
+#: A unit printed in the VALUE zone rather than the header's label zone: a currency
+#: (``€``, ``US$``, ``CHF``) and/or a scale (``m``, ``bn``, ``million``, ``'000``),
+#: alone or joined (``€m``, ``$'000``). QA campaign 2026-11: Richemont prints
+#: ``€ 8 496 m`` in each cell of its key-data table and ``€m €m`` under the years of
+#: its cash-flow statement. Both units were dropped, and the page's prose supplied
+#: "billion".
+_VALUE_ZONE_CURRENCY = (
+    r"(?:US\$|A\$|C\$|HK\$|S\$|NZ\$|[€£$¥]"
+    r"|CHF|EUR|USD|GBP|DKK|SEK|NOK|JPY|AUD|CAD)"
+)
+_VALUE_ZONE_SCALE = r"(?:m|mn|bn|millions?|billions?|thousands?|[’']?000)"
+_VALUE_ZONE_UNIT_RE = re.compile(
+    rf"^\(?(?P<cur>{_VALUE_ZONE_CURRENCY})?\s?(?P<scale>{_VALUE_ZONE_SCALE})?\)?$",
+    re.IGNORECASE,
+)
+
+
+def _value_zone_units(
+    words: Sequence[Mapping[str, object]],
+) -> tuple[set[str], set[str]]:
+    """``(currencies, scales)`` printed among one row's value words.
+
+    A bare scale ("m") is only a unit when a currency is printed in the same row
+    (``€ 8 496 m``) or attached to it (``€m``): a lone "m" may be metres.
+    """
+    currencies: set[str] = set()
+    scales: set[str] = set()
+    bare: set[str] = set()
+    for word in words:
+        m = _VALUE_ZONE_UNIT_RE.match(_text(word).strip().lstrip("+-"))
+        if m is None or not (m.group("cur") or m.group("scale")):
+            continue
+        scale = (m.group("scale") or "").lower().replace("’", "'")
+        scale = {"m": "million", "mn": "million", "millions": "million",
+                 "bn": "billion", "billions": "billion", "thousands": "thousand",
+                 "000": "thousand", "'000": "thousand"}.get(scale, scale)
+        if m.group("cur"):
+            currencies.add(m.group("cur").upper())
+            if scale:
+                scales.add(scale)
+        elif scale:
+            bare.add(scale)
+    if currencies:
+        scales |= bare
+    return currencies, scales
+
+
 def is_numeric_cell(text: str) -> bool:
     """True when ``text`` looks like a table VALUE cell (layout test only)."""
     stripped = text.strip()
@@ -981,6 +1028,8 @@ def _walk_region(
     out_rows: list[TableRow] = []
     heading_candidates: list[str] = []
     pending_label: str | None = None
+    value_zone_scales: set[str] = set()
+    value_zone_currencies: set[str] = set()
     row_tops: list[float] = []
     previous_top = _f(header_row[0], "top")
 
@@ -1014,6 +1063,10 @@ def _walk_region(
             break
 
         label = " ".join(_text(w) for w in label_words).strip()
+        row_currencies, row_scales = _value_zone_units(value_words)
+        if row_scales:
+            value_zone_scales |= row_scales
+            value_zone_currencies |= row_currencies
         cells, ambiguous = _assign_cells(value_words, group, rejections, label or "?")
 
         if not cells:
@@ -1045,6 +1098,15 @@ def _walk_region(
 
     if not out_rows:
         return None
+
+    # No unit in the header's label zone: take the one printed among the values,
+    # when every row that prints one agrees. Two scales say nothing.
+    if (
+        unit_label is None
+        and len(value_zone_currencies) == 1
+        and len(value_zone_scales) == 1
+    ):
+        unit_label = f"{next(iter(value_zone_currencies))} {next(iter(value_zone_scales))}"
 
     return ReconstructedFinancialTable(
         page_number=page_number,

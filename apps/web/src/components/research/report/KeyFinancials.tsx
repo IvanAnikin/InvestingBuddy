@@ -155,6 +155,7 @@ export default function KeyFinancials({
     latestClose,
     statementsNote,
     currentPeriodNote,
+    basisChangeNote,
     fallbackNote,
     annualState,
     currentState,
@@ -178,6 +179,16 @@ export default function KeyFinancials({
       <h2 className="text-lg font-semibold tracking-tight text-[color:var(--ib-ink)]">
         Key financials
       </h2>
+
+      {basisChangeNote && (
+        <p
+          className="ib-breakable mt-3 max-w-2xl rounded-md border border-[color:var(--ib-line-strong)] bg-[color:var(--ib-accent-quiet)] p-3 text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+          data-testid="basis-change-note"
+          role="note"
+        >
+          {basisChangeNote}
+        </p>
+      )}
 
       {!hasAnything && !annualSituation && (
         <p className="ib-breakable mt-3 max-w-2xl text-sm leading-relaxed text-[color:var(--ib-ink-3)]">

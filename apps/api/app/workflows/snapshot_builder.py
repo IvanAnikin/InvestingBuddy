@@ -559,6 +559,11 @@ def enrich_snapshot_with_free_real(snapshot: dict, free_real_dict: dict) -> dict
                 if _as_of(f"sec_edgar.{field}")
             },
             "withheld_fields": _val("sec_edgar.withheld_fields") or [],
+            # QA campaign 2026-11 — the latest 10-Q's own single-quarter figures, when
+            # it is newer than the annual bundle. Read by the report's current-period
+            # slots; never merged into the annual figures above.
+            "current_period_facts": _val("sec_edgar.current_period_facts") or [],
+            "basis_changes": _val("sec_edgar.basis_changes") or [],
             "statement_consistency": _val("sec_edgar.statement_consistency") or {},
             "data_quality": fr_fund.get("data_quality") or "B_single_credible",
             "note": (

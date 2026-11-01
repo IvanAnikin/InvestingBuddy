@@ -729,15 +729,66 @@ def _match_label(text: str) -> str | None:
     return None
 
 
-def _find_scale(text: str) -> str | None:
-    """Return million/billion/thousand if a scale token is present, else None."""
-    m = _SCALE_RE.search(text or "")
-    if m is None:
-        return None
+def _scale_of(m: re.Match[str]) -> str | None:
     if m.group("thousands"):
         return "thousand"
     # rstrip("s") normalizes a plural ("millions" → "million") for _scale_word.
     return _scale_word((m.group("word") or m.group("abbr")).rstrip("s"))
+
+
+def _find_scale(text: str) -> str | None:
+    """Return million/billion/thousand if a scale token is present, else None."""
+    m = _SCALE_RE.search(text or "")
+    return None if m is None else _scale_of(m)
+
+
+#: A scale token that belongs to ONE printed amount: "€ 22.4 billion", "5.2m",
+#: "USD 1,200 million". The digit run may carry thin/normal spaces as thousands
+#: separators ("€ 4 880 million").
+_INLINE_AMOUNT_TAIL_RE = re.compile(r"\d[\d.,\u00a0\u202f ]*$")
+
+
+def _declared_scale(text: str) -> str | None:
+    """A scale the text DECLARES for figures elsewhere, never one tied to an amount.
+
+    "€m", "in millions", "(€ million)", "$'000" declare a unit. "sales reached € 22.4
+    billion" does not: that "billion" belongs to that one number. QA campaign 2026-11:
+    Richemont's "Key financial data" table prints "€ 8 496 m" in its cells and no
+    unit in its header. The page fallback took the first scale on the page, the
+    "billion" of a prose sentence, so net cash and operating cash flow were shown as
+    "8,496 bn EUR" and "4,880 bn EUR".
+    """
+    for m in _SCALE_RE.finditer(text or ""):
+        if m.group("word") and _INLINE_AMOUNT_TAIL_RE.search(
+            text[max(0, m.start() - 24):m.start()].rstrip("(")
+        ):
+            continue
+        if m.group("abbr") and m.group(0)[:1].isdigit():  # "5.2m", "8 496 m"
+            continue
+        return _scale_of(m)
+    return None
+
+
+def _value_cell_scale(table: ExtractedTable) -> str | None:
+    """The scale printed BESIDE the figures of the table's money rows, if they agree.
+
+    Only value cells (never the label column, so "Loans repayable within 12m" or
+    "Shares (millions)" cannot scale a table) of rows whose label is a money line.
+    Every scale found must be the same; any disagreement gives None.
+    """
+    found: set[str] = set()
+    for row in table.rows:
+        if not row:
+            continue
+        label = _match_label(row[0] or "")
+        if label is None or label not in _MONEY_LABELS:
+            continue
+        cells = " ".join(cell for cell in row[1:] if cell)
+        for m in _SCALE_RE.finditer(cells):
+            scale = _scale_of(m)
+            if scale:
+                found.add(scale)
+    return next(iter(found)) if len(found) == 1 else None
 
 
 #: Review round 2, H1 — a column header that says it is part of a year without
@@ -911,11 +962,15 @@ def _table_currency_scale(
             break
         header_rows.append(row)
     scale = _find_scale(" ".join(cell for row in header_rows for cell in row))
+    # Then the unit printed beside the figures themselves ("€ 8 496 m").
+    scale = scale or _value_cell_scale(table)
 
     if currency is None or scale is None:
         for text in excerpts_by_page.get(table.page_number, []):
             currency = currency or _resolve_dollar(_find_currency(text), text, issuer)
-            scale = scale or _find_scale(text)
+            # Prose on the page may only DECLARE a unit; an amount's own scale
+            # ("sales reached € 22.4 billion") says nothing about this table.
+            scale = scale or _declared_scale(text)
             if currency and scale:
                 break
 

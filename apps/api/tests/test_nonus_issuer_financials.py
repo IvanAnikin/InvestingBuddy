@@ -274,7 +274,7 @@ class TestProseLoss:
 
 
 def test_the_pipeline_version_advanced_so_reuse_restamps():
-    assert CURRENT_EXTRACTION_PIPELINE_VERSION == 19
+    assert CURRENT_EXTRACTION_PIPELINE_VERSION == 20
 
 
 def test_the_v2_snapshot_vocabulary_is_unchanged():
