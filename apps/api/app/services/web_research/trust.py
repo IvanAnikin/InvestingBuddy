@@ -1601,7 +1601,7 @@ _CHANGE_LEAD_RE = re.compile(
 #: The same, written after the amount: "a $39.9m increase", "$12m lower".
 _CHANGE_TAIL_RE = re.compile(
     r"^\s*(?:increase|decrease|rise|fall|drop|decline|gain|reduction|improvement|"
-    r"deterioration|uplift|higher|lower)\b",
+    r"deterioration|uplift)\b|^\s*(?:higher|lower)\b(?!\s+than\b)",
     re.IGNORECASE,
 )
 

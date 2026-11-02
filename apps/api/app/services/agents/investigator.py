@@ -1082,10 +1082,14 @@ _ARTICLE_CASED_RE = re.compile(r"^the\s+", re.IGNORECASE)
 #: Robotics Corp."). A possessive ("Lundin's") ends the name.
 _OPENING_NAME_RE = re.compile(r"[A-Z][\w&.'’-]*(?:[ \t]+[A-Z][\w&.'’-]*){0,3}")
 #: The writer saying itself that a name is not the subject: "Ecora (not the company)",
-#: "Vexmoor (not Acme)". The name may stand anywhere; the parenthesis must follow it.
-_NOT_THE_SUBJECT_RE = re.compile(
-    r"(?P<name>[A-Z][\w&.'’-]*(?:[ \t]+[A-Z][\w&.'’-]*){0,3})\s*\(\s*not\s+(?P<who>[^()]{1,60})\)",
+#: "Vexmoor (not Acme)". The parenthesis must say ONLY that — "(not the group's statutory
+#: profit)" contrasts a measure, not a company (review round 1) — and the name before it
+#: is read from a bounded window (the regex is never run over an unbounded text).
+_NOT_PAREN_RE = re.compile(r"\(\s*not\s+(?P<who>[^()]{1,60})\)")
+_NAME_BEFORE_RE = re.compile(
+    r"(?P<name>[A-Z][\w&.'’-]{0,40}(?:[ \t]+[A-Z][\w&.'’-]{0,40}){0,3})\s*$"
 )
+_NOT_WHO_PHRASE_RE = re.compile(r"the\s+(?:company|issuer|group|subject)\s*", re.IGNORECASE)
 #: The opening name only RELAYS someone else's figure: "Vexmoor cites…", "…quoting".
 _CITING_RE = re.compile(r"^\s+(?:cites?|cited|citing|quotes?|quoting)\b", re.IGNORECASE)
 _SUBJECT_PHRASE_RE = re.compile(r"\bthe\s+(?:company|group|issuer)\b", re.IGNORECASE)
@@ -1190,6 +1194,50 @@ def publisher_is_named_company(origin_key: str | None, words: "Sequence[str]") -
     return int(rest in _GENERIC_TOKENS and issuer_domain_matches(host, f"{first} {rest}"))
 
 
+def _who_is_only_the_subject(
+    who: str, aliases: "frozenset[str]", subject_ticker: str | None
+) -> bool:
+    """The parenthesis names the subject and nothing else: "the company", "Acme",
+    "Acme plc" — never "the group's largest mine" or "Acme's guidance"."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+    if _NOT_WHO_PHRASE_RE.fullmatch(who):
+        return True
+    if re.search(r"['’]s\b", who):
+        return False
+    ticker = (subject_ticker or "").strip().lower()
+    words = name_tokens(who)  # legal suffixes ("plc", "Inc.") removed
+    named = [w for w in words if w in aliases or (ticker and w == ticker)]
+    return bool(named) and all(w in aliases or w == ticker or w in _GENERIC_TOKENS for w in words)
+
+
+def _disclaimed_name(
+    text: str, aliases: "frozenset[str]", subject_ticker: str | None
+) -> "tuple[list[str], int, int] | None":
+    """The name a "(not the company)" parenthesis follows, with the span of name and
+    parenthesis; None when there is none, or the name is not read as a company name
+    (an acronym, a short or generic first word — the ``_opening_names`` filters)."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, _fold  # noqa: PLC2701
+
+    if "(" not in text:
+        return None
+    for paren in _NOT_PAREN_RE.finditer(text):
+        if not _who_is_only_the_subject(paren.group("who").strip(), aliases, subject_ticker):
+            continue
+        window_start = max(0, paren.start() - 200)
+        before = _NAME_BEFORE_RE.search(text[window_start: paren.start()])
+        if not before:
+            continue
+        words = _name_words(before.group("name"))
+        if not words or words[0].isupper():
+            continue
+        first = re.sub(r"[^a-z0-9]", "", _fold(words[0]))
+        if len(first) < 4 or first in _GENERIC_TOKENS:
+            continue
+        return words, window_start + before.start("name"), paren.end()
+    return None
+
+
 def statement_about_foreign_subject(
     statement: str,
     cited: "Sequence[_Evidence]",
@@ -1213,21 +1261,12 @@ def statement_about_foreign_subject(
         return None  # cannot tell the subject apart, or not resting on web text alone
     text = statement.strip()
 
-    disclaimer = next(
-        (
-            m for m in _NOT_THE_SUBJECT_RE.finditer(text)
-            if re.match(r"the\s+(?:company|issuer|group|subject)\b", m.group("who"), re.I)
-            or _names_subject(m.group("who"), aliases, subject_ticker)
-        ),
-        None,
-    )
+    disclaimer = _disclaimed_name(text, aliases, subject_ticker)
     if disclaimer is not None:
-        words = _name_words(disclaimer.group("name"))
-        rest = text[: disclaimer.start("name")] + text[disclaimer.end():]
-        if (
-            words
-            and not _names_subject(" ".join(words), aliases, subject_ticker)
-            and not _names_subject(rest, aliases, subject_ticker)
+        words, start, end = disclaimer
+        rest = text[:start] + text[end:]
+        if not _names_subject(" ".join(words), aliases, subject_ticker) and not _names_subject(
+            rest, aliases, subject_ticker
         ):
             return " ".join(words)[:60]
         return None

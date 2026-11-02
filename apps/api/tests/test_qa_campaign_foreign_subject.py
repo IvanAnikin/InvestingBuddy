@@ -367,3 +367,49 @@ class TestChangeIsNotLevel:
         a = _side("e", "Calderon revenue for 2024 was $6,613.4m.", "minesdaily.com")
         b = _side("f", "Calderon revenue for 2024 rose by $300m to $7,900m.", "metalsweekly.com")
         assert len(trust.find_contradictions(b, [a])) == 1
+
+
+# -- Review round 1 (PR #310) ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "statement,origin",
+    [
+        # A "(not …)" parenthesis contrasting a MEASURE, not a company.
+        ("Underlying EBITDA (not the group's statutory profit) was US$3.4bn.", "calderon.co.uk"),
+        ("Rio Seco (not the group's largest mine) produced 250kt of copper.", "calderon.co.uk"),
+        ("Free Cash Flow (not the company's reported net income) rose to $1.2bn.", "calderon.co.uk"),
+        ("Revenue (not the company's guidance) was $8bn.", "calderon.co.uk"),
+        ("Revenue (not Calderon's guidance) was $8bn.", "calderon.co.uk"),
+        # A disclaimed acronym or a short/generic first word is not read as a company name.
+        ("EBITDA (not the company) is a non-GAAP measure.", "calderon.co.uk"),
+    ],
+)
+def test_a_parenthesis_contrasting_a_measure_is_not_a_disclaimer(statement: str, origin: str) -> None:
+    assert _judge(statement, _ev(origin)) is None
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Ostara (not the company): leverage ratio of 1.5x.",
+        "Ostara (not Calderon) holds a 2% royalty over the Rio Seco mine.",
+        "Ostara Resources (not Calderon plc) reported net debt of $40m.",
+    ],
+)
+def test_a_parenthesis_naming_only_the_subject_still_disclaims(statement: str) -> None:
+    assert _judge(statement, _ev("ostara.com")) is not None
+
+
+def test_the_disclaimer_scan_is_linear_on_adversarial_text() -> None:
+    import time
+
+    for text in ("A" * 10_000, "A." * 5_000, "Aa " * 3_000 + "(not the company)"):
+        started = time.perf_counter()
+        _judge(text, _ev("ostara.com"))
+        assert time.perf_counter() - started < 1.0
+
+
+def test_higher_than_is_a_comparison_not_a_change() -> None:
+    assert trust.level_money_values("Revenue of $7.9bn higher than consensus")
+    assert not trust.level_money_values("Revenue was $12m lower")

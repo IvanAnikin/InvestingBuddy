@@ -5488,7 +5488,12 @@ nor `money_values` tells a change from a level.
    Separately, a statement in which the writer marks a name as not the subject is
    dropped: "<Name> (not the company / the issuer / the group / <subject>)". No domain
    match is needed for this, but the subject must not be named elsewhere in the
-   statement.
+   statement. The parenthesis must name the subject AND NOTHING ELSE: "Underlying
+   EBITDA (not the group's statutory profit)" or "Revenue (not the company's guidance)"
+   contrasts a measure, not a company, and is kept (review round 1 found the first
+   draft dropped exactly these). The disclaimed name passes the opening-name filters
+   (no acronym, first word ≥ 4 characters, not generic), and is read from a bounded
+   200-character window before the parenthesis, so the scan stays linear.
 
    Each drop counts in `statements_about_foreign_subject` (a diagnostics key, pinned in
    `test_v3_investigator_diagnostics`). The question gets ONE `entity_ambiguous` gap per
