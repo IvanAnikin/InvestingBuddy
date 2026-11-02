@@ -5668,3 +5668,125 @@ not have fixed it.
   - The V2 classification call (`company_analysis`) goes through the same resolver, by
     way of `classification/service.py`.
   - The display ticker is the first one alphabetically.
+
+---
+
+## ADR-076: A Recency Question Reads the Newest Documents the Platform Holds
+
+**Date:** 2026-11-02 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, hypothesis C ("acquired but not used"),
+seen in 3 of 8 live reports:
+- **PYPL:** the Q3 EX-99.1 earnings release was read, yet "headline figures of the latest
+  period" ended `not_acquired`;
+- **LIN (Lindian Resources, ASX):** the Sep-2026 Appendix 5B (26 chunks) and quarterly
+  report (41 chunks) were in `core_disclosures`, state ready. The report still quoted the
+  30-Jun cash figure and said no quarterly report was present;
+- **CLLS:** an ingested pivot article was never used.
+
+### Context
+Three defects, verified on `09836d0`:
+1. `recent_external_developments` (the headline-figures question) offered only
+   `search_web` and `fetch_public_source`, with the default contract (no external research)
+   and no `search_intents`. `_gather` never called `search_company_corpus`, and the
+   external rung stopped `contract_does_not_allow_external_research`. Its log read
+   `tools: [], citable_items: 0`.
+2. `recent_disclosure` had no `search_intents`, so `_corpus_arguments` fell back to the
+   question's prose. PostgreSQL ranks by `ts_rank_cd` alone and nothing sent
+   `published_from`, so a 261-chunk annual report outranked the newer 5B on every run.
+3. `director.loop._record_unresolved` stamped `not_acquired` from the question's empty
+   evidence list, not from what the corpus holds.
+
+### Decision
+1. **Corpus access for the headline-figures question.**
+   `planner.EXTERNAL_QUESTION_DETAILS` gives it:
+   - `search_company_corpus` as an **optional** tool. It never decides assignment, so the
+     external role still answers and its web search is unchanged;
+   - an evidence contract that allows external research, with one search. The external
+     role holds no acquisition ladder, so this buys no extra search;
+   - search intents naming the latest-period results: "quarter results revenue reported",
+     "quarterly activities cash flow report", "results release".
+
+   The same definition is restored when the question is re-asked from a carried-forward
+   gap. `recent_disclosure` gets real intents too.
+2. **An additive recency pass.** For `base_model.RECENCY_QUESTION_KEYS`
+   (`recent_disclosure`, `recent_external_developments`, `upcoming_catalysts`), the
+   investigator runs ONE extra corpus search after the platform rung:
+   - The ordinary search is not changed and nothing is filtered out of it.
+   - The new tool argument `recent_window_days` (1–366) restricts the extra search to
+     documents published within 45 days of the subject's newest **held dated** document.
+     The anchor comes from the corpus, never the clock. Both backends gained
+     `newest_published_at(filters)`; `corpus.retrieval.newest_published` calls it.
+   - Its hits are ordered newest first and capped at 4 (`RECENCY_MAX_ITEMS`). They are
+     merged at the **front** of the question's evidence, de-duplicated, so the unchanged
+     prompt budget reaches them.
+   - It is logged as the `recency_corpus` acquisition step: query, window, newest held
+     date, items. `domain_cost` counts it as a corpus query. It is not an intent, so
+     `corpus_intents_in` does not skip one.
+   - **Undated chunks:** without `include_undated`, a date window excludes NULL-dated
+     chunks in both backends (`CorpusFilters._passes`, `postgres._filter_clauses`). This is
+     why the pass is additive: the ordinary search sends no window and still returns
+     them. With no dated document held, no window is anchored and the pass returns
+     nothing; it says so instead of guessing.
+3. **An honest unresolved reason.** A new closed-vocabulary value, `acquired_not_read`
+   (`ledger.UNRESOLVED_ACQUIRED_NOT_READ`). It applies when a recency question ends with
+   nothing cited while the subject's own indexed corpus holds a dated document. Every
+   such document is newer than nothing cited.
+   - The lookup is `loop.newest_held_document_date`. It runs once per run, in a SAVEPOINT,
+     and any failure falls back to `not_acquired`.
+   - Consumers checked:
+     - the `research_questions.unresolved_reason` column is `String(40)` with no CHECK
+       constraint, so no migration is needed;
+     - `update_question_graph_state` validates against `UNRESOLVED_REASONS`, which now
+       includes the new value;
+     - `professional_research` passes the value through and counts it in
+       `unresolved_by_reason`;
+     - the web's `UNRESOLVED_REASON_WORDS` gains a reader wording ("held by the platform
+       but not read for this question"). The unknown-key fallback would otherwise have
+       printed "acquired not read".
+
+     The gap `knowledge_state` taxonomy (`not_acquired_by_platform` …) is a separate field
+     and is unchanged.
+
+### Tests
+- `tests/test_qa_campaign_recency_evidence.py` (24):
+  - the planner question's corpus tool, contract and intents, including on a re-ask;
+  - a fake corpus where a 60-chunk annual report out-matches a newer 5B. A non-recency
+    question never reaches the 5B, while the recency question's evidence is led by it;
+  - NULL-dated chunks are still returned by the ordinary search and by the question;
+  - the window argument's bounds;
+  - `acquired_not_read` versus `not_acquired`, with and without a held dated chunk.
+- The pinned plan snapshot `fixtures/playbook_plans_before_overlay.json` was regenerated.
+  Only `recent_disclosure` and `recent_external_developments` changed (intents, optional
+  tool, contract); tasks and assignments are byte-identical.
+- `test_a_satisfied_contract_never_spends_a_search` now expects the `recency_corpus` rung.
+
+### Offline replay (LIN)
+The 12 LIN ASX PDFs were extracted with the platform extractor and chunker into the
+memory backend. Chunk counts match live: annual report 261, 5B 26, quarterly report 41.
+Each was dated with its ASX announcement date, and the acquisition ladder ran with a web
+stub. Results:
+- **Before (`09836d0`):** `recent_external_developments` made 0 corpus calls and had 0
+  evidence items. `recent_disclosure` searched the raw prose and got 2 low-ranked 5B
+  chunks and 0 quarterly-report chunks.
+- **After:**
+  - Both questions' evidence is led by 2 × 5B and 2 × quarterly-report chunks. The window
+    was 2026-09-11 → 2026-10-26, anchored on the newest held document, 26 Oct.
+  - This includes "At the end of the quarter, the Company had $45m in cash" for the
+    30-Sep quarter.
+  - `recent_external_developments` now carries 11 items, previously 0.
+
+The memory backend ranks by BM25, not `ts_rank_cd`, so the "before" ordering is not a
+byte-for-byte replay of PostgreSQL.
+
+### Not changed / known limits
+- The recency pass ranks within the window lexically. A recent document whose chunks
+  match none of the intent terms is still not read: here `upcoming_catalysts` read the 26-Oct operations update but
+  neither the 5B nor the quarterly report.
+- The window anchors on the newest held **dated** document of the subject's own company
+  row. A newer web article about the subject (a subject-row hit) does not move the anchor
+  and is not in the pass.
+- `acquired_not_read` is limited to the three recency questions. For other questions an
+  empty answer beside a held document is not evidence that the document answers them.
+- CLLS's pivot article is covered only when it is the subject's own dated chunk in the
+  window. Subject-row (`via_subject`) admission is not part of the pass.
+- No live run yet. Production acceptance needs a LIN and a PYPL rerun after deploy.

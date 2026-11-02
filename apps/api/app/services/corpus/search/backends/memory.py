@@ -36,6 +36,7 @@ import math
 import re
 import uuid
 from collections import Counter
+from datetime import date
 
 from app.services.corpus.search.fusion import (
     DEFAULT_LEXICAL_WEIGHT,
@@ -44,6 +45,7 @@ from app.services.corpus.search.fusion import (
 )
 from app.services.corpus.search.types import (
     CorpusChunk,
+    CorpusFilters,
     CorpusHit,
     CorpusQuery,
     IndexResult,
@@ -136,6 +138,20 @@ class InMemorySearchBackend:
         return len(removed)
 
     # -- searching --------------------------------------------------------- #
+
+    async def newest_published_at(self, filters: CorpusFilters) -> "date | None":
+        """ADR-076 — the latest ``published_at`` among chunks ``filters`` admits.
+
+        Undated chunks carry no date and are ignored here; ``None`` when nothing dated
+        matches. Same filter semantics as ``search``, so "the subject's newest held
+        document" means the same thing in both backends.
+        """
+        dates = [
+            chunk.published_at
+            for chunk in self._chunks.values()
+            if chunk.published_at is not None and filters.matches(chunk)
+        ]
+        return max(dates) if dates else None
 
     async def search(self, query: CorpusQuery) -> "list[CorpusHit]":
         query.validate()

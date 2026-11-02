@@ -302,6 +302,31 @@ async def search_corpus(
     ]
 
 
+async def newest_published(
+    *,
+    backend: "SearchBackend",
+    cfg: "Settings",
+    company_ids: "Sequence[uuid.UUID]",
+) -> date | None:
+    """ADR-076 — the publication date of the companies' newest HELD, dated document.
+
+    What the recency pass anchors its window on: "the subject's newest documents" is a
+    fact about the corpus, never about the clock. ``None`` when the corpus is disabled,
+    when the backend cannot say, or when nothing dated is held — the caller then runs
+    no recency pass rather than guessing a window. Never raises.
+    """
+    if not getattr(cfg, "v3_corpus_enabled", False) or not company_ids:
+        return None
+    probe = getattr(backend, "newest_published_at", None)
+    if not callable(probe):
+        return None
+    try:
+        value = await probe(CorpusFilters(company_ids=tuple(company_ids)))
+    except Exception:  # noqa: BLE001 - no anchor means no recency pass, never a failure
+        return None
+    return value if isinstance(value, date) else None
+
+
 async def resolve_evidence(
     session: "Any",
     *,
@@ -378,6 +403,7 @@ __all__ = [
     "EvidenceReference",
     "chunk_id_from_evidence_id",
     "evidence_id_for",
+    "newest_published",
     "resolve_evidence",
     "search_corpus",
 ]

@@ -637,10 +637,15 @@ UNRESOLVED_NOT_REACHED = "not_reached"
 #: V3.19.13 — a conditionally blocking question whose condition does not hold (e.g. the
 #: evidence names no segment): unanswerable, and it no longer blocks the Council.
 UNRESOLVED_PRECONDITION_ABSENT = "precondition_absent"
+#: ADR-076 — a recency question ended with nothing cited while the corpus HOLDS a dated
+#: document of the subject: the platform had it and did not read it into the answer.
+#: ``not_acquired`` there sends a reader to fetch what is already stored.
+UNRESOLVED_ACQUIRED_NOT_READ = "acquired_not_read"
 
 UNRESOLVED_REASONS: frozenset[str] = frozenset(
     {
         UNRESOLVED_NOT_ACQUIRED,
+        UNRESOLVED_ACQUIRED_NOT_READ,
         UNRESOLVED_CONTRACT_UNMET,
         UNRESOLVED_BUDGET_EXHAUSTED,
         UNRESOLVED_TOOL_UNAVAILABLE,

@@ -406,7 +406,25 @@ BASE_QUESTIONS: tuple[PlaybookQuestion, ...] = (
         owner_role="event_analyst",
         why_it_matters="The newest disclosure dates every other conclusion.",
         evidence_contract=EvidenceContract(min_items=1),
+        # ADR-076 — the question's prose is all stopwords ("what has the issuer
+        # disclosed most recently"), so with no intent the corpus was searched by the
+        # raw sentence and a 261-chunk annual report outranked the newer quarterly
+        # cash-flow report on every run. These name what a latest disclosure IS.
+        search_intents=(
+            "{company} quarterly report results period ended",
+            "{company} quarterly activities cash flow report",
+            "{company} results release announcement",
+        ),
     ),
+)
+
+#: ADR-076 — questions whose answer is, by definition, the NEWEST thing the issuer has
+#: published. Each gets an additional corpus pass restricted to the subject's newest held
+#: documents (``agents.investigator``), and an empty answer beside a held document is
+#: recorded as ``acquired_not_read`` rather than ``not_acquired`` (``director.loop``).
+#: ``recent_external_developments`` is planned by ``director.planner``, not here.
+RECENCY_QUESTION_KEYS: frozenset[str] = frozenset(
+    {"recent_disclosure", "recent_external_developments", "upcoming_catalysts"}
 )
 
 BASE_QUESTION_KEYS: frozenset[str] = frozenset(q.key for q in BASE_QUESTIONS)
@@ -419,6 +437,7 @@ def base_question(key: str) -> PlaybookQuestion | None:
 __all__ = [
     "BASE_QUESTIONS",
     "BASE_QUESTION_KEYS",
+    "RECENCY_QUESTION_KEYS",
     "RETIRED_QUESTION_KEYS",
     "base_question",
 ]

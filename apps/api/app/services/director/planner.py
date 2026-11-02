@@ -98,6 +98,34 @@ EXTERNAL_QUESTIONS: tuple[tuple[str, str, frozenset[str]], ...] = (
     ),
 )
 
+#: ADR-076 — the rest of the external question's definition: what it may also read, how
+#: its evidence is judged and the terms the corpus is searched by. Kept beside
+#: ``EXTERNAL_QUESTIONS`` (whose ``(key, text, tools)`` shape several callers read) and
+#: applied both when the question is first planned and when it is RE-ASKED from a gap.
+#:
+#: Before this the question could read only the web. The issuer's own latest release —
+#: a PYPL EX-99.1, a Lindian Appendix 5B — was already chunked in the corpus and was
+#: never searched for it, so "the headline figures of the latest period" ended
+#: ``not_acquired`` beside a corpus that held them. ``search_company_corpus`` is an
+#: OPTIONAL tool, so it never decides who answers: the external role still does, and its
+#: web search runs exactly as before.
+EXTERNAL_QUESTION_DETAILS: dict[str, dict[str, Any]] = {
+    "recent_external_developments": {
+        "optional_tools": frozenset({"search_company_corpus"}),
+        # The question may still reach the web — the external role's own search is its
+        # point. One search, as before; the role holds no acquisition ladder, so the
+        # contract never buys a second one.
+        "evidence_contract": EvidenceContract(
+            min_items=1, allow_external=True, max_external_searches=1
+        ),
+        "search_intents": (
+            "{company} quarter results revenue reported",
+            "{company} quarterly activities cash flow report",
+            "{company} results release",
+        ),
+    },
+}
+
 
 @runtime_checkable
 class PlaybookLike(Protocol):
@@ -306,6 +334,7 @@ def _external_questions(available: "frozenset[str]") -> list[PlannedQuestion]:
                 "The platform's own holdings are worst at what was reported after "
                 "the latest document it holds."
             ),
+            **EXTERNAL_QUESTION_DETAILS.get(key, {}),
         )
         for key, text, tools in EXTERNAL_QUESTIONS
         if tools <= available
@@ -486,6 +515,15 @@ async def plan_research(
                     origin=restored.origin,
                     required_tools=needed,
                     priority=priority,
+                )
+            elif key in EXTERNAL_QUESTION_DETAILS:
+                # ADR-076 — the external question's contract, intents and optional
+                # corpus tool come back too; a re-ask without them reads only the web.
+                restored = replace(
+                    restored,
+                    domain="catalysts",
+                    owner_role="external_research_analyst",
+                    **EXTERNAL_QUESTION_DETAILS[key],
                 )
             questions[key] = restored
 

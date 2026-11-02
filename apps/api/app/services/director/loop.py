@@ -882,6 +882,15 @@ async def _record_unresolved(
         )
     ).scalars().all()
     limited = stop_reason in LIMIT_STOP_REASONS
+    from app.services.director.base_model import RECENCY_QUESTION_KEYS
+
+    held: list[Any] = []  # the subject's newest held document date, looked up once
+
+    async def _holds_a_document() -> bool:
+        if not held:
+            held.append(await newest_held_document_date(session, run))
+        return held[0] is not None
+
     for row in rows:
         if row.contract_status == "satisfied":
             continue
@@ -899,12 +908,47 @@ async def _record_unresolved(
             reason = ledger.UNRESOLVED_BUDGET_EXHAUSTED
         elif row.question_key not in evidence_so_far and row.contract_status is None:
             reason = ledger.UNRESOLVED_NOT_REACHED
+        elif row.question_key in RECENCY_QUESTION_KEYS and await _holds_a_document():
+            # ADR-076 — nothing was cited, and the corpus holds a dated document of the
+            # subject, every one of which is newer than nothing. The newest disclosure
+            # was HELD and not read into the answer; "not acquired" would send a reader
+            # to fetch what the platform already stores.
+            reason = ledger.UNRESOLVED_ACQUIRED_NOT_READ
         else:
             reason = ledger.UNRESOLVED_NOT_ACQUIRED
         if row.contract_status is None:
             row.contract_status = "unmet"
         row.unresolved_reason = reason
     await session.flush()
+
+
+async def newest_held_document_date(session: Any, run: Any) -> Any:
+    """ADR-076 — the newest ``published_at`` of the subject's own INDEXED corpus chunks.
+
+    ``None`` when the run has no company, nothing dated is held, or the lookup fails —
+    and ``None`` keeps the honest default (``not_acquired``). Never raises.
+    """
+    company_id = getattr(run, "company_id", None)
+    if not company_id:
+        return None
+    try:
+        from sqlalchemy import func, select
+
+        from app.models.research_chunk import ResearchDocumentChunk as C
+
+        async with session.begin_nested():
+            return (
+                await session.execute(
+                    select(func.max(C.published_at)).where(
+                        C.company_id == company_id,
+                        C.indexed_at.is_not(None),
+                        C.indexable.is_(True),
+                        C.published_at.is_not(None),
+                    )
+                )
+            ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - an unknown holding is reported as not acquired
+        return None
 
 
 def _rules_satisfied(

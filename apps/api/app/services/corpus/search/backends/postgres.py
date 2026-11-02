@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import (
@@ -433,6 +433,24 @@ class PostgresSearchBackend:
         return int(result.rowcount or 0)
 
     # -- searching --------------------------------------------------------- #
+
+    async def newest_published_at(self, filters: CorpusFilters) -> "date | None":
+        """ADR-076 — the latest ``published_at`` among INDEXED chunks ``filters`` admits.
+
+        Undated chunks are ignored (``MAX`` skips NULL); ``None`` when nothing dated
+        matches. The filters are the search's own clauses, so "the subject's newest held
+        document" means the same thing here as in the memory backend.
+        """
+        C = ResearchDocumentChunk
+        stmt = select(func.max(C.published_at)).where(
+            C.indexed_at.is_not(None),
+            C.published_at.is_not(None),
+            *_filter_clauses(filters),
+        )
+        value = (await self._session.execute(stmt)).scalar_one_or_none()
+        if isinstance(value, datetime):
+            return value.date()
+        return value
 
     async def search(self, query: CorpusQuery) -> "list[CorpusHit]":
         query.validate()

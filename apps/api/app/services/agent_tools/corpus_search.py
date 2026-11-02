@@ -172,6 +172,32 @@ def _published_from(arguments: dict[str, Any]) -> date | None:
     return max(bounds) if bounds else None
 
 
+#: ADR-076 — the widest recency window a caller may ask for. A "recent" window wider than
+#: a year is not a recency question.
+MAX_RECENT_WINDOW_DAYS = 366
+
+
+def _recent_window_days(raw: Any) -> int | None:
+    """``recent_window_days``: restrict to the subject's newest held documents.
+
+    The window is anchored on the newest DATED document the corpus holds for the
+    companies named, never on the clock, so a corpus last refreshed in March still has a
+    "newest" set. Undated chunks are outside any window — the caller's ordinary search,
+    which sends no window, is where they are read.
+    """
+    if raw in (None, ""):
+        return None
+    try:
+        days = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("recent_window_days must be a whole number of days.") from exc
+    if not 1 <= days <= MAX_RECENT_WINDOW_DAYS:
+        raise ValueError(
+            f"recent_window_days must be between 1 and {MAX_RECENT_WINDOW_DAYS}."
+        )
+    return days
+
+
 def validate_search_company_corpus(arguments: dict[str, Any]) -> dict[str, Any]:
     """Validate, and refuse the two requests the retrieval service would refuse anyway.
 
@@ -221,6 +247,7 @@ def validate_search_company_corpus(arguments: dict[str, Any]) -> dict[str, Any]:
         "published_to": _iso_date(arguments.get("published_to"), "published_to"),
         "mode": mode,
         "top_k": max(1, min(top_k, MAX_TOP_K)),
+        "recent_window_days": _recent_window_days(arguments.get("recent_window_days")),
         **_web_filters(arguments, exclude_suspect_default=False),
     }
 
@@ -326,6 +353,44 @@ async def _search_company_corpus(
             query, corpus_ranking.name_variants(*names)
         )
 
+    published_from = _published_from(arguments)
+    recency: dict[str, Any] | None = None
+    window_days = arguments.get("recent_window_days")
+    if window_days:
+        # ADR-076 — the newest held documents only: from (newest dated document − window).
+        # An ADDITIONAL pass a caller makes beside its ordinary search; nothing here
+        # changes what a call without the argument returns.
+        from datetime import timedelta
+
+        from app.services.corpus.retrieval import newest_published
+
+        newest = await newest_published(
+            backend=backend, cfg=context.cfg, company_ids=company_ids
+        )
+        if newest is None:
+            return {
+                "items": [],
+                "backend_configured": True,
+                "recency_window": {"newest_held": None, "published_from": None,
+                                   "window_days": window_days},
+                "consumption": units_for(
+                    SEARCH_INSTRUMENTED_UNITS, search_index_queries=0
+                ),
+                "summary": (
+                    "no dated document is held for these companies, so no recency "
+                    "window could be anchored; this is not a statement that nothing "
+                    "recent exists"
+                ),
+                "contains_untrusted_content": False,
+            }
+        window_start = newest - timedelta(days=int(window_days))
+        published_from = max(published_from, window_start) if published_from else window_start
+        recency = {
+            "newest_held": newest.isoformat(),
+            "published_from": published_from.isoformat(),
+            "window_days": window_days,
+        }
+
     results = await search_corpus(
         context.session,
         backend=backend,
@@ -339,7 +404,7 @@ async def _search_company_corpus(
         scope_types=arguments["scope_types"] or None,
         scope_keys=arguments["scope_keys"] or None,
         languages=arguments["languages"] or None,
-        published_from=_published_from(arguments),
+        published_from=published_from,
         published_to=arguments["published_to"],
         top_k=corpus_ranking.pool_size(arguments["top_k"]),
         mode=REQUESTABLE_MODES[arguments["mode"]],
@@ -355,7 +420,7 @@ async def _search_company_corpus(
         limit=arguments["top_k"],
     )
     items = [_hit_payload(result) for result in results]
-    return {
+    payload: dict[str, Any] = {
         "items": items,
         "backend_configured": True,
         # One index query per call, REPORTED rather than defaulted.
@@ -369,6 +434,9 @@ async def _search_company_corpus(
         # sanitiser is a filter an attacker iterates against.
         "contains_untrusted_content": True,
     }
+    if recency is not None:
+        payload["recency_window"] = recency
+    return payload
 
 
 #: Why a theme-corpus call returned nothing without searching.
@@ -558,6 +626,7 @@ def register_theme_corpus_tool(registry: "ToolRegistry") -> "ToolRegistry":
 __all__ = [
     "DEFAULT_TOP_K",
     "SEARCH_INSTRUMENTED_UNITS",
+    "MAX_RECENT_WINDOW_DAYS",
     "MAX_TOP_K",
     "PRIVATE_RESEARCH_DENIED",
     "REQUESTABLE_MODES",
