@@ -8,7 +8,9 @@
   "executive_summary": {
     "verdict": "Not yet a trustworthy research system. Overall usefulness after the fixes is 3-4/10 for six of eight companies.",
     "merged_corrective_prs": 18,
-    "reports_evaluated": 12,
+    "reports_scored": 13,
+    "reports_claim_audited": 12,
+    "companies_rerun": 5,
     "companies": 8,
     "claims": {
       "PASS": 112,
@@ -120,9 +122,9 @@
     "Tavily": "Available. Daily cap 300 credits, not raised. About 287 credits used on 2026-11-01 (orchestrator count). On 2026-11-02 about 171 before Discovery E3, which used 38, so about 209 before the CLLS3 and PYPL3 reruns.",
     "DeepSeek search": "OFF throughout (not enabled).",
     "Test-suite baseline": "9,893 passed, 195 skipped (full API suite, pre-campaign, 2026-11-01). mypy on app: 81 errors at both the campaign baseline and head.",
-    "Day-1 deploys (2026-11-01)": "1b14000 (HON rerun f0be3c4f, Discovery E2 d6f5d2c6). Fixes merged up to 49ec531 were deployed that day; the last deploy was 49ec531. The ADBE (7b401826) and JPM (30828043) runs started after the HON rerun; their exact deployed SHA (1b14000 or ba44c87) was not recorded.",
-    "Day-2 deploys (2026-11-02)": "fbb40e8 (#305, #306, #307, #308; PYPL, ANTO, CLLS, LIN first runs) -> e052ec2 (#310, ADR-074) -> 09836d0 (#311, ADR-075; ANTO2, CLLS2) -> 95ba5f7 (#312, ADR-076; PYPL2, LIN2, Discovery E3) -> 48b5777 (#313 merged as 342b660, ADR-077; #314 merged as 48b5777, ADR-078). No scored run used 48b5777.",
-    "Main / deployed SHA at report time": "48b5777 on main and deployed (API and web). It contains #313 (ADR-077, merged as 342b660) and #314 (ADR-078, merged as 48b5777).",
+    "Day-1 deploys (2026-11-01)": "1b14000 (#296-#300; HON rerun f0be3c4f, Discovery E2 d6f5d2c6) -> ba44c87 (#301 alone, 19:27Z) -> 49ec531 (#304; contains #302-#304) -> ebb565e, d576570, 75c5389, fbb40e8 (#306, #305, #307, #308; 21:13Z-22:22Z, from gh run list). The last day-1 deploy was fbb40e8. The ADBE (7b401826) and JPM (30828043) runs started after the HON rerun; their exact deployed SHA (1b14000 or ba44c87) was not recorded.",
+    "Day-2 deploys (2026-11-02)": "e052ec2 (#310, ADR-074) -> 09836d0 (#311, ADR-075; ANTO2, CLLS2) -> 95ba5f7 (#312, ADR-076; PYPL2, LIN2, Discovery E3) -> 342b660 (#313, ADR-077) -> 48b5777 (#314, ADR-078). The PYPL, ANTO, CLLS and LIN first runs ran on fbb40e8, deployed late on day 1. No scored run used 342b660 or 48b5777.",
+    "Main / deployed SHA at report time": "Main 48b5777. Deployed API 48b5777, web 95ba5f7 (nothing under apps/web changed between them). Main contains #313 (ADR-077, merged as 342b660) and #314 (ADR-078, merged as 48b5777).",
     "Extraction pipeline": "v19 -> v20 (ADR-064). Held documents are re-read on the next run."
   },
   "campaign_conduct": [
@@ -7517,7 +7519,7 @@
         "hypothesis": "E, G",
         "root_cause": "ADR-075 maps the annual form to 20-F for a foreign private issuer but leaves the quarterly form list at the domestic ['10-Q'] default. ensure_core_filings has no 6-K exhibit classifier (interim report vs press release).",
         "status": "FIXED_REPLAY",
-        "fix": "#313 342b660 ADR-077 (merged; deployed in 48b5777): a 20-F filer's interim results are read from its results 6-K. Live replay picks the true latest interim for 12 of 13 filers, Cellectis included (Toyota: no pick). Live confirmation: CLLS3 rerun, pending (section 14).",
+        "fix": "#313 342b660 ADR-077 (merged and deployed as 342b660): a 20-F filer's interim results are read from its results 6-K. Live replay picks the true latest interim for 12 of 13 filers, Cellectis included (Toyota: no pick). Live confirmation: CLLS3 rerun, pending (section 14).",
         "sections": [
           8,
           10
@@ -8068,7 +8070,7 @@
         "verification": "Replay: e50cb267 drops 3 of 4 HONA findings; f0be3c4f drops 1 of 2. HON3 not run. Live on CLLS2 the rule misses Calyxt risk factors inside Cellectis's own FY2022 20-F (CLLS2-2).",
         "state": "merged",
         "merged_day": "2026-11-01",
-        "deployed_in": "49ec531"
+        "deployed_in": "ba44c87"
       },
       {
         "pr": 302,
@@ -8109,7 +8111,7 @@
           "C2 (independent guard)"
         ],
         "review": "Independent review. Recorded a separate parser defect: 'USD 23,769 millions' read as USD 23,769.",
-        "verification": "Live: no false press-vs-filing conflict on PYPL, PYPL2, ANTO2, CLLS, CLLS2, LIN, LIN2. FAILED on ANTO a68e6d31 (South32 revenue vs an Antofagasta volume variance, each a single amount with no segment named); that class is fixed by ADR-074 (#310).",
+        "verification": "Live: no false press-vs-filing conflict on PYPL, PYPL2, ANTO2, LIN, LIN2 (on CLLS and CLLS2 the evaluations record ADR-071 as not exercised). FAILED on ANTO a68e6d31 (South32 revenue vs an Antofagasta volume variance, each a single amount with no segment named); that class is fixed by ADR-074 (#310).",
         "state": "merged",
         "merged_day": "2026-11-01",
         "deployed_in": "49ec531"
@@ -8126,7 +8128,7 @@
         "verification": "No stored run could be replayed (cut names were never persisted). Live on Discovery E3 b14b96d9 (95ba5f7): partial. Web scores vary and the cut is named by ticker; registry scores stay constant and a verified size outranks fit (E3-2; section 11).",
         "state": "merged",
         "merged_day": "2026-11-01",
-        "deployed_in": "fbb40e8"
+        "deployed_in": "ebb565e"
       },
       {
         "pr": 305,
@@ -8141,7 +8143,7 @@
         "verification": "LIVE on PYPL: the Item 2.02 EX-99.1 is read (f031b73b) and, through ADR-076, feeds a finding (39905de8). JPM not rerun (replay resolves the 2026-10-13 EX-99.1).",
         "state": "merged",
         "merged_day": "2026-11-01",
-        "deployed_in": "fbb40e8"
+        "deployed_in": "d576570"
       },
       {
         "pr": 307,
@@ -8155,7 +8157,7 @@
         "verification": "LIVE on PYPL: total debt withheld (holds) but no withheld reason reaches the page (PYPL-11). Replay on 24 filers: JPM 64,776 -> 499,982; HON 34,580; ADBE 6,210; BAC, NEE, CAT, PYPL withheld. JPM not rerun.",
         "state": "merged",
         "merged_day": "2026-11-01",
-        "deployed_in": "fbb40e8"
+        "deployed_in": "75c5389"
       },
       {
         "pr": 308,
@@ -8225,7 +8227,7 @@
         "adr": "ADR-077",
         "state": "merged",
         "merged_day": "2026-11-02",
-        "deployed_in": "48b5777",
+        "deployed_in": "342b660",
         "title": "SEC filings: a 20-F filer's interim results are read from its results 6-K",
         "defects": [
           "CLLS2-1"
@@ -8258,7 +8260,11 @@
         "summary": "Four rounds of independent adversarial review found 13, 19, 21 and 38 false drops of true statements (deny-list, narrower deny-list, full-period allow-list, strict adjacency). Guidance verbs ('lifted FY2026 revenue to', 'set at', 'cut to') and trailing qualifiers ('is the midpoint of its range') read as actuals. Conclusion: actual versus guidance cannot be decided by wording rules after the fact; it needs a statement-kind tag at extraction. ADBE-3 stays OUTSTANDING P1."
       }
     ],
-    "main_and_deployed_at_report_time": "48b5777"
+    "main_at_report_time": "48b5777",
+    "deployed_at_report_time": {
+      "api": "48b5777",
+      "web": "95ba5f7"
+    }
   },
   "before_after": {
     "cases": [
@@ -8546,7 +8552,7 @@
         "CLLS3",
         "PYPL3"
       ],
-      "deployed": "48b5777",
+      "deployed_api": "48b5777",
       "purpose": "Confirm ADR-077 (CLLS2-1) and ADR-078 (PYPL2-1) in a live research run; both are replay-verified only.",
       "result": "<!-- PENDING: CLLS3/PYPL3 -->"
     }
@@ -8606,7 +8612,7 @@
       "name": "V2 / V3 coherence",
       "verdict": "CONFIRMED IN EVERY REPORT; OPEN",
       "status": "OPEN",
-      "evidence": "Every one of the 12 evaluated reports contradicts itself. Examples: 'newest filing is the 10-K' while the 10-Q is cited (ADBE-5); 'latest disclosure is the July release' while Q3 is cited (PYPL2-3); 'most recent disclosure covers FY2025' while H1 and Q3 2026 are cited (ANTO-5); the V2 memo says no issuer document was found while 5 ASX documents are held (LIN-5); the legacy council says 'no company disclosures' while the ledger holds 17 issuer-filing findings (CLLS-4); the chair says 0 findings while the ledger holds 37 (CLLS2-3); gaps deny facts that findings state (ANTO2-3, CLLS2-8, LIN2-4); 61 gaps on the ADBE page vs 73 in the loop."
+      "evidence": "Every one of the 12 claim-audited reports contradicts itself. Examples: 'newest filing is the 10-K' while the 10-Q is cited (ADBE-5); 'latest disclosure is the July release' while Q3 is cited (PYPL2-3); 'most recent disclosure covers FY2025' while H1 and Q3 2026 are cited (ANTO-5); the V2 memo says no issuer document was found while 5 ASX documents are held (LIN-5); the legacy council says 'no company disclosures' while the ledger holds 17 issuer-filing findings (CLLS-4); the chair says 0 findings while the ledger holds 37 (CLLS2-3); gaps deny facts that findings state (ANTO2-3, CLLS2-8, LIN2-4); 61 gaps on the ADBE page vs 73 in the loop."
     },
     {
       "id": "I",
@@ -8643,7 +8649,7 @@
       "companies": "all 8",
       "sectors": "all",
       "venues": "all",
-      "frequency": "12 of 12 reports had at least one self-contradiction",
+      "frequency": "12 of 12 claim-audited reports had at least one self-contradiction",
       "severity": "P1",
       "root_cause": "Gaps, 'latest disclosure', question status, chair counts and the V2 memo are each computed from a different partial view; nothing reconciles them against the ledger and the document inventory.",
       "fixed": "No (council header only, ADR-062 s.5)",
@@ -8825,7 +8831,7 @@
       "id": "P-2",
       "title": "One reconciled research state derived from the ledger",
       "problem": "Gaps, 'latest disclosure', question status, chair counts and the V2 memo contradict the findings in the same report.",
-      "evidence": "12 of 12 reports self-contradict: PYPL2-3, ANTO-5, LIN-5/LIN2-4, CLLS-4, CLLS2-3 (0 vs 37 findings), CLLS2-8, ANTO2-3, ADBE-5, H8, H11; questions 'satisfied' with 0 findings (PYPL2-12) or without their metric (JPM-11); 61 vs 73 ADBE gaps.",
+      "evidence": "12 of 12 claim-audited reports self-contradict: PYPL2-3, ANTO-5, LIN-5/LIN2-4, CLLS-4, CLLS2-3 (0 vs 37 findings), CLLS2-8, ANTO2-3, ADBE-5, H8, H11; questions 'satisfied' with 0 findings (PYPL2-12) or without their metric (JPM-11); 61 vs 73 ADBE gaps.",
       "affected": "8 of 8 companies",
       "benefit": "The owner can trust what the page says the platform knows and does not know. Prerequisite for any completeness or readiness label.",
       "scope": "Medium-large: compute newest document, latest period, segment structure and ledger counts once per run; derive gaps and question status from the ledger and inventory; make the chair fallback and the V2 memo read the same state.",
@@ -9102,7 +9108,7 @@
       {
         "q": "C",
         "question": "Can period/scope/entity handling be trusted?",
-        "answer": "No. 59 of 231 independently checked claims (26%) are STALE, WRONG_PERIOD, WRONG_SCOPE or WRONG_ENTITY. On the four rerun companies the share fell from 29% (23 of 78) to 21% (18 of 84): one in five checked claims is still stale or mis-attributed after the fixes. New scope and entity errors appeared on reruns (ANTO2-1 mine capex as Group; CLLS2-2 Calyxt risks as Cellectis's; LIN2-3 Iluka unit costs unattributed)."
+        "answer": "No. 59 of 231 independently checked claims (26%) are STALE, WRONG_PERIOD, WRONG_SCOPE or WRONG_ENTITY. On the four rerun companies with claim audits on both runs (PYPL, ANTO, Cellectis, LIN) the share fell from 29% (23 of 78) to 21% (18 of 84): one in five checked claims is still stale or mis-attributed after the fixes. New scope and entity errors appeared on reruns (ANTO2-1 mine capex as Group; CLLS2-2 Calyxt risks as Cellectis's; LIN2-3 Iluka unit costs unattributed)."
       },
       {
         "q": "D",
@@ -9157,7 +9163,7 @@
   "stop_condition": [
     {
       "condition": "All eight company cases read and scored",
-      "status": "MET: 8 of 8 scored; 4 of them rerun after fixes (12 evaluated reports)."
+      "status": "MET: 8 of 8 scored; 5 of them rerun after fixes (HON, PYPL, ANTO, Cellectis, LIN): 13 scored reports, 12 of them claim-audited (HON after was scored, not claim-audited)."
     },
     {
       "condition": "All feasible Discovery cases inspected",
@@ -9165,7 +9171,7 @@
     },
     {
       "condition": "Important claims independently verified",
-      "status": "MET: 231 claims across 12 reports (at least 3 financial, 2 business, 2 current-event and 1 risk claim per report)."
+      "status": "MET: 231 claims across 12 claim-audited reports (at least 3 financial, 2 business, 2 current-event and 1 risk claim per report)."
     },
     {
       "condition": "All P0/P1 fixed and rerun, or documented as an external blocker",
