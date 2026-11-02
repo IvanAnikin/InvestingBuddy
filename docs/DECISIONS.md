@@ -5795,3 +5795,127 @@ byte-for-byte replay of PostgreSQL.
 - CLLS's pivot article is covered only when it is the subject's own dated chunk in the
   window. Subject-row (`via_subject`) admission is not part of the pass.
 - No live run yet. Production acceptance needs a LIN and a PYPL rerun after deploy.
+
+---
+
+## ADR-077: A 20-F Filer's Interim Results Are Read From Its Results 6-K
+
+**Date:** 2026-11-02 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, live Cellectis rerun 686d71f6.
+ADR-075 now reads the FY2025 20-F of a foreign SEC filer. But `ensure_core_filings`
+looked for a 10-Q only (`QUARTERLY_FORMS = ("10-Q",)`). A 20-F / 40-F filer reports
+its quarter or half year on a Form 6-K, often with an EX-99.1 press release and
+sometimes an iXBRL 6-K/A. So `current_period` said "No interim report acquired", and
+the newest figures in the report were 9M 2025. H1 2026 (6-K 2026-08-06, iXBRL 6-K/A
+2026-09-11) was never read. This affects every 20-F filer.
+
+### Context
+- EDGAR records no item codes for a 6-K, so ADR-068's Item 2.02 rule cannot apply.
+- Most 6-Ks are not results. Examples: Novo Nordisk's weekly buyback notices, Shell's
+  dividend and own-share notices, Cellectis's AGM vote results and its clinical-data,
+  strategy and conference-call releases.
+- The `-index.htm` descriptions are generic ("PRESS RELEASE", "EXHIBIT 99.1",
+  "6-K"), so a description rarely names results.
+
+### Decision
+1. **When.** The quarterly slot reads 6-Ks only when no 10-Q is listed, the annual
+   slot is not a 10-K, and 6-K / 6-K/A filings are listed. Only a foreign private
+   issuer files a 6-K. A 10-K filer is unchanged. With
+   `PRIMARY_DOCUMENT_SEC_BODY_ENABLED` off, no index page is read and the slot is
+   `not_listed` with "SEC filing-body fetch is disabled".
+2. **Which 6-K** (`sources/sec_6k_results.select_results_6k`). It walks 6-Ks newest
+   first and takes the first one whose own documents show it is a results release.
+   The rules, in order (`classify_6k`):
+   1. **iXBRL statements.** A 6-K / EX-99 document marked iXBRL on the index page
+      means results. A 6-K has no iXBRL cover requirement, so iXBRL here is financial
+      data. `parse_filing_index_page` now records `ixbrl` per row.
+   2. **A notice by file name.** File names naming an AGM, vote, meeting, prospectus,
+      buyback, repurchase, own shares or share capital mean a notice. This wins even
+      over "results" (`6-ka_agm_vote_results.htm`).
+   3. **Results by description or headline title line.** The headline is read only
+      when undecided. It comes from the press-release exhibit's first 400 characters,
+      or, when that exhibit is over 256 KB or absent, the 6-K document's first 6,000
+      characters (its exhibit list or the newswire announcement). A title line is at
+      most 200 characters, so a forward-looking-statements paragraph that mentions
+      "financial results" is never a title.
+      - Results phrases: "financial results/report" (not "annual financial report"),
+        "interim / half-year / quarterly report or statement(s)", "earnings release".
+      - A period next to "results" also counts (Q1–Q4, H1/H2, first/second … quarter,
+        half-year, first half, three/six/nine months), but not in a line about a trial
+        (topline, phase, study, clinical, data).
+      - A headline naming a notice and no results means a notice.
+   4. **Results by file name**: `q[1-4]`, `h1`, half-year, interim, quarter, results,
+      earnings (`clls_6-k_q2_2026.htm`, `caq22026.htm`, `shellq320266-k.htm`).
+   5. Anything else is **undecided and never taken**. Reading no 6-K is better than
+      reading the wrong one.
+3. **Bounded.** Reads use the existing guarded, throttled SEC Archives leg
+   (`fetch_filing_index_page`, `_fetch_sec_archive_bytes` with the 256 KB cap and the
+   `sec_6k_headline_*` events). There is no new host, no new provider, and no URL
+   that does not come from the accession. Per selection:
+   - at most 6 index pages (`MAX_INDEX_FETCHES`);
+   - at most 4 heads (`MAX_HEADLINE_FETCHES`);
+   - at most 4 6-Ks without a feed signal (`MAX_UNSIGNALLED_VISITS`). A feed signal
+     is a results-named primary document, or a period of report in the last week of a
+     month 10–200 days before filing. With this cap a weekly-buyback filer still
+     reaches its interim report;
+   - a 6-K whose feed file name names a notice costs nothing.
+4. **The document read.**
+   - With iXBRL as the basis: the iXBRL EX-99 exhibit, else the iXBRL 6-K document.
+   - Otherwise, as ADR-068: the `EX-99.1` exhibit, else the first `EX-99*`. If that
+     exhibit is under 10 KB and a larger EX-99 exists, the larger one is read (Shell's
+     3 KB EX-99.1 sits beside a 1.8 MB quarterly report).
+   - With no exhibit: the 6-K document.
+5. **Through the same bridge.** `ensure_filing_corpus_evidence(…, document_name=…)` →
+   `acquire_sec_filing(document_name=…)` passes the name as the resolver's
+   primary-document hint, which re-validates it against this accession's index. It is
+   never a URL. Readiness and indexing are judged on that one document
+   (`<accession>/<file>`, escaped, URL must end with it). An exhibit asked for by name
+   counts as ready. A held cover page of the same accession cannot answer for it. The
+   unnamed path is unchanged.
+6. **Slot output.** It records `form` (6-K / 6-K/A), `filing_date`, `document`, `basis`,
+   `title` (the document's own results title line, when read), `period_end` and
+   `selection` (counts). `period_end` is EDGAR's period of report, given only when the
+   basis is iXBRL: for financial statements it is the balance-sheet date. Nothing
+   qualifying gives `not_listed` with "no results 6-K among the N examined of M listed
+   (K skipped as notices by file name)".
+7. **current_period.** A ready 6-K slot counts as the interim report. The headline is
+   the slot's `title`, else its form. The period comes only from that title
+   ("…Second Quarter 2026" gives "Q2 2026 quarterly report acquired"), or the label
+   states "for the period ended 2026-06-30". A lone year in a 6-K title is never read
+   as a fiscal year. `gap_reconciliation.ready_documents` already maps a ready
+   quarterly slot to an interim document.
+
+### Live replay (read-only, 2026-11-02)
+User-Agent "InvestingBuddy research research@investingbuddy.example". 32 SEC requests
+in total, including 5 submissions and probes.
+
+| Filer (CIK) | 6-K picked | Document · basis | Latest interim? |
+|---|---|---|---|
+| Cellectis (1627281) | 6-K/A 2026-09-11 0001193125-26-389336 | `clls-ex99_1.htm` · iXBRL · period end 2026-06-30 | Yes, H1 2026 (Q3 due ~Nov) |
+| ASML (937966) | 6-K 2026-10-14 0001628280-26-065813 | `pressreleasefinancialresul.htm` · file name | Yes, Q3 2026 |
+| Novo Nordisk (353278) | 6-K 2026-08-04 0000353278-26-000023 | `caq22026.htm` · file name | Yes, H1 2026 (Q3 due ~Nov) |
+| SAP (1000184) | 6-K 2026-10-26 0001104659-26-118617 | `tm2628113d1_ex99-1.htm` · headline "Quarterly Statement dated October 21, 2026" | Yes, Q3 2026 |
+| Shell (1306965) | 6-K 2026-10-29 0001628280-26-068044 | `quarterlyexhibit992-q32026.htm` · file name | Yes, Q3 2026 |
+
+The following were read and refused (undecided or notice): Cellectis's .HEAL-101 data,
+strategic-transformation and conference-call releases; Novo's four newest buyback
+6-Ks; Shell's "Third Quarter 2026 Interim Dividend" and own-share notices.
+
+### Not changed / known limits
+- **A results release with no signal past the cap is missed.** This covers a newswire
+  press release with a generic file name, no iXBRL, and four or more newer non-results
+  6-Ks above it. The slot then says `not_listed` with the counts. It does not guess.
+- **A results headline in a press release over 256 KB is not read.** Only the cover's
+  exhibit list can decide it.
+- **Undated periods.** A 6-K chosen by file name or iXBRL carries no title. Its
+  `current_period` label names a period end only for iXBRL. Otherwise it says
+  "Interim report acquired (date)".
+- **`max_events=80`** in the filing list is unchanged. Novo Nordisk lists 79 6-Ks in the
+  420-day window, and its 20-F (2026-02-04) is still inside it. A heavier 6-K filer
+  could push its 20-F out of the list.
+- **Figures.** The 6-K is chunked and searchable. SEC XBRL normalisation still reads
+  `us-gaap` only (ADR-075), so the 6-K/A's IFRS iXBRL tags are not read as structured
+  facts. Any figures come from the existing document-text extraction, which this change
+  does not alter.
+- **No live research run yet.** Production acceptance needs a Cellectis rerun after
+  deploy.

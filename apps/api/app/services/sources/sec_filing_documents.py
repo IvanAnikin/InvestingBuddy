@@ -662,6 +662,9 @@ def parse_filing_index_page(page: str | bytes | None) -> list[dict[str, Any]]:
                 "type": _cell_text(cells[3][0]),
                 "size": _cell_text(cells[4][0]),
                 "description": _cell_text(cells[1][0]),
+                # EDGAR marks an Inline XBRL document with an "iXBRL" label beside its
+                # link. A 6-K carries iXBRL only for financial statements (ADR-077).
+                "ixbrl": "ixbrl" in cells[2][1],
             }
         )
     return entries
