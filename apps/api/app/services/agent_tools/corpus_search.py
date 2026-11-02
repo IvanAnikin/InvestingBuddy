@@ -180,10 +180,11 @@ MAX_RECENT_WINDOW_DAYS = 366
 def _recent_window_days(raw: Any) -> int | None:
     """``recent_window_days``: restrict to the subject's newest held documents.
 
-    The window is anchored on the newest DATED document the corpus holds for the
-    companies named, never on the clock, so a corpus last refreshed in March still has a
-    "newest" set. Undated chunks are outside any window — the caller's ordinary search,
-    which sends no window, is where they are read.
+    The window is anchored on the newest DATED issuer / primary DISCLOSURE the corpus
+    holds for the companies named (never a quote or market-data page), and never on the
+    clock, so a corpus last refreshed in March still has a "newest" set. Undated chunks
+    are outside any window — the caller's ordinary search, which sends no window, is
+    where they are read.
     """
     if raw in (None, ""):
         return None
@@ -357,7 +358,9 @@ async def _search_company_corpus(
     recency: dict[str, Any] | None = None
     window_days = arguments.get("recent_window_days")
     if window_days:
-        # ADR-076 — the newest held documents only: from (newest dated document − window).
+        # ADR-076 — the newest held documents only: from (newest dated DISCLOSURE − window).
+        # Every subject chunk dated in the window is searched; only the anchor is limited
+        # to disclosures (ADR-076 review: anchor).
         # An ADDITIONAL pass a caller makes beside its ordinary search; nothing here
         # changes what a call without the argument returns.
         from datetime import timedelta
@@ -377,9 +380,9 @@ async def _search_company_corpus(
                     SEARCH_INSTRUMENTED_UNITS, search_index_queries=0
                 ),
                 "summary": (
-                    "no dated document is held for these companies, so no recency "
-                    "window could be anchored; this is not a statement that nothing "
-                    "recent exists"
+                    "no dated issuer or primary disclosure is held for these companies, "
+                    "so no recency window could be anchored; this is not a statement "
+                    "that nothing recent exists"
                 ),
                 "contains_untrusted_content": False,
             }

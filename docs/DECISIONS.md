@@ -5796,6 +5796,77 @@ byte-for-byte replay of PostgreSQL.
   window. Subject-row (`via_subject`) admission is not part of the pass.
 - No live run yet. Production acceptance needs a LIN and a PYPL rerun after deploy.
 
+### Amendment 2026-11-02 — ADR-076 review: anchor
+**Trigger:** live Cellectis rerun `df36d6f6`. The `recency_corpus` steps logged
+`newest_held: 2026-11-02` (the run day), so the window started on 2026-09-18. The only
+holding dated that day was a Boursorama Sanofi quote page (`unknown_web`, with its date taken
+from the page text). The window therefore missed the H1 2026 6-K/A (filed 2026-09-11) and
+the 2026-09-14 pivot article, which are the documents the pass exists to surface.
+`loop.newest_held_document_date` had the same flaw: a quote page dated today made the
+subject look like it "held a current document".
+
+**Decision.**
+1. **Only an issuer or primary disclosure anchors the window.** There is one rule,
+   `corpus.search.types.is_disclosure`, exposed as the filter
+   `CorpusFilters.disclosures_only`. It uses columns the corpus already has:
+   - the chunk's `source_tier` is in `DISCLOSURE_SOURCE_TIERS`:
+     - `T1_primary_filing` (issuer or regulatory filings);
+     - `T1_primary_company_source` (issuer IR material and releases);
+     - `T2_regulator_or_gov` (venue announcements from the NSM, Euronext, Nordic and SIX
+       connectors);
+   - and the version's open-web `source_class` is either NULL (a connector-delivered
+     document) or one of `issuer_filing`, `regulatory_filing`, `exchange_announcement`,
+     `company_press_release` or `investor_presentation`.
+
+   Quote, market-data, aggregator, `unknown_web`, generic `company_web_page`, press and
+   government pages never anchor the window, whatever their tier.
+   - The memory backend applies the filter in `CorpusFilters._passes`.
+   - PostgreSQL applies it in `_filter_clauses`, as a tier `IN` plus `NOT EXISTS` over a
+     non-disclosure version class, so a NULL class passes.
+   - `retrieval.newest_published` sends the filter.
+   - `loop.newest_held_document_date` now calls `PostgresSearchBackend.newest_published_at`
+     with the same filter, so `acquired_not_read` and the window share one definition.
+
+   Only the **anchor** is restricted. The window still searches every subject chunk dated
+   on or after its start, including web pages and the pivot article.
+2. **The window is 75 days, not 45** (option (a)). Anchoring on disclosures alone fixes
+   this run's anchor, but the next miss is a minor disclosure filed weeks after the
+   results. Cellectis's 2026-10-27 data release is 46 days after the 6-K/A, so a 45-day
+   window anchored on it starts on 2026-09-12 and misses the 6-K/A by one day. A 75-day
+   window starts on 2026-08-13 and includes both the 6-K/A and the pivot. It still stops
+   short of the previous quarter's results, about 91 days back; LIN's 2026-07-30 annual
+   report, 88 days before its 5B, stays outside.
+
+   Option (b), the newest N disclosure documents, would need per-document grouping in both
+   backends. It would also not reach the pivot, because a trade article is not a
+   disclosure. It is the larger change and does no better here.
+3. Everything else in ADR-076 is unchanged: the additive pass, NULL-dated chunks outside a
+   window, `acquired_not_read` and the 120-day staleness rule.
+
+**What this does NOT fix in CLLS3.** The 6-K/A and 20-F chunks are **undated**:
+`corpus.filing_evidence` never sets `published_at` from the filing date (CLLS2-5).
+Cellectis's issuer pages are also classed `unknown_web` (CLLS-5). Under this amendment, the
+CLLS3 corpus therefore holds no dated disclosure, so the pass anchors no window and says
+so ("no dated issuer or primary disclosure is held"). It no longer runs a window anchored
+on the quote page. The 6-K/A reaches the pass only once core-filing chunks carry their
+filing date, which is a separate fix.
+
+**Tests** (`tests/test_qa_campaign_recency_evidence.py`, 41 run on SQLite plus 2 on
+PostgreSQL):
+- a quote page dated today plus a 6-K dated 52 days earlier: the window is anchored on the
+  6-K and includes it, through both the tool and the investigator pass;
+- a 6-K plus a data release 46 days later: the 75-day window includes the 6-K and the
+  pivot, and a 45-day window would not;
+- with no dated disclosure, no window is anchored, even beside a dated quote page;
+- a `company_web_page` does not anchor the window, and a `company_press_release` does;
+- the disclosure vocabulary is pinned to the taxonomy and to `classify.CLASS_TABLE`;
+- the loop: a quote page, or a T1-tier `company_web_page`, leaves `not_acquired`;
+  `newest_held_document_date` skips the quote page.
+- PostgreSQL (`V3_TEST_POSTGRES_URL`, a UTF8 scratch database migrated to 044 and dropped
+  afterwards): the same quote page plus 6-K case through `PostgresSearchBackend`, the tool
+  and the loop. A parity test checks that `_filter_clauses` and `is_disclosure` admit the
+  same chunks for every web class.
+
 ---
 
 ## ADR-077: A 20-F Filer's Interim Results Are Read From Its Results 6-K

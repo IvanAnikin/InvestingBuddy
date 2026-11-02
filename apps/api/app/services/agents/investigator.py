@@ -106,12 +106,15 @@ CORPUS_TOP_K = 12
 
 #: ADR-076 — the recency pass. A question about the issuer's NEWEST disclosure also
 #: searches only the subject's newest held documents: those published within this many
-#: days of the newest dated document the corpus holds for it. Lexical rank alone let a
-#: 261-chunk annual report outrank the newer quarterly cash-flow report on every run, so
-#: the report quoted the older quarter's cash and said no quarterly report was present.
-#: Forty-five days spans one reporting cycle's cluster (a 5B, its activities report and
-#: the results release) without reaching back to the previous quarter.
-RECENCY_WINDOW_DAYS = 45
+#: days of the newest dated issuer / primary DISCLOSURE the corpus holds for it. Lexical
+#: rank alone let a 261-chunk annual report outrank the newer quarterly cash-flow report
+#: on every run, so the report quoted the older quarter's cash and said no quarterly
+#: report was present.
+#: Seventy-five days, not 45 (ADR-076 review: anchor): the newest disclosure is often a
+#: minor one filed weeks after the results. Cellectis's 2026-10-27 data release sits 46
+#: days after its H1 6-K/A (2026-09-11), one day outside a 45-day window. Seventy-five
+#: days still stops short of the previous quarter's results (~91 days back).
+RECENCY_WINDOW_DAYS = 75
 #: How many of the recency pass's hits lead the question's evidence. Half a corpus page:
 #: the newest documents come first, and the ordinary search still fills the rest of the
 #: prompt budget.

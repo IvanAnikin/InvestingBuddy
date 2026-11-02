@@ -81,6 +81,8 @@ from app.services.corpus.search.fusion import (
     reciprocal_rank_fusion,
 )
 from app.services.corpus.search.types import (
+    DISCLOSURE_SOURCE_CLASSES,
+    DISCLOSURE_SOURCE_TIERS,
     SCOPE_TYPE_MENTION,
     CorpusChunk,
     CorpusFilters,
@@ -216,6 +218,20 @@ def _filter_clauses(filters: CorpusFilters) -> list[Any]:
             ResearchDocumentSubject.theme_key.in_(list(filters.theme_keys)),
         )
         document_conditions.append(ResearchDocument.id.in_(themed))
+    if filters.disclosures_only:
+        # ADR-076 review: anchor. Mirrors ``types.is_disclosure``: a disclosure tier, and
+        # no web class or a disclosure class. Written as NOT EXISTS over a NON-disclosure
+        # class so a NULL class (every connector-delivered version) passes.
+        clauses.append(C.source_tier.in_(list(DISCLOSURE_SOURCE_TIERS)))
+        clauses.append(
+            ~select(V.id)
+            .where(
+                V.id == C.research_document_version_id,
+                V.source_class.is_not(None),
+                V.source_class.not_in(list(DISCLOSURE_SOURCE_CLASSES)),
+            )
+            .exists()
+        )
     if version_conditions or document_conditions:
         versions = select(V.id)
         if document_conditions:
