@@ -1,0 +1,1690 @@
+# Autonomous Cross-Sector Research QA Campaign — 2026-11
+
+Campaign window: 2026-11-01 (first runs, fixes, reviews, merges) and 2026-11-02 (new companies, reruns after the Tavily daily reset, further fixes). Report written 2026-11-02. The spec's hypotheses A–J, 15-dimension rubric, claim verdicts and gap taxonomy are used verbatim. Machine-readable twin: [`autonomous-cross-sector-research-qa-2026-11.json`](autonomous-cross-sector-research-qa-2026-11.json) (same facts).
+
+Two facts arrive after this report was written: the Discovery E3 result and the merge SHAs of the two open PRs (#313, #314). Each place they go is marked with an HTML comment of the form `<!-- PENDING: ... -->` (grep for `<!-- PENDING`).
+
+All company and run identifiers below are platform UUIDs (8-character prefixes in tables). No secret values appear in this report.
+
+---
+
+## 1. Executive summary
+
+**Verdict.** InvestingBuddy is not yet a trustworthy research system. 16 corrective PRs were merged and deployed in two days. They made the deterministic financial snapshot much safer: it now withholds a number rather than publish a partial or mis-scoped one. They did not make the research useful. **After the fixes, overall usefulness is still 3–4 out of 10 for six of the eight companies** (HON 6, CFR 4, ADBE 4, ANTO 4, LIN 4, JPM 3, PYPL 3, Cellectis 2). Do not resume broad manual owner testing until the three CRITICAL items in section 17 have landed.
+
+- **Panel.** 8 companies across 6 venues and 7 sectors, 12 evaluated reports: HON (before/after), CFR, ADBE, JPM, and PYPL, ANTO, Cellectis and LIN (first run and rerun). CFR, ADBE and JPM were not rerun (budget and time).
+- **Claims.** 231 claims independently verified against filings and issuer documents: 112 PASS (48%), 59 (26%) STALE / WRONG_PERIOD / WRONG_SCOPE / WRONG_ENTITY, 19 WRONG, 10 UNSUPPORTED.
+- **Gaps.** 77 of 121 independently audited 'missing' facts (64%) were DOCUMENT_ACQUIRED_EXTRACTION_FAILED: the platform held the document. Only 11 were genuinely not disclosed; 21 were not acquired (17 of them for non-US issuers); none was source-blocked.
+- **Defects logged:** 129 (P0 7, P1 43, P2 61, P3 18). Fixed live 8, fixed by replay only 7, fixed in code not yet observed 4, partly fixed 13, not reproduced without a fix 6, fix in an open PR 2, open 89.
+- **P0s (7).** Fixed live: H1 (HON YoY sign), ANTO-1 (manufactured revenue conflict), CLLS-3 (chair 'no FY2024 results'). Fixed, replay only (company not rerun): C1 (CFR x1000), JPM-1 (JPM total debt 7.7x too low). Not reproduced, root cause unfixed: LIN-1 ('mines and sells' for a pre-revenue developer; the editor failed on the rerun). **Open, fix in an unmerged PR:** PYPL2-1 (a takeover rumour stated as fact in PayPal's executive synthesis; #314).
+- **P1s.** 32 of 43 are open, partly fixed or waiting on an open PR. None is an external blocker, so the campaign stop condition is **not met**.
+- **Discovery.** Thesis fit on the materials thesis went from 0/15 to 12/15 after ADR-063 (live). Ranking was confirmed broken (score constant per source; the cap silently cut 6 of 7 theme-verified web names). It is fixed in code by ADR-070 and ADR-073. Live verification on Discovery E3 b14b96d9: <!-- PENDING: E3 -->. Recall (name-only leads) is the main open Discovery weakness.
+- **Biggest generic weakness.** The platform acquires the right documents and does not read them, then writes a research state that is not derived from what it holds. Every one of the 12 reports contradicts itself.
+- **Deployed SHA at report time:** 95ba5f7 (API and web). #313 (ADR-077) and #314 (ADR-078) are open; see section 13.
+
+Hypothesis verdicts (detail in sections 16 and 18):
+
+| Hyp. | Area | Verdict |
+|---|---|---|
+| A | Corporate actions / economic perimeter | CONFIRMED; FIXED FOR THE US XBRL SNAPSHOT ONLY |
+| B | Financial taxonomy | CONFIRMED; FIXED ONLY IN THE DETERMINISTIC LAYER |
+| C | Document acquired but fact not extracted | CONFIRMED; LARGEST SYSTEMIC DEFECT; PARTLY MITIGATED FOR RECENCY QUESTIONS ONLY |
+| D | Subject / counterparty firewall | CONFIRMED; EXPLICIT CASES FIXED; IMPLICIT SUBJECTS AND THE ISSUER'S OWN DOCUMENTS OPEN |
+| E | Multi-listing identity | CONFIRMED ON THE RESEARCH PATH; PARTLY FIXED; NOT OBSERVED IN DISCOVERY |
+| F | Security-code extraction | CONFIRMED; WKN FAMILY FIXED IN CODE; OTHER TOKEN-AS-NAME CASES OPEN |
+| G | Currentness | CONFIRMED; LATEST NUMBERS PARTLY FIXED; EVENTS, SUPERSESSION AND NON-US INTERIMS OPEN |
+| H | V2 / V3 coherence | CONFIRMED IN EVERY REPORT; OPEN |
+| I | Council status | CONFIRMED; HEADER FIXED IN CODE; DEGRADED RUNS ARE COMMON AND SIGNALLED UNRELIABLY |
+| J | Discovery triage | CONFIRMED; FIXED IN CODE; LIVE CHECK PENDING (E3) |
+
+---
+
+## 2. Deployed versions
+
+| Item | Value |
+|---|---|
+| Main SHA at campaign start | d64228a (PR #295, 2026-11-01 13:20 +0100), the last commit before the first campaign merge (#297 at 17:36 +0100), from git history. |
+| Deployed API / web SHA at campaign start | Not recorded during the campaign. The before runs (HON e50cb267, CFR f722d620) ran on the pre-campaign deployment. |
+| Production health at start | Healthy enough to complete research jobs and Discovery runs; no formal health snapshot was kept. |
+| Alembic head | 044 (044_add_web_documents_to_corpus). No campaign PR added a migration: git log d64228a..95ba5f7 shows no change under apps/api/alembic. |
+| Enabled research feature flags | A full flag dump was not captured. Observed from run behaviour: SEC filings and XBRL, UK FCA NSM and ASX disclosure connectors, open-web search and fetch (Tavily), corpus search, and dynamic Discovery were active. DeepSeek search was off. |
+| Tavily | Available. Daily cap 300 credits, not raised. About 287 credits used on 2026-11-01 (orchestrator count). About 171 on 2026-11-02 before Discovery E3 (E3 usage: section 11). |
+| DeepSeek search | OFF throughout (not enabled). |
+| Test-suite baseline | 9,893 passed, 195 skipped (full API suite, pre-campaign, 2026-11-01). mypy on app: 81 errors at both the campaign baseline and head. |
+| Day-1 deploys (2026-11-01) | 1b14000 (HON rerun f0be3c4f, Discovery E2 d6f5d2c6). Fixes merged up to 49ec531 were deployed that day; the last deploy was 49ec531. The ADBE (7b401826) and JPM (30828043) runs started after the HON rerun; their exact deployed SHA (1b14000 or ba44c87) was not recorded. |
+| Day-2 deploys (2026-11-02) | fbb40e8 (#305, #306, #307, #308; PYPL, ANTO, CLLS, LIN first runs) -> e052ec2 (#310, ADR-074) -> 09836d0 (#311, ADR-075; ANTO2, CLLS2) -> 95ba5f7 (#312, ADR-076; PYPL2, LIN2, Discovery E3). |
+| Main / deployed SHA at report time | 95ba5f7 on main and deployed (API and web). Final main after #313/#314 merge: <!-- PENDING: #313/#314 merge -->. |
+| Extraction pipeline | v19 -> v20 (ADR-064). Held documents are re-read on the next run. |
+
+**Campaign conduct and cost control**
+
+- The Tavily daily cap of 300 was respected on both days. No provider limit was raised.
+- No new paid provider was enabled, DeepSeek search stayed off, no source restriction was bypassed, no source access was purchased, and no browser or captcha workaround was added.
+- No out-of-scope source project (SEDAR+ DDS, LSEG, browser automation, FCA FIRDS expansion, another search provider) was started.
+- Disclosure: early on day 1 the owner's personal email address was sent in the SEC User-Agent header for a few direct sec.gov fetches. This was corrected the same day, and every later fetch used the project's research contact string. The address is not reproduced here.
+- Deploy workflows have no concurrency guard. Rapid merges raced on day 1, and the db5baf8 smoke test failed and was superseded by the next deploy.
+- Budget and time stopped four planned reruns: CFR2, HON3, JPM2 and ADBE2 were not run. Their fixes are verified by offline replay only, or by the same mechanism on another company.
+
+---
+
+## 3. Companies tested
+
+The panel follows spec section 2: four fixed regression cases plus four companies with different reporting structures (software, bank, payments, non-US resources). LIN was selected naturally from Discovery E2 (rank 13, on-thesis).
+
+| # | Category | Ticker | Issuer / security identity | Platform company id | Runs |
+|---|---|---|---|---|---|
+| 1 | US industrial / automation (corporate-action stress) | HON | Honeywell International Inc. (CIK 773840), NASDAQ:HON common stock. Separate registrant Honeywell Aerospace Inc. (HONA, CIK 2089271) since 2026-06-29. 1-for-2 share consolidation 2026-06-29. | 5d0c5912-b9aa-4142-a46b-abdce6950c09 | before (pre-campaign): report e50cb267-3233-48a6-aa5e-897dbf111c4d, job 5dea7db7-f2dd-4b22-a2c7-0958d9120281, run 08beb003-aa6e-4a6e-97ba-2a2bab86169a; after (1b14000): report f0be3c4f-7e6b-434e-90f0-82c5508d0dd1, job 4b5ecef4-e813-4401-a859-c9ce532055aa, run ba206178-7758-46d7-b1fd-0af94ffa960b. HON3 (after ADR-066 and the day-2 fixes) was planned and not run. |
+| 2 | Switzerland / luxury (non-US primary documents) | CFR | Compagnie Financiere Richemont SA (CH), SIX:CFR 'A' registered share (ISIN CH0210483332). JSE depositary receipts are not modelled. The SEC ticker CFR belongs to Cullen/Frost (ticker collision; handled by ADR-066's ticker-and-name match). | 041cc7e4-0802-4505-9e25-63898f04d12a | before (pre-campaign): report f722d620-2937-48f5-9306-3b7264d5cc7a, job c25bf04b-76c9-452a-9f30-701f35f735f0, run 19354d90-5b20-42a1-8bbc-28b42e73bfde. CFR2 was planned and not run. CFR has a before score and day-1 fix checks (offline replay on the real FY26 PDF) only. |
+| 3 | France / biotechnology (dual listing, geography) | ALCLS + CLLS | Cellectis S.A. (France), SEC CIK 1627281, 20-F/6-K filer, SIC 2836. Ordinary shares on Euronext Growth Paris (ALCLS, ISIN FR0010425595) and ADSs on Nasdaq (CLLS, 1 ADS = 1 share). Reports in USD under IFRS; functional currency EUR. Run 1 knew only ALCLS.PA; run 2 linked CIK 1627281 at research time (ADR-075) but the company record still shows one line. | 3c13d328-0c54-4b03-9092-042d8fce2223 | run 1 (fbb40e8): report 1df9100c-bd52-4cdf-a738-6b55b49728a9, job c2d2da70-2a45-4a85-99a6-9487669dd763; rerun (09836d0): report 686d71f6-d79e-4272-8a3f-ec4a81f0fc67, job e12bc30e-545e-4ad0-858d-e5fb53c50714 |
+| 4 | ASX development stage (selected from Discovery E2) | LIN | Lindian Resources Limited (ABN 53 090 772 222), ASX:LIN, Perth; A$ reporter, June year-end; not an SEC registrant. Kangankunde rare-earth project (Malawi), pre-revenue: first concentrate targeted December 2026. Selected naturally from Discovery E2 (rank 13, on-thesis). The report shows the exchange as 'AU', not 'ASX'. | e1463e13-6f29-4dc9-8084-ca8c725faba9 | run 1 (fbb40e8): report 796b644d-a2f8-4a04-ab0b-9f536a34101d, job e602e266-618e-48bb-a6ed-6326a111d501; rerun (95ba5f7): report 6d4f1c43-631e-4089-9eca-8c0b2bc581ce, job 124cbc51-2145-47c5-92e8-9075bd46b420 |
+| 5 | US profitable software | ADBE | Adobe Inc. (CIK 796343), Nasdaq Global Select ADBE, SIC 7372. Fiscal year ends on the Friday nearest 30 November (FY2025 ended 2025-11-28; Q3 FY2026 ended 2026-08-28). | 4741fc77-450b-4025-8000-49769d7880ca | single run (1b14000 or ba44c87 (not recorded)): report 7b401826-571d-4f06-ad1e-3dbde133a6ee, job b67e3b11-e518-485d-9a49-f720c51a5cb6, run 536dea32-8c5b-4b83-9177-b5a2e3e5bf49. ADBE2 was planned and not run. |
+| 6 | Major US bank | JPM | JPMorgan Chase & Co. (CIK 19617), NYSE:JPM common stock, SIC 6021. Preferred depositary shares and ETNs are not modelled (acceptable). | 3f8da8ae-4b45-4336-a9ac-5a85b96cfb7f | single run (1b14000 or ba44c87 (not recorded)): report 30828043-1baa-4ae5-a913-a1a551e24451, job 60e705ec-d59f-4db7-99b4-efb17b553a34, run 50134081-2321-4f27-b503-4490e03f906f. JPM2 was planned and not run. |
+| 7 | Payments / fintech | PYPL | PayPal Holdings, Inc. (CIK 1633917, Delaware), Nasdaq Global Select PYPL, SIC 7389. Issuer, ticker, exchange, USD and LEI correct. Left UNCLASSIFIED in both runs ('SEC SIC 7389 has no canonical industry mapping'), so no payments playbook and no peers. | 6bfa3229-528d-4106-82c6-106ee5ced4fb | run 1 (fbb40e8): report f031b73b-085b-490b-9e2d-4e7fbfc16d01, job 8d4116af-53b3-4b30-b615-1ae59f2b628b; rerun (95ba5f7): report 39905de8-2842-40a1-b874-1b9ceaff04e3, job 437ff20d-52f7-44d8-a59d-169ff77f58b2 |
+| 8 | Non-US operating resources | ANTO | Antofagasta plc (England & Wales), LSE:ANTO; Chilean copper producer; not an SEC registrant; controlled by the Luksic family (Metalinvest Establishment / E. Abaroa Foundation). Name, ticker and exchange correct; ISIN, sector, reporting currency and website 'not sourced'; UNCLASSIFIED in both runs (no mining playbook). | 697f709f-2288-4997-b19d-ba2de3415278 | run 1 (fbb40e8): report a68e6d31-93d6-4dfb-8c98-039cb8138311, job 921229ed-6ce9-4c2a-8de1-2e6b1fb489f1; rerun (09836d0): report c971490d-7220-4e92-abe6-923700b66fe2, job 5479f2ec-10e6-4f9e-b10c-8ea656838b66 |
+
+---
+
+## 4. Discovery theses and runs
+
+The five owner theses (spec section 8) were run with explicit filters where the thesis implied them. E was rerun as E2 after the intent fix (ADR-063). E3 reruns it after the ranking fixes (ADR-070, ADR-073).
+
+| Run | Thesis | Run id | Deployed | Explicit filters | Tavily credits | Returned | On-thesis |
+|---|---|---|---|---|---|---|---|
+| A | European biotech | aea5d966-fb1a-4e2e-a457-7d3e54b1d86c | pre-#296 | Region=Europe, Sector=Healthcare, Industry=Biotechnology | 0 (20/20 queries served from cache) | 1 | 1/1 (recall about 1 of dozens) |
+| B | AI data-centre power / grid | 0ca9f1d8-97a9-44ba-b30e-7cc524f97f8e | pre-#296 | Sector=Industrials, Industry=Electrical Equipment; size small+mid HARD | 20 | 3 | 1/3 strict (POWL); NVT probably large, Siemens mega-cap |
+| C | Payments / fintech | 22e664d2-25dc-4b36-990f-f3a63316e541 | pre-#296 | Sector=Financials, Industry=Financial Technology; size small+mid HARD | 20 | 0 | 0/0 (honest empty result) |
+| D | Industrial automation | 0434a272-9b9d-4355-ba98-4d5cfb6724bb | pre-#296 | Sector=Industrials, Industry=Robotics & Automation; size small+mid HARD | 20 | 10 | 2/10 strict (Yaskawa, Symbotic; both size uncertain); 7/10 on theme ignoring size |
+| E | Advanced materials (before ADR-063) | a8ce129a-fd4c-4cb7-a961-339ddf497234 | pre-#296 | Sector=Materials; size 'smaller' SOFT | 20 | 15 | 0/15 (HCL adjacent) |
+| E2 | Advanced materials (after ADR-063, deployed 1b14000) | d6f5d2c6-0a4b-4be5-bb1e-6ad2d0807c54 | 1b14000 | Sector=Materials; size SOFT | 20 (stored tavily_credits in the run payload; an earlier campaign note estimated 38) | 15 | 12/15 (SCCO, CLF, FCX adjacent) |
+| E3 | Advanced materials (after ADR-070 + ADR-073) | b14b96d9-df16-4c20-9423-c95fbfbf908f | 95ba5f7 | same as E2 | see section 11 | see section 11 | see section 11 |
+
+| Run | Funnel (search -> entities -> listing -> theme -> constraints -> admitted -> shortlisted -> returned) | Key failures |
+|---|---|---|
+| A | 160 results -> 40 selected (98 over budget) -> 24 pages (4 with mentions) -> 12 mentions / 11 leads -> 1 listing verified -> 0 admitted (Cellectis 'labelled', not admitted) | 8 leads rejected no_ticker (7 ETFs, German descriptor prefixes); WKN A0NFN3 read as BB Biotech's name (D3); curated biotech registry holds US names only; web expansion drifted to bioprocessing/CDMO. |
+| B | 145 results -> 40 selected (77 over budget) -> 21 pages (1 with mentions) -> 1 web lead (NKT, rejected no_ticker) -> 0 web admitted; 7 registry issuers verified; 4 excluded on cited size | Utilities paired with grid (D1); Siemens passes small/mid as size unknown (D5); NKT A/S lost (D4); all three score 90 (J). |
+| C | 160 results -> 40 selected (103 over budget) -> 18 pages (2 with mentions) -> 2 web leads (one an index, XSO) -> 0 admitted; 7 excluded on cited size | Banks paired with payments (D1); registry holds only mega/large caps so HARD size empties it (D12); stale 'SQ' ticker (D11); zero recall of Flywire, Payoneer, Marqeta, Shift4, Nexi, Worldline etc. (D4). |
+| D | 160 results -> 40 selected (93 over budget) -> 24 pages (3 with mentions) -> 18 leads (9 name-only dropped) -> 4 listing verified -> 1 admitted (WiseTech, route C); 5 excluded on size | Ranks 1-6 large/mega caps with size not verified (D6, D7); DroneShield/WiseTech/TSLA score 66 like Symbotic (D9); Cognex/Ouster lost to a GICS heading used as name (D4); TSE codes sent as CIKs (D8). |
+| E | 160 results -> 40 selected (106 over budget) -> 19 pages (2 with mentions) -> 8 web leads -> 6 listing verified -> 5 admitted (A 2, C 3); 1 cut by the cap (inferred) | Thesis parsed as defence with hard industry 'defense' (D2); all expansion queries defence; defence primes fill ranks 1-11; post-spin HON held as A&D (H4). |
+| E2 | 160 results -> 40 selected (92 over budget) -> 15 pages (7 with mentions) -> 28 web leads -> 13 web listing verified -> 7 admitted (A 1, C 6) -> 23 non-excluded -> cap 15 (8 cut, incl. 6 of 7 admitted; inferred) | Score constant per source 85/30/20 (J); Lynas rank 14 score 20; SCCO rank 3 as 'eligible' with size unknown (D5); 6 theme-verified web names cut silently (D10); GGG/ETM rename not mapped; only ETM theme-verified. |
+| E3 | Result recorded in section 11 (Run E3). | see section 11 |
+
+---
+
+## 5. Per-company scorecard
+
+Scores are 0–10 on substance, not prose. 'run 1' is the first run on the then-deployed SHA; 'rerun' follows the day-2 fixes. ADBE and JPM are single runs. CFR has a before run only.
+
+| Company | Run | Report | Deployed | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | Mean |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| HON | before | e50cb267 | pre-campaign | 8 | 8 | 4 | 2 | 5 | 3 | 6 | 4 | 3 | 3 | 4 | 5 | 2 | 3 | 3 | 4.20 |
+| HON | after | f0be3c4f | 1b14000 | 8 | 8 | 7 | 7 | 6 | 7 | 6 | 4 | 3 | 5 | 4 | 5 | 4 | 6 | 6 | 5.73 |
+| CFR | before | f722d620 | pre-campaign | 9 | 8 | 5 | 6 | 5 | 4 | 7 | 5 | 3 | 3 | 3 | 5 | 7 | 4 | 4 | 5.20 |
+| ADBE | single run | 7b401826 | 1b14000 or ba44c87 | 8 | 5 | 6 | 4 | 3 | 5 | 4 | 2 | 1 | 2 | 3 | 3 | 7 | 3 | 4 | 4.00 |
+| JPM | single run | 30828043 | 1b14000 or ba44c87 | 8 | 5 | 5 | 3 | 2 | 2 | 5 | 2 | 2 | 2 | 3 | 3 | 5 | 2 | 3 | 3.47 |
+| PYPL | run 1 | f031b73b | fbb40e8 | 7 | 5 | 6 | 3 | 2 | 4 | 4 | 2 | 1 | 2 | 3 | 3 | 8 | 3 | 3 | 3.73 |
+| PYPL | rerun | 39905de8 | 95ba5f7 | 7 | 5 | 5 | 4 | 3 | 5 | 4 | 3 | 1 | 3 | 2 | 3 | 8 | 2 | 3 | 3.87 |
+| ANTO | run 1 | a68e6d31 | fbb40e8 | 6 | 2 | 5 | 3 | 2 | 3 | 3 | 2 | 1 | 3 | 1 | 2 | 1 | 1 | 2 | 2.47 |
+| ANTO | rerun | c971490d | 09836d0 | 6 | 2 | 6 | 3 | 2 | 3 | 4 | 3 | 2 | 5 | 4 | 3 | 7 | 3 | 4 | 3.80 |
+| CLLS | run 1 | 1df9100c | fbb40e8 | 4 | 2 | 5 | 1 | 1 | 3 | 3 | 1 | 1 | 1 | 3 | 2 | 6 | 1 | 1 | 2.33 |
+| CLLS | rerun | 686d71f6 | 09836d0 | 5 | 4 | 6 | 2 | 2 | 4 | 3 | 2 | 3 | 1 | 3 | 2 | 5 | 2 | 2 | 3.07 |
+| LIN | run 1 | 796b644d | fbb40e8 | 6 | 5 | 5 | 3 | 2 | 3 | 5 | 4 | 2 | 3 | 2 | 2 | 3 | 3 | 3 | 3.40 |
+| LIN | rerun | 6d4f1c43 | 95ba5f7 | 6 | 5 | 5 | 6 | 3 | 4 | 6 | 5 | 2 | 5 | 2 | 3 | 3 | 3 | 4 | 4.13 |
+
+Dimensions: 1 Identity; 2 Primary-source quality; 3 Factual correctness; 4 Latest-period coverage; 5 Extraction completeness; 6 Financial semantics; 7 Business model; 8 Sector-specific; 9 Competitive position; 10 Catalysts / current; 11 Risks / counter-thesis; 12 Evidence consistency; 13 Entity separation; 14 Executive synthesis; 15 Overall usefulness.
+
+**Before → after deltas (reruns only)**
+
+| Company | From → to | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | Mean |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| HON | e50cb267 → f0be3c4f | 0 | 0 | +3 | +5 | +1 | +4 | 0 | 0 | 0 | +2 | 0 | 0 | +2 | +3 | +3 | 4.20 → 5.73 (+1.53) |
+| PYPL | f031b73b → 39905de8 | 0 | 0 | -1 | +1 | +1 | +1 | 0 | +1 | 0 | +1 | -1 | 0 | 0 | -1 | 0 | 3.73 → 3.87 (+0.13) |
+| ANTO | a68e6d31 → c971490d | 0 | 0 | +1 | 0 | 0 | 0 | +1 | +1 | +1 | +2 | +3 | +1 | +6 | +2 | +2 | 2.47 → 3.80 (+1.33) |
+| CLLS | 1df9100c → 686d71f6 | +1 | +2 | +1 | +1 | +1 | +1 | 0 | +1 | +2 | 0 | 0 | 0 | -1 | +1 | +1 | 2.33 → 3.07 (+0.73) |
+| LIN | 796b644d → 6d4f1c43 | 0 | 0 | 0 | +3 | +1 | +1 | +1 | +1 | 0 | +2 | 0 | +1 | 0 | 0 | +1 | 3.40 → 4.13 (+0.73) |
+
+Read the deltas bluntly. HON gained on the deterministic snapshot. ANTO gained from one entity-firewall fix. LIN gained on currency. Cellectis gained on identity but stays near the floor. PayPal is flat: one new P0 cancels one real improvement. Competitive position and sector-specific analysis barely moved: no report scores above 3 on competitive position or above 5 on sector-specific analysis.
+
+**Score reasons**
+
+- **HON (before, e50cb267)**: YoY sign wrong (-2.7% vs +7.9%), segment profit shown as group operating margin, pre-consolidation EPS beside post-split price, Q3 2026 10-Q acquired but not extracted, Honeywell Aerospace (separate registrant since 2026-06-29) catalysts/risks filed as HON, A&D playbook from stale SIC 3724, synthesis omits the spin-off.
+- **HON (after, f0be3c4f)**: FIXED live: revenue +7.85% vs recast prior year (verified 37,442/34,717); net income -17.11% verified (4,729/5,705); Q3 2026 10-Q extracted (rev 4,994, NI 664); change-of-basis notice names the spin-off perimeter change AND the 1-for-2 consolidation; segment profit no longer shown as group operating margin. STILL WRONG: 2 HONA findings (Tempe plant; HONA standalone Q3 + $0.40 dividend) — H3 fix not yet deployed; backlog narrative mixes pre-spin $38.0bn/+12% with post-spin $18.8bn/+1% (new H10); 'newest disclosure is Q2' beside Q3 facts (H8); A&D playbook and A&D primes as peers (H4) for a post-spin automation company; chair cites an 'unresolved disagreement' about Q3 revenue that the facts do not support.
+- **CFR (before, f722d620)**: Net cash/OCF shown x1000 (bn instead of m); Jewellery €5bn sentence validated as a group figure manufacturing a 'conflict'; a November-2025 H1 interim labelled 2026-Q1; Q1 FY27 sales present but not in synthesis; current developments are noise; AML/regulatory risk lifted from single secondary pages; peers = Swatch only.
+- **ADBE (single run, 7b401826)**: The report identifies Adobe correctly and handles the non-calendar fiscal year correctly for the hard numbers. FY2025 (FYE 2025-11-28) and Q3 FY2026 (quarter ended 2026-08-28) figures from XBRL reconcile exactly, and the FY2025 YoY of 10.53% uses the right fiscal comparison. Beyond that snapshot the research is stale, generic or wrong. It presents the FY2025 three-segment structure as current, although Adobe merged into one reportable segment in Q1 FY2026. It treats the Sept-10 Q3 results as an upcoming 'checkpoint' and never shows Q3 YoY growth (+12.9%), ARR ($27.50B) or the raised FY2026 targets on the investor page. It misses the CEO succession (Chakravarthy, effective 2026-12-01), the CFO resignation, the Semrush acquisition, the DOJ settlement and $6.8B of 9M buybacks. Competitive analysis names Tempus AI as a closest peer, the peer table prints cash conversion as 140.69×, and F14 shows FY2026 revenue as reported before the year has closed. The research state contradicts itself: it says the newest filing is the 10-K, marks the latest-period headline question 'not acquired' while holding those figures, and labels 10-K figures 'press; filing figure differs'. Most of the 61 open gaps are disclosed in documents the platform already acquired but extracted 0 facts from. The root causes are no software playbook, a max_tasks stop, skipped 8-K disclosures and failed issuer-document extraction.
+- **JPM (single run, 30828043)**: This JPM report gets the identity right, and most individual figures it states (FY2025 revenue/NI/EPS, Q2 2026 NII, deposits, uninsured deposits, capital rollforward, ratings) reconcile exactly to the 10-K, the Q2 10-Q and XBRL. As bank research it fails. Its headline 'Total debt' (64,776m) is short-term borrowings only, with long-term debt of 435,206m silently dropped. Its executive synthesis and chair verdict lead with an industrial misreading of negative operating cash flow and a -259% 'cash conversion'. It blocks on missing EBITDA/FCF. The bank metrics that matter (provisions/NCOs, NPAs, CET1 for 2025, SLR, LCR, ROTCE, TBVPS, overhead ratio, NIM, segment results) are all in the 10-K/10-Q the platform acquired and indexed, yet the report asserts they were 'not acquired'. It misses the Q3 2026 results released 2026-10-13 because it ingested a 2026-10-20 note-offering 8-K as its 'results release'. The Q3 10-Q is not yet filed (live EDGAR, 2026-11-01, latest 10-Q 2026-08-06). Catalysts and risks are filled with FASB effective dates, J.P. Morgan SE governance, a stale interchange trial and a 2023 First Republic page. Meanwhile the Apple Card portfolio acquisition and the $4.6B Visa gain behind the Q2 profit are absent from the V3 research. A subsidiary's ICAAP leaks into the executive synthesis as group capital adequacy. Overall usefulness is about 3/10, on par with Honeywell before fixes.
+- **PYPL (run 1, f031b73b)**: The report gets PayPal's identity and every FY2025 XBRL figure and ratio right, and it correctly withholds total debt and keeps FCF and cash conversion. Beyond that it is thin and partly wrong. The latest Q3 2026 release (Item 2.02 EX-99.1) and the 10-Q were acquired and indexed, but the research state says the latest period's headline figures were 'not acquired'. Q3's direction (GAAP OI -8%, NI -14%), TPV, TM$, guidance and buybacks all go unreported, and stale Q2 product numbers from a chargeback blog stand in as the current picture. The legal picture is wrong. The 2022 class action is called 'resolved' though it is on appeal. The active 2026 Branded Checkout securities action is omitted. A gap claims no live regulatory action or litigation, despite FTC, CFPB, FCO and FCA proceedings in the 10-Q. Because the company is unclassified, no payments playbook ran: the synthesis frames customer balances as leverage, and the web follow-up searched for PayPal's 'nameplate capacity'. The CEO change, the buybacks that exceed FCF, and the €65bn BNPL forward-flow are missing. Usefulness is about where Honeywell stood before its fixes: right numbers, wrong or missing analysis.
+- **PYPL (rerun, 39905de8)**: This rerun keeps every FY2025 and Q3 XBRL figure correct and fixes two before-run errors: the red team's misdated cash and the 'resolved' class-action misreading, though the second is fixed only because litigation now does not appear at all. ADR-076 is mechanically live. The headline-figures question now searches the corpus and runs a recency pass, which brought in issuer-sourced Q3 active accounts (440M) and transactions (6,796M). The Q3 economics a payments analyst needs are still absent although the release is held: TPV $487.1B, TM$, the GAAP OI -8% / NI -14% decline, FCF, debt of $13.5B, the $1.5B buyback and the guidance table. The research state contradicts itself: one finding names the July release as the latest issuer disclosure, and a gap says no Q3 10-Q or press release is in evidence, beside findings that cite both. The worst new defect is a P0: the executive synthesis presents a Stripe/Advent $53B takeover offer 'rejected by the board' as fact, on a single unclassified web page that no filing supports. Litigation and regulation are falsely reported as absent, the chair dates Q2 third-party product growth to Q3, and the company remains unclassified, so no payments playbook ran. Net usefulness is unchanged at about 3: one important improvement is offset by a new fabricated-looking catalyst at the top of the report.
+- **ANTO (run 1, a68e6d31)**: The report identifies Antofagasta correctly. The Antofagasta-specific numbers it does state, mostly FY2024 revenue bridge items, net debt and capex, match the issuer's FY2024 results, and its Q3 2026 output and cash-cost findings are correct. But the financial core is two periods stale: FY2025 results and H1 2026 financials were never acquired, and the synthesis presents Dec-2024 net debt of $1.6bn as a 'manageable' current position when net debt was $3.97bn at 30 June 2026. A third of the ledger is other companies (South32, Lundin, Ecora). The risk section and the executive synthesis attribute Lundin Mining's Vicuña JV and stakeholder risks to Antofagasta, and the 'stable labour' claim is contradicted by the October 2026 Centinela strike. A manufactured conflict shows Antofagasta 2024 'revenue' as $156.6m (a volume variance) against South32's $8,296m. ADR-071 did not catch it, because each side states one amount and neither names a segment. The issuer's own IR pages are labelled 'reported in the press' and counted as zero issuer documents, so ADR-065's label fix does not reach non-US issuers without a sourced website. With no classification, no mining playbook ran: reserves, royalty, attributable basis, price sensitivity and the 2027 commissioning catalysts are all missing. Overall usefulness is below the pre-fix Honeywell baseline.
+- **ANTO (rerun, c971490d)**: The rerun fixes the two worst defects in the before report. No other company's facts are filed as Antofagasta's (0 of 40, against 10 of 35 before): the ADR-074 guard dropped a South32 statement and recorded an entity_ambiguous gap. The manufactured revenue conflict is gone: the '$156.6m' volume variance now sits beside the $6,613.4m revenue with no conflict. Risks and the synthesis are now Antofagasta's own (the Centinela strike and the royalty law), and the current catalysts are right (2027 commissioning, 2027 guidance 630-690kt). But the financial core is still FY2024. Group FY2025 and H1 2026 revenue, EBITDA and net debt were not extracted, and the synthesis still calls net debt 'manageable' from Dec-2024 data when it was $3.97bn at June 2026. A new scope error labels Centinela's segment capex ($1,414.0m for 2024, $2,478.1m for 2025) as Group capex. Q3 2026 production and the cost-guidance revisions dropped out when the fused Q2/Q3 statement was discarded. Issuer IR pages are still labelled press or 'Unclassified', with 0 findings counted from issuer documents. The company is still unclassified, so no mining playbook ran. Overall it is a real improvement (2 to 4), still well short of a usable report.
+- **CLLS (run 1, 1df9100c)**: The report researches Cellectis as a Euronext-only issuer (ALCLS·PA). It never links the Nasdaq ADS line (CLLS, 1:1) or CIK 1627281, so no 20-F or 6-K was read and the SEC path was skipped as 'not an SEC registrant'. Its 30 findings rest on old cellectis.com documents and trade press. The newest period is Q1 2024, ten quarters behind the Q2 2026 results filed on 2026-08-06. The historical figures it quotes are accurate against filings, but they are stale and several are labelled 'reported in the press' although they are filed interim financials. The single most material event, the 2026-09-14 exit from lasme-cel/eti-cel and pivot to in vivo .HEAL programs with a restructuring and an H2 2028 runway target, was ingested as a web document but never became a finding. The chair therefore describes a CAR-T company that no longer exists and asserts that 'no FY2024 results [are] available'. Biotech essentials are absent: cash ($169m), burn (~$21m per quarter), runway, pipeline stage, AZ's ~32%/40% control and convertible preferred dilution. The legacy council saw only EODHD price data and reads momentum as fundamentals. The entity firewall mostly holds (no other company's facts are filed as Cellectis's), and there is no ADS double-counting, but only because the ADS line is absent altogether. Overall the report would mislead a reader about strategy, pipeline and financial position.
+- **CLLS (rerun, 686d71f6)**: The rerun fixes the identity-to-SEC link. ADR-075 resolves CIK 1627281 by exact name and France domicile, fetches the correct latest annual report (20-F FY2025, filed 2026-03-20, 1010 chunks) and classifies the company as Biotechnology from SIC 2836, so the biotech playbook applies. The false chair statements of the first run ('no FY2024 results', 'solid cash position') are gone, but only because the council refused and the chair fell back to a deterministic 'insufficient data' that miscounts the ledger as 0 findings. The 20-F is used mainly for risk-factor boilerplate. No statement figure was extracted, and the blocking cash_runway question and four others ran zero tools, although the 20-F in the corpus states $208.7m of cash and current financial assets at 2025-12-31. The interim period is still stale: the quarterly slot accepts only 10-Q, so the H1 2026 6-K (and its iXBRL 6-K/A) was never read. The newest figures are 9M 2025. The 2026-09-14 strategic transformation is still missed even though F18 lists that 6-K by date. The report still describes a CAR-T company and shows lasme-cel peak sales for a program Cellectis has exited. A new entity error files Calyxt's 2022 merger and BioFactory risks as Cellectis's counter-thesis, and 'Current developments' shows a boat builder, a Sanofi quote page and Vertex. No ADS-ratio or currency-conversion error was introduced, but the ADS and its 1:1 ratio are never shown. Overall the report is less wrong than before but still not useful for an investor.
+- **LIN (run 1, 796b644d)**: The report gets Lindian's JORC reserve and resource, granted Malawi licences, 100% SARECO ownership, Carester offtake terms, Gerald termination and interest-only FY26 income right, from real ASX documents. Its central financial picture is stale. It presents A$108m cash (30 Jun) and 'a cash position sufficient to start operations', although the acquired Sep-2026 Appendix 5B shows A$45.1m after a A$62.8m one-quarter draw, and no runway is computed. The executive synthesis wrongly says Lindian already 'mines and sells' concentrate, when first concentrate is only targeted for December 2026. Entity separation is weak: two of Lindian's own AR statements are attributed to Iluka, seven Iluka findings answer Lindian's questions, and Iluka is called the largest non-China producer. The research state contradicts itself: the newest disclosure is said to be the AR and 'no quarterly report is present'; gaps deny offtakes and ownership that findings state; the memo says no issuer document was found; and the chair invents a revenue disagreement. The most material 2026 jurisdiction risk is absent: Malawi's raw-mineral export order, the draft beneficiation regulations, and the August suspension and parliamentary scrutiny. So are dilution (+59% shares) and the ~45% share-price fall since the April placement. Usefulness 3/10.
+- **LIN (rerun, 6d4f1c43)**: The rerun on 95ba5f7 is better than 796b644d on currency. It correctly names the 26-Oct Sep Quarterly and Appendix 5B as the newest disclosure, states 30-Sep cash of A$45,087k (from A$107,936k) and the quarter's A$24m project spend and A$28.8m SARECO payment, and gives the November energisation and December first-concentrate targets. The 'mines and sells' error is gone, but only because the editor failed (LLMJsonError) and the executive synthesis fell back to a first-finding-per-section list that says nothing about cash, timing or risk. The financial section is still wrong in substance: it presents koalagains' FY2025 figures (cash A$3.49m, equity A$58.4m, +0.98% shares) as the 'most recent fiscal year', computes no runway (5B 8.7 = 4.50 quarters, ~1.3 with capex), and a gap still says no post-placement cash exists. Entity separation is still broken: Lindian's own AR risk boilerplate is the counter-thesis, labelled 'Iluka's', and Iluka's zircon unit costs answer Lindian's unit-cost question without a name. Gaps still deny ownership, offtake volumes, cash and acquisition spend that findings state, and the V2 memo still says no issuer document exists. Malawi's export-order and beneficiation regime, the August suspension, Wei's retirement, the November meeting, dilution and the Stage 2 DFS are absent, and new tenement errors appeared. Usefulness 4/10 (was 3).
+
+**Sector-specific questions (spec section 3)**
+
+| Company | Run | Playbook applied | Captures the economics? | Evidence |
+|---|---|---|---|---|
+| HON | both | industrial_defense (from stale SIC 3724) | No | Post-spin Honeywell is an automation company. The A&D playbook and peers (BAE, Thales, LMT) ask the wrong questions. Backlog is present but mixes perimeters (H10). |
+| CFR | before | luxury | Partly | Region mix, DTC 77% and Jewellery/Watchmakers segment margins are present. Missing: price/mix, tourist/local demand, FX and gold sensitivity ('no research question assigned'). Peers are Swatch only. |
+| ADBE | single | none ('no playbook declares Software & IT Services') | No | 4 of 8 software variables absent (ARR, retention, operating leverage, SBC) and 3 partial. Web queries asked about 'nameplate capacity'; gaps asked about mines and permits. ARR $27.50B, RPO $22.16B, SBC and the no-10%-customer statement are all in acquired filings. |
+| JPM | single | banks_financials v1 (+ generic graph) | Partly, not enforced | The right core questions exist (capital, asset quality, NIM), but the generic cash-generation/EBITDA questions also ran and dominated the synthesis (fixed by ADR-069). Blocking questions were satisfied without their metrics (JPM-11). None of NIM, NCOs, NPAs, CET1 2025, ROTCE, overhead ratio, TBVPS or loan growth is in the report. |
+| PYPL | run 1 | none (unclassified, SIC 7389) | No | Variables yes 0 / partial 5 / no 4 of 9. No. No playbook was applied (unclassified SIC 7389). The generic template asked about plants, mines, nameplate capacity and offtake, and none of the payments drivers (TPV, take rate, TM$, loss rate, active accounts, customer-balance interest, BNPL funding) was a required question. |
+| PYPL | rerun | none (unclassified, SIC 7389) | No | Variables yes 2 / partial 4 / no 3 of 9. No. No playbook was applied (unclassified SIC 7389). The generic template still asks about permits, capacity and offtake, and none of TPV, take rate, TM$, loss rate or customer-balance interest is a required question. Active accounts and transactions arrived only because the recency pass happened to hit the ER operating-data table. |
+| ANTO | run 1 | none (unclassified, sector=None) | No | Variables yes 0 / partial 8 / no 4 of 12. No playbook was applied (company unclassified, sector=None), so none of the economically decisive copper-miner variables were asked for: reserves, mine-level C1, attributable basis, royalty, price sensitivity, or the 2027 project ramp. |
+| ANTO | rerun | none (unclassified) | No | Variables yes 1 / partial 8 / no 2 of 11. Still no playbook: the company is unclassified (sector=None) and the subject profile says 'commodities were not identified'. Reserves, mine-level economics, attributable basis, price sensitivity and the guidance trajectory were never asked for. The copper variables that do appear came from generic questions. |
+| CLLS | run 1 | none (unclassified; SecExchangeNotSupportedError) | No | Variables yes 0 / partial 3 / no 5 of 8. No playbook was applied: the company is unclassified despite SIC 2836 on its SEC registrant. The generic and mining templates chased capacity, permits and offtake, and captured none of the biotech variables (runway, burn, pipeline stage, partnerships, dilution, AZ control). |
+| CLLS | rerun | biotech v1 (SEC SIC 2836, via ADR-075) | In design only | Variables yes 0 / partial 2 / no 6 of 8. Partly in design, not in practice. The biotech playbook v1 now applies via SEC SIC 2836 and asks pipeline, R&D-intensity and dilution questions. But the blocking cash_runway question ran no tool, no 6-K is read, and mining follow-up templates still drive the web search, so runway, burn, pipeline stage and AZ control are all absent. |
+| LIN | run 1 | mining_critical_materials | Partly | Variables yes 1 / partial 5 / no 4 of 10. Partly. mining_critical_materials drove the JORC, licence and offtake questions well. But it has no Appendix-5B runway, capex or dilution metrics, and it let a commodity-mention profile pull in aluminium. The binding economic variables for a funded-but-burning developer (cash vs remaining capex, first-production date, export policy) are not captured. |
+| LIN | rerun | mining_critical_materials | Partly | Variables yes 4 / partial 4 / no 2 of 10. Partly. mining_critical_materials drives JORC, licence, offtake and timing questions, and ADR-076 now brings the 5B into the recency questions. But the playbook's cash, funding and balance-sheet questions are not recency-anchored and have no 5B runway, capex-to-complete or dilution metric, so the binding variable for a funded-but-burning developer (A$45m vs remaining spend) is still not in the Financial capacity section. A unit_costs question for a pre-production company invites a peer's costs. |
+
+---
+
+## 6. Independently verified claims
+
+Every claim was checked against the strongest available source: SEC filings and XBRL companyfacts, exchange filings (RNS, ASX announcements and Appendix 5B), the issuer's results announcement or annual report, and EDGAR submissions. The InvestingBuddy output was never used as validation.
+
+**Verdict totals**
+
+| Report | PASS | WRONG | STALE | WRONG_SCOPE | WRONG_PERIOD | WRONG_ENTITY | UNSUPPORTED | PARTIALLY_SUPPORTED | Total |
+|---|---|---|---|---|---|---|---|---|---|
+| HON before | 4 | 1 | 1 | 1 | 1 | 2 | 0 | 1 | 11 |
+| CFR before | 6 | 1 | 0 | 1 | 1 | 0 | 1 | 0 | 10 |
+| ADBE single run | 10 | 2 | 3 | 0 | 1 | 0 | 2 | 1 | 19 |
+| JPM single run | 16 | 2 | 4 | 1 | 1 | 1 | 1 | 3 | 29 |
+| PYPL run 1 | 9 | 4 | 0 | 0 | 1 | 0 | 2 | 4 | 20 |
+| PYPL rerun | 6 | 2 | 1 | 0 | 2 | 0 | 2 | 7 | 20 |
+| ANTO run 1 | 11 | 0 | 3 | 1 | 1 | 2 | 0 | 2 | 20 |
+| ANTO rerun | 13 | 0 | 2 | 2 | 0 | 0 | 1 | 2 | 20 |
+| CLLS run 1 | 4 | 1 | 9 | 0 | 0 | 0 | 0 | 3 | 17 |
+| CLLS rerun | 9 | 1 | 4 | 0 | 0 | 1 | 1 | 5 | 21 |
+| LIN run 1 | 11 | 3 | 3 | 0 | 0 | 3 | 0 | 1 | 21 |
+| LIN rerun | 13 | 2 | 2 | 0 | 2 | 2 | 0 | 2 | 23 |
+| ALL | 112 | 19 | 32 | 6 | 10 | 11 | 10 | 31 | 231 |
+
+**HON before (report e50cb267)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | Revenue FY2025 37,442 USD m | PASS | (see note) | 10-K 0000773840-26-000013 as filed; pre-Aerospace-spin perimeter, no basis note shown |
+| 2 | financial | Revenue YoY -2.74% (synthesis: 'slight decline') | WRONG | (see note) | FY2024 restated comparative in the same 10-K is 34,717 → +7.85%; system used FY2024 as originally filed (38,498, pre-Solstice). Fixed ADR-062 |
+| 3 | financial | Operating income 8,127 / group operating margin 21.71% | WRONG_SCOPE | (see note) | Tagged OperatingIncomeLoss is total segment profit; revenue − COGS − SG&A − R&D = 6,567. Fixed ADR-062 (withheld) |
+| 4 | financial | Diluted EPS 7.36 beside latest close 218.33 | WRONG_PERIOD | (see note) | EPS predates the 1-for-2 consolidation (Q3 2025 EPS restated 2.86→5.71); price is post-consolidation. Fixed ADR-062 (withheld) |
+| 5 | financial | OCF 6,408, capex 986, FCF 5,422, dividends 2,976 FY2025 | PASS | (see note) | 10-K XBRL; FCF = OCF − capex arithmetic correct |
+| 6 | financial | Net debt 22,452 = debt 34,939 − cash 12,487 | PARTIALLY_SUPPORTED | (see note) | arithmetic right on FY2025 balance sheet; Q3 2026 cash is 5,694 after the spin — stale as a current position |
+| 7 | business | Four reportable segments in 2025 (Aero, IA, BA, ESS) | STALE | (see note) | true for FY2025; Aerospace Technologies spun off 2026-06-29, ESS/Solstice Oct-2025; Q3 2026 10-Q has a recast perimeter |
+| 8 | business | AM business spun off as Solstice Advanced Materials effective 2025-10-30, discontinued ops | PASS | (see note) | 10-K |
+| 9 | current_event | Honeywell Aerospace $500M Tempe facility; backlog $18.2B +9% (F12/F18) | WRONG_ENTITY | (see note) | Honeywell Aerospace Inc. (HONA) is a separate registrant since 2026-06-29; presented as HON catalyst |
+| 10 | current_event | Honeywell Aerospace paid >$2M to settle FCA cybersecurity allegations (F44) | WRONG_ENTITY | (see note) | post-spin HONA matter, filed as HON risk |
+| 11 | risk | Repositioning cash spend $153M/189M/280M 2025/24/23 (F40) | PASS | (see note) | 10-K |
+
+**CFR before (report f722d620)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | FY2026 sales €22,420m with regional split APAC 7,204 / Americas 5,680 / Europe 5,264 / Japan 2,229 / MEA 2,043 (F12) | PASS | (see note) | FY26 results announcement |
+| 2 | financial | Net cash 8,496 bn EUR / OCF 4,880 bn EUR (Key Financials) | WRONG | (see note) | € million; x1000 scale error from prose 'billion'. Fixed ADR-064 |
+| 3 | financial | Operating profit €4.5bn, margin 20.0% FY2026 | PASS | (see note) | 4,492m / 20.0% |
+| 4 | financial | F30: a third document states FY2026 Group operating profit 'to €5 billion', conflicting | WRONG_SCOPE | (see note) | the €5bn sentence is Jewellery Maisons (5,037m); not a group conflict |
+| 5 | financial | Jewellery Maisons op. profit 5,037 (30.5%) vs 4,896 (31.9%) | PASS | (see note) | segment table |
+| 6 | business | DTC 77% of FY2026 sales (F7) | PASS | (see note) | annual report |
+| 7 | business | Reportable segments Jewellery Maisons, Specialist Watchmakers, Other (F2) | PASS | (see note) |  |
+| 8 | current_event | Q1 FY27 sales €6.3bn (Key Financials, 2027-Q1) | PASS | (see note) | 6,329m, +17% actual / +20% cc — not mentioned in synthesis |
+| 9 | current_event | F28 '2026-Q1: sales rose in all regions' source dated 2025-11-21 | WRONG_PERIOD | (see note) | a November 2025 document is the H1 FY26 interim, not a Q1 |
+| 10 | risk | Synthesis: 'regulatory investigations in the US and potential AML vulnerabilities' | UNSUPPORTED | (see note) | amlnetwork.org single secondary page; 2019 OFAC $334,800 settlement; law-firm solicitations ≠ regulatory investigation |
+
+**ADBE single run (report 7b401826)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | F36: Group revenue FY2025 (FYE 2025-11-28) was USD 23,769m | PASS | SEC XBRL companyfacts (facts_ADBE.json) Revenues 2024-11-30..2025-11-28 = 23,769,000,000; 10-K FY2025, acc. 0000796343-26-000003 (adbe-20251128.htm, filed 2026… | Exact match. |
+| 2 | financial | F31: FY2025 operating income USD 8,706m, net income USD 7,130m, operating margin 36.63%, net margin 30.00% | PASS | SEC XBRL companyfacts (facts_ADBE.json) OperatingIncomeLoss/NetIncomeLoss FY2025 | 8,706 and 7,130 match. 8,706/23,769 = 36.63% and 7,130/23,769 = 30.00%. |
+| 3 | financial | F27/F23: FY2025 OCF USD 10,031m, capex USD 179m, FCF USD 9,852m | PASS | SEC XBRL companyfacts (facts_ADBE.json) NetCashProvidedByUsedInOperatingActivities 10,031; PaymentsToAcquirePropertyPlantAndEquipment 179 | Matches. FCF is defined as OCF minus PP&E purchases. |
+| 4 | financial | F24/F28 and chair: total debt USD 6,210m 'entirely long-term', cash USD 5,431m; chair says the 'balance sheet is solid with long-term debt only' | STALE | SEC XBRL companyfacts (facts_ADBE.json) LongTermDebt 2025-11-28 = 6,210, DebtCurrent = 0; 10-Q Q3 FY2026, acc. 0000796343-26-000156 (adbe-20260828.htm, filed 2… | Correct as of 2025-11-28. As of 2026-08-28: current debt 1,597 (2.15% Feb-2027 notes $850M + 4.85% Apr-2027 notes $500M + $250M commercial paper) plus long-term debt 4,766 = 6,363. The 'long-term only' framing is no longer true. |
+| 5 | financial | F30/F38/F42: Q3 FY2026 (quarter ended 2026-08-28) revenue USD 6,760m, operating income 2,354, net income 1,827, cash 4,359, total assets 29,981, equity 11,764 | PASS | SEC XBRL companyfacts (facts_ADBE.json) 2026-05-30..2026-08-28; 8-K 2026-09-10, acc. 0000796343-26-000147, Ex.99.1 Q3 FY2026 release income statement and balan… | All six figures match. The period is labelled correctly as fiscal Q3 FY2026. |
+| 6 | financial | F41: FY2025 diluted EPS USD 16.70 | PASS | SEC XBRL companyfacts (facts_ADBE.json) EarningsPerShareDiluted FY2025 = 16.70 | Match. |
+| 7 | financial | F14: 'Trefis reports Adobe FY2026 total revenue 26.58 Bil and ending ARR growth 10.2%, per its Q4 2026 summary' (source dated 2026-01-10) | WRONG_PERIOD | 8-K 2026-09-10, acc. 0000796343-26-000147, Ex.99.1 Q3 FY2026 release 'updated FY2026 targets: Total revenue $26.576 billion to $26.626 billion ... Total Adobe… | FY2026 ends ~2026-11-27 and Q4 FY2026 has not been reported. 26.58 is the low end of the company's updated guidance, so a forecast is presented as an actual from a non-existent 'Q4 2026 summary'. |
+| 8 | business | F1: FY2025 segments Digital Media $17,649M, Digital Experience $5,864M, Publishing & Advertising $256M, total $23,769M, badged 'Reported in the press; a filing figure differs', source: secondary web | PASS | 10-K FY2025, acc. 0000796343-26-000003 (adbe-20251128.htm, filed 2026-01-15) MD&A 'Total revenue by reportable segment' | The figures match the 10-K exactly, so no filing figure differs. The provenance badge and the 'secondary web' source kind are wrong. |
+| 9 | business | F2/F40: FY2025 revenue by geography US $12,529M, other Americas $1,591M, EMEA $6,289M, APAC $3,360M; US FY2023 $10,460M, FY2024 $11,499M | PASS | 10-K FY2025, acc. 0000796343-26-000003 (adbe-20251128.htm, filed 2026-01-15) segment note 'Revenue by geographic area' | Exact match, but again badged 'press'. |
+| 10 | business | Executive synthesis and section 3: 'Adobe's revenue is primarily generated from its Digital Media and Digital Experience segments' | STALE | 10-Q Q3 FY2026, acc. 0000796343-26-000156 (adbe-20260828.htm, filed 2026-09-22) Note 15 Segment Information | 'In the first quarter of fiscal 2026, we combined our former segments—Digital Media, Digital Experience and Publishing and Advertising—into a single operating and reportable segment.' The report never mentions this change. |
+| 11 | business | F17: 'Platform peer set names Tempus AI (TEM) and GOOGL as closest comparables' | WRONG | 10-K FY2025, acc. 0000796343-26-000003 (adbe-20251128.htm, filed 2026-01-15) Item 1 'Competition' | Adobe describes its competitors as software, AI, OS, hardware and social media companies and AI/cloud-native entrants. Tempus AI is a precision-medicine diagnostics company and is not a comparable. |
+| 12 | business | F13/F15: cost of subscription revenue is mainly third-party hosting, data-center, network ops and AI inferencing | PASS | 10-Q Q3 FY2026, acc. 0000796343-26-000156 (adbe-20260828.htm, filed 2026-09-22) MD&A Cost of Revenue | 'Cost of subscription revenue consists primarily of third-party hosting services and data center costs, including ... AI inferencing costs.' |
+| 13 | business | F22: from FY2026 Adobe reports and guides on customer-group subscription revenue and Total Adobe ending ARR growth, plus total revenue and EPS | PASS | 10-Q Q3 FY2026, acc. 0000796343-26-000156 (adbe-20260828.htm, filed 2026-09-22) MD&A (Total Adobe ARR as the key metric); 8-K 2026-09-10, acc. 0000796343-26-00… | Consistent with the Q3 release format. |
+| 14 | current_event | F21 and executive synthesis: the Q3 FY2026 results event on Sept 10, 2026 is 'framed as a high-stakes checkpoint'; 'upcoming results framed as a critical checkpoint' | STALE | 8-K 2026-09-10, acc. 0000796343-26-000147, Ex.99.1 Q3 FY2026 release | The results were released on 2026-09-10: revenue $6.76B (+13% YoY), ARR $27.50B, AI-first ARR >150% growth, 1B MAU, FY2026 revenue and EPS targets raised. On 2026-11-01 this is a past event with known outcomes. It is also labelled 'management says' although it is aggregator framing. |
+| 15 | current_event | F19: 'Newest primary filing in evidence is Adobe's Form 10-K, accession 0000796343-26-000003' | WRONG | report core_filings.quarterly (10-Q 0000796343-26-000156, state ready, 217 chunks); 10-Q Q3 FY2026, acc. 0000796343-26-000156 (adbe-20260828.htm, filed 2026-09… | The 10-Q filed 2026-09-22 is newer, is in evidence, and is cited by F13, F15 and F38. |
+| 16 | current_event | (Omission) No mention of the CEO succession, CFO departure, Semrush acquisition or DOJ settlement | UNSUPPORTED | 8-K acc. 0000796343-26-000144 (Item 5.02, 2026-09-02); 8-K acc. 0000796343-26-000109 (Item 5.02, 2026-06-08); 10-Q Q3 FY2026, acc. 0000796343-26-000156 (adbe-2… | Anil Chakravarthy becomes CEO on 2026-12-01 and Narayen becomes Executive Chair. CFO Durn resigned effective 2026-06-15 (Steven Day is interim). Wadhwani left as President, Creativity & Productivity on 2026-09-27. Semrush closed on 2026-04-28 for $1.87B. The DOJ ROSCA action was settled in March 2026. None of these ap… |
+| 17 | risk | F46: 'Three shareholder derivative suits (Shah, Gervat, Sbriglio) were filed 2023-2024 in Delaware naming Narayen et al' | PARTIALLY_SUPPORTED | 10-K FY2025, acc. 0000796343-26-000003 (adbe-20251128.htm, filed 2026-01-15) and 10-Q Q3 FY2026, acc. 0000796343-26-000156 (adbe-20260828.htm, filed 2026-09-22… | Shah and Gervat were filed in D. Del. and consolidated. Sbriglio was filed in California Superior Court, not Delaware. Roy (SDNY, 2024) and Daniel (Cal. Sup. Ct., 2025) were also filed, so there are five derivative actions, now stayed. The securities class action over Figma-competition statements is omitted. |
+| 18 | risk | F6: adverse macro and geopolitical events such as trade disputes and tariffs cause spend scrutiny and delays in enterprise purchasing (cited as secondary web) | PASS | 10-K FY2025, acc. 0000796343-26-000003 (adbe-20251128.htm, filed 2026-01-15) Item 1A risk factors | The 10-K risk factors cite trade disputes, tariffs and longer enterprise sales cycles. The content is right, but it is labelled secondary web. |
+| 19 | risk | F48: Adobe is suspended from the U.S. Permanent Labor Certification (PERM) program, per press (beinsure.com, 2026-10-11) | UNSUPPORTED | No SEC filing after 2026-09-22 addresses it. The 10-Q predates the article. | Press-only and single-source. Appropriately hedged as 'per press', but the chair promotes it to a headline adverse factor. |
+
+**JPM single run (report 30828043)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | FY2025 Group revenue USD 182,447m; grew 2.75% YoY (F39/F40) | PASS | SEC XBRL companyfacts (facts_JPM.json) Revenues/RevenuesNetOfInterestExpense FY2025=182,447m, FY2024=177,556m; 10-K FY2025, acc 0001628280-26-008131 (filed 202… | Total net revenue, reported (not managed: managed FY2025 is higher by the FTE adjustment). |
+| 2 | financial | FY2025 net income 57,048m; diluted EPS 20.02 (F41) | PASS | SEC XBRL companyfacts (facts_JPM.json) NetIncomeLoss, EarningsPerShareDiluted; 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) consolidated results ta… | 10-K: NI 57,048 (2024: 58,471), EPS 20.02 (2024: 19.75). |
+| 3 | financial | Net income 21,155m, 'Q2 2026 Group' (Key financials, current period) | PASS | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) consolidated statements; XBRL 2026-04-01..2026-06-30 | The figure and the 3-month period are right. But the 10-Q says Q2 'included a $4.6 billion net gain related to Visa shares in Corporate and $1.0 billion of gains on certain equity investments'. The V3 report never says so, so a non-recurring quarter is shown as the current-period profit level. |
+| 4 | financial | Q2 2026 reported NII $25,511M; managed $25,622M (F33) | PASS | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) reported-to-managed reconciliation | Exact match. NII ex-Markets 23,677; net yield on IEA (managed) 2.40%. Neither is reported. |
+| 5 | financial | FY2024 reported NII $92,583M; managed $93,060M; excl. Markets $92,419M (F34, source a 2025-04-06 web page) | STALE | 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) NII table | The 2024 figures are correct. But the same 10-K table, already in the corpus, gives FY2025: reported 95,443, managed 95,868, ex-Markets 92,591. FY2025 NII is absent from the report. |
+| 6 | financial | Total debt 64,776 USD_m, annual FY2025 (Key financials, 'Regulatory filing') | WRONG | SEC XBRL companyfacts (facts_JPM.json) ShortTermBorrowings 2025-12-31 = 64,776m; 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) balance sheet: Long-… | The value is short-term borrowings only. Long-term debt of 435,206m is omitted (report.json not_reported_for_period: LongTermDebt 'latest tagged 2013'). Short-term plus long-term debt is about 499,982m, 7.7x the figure shown. |
+| 7 | financial | Q2 2026 total assets 5,015,069m; shareholders' equity 374,598m (F24) | PASS | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) balance sheet; XBRL Assets/StockholdersEquity 2026-06-30 | Exact. |
+| 8 | financial | FY2025 total liabilities 4,062,462m, equity 362,438m, 'liabilities exceeding eleven times equity' (F23) | PASS | SEC XBRL companyfacts (facts_JPM.json) Liabilities/StockholdersEquity 2025-12-31 | Arithmetic is right (11.2x). But this is industrial leverage framing: for a bank the relevant measures are SLR (5.8% at YE25) and CET1 (14.6%), and neither is reported for 2025. |
+| 9 | financial | Deposits $2,559.3bn at Dec 31, 2025 = 63% of total liabilities; loans-to-deposits 58% (2024: $2,406.0bn, 66%, 56%) (F30) | PASS | SEC XBRL companyfacts (facts_JPM.json) Deposits 2025-12-31 = 2,559,320m; 10-K selected metrics LDR 58/56 | 2,559.3/4,062.5 = 63.0%. Loans 1,493,429 / deposits = 58.4%. Sourced from a web copy although it is in the 10-K. Q2 2026 deposits (2,713,700) are not reported. |
+| 10 | financial | Firmwide estimated uninsured deposits $1,743.9bn at Jun 30, 2026 and $1,558.6bn at Dec 31, 2025 (F31) | PASS | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) Liquidity Risk Management, deposits | Verbatim. The uninsured share (about 64% of 2,713.7bn) is derivable but the report calls it a gap. |
+| 11 | financial | FY2025 dividends paid $16,625m; treasury stock net purchases $30,573m; common dividends declared $16,060m (F20) | PASS | SEC XBRL companyfacts (facts_JPM.json) PaymentsOfDividends FY2025 = 16,625m; 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) capital rollforward: divi… | Correct. The sentence mixes a cash-flow basis (paid, incl. preferred) with a capital-rollforward basis. Gross buybacks per the cash flow statement are 31,591. |
+| 12 | financial | H1 2026 dividends declared on common $8,100m; net treasury purchases $13,842m (F21) | PASS | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) CET1 capital rollforward, six months ended June 30, 2026 | Verbatim. |
+| 13 | financial | Firm CET1 ratio at Dec 31, 2024: 15.7% Standardized / 15.8% Advanced; requirements 12.3% / 11.5% (F44) | STALE | 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) capital table; 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) selected metrics; 3Q26 earnin… | The 2024 values are right but two periods old. Dec 31, 2025: 14.6% Std (requirement 11.5%). Jun 30, 2026: 14.2%. Sep 30, 2026: 13.9% Std / 14.1% Adv (estimated). The report's gap says 'no actual Firm CET1 ratio for 2025 appears in the evidence' despite the indexed 10-K. |
+| 14 | financial | FY2025 Group operating cash flow -147,782m, 'so operations consumed rather than generated cash' (F27; executive synthesis; chair) | PARTIALLY_SUPPORTED | SEC XBRL companyfacts (facts_JPM.json) NetCashProvidedByUsedInOperatingActivities FY2025 = -147,782m | The figure is right. The reading is wrong for a bank: OCF is dominated by changes in trading assets and liabilities and securities financing (trading assets rose from 802.9bn at YE25 to 1,062bn at Q2 26). It says nothing about cash generation. JPM's OCF was also negative in FY2024 (-42,012) and in H1 2026 (-237,044). |
+| 15 | financial | FHLB and discount-window borrowing capacity ~$457bn at 30 Jun 2026 vs ~$449bn at 31 Dec 2025 (F7) | PASS | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) Liquidity Risk Management, HQLA paragraph | Verbatim. The 10-Q adds that the Firm 'does not view this borrowing capacity ... as a primary source of liquidity', which the executive synthesis ignores. |
+| 16 | business | Managed on an LOB basis with three reportable segments: CCB, CIB, AWM; remaining activities in Corporate (F1) | PASS | 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) Business segments; 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) Business Segment & Corpor… | Correct (sourced from a web copy). |
+| 17 | business | At 31 Dec 2025: 86.6m CCB consumer customers, 7.4m small-business customers, 5,083 branches, 74.6m active digital, 61.7m active mobile (F3) | PASS | 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) p.67 CCB selected metrics | 86.6 / 7.4 / 5,083 / 74,646k / 61,736k: exact. |
+| 18 | business | FY2025 Card Services sales volume ex-commercial card $1,354.7bn; labelled 'Reported in the press; not from a filing' (F4) | PASS | 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) p.68 Card Services metrics | The figure is in the 10-K. The 'not from a filing' label is wrong (the source was the issuer's annual-report page). |
+| 19 | business | Q2 2026 10-Q routes revenue discussion to four segments: CIB (pp.27-34), AWM (pp.35-39), CCB and Corporate (pp.40-42) (F10) | PARTIALLY_SUPPORTED | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) Business Segment & Corporate Results (CCB section begins p.21) | There are three reportable segments plus Corporate, not four segments. CCB is on pp.21-26, not 40-42. The finding carries no figures. |
+| 20 | current_event | Current period is Q2 2026 (header, Key financials); latest-period headline question 'not settled - evidence not acquired' | STALE | 3Q26 earnings presentation EX-99, 8-K acc 0001628280-26-065616 (2026-10-13); earnings 8-K Item 2.02 acc 0001628280-26-065582 | Q3 2026 was released on 2026-10-13: NI $15.3B (+6% YoY), EPS $5.57, managed revenue $50.9B, NII $27.1B (+13%), NCOs $2.2B, reserve build $539mm, CET1 13.9%, ROTCE 20%, TBVPS $112.64, total assets $5,092B, common dividend $1.65/share. The platform ingested the 2026-10-20 debt-offering 8-K (acc 0001193125-26-426704, Ite… |
+| 21 | current_event | As of June 30, 2026 the parent's long-term issuer ratings: Moody's A1, S&P A, Fitch AA-, all Stable (F19) | PASS | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) Credit ratings table | Verbatim for JPMorgan Chase & Co. |
+| 22 | current_event | Benchmark-rate merchant claims against JPMorganChase: SDNY trial of several merchants' claims scheduled April 2026 (F50) | STALE | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) Note: Litigation, Interchange Litigation | This is Interchange Litigation, not 'benchmark-rate'. The Q2 10-Q, held by the platform, says: 'The parties resolved actions which were pending in the ... Southern District of New York and were scheduled to begin trial in April 2026.' The remaining opt-out actions are in N.D. Illinois with trial set for September 2026… |
+| 23 | current_event | Nov 2025 Fed/OCC/FDIC final rule reset GSIB eSLR buffers to 50% of Method 1 surcharge, capped at 1% for IDIs (F25); gap: 'eSLR excerpt states the amended buffers but not the compliance effective date' | PARTIALLY_SUPPORTED | 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) Key Regulatory Developments p.91 | The rule description is correct, but it is on p.91, not p.1. The same paragraph gives the effective date April 1, 2026, early-adopted by the Firm on January 1, 2026, so the gap is false. F26 (SLR 3% + 2% leverage buffer, from a 2025 web page) is superseded by this rule. |
+| 24 | current_event | Jamie Dimon says JPMorgan Chase could do $20 billion acquisition (CNBC, 2026-05-27; 'Current developments') | UNSUPPORTED | No SEC filing support; press only | Not verifiable from primary sources. It is shown, while the actual filed transaction (the Apple Card portfolio forward purchase commitment, 10-Q selected metrics note) is absent. |
+| 25 | risk | FY2025 10-K names cyber attack, data-management failures, safeguarding of personal information and vendor oversight as operational risks (F42) | PASS | 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) Risk Factors / Operational risk | Correct but generic. No credit, rate-sensitivity or concentration risk is quantified. |
+| 26 | risk | Executive synthesis: 'Risk disclosures highlight operational risks ... while capital adequacy is assessed under baseline and adverse scenarios' (cites F42, F43) | WRONG_ENTITY | F43 = J.P. Morgan SE 2024 management report (jpmorgan.com) | The ICAAP baseline/adverse statement belongs to J.P. Morgan SE, a German subsidiary. The executive synthesis presents it unlabelled as the Group's practice. The Group's capital adequacy is CET1 14.2% / SCB 2.5% / CCAR, per the 10-Q and 10-K. |
+| 27 | financial | Council/red team (tech page): 'Investment Banking revenue was $7.0 billion in Q2 2026, up 42%' | WRONG_PERIOD | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) CIB discussion | $7.0B up 42% is the six-month (H1 2026) figure. Q2 CIB Investment Banking revenue is about $3.9B (3Q26 3,098 + 804 per the 3Q26 slides). Firm IB fees Q2 = 3,208. |
+| 28 | financial | Council/red team (tech page): 'Noninterest revenue was $5.2 billion in Q2 2026, compared with $49 million in the prior year' | WRONG_SCOPE | 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) Corporate segment results; Firm consolidated income statement | That is Corporate segment NIR (incl. the $4.6B Visa gain). Firm NIR in Q2 2026 was 31,836 (2025: 21,703). |
+| 29 | financial | Council: FY2025 'return on equity 15.7%' and 'debt to equity 0.179 ... moderate leverage / conservative capital structure' | WRONG | 10-K FY2025, acc 0001628280-26-008131 (filed 2026-02-13) selected metrics (ROE 17%, ROTCE 20%); 10-Q Q2 2026, acc 0001628280-26-054343 (filed 2026-08-06) balan… | 15.7% = NI incl. preferred / period-end total equity. The issuer's ROE is 17% (NI to common / average common equity). D/E 0.179 uses short-term borrowings only. With LTD it is about 1.38x, and for a bank D/E is not the leverage measure anyway (SLR 5.8%). |
+
+**PYPL run 1 (report f031b73b)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | FY2025 Group revenue USD 33,172m (F29); +4.32% YoY (F30) | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) Revenues FY2025 33,172; FY2024 31,797 | 33,172/31,797-1 = 4.32%. |
+| 2 | financial | FY2025 OCF 6,416, capex 852, FCF 5,564 (F18/F23) | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) NetCashProvidedByUsedInOperatingActivities 6,416; PaymentsToAcquirePropertyPlantAndEquipment 852 | 6,416-852 = 5,564. This matches PayPal's non-GAAP FCF definition (OCF less purchases of P&E). |
+| 3 | financial | FY2025 operating margin 18.28% (OI 6,065) and net margin 15.78% (NI 5,233) (F25/F26); diluted EPS 5.41 (F32) | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) | OperatingIncomeLoss 6,065, NetIncomeLoss 5,233, EPS diluted 5.41. |
+| 4 | financial | FY2025 dividends paid USD 130m (F19) | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) PaymentsOfDividends 130 (FY2024: 0) | Correct, but buybacks of 6,052 in the same year (PaymentsForRepurchaseOfCommonStock) are omitted, and the gap says 'no evidence on buyback spend'. |
+| 5 | financial | At FY2025 long-term debt due after one year USD 9,987m vs cash 8,049m; 'long-term debt alone exceeded cash' (F20) | PARTIALLY_SUPPORTED | 10-Q 0001633917-26-000088 (filed 2026-10-27) balance sheet; debt note | The figures are correct (LongTermDebtNoncurrent 9,987; cash 8,049). The framing omits short-term debt 1,596 (total 11,583) and cash, cash equivalents and investments of $12,848m excluding customer funds (10-Q liquidity table). |
+| 6 | financial | Q3 2026 revenue 8,584, operating income 1,402, net income 1,073; total assets 81,622, equity 19,483, cash 7,160 (F31/F33, Key financials) | PASS | 10-Q 0001633917-26-000088 (filed 2026-10-27) income statement / balance sheet; 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) | All match. The report never states that these are down YoY: OI -8% (1,520), NI -14% (1,248), EPS 1.25 vs 1.30. |
+| 7 | financial | Red team: 'Cash and cash equivalents were $8.0 billion as of September 30, 2026' | WRONG_PERIOD | 10-Q 0001633917-26-000088 (filed 2026-10-27) balance sheet | 7,160 at 2026-09-30. 8,049 is 2025-12-31. |
+| 8 | financial | Red team: FCF declined 17.78% YoY while NI grew 26.19% (FY2025) | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) FY2024 OCF 7,450, capex 683, NI 4,147 | FCF 6,767 -> 5,564 = -17.78%; NI 4,147 -> 5,233 = +26.19%. |
+| 9 | financial | Red team: strategic investments $1.7B at 2026-09-30, down from $1.9B at 2025-12-31 | PASS | 10-Q 0001633917-26-000088 (filed 2026-10-27) market risk section | Verbatim: 'our strategic investments totaled $1.7 billion and $1.9 billion respectively'. |
+| 10 | business | Q2 2026 revenue is mostly transaction revenue; credit and balance interest smaller; no split figures (F1/F11) | PARTIALLY_SUPPORTED | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) 'Net Revenues by Type' table | The direction is right, but split figures ARE disclosed: Q2 transaction 7,832 / OVAS 850; Q3 7,711 / 873 (90%/10%). US 5,002 / international 3,582 in Q3. |
+| 11 | business | FY2025 TPV $1.79 trillion (F7, chargebacks911.com) | PASS | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) and Q2 2026 EX-99.1 (0001633917-26-000080) quarterly TPV tables | Q1'25 ~418.4 (derived) + Q2'25 443.5 + Q3'25 458.1 + Q4'25 475.1 ≈ $1.795T. Right number, but taken from a third-party page when the issuer discloses it. |
+| 12 | business | Q2 2026: 6.8 billion payment transactions, ~200 markets (F8) | PASS | Q2 2026 EX-99.1 (0001633917-26-000080): 'Payment transactions increased 8% to 6.8 billion' (6,750) | Correct but stale. Q3 2026 is 6,796 (+7%), with 440M active accounts. |
+| 13 | business | Q2 2026 branded checkout +2% FXN, BNPL volume +26%, Venmo TPV +14%, Pay with Venmo +44% (F4/F9/F34; chair synthesis) | UNSUPPORTED | Q2 2026 EX-99.1 and Q3 10-Q MD&A checked | Not in the issuer's Q2 release or the Q3 10-Q. It is call/deck commentary relayed by chargeback.io. The Q2 release only says 'Branded checkout has further stabilized'. Stale vs Q3 in any case. |
+| 14 | business | 10-K exhibit: 11 Nov 2025 Receivables Purchase Agreement, PayPal Europe/UK as sellers, Alps 2.0 Partners purchaser, BNY Mellon security agent (F15/F17/F36) | PARTIALLY_SUPPORTED | 8-K 0001193125-25-284822 (2025-11-17) Item 1.01 | PayPal (Europe) is the Seller and PayPal UK is a Receivables Manager. The report misses the substance: a forward-flow sale of up to €65bn of UK/European BNPL receivables over 28 months. |
+| 15 | current_event | Q3 2026 10-Q discloses derivative actions Goncalves (Mar 11 2026), LR Trust (May 6), Stan (May 11) in N.D. Cal., '10-Q page 1' (F13) | PARTIALLY_SUPPORTED | 10-Q 0001633917-26-000088 (filed 2026-10-27) Note 13, pp. 40-41 | Dates are correct. They are on pp. 40-41, not 'page 1'. They are the 'Branded Checkout Derivative Actions' (with Lovoi and Haliburton), tied to the 2026 Branded Checkout Securities Action, which the report never mentions. |
+| 16 | risk | The 10-Q 'resolves' the 2022 securities class action (F14); chair: 'a resolved securities class action' | WRONG | 10-Q 0001633917-26-000088 (filed 2026-10-27) Note 13 Legal proceedings | The PPH Securities Action was dismissed with prejudice on 2026-03-31, and plaintiffs appealed to the Third Circuit on 2026-04-30. It is pending, not resolved. A separate 2026 class action (In re PayPal Branded Checkout Securities Litigation, 3:26-cv-01589; amended complaint 2026-08-10) is active. |
+| 17 | risk | Gap: 'No evidence of any live regulatory action, fine, litigation, outage ... affecting PayPal' | WRONG | 10-Q 0001633917-26-000088 (filed 2026-10-27) Note 13 Regulatory proceedings (p.39) | FTC CIDs (2022, Aug 2025, and a NEW Sept 2026 CID on fees/purchase protection), CFPB CIDs (Reg E; PayPal Credit), German FCO proceeding, UK FCA Competition Act investigations (Mar 2026), plus the securities and derivative actions. |
+| 18 | current_event | Gap: 'No executive-officer disclosure in a primary filing' | WRONG | 8-K 0001193125-26-035860 (2026-02-03) Item 5.02; 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) quote attribution | Alex Chriss ceased as CEO on 2026-02-02. Enrique Lores (ex-HP CEO) became CEO on 2026-03-01, with Jamie Miller as interim. The acquired EX-99.1 quotes 'Enrique Lores President and CEO'. |
+| 19 | current_event | Current developments: 'PayPal (PYPL) Is In Acquisition Talks At $53 Billion' (yahoo, 2026-08-14); 'Stripe Eyes PayPal Acquisition' (2026-02-25) | UNSUPPORTED | EDGAR submissions (pypl_sub.json); 10-Q 0001633917-26-000088 (filed 2026-10-27) | No 8-K Item 1.01/8.01 merger agreement, no 425/S-4/SC 14D9, and no mention in the Q3 10-Q. These are rumour headlines shown without an 'unconfirmed' label. |
+| 20 | current_event | 'No dated forward guidance or catalyst calendar in evidence for 2026-Q3 or beyond' | WRONG | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) 'Financial Guidance' | Q4'26 GAAP EPS ~$1.37, FY'26 GAAP EPS ~$5.07 (reaffirmed; vs $5.41 FY25), FY'26 non-GAAP EPS raised to ~$5.60 from ~$5.38, dividend $0.14 payable 2026-12-24. |
+
+**PYPL rerun (report 39905de8)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | FY2025 Group revenue $33,172m (F28), +4.32% YoY (F29) | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) Revenues FY2025 33,172; FY2024 31,797 | 33,172/31,797-1 = 4.32%. |
+| 2 | financial | FY2025 OCF 6,416, capex 852, FCF 5,564 (F22/F32) | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) NetCashProvidedByUsedInOperatingActivities 6,416; PaymentsToAcquirePropertyPlantAndEquipment 852 | Matches the issuer's FCF definition. |
+| 3 | financial | FY2025 operating margin 18.28%, net margin 15.78%, diluted EPS 5.41 (F24/F25/F31) | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) | OI 6,065, NI 5,233, EPS 5.41. |
+| 4 | financial | Q3 2026 revenue 8,584 (F30), OI 1,402 and NI 1,073 (F33); total assets 81,622, cash 7,160, equity 19,483 — 'that quarter's evidence carries no debt figure' (F21) | PARTIALLY_SUPPORTED | 10-Q 0001633917-26-000088 (filed 2026-10-27) income statement / balance sheet; 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) | All figures match. But the 10-Q balance sheet shows short-term debt 2,533 and long-term debt 10,939, and the ER says 'Debt totaled $13.5 billion'. The YoY declines (OI -8% from 1,520; NI -14% from 1,248) are never stated. |
+| 5 | financial | F20: 'Borrowings are modest: long-term debt due after one year 9,987 at FY2025, against cash 8,049 and equity 20,256'; synthesis 'manageable leverage' | PARTIALLY_SUPPORTED | 10-K 0001633917-26-000024 XBRL (companyfacts); 10-Q 0001633917-26-000088 (filed 2026-10-27) balance sheet; 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsr… | The figures are right. 'Modest' omits FY2025 short-term debt 1,596 (total 11,583) and the Q3 rise to 13,472 (+16%). The issuer frames liquidity as cash, cash equivalents and investments of $15.1B vs debt of $13.5B at 2026-09-30. |
+| 6 | financial | F13 (web): Q3 2026 revenue grew 2% YoY to $8.58B, below consensus | PARTIALLY_SUPPORTED | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) results table: net revenues 8,584 vs 8,417 | +1.98% is correct. 'Below consensus' cannot be verified from a primary source. It cites yahoo although the issuer ER is held. |
+| 7 | financial | Red team: 'total assets $80.2B, liabilities $59.9B, equity $20.3B, cash and equivalents $8.0B, long-term debt $10.0B'; ROE 25.8% FY2025 | PASS | 10-K 0001633917-26-000024 XBRL (companyfacts) | All FY2025 values. 5,233/20,256 = 25.83% (year-end equity). The before-run misdating of $8.0B cash to 2026-09-30 is gone. |
+| 8 | financial | Finding (not rendered on the page, period_key 2026-Q3): at Dec 31 2025 funds receivable and customer accounts held commercial paper $4,229m fair value, MBS/ABS $3,831m, US government/agency $3,530m | WRONG_PERIOD | 10-Q 0001633917-26-000088 (filed 2026-10-27) Note 6 AFS table, Dec 31 2025 column | The values are right (CP fair value 4,230; 4,229 is amortized cost), but they are Dec-2025 comparatives tagged 2026-Q3. The Q3 values are CP 4,902, MBS 4,490, US government 4,206. |
+| 9 | business | F12: Issuer 8-K table, Q3 2026: 440M active accounts and 6,796M payment transactions | PASS | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) 'Unaudited Supplemental Operating Data' | Active accounts 440 (+1% YoY), transactions 6,796 (+7%). This is new versus the before run, and it is issuer-sourced. |
+| 10 | business | F3 (web): 439m active accounts at 30 Jun 2026, ~228m active monthly | PARTIALLY_SUPPORTED | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) operating data table (Jun 30 2026: 439) | 439 is right. The ~228m monthly actives figure is not issuer-disclosed. |
+| 11 | business | F1 (web): Q2 2026 revenue $8.7B, mostly transaction revenue | PARTIALLY_SUPPORTED | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) quarterly revenue table: Q2'26 8,682 | Right. The issuer split (transaction 7,832 / OVAS 850) is held but unused. |
+| 12 | business | F2/F35 (web): Q2 2026 branded checkout +2% FXN, BNPL +26%, Venmo TPV +14%, Pay with Venmo +44% | UNSUPPORTED | Q2 2026 EX-99.1 and Q3 10-Q MD&A checked (before eval) | This is call/deck commentary relayed by chargeback.io, and it is stale versus Q3. |
+| 13 | business | F36: PayPal (Europe) and PayPal UK are sellers/managers under the 11 Nov 2025 RPA with Alps 2.0 Partners as purchaser | PASS | 8-K 0001193125-25-284822 (2025-11-17) Item 1.01 | The roles are now correct. The substance is still missing: a forward-flow sale of up to €65bn of UK/EU BNPL receivables over 28 months. |
+| 14 | current_event | Executive synthesis: 'A recent acquisition offer was rejected by the board as inadequate'; F14: 'Stripe/Advent's $60.50-per-share, $53B offer for PayPal was rejected by the board as inadequate on July 20, 2026' (startupfortune.com) | UNSUPPORTED | EDGAR submissions (pypl_sub.json): no 8-K 7.01/8.01, no SC 14D9 (EDGAR type search empty), no 425, after May 2026; Q2 10-Q 0001633917-26-000082 (filed 2026-07-… | A single unclassified web page, presented without any 'reported/unconfirmed' label. The before run's rumour headline dated talks to 2026-08-14, after this alleged 'rejection'. |
+| 15 | current_event | F10: 'Issuer's own latest disclosure in evidence is a press release dated 2026-07-28' | STALE | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27); 10-Q 0001633917-26-000088 (filed 2026-10-27) | The Q3 EX-99.1 (2026-10-27) and 10-Q are held and cited by F12, F21, F30 and F33 of the same report. |
+| 16 | current_event | F15 (web, 'management says'): Q3 results raised FY26 earnings guidance and gave Q4 guidance above expectations | PARTIALLY_SUPPORTED | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27) 'Financial Guidance' | The non-GAAP EPS guidance was raised (~$5.60 from ~$5.38) and the TM$ guidance raised. FY'26 GAAP EPS ~$5.07 was REAFFIRMED (vs $5.41 FY25). Q4 GAAP EPS ~$1.37 vs $1.53 PY. 'Above expectations' cannot be verified. |
+| 17 | current_event | Chair key point: 'Q3 2026 revenue grew modestly by 2% YoY ... with raised FY26 earnings guidance, but product volume growth is mixed with slow branded checkout growth (+2%) versus stronger BNPL (+26%) and Venmo TPV (+14%)' | WRONG_PERIOD | 8-K 0001633917-26-000086 EX-99.1 (pypl3q-26earningsrelease.htm, 2026-10-27); Q2 product figures from chargeback.io (2026-09-01) | The product growth figures are Q2 third-party figures spliced into a Q3 sentence. The ER gives no Q3 branded-checkout/BNPL figures. |
+| 18 | current_event | Current developments: 'PayPal Cuts Thousands of Jobs, Bets on AI and Lifts Profit Outlook' (yahoo, 2026-10-27) | PARTIALLY_SUPPORTED | 10-Q 0001633917-26-000088 (filed 2026-10-27) Note 17 '3Q 2026 Plan' and MD&A | A global workforce reduction ($152m charges in Q3; ~$340m annualized savings) is disclosed. The headcount 'thousands' is not in the 10-Q. |
+| 19 | risk | Gaps: 'No evidence in the corpus on litigation, regulatory action, labour ...' and 'No evidence in the retrieved items of any live dispute, regulatory action, fine ...' | WRONG | 10-Q 0001633917-26-000088 (filed 2026-10-27) Note 13 (Regulatory proceedings; Legal proceedings) | FTC CIDs (Feb 2022, Aug 2025, Sept 2026), CFPB CIDs, German FCO, UK FCA; PPH Securities Action on appeal; 2026 Branded Checkout Securities Action; Branded Checkout Derivative Actions. |
+| 20 | risk | Gap: 'No issuer-own Q3 2026 filing, 10-Q or press release appears in the evidence' (labelled 'Not acquired by the platform') | WRONG | report core_filings.quarterly (10-Q 0001633917-26-000088, 357 chunks, ready); Documents read: 10-Q and 8-K 0001633917-26-000086 results_release | Both were acquired and indexed, and are cited by F12/F21/F30/F33. |
+
+**ANTO run 1 (report a68e6d31)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | F14: Antofagasta FY2024 revenue $6,613.4m (2023: $6,324.5m) | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) p1 table + revenue reconciliation | Revenue $m 6,613.4 vs 6,324.5 (+5%). Stale as the 'latest': FY2025 revenue $8,620.3m (FY25 RNS p1). |
+| 2 | financial | F11/F12: 2024 by-product revenue $1,013.2m vs $981.2m (+$32.0m, 3.3%); gold revenue $446.8m vs $406.9m | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) revenue analysis | 'to $1,013.2 million in 2024, compared with $981.2 million in 2023'; 'Revenue from gold sales (net of TC/RC) was $446.8 million (2023 - $406.9 million)'. Labelled 'reported in the press' although the source is the issuer's own results. |
+| 3 | financial | F13: 2024 copper sales volumes fell 2.9% to 607,100 t (2023: 625,300 t), reducing revenue by $156.6m | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) revenue analysis | Matches exactly. $156.6m is a volume VARIANCE in the revenue bridge, not a revenue level. |
+| 4 | financial | Conflict gap: 'Sources disagree on revenue (2024): US$8,296m (south32.net) vs $156.6m (aminerals.cl, antofagasta.co.uk)' | WRONG_ENTITY | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) revenue bridge 'Decrease in copper sales volumes (156.6)' | US$8,296m is South32's FY24 underlying revenue. $156.6m is Antofagasta's volume variance. Antofagasta's 2024 revenue was $6,613.4m. There is no disagreement. |
+| 5 | financial | F26: at 31 Dec 2024 cash and liquid investments $4,316.3m, borrowings $5,945.4m, net debt $1,629.1m; 22% due <1y, 11% 1-2y, 47% >5y | PARTIALLY_SUPPORTED | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) going-concern note and net debt table | 4,316.3 / 5,945.4 / 1,629.1, 22% and 11% match. The 47% beyond five years is not in the RNS (possibly in the AR maturity table, not verified). |
+| 6 | financial | Executive synthesis/chair: 'maintains ... a manageable net debt position'; 'net debt around $1.6bn and cash ... $4.3bn' (presented as current) | STALE | antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26-vf.pdf (H1 2026 half-year report, 13 Aug 2026) net debt table p.~30; antofagasta.co.uk/media/4894/… | Net debt was $2,749.5m at 31 Dec 2025 and $3,966.1m at 30 Jun 2026 (cash $4,160.1m, borrowings $8,126.2m); net debt/EBITDA was 0.68x. The $1.6bn figure is from Dec 2024. |
+| 7 | financial | F22: 2024 development capex $963.1m, of which $877.6m Centinela Second Concentrator | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) capex section | '$963.1 million of development capital expenditure ($877.6 million related to Centinela Second Concentrator project)'. Total 2024 capex was $2,414.9m; 2025 capex $3,684.5m. |
+| 8 | financial | F24: dividend policy at least 35% of underlying net earnings; 2024 payout 50%, $309.6m | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) dividends | 31.4c total = $309.6m, payout 50%. Later data omitted: FY2025 64.6c (50% payout), H1 2026 interim 30.1c (35%). |
+| 9 | financial | F28: FY24 operating cash flow $3,276.2m vs $2,414.9m PP&E purchases | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) cash flow statement | Cash flows from continuing operations 3,276.2; purchases of PP&E (2,414.9). |
+| 10 | business | F15: H1 2026 copper output 285.0kt: Los Pelambres 133.8kt, Antucoya 37.0kt, Zaldívar 17.0kt | WRONG_SCOPE | antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26-vf.pdf (H1 2026 half-year report, 13 Aug 2026) production table | The figures match: group total 284.9kt, LP 133.8, Antucoya 37.0. But Zaldívar 17.0kt is labelled by the issuer 'attributable basis - 50%' while the LP (60%-owned) and Antucoya (70%) figures are 100% basis. The report mixes bases without saying so and omits Centinela (97.1kt). period_key=None. |
+| 11 | business | F9: Q3 2026 group copper output 151.9 Kt (vs 142.0 Kt), gold 44.3 koz, molybdenum 2.9 Kt | PASS | antofagasta.co.uk/investors/news/2026/q3-2026-production-report/ (+PDF /media/4976/20261015_aplc26q3prodreport-oct26-vf.pdf, 15 Oct 2026) group table | Q3 151.9 vs Q2 142.0 (+7.0%); gold 44.3 koz; Mo 2.9kt. YTD 436.9kt (-8.3%). |
+| 12 | business | F16: 'Peer Antofagasta reports 664,000 t copper produced in 2024 and held costs flat' | PARTIALLY_SUPPORTED | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) p2 | 664,000 t is correct, and net cash costs of $1.64/lb were 'broadly in line with 2023'. The subject is mislabelled a 'peer', which is an entity-framing error. |
+| 13 | business | F10: 2024 copper sales fell 35,400 t at Centinela on lower grades at Centinela Concentrates | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) revenue analysis | '(35,400 tonne decrease), as a result of lower grades at Centinela Concentrates and temporary shipment delays'. |
+| 14 | current_event | F7 (period 2026-Q2): 'Antofagasta raised 2026 gross cash cost guidance to US$2.60-2.70/lb, citing fuel and consumables above Jan 2026 levels' | WRONG_PERIOD | antofagasta.co.uk/investors/news/2026/q2-2026-production-report/ (Q2 2026 production report, ~15 Jul 2026); antofagasta.co.uk/investors/news/2026/q3-2026-produ… | The Q2 report raised the guidance only to $2.40-2.60/lb, citing 'fuel prices and key consumables remaining above the levels seen in January 2026'. The rise to $2.60-2.70/lb came in the Q3 report of 15 Oct 2026 ('reflecting global diesel prices ... previous guidance range was $2.40-2.60/lb'). F7 joins the Q3 figure to… |
+| 15 | current_event | F8: Q3 2026 gross cash cost US$2.73/lb, down 7% q/q; net cost guidance held at US$1.15-1.35/lb | PASS | antofagasta.co.uk/investors/news/2026/q3-2026-production-report/ (+PDF /media/4976/20261015_aplc26q3prodreport-oct26-vf.pdf, 15 Oct 2026) | $2.73/lb, -7.1% vs Q2 $2.94; 'Net cash cost guidance remains unchanged at $1.15-1.35/lb'. The finding omits Q3 net cash cost $1.38/lb. period_key=None (should be 2026-Q3). |
+| 16 | current_event | F20: 2026 capex guidance unchanged at $3.4 billion; copper output expected to rise sequentially through H2 2026 | PASS | antofagasta.co.uk/investors/news/2026/q2-2026-production-report/ (Q2 2026 production report, ~15 Jul 2026); antofagasta.co.uk/investors/news/2026/q3-2026-produ… | Correct, though the capex excludes Zaldívar. Omitted: on 13 Aug 2026 the 2026 production guidance was cut from 650-700kt to 625-655kt after the July Los Pelambres weather shutdown; the Q3 report adds 2027 guidance of 630-690kt. |
+| 17 | current_event | F18: 'Most recent disclosure referenced is the 2024 Annual Report and Financial Statements' | STALE | antofagasta.co.uk/media/4894/20260217-anto-fy25-results-rns.pdf (FY2025 results RNS, 17 Feb 2026); antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26… | The FY2025 results came out 17 Feb 2026 (and the 2025 AR is on the IR site), H1 2026 on 13 Aug 2026 and Q3 2026 on 15 Oct 2026. The report itself cites Q2/Q3 2026 material. |
+| 18 | risk | Exec synthesis + F35: 'labor relations appear stable with recent agreements and minimal strike impact' | STALE | antofagasta.co.uk/investors/news/2026/q3-2026-production-report/ (+PDF /media/4976/20261015_aplc26q3prodreport-oct26-vf.pdf, 15 Oct 2026) Corporate update | 'Following the end of the quarter, two workers' unions at Centinela representing approximately 20% of the own employee workforce declared a strike, and negotiations are continuing.' The FY25 RNS also flagged three Centinela labour agreements expiring in 2026. |
+| 19 | risk | Exec synthesis: 'Risks include governance challenges in joint ventures and stakeholder opposition' (cites F30, F31) | WRONG_ENTITY | F30/F31 evidence = lundinmining.com 2026-06-17 | These are Lundin Mining's risks (the Vicuña JV with BHP). Antofagasta's own JV is Zaldívar (50% with Barrick, FY25 RNS note), which the report never discusses as a risk. |
+| 20 | risk | F33: independent-director committee oversaw a related-party purchase of Chilean mining properties from Mineralinvest Establishment (Luksic entity) | PASS | antofagasta.co.uk/media/4894/20260217-anto-fy25-results-rns.pdf (FY2025 results RNS, 17 Feb 2026) related-party note | In Jan 2025 the Group agreed to acquire Mineralinvest's 49% interest in Antomin Investors; the properties were demerged into Antomin Volcanes (51/49). |
+
+**ANTO rerun (report c971490d)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | F1: Antofagasta 2024 total revenue $6,613.4m; copper sales $5,405.3m, by-products $1,013.2m | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) p1 table and revenue analysis | Revenue 6,613.4. 'Revenue from copper concentrate and copper cathode sales ... to $5,405.3 million'. By-products 1,013.2. Stale as the latest: FY2025 revenue was $8,620.3m and H1 2026 $4,479.0m. |
+| 2 | financial | F12: 2024 copper sales volumes fell 2.9% to 607,100 t, 'decreasing revenue by $156.6 million' | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) revenue analysis (iii) Copper volumes | Exact match. It is a change amount. No conflict is built from it this time. |
+| 3 | financial | F21: 'Antofagasta 2024 capex $1,414.0m, incl $877.6m on the Centinela Second Concentrator Project' | WRONG_SCOPE | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) p23-24 capex paragraph and segment note; antofagasta.co.uk… | $1,414.0m is CENTINELA's 2024 capex ('expenditure of $1,414.0 million at Centinela'). Group 2024 capex was $2,414.9m. The $877.6m CSC figure is correct. |
+| 4 | financial | F30: 'Antofagasta capex was US$2,478.1m vs US$1,414.0m in 2024, incl. US$1,635.8m development and US$1,327.1m Centinela Second Concentrator' (no period stated) | WRONG_SCOPE | antofagasta.co.uk/media/4894/20260217-anto-fy25-results-rns.pdf (FY2025 results RNS, 17 Feb 2026) Centinela financial performance, 'Capital expenditure was $2,… | This is Centinela's 2025 capex. Group 2025 capex was $3,684.5m. period_key None, and the page never says 2025. |
+| 5 | financial | F26/F29: net debt $1,629.1m at 31 Dec 2024 (2023: $1,159.8m); borrowings $5,945.4m, cash $4,316.3m; net debt/EBITDA 0.48 | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) net debt table and headline table | All match. These are the only net-debt figures in the report. Net debt was $2,749.5m at Dec 2025 (0.53x) and $3,966.1m at Jun 2026 (0.68x). |
+| 6 | financial | Executive synthesis: 'Antofagasta maintains ... a strong balance sheet and manageable net debt levels' (F23-F27), as current | STALE | antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26-vf.pdf (H1 2026 half-year report, 13 Aug 2026) net debt table; antofagasta.co.uk/media/4894/202602… | Every cited finding is dated 31 Dec 2024. At 30 Jun 2026 net debt was $3,966.1m (2.4x the cited level), with cash of $4,160.1m. |
+| 7 | financial | F31: net cash cost $1.22/lb in H1 2026 vs $1.32/lb in H1 2025 | PASS | antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26-vf.pdf (H1 2026 half-year report, 13 Aug 2026) cash cost table | 'net cash costs were 8% lower on a year-on-year basis at $1.22/lb'. H1 2025 was 1.32. period_key None (should be 2026-H1). |
+| 8 | financial | F32: group realised copper price $6.19/lb in H1 2026 against a $5.93/lb market price | PASS | antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26-vf.pdf (H1 2026 half-year report, 13 Aug 2026) revenue analysis (i) | Realised $6.19/lb (H1 2025 $4.55). LME average $5.93/lb. |
+| 9 | financial | F28: FY2024 operating cash flow $3,276.2m vs PP&E purchases $2,414.9m (2023: $3,027.1m vs $2,129.2m) | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) cash flow and capex section | Matches. Stale: FY2025 OCF was 4,252.9 and capex 3,684.5. |
+| 10 | business | F8/F9: Centinela produced 240,400 t in FY2025 (+7%); cash costs $2.27/lb before by-products, net $0.75/lb | PASS | antofagasta.co.uk/media/4894/20260217-anto-fy25-results-rns.pdf (FY2025 results RNS, 17 Feb 2026) Centinela section | 'Total year copper production was 7% higher ... at 240,400 tonnes'. Cost table 2.27 / 0.75 (2024: 2.60 / 1.60). The run has no group output total. |
+| 11 | business | F25: Jan 2025 agreement to buy Mineralinvest's 49% of Antomin's Centinela District properties for $80m; Mar 2025 Los Pelambres completed a $2bn financing tied to its water assets | PASS | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) post-balance-sheet events; antofagasta.co.uk/media/4894/20… | Both match. |
+| 12 | business | F7: 'Centinela Second Concentrator adds 95 ktpd processing capacity at $4.4bn, 2024-2027' (management says) | PARTIALLY_SUPPORTED | antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26-vf.pdf (H1 2026 half-year report, 13 Aug 2026) projects table footnote 2 | '$4.4 billion ... is the figure provided on announcement in December 2023, which was subsequently reduced by $380 million' after the water transport agreement. The 95 ktpd capacity was not found in the cached RNS text, so it is not verified. The 2027 completion is correct. |
+| 13 | business | F14: peer names in evidence: South32, Lundin Mining's Candelaria, Capstone's Santo Domingo | PASS | Peer context only (south32.net, lundinmining.com, ecoraroyalties.com) | Labelled as peers, in competitive_position. It is not attributed to Antofagasta. |
+| 14 | current_event | F20: Antofagasta introduced 2027 group copper guidance of 630,000-690,000 t, above its 2026 range | PASS | antofagasta.co.uk/media/4976/20261015_aplc26q3prodreport-oct26-vf.pdf (Q3 2026 production report, 15 Oct 2026) headline | '2027 PRODUCTION GUIDANCE OF 630,000–690,000 TONNES'. The 2026 range is 625-655kt. Cited via a yahoo.com relay, not the issuer. |
+| 15 | current_event | F15/F19: CSC on track and on budget, construction completion 2027; CSC and LP expansion due to complete in 2027 | PASS | antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26-vf.pdf (H1 2026 half-year report, 13 Aug 2026); antofagasta.co.uk/media/4976/20261015_aplc26q3prod… | Commissioning of the CSC and the LP projects completes in 2027. |
+| 16 | current_event | F15: 'Most recent disclosure covers full-year 2025' | STALE | antofagasta.co.uk/media/4972/20260813_antofagasta-hy26-aug26-vf.pdf (H1 2026 half-year report, 13 Aug 2026); antofagasta.co.uk/media/4976/20261015_aplc26q3prod… | H1 2026 (13 Aug 2026) and Q3 2026 (15 Oct 2026) were published, and the ledger itself cites both (F20, F31, F32, F39). |
+| 17 | current_event | Q3 2026 production (before: F9 151.9kt) and the 2026 guidance revisions | UNSUPPORTED | antofagasta.co.uk/media/4976/20261015_aplc26q3prodreport-oct26-vf.pdf (Q3 2026 production report, 15 Oct 2026) group table | The report states no Q3 2026 output (151.9kt; YTD 436.9kt, -8.3%), no FY26 guidance of 625-655kt and no gross cost guidance of $2.60-2.70/lb. The mixed Q2/Q3 statement was discarded, and nothing replaced it. The guidance cut appears only as an SMM headline in Current developments. |
+| 18 | risk | F39 + synthesis: two unions representing about 20% of Centinela's direct workforce declared a strike after quarter-end; talks continue | PASS | antofagasta.co.uk/media/4976/20261015_aplc26q3prodreport-oct26-vf.pdf (Q3 2026 production report, 15 Oct 2026) corporate update | 'two workers' unions at Centinela representing approximately 20% of the own employee workforce declared a strike, and negotiations are continuing'. This fixes the earlier 'stable labour' claim. |
+| 19 | risk | F40 + synthesis: Chile's Mining Royalty Law (2024): 1% ad valorem plus 8-26% on margin, up to 46.5% above 80,000 MT; 'may impact costs' | PARTIALLY_SUPPORTED | antofagasta.co.uk/media/4750/20250218_aplc24fyresults-dec24-vf.pdf (FY2024 results RNS, 18 Feb 2025) taxation ('Centinela and Antucoya have tax stability agree… | The law's structure is broadly right (46.5% is the maximum potential tax burden, not a rate 'above 80,000 MT'). It omits that only Los Pelambres pays the new royalty before 2030. The 2025 mining tax had a net impact of $218.3m (7.0pp ETR). |
+| 20 | risk | F36: independent-director committee oversaw (2024) and approved (2025) the purchase of Centinela District properties from Mineralinvest Establishment (Luksic) | PASS | antofagasta.co.uk/media/4894/20260217-anto-fy25-results-rns.pdf (FY2025 results RNS, 17 Feb 2026) related-party note | Matches. |
+
+**CLLS run 1 (report 1df9100c)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | [reported in the press; not from a filing] Cellectis Group revenue $4.5m for the three months ended March 31, 2024 vs $0.1m for the same 2023 period (finding 2, scope group). | STALE | 6-K 0000950170-24-065225 EX-99.1 (Q1 2024 interim FS), statement of operations | Revenues 4,528 vs 139 ($k): the values are correct. But it is a filing, not press, and the period is ten quarters old. The latest is H1 2026 revenue $11.0m vs $27.4m (6-K 2026-08-06). |
+| 2 | financial | Going concern: $123.0m cash and cash equivalents at March 31, 2024, plus the $140m AZ SIA equity investment received May 3, 2024 (finding 17, labelled press). | STALE | 6-K 0000950170-24-065225 EX-99.1, note 'Going concern'; balance sheet cash 122,971 | Correct for Q1 2024. Current figures: $169m cash, equivalents and fixed-term deposits at 2026-06-30, runway into Q4 2027 (Q2 2026 release), and a targeted extension into H2 2028 after the restructuring (6-K 2026-09-14). |
+| 3 | financial | SIA derivative remeasured to $64.0m at Mar 31, 2024, and a $21.3m fair-value increase in financial income (findings 11-12, domain 'catalysts'). | STALE | 6-K 0000950170-24-065225 EX-99.1, notes 11.1 and 4.4 | The values match the filing. It is a non-cash 2024 accounting gain mis-filed as a catalyst, and the instrument settled in May 2024. |
+| 4 | financial | Cash and equivalents $261.0m plus $41.2m current financial assets at Sep 30, 2020 (finding 15, labelled press). | STALE | 6-K 0001193125-20-286910 EX-99.1 (Q3 2020 interim report), Liquidity management | The exact text matches. It is six years old and its Group scope still consolidated Calyxt, so it is not comparable with today's perimeter. |
+| 5 | financial | H1 2024 capital increase of 28,000,000 shares added $1,514k share capital and $139,256k premium (findings 4/16). | PARTIALLY_SUPPORTED | 20-F FY2025 0001193125-26-116428 (issuance of 10,000,000 Class A + 18,000,000 Class B Preferred Shares to AZ Holdings, May 3 2024) | $140m in total is right. But these are AstraZeneca convertible preferred shares, not ordinary shares. That is the core dilution and control fact (AZ ~44% as-converted), and the report omits it. |
+| 6 | financial | Latest close 1.038 EUR (2026-10-30). 52-week range 0.9385–4.57. Returns -57.39% over 3 months and -68.1% over 6 months. | PARTIALLY_SUPPORTED | EODHD aggregator (report). It cannot be verified under the evaluation fetch rules (SEC/cellectis.com only). | The direction is consistent with the 2026-09-14 exit from the lead CAR-T programs. The council's reading, 'absence of positive news or operational progress', is unsupported: the fall coincides with a disclosed strategic transformation. |
+| 7 | business | Cellectis reports a single operating and reportable segment, Therapeutics, since Calyxt's deconsolidation on 1 June 2023 (finding 0). | PASS | 20-F FY2025 0001193125-26-116428, Item 4 / note on segments | 'As from June 1, 2023 and the deconsolidation of Calyxt, we view our operations ... in a single operating and reportable segment corresponding to the Therapeutics segment.' |
+| 8 | business | Cellectis has generated no revenue from therapeutic product sales; royalties depend on Allogene and Servier net sales (finding 1). | PASS | 20-F FY2025, risk factors and Item 4 licensing relationships | 'We do not know when, or if, we will generate any revenues from therapeutic product sales.' The Allogene/Servier licences are confirmed. The Iovance licence is omitted. |
+| 9 | business | [management says] AstraZeneca invested $245 million in Cellectis, reserving 25 genetic targets exclusively, with up to 10 candidate products (finding 6, bioprocessintl.com). | PARTIALLY_SUPPORTED | 20-F FY2025: AZ JRCA, IIA ($80m for 16,000,000 ordinary shares at $5.00) and SIA ($140m preferred); $25m upfront under the JRCA | The 25 targets and up to 10 candidates are right. The $245m is $220m of equity plus a $25m upfront collaboration payment, so 'invested $245m' is loose. AZ now holds ~32% beneficially and ~40% of voting rights, which the report does not mention. |
+| 10 | business | Cellectis Q1 2024 revenue came entirely from AZ JRCA milestones and research-cost reinvoicing (finding 10). | STALE | 6-K 0000950170-24-065225 EX-99.1 | Q1 2024 only. The Q2 2026 release attributes the H1 2026 revenue decline of $16.4m to a lower level of AZ JRCA research-plan activity, which is the current revenue driver and is not in the report. |
+| 11 | current_event | Dated near-term calendar is investor conferences: Wells Fargo Sept 10, Baird Sept 15, Barclays Oct 6, Stifel Nov 10-12, Jefferies Nov 16-19, 2026 (finding 13, yahoo.com). | PASS | 6-K 0001171843-26-005837 EX-99.1 (2026-09-01) | The dates match. Three of the five had passed by the report date. The material dated catalysts (.HEAL-101 IIT data H2 2027, .HEAL-201 H1 2028) are absent. |
+| 12 | current_event | Allogene's H1 2026 interim futility analysis on the pivotal Phase 2 ALPHA3 trial (cema-cel) is described by Cellectis as on track (finding 14). | STALE | 6-K 0001193125-26-216901 EX-99.1 (Q1 2026 interim report, filed 2026-05-11) | Allogene announced the futility analysis in April 2026: 58.3% (7/12) MRD-negative on the cema-cel arm vs 16.7% (2/12) on observation. Cema-cel then received RMAT and Fast Track in July 2026 (Q2 2026 release). |
+| 13 | current_event | Chair: 'The latest financial data is from Q1 2024, with no FY2024 results available'; finding 11: 'Newest period in evidence is the three-month period ended March 31, 2024'. | WRONG | EDGAR submissions CIK 1627281: 20-F FY2024 0000950170-25-039038 (2025-03-14), 20-F FY2025 0001193125-26-116428 (2026-03-20), Q1 2026 6-K 2026-05-11, Q2 2026 6-… | FY2024, FY2025, Q1 2026 and Q2 2026 results are all public. The chair states their absence as a fact about the company, not about the evidence. |
+| 14 | current_event | Chair: Cellectis's 'own product commercialization timeline remains uncertain' and 'market data indicates a growing CAR T-cell therapy market', framing the company as an allogeneic CAR-T developer. | STALE | 6-K 0001171843-26-006010 EX-99.1 (2026-09-14) 'Cellectis Announces Strategic Transformation To In Vivo Gene Editing Company' | On 2026-09-11 the board approved exiting lasme-cel and eti-cel development (seeking partners), refocusing on .HEAL-101 (APOC3 base editing, sHTG) and .HEAL-201 (PCSK9 epigenetic editing), realigning the organisation, and targeting runway into H2 2028. The platform ingested the biopharminternational article on this piv… |
+| 15 | risk | Cellectis labels the runway assessment a forward-looking statement and could use capital sooner than expected (finding 18, Q1 2024 basis). | STALE | Q2 2026 release (6-K 0001171843-26-005324 EX-99.1); 6-K 2026-09-14 | The language is generic and still present, but the runway itself is never stated. Current runway: into Q4 2027 at 2026-06-30, with a targeted extension into H2 2028 after the restructuring (excluding any partnering of lasme-cel/eti-cel). |
+| 16 | risk | [single source] Cellectis' equity interest in Cibus fell to 2.9% after the Merger closed (finding 25). | STALE | 20-F FY2025 0001193125-26-116428, Item 3 / Item 4 | 'Subsequently, Cellectis sold in full its remaining equity in Cibus.' The 2.9% stake no longer exists. |
+| 17 | risk | Cellectis states it does not know when, or if, it will generate any revenues from therapeutic product sales (finding 24). | PASS | 20-F FY2025 risk factors | The text matches verbatim. |
+
+**CLLS rerun (report 686d71f6)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | F21: Group R&D expense for the nine months ended Sept 30, 2025 was 69,081, vs 69,670 in the same 2024 period (units as presented). | PASS | 6-K 0001193125-25-272443 EX-99.1 (Q3 2025 interim report, filed 2025-11-07), statement of operations and note 4.2 | Research and development expenses (69,670) 2024 vs (69,081) 2025, $ thousands, -0.8%. The values are right, but the currency is not stated and the period is three quarters behind H1 2026. |
+| 2 | financial | F22: The 9M-2025 R&D comprises personnel 29,482, purchases and external expenses 24,743, D&A 13,868 and other 987. | PASS | 6-K 0001193125-25-272443 EX-99.1 (Q3 2025 interim report, filed 2025-11-07), R&D nature-of-expense table | Exact match ($ thousands). |
+| 3 | financial | F26: Cellectis spent $87.6m, $90.5m and $93.5m on R&D in 2023, 2024 and 2025. | PASS | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20), Item 5.C | 'In the years ended December 31, 2023, 2024 and 2025 we spent $87.6 million, $90.5 million and $93.5 million respectively, on research and development.' |
+| 4 | financial | F20: The 2023 capital increase covered 25,907,800 shares, with $2,049k transaction costs booked against share premium. | PASS | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20), statement of changes in equity and note 17 | 25,907,800 shares, share capital 1,401 plus premium 68,584, transaction costs (2,049). The figure combines AZ's 16,000,000 IIA shares with the 9,907,800-share follow-on offering, which the report does not say. |
+| 5 | financial | F19: In 2024 Cellectis issued 28,000,000 shares, adding $1,514k share capital and $139,256k share premium. | PARTIALLY_SUPPORTED | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20) (SIA, May 3 2024: 10,000,000 Class A and 18,000,000 Class B convertible preferred to AZ… | The $140m total is right. The instrument is AZ convertible preferred, not ordinary shares, which is the core dilution and control fact. |
+| 6 | financial | F27: Under the June 26, 2025 authorisation, the maximum aggregate number of ordinary shares that may be issued is 6,017,473. | PASS | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20), Item 6.B Free Share Plans and Stock Option Plans | Exact match. It is the overall cap shared between free shares and stock options. |
+| 7 | financial | F28: 16,000,000 shares were issued on November 6, 2023 under the AZ IIA ($80.0m at $5), giving AstraZeneca ~22% of share capital and 21% of voting rights. | STALE | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20), note on share capital and Item 7 | Correct as of closing ('At the time of the closing of the Initial Investment'). At 2025-12-31, AZ beneficially owned ~32%, ~44% as-converted, with ~40% of voting rights. The report presents the 2023 stake undated. |
+| 8 | financial | Market data: latest close 0.98 EUR; momentum -21.85% / -60.55% / -69.36% over 1/3/6 months (legacy council, EODHD). | PARTIALLY_SUPPORTED | EODHD aggregator; not verifiable under the evaluation fetch rules | The direction is consistent with the 2026-09-14 exit from lasme-cel/eti-cel. The council's 'no evidence of new operational or financial catalysts' ignores that disclosed event. |
+| 9 | business | F1: Cellectis reports a Therapeutics segment containing its UCART product candidates and gene-edited HSPC candidates (source dated 2024-05-28). | STALE | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20) segment note; 6-K 0001171843-26-006010 EX-99.1 (2026-09-14) 'Cellectis Announces Strateg… | Single Therapeutics segment confirmed. But on 2026-09-11 the board approved exiting lasme-cel (UCART22) and eti-cel (UCART20x22) and refocusing on in vivo .HEAL-101/.HEAL-201. |
+| 10 | business | F2 (first sentence of the executive synthesis): a second segment, Plants (Calyxt), was held for sale until May 31, 2023 and deconsolidated from June 1, 2023. | PASS | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20), segment information | The history is accurate, but it is a 2023 perimeter fact about a business Cellectis no longer owns (its Cibus stake was sold in full), and it leads the executive synthesis. |
+| 11 | business | F5: Cellectis has no approved products; revenue would come as royalties on licensees' product sales. | PARTIALLY_SUPPORTED | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20); Q2 2026 release 6-K 0001171843-26-005324 EX-99.1 (2026-08-06) | No approved products is right. But current revenue is AZ JRCA collaboration revenue (H1 2026 revenue $11.0m vs $27.4m, down on lower JRCA activity), not royalties. |
+| 12 | business | F12: Cellectis' 20-F names Amgen, AstraZeneca, BMS, Incyte, J&J, Merck, Novartis, Pfizer and Roche as competitors. | PARTIALLY_SUPPORTED | 20-F FY2025 0001193125-26-116428 (period 2025-12-31, filed 2026-03-20), Item 4.B Competition | These are the 20-F's 'non-cell based treatments' competitors. Its CAR-T list (Gilead, Fate, Caribou, Allogeneic players…) and gene-editing list (CRISPR, Editas, Intellia, Precision, Sangamo, Prime, Verve, Beam) are omitted, and those are the relevant ones for the in vivo pivot. |
+| 13 | business | F6: Cellectis frames lasme-cel peak gross sales across the US, EU4 and UK by 2035, ~1,100 patients treated annually (2025-Q3, labelled 'reported in the press'). | STALE | 6-K 0001171843-26-006010 EX-99.1 (2026-09-14) 'Cellectis Announces Strategic Transformation To In Vivo Gene Editing Company' | Cellectis exited lasme-cel development on 2026-09-11/14 and is seeking partners. The source is cellectis.com, the issuer's own site, yet it is labelled press. |
+| 14 | current_event | F14: 'Latest dated Cellectis disclosure in the corpus: a Form 6-K published 2025-11-07 for Q3 2025.' | WRONG | core_filings.annual (20-F filed 2026-03-20, in the corpus); EDGAR submissions CIK 1627281 | The corpus itself holds the 20-F filed 2026-03-20, undated in the corpus ('carries no publication date'). EDGAR has more than 20 later 6-Ks, including Q1 2026 (2026-05-11), Q2 2026 (2026-08-06) and the pivot (2026-09-14). |
+| 15 | current_event | F18: Cellectis' SEC filing calendar lists 6-Ks dated 2026-08-06, 2026-09-01, 2026-09-11, 2026-09-14 and 2026-10-28, plus a 6-K/A for the period ended 2026-06-30 filed 2026-09-11. | PASS | EDGAR submissions CIK 1627281 | The dates match (0001171843-26-005324, -005837, -006002, -006010, -006873; 6-K/A 0001193125-26-389336). None of these documents was read: the gap says 'the six SEC filing items carry only accession numbers, form type and dates'. |
+| 16 | current_event | F16: Allogene's pivotal Phase 2 ALPHA3 (cema-cel) interim futility analysis is slated for H1 2026, per Cellectis (source 2026-01-08). | STALE | Q1 2026 6-K 0001193125-26-216901 EX-99.1; Q2 2026 release 6-K 0001171843-26-005324 EX-99.1 (2026-08-06) | The futility analysis read out in April 2026 (MRD-negative 58.3% vs 16.7%), and cema-cel then received RMAT and Fast Track in July 2026. |
+| 17 | current_event | Legacy catalyst agent: 'There is no evidence of new operational or financial catalysts in the pack. The price trend suggests market challenges or negative sentiment.' | UNSUPPORTED | 6-K 0001171843-26-006010 EX-99.1 (2026-09-14) 'Cellectis Announces Strategic Transformation To In Vivo Gene Editing Company'; 6-K 0001171843-26-006873 (2026-10… | The share fall coincides with a disclosed strategic transformation and restructuring, and preclinical .HEAL-101 data followed on 2026-10-27. |
+| 18 | current_event | F7: industry debate, HLA matching and supply-chain constraints push developers toward in vivo cell engineering (biopharminternational, 2026-09-14). | PARTIALLY_SUPPORTED | 6-K 0001171843-26-006010 EX-99.1 (2026-09-14) 'Cellectis Announces Strategic Transformation To In Vivo Gene Editing Company' | The trade article could not be fetched under the evaluation rules. Its date matches Cellectis's own pivot, which the platform reduced to an anonymous 'industry debate' instead of a company event. |
+| 19 | risk | F31 (counter-thesis): 'Cellectis risk factors name cost cuts and proposed transactions possibly harming employee and third-party relations, Nasdaq listing, and BioFactory output' (sec.gov, 2022-12-31). | WRONG_ENTITY | 20-F FY2022 0001193125-23-070116 (filed 2023-03-14), Item 3.D 'The material risks that Calyxt faces, include: Risks Related to the Calyxt Merger…' | These are Calyxt's risks: cost reduction while completing the Calyxt-Cibus merger, Calyxt's Nasdaq listing, and Calyxt's BioFactory, as summarised in Cellectis's FY2022 20-F while Calyxt was a subsidiary. Calyxt (now Cibus) is a separately registered company, deconsolidated in 2023, and Cellectis has since sold its st… |
+| 20 | risk | F32: AstraZeneca is a Cellectis shareholder with significant influence and a related-party counterparty in 2025-Q3. | PASS | 6-K 0001193125-25-272443 EX-99.1 (Q3 2025 interim report, filed 2025-11-07), note 20 | '…the Group conducted transactions with AstraZeneca, which is also a shareholder with significant influence over the Group.' The ~40% voting and ~44% as-converted figures are omitted. |
+| 21 | risk | F25: Cellectis reports cumulative negative cash flows from operations in nearly every year since 2000 and expects to need additional capital. | PASS | 6-K 0001193125-25-272443 EX-99.1 (Q3 2025 interim report, filed 2025-11-07), Liquidity and Capital Resources | The text matches. The actual cash, burn and runway figures that answer the risk are absent. |
+
+**LIN run 1 (report 796b644d)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | F40: 'Lindian ended FY2026 with ~A$108m cash, plus ~A$17m undrawn NBS equipment facility'; used by the synthesis as 'a cash position sufficient to start operations without debt'. | STALE | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) p.12-13 + balance sheet; ASX 03157006 Appendix 5B, quarter ended 30 Sep 2026 (26 Oct 2026) items 4.… | AR: cash A$107,935,687 at 30 Jun 2026, NBS A$17m undrawn (correct for June). The Appendix 5B in the corpus shows cash A$45,087k at 30 Sep 2026 after operating outflows of (7,349)k and investing outflows of (55,483)k. |
+| 2 | financial | F3: 'FY2026 Group total segment revenue was $2,453,519, comprising interest income only, not mineral sales.' | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) income statement / segment note | 'Revenue and other income $2,453,519'; 'Interest income 2,453,519' (FY25 277,599). Currency is A$, but the report prints a bare '$'. |
+| 3 | financial | F4: 'FY2025 Group total segment revenue was $277,599, also interest income only.' | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) segment note | 'Interest income - - 257 277,342 277,599'. |
+| 4 | financial | F35: 'Lindian raised ~A$100m via placement of ~133.33m shares at A$0.75 to fund Kangankunde Stage 1, Stage 2 and SARECO.' [single source] | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) p.12 ('In April 2026, the Company completed a further A$100 million institutional placement'); ASX… | Issuer-confirmed. The '[single source]' label understates it: this is the issuer's own release, and it is corroborated by the AR. |
+| 5 | financial | F41: 'Lindian says Stage 1 needs no debt drawdown; the ~A$32m Iluka facility is undrawn and Stage 1 cash flow is to fund Stage 2.' | PARTIALLY_SUPPORTED | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) note 28 (Iluka US$20m five-year loan facility); ASX 03157006 Appendix 5B, quarter ended 30 Sep 2026… | The Iluka US$20m facility exists (note 28, Guarantees). The April-2026 web source is stale. The Sep-quarter 5B section 7 lists no facilities, and the quarterly cites only the A$17m NBS facility in 'total liquidity of $62 million'. |
+| 6 | financial | F29: 'Under the termination deed ... Lindian issued 20,000,000 fully paid ordinary shares.' | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) note 3 / share-capital movements | Correct. The report omits that this is booked as a A$16,500,000 expense in FY26 (loss after tax A$31,843,861 vs A$9,292,227). |
+| 7 | business | Executive synthesis: 'The company mines and sells monazite concentrate from its Kangankunde project in Malawi and owns downstream processing facilities in Kazakhstan.' | WRONG | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.2, p.20; ASX 03157004 Operational Readiness Update (26 Oct 2026) p.1; ASX 03143834 Annu… | Mining began 1 Jul 2026 (ore is only being stockpiled). Integrated circuit commissioning is scheduled for November and first concentrate is targeted for December 2026. There are no sales; FY26 income is interest only. The SARECO ownership part is correct. |
+| 8 | business | F6: 'Downstream, it owns the SARECO MREC facility in Stepnogorsk, Kazakhstan, and plans an 8,000tpa REO SX facility.' | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.12-13, p.16 | 100% acquired; final US$20m (A$28.8m) paid 4 Sep 2026. Carester/Tetra Tech DFS for the 8,000 tpa REO SX facility is due Q4 2026. |
+| 9 | business | F7/F8: Carester binding 10-year offtake for SEGH Carbonate, extendable by two 5-year terms; at least 70% each year, capped at 8,750 dmtpa, shipped from Aktau or Dostyk Port. | PASS | ASX 03135257 Carester binding offtake / oxide separation partnership (3 Sep 2026) p.1, p.4; ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 202… | Matches the announcement verbatim. |
+| 10 | business | F16/F18/F19: Ore Reserve 23.7 Mt @ 2.9% TREO (all Probable, 1.00% cut-off); Resource Indicated 61 Mt @ 2.43%, Inferred 200 Mt @ 2.05%, total 261 Mt @ 2.14% TREO. | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) Ore Reserves & Mineral Resources statements (Tables 1-2) | Figures are correct. They are the May-2024 MRE and the June-2024 Ore Reserve, but the report keys them period 2026. NdPr share (~20%) and contained TREO (676 kt reserve) are omitted. |
+| 11 | business | Competitive-position lead: 'Iluka is identified as a large peer and the world's largest non-China rare earths producer'. | WRONG_ENTITY | Report F23 vs lead; Iluka's own F22 ('rare earths refinery (Eneabba, in development)') | The report's own F23 says Lynas is the world's largest non-China producer. Iluka is Lindian's offtaker and lender with a refinery still in development. |
+| 12 | risk | F42 (counter-thesis): 'Iluka FY2026 report: approval delays may affect operations; non-compliance may bring regulatory fines or civil liability.' | WRONG_ENTITY | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) directors' report risk section | This is Lindian's own AR text ('...any delays in obtaining these approvals may affect the Group's operations ... Any non-compliance may result in regulatory fines and/or civil liability'). It is filed with source_published_at 2026-09-24 = the Lindian AR, but attributed to Iluka. |
+| 13 | current_event | F32 (upcoming catalyst): 'Iluka states it will adopt a new accounting standard requiring Operating profit ... sub-totals from 1 July 2027.' | WRONG_ENTITY | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) note on new standards (AASB 18) | Lindian's AR: 'The consolidated entity will adopt this standard from 1 July 2027'. Iluka has a December year-end. The subject's own statement is attributed to a peer, and it is not a catalyst anyway. |
+| 14 | current_event | F17: 'Kangankunde Sept 2026 qtr: Stage 1 pit opened, 14 production blasts, ~125,000 t ore stockpiled on ROM pad pre plant commissioning.' | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.1, p.3 | Verbatim match. |
+| 15 | current_event | F33: 'Kangankunde Stage 2 DFS advancing; targeted for completion December 2026.' | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.9 | Correct. The report omits the Stage 2 objective: ~120,000 tpa concentrate on a 4.0 Mtpa pathway (AR p.4). |
+| 16 | current_event | F28: Lindian and Gerald Metals SARL mutually terminated the Stage 1 concentrate supply agreement on 19 June 2026. | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) p.12 and note 3; ASX 03105959 (19 Jun 2026) | Correct. |
+| 17 | current_event | F27: 'The newest issuer disclosure in the evidence is the Annual Report 2026, published 24 September 2026'. Gap: 'No disclosure newer than 24 September 2026 appears in the evidence, and no quarterly report is present.' | WRONG | report core_disclosures (03157011, 03157006, 03157004 filed 2026-10-25, state ready); ASX list | The Sep Quarterly, Appendix 5B and Ops update (26 Oct 2026 AEST) were in the corpus and are cited by F17, F33, F49 and F52. ASX also lists 13 later announcements before 2 Nov (export position 30 Sep, grid power 1 Oct, Wei retirement 14 Oct, AGM notice 16 Oct, Oct-16 update). |
+| 18 | risk | F49: 'Guinea tenements (Gaoual 2019/3942 at 51%, 2020/2562 at 100%; Lelouma 2020/2351 at 61% up to 75%) are at Application status'. | WRONG | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) tenement schedule p.24-25 | 2020/2562 is Lelouma (100%) and 2020/2351 is Woula (61%, up to 75%). Gaoual is only 2019/3942. Lelouma, like Gaoual, is recorded as inactive (withdrawn by ministerial order, strategic reserve zone); the report notes this only for Gaoual (F50). |
+| 19 | risk | F44/F45 (governance): general meeting notice shows Kabunga Holdings nominating Warwick Grigor; the Board (excluding Mr Steele and Mr Wei) recommends AGAINST Resolutions 1 and 2. | STALE | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) remuneration report (Blake Steele NED 10 Dec 2024 – 10 Feb 2025; Asimwe Kabunga resigned 25 Nov 202… | This is a 2024/early-2025 requisitioned meeting (evidence dated 2024-12-31), shown undated. The current governance events are missing: Park Wei (largest independent holder) retired suddenly on 14 Oct 2026, and the AGM is on 23 Nov 2026. |
+| 20 | risk | F51: 'Lindian's Kangankunde risk table flags delays in approvals to commence construction and additional taxes/government ownership.' | STALE | otcmarkets.com evidence dated 2024-07-09; ASX 03123471 'Lindian and Government clarification regarding inaccurate commentary in the media' (10 Aug 2026) | Construction and mining have already begun. The live 2026 regulatory risks are the Executive Order No.2/2025 export restriction, the draft Beneficiation and Value Addition Regulations, and the medium-scale licence classification ahead of Stage 2 FID. All are absent. |
+| 21 | risk | F46/F34: Kangankunde ML MML0290/22 and EL0514/18R granted, 100% beneficial interest. | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) tenement schedule; ASX 03123471 'Lindian and Government clarification regarding inaccurat… | Correct. But the platform gap still says 'Ownership percentage of Kangankunde ... is not stated in the evidence'. |
+
+**LIN rerun (report 6d4f1c43)**
+
+| # | Type | Claim as stated | Verdict | Independent source | Note |
+|---|---|---|---|---|---|
+| 1 | financial | F32: 'Quarter ended 30 Sep 2026: cash and cash equivalents $A45,087k, down from $A107,936k at prior quarter end.' | PASS | ASX 03157006 Appendix 5B, quarter ended 30 Sep 2026 (26 Oct 2026) items 4.1 / 4.6 / 8.4 | 4.1 = 107,936; 4.6 = 45,087 ($A'000). It is filed under Catalysts (recent_external_developments), not Financial capacity. The web co-citation (nine entertainment) is dated 9/30/2026, before the release. |
+| 2 | financial | F33: 'Quarter to 30 Sep 2026: $24m Kangankunde project costs, $28.8m SARECO consideration plus $4.6m VAT, $2.6m exploration.' | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.21; ASX 03157006 Appendix 5B, quarter ended 30 Sep 2026 (26 Oct 2026) items 2.1(a),(c),… | Matches: $24.0m, $28.8m (US$20.0m), $4.6m recoverable VAT, ~$2.6m exploration. Bare '$' for A$. |
+| 3 | financial | F42: '[reported in the press] Lindian Resources, most recent fiscal year: cash AUD 3.49m, total debt AUD 0.2m, operating cash flow AUD -6.07m.' (koalagains.com, 2026-02-20) | WRONG_PERIOD | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) balance sheet and cash-flow statement (FY2026 and FY2025 comparatives) | These are FY2025 (30 Jun 2025) values: cash 3,490,719, operating CF (6,066,570). The most recent fiscal year, FY2026, has cash 107,935,687 and op CF (11,726,343), and is held in the corpus. At 30 Sep 2026 cash is A$45.1m. This is the only cash level in the Financial capacity section. |
+| 4 | financial | F41: 'koalagains puts Lindian total debt at AUD 0.2m versus AUD 58.36m equity; current ratio 1.39.' | WRONG_PERIOD | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) statement of financial position | Net assets of 58,358,833 are FY2025. FY2026 net assets are 245,112,665. Current assets FY26 111,242,442 (FY25 3,914,327). |
+| 5 | financial | F40: 'koalagains states ... share count grew 0.98% last fiscal year.' | STALE | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) note 'Movement in shares on issue' | FY2026 shares went from 1,163,422,236 to 1,849,396,405, +59.0%. |
+| 6 | financial | F2: 'FY2026 Group revenue $2,453,519 = interest income only; Australia $2,453,418, Malawi $101, Tanzania and Guinea nil.' | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) segment note ('Interest income - - 101 2,453,418 2,453,519') | Correct. Currency is A$, but a bare '$' is printed. |
+| 7 | financial | F38: 'Lindian raised ~A$100m via a placement of ~133.33m new shares at A$0.75' [single source] | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) p.12 | Issuer-confirmed in the held AR, yet labelled single-source web. |
+| 8 | financial | F43: 'The $100m institutional placement funds Stage 1 debt-free, negating the $32m Iluka debt facility.' | PARTIALLY_SUPPORTED | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) note 28 (Iluka US$20m facility); ASX 03157006 Appendix 5B, quarter ended 30 Sep 2026 (26 Oct 2026)… | The Iluka facility exists and is undrawn. 'Negating' is the web writer's word. |
+| 9 | business | F23: '[single source] Lindian's sole evidenced sale product is Kangankunde monazite concentrate; Iluka holds a ~15-year offtake of 6,000 dmt/yr (90,000 dmt total ...)' | PARTIALLY_SUPPORTED | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) p.12 (Iluka 15-year, 6,000 tpa); ASX 03135257 Carester binding offtake / oxide separation partnersh… | The volumes are right. 'Sole sale product' is wrong: Carester holds a binding 10-year offtake for SARECO's SEGH carbonate (the report's own F6). The red team challenged this, and it is unresolved. |
+| 10 | business | F6: 'Carester must buy at least 70% of SEGH Carbonate per contract year up to 8,750 dmtpa, under a 10-year term.' | PASS | ASX 03135257 Carester binding offtake / oxide separation partnership (3 Sep 2026) p.1, p.4 | Matches the announcement. |
+| 11 | business | F17/F20: Ore Reserve 23.7 Mt @ 2.9% TREO (all Probable, 1.00% cut-off); Resource Ind 61 Mt @ 2.43%, Inf 200 Mt @ 2.05%, total 261 Mt @ 2.14%. | PASS | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) Ore Reserves & Mineral Resources statements | Correct. These are 2024 estimates keyed to period 2026. Shown twice (F17 and F19). |
+| 12 | business | F3/F4: vertically integrated Kangankunde → SARECO MREC chain; 'Separation is not yet built: an 8,000tpa REO SX facility is proposed'. | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.12-16 | Correct and correctly tensed. |
+| 13 | business | F21/F22 (Products, assets and operations; question unit_costs): 'H1 2026 unit cash cost per t Z/R/SR produced ... $1,236/t vs $1,138/t (+9%)'; 'Unit cost of goods sold per t Z/R/SR sold: $1,358/t ...' | WRONG_ENTITY | Evidence ev:c:f0f567b8 = iluka.com (2026-08-19), the same item F26 attributes to Iluka; ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) | These are Iluka's zircon/rutile/synthetic-rutile costs. Lindian produces no Z/R/SR and has no unit costs yet (first concentrate Dec 2026). The subject is unnamed, so ADR-074's guard could not fire (documented limit). |
+| 14 | business | F37: 'Guinea projects are at Application stage: Gaoual 2019/3942 51%, 2020/2562 100%, Lelouma 2020/2562 61% (up to 75%).' | WRONG | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) tenement schedule p.11 | Lelouma is 2020/2562 at 100% (inactive, withdrawn by ministerial order); Woula is 2020/2351 at 61% (up to 75%), active with an extension application. The report assigns 2020/2562 twice and drops Woula. |
+| 15 | current_event | F28: 'The most recent issuer disclosure retrieved is dated 25 October 2026: a September Quarterly Report plus Appendix 5B, both covering the quarter ended 30 September 2026.' | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026); ASX 03157006 Appendix 5B, quarter ended 30 Sep 2026 (26 Oct 2026); ASX announcements list | Correct as the newest HELD issuer documents (UTC date; ASX 26 Oct AEST). Newer listed items (Oct-30 substantial holding) are holder notices. |
+| 16 | current_event | F34: '[management says] Lindian targets site energisation at Kangankunde in the first week of November 2026.' | PASS | ASX 03153073 'Kangankunde Advances Towards December First Production' (16 Oct 2026) p.3 | 'Power infrastructure is advancing towards site energisation, targeted for the first week of November 2026.' Cited via nikkei/miningmetalnews, not the ASX release. The 33kV grid line was energised on 1 Oct (03147047), which the report omits. |
+| 17 | current_event | F35: '[management says] Lindian targets first monazite concentrate at Kangankunde in December 2026.' | PASS | ASX 03157004 Operational Readiness Update (26 Oct 2026) p.1; ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.2 | Correct. Integrated circuit commissioning is late November. |
+| 18 | current_event | F30: 'Executive Director Zac Komur relocated to Kazakhstan to provide direct oversight of integration, commissioning and operational development.' | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.13 | Verbatim. |
+| 19 | current_event | F29: '~12,500 tonnes per annum of Kangankunde Stage 1 monazite concentrate is ultimately expected to feed the Kazakhstan facility.' | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.12-13 | Correct. |
+| 20 | risk | F44/F45 (counter-thesis): 'Iluka's 2026 Annual Report says its list of material business risks is not a complete list ...'; 'Iluka's 2026 Annual Report states approval delays may affect the Group's operations or its ability to continue its operations.' | WRONG_ENTITY | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) directors' report, Material Business Risks ('this list is not purported to be a complete list of al… | Lindian's own AR text, cited from the Lindian AR (issuer_filing, 2026-09-24), attributed to Iluka. Same defect as LIN-3. |
+| 21 | risk | F49: 'In the 2026 annual report only the two Malawi Kangankunde licences are shown granted; Guinea and Tanzania tenements are applications.' | WRONG | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) tenement schedule p.11 | Eight Tanzanian Uyowa licences are Granted (PL 10918/2016 plus 7 primary mining licences, 100%/99%). Lushoto/Pare are 'Being Relinquished', not applications. |
+| 22 | risk | F47: 'Notice: Kabunga Holdings nominated Warwick Grigor; Board urges AGAINST resolutions on Mr Steele and Mr Wei.' (source dated 2024-12-31) | STALE | ASX 03143834 Annual Report 2026 (released 25 Sep 2026 AEST) remuneration report; ASX 03152555 Retirement of Non-Executive Director (15 Oct 2026 AEST); ASX 0315… | A Dec-2024 requisition. The current events are absent: Wei retired 15 Oct 2026, and the general meeting is on 23 Nov 2026. |
+| 23 | risk | F50: 'At Kangankunde, TSF bulk earthworks were complete at 30 Sep 2026; toe dam lining and piping remained.' | PASS | ASX 03157011 September 2026 Quarterly Activities Report (26 Oct 2026) p.7 | Correct, but it is a construction-progress fact, not a risk, and it is the exec synthesis's only 'risk'. |
+
+**Derived-metric audit (spec section 6)**
+
+Calculations must fail closed when their inputs are incompatible. Before the fixes, several did not: the HON YoY sign, CFR x1000, JPM partial-sum total debt and the 7/19 double-counted totals all published a wrong number instead of withholding. After the fixes the deterministic layer withholds (PYPL total debt). The day-2 audit found the remaining failures upstream of it: a mine's capex labelled Group (ANTO2), a computable take rate and Q3 total debt reported as non-existent (PYPL), and no runway computed from a held Appendix 5B or 20-F (LIN, Cellectis). NOT_SHOWN marks a metric the report should have derived and did not.
+
+| Company | Run | Metric | Report | Recomputed | Verdict | Checks |
+|---|---|---|---|---|---|---|
+| HON | before/after | Revenue YoY FY2025 (before) | -2.74% | +7.85% (37,442 / restated 34,717) | WRONG | Prior year taken as originally filed (38,498, pre-Solstice) instead of the restated comparative in the same 10-K. Fixed ADR-062. |
+| HON | before/after | Group operating margin FY2025 (before) | 21.71% (8,127) | bound 6,567 = revenue - COGS - SG&A - R&D | WRONG_SCOPE | OperatingIncomeLoss is total segment profit. Withheld by ADR-062. |
+| HON | before/after | FCF FY2025 | 5,422 | 5,422 (6,408 - 986) | PASS | 10-K XBRL. |
+| HON | before/after | Net debt FY2025 | 22,452 | 22,452 (34,939 - 12,487); ADR-067 total debt 34,580 | PARTIALLY_SUPPORTED | Arithmetic right on the FY2025 balance sheet, stale after the spin (Q3 2026 cash 5,694). Total debt carried a current-maturities double count before ADR-067. |
+| HON | before/after | Revenue YoY FY2025 (after, f0be3c4f) | +7.85% | +7.85% | PASS | Verified against companyfacts. |
+| HON | before/after | Net income YoY FY2025 (after) | -17.11% | -17.11% (4,729 / 5,705) | PASS | Verified against companyfacts. |
+| CFR | before | Net cash / OCF FY2026 (Key Financials) | 8,496 bn / 4,880 bn EUR | 8,496m / 4,880m EUR | WRONG | x1000 unit error: the table unit was borrowed from the prose 'EUR 22.4 billion'. Fixed ADR-064 (offline replay on the real PDF). |
+| CFR | before | Operating margin FY2026 | 20.0% | 20.0% (4,492 / 22,420) | PASS | Group. |
+| CFR | before | Jewellery Maisons margin FY2026 | 30.5% vs 31.9% | 30.5% (5,037) vs 31.9% (4,896) | PASS | Segment scope labelled correctly. |
+| ADBE | single run | Revenue YoY FY2025 | 10.53% | 10.53% | PASS | Correct fiscal periods, not calendarised. USD. Group. Both years are 52-week years. |
+| ADBE | single run | Operating margin FY2025 | 36.63% | 36.63% | PASS | GAAP and group basis. |
+| ADBE | single run | Net margin FY2025 | 30.00% | 29.997% | PASS | Rounding is fine. |
+| ADBE | single run | Free cash flow FY2025 | USD 9,852m | USD 9,852m | PASS | Sign is correct. Excludes acquisitions. |
+| ADBE | single run | Capex / OCF FY2025 | 1.78% (1.8%) | 1.78% | PASS | OK. |
+| ADBE | single run | Cash conversion (OCF/NI) FY2025 | 140.69% in F32; '140.69×' in the peer-comparison table (GOOGL '124.62×') | 140.69% = 1.41× | WRONG | Unit error in the peer table: a percentage is printed with a multiplier sign, so the displayed ratio is 100 times too large. The finding text is correct. |
+| ADBE | single run | Net debt FY2025 (peer table) | USD 779m | 779 (debt 6,210 minus cash 5,431); 2,004 at Q3 FY2026 (6,363 minus 4,359) | STALE | Correct for FY2025, but excludes short-term investments (1,164) without saying so. The latest quarter's net debt is 2.6 times higher after buybacks and Semrush and is not shown. |
+| ADBE | single run | Gross margin FY2025 total / DM / DE / P&A | 89% / 95% / 72% / 67% | 89.3% / 95.2% / 72.3% / 66.8% | PASS | Uses the FY2025 segment perimeter, which no longer exists from FY2026 (single segment). |
+| ADBE | single run | FCF vs total debt FY2025 | FCF 9,852 > debt 6,210 | 1.59× | PASS | The arithmetic is correct, but it omits that FY2025 buybacks of 11,281 (XBRL PaymentsForRepurchaseOfCommonStock) were 114.5% of FCF. |
+| ADBE | single run | Q3 FY2026 revenue YoY (council / report.md only, not on the investor page) | +13% | +12.9% | PASS | Correct fiscal-quarter comparison. Absent from the V3 findings and the investor page. |
+| ADBE | single run | Q3 FY2026 net income YoY (council) | +3% | +3.1% | PASS | The tax rate rose from 19.0% to 22.5% (415/2,187 against 530/2,357). The council blames 'margin pressure' without checking this. |
+| ADBE | single run | Operating margin ~37% and ROE ~61% beside Q3 growth (financial_analyst summary) | ~37% / ~61% | Q3 FY2026 operating margin 34.8% (2,354/6,760); FY2025 36.6%; FY2025 ROE 61.3% (7,130/11,623) | WRONG_PERIOD | FY2025 ratios are presented in the same sentence as the Q3 FY2026 growth as if they were the same period. |
+| JPM | single run | Revenue YoY FY2025 | +2.75% | +2.755% | PASS | USD m; reported (not managed) total net revenue; same perimeter; sign correct. |
+| JPM | single run | Net income YoY FY2025 | -2.43% | -2.434% | PASS | Sign correct. FY2024 included the Visa share exchange gain, which the report does not mention. |
+| JPM | single run | Net margin FY2025 | 31.27% | 31.27% | PASS | Arithmetic is right. Semantically weak for a bank: the denominator is net revenue after interest expense, before provisions. Bank-standard profitability measures (ROTCE 20%, ROA 1.29%, overhead ratio 52%) are in the 10-K and not reported. |
+| JPM | single run | Cash conversion FY2025 (OCF / net income) | -259.1% | -259.05% | WRONG | Arithmetic is right, but the metric is meaningless for a bank (OCF swings with trading assets, securities financing and loans held for sale). It is presented as an 'adverse' finding and repeated in the executive synthesis and chair verdict. It should be suppressed under banks_financials. |
+| JPM | single run | Total debt FY2025 | 64,776 USD m | 499,982 USD m (short-term borrowings 64,776 + long-term debt 435,206) | WRONG | Long-term debt is excluded because the XBRL LongTermDebt concept was last tagged by JPM in 2013. The figure is labelled 'Total debt' with 'Regulatory filing' provenance. |
+| JPM | single run | Debt to equity FY2025 (council / financial snapshot) | 0.179 | 1.38 (499,982 / 362,438), or 0.179 only if debt = short-term borrowings | WRONG | Drives the council's 'moderate leverage / conservative capital structure' language. Not a meaningful bank leverage metric; SLR 5.8% / Tier 1 leverage 6.9% are the relevant ones. |
+| JPM | single run | Return on equity FY2025 (council) | 15.7% | Issuer ROE 17% (NI applicable to common 55,681 / avg common equity); naive NI/ending total equity = 15.74% | WRONG | Uses NI including preferred dividends over period-end total equity including preferred, which differs from the issuer's definition. Collides visually with the CET1 15.7% (2024) figure. |
+| JPM | single run | Liabilities / equity FY2025 | >11x | 11.21x | PASS | Arithmetic is right, but the framing is industrial ('liabilities exceeding eleven times equity'). |
+| JPM | single run | Deposits / total liabilities and loans / deposits, Dec 31 2025 | 63%; 58% | 63.0%; 58.4% (loans 1,493,429 / deposits 2,559,320) | PASS | Period-end; matches the issuer-reported LDR of 58. |
+| JPM | single run | Borrowing capacity change | increased slightly (457 vs 449 $bn) | +$8bn (+1.8%) | PASS | Same basis, both dates from one filing. |
+| JPM | single run | Enterprise value / market cap / P/E (snapshot categories) | listed as 'sourced from sec_edgar_xbrl (T2)' | n/a (derived T6 from price plus SEC data, per the report's own next-steps note) | WRONG | Mislabelled as T2-sourced. EV built from 'total debt' (short-term only) minus cash is meaningless for a bank. Values are not shown on the investor page. |
+| PYPL | run 1 | Revenue YoY FY2025 | 4.32% | 4.32% | PASS | USD m, same-basis annual, continuing ops (no discontinued ops), group. |
+| PYPL | run 1 | Operating margin FY2025 | 18.28% | 18.28% | PASS | GAAP. Q3'26 GAAP margin 16.3% (-173bps YoY) is not shown. |
+| PYPL | run 1 | Net margin FY2025 | 15.78% | 15.78% | PASS | FY2025 NI includes a ~$0.14/share positive impact from strategic investments/crypto (per ER footnote). Not noted. |
+| PYPL | run 1 | Free cash flow FY2025 | 5,564 | 5,564 | PASS | Matches the issuer's FCF definition. PayPal also reports adjusted FCF, excluding BNPL held-for-sale timing, which is not mentioned. |
+| PYPL | run 1 | Cash conversion FY2025 (OCF/NI) | 122.61% | 122.61% | PASS | Shown as a %, correct. OCF for PYPL swings with BNPL held-for-sale originations/repayments (9M26: -36,426 / +35,558), so the ratio needs that caveat. |
+| PYPL | run 1 | Capex intensity / capex-to-OCF FY2025 | 2.57% / 13.28% | 2.57% / 13.28% | PASS | Units and period OK. |
+| PYPL | run 1 | Liabilities / equity FY2025 | 'roughly three times' | 2.96x; ex customer funds payable 0.97x | PARTIALLY_SUPPORTED | Arithmetic right. Economically misleading for a payments company, because 2/3 of liabilities are customer balances matched by 38,198 of customer-account assets. |
+| PYPL | run 1 | FCF YoY FY2025 (red team) | -17.78% | -17.78% | PASS | Same definition both years. |
+| PYPL | run 1 | FCF margin FY2025 (red team) | 16.8% | 16.77% | PASS | - |
+| PYPL | run 1 | Total debt FY2025 (ADR-067) | withheld (shown as 'Required field missing') | 11,583 from the balance sheet (LTD 9,987 + short-term debt 1,596), but the 10-K XBRL tags only LongTermDebtNoncurrent; DebtCurrent/LongTermDebtCurrent for 2025-12-31 appear only in later 10-Qs, and t… | PASS | Withholding is correct under ADR-067. The page gives no withheld reason and calls it 'not extracted'. |
+| PYPL | run 1 | Total debt Q3 2026 (not shown) | gap: 'No total or short-term debt figure exists for 2026-Q3' | 13,472 (LongTermDebtNoncurrent 10,939 + DebtCurrent 2,533); issuer: 'Debt totaled $13.5 billion' | WRONG | The figure exists and is tagged in the acquired 10-Q (basis b of ADR-067). |
+| PYPL | run 1 | Take rate Q3 2026 (not shown) | 'only defined, not quantified' | total 1.76% (8,584/487,138); transaction 1.58% (7,711/487,138) | WRONG | Computable from the acquired release. |
+| PYPL | rerun | Revenue YoY FY2025 | 4.32% | 4.32% | PASS | USD m, annual, group, continuing. |
+| PYPL | rerun | Revenue YoY Q3 2026 (F13, web) | +2% | +1.98% | PASS | Same-quarter basis. Taken from yahoo, not the held ER. |
+| PYPL | rerun | Operating margin FY2025 | 18.28% | 18.28% | PASS | GAAP. The Q3 GAAP margin of 16.3% (-173bps YoY) is not shown. |
+| PYPL | rerun | Net margin FY2025 | 15.78% | 15.78% | PASS | FY25 includes a ~$0.14/sh strategic-investment/crypto benefit (ER footnote). Not noted. |
+| PYPL | rerun | Free cash flow FY2025 | 5,564 | 5,564 | PASS | Issuer definition. Adjusted FCF (BNPL HFS timing) is not mentioned. |
+| PYPL | rerun | Cash conversion FY2025 | 122.61% | 122.61% | PASS | Shown as a %. No BNPL held-for-sale caveat. |
+| PYPL | rerun | Capex intensity / capex-to-OCF FY2025 | 2.57% / 13.28% | 2.57% / 13.28% | PASS | OK. |
+| PYPL | rerun | ROE FY2025 (red team) | 25.8% | 25.83% | PASS | Year-end, not average equity. Not labelled. |
+| PYPL | rerun | FCF YoY FY2025 (red team) | -17.8% | -17.78% | PASS | Same definition. |
+| PYPL | rerun | Total debt FY2025 (ADR-067) | withheld ('Required field missing: snapshot_financials.total_debt') | 11,583 from the balance sheet; the 10-K XBRL tags only LongTermDebtNoncurrent | PASS | Withholding is correct. Still no withheld_reason shown. |
+| PYPL | rerun | Total debt Q3 2026 (not shown; F21 'no debt figure') | absent | 13,472 (10,939 + DebtCurrent 2,533); ER 'Debt totaled $13.5 billion' | WRONG | Exists and is tagged in the held 10-Q. |
+| PYPL | rerun | Take rate Q3 2026 (not shown) | gap: 'No independent benchmark ... take rates' | 1.76% total (8,584/487,138); 1.58% transaction (7,711/487,138) | WRONG | Computable from the held release. |
+| ANTO | run 1 | Revenue YoY 2024 | 'increased modestly' 6,613.4 vs 6,324.5 | +4.6% | PASS | USD m, group consolidated, continuing. Stale: FY2025 +30% to 8,620.3; H1 2026 +18% to 4,479.0. |
+| ANTO | run 1 | By-product revenue YoY 2024 | +$32.0m, +3.3% | +$32.0m, +3.26% | PASS | Net of tolling/TC-RC as stated by issuer. |
+| ANTO | run 1 | Gold revenue change 2024 | +$39.9m | +$39.9m | PASS | net of TC/RC. |
+| ANTO | run 1 | Copper sales volume YoY 2024 | -2.9% | -2.91% | PASS | These are sales volumes recognised in revenue (attributable consolidated), not the production of 664.0kt. |
+| ANTO | run 1 | Net debt 31 Dec 2024 | $1,629.1m | 5,945.4 - 4,316.3 = 1,629.1 | PASS | Sign and units OK. Presented as current in the synthesis, but it is STALE: 30 Jun 2026 net debt 3,966.1 (8,126.2 - 4,160.1). |
+| ANTO | run 1 | Net debt / EBITDA | not computed (gap: 'No leverage ratio ... for the company itself') | Dec-24 1,629.1/3,426.8 = 0.48x; Dec-25 2,749.5/5,201.9 = 0.53x; Jun-26 reported 0.68x (LTM) | UNSUPPORTED | The issuer prints this ratio in every results release; the report says it is missing. |
+| ANTO | run 1 | Q3 2026 cash cost q/q | -7% | 2.73/2.94-1 = -7.1% | PASS | Before by-product credits, group basis, $/lb. |
+| ANTO | run 1 | Q3 2026 copper output q/q | 151.9 vs 142.0 | +7.0% | PASS | The comparator is Q2 2026, not Q3 2025; the report does not say which. |
+| ANTO | run 1 | H1 2026 output by mine | 285.0 total; LP 133.8, Antucoya 37.0, Zaldívar 17.0 | 133.8+97.1+37.0+17.0 = 284.9 | WRONG_SCOPE | Centinela (97.1) is omitted; Zaldívar is on a 50% attributable basis and the other mines are 100%, which the report never says. |
+| ANTO | run 1 | 2024 copper average price vs 2023 | $4.15/lb, +8% | 4.15/3.85-1 = +7.8% | PASS | LME average market price. |
+| ANTO | run 1 | 2024 dividend payout | 50%, $309.6m | 31.4c / 62.8c underlying EPS = 50% | PASS | Underlying EPS basis. |
+| ANTO | run 1 | 2024 OCF minus PP&E purchases (implied) | not stated (gap says no FCF figure) | 3,276.2 - 2,414.9 = 861.3 $m | PASS | The report gives both inputs but no FCF; FY2025 equivalent 4,252.9 - 3,684.5 = 568.4. |
+| ANTO | rerun | Copper sales volume YoY 2024 | -2.9% | 607.1/625.3-1 = -2.91% | PASS | Sales volumes, not production (664kt). |
+| ANTO | rerun | By-product revenue YoY 2024 | +3.3% | 1,013.2/981.2-1 = +3.26% | PASS | Net of tolling and TC/RC. |
+| ANTO | rerun | Gold revenue change 2024 | +$39.9m | 446.8-406.9 = 39.9 | PASS | A change amount, not used as a level. |
+| ANTO | rerun | Copper price 2024 vs 2023 | +8% | 4.15/3.85-1 = +7.8% | PASS | LME average. |
+| ANTO | rerun | Net debt 31 Dec 2024 | $1,629.1m | 5,945.4-4,316.3 = 1,629.1 | PASS | Correct but STALE when presented as current: Jun-26 8,126.2-4,160.1 = 3,966.1. |
+| ANTO | rerun | Net debt/EBITDA | 0.48x (31 Dec 2024) | 1,629.1/3,426.8 = 0.475x | PASS | Issuer prints 0.48. The current figure is 0.68x (H1 2026 LTM). The gap 'No ... leverage multiple is stated' contradicts this finding. |
+| ANTO | rerun | Centinela production YoY 2025 | +7% | 240.4/223.8-1 = +7.4% | PASS | Mine level, 100% basis (70% owned). |
+| ANTO | rerun | H1 2026 net cash cost YoY | 1.22 vs 1.32 | -7.6% | PASS | Group weighted average, net of by-products. |
+| ANTO | rerun | H1 2026 realised premium to LME | 6.19 vs 5.93 | +4.4% | PASS | The premium includes the $131.1m provisional pricing gain. |
+| ANTO | rerun | 2025 capex (as 'Antofagasta capex') | $2,478.1m vs $1,414.0m | Group 3,684.5 vs 2,414.9 (+52.6%) | WRONG_SCOPE | The report's pair is Centinela-only (+75.3%). Labelling it the Group's understates capex by $1.2bn and overstates the growth rate. |
+| ANTO | rerun | 2024 OCF minus PP&E purchases (implied) | inputs shown, no FCF | 3,276.2-2,414.9 = 861.3 | PASS | FY2025: 4,252.9-3,684.5 = 568.4. H1 2026 is lower still because of capex. |
+| CLLS | run 1 | Q1 2024 revenue YoY (implicit in finding 2: $4.5m vs $0.1m) | $4.5m vs $0.1m | 4,528 vs 139 ($k) = +3,158% | STALE | Units, sign and currency are fine. The period is ten quarters old. The comparative excludes Calyxt (discontinued), so the scope is consistent. |
+| CLLS | run 1 | H1 2024 equity raised (finding 4) | $1,514k share capital + $139,256k premium | $140,770k ≈ $140m SIA | PARTIALLY_SUPPORTED | The sum is right. The instrument is convertible preferred, not ordinary shares, so it does not show the dilution. |
+| CLLS | run 1 | H1 2026 cash burn (cash + fixed-term deposits) | absent | $211m → $169m = -$42m in 6 months (~$21m per quarter) | UNSUPPORTED | This is the key biotech metric and the report does not compute it. USD reporting; the burn is helped by $16.8m of customer receipts. |
+| CLLS | run 1 | Implied runway at H1 2026 burn | absent (only 2024 going-concern text) | 169 / 21 ≈ 8 quarters → ~mid-2028 at a flat burn; company guides into Q4 2027 (pre-restructuring) and targets H2 2028 after the restructuring | UNSUPPORTED | The simple division is optimistic against company guidance because H1 included $16.8m of AZ receipts that are falling. |
+| CLLS | run 1 | H1 2026 revenue YoY | absent | Revenues 11,006 vs 27,380 = -59.8%; total revenues and other income 14,452 vs 30,222 = -52.2% | UNSUPPORTED | Lower AZ JRCA activity drives the fall. The operating loss widened from $23.8m to $48.7m. |
+| CLLS | run 1 | Net cash ex-leases at 2026-06-30 | absent ('no debt in evidence') | 166.8 - (66.2 + 7.5) = ~$93.2m. Lease debts add $30.6m | UNSUPPORTED | The financial liabilities include the EIB loan and the PGE loan. Measured on the balance-sheet line (166.8), not the press figure of $169m, which includes non-current restricted cash. |
+| CLLS | rerun | 9M-2025 R&D YoY (implicit in F21) | 69,081 vs 69,670 | -0.85% (issuer: -0.8%) | PASS | Sign and period are right. Currency is not stated in the report. Continuing operations only (Calyxt was deconsolidated before both periods). |
+| CLLS | rerun | Annual R&D growth FY2023→FY2025 (implicit in F26) | $87.6m → $90.5m → $93.5m | +3.3% (2024), +3.3% (2025) | PASS | USD, Group, annual. |
+| CLLS | rerun | 2024 equity raised (F19) | $1,514k + $139,256k | $140,770k ≈ $140m SIA | PARTIALLY_SUPPORTED | The sum is right. The instrument is mislabelled as ordinary 'shares issued'. |
+| CLLS | rerun | Cash and current financial assets at FY2025 year end | absent ('no cash balance for 2025') | 61,533 + 147,130 = $208.7m (vs $260.3m at 2024-12-31, -$51.6m) | UNSUPPORTED | The document was acquired but not extracted. The issuer's press figure including restricted cash is $211m. |
+| CLLS | rerun | H1 2026 cash burn | absent | $211m → $169m = -$42m in 6 months (~$21m per quarter) | UNSUPPORTED | USD. Includes $16.8m of customer receipts. The document was not acquired (quarterly slot is 10-Q only). |
+| CLLS | rerun | Runway | absent (blocking question never researched) | Company guidance: into Q4 2027 (at 2026-06-30), and a target of H2 2028 after the restructuring | UNSUPPORTED | The pivot guidance excludes any partnering proceeds from lasme-cel/eti-cel. |
+| CLLS | rerun | H1 2026 revenue YoY | absent | 11,006 vs 27,380 = -59.8% | UNSUPPORTED | Lower AZ JRCA activity. The operating loss widened from $23.8m to $48.7m. |
+| CLLS | rerun | Peer comparison: Moderna FY2025 revenue $1,944m, operating margin -158.1%, net debt -2,005m | shown as Cellectis's only peer | n/a (not a Cellectis metric) | WRONG_SCOPE | A same-canonical-industry tag only. Moderna is an mRNA vaccine company about 100x Cellectis's revenue, so not a comparable. |
+| LIN | run 1 | Estimated quarters of funding (Appendix 5B item 8.7) | not shown (no runway anywhere in the report) | 4.50 quarters (issuer basis: 45,087 / 10,011). Including development PPE spend, 45,087 / (7,349 + 2,662 + 24,025) = 1.32 quarters of cash; 1.82 with the A$17m NBS facility. | NOT_SHOWN | $A'000 units; the issuer formula excludes development capex, so the 4.5 quarters overstate runway for a company in construction. The 5B section 7 shows no facilities, though the activities report cites A$17m NBS undrawn. |
+| LIN | run 1 | Cash change, Q1 FY27 (30 Jun → 30 Sep 2026) | A$108m presented as the current position (F40) | 107,936 → 45,087 = −62,849 (−58.2%). Reconciles: 107,936 − 7,349 − 55,483 − 17 FX = 45,087. | STALE | A$; consolidated; includes the one-off A$28.8m SARECO consideration + A$4.6m recoverable VAT. |
+| LIN | run 1 | Interest income YoY FY2026 | levels only (A$2,453,519 vs A$277,599) | +783.8% (×8.84) | PASS | Levels are correct. This is not revenue growth: it reflects interest on placement cash. |
+| LIN | run 1 | Placement value | ~A$100m = ~133.33m × A$0.75 | 133.33m × 0.75 = A$100.0m | PASS | A$; April 2026. |
+| LIN | run 1 | Iluka offtake annual rate | 90,000 dmt over ~15 years (F21) and 6 ktpa, 15 years (F55) | 90,000 / 15 = 6,000 tpa | PASS | Consistent. |
+| LIN | run 1 | USGS 2025 country shares of world REO mine output | China 69.2%, US 13.1%, Australia 7.4%, Burma 5.6% | 270/390 = 69.2%; 51/390 = 13.1%; 29/390 = 7.4%; 22/390 = 5.6% | PASS | Arithmetic only. |
+| LIN | run 1 | Share dilution FY2026 | not shown | 1,163,422,236 → 1,849,396,405 shares = +59.0%; plus up to 27,535,693 SARECO consideration shares + US$7m performance rights at A$0.775 | NOT_SHOWN | Ordinary shares; includes 569.0m placement shares, 66.6m option exercises, 20m Gerald, 20m Lelouma. |
+| LIN | run 1 | Market capitalisation | 'market cap not sourced' | A$0.415 × 1,849.4m ≈ A$767m | NOT_SHOWN | Basic shares; excludes the pending SARECO shares. |
+| LIN | run 1 | Share price vs April-2026 placement | V2 council only: −46.45% over 6 months | 0.415 / 0.75 − 1 = −44.7% vs placement; −46.5% vs the A$0.775 SARECO deemed price | NOT_SHOWN | Not linked to the funding-risk narrative. |
+| LIN | rerun | Cash change Q1 FY27 (30 Jun → 30 Sep 2026) | levels only: $A107,936k → $A45,087k (F32) | −62,849k (−58.2%); 107,936 − 7,349 − 55,483 − 17 FX = 45,087 | PASS | A$'000; consolidated; includes the one-off A$28.8m SARECO + A$4.6m recoverable VAT. The levels are correct, but the change is not stated and is filed under catalysts. |
+| LIN | rerun | Estimated quarters of funding (5B item 8.7) | not shown | 4.50 (45,087 / 10,011, issuer basis). Capex-inclusive: 45,087 / (7,349 + 2,662 + 24,025) = 1.32 quarters; 1.82 with the A$17m NBS facility | NOT_SHOWN | The issuer formula excludes development capex, so it overstates runway for a company in construction. |
+| LIN | rerun | Iluka unit cash cost change H1 2026 (F21/F26) | +9% ($1,236 vs $1,138) | +8.6%; COGS/t 1,358/1,241 = +9.4% | WRONG_ENTITY | The arithmetic is fine, but it is Iluka's Z/R/SR metric, and F21/F22 show it unattributed in Lindian's operations section. |
+| LIN | rerun | USGS 2025 country shares | China 69.2%, US 13.1%, Australia 7.4%, Burma 5.6% | 270/390 = 69.2; 51/390 = 13.1; 29/390 = 7.4; 22/390 = 5.6 | PASS | Arithmetic only. |
+| LIN | rerun | Placement value | ~A$100m = 133.33m × A$0.75 | A$100.0m | PASS | A$; April 2026. |
+| LIN | rerun | Iluka offtake annual rate | 6,000 dmt/yr, 90,000 dmt over ~15 years (F23); 6ktpa/15 yrs (F53) | 90,000 / 15 = 6,000 | PASS | Consistent. |
+| LIN | rerun | Share dilution FY2026 | 'share count grew 0.98% last fiscal year' (F40, koalagains) | +59.0% (1,163.4m → 1,849.4m) | STALE | FY2025 aggregator figure vs the FY2026 AR held in the corpus. |
+| LIN | rerun | Market capitalisation | not sourced (blocking gap) | ≈ A$0.42 × 1,849.4m ≈ A$777m (basic) | NOT_SHOWN | Excludes the pending SARECO consideration shares. |
+
+---
+
+## 7. Factual failures
+
+These are wrong values, unsupported claims presented as fact, and wrong entities shown as facts. The day-1 P0s were headline numbers from deterministic layers (XBRL period selection, table unit inference, debt-concept summation). They carried 'Regulatory filing' provenance, which made them the most dangerous failure mode. All three are fixed in that layer. The day-2 P0s came from the LLM layers that write prose on top of the ledger: a manufactured conflict (ANTO-1), a chair asserting that results do not exist (CLLS-3), a synthesis giving a pre-revenue developer a mining business (LIN-1), and a rumour stated as fact (PYPL2-1). Nothing in the current architecture verifies that kind of sentence.
+
+**All P0 defects**
+
+| ID | Case | Sev | Defect | Hyp. | Status | Fix / note |
+|---|---|---|---|---|---|---|
+| H1 | HON e50cb267 | P0 | Revenue YoY -2.74% instead of +7.85%; synthesis 'slight decline' | B, A | fixed by a merged PR; verified on a live rerun | #297 1f38d38 ADR-062 |
+| C1 | CFR f722d620 | P0 | Net cash '8,496 bn EUR' and OCF '4,880 bn EUR' (x1000) | B, C | fixed by a merged PR; verified by offline replay; case not rerun | #298 c940772 ADR-064 (offline replay on the real FY26 PDF: 8,496m / 4,880m). CFR not rerun. No scale error on ANTO or LIN, where the fix was barely exercised (facts_read=0). |
+| JPM-1 | JPM 30828043 | P0 | 'Total debt' shown as 64,776m = short-term borrowings only; long-term debt (435,206m) omitted | B | fixed by a merged PR; verified by offline replay; case not rerun | #307 75c5389 ADR-067 (replay: 64,776 -> 499,982). JPM not rerun. Live on PYPL the withholding path holds, but no withheld reason reaches the page (PYPL-11). |
+| PYPL2-1 | PYPL 39905de8 | P0 | Unsupported takeover claim presented as fact in the executive synthesis | H | fix in an open PR, not merged | #314 (ADR-078, open): a material corporate event resting only on unvetted web pages is never stated as fact. |
+| ANTO-1 | ANTO a68e6d31 | P0 | Manufactured revenue conflict shows Antofagasta 2024 revenue as $156.6m against South32's $8,296m | B, D | fixed by a merged PR; verified on a live rerun | #310 e052ec2 ADR-074 (a change is not a level; another company's statement on its own site is not the issuer's). ANTO2: no conflict; '$156.6m' sits beside revenue $6,613.4m. |
+| CLLS-3 | CLLS 1df9100c | P0 | The chair states false facts about disclosure availability and presents a 2024 snapshot as the current state | H | fixed by a merged PR; verified on a live rerun | Gone on the rerun after #311 09836d0: the council refused (blocking question open) and the chair fell back to a deterministic verdict. No guard was added that stops 'not in evidence' being stated as 'does not exist' (same class as PYPL2-1, LIN-1). |
+| LIN-1 | LIN 796b644d | P0 | Executive synthesis says the pre-revenue developer 'mines and sells monazite concentrate' | G | absent on the rerun without a targeted fix; root cause not addressed | Absent on the rerun only because the editor failed (LLMJsonError) and a deterministic synthesis was used. The tense/stage check does not exist. |
+
+**All factual-failure defects**
+
+| ID | Case | Sev | Defect | Hyp. | Status |
+|---|---|---|---|---|---|
+| H1 | HON e50cb267 | P0 | Revenue YoY -2.74% instead of +7.85%; synthesis 'slight decline' | B, A | fixed by a merged PR; verified on a live rerun |
+| C1 | CFR f722d620 | P0 | Net cash '8,496 bn EUR' and OCF '4,880 bn EUR' (x1000) | B, C | fixed by a merged PR; verified by offline replay; case not rerun |
+| C4 | CFR f722d620 | P2 | Weak/advocacy single sources (NGO, amlnetwork.org) lifted to the executive synthesis as 'regulatory investigations' | - | open |
+| ADBE-3 | ADBE 7b401826 | P1 | F14 states FY2026 total revenue as reported from a non-existent 'Q4 2026 summary' | G, B | open |
+| ADBE-4 | ADBE 7b401826 | P1 | Peer set is Tempus AI and Alphabet | - | open |
+| ADBE-6 | ADBE 7b401826 | P1 | Cash conversion printed as '140.69×' (and GOOGL '124.62×') in the peer table | B | fixed by a merged PR; not yet observed live |
+| ADBE-12 | ADBE 7b401826 | P2 | Derivative-suit finding has the wrong venue and count | - | open |
+| JPM-1 | JPM 30828043 | P0 | 'Total debt' shown as 64,776m = short-term borrowings only; long-term debt (435,206m) omitted | B | fixed by a merged PR; verified by offline replay; case not rerun |
+| JPM-6 | JPM 30828043 | P1 | Council/red-team claims with wrong period and scope (H1 as Q2, Corporate segment as Firm) and wrong ROE | B, H | open |
+| PYPL-2 | PYPL f031b73b; rerun PYPL2-4 | P1 | Securities litigation misread as 'resolved'; active 2026 Branded Checkout class action omitted | - | open |
+| PYPL-3 | PYPL f031b73b; rerun PYPL2-4 | P1 | Gap says no live regulatory action or litigation, contradicting the acquired 10-Q and the report's own F13 | C, H | open |
+| PYPL-5 | PYPL f031b73b | P1 | Red team dates FY2025 cash to 2026-09-30 | B | absent on the rerun without a targeted fix; root cause not addressed |
+| PYPL-12 | PYPL f031b73b; rerun PYPL2-11 | P2 | Unconfirmed M&A rumours and an irrelevant article listed as current developments | G | open |
+| PYPL2-1 | PYPL 39905de8 | P0 | Unsupported takeover claim presented as fact in the executive synthesis | H | fix in an open PR, not merged |
+| ANTO-1 | ANTO a68e6d31 | P0 | Manufactured revenue conflict shows Antofagasta 2024 revenue as $156.6m against South32's $8,296m | B, D | fixed by a merged PR; verified on a live rerun |
+| ANTO2-1 | ANTO c971490d | P1 | Centinela segment capex presented as Antofagasta (Group) capex | A, B | open |
+| CLLS-3 | CLLS 1df9100c | P0 | The chair states false facts about disclosure availability and presents a 2024 snapshot as the current state | H | fixed by a merged PR; verified on a live rerun |
+| CLLS-11 | CLLS 1df9100c | P2 | The AstraZeneca '$245m invested' figure conflates a collaboration upfront with equity | B | absent on the rerun without a targeted fix; root cause not addressed |
+| LIN-1 | LIN 796b644d | P0 | Executive synthesis says the pre-revenue developer 'mines and sells monazite concentrate' | G | absent on the rerun without a targeted fix; root cause not addressed |
+| LIN-6 | LIN 796b644d | P1 | Chair invents a revenue contradiction and cites a disagreement id that does not exist in the council | H, I | absent on the rerun without a targeted fix; root cause not addressed |
+| LIN-10 | LIN 796b644d; rerun LIN2-6 | P2 | Guinea tenement IDs assigned to the wrong projects; Lelouma's inactive status missed | - | open |
+
+---
+
+## 8. Extraction failures
+
+**This is the campaign's largest finding.** 'Missing' in a report usually means the platform held the document and did not read it, not that the issuer did not disclose the fact.
+
+- The issuer-document fact channel read 0 facts for the 10-K/10-Q of HON (before), ADBE, JPM and PYPL, the Cellectis 20-F (the XBRL reader is us-gaap only, so IFRS is not read), Lindian's annual report and Appendix 5B, and Antofagasta's documents. US research rests on XBRL; non-US research rests on whatever an investigator happens to quote.
+- JPM's gaps say no provision, NCO, NPA, CET1-2025, SLR, LCR or segment figure exists 'for any period'. All are in the 10-K/10-Q the platform indexed (1,663 + 735 chunks). The whole run made one corpus query.
+- Cellectis's blocking cash_runway question ran 0 tools; the 20-F in the corpus states $208.7m of cash and current financial assets.
+- Lindian's Appendix 5B (26 chunks, state ready) holds the quarter's cash flow and item 8.7 (4.50 quarters of funding); no runway is computed.
+- PayPal's Q3 EX-99.1 was read; TPV $487.1B, TM$, guidance, debt of $13.5B and the buyback never became findings, and a computable take rate (1.76%) is called 'only defined'.
+- ADR-076 (#312) makes recency questions read the newest held documents and adds the honest reason acquired_not_read. It is live on PYPL2 and LIN2, but covers recency questions only.
+
+**Gap audit totals**
+
+| Report | ISSUER_NOT_DISCLOSED | DOCUMENT_NOT_ACQUIRED | SOURCE_BLOCKED | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | FACT_REJECTED_SCOPE_MISMATCH | FACT_NONCOMPARABLE | FACT_SUPERSEDED | RESEARCH_QUESTION_NOT_RUN | Total |
+|---|---|---|---|---|---|---|---|---|---|
+| HON before | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 1 |
+| CFR before | 0 | 0 | 0 | 3 | 0 | 0 | 0 | 0 | 3 |
+| ADBE single run | 0 | 1 | 0 | 10 | 0 | 0 | 0 | 1 | 12 |
+| JPM single run | 1 | 2 | 0 | 11 | 0 | 1 | 0 | 0 | 15 |
+| PYPL run 1 | 3 | 0 | 0 | 11 | 0 | 0 | 0 | 1 | 15 |
+| PYPL rerun | 2 | 1 | 0 | 8 | 0 | 0 | 0 | 1 | 12 |
+| ANTO run 1 | 0 | 3 | 0 | 6 | 0 | 1 | 0 | 1 | 11 |
+| ANTO rerun | 1 | 1 | 0 | 5 | 1 | 0 | 1 | 1 | 10 |
+| CLLS run 1 | 1 | 5 | 0 | 2 | 0 | 0 | 0 | 0 | 8 |
+| CLLS rerun | 1 | 2 | 0 | 5 | 0 | 0 | 0 | 3 | 11 |
+| LIN run 1 | 1 | 2 | 0 | 8 | 0 | 0 | 0 | 0 | 11 |
+| LIN rerun | 1 | 4 | 0 | 7 | 0 | 0 | 0 | 0 | 12 |
+| ALL | 11 | 21 | 0 | 77 | 1 | 2 | 1 | 8 | 121 |
+
+**Gap audit detail**
+
+| # | Company | Run | Gap as stated | Classification | Evidence | Audit |
+|---|---|---|---|---|---|---|
+| 1 | ADBE | single run | No debt balance is given for 2026-Q3, so leverage cannot be tracked from FY2025 to the latest quarter | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q filed 2026-09-22 balance sheet: Debt (current) 1,597 and Debt (long-term) 4,766. Note 14 itemises the notes plus $250M commercial paper. Also in XBRL DebtCurrent and LongTermDebt for 2026-08-28. | independent evaluation |
+| 2 | ADBE | single run | No covenant disclosure; no refinancing or maturity schedule; no coupon or interest expense for any period | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q Note 14 has the full maturity table (2.15% 2027 $850M, 4.85% 2027 $500M, 4.75% 2028 $800M, ..., 5.30% 2035 $500M) and states the notes 'do not contain financial covenants'. Interest expense was Q3 $66M and FY2025 $263M (XBRL InterestExpenseNonoperating). | independent evaluation |
+| 3 | ADBE | single run | No dividend, share-repurchase, acquisition or debt-repayment line items for any period; no buyback authorisations | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | XBRL repurchases were FY2025 $11,281M and 9M FY2026 $6,821M. 10-Q Note 11: new $25B authority in April 2026, $24.55B remaining. Semrush acquisition $1.87B (Note 3). Q3 debt repayment $250M (Q3 release cash-flow statement). Adobe pays no dividend. | independent evaluation |
+| 4 | ADBE | single run | No cash flow statement for Q3 FY2026 | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The 10-Q has a 9-month cash-flow statement (OCF 7,646, PP&E 180). The Q3 release (8-K 2026-09-10, acquired) has Q3 OCF 2,523, capex 85 and repurchases 2,232. | independent evaluation |
+| 5 | ADBE | single run | No segment-level revenue figures / no reporting-segment revenue breakdown in evidence | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Contradicted by the report's own F1/F2, taken from the 10-K segment and geography tables. For FY2026 Adobe has one segment and discloses customer-group subscription revenue: Q3 BP&C $1.91B (+16%), C&MP $4.65B (+13%) (Q3 release; 10-Q MD&A). | independent evaluation |
+| 6 | ADBE | single run | No unit economics: no subscriber counts, seats, ARPU, bookings | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Seats and ARPU are not disclosed (ISSUER_NOT_DISCLOSED). But Total Adobe ARR $27.50B, RPO $22.16B (cRPO 67%) and 1B MAU are disclosed in the Q3 release and 10-Q, and none were extracted. | independent evaluation |
+| 7 | ADBE | single run | No litigation, regulatory or legal-proceeding disclosure with amounts or case counts | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q Note 13: DOJ/FTC ROSCA action settled on 2026-03-12; 9M loss contingency $92M; securities class action (Figma statements); five derivative actions. FY2026 goodwill impairment of $70M (Publishing & Advertising). | independent evaluation |
+| 8 | ADBE | single run | No customer, geography, product or channel concentration data | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-K Note 2: 'there were no customers that represented at least 10% of net revenue.' Geography is in the 10-K, and the report itself has it as F2. | independent evaluation |
+| 9 | ADBE | single run | No evidence identifies major shareholders or their stakes | DOCUMENT_NOT_ACQUIRED | Schedule 13G filings on 2026-08-07 (0000093751-26-000403) and 2026-04-29, a 13G/A on 2026-07-27, and the 2026 proxy (2026-02-27) are on EDGAR and were not fetched. | independent evaluation |
+| 10 | ADBE | single run | No announced project or new-product launch; no capex per project; no permits, construction status, offtake, plants, mines or capacity | RESEARCH_QUESTION_NOT_RUN | These are template questions for an industrial or mining company and do not apply to software (no software playbook). The software-relevant equivalents (Semrush acquisition, AI product launches, freemium) are disclosed in the 10-Q and release and were not researched. | independent evaluation |
+| 11 | ADBE | single run | Headline figures of the most recently reported period: 'not settled, evidence not acquired by the platform' | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | F38/F42 hold Q3 FY2026 revenue 6,760 and net income 1,827 from the 10-Q. The Q3 release 8-K (0000796343-26-000147) is listed under 'Documents read' with 0 facts. | independent evaluation |
+| 12 | ADBE | single run | Missing primary source: Annual report / 10-K narrative | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | core_filings.annual: 10-K 0000796343-26-000003, state ready, 384 chunks indexed. F19, F44 and F46 cite it. | independent evaluation |
+| 13 | JPM | single run | No provision for credit losses, net charge-off or cost-of-risk figure appears in any retrieved evidence item, for any period | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q Q2 2026 (acquired, 735 chunks): provision for credit losses 2,515 (Q2), 5,022 (H1); Firm NCOs 2,366, NCO rate 0.66%; allowance 26,152. XBRL ProvisionForLoanLeaseAndOtherLosses FY2025 = 14,212m. 3Q26 slides: NCOs $2.2B, credit costs $2.7B. | independent evaluation |
+| 14 | JPM | single run | No non-performing exposure figure (nonaccrual loans, NPL ratio, NPE total) for any period | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q selected metrics: nonperforming assets 9,849 at Jun 30, 2026 (10,359 at Dec 31, 2025); CCB nonaccrual loans 3,506; CIB total nonaccrual loans 4,810. | independent evaluation |
+| 15 | JPM | single run | No actual Firm CET1 ratio for 2025; only 2024 ratios | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-K capital table: CET1 14.6% Standardized / 14.1% Advanced at Dec 31, 2025, requirement 11.5%. 10-Q: 14.2% at Jun 30, 2026. 3Q26 slides: 13.9% / 14.1%. | independent evaluation |
+| 16 | JPM | single run | No revenue or profit figures per segment | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q segment results: CCB Q2 2026 NI 5,311, revenue 20,272 (BWM 11,229, Home Lending 1,285, Card & Auto 7,758). 3Q26 slides: CCB NI $5.7B, CIB $8.2B, AWM $1.8B. | independent evaluation |
+| 17 | JPM | single run | No LCR, NSFR or other liquidity ratio figures | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q selected metrics: Firm LCR (average) 110%, JPMorgan Chase Bank N.A. LCR 118% for Q2 2026; HQLA ~956bn. 3Q26: Firm LCR 113%. | independent evaluation |
+| 18 | JPM | single run | No Group-level actual regulatory leverage ratio (SLR) - only requirement levels | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q selected metrics: SLR 5.5% at Jun 30, 2026 (5.8% at Dec 31, 2025), Tier 1 leverage 6.6%. 3Q26: Firm SLR 5.5%. | independent evaluation |
+| 19 | JPM | single run | The eSLR excerpt states the amended buffers but not the compliance effective date | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-K Key Regulatory Developments, same paragraph: 'The final rule, with an effective date of April 1, 2026, allows for early adoption, which the Firm has elected, effective January 1, 2026.' | independent evaluation |
+| 20 | JPM | single run | No debt maturity schedule ... long-term debt levels | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q balance sheet: long-term debt 460,523 at Jun 30, 2026 vs 435,206 at Dec 31, 2025. The 10-K long-term debt note has a maturity table. Meanwhile the Key financials 'Total debt' omits LTD entirely. | independent evaluation |
+| 21 | JPM | single run | What were the headline figures of this issuer's most recently reported period? - 'no citable evidence was retrieved' | DOCUMENT_NOT_ACQUIRED | Q3 2026 earnings 8-K (Item 2.02) acc 0001628280-26-065582 and slides 8-K acc 0001628280-26-065616, both 2026-10-13, are on EDGAR. The platform instead ingested 8-K acc 0001193125-26-426704 (2026-10-20, Item 8.01 note-offering legal opinion) as 'results_release'. | independent evaluation |
+| 22 | JPM | single run | No stated capital-allocation or dividend/buyback policy text | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-K Capital Risk Management (capital actions, SCB 2.5% through Sep 30, 2027) and the CET1 rollforward (used in F20/F21). 3Q26: common dividend $1.65/share (up from $1.50), net repurchases $664mm, LTM net payout 61%. | independent evaluation |
+| 23 | JPM | single run | No capital expenditure or free cash flow figure for any period; blocking gaps for EBITDA/FCF/current ratio; 'Valuation blocked: FCF, EBITDA' | FACT_NONCOMPARABLE | EBITDA, FCF and current ratio are not meaningful for a bank, and banks do not report them. These should not be required fields under banks_financials. The bank equivalents (PPNR 30,031 Q2; TBVPS 113.35; ROTCE 29%) are disclosed and not used. | independent evaluation |
+| 24 | JPM | single run | Book value per share not extracted (listed among 'remaining statement lines') | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q selected metrics: BVPS $133.01, TBVPS $113.35 at Jun 30, 2026; 10-K: 126.99 / 107.56 at Dec 31, 2025. | independent evaluation |
+| 25 | JPM | single run | No dated catalyst, launch date or expected completion timing in the FY2025 10-K or Q2 2026 10-Q excerpts | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q: forward purchase commitment (Dec 30, 2025) to acquire the Apple credit card portfolio, expected closing about 24 months later; interchange settlement final-approval hearing November 2026; N.D. Ill. merchant trial September 2026. | independent evaluation |
+| 26 | JPM | single run | No named competitor carries scale, growth, cost or capital figures | ISSUER_NOT_DISCLOSED | The 10-K competition section names peer classes, not named peers, so the platform's statement is broadly right. Peer data would need peers' own filings (RESEARCH_QUESTION_NOT_RUN for those). | independent evaluation |
+| 27 | JPM | single run | No Group-level board composition, director independence, tenure or committee detail | DOCUMENT_NOT_ACQUIRED | In the 2026 DEF 14A proxy statement, which was not acquired. The platform substituted J.P. Morgan SE's supervisory-board data. | independent evaluation |
+| 28 | CFR | before | No free cash flow or operating cash flow figure appears in the evidence | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | OCF 4,880m is an acquired, validated fact (annual report and results announcement). | defect log C7 |
+| 29 | CFR | before | No sales figure by business area | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Jewellery Maisons 16.5bn and Specialist Watchmakers 3.1bn are acquired segment facts. | defect log C7 |
+| 30 | CFR | before | Headline figures of the most recent period not settled | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Q1 FY27 sales 6,329m (+17%, +20% cc) is in Key Financials. | defect log C7 |
+| 31 | HON | before | Current period: 'Interim report acquired (2026-10-22), figures not yet extracted' | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The Q3 2026 10-Q was acquired; its XBRL quarter was never read. Fixed for US 10-Q filers via XBRL by ADR-062 (live: revenue 4,994m, NI 664m). Issuer-document facts from the 10-K/10-Q remain 0. | defect log H2 |
+| 32 | PYPL | run 1 | What were the headline figures of the most recently reported period (question 'not settled', evidence not acquired) | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The EX-99.1 for 8-K 0001633917-26-000086 has status 'extracted', with excerpts 'Net revenues increased 2% to $8.6 billion', 'GAAP operating income decreased 8% to $1.4 billion', 'Cash flow from operations of $1.6 billion and free cash flow of $1.4 billion'. | independent evaluation |
+| 33 | PYPL | run 1 | Take rate, transaction margin and transaction margin dollars are only defined, not quantified | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | ER: TM$ 3,950 (+2%), TM$ ex-interest 3,661, transaction margin 46.0%. 10-Q MD&A: transaction expense rate 0.87%, transaction and credit loss rate 0.08%. | independent evaluation |
+| 34 | PYPL | run 1 | No product, segment or geographic revenue or profit split | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q/ER: one reportable segment; Q3 transaction revenues 7,711 / OVAS 873; U.S. 5,002 / International 3,582 (FXN -4%). 10-Q MD&A: Braintree +~$270m, Venmo +~$100m (9M). | independent evaluation |
+| 35 | PYPL | run 1 | No evidence on buyback spend, debt repayment amounts, acquisition outlays or capital-allocation policy | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | XBRL FY2025 PaymentsForRepurchaseOfCommonStock 6,052. 10-Q Note 14: 94m shares for $4.5B in 9M26, $9.4B authorization remaining. Repayments under financing arrangements 2,100 (9M26). Acquisitions 122. | independent evaluation |
+| 36 | PYPL | run 1 | No total or short-term debt figure for 2026-Q3 | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q balance sheet: short-term debt 2,533, long-term debt 10,939. XBRL DebtCurrent 2,533, LongTermDebt 13,353. ER: 'Debt totaled $13.5 billion'. | independent evaluation |
+| 37 | PYPL | run 1 | No refinancing disclosure: maturity schedule, credit-facility capacity, debt issued/repaid | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q debt note: notes table incl. 2026 issuance (4.55% 2028, 4.95% 2031, 5.55% 2036), maturity schedule (1,250 rest of 2026; 1,797 / 1,512 / 1,011 in later years), Paidy ¥90bn facility (~$572m, due Feb 2027). Borrowings 3,924 / repayments 2,100 in 9M26. | independent evaluation |
+| 38 | PYPL | run 1 | No evidence of any live regulatory action, fine, litigation | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q Note 13 pp.39-41: FTC CIDs (incl. Sept 2026), CFPB CIDs, German FCO, UK FCA (Mar 2026), PPH action on appeal, Branded Checkout Securities Action, five Branded Checkout Derivative Actions. | independent evaluation |
+| 39 | PYPL | run 1 | No dated forward guidance or catalyst calendar | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | ER 'Financial Guidance': Q4'26 GAAP EPS ~$1.37, FY'26 GAAP ~$5.07, non-GAAP ~$5.60 (raised). Dividend payable 2026-12-24. | independent evaluation |
+| 40 | PYPL | run 1 | No executive-officer disclosure in a primary filing | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The acquired ER quotes 'Enrique Lores President and CEO'. The CEO change itself is 8-K 0001193125-26-035860 Item 5.02 (2026-02-03), which was not acquired. | independent evaluation |
+| 41 | PYPL | run 1 | No prior-year (FY2024) margin values, so no margin trend | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-K XBRL FY2024: revenue 31,797, OI 5,325 (16.75% margin), NI 4,147. The red team itself used FY2024 FCF. | independent evaluation |
+| 42 | PYPL | run 1 | Only page 1 of the 2026-Q3 10-Q was retrieved | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | core_filings.quarterly: state ready, chunk_count 357. Note 13 text cited as 'page 1' is on pp.39-41. Investigators ran 0 corpus queries in 13 of 14 domains. | independent evaluation |
+| 43 | PYPL | run 1 | No competitor or peer-group figures | RESEARCH_QUESTION_NOT_RUN | peer_table empty because the company is unclassified. No peer search was run. | independent evaluation |
+| 44 | PYPL | run 1 | No capex, capacity additions, permits, construction status or offtake contracts | ISSUER_NOT_DISCLOSED | Inapplicable industrial/mining template for a payments company. Capex is disclosed (852 FY2025; 600 9M26). | independent evaluation |
+| 45 | PYPL | run 1 | No covenant terms (maintenance tests, headroom) | ISSUER_NOT_DISCLOSED | The Q3 10-Q debt note discloses no financial maintenance covenant headroom. The notes are senior unsecured. | independent evaluation |
+| 46 | PYPL | run 1 | ISIN missing (blocking) | ISSUER_NOT_DISCLOSED | ISIN is not in SEC filings (US70450Y1038 is the market identifier). Not a research gap. | independent evaluation |
+| 47 | PYPL | rerun | No issuer-own Q3 2026 filing, 10-Q or press release appears in the evidence | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | core_filings.quarterly ready (357 chunks); 8-K 0001633917-26-000086 results_release 'reused from cache'; F12 cites its table t18; F21/F30/F33 cite the 10-Q. The gap is false, not merely unextracted. | independent evaluation |
+| 48 | PYPL | rerun | Evidence contains no company-issued margin guidance or outlook figures for FY2026 | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | ER 'Financial Guidance': 4Q'26 GAAP EPS ~$1.37, non-GAAP ~$1.43; FY'26 GAAP EPS ~$5.07 (reaffirmed), non-GAAP ~$5.60 (raised from ~$5.38); TM$ guidance raised. | independent evaluation |
+| 49 | PYPL | rerun | No total debt, short-term borrowings or net debt figure exists for 2026-Q3 | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q balance sheet: short-term debt 2,533, long-term debt 10,939; ER: 'Debt totaled $13.5 billion'; cash, cash equivalents and investments $15.1B. | independent evaluation |
+| 50 | PYPL | rerun | No share repurchase (buyback) amounts, authorisations or spend appear in any period | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | ER: '$1.5 billion ... repurchasing approximately 28 million shares in 3Q'26; TTM $6.0 billion, 117 million shares'. 10-K XBRL PaymentsForRepurchaseOfCommonStock FY2025 6,052. | independent evaluation |
+| 51 | PYPL | rerun | No revenue or profit breakdown by segment or geography | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q/ER: one reportable segment; Q3 transaction revenues 7,711 / OVAS 873; U.S. 5,002 / International 3,582. | independent evaluation |
+| 52 | PYPL | rerun | No evidence in the corpus on litigation, regulatory action ... | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q Note 13: FTC CIDs (incl. Sept 2026), CFPB CIDs, German FCO, UK FCA, PPH action on appeal, Branded Checkout Securities Action and Derivative Actions. | independent evaluation |
+| 53 | PYPL | rerun | No unit cost per transaction ... No quantified input costs (processing, network fees, credit losses) | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q MD&A: transaction expense rate 0.87% (0.89% PY); transaction and credit loss rate 0.08% (0.11% PY). | independent evaluation |
+| 54 | PYPL | rerun | No debt maturity schedule or refinancing disclosure | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 10-Q debt note: notes table including the May 2026 issuance (424B2s 2026-05-12/13/14), future principal payments schedule, Paidy credit facility. | independent evaluation |
+| 55 | PYPL | rerun | No evidence on board composition, ownership, related-party transactions | DOCUMENT_NOT_ACQUIRED | DEF 14A 0001193125-26-145721 (2026-04-07) exists on EDGAR and was not acquired. The CEO change (8-K 0001193125-26-035860 Item 5.02) was also not acquired. | independent evaluation |
+| 56 | PYPL | rerun | No evidence names any competitor of PayPal, nor gives peer figures | RESEARCH_QUESTION_NOT_RUN | peer_table empty (unclassified). competitive_position is 'satisfied' with 0 findings and ran 0 corpus queries. | independent evaluation |
+| 57 | PYPL | rerun | No scheduled date for Q4/FY26 results, or for any takeover-process deadline | ISSUER_NOT_DISCLOSED | The ER gives no Q4 date. No takeover process exists in any filing; the gap repeats the unsupported web claim. | independent evaluation |
+| 58 | PYPL | rerun | No evidence on project pipeline: capacity additions, permits, construction status or offtake contracts | ISSUER_NOT_DISCLOSED | This is the inapplicable industrial/mining template. Capex is disclosed (852 FY2025). | independent evaluation |
+| 59 | ANTO | run 1 | No interim or quarterly disclosure is identified; only 2024 annual-report material. | DOCUMENT_NOT_ACQUIRED | The H1 2026 half-year report (13 Aug 2026), the FY2025 RNS (17 Feb 2026) and the Q3 2026 production report (15 Oct 2026) are all public on antofagasta.co.uk and download with a plain GET (all returned 200 in this evaluation). The run also held the Q2/Q3 IR pages (F8, F9, F20). T… | independent evaluation |
+| 60 | ANTO | run 1 | No citable evidence for 'profitability' / 'revenue_trajectory' | DOCUMENT_NOT_ACQUIRED | FY25 RNS p1: revenue 8,620.3, EBITDA 5,201.9 (margin 60.3%); H1 2026: revenue 4,479.0, EBITDA 2,840.5 (63.4%). | independent evaluation |
+| 61 | ANTO | run 1 | No revenue breakdown by mine or by segment (Los Pelambres, Centinela, Antucoya, Zaldívar) | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The FY24 RNS segment note gives revenue LP 3,326.7, Centinela 2,359.2, Antucoya 732.6 $m. The run ingested the 2024 annual report (1,041 PDF pages), which carries the same note. | independent evaluation |
+| 62 | ANTO | run 1 | No asset-by-asset production tonnage, capacity or unit cash cost (C1) | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | F15's own evidence has the mine-level H1 2026 table (LP 133.8, Centinela 97.1, Antucoya 37.0, Zaldívar 17.0). The Q3 2026 page the run held carries per-mine sections. | independent evaluation |
+| 63 | ANTO | run 1 | No leverage ratio (net debt/adjusted EBITDA) for the company itself | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | FY24 RNS: net debt/EBITDA 0.48x. FY25: 0.53x. H1 2026: 0.68x. All headline-table items. | independent evaluation |
+| 64 | ANTO | run 1 | No company disclosure on facility maturities, refinancing plans or undrawn committed lines | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | FY24 RNS going-concern note: 'undrawn revolving credit facility of $500 million which expires in December 2028'. The same paragraph is F26's source (22%/11% maturities), so the gap contradicts F26. | independent evaluation |
+| 65 | ANTO | run 1 | Shareholder names, ownership percentages and board composition not in evidence | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The gap itself says the AR cross-references substantial shareholders to p161. FY25 RNS: immediate parent Metalinvest Establishment, ultimate parent E. Abaroa Foundation (Luksic family). | independent evaluation |
+| 66 | ANTO | run 1 | No capex, timing or capacity for Zaldívar | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Q2 2026 report (the 7/15/2026 antofagasta.co.uk page behind F20): ~$0.9bn (100% basis) water pipeline, transition from mid-2028, mine life to 2051. Zaldívar EIA approved (2025 release). | independent evaluation |
+| 67 | ANTO | run 1 | No expected capacity, capex or commissioning date for Centinela Second Concentrator | DOCUMENT_NOT_ACQUIRED | H1 2026 and Q3 2026: commissioning to complete in 2027; together with the LP projects, expected to deliver '30% increase in copper production'. | independent evaluation |
+| 68 | ANTO | run 1 | Sensitivities: 'No research question was assigned to this section' | RESEARCH_QUESTION_NOT_RUN | FY25 RNS: a 10% move in copper price ($4.51/lb avg) = $662.7m EBITDA; Mo $75.0m; gold $72.6m; USD/CLP $172.0m. | independent evaluation |
+| 69 | ANTO | run 1 | Conflict: revenue 2024 US$8,296m vs $156.6m | FACT_NONCOMPARABLE | These are different entities (South32 vs Antofagasta) and different quantities (a revenue level vs a volume variance). Antofagasta 2024 revenue = $6,613.4m. | independent evaluation |
+| 70 | ANTO | rerun | No 2025 revenue figures appear in the evidence despite a 2025 Annual Report publication notice; 'No citable evidence for revenue_trajectory/profitability' | DOCUMENT_NOT_ACQUIRED | FY25 RNS p1: revenue 8,620.3, EBITDA 5,201.9 (60.3%). H1 2026: revenue 4,479.0, EBITDA 2,840.5. Both download from antofagasta.co.uk with a plain GET. The run read the FY25 Centinela section (F8, F9, F30) but not the group table. | independent evaluation |
+| 71 | ANTO | rerun | No Group-level output total or consolidated unit cost across all assets | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | H1 2026 report: group net cash cost 1.22 (which the run holds as F31) and group production. Q3 2026: YTD 436.9kt. The F31 and F32 source has the group table. | independent evaluation |
+| 72 | ANTO | rerun | No covenant threshold, headroom figure or leverage multiple is stated for the Group | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | F24 and F29 state net debt/EBITDA 0.48x. FY24 RNS going-concern note: undrawn $500m RCF to Dec 2028. The gap contradicts the ledger. | independent evaluation |
+| 73 | ANTO | rerun | No revenue split by operating segment or mine (Los Pelambres, Centinela, Antucoya, Zaldivar) | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The segment note in the FY24 and FY25 RNS gives mine revenue and EBITDA (2025 EBITDA LP 2,548.0, Centinela 2,234.2, Antucoya 327.0). The run read the FY25 Centinela section. | independent evaluation |
+| 74 | ANTO | rerun | No expected capacity, capex or completion date given for Centinela Second Concentrator | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Contradicted by F7 ($4.4bn, 2024-2027), F15/F19 (2027) and F30 (CSC $1,327.1m in 2025). H1 2026 projects table: cost reduced by about $380m. | independent evaluation |
+| 75 | ANTO | rerun | No shareholding percentages or named substantial shareholders; text cross-refers to page 161 | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | FY25 RNS: immediate parent Metalinvest Establishment, ultimate parent E. Abaroa Foundation. AR p161 is the substantial-shareholders table. | independent evaluation |
+| 76 | ANTO | rerun | No evidence on the strike's duration, output impact or resolution status | ISSUER_NOT_DISCLOSED | Q3 2026 report: 'negotiations are continuing'. No impact is quantified as of 15 Oct 2026. | independent evaluation |
+| 77 | ANTO | rerun | Sensitivities: 'No research question was assigned to this section' | RESEARCH_QUESTION_NOT_RUN | H1 2026: a 10% copper move = $350.3m EBITDA (6 months). Mo $40.1m. Au $37.4m. USD/CLP $86m. | independent evaluation |
+| 78 | ANTO | rerun | Web statements about South32 ... were not filed under the issuer (entity_ambiguous) | FACT_REJECTED_SCOPE_MISMATCH | A correct drop of another company's statement (ADR-074). It is mislabelled on the page as 'Not acquired by the platform' and 'Partially addressed by F1'. | independent evaluation |
+| 79 | ANTO | rerun | A statement was discarded because its evidence does not agree on periods ['2026-Q2','2026-Q3'] | FACT_SUPERSEDED | Q2 2026 raised gross cost guidance to $2.40-2.60/lb. Q3 2026 raised it to $2.60-2.70/lb. Discarding the fused statement is right, but no correctly keyed Q3 finding replaced it. | independent evaluation |
+| 80 | CLLS | run 1 | No evidence of any disclosure dated after March 31, 2024, e.g. FY2024 results | DOCUMENT_NOT_ACQUIRED | EDGAR holds the 20-F FY2024 (2025-03-14), the 20-F FY2025 (2026-03-20), the Q1 2026 6-K (2026-05-11) and the Q2 2026 6-K and release (2026-08-06). core_filings was skipped as 'not an SEC registrant' because the company row is ALCLS/PA with no CLLS sibling. | independent evaluation |
+| 81 | CLLS | run 1 | No citable evidence for 'profitability' and 'revenue_trajectory' | DOCUMENT_NOT_ACQUIRED | Q2 2026 release: H1 2026 revenues $11.0m vs $27.4m, R&D $52.2m, SG&A $11.3m, operating loss $48.7m, net loss $39.6m. The 20-F FY2025 has the full-year P&L, and ifrs-full XBRL is in SEC companyfacts. | independent evaluation |
+| 82 | CLLS | run 1 | No debt, borrowings, leverage, maturities or credit facilities in the evidence | DOCUMENT_NOT_ACQUIRED | Q2 2026 balance sheet: non-current financial liabilities $66.2m and current $7.5m (EIB loan and PGE loan; $2.7m PGE repaid in H1), lease debts $30.6m. EIB Tranche A/B/C warrants are disclosed. | independent evaluation |
+| 83 | CLLS | run 1 | No evidence on ownership, controlling shareholders or voting arrangements | DOCUMENT_NOT_ACQUIRED | 20-F FY2025: AZ Holdings beneficially owns ~32% of ordinary shares, ~44% as-converted including Class A/B preferred, and ~40% of voting rights. 'AstraZeneca has significant influence'. | independent evaluation |
+| 84 | CLLS | run 1 | No dated readout, filing or approval for Cellectis' own pipeline candidates | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The biopharminternational article on .HEAL-101/.HEAL-201 (2026-09-14) was ingested as catalyst_evidence (document_version_id d8a586d8) and yielded no finding. The 6-K of 2026-09-14 gives Phase 1 IIT data in H2 2027 (.HEAL-101) and H1 2028 (.HEAL-201). Before that, the Q2 2026 re… | independent evaluation |
+| 85 | CLLS | run 1 | No capex, FCF or operating cash flow amount in the evidence | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The acquired Q1 2024 interim cash-flow statement prints continuing-operations operating cash flow of -23,315 and capex of -218 ($k). The report's own gap admits 'company-source documents retrieved are cash-flow statements'. The Q2 2026 release gives H1 2026 capex $0.5m and the c… | independent evaluation |
+| 86 | CLLS | run 1 | No production volumes, unit costs or per-site throughput | ISSUER_NOT_DISCLOSED | A clinical-stage biotech does not report plant throughput. The gap comes from a non-biotech template (no playbook) and is irrelevant to the economics. | independent evaluation |
+| 87 | CLLS | run 1 | identity.isin / identity.sector_classification / profile.reporting_currency missing | DOCUMENT_NOT_ACQUIRED | EDGAR submissions for CIK 1627281 give SIC 2836 (Biological Products). The 20-F gives USD presentation currency and EUR functional currency. ADR-061 discovery had already verified ISIN FR0010425595 (run d15a74c4), but it did not carry over to the company record. | independent evaluation |
+| 88 | CLLS | rerun | No citable evidence for 'cash_runway' (the blocking question that stopped the council) | RESEARCH_QUESTION_NOT_RUN | question_graph.cash_runway: platform_tools tools=[] citable_items=0. The 20-F FY2025 in the corpus gives cash $61.5m + current financial assets $147.1m at 2025-12-31 and runway language ('we could use our available capital resources sooner…'). The Q2 2026 release gives $169m and… | independent evaluation |
+| 89 | CLLS | rerun | Only cash figure is $201m at 30 Sep 2021; no cash balance for 2025 | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The 20-F FY2025 (1010 chunks in the corpus) prints cash 61,533 and current financial assets 147,130 at 2025-12-31. The Q3 2025 6-K (cellectis.com copy in the corpus, cited by F21/F22) prints cash 52,243 and current financial assets 139,980 at 2025-09-30. | independent evaluation |
+| 90 | CLLS | rerun | No citable evidence for revenue_trajectory / profitability | RESEARCH_QUESTION_NOT_RUN | Both questions ran 0 tool calls. The Q3 2025 6-K in the corpus has 9M revenue 62,552 vs 28,789 and operating loss (15,725) vs (48,874). The 20-F FY2025 has the full-year P&L (net loss from continuing operations $67.6m). | independent evaluation |
+| 91 | CLLS | rerun | No evidence on ownership, control, board composition or related-party dealings | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Contradicted by the report's own F28 and F32. 20-F FY2025: AZ Holdings ~32% beneficial, ~44% as-converted, ~40% of voting rights at 2025-12-31; officers, directors and 5% holders ~35%. | independent evaluation |
+| 92 | CLLS | rerun | No evidence item names any clinical asset, development phase or target indication for Cellectis | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Contradicted by F6 (lasme-cel). The 20-F FY2025 names lasme-cel (BALLI-01) and eti-cel (NATHALI-01) with stages. .HEAL-101/.HEAL-201 are in the 2026-09-14 6-K, which is listed in F18 but not fetched (DOCUMENT_NOT_ACQUIRED). | independent evaluation |
+| 93 | CLLS | rerun | No evidence on warrants, convertible notes, options or other dilutive instruments outstanding beyond free share plans | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | Another gap of the same run says 'the four citable items are warrant-valuation tables (Tranche A/B/C…)'. The 20-F describes the EIB warrants (one ordinary share each) and the AZ Class A/B convertible preferred. | independent evaluation |
+| 94 | CLLS | rerun | Retrieved evidence contains no borrowings, debt, lease liability or net debt figure; '20-F pages retrieved are front matter, tax discussion and audit report' | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The 20-F FY2025 balance sheet and financial-liabilities note (EIB loan, PGE loan, lease debts) are in the 1010 indexed chunks. Corpus retrieval returned 8 items per question and missed them. | independent evaluation |
+| 95 | CLLS | rerun | The six SEC filing items carry only accession numbers, form type and dates; none includes the document text | DOCUMENT_NOT_ACQUIRED | get_recent_filings lists the 6-Ks, but the platform fetches 6-K bodies for no slot (core_filings.quarterly forms=['10-Q'], state not_listed). Included: Q2 2026 6-K 0001193125-26-338220 and its iXBRL 6-K/A 0001193125-26-389336. | independent evaluation |
+| 96 | CLLS | rerun | No citable evidence for 'recent_external_developments' | RESEARCH_QUESTION_NOT_RUN | 0 tool calls. The 2026-09-14 transformation 6-K and the 2026-10-28 .HEAL-101 ESGCT 6-K are on EDGAR, and the biopharminternational 2026-09-14 article was ingested. | independent evaluation |
+| 97 | CLLS | rerun | No production volumes, manufacturing capacity, unit costs; no capacity addition, construction stage, permit milestone | ISSUER_NOT_DISCLOSED | A clinical-stage biotech does not report these. The gaps come from mining/industrial templates that still run beside the biotech playbook. | independent evaluation |
+| 98 | CLLS | rerun | identity.isin / identity.lei / profile.reporting_currency missing (blocking) | DOCUMENT_NOT_ACQUIRED | 20-F FY2025 §2.2: presented in USD, functional currency EUR. ISIN FR0010425595 was verified in discovery run d15a74c4 but not carried to the company record. | independent evaluation |
+| 99 | LIN | run 1 | No disclosure newer than 24 September 2026 appears in the evidence, and no quarterly report is present. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | core_disclosures shows 03157011 Sep Quarterly (41 chunks) and 03157006 Appendix 5B (26 chunks) state=ready; F17/F33 cite them. | independent evaluation |
+| 100 | LIN | run 1 | No Lindian operating cash flow or free cash flow figure / no cash flow statement in the evidence. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR FY26: net cash used in operating (11,726,343), investing (80,521,090), financing +196,692,402. 5B Sep qtr: op (7,349)k, investing (55,483)k. | independent evaluation |
+| 101 | LIN | run 1 | No citable evidence for 'profitability' / 'revenue_trajectory'. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR FY26: loss after income tax (31,843,861) vs (9,292,227), incl. the A$16.5m Gerald termination expense. Interest income 2,453,519 vs 277,599. | independent evaluation |
+| 102 | LIN | run 1 | No customers, offtakers or sales contracts are disclosed in the evidence. / No financing, partners or offtake disclosed for Kangankunde. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR p.12: Iluka 15-year offtake 6,000 tpa remains in place; Gerald terminated; Iluka US$20m loan (note 28); NBS US$11.6m facility. The report's own F7, F8, F21 and F55 state these. | independent evaluation |
+| 103 | LIN | run 1 | Ownership percentage of Kangankunde is not stated in the evidence. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR p.20 / QR tenement schedule: 100% (final US$10m tranche paid Dec 2025); F34 and F46 already say 100%. | independent evaluation |
+| 104 | LIN | run 1 | No Lindian capex budget or commitment schedule for Stage 1/Stage 2. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR note 28: capital commitments A$20,494,622 at 30 Jun 2026, due within 12 months. 5B: PPE spend A$24.0m in Sep qtr (A$17.5m prior qtr). The Stage 2 capex genuinely awaits the DFS (Dec 2026) = ISSUER_NOT_DISCLOSED. | independent evaluation |
+| 105 | LIN | run 1 | The balance-sheet extract lists liability captions without amounts, so no debt figure can be computed. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR balance sheet: lease liability current 167,875 / non-current 210,150; no borrowings; total non-current liabilities 3,469,211. | independent evaluation |
+| 106 | LIN | run 1 | Construction is on track toward initial production with no date. / Evidence does not give SARECO plant timing. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | QR p.2/p.20: first Monazite Concentrate targeted December 2026; SARECO first processing targeted from Q4 2026; ~12,500 tpa concentrate to feed SARECO. Ops update: integrated circuit commissioning in November. | independent evaluation |
+| 107 | LIN | run 1 | No production rate or annual ore throughput, so reserve life cannot be computed. | DOCUMENT_NOT_ACQUIRED | The Stage 1 rates are in the 1 Jul 2024 Feasibility Study announcement (referenced in AR/QR), which was not acquired. AR gives the Stage 2 objective (~120,000 tpa concentrate, 4.0 Mtpa). | independent evaluation |
+| 108 | LIN | run 1 | No covenant disclosure (gearing, interest cover, minimum liquidity) for Lindian. | ISSUER_NOT_DISCLOSED | Not in AR 2026 or the Sep-qtr 5B. The Iluka facility terms (11% + Term SOFR, capitalised) existed in a previous-run finding that was invalidated in delta. | independent evaluation |
+| 109 | LIN | run 1 | No evidence of Malawian grants, designations, tariffs or fiscal changes applying to Lindian. | DOCUMENT_NOT_ACQUIRED | ASX 03145908 (30 Sep 2026): Executive Order No.2 of 2025 (raw-mineral export restriction; MMRA letter of 28 Oct 2025 exempts beneficiated concentrate) and draft Beneficiation and Value Addition Regulations (consultation to 10 Oct 2026). Not acquired. | independent evaluation |
+| 110 | LIN | rerun | No post-placement Lindian cash balance, capex commitment schedule or facility drawdown status in evidence. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 5B 4.6 = A$45,087k at 30 Sep 2026 (the report's own F32); AR capital commitments A$20,494,622; OPS p.1: NBS US$11.6m facility undrawn. | independent evaluation |
+| 111 | LIN | rerun | No ownership percentage for Kangankunde or any operating asset appears in the evidence. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR tenement schedule: MML0290/22 and EL0514/18R 100% (final tranche Dec 2025). The report's F36 states 100%. | independent evaluation |
+| 112 | LIN | rerun | No customer, offtake or product sales data; no contracted volumes or prices disclosed. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The report's F5/F6/F23/F53 state Iluka 6 ktpa × 15 years and Carester ≥70% up to 8,750 dmtpa. 'No sales' is true and is ISSUER_NOT_DISCLOSED only in the sense that there are none yet (pre-production). | independent evaluation |
+| 113 | LIN | rerun | No evidence on tariffs, export controls, royalties or tax changes / no protests, blockades, suspensions, legal challenges. | DOCUMENT_NOT_ACQUIRED | ASX 03145908 'Kangankunde Concentrate Export Remains Unchanged' (30 Sep 2026): Executive Order No.2 of 2025 raw-mineral export restriction (Kangankunde exempted by MMRA letter 28 Oct 2025); draft beneficiation regulations still in consultation. ASX 03123471 Government clarificat… | independent evaluation |
+| 114 | LIN | rerun | Pricing, floor or penalty terms of the Iluka and Carester offtakes are not in the evidence. | DOCUMENT_NOT_ACQUIRED | ASX 03135257 Carester binding offtake / oxide separation partnership (3 Sep 2026): SEGH pricing 'linked to the Carester Realised Price and tied to any government floor price'. Not acquired. The Iluka mechanism IS in the report (F52), so that half of the gap contradicts a finding. | independent evaluation |
+| 115 | LIN | rerun | FY2026 Annual Report extracts are accounting-policy notes only; no Group debt, gearing or facility figures. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR balance sheet: no borrowings; lease liabilities 167,875 current / 210,150 non-current; note 28 Iluka US$20m facility; total equity 245,112,665. | independent evaluation |
+| 116 | LIN | rerun | No citable evidence was retrieved for 'profitability' / 'revenue_trajectory' (unresolved_reason not_acquired). | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | AR FY26 loss after tax (31,843,861) vs (9,292,227), including the A$16.5m Gerald termination expense; interest income 2,453,519 vs 277,599. ADR-076's acquired_not_read covers only recency questions, so these still read not_acquired. | independent evaluation |
+| 117 | LIN | rerun | No figures for buybacks, debt reduction or acquisition spend in the evidence. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | The report's own F33: A$28.8m SARECO consideration (5B 2.1(a)). | independent evaluation |
+| 118 | LIN | rerun | No annual production rate or reserve-life years for Kangankunde appears in the evidence. | DOCUMENT_NOT_ACQUIRED | The Stage 1 rates are in the 1-Jul-2024 Feasibility Study announcement (not acquired). QR: ~12,500 tpa concentrate feed to SARECO (the report's F29). | independent evaluation |
+| 119 | LIN | rerun | Evidence carries no covenant terms, headroom, or refinancing/facility maturity disclosure for Lindian. | ISSUER_NOT_DISCLOSED | No covenant terms in the AR or 5B; 5B section 7 lists no facilities. | independent evaluation |
+| 120 | LIN | rerun | No substantial-holding register, major or controlling shareholder disclosure appears in the evidence. | DOCUMENT_NOT_ACQUIRED | ASX lists 9 substantial-holder notices from 28 Sep to 30 Oct 2026 (MUFG, Morgan Stanley); Wei (largest independent holder) retired 15 Oct. None acquired. | independent evaluation |
+| 121 | LIN | rerun | financial_statements_state.current_period: 'Quarterly report acquired (2026-10-25) — figures not yet extracted'. | DOCUMENT_ACQUIRED_EXTRACTION_FAILED | 5B p.3 holds 45,087 / 107,936 and the full $A'000 cash-flow statement. The investigator quoted it (F32), but the statement-fact layer read 0 facts. | independent evaluation |
+
+**Extraction-related defects**
+
+| ID | Case | Sev | Defect | Hyp. | Status |
+|---|---|---|---|---|---|
+| H2 | HON e50cb267 | P1 | Latest quarter (Q3 2026 10-Q) acquired but never extracted for US filers | G, C | fixed by a merged PR; verified on a live rerun |
+| C1 | CFR f722d620 | P0 | Net cash '8,496 bn EUR' and OCF '4,880 bn EUR' (x1000) | B, C | fixed by a merged PR; verified by offline replay; case not rerun |
+| C7 | CFR f722d620 | P2 | Gaps call OCF, segment sales and latest-period headline 'missing' while they are acquired facts | C | open |
+| ADBE-8 | ADBE 7b401826 | P2 | Q3 FY2026 results are treated as an upcoming event and the release content is not used | G, C | open |
+| ADBE-9 | ADBE 7b401826 | P2 | No issuer facts extracted from the acquired 10-K, 10-Q or 8-K | C | open |
+| JPM-4 | JPM 30828043 | P1 | Core bank metrics recorded as 'not acquired' although the acquired 10-K/10-Q and the platform's own XBRL contain them | C | open |
+| PYPL-1 | PYPL f031b73b; rerun PYPL2-2 | P1 | Latest results release acquired but unused; 'headline figures of latest period' reported as not acquired | C, G | partly fixed |
+| PYPL-3 | PYPL f031b73b; rerun PYPL2-4 | P1 | Gap says no live regulatory action or litigation, contradicting the acquired 10-Q and the report's own F13 | C, H | open |
+| PYPL-8 | PYPL f031b73b; rerun PYPL2-8 | P2 | Capital allocation omits buybacks that exceed FCF | C | open |
+| PYPL-11 | PYPL f031b73b; rerun PYPL2-10 | P2 | Total debt withheld without the ADR-067 reason; Q3 total that exists is called missing | B | open |
+| ANTO-7 | ANTO a68e6d31 | P2 | Latest annual and interim financials and the material 2026 events are absent | G, C | open |
+| ANTO2-3 | ANTO c971490d | P2 | Gaps contradict findings in the same ledger | H, C | open |
+| CLLS-1 | CLLS 1df9100c | P1 | Dual-listed SEC filer researched as a Euronext-only issuer: the CLLS/CIK sibling was never linked, so no 20-F/6-K was read | E, C | partly fixed |
+| CLLS-2 | CLLS 1df9100c | P1 | The most material event, the 2026-09-14 strategic transformation (exit of lasme-cel/eti-cel, pivot to in vivo .HEAL programs, restructuring), was acquired but not used | G, C | open |
+| CLLS-10 | CLLS 1df9100c | P2 | Biotech economics are absent: runway, burn, AZ control/dilution and pipeline stages | C | open |
+| CLLS2-1 | CLLS 686d71f6 | P1 | The interim and current period of a 6-K filer is never acquired because the quarterly slot accepts only 10-Q | E, G | fix in an open PR, not merged |
+| CLLS2-4 | CLLS 686d71f6 | P1 | The blocking cash_runway question was never researched although the answer is in the acquired 20-F, and its gap is labelled 'not acquired' | C, I | open |
+| LIN-2 | LIN 796b644d; rerun LIN2-1 | P1 | Cash/funding is stated at the 30-Jun figure; the acquired Sep-2026 Appendix 5B (cash A$45.1m, −58% in one quarter) is never used and no runway is computed | C, G | partly fixed |
+| LIN-8 | LIN 796b644d; rerun LIN2-9 | P2 | Dilution, capital structure and valuation inputs absent | C | open |
+| LIN-9 | LIN 796b644d; rerun LIN2-8 | P2 | FY2026 financial statements acquired but not extracted (facts_read=0) | C | open |
+
+---
+
+## 9. Scope / period / entity failures
+
+Includes identity and multi-listing failures (hypothesis E) and every finding filed under the wrong entity, period or scope.
+
+| ID | Case | Sev | Defect | Hyp. | Status |
+|---|---|---|---|---|---|
+| H1 | HON e50cb267 | P0 | Revenue YoY -2.74% instead of +7.85%; synthesis 'slight decline' | B, A | fixed by a merged PR; verified on a live rerun |
+| H3 | HON e50cb267, f0be3c4f | P1 | Honeywell Aerospace (HONA, separate registrant) facts filed as HON catalysts/risks | D | partly fixed |
+| H4 | HON both runs; Discovery E | P2 | Classification from stale SIC 3724 -> A&D playbook, A&D peers (BAE, Thales, LMT) for post-spin automation company | A | open |
+| H5 | HON e50cb267 | P1 | Pre-consolidation EPS 7.36 beside post-consolidation price 218.33 | A, B | fixed by a merged PR; verified on a live rerun |
+| H6 | HON e50cb267 | P2 | Synthesis omits the spin-off, Solstice and the Quantinuum gain | A, G | open |
+| H9 | HON e50cb267 | P3 | Honeywell Automation India RPT (2024 subsidiary) in governance | D | open |
+| H10 | HON f0be3c4f | P2 | Backlog narrative mixes pre-spin Q1/Q2 ($38.3bn/+15%, $38.0bn/+12%) with post-spin Q3 ($18.8bn/+1%) without a perimeter caveat; chair 'backlog growth' | A | open |
+| C1 | CFR f722d620 | P0 | Net cash '8,496 bn EUR' and OCF '4,880 bn EUR' (x1000) | B, C | fixed by a merged PR; verified by offline replay; case not rerun |
+| C2 | CFR f722d620 | P1 | Jewellery Maisons 'EUR 5 billion' sentence validated as a group figure, manufacturing a conflict (F30) | B, D | fixed by a merged PR; verified by offline replay; case not rerun |
+| ADBE-1 | ADBE 7b401826 | P1 | Report presents a dissolved three-segment structure as current | A, G | open |
+| ADBE-3 | ADBE 7b401826 | P1 | F14 states FY2026 total revenue as reported from a non-existent 'Q4 2026 summary' | G, B | open |
+| ADBE-6 | ADBE 7b401826 | P1 | Cash conversion printed as '140.69×' (and GOOGL '124.62×') in the peer table | B | fixed by a merged PR; not yet observed live |
+| JPM-1 | JPM 30828043 | P0 | 'Total debt' shown as 64,776m = short-term borrowings only; long-term debt (435,206m) omitted | B | fixed by a merged PR; verified by offline replay; case not rerun |
+| JPM-3 | JPM 30828043 | P1 | Industrial cash-flow and leverage semantics applied to a bank and promoted to the executive synthesis and chair verdict | B | fixed by a merged PR; verified by offline replay; case not rerun |
+| JPM-5 | JPM 30828043 | P1 | Executive synthesis attributes a subsidiary's (J.P. Morgan SE) ICAAP to the Group; subsidiary findings crowd group sections | D | open |
+| JPM-6 | JPM 30828043 | P1 | Council/red-team claims with wrong period and scope (H1 as Q2, Corporate segment as Firm) and wrong ROE | B, H | open |
+| PYPL-4 | PYPL f031b73b; rerun PYPL2-7 | P1 (P2 on rerun) | Payments balance sheet read with industrial leverage semantics in executive synthesis and chair | B | partly fixed |
+| PYPL-5 | PYPL f031b73b | P1 | Red team dates FY2025 cash to 2026-09-30 | B | absent on the rerun without a targeted fix; root cause not addressed |
+| PYPL2-5 | PYPL 39905de8 | P1 | Chair splices Q2 third-party product growth into the Q3 results statement | B, G | open |
+| PYPL2-14 | PYPL 39905de8 | P3 | Period and labelling slips | B | open |
+| ANTO-1 | ANTO a68e6d31 | P0 | Manufactured revenue conflict shows Antofagasta 2024 revenue as $156.6m against South32's $8,296m | B, D | fixed by a merged PR; verified on a live rerun |
+| ANTO-2 | ANTO a68e6d31 | P1 | Cross-entity contamination: South32, Lundin and Ecora findings fill the business, competitive, financial and risk sections | D | fixed by a merged PR; verified on a live rerun |
+| ANTO-4 | ANTO a68e6d31 | P1 | F7 joins the Q3 guidance raise to the Q2 rationale and keys it 2026-Q2 | G, B | absent on the rerun without a targeted fix; root cause not addressed |
+| ANTO-9 | ANTO a68e6d31 | P2 | Attributable vs 100% basis is never stated; the mine split mixes bases and omits Centinela | A, B | open |
+| ANTO-10 | ANTO a68e6d31 | P2 | Period keys missing on current findings | G | open |
+| ANTO2-1 | ANTO c971490d | P1 | Centinela segment capex presented as Antofagasta (Group) capex | A, B | open |
+| CLLS-1 | CLLS 1df9100c | P1 | Dual-listed SEC filer researched as a Euronext-only issuer: the CLLS/CIK sibling was never linked, so no 20-F/6-K was read | E, C | partly fixed |
+| CLLS-8 | CLLS 1df9100c | P2 | Garbage scope keys parsed from sentence fragments and question text | B | open |
+| CLLS2-2 | CLLS 686d71f6 | P1 | A former subsidiary's (Calyxt, now Cibus) risk factors are filed as Cellectis's counter-thesis | D, A | open |
+| CLLS2-5 | CLLS 686d71f6 | P2 | The 20-F in the corpus is undated, so its findings carry no date or period and recency logic cannot run | G | open |
+| CLLS2-6 | CLLS 686d71f6 | P2 | Unrelated companies appear as Cellectis 'Current developments', and the peers are irrelevant | D | open |
+| CLLS2-9 | CLLS 686d71f6 | P2 | The identity record still shows one line, with no ADS, ISIN or reporting currency | E | open |
+| LIN-3 | LIN 796b644d; rerun LIN2-2 | P1 | Subject's own Annual Report statements filed as Iluka's | D | open |
+| LIN-4 | LIN 796b644d; rerun LIN2-3 | P1 | Iluka (offtaker/lender) material crowds Lindian's questions, and Iluka is conflated with Lynas | D | partly fixed |
+| LIN2-1 | LIN 6d4f1c43 | P1 | Financial capacity shows FY2025 aggregator figures as 'most recent fiscal year'; the 30-Sep cash sits only in Catalysts; no runway | G, C | open |
+
+---
+
+## 10. Freshness failures
+
+| ID | Case | Sev | Defect | Hyp. | Status |
+|---|---|---|---|---|---|
+| H2 | HON e50cb267 | P1 | Latest quarter (Q3 2026 10-Q) acquired but never extracted for US filers | G, C | fixed by a merged PR; verified on a live rerun |
+| H6 | HON e50cb267 | P2 | Synthesis omits the spin-off, Solstice and the Quantinuum gain | A, G | open |
+| C3 | CFR f722d620 | P1 | A November 2025 document (H1 FY26 interim) labelled '2026-Q1'; issuer IR labelled 'reported in the press' | G | partly fixed |
+| C5 | CFR f722d620 | P2 | Current developments are noise; missed Q1 FY27 +20% cc, Avolta stake disposal, Baume & Mercier sale | G | open |
+| C8 | CFR f722d620 | P3 | Gross margin under Governance; stale FY2024 findings beside FY2026; 2025 gold projection presented as current | G | open |
+| ADBE-1 | ADBE 7b401826 | P1 | Report presents a dissolved three-segment structure as current | A, G | open |
+| ADBE-3 | ADBE 7b401826 | P1 | F14 states FY2026 total revenue as reported from a non-existent 'Q4 2026 summary' | G, B | open |
+| ADBE-7 | ADBE 7b401826 | P2 | Material post-period and in-period events are missing: CEO succession, CFO resignation, Semrush, DOJ settlement, buybacks | G | open |
+| ADBE-8 | ADBE 7b401826 | P2 | Q3 FY2026 results are treated as an upcoming event and the release content is not used | G, C | open |
+| ADBE-11 | ADBE 7b401826 | P2 | Stale balance-sheet framing in the chair and findings | G | open |
+| ADBE-14 | ADBE 7b401826 | P3 | Ambiguous fiscal labels and contradictory period tiles | G | open |
+| JPM-2 | JPM 30828043 | P1 | Latest quarter missed: wrong 8-K ingested as 'results_release'; Q3 2026 results absent | G | fixed by a merged PR; verified by offline replay; case not rerun |
+| JPM-7 | JPM 30828043 | P2 | Stale facts used where the acquired filings hold newer ones; a resolved trial shown as pending | G | open |
+| JPM-8 | JPM 30828043 | P2 | Material Q2 2026 one-off (the $4.6B Visa gain) and filed corporate actions absent from V3 research | G | open |
+| PYPL-1 | PYPL f031b73b; rerun PYPL2-2 | P1 | Latest results release acquired but unused; 'headline figures of latest period' reported as not acquired | C, G | partly fixed |
+| PYPL-7 | PYPL f031b73b; rerun PYPL2-5 | P2 | Stale, third-party Q2 product metrics presented as current | G | open |
+| PYPL-9 | PYPL f031b73b; rerun PYPL2-9 | P2 | CEO change missing; gap says no executive disclosure | G | open |
+| PYPL2-3 | PYPL 39905de8 | P1 | Research state contradicts itself on what the latest issuer disclosure is | H, G | open |
+| PYPL2-5 | PYPL 39905de8 | P1 | Chair splices Q2 third-party product growth into the Q3 results statement | B, G | open |
+| ANTO-3 | ANTO a68e6d31 | P1 | FY2024 balance sheet and labour state presented as current in the synthesis and chair | G | partly fixed |
+| ANTO-4 | ANTO a68e6d31 | P1 | F7 joins the Q3 guidance raise to the Q2 rationale and keys it 2026-Q2 | G, B | absent on the rerun without a targeted fix; root cause not addressed |
+| ANTO-5 | ANTO a68e6d31 | P1 | Research state contradicts itself on what is the latest disclosure, and the chair invents a net-debt disagreement | H | open |
+| ANTO-7 | ANTO a68e6d31 | P2 | Latest annual and interim financials and the material 2026 events are absent | G, C | open |
+| ANTO2-2 | ANTO c971490d | P2 | Regression: Q3 2026 production and cost guidance dropped out entirely | G | open |
+| CLLS-2 | CLLS 1df9100c | P1 | The most material event, the 2026-09-14 strategic transformation (exit of lasme-cel/eti-cel, pivot to in vivo .HEAL programs, restructuring), was acquired but not used | G, C | open |
+| CLLS-7 | CLLS 1df9100c | P2 | Stale facts are presented without recency ranking | G | open |
+| CLLS2-1 | CLLS 686d71f6 | P1 | The interim and current period of a 6-K filer is never acquired because the quarterly slot accepts only 10-Q | E, G | fix in an open PR, not merged |
+| LIN-2 | LIN 796b644d; rerun LIN2-1 | P1 | Cash/funding is stated at the 30-Jun figure; the acquired Sep-2026 Appendix 5B (cash A$45.1m, −58% in one quarter) is never used and no runway is computed | C, G | partly fixed |
+| LIN-7 | LIN 796b644d; rerun LIN2-7 | P2 | Material Malawi jurisdiction events missing | G | open |
+| LIN-11 | LIN 796b644d; rerun LIN2-7 | P2 | Stale governance and risk items presented undated as current; current ones missed | G | open |
+| LIN2-1 | LIN 6d4f1c43 | P1 | Financial capacity shows FY2025 aggregator figures as 'most recent fiscal year'; the 30-Sep cash sits only in Catalysts; no runway | G, C | open |
+
+---
+
+## 11. Discovery failures
+
+**Defects**
+
+| ID | Case | Sev | Defect | Hyp. | Status |
+|---|---|---|---|---|---|
+| D1 | Discovery B, C | P2 | Thesis autofill took a theme's first sector/industry (grid -> Utilities, payments -> Banks) | J | fixed by a merged PR; verified by offline replay; case not rerun |
+| D2 | Discovery E | P1 | Materials thesis read as defence, with a hard 'defense' industry constraint; 15/15 off-thesis | J | fixed by a merged PR; verified on a live rerun |
+| D3 | Discovery A | P2 | WKN A0NFN3 read as the issuer name; BB Biotech listing rejected | F | fixed by a merged PR; verified by offline replay; case not rerun |
+| D4 | Discovery A, B, C, D, E2 | P2 | Web recall: name-only leads never resolved against exchange directories (NKT, argenx, Zinnwald); ETFs/indices extracted as companies; a GICS heading (Cognex, Ouster) and a ticker (TSLA) used as names; renamed issuers lost (Arafura, GGG/ETM); 77-106 of 145-160 results skipped over budget and PDFs skipped in every run | J, F | open |
+| D5 | Discovery B (Siemens), E2 (SCCO) | P2 | Size unknown passes as eligible / eligible_unverified for mega caps | J | open |
+| D6 | Discovery D | P2 | MAX_FLOAT_AGE_DAYS 548 dropped current Sept-FY filers' floats (ROK, SYM, POWL); would drop all Dec-FY filers each January | J | fixed by a merged PR; not yet observed live |
+| D7 | Discovery D (ABB, Fanuc, Yaskawa, Keyence), E (RHM, BAE, SAAB) | P2 | Non-US curated issuers have no market-cap source; mega caps pass small-cap theses as 'unverified' | J | open |
+| D8 | Discovery D | P3 | TSE codes 6954/6506 sent to SEC as CIKs | F | open |
+| D9 | Discovery D | P2 | Off-thesis web leads (DroneShield, WiseTech, TSLA) admitted with circular inherited theme points; WiseTech theme 'verified' on the generic word 'automation' | J | partly fixed |
+| D10 | Discovery A, B, D, E, E2 | P2 | Hypothesis J: relevance score constant per source (E2: 85/30/20); order ignores relevance; cap of 15 silently cut 8 names incl. 6 of 7 theme-verified web candidates (inferred from counts) | J | fixed by a merged PR; not yet observed live |
+| D11 | Discovery A, C, E, E2 | P3 | Registry stale identifiers and classifications: Block 'SQ' (now XYZ), GGG (now ETM), Umicore 'Mining', GRML 'Biotechnology' (uncertain), HON 'A&D' after the spin | J | open |
+| D12 | Discovery A, B, C, D | P2 | Curated registries hold mega caps per theme and no European biotech; small/mid theses depend on web recall, so C returns 0 by construction | J | open |
+
+**Candidate inspection (top 5 and bottom admitted per run)**
+
+Scores are the stored `relevance_score_pre_scan` values. They were constant per source in every run, which is hypothesis J.
+
+**Run A** (aea5d966)
+
+| Rank | Issuer | Security | Route | Source | Score | Eligibility | Fit | Why it belongs / not |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Cellectis S.A. | PA:ALCLS | external_search label: web-search lead matched a company already held in the platform registry (A3 theme evidence not passed) | Tavily web search (provenance names no URL); identity from platform registry | 61.0 | eligible_unverified: industry not verified; geography pass; size 'micro-cap' verified (not requested) | on-thesis | French clinical-stage gene-editing (TALEN) allogeneic CAR-T company with an AstraZeneca partnership: exactly the thesis. |
+
+**Run B** (0ca9f1d8)
+
+| Rank | Issuer | Security | Route | Source | Score | Eligibility | Fit | Why it belongs / not |
+|---|---|---|---|---|---|---|---|---|
+| 1 | nVent Electric plc | US:NVT | curated registry | curated registry (curated_theme_registry, T3) | 90.0 | eligible_unverified: size unknown. Public float $11.65bn (2025-12-31) was treated as a lower bound that 'cannot place it' | adjacent (on-theme, size probably violated) | Enclosures, liquid cooling and power connections for data centres fit the theme. But a float above $11bn means a market cap of roughly $15bn or more, which is above the mid-cap ceiling (UNCERTAIN on the current cap). |
+| 2 | Powell Industries Inc. | US:POWL | curated registry | curated registry (curated_theme_registry, T3) | 90.0 | eligible_unverified: 'no market capitalisation was verified' (a Sept-FY filer, so its float was probably dropped by the float-age bug D6, fixed in PR #299) | on-thesis | Custom switchgear and power-distribution equipment, with data-centre and utility orders driving backlog; mid-cap. |
+| 3 | Siemens AG | XETRA:SIE | curated registry | curated registry (curated_theme_registry, T3) | 90.0 | eligible_unverified: size unknown (Xetra has no market-cap source) | off-thesis (size) | A mega-cap conglomerate of about EUR150bn+. The size constraint is HARD, and Siemens passes only because its size cannot be checked on Xetra (D5). |
+
+**Run D** (0434a272)
+
+| Rank | Issuer | Security | Route | Source | Score | Eligibility | Fit | Why it belongs / not |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Rockwell Automation Inc. | US:ROK | curated registry | curated registry (curated_theme_registry, T3) | 86.0 | eligible_unverified: size unknown (Sept-FY float dropped by the float-age bug D6) | adjacent (on-theme, large-cap) | A pure factory-automation leader, but its market cap of $30bn+ violates the HARD small/mid constraint. |
+| 2 | Teradyne Inc. | US:TER | curated registry | curated registry (curated_theme_registry, T3) | 86.0 | eligible_unverified: float $12.7bn treated as a non-placing lower bound | adjacent | Mostly semiconductor test; robotics (Universal Robots/MiR) is a minority segment; large-cap. |
+| 3 | ABB Ltd. | SW:ABBN | curated registry | curated registry (curated_theme_registry, T3) | 86.0 | eligible_unverified: no market-cap source for SIX (D7) | off-thesis (size) | Mega-cap of about $100bn+; robotics is one division (and its sale was announced in 2025: UNCERTAIN on status). |
+| 4 | Fanuc Corp. | TSE:6954 | curated registry | curated registry (curated_theme_registry, T3) | 86.0 | eligible_unverified: no TSE market-cap source (D7); the TSE code was sent to SEC as a CIK (D8) | adjacent (on-theme, large-cap) | Core robotics/CNC name, but about $25-30bn, so large-cap. |
+| 5 | Yaskawa Electric Corp. | TSE:6506 | curated registry | curated registry (curated_theme_registry, T3) | 86.0 | eligible_unverified: size unknown (D7) | on-thesis (UNCERTAIN on size) | Motion control, servos and robots; market cap roughly $7-10bn, which is plausibly mid-cap. |
+| 8 | WiseTech Global Ltd | AU:WTC | route C (open-web search, regulated ASX document passage) - the only admitted web candidate | Tavily search (investingnews.com page) + ASX announcement | 66.0 | eligible_unverified: industry not verified; size verified A$13.65bn (about $9.6bn, mid-cap); A3 theme 'verified_issuer' from 2 passages | off-thesis | Logistics software (CargoWise), not factory automation. Theme verification fired on the word 'automation' in an AI-cost-savings passage, which is a false theme verification. |
+| 9 | Tesla (lead named 'TSLA') | US:TSLA | external_search label: web-search lead matched a company already held in the platform registry (A3 theme evidence not passed) | Tavily search | 66.0 | eligible_unverified: industry and size unknown (the name is 'TSLA', so the size lookup failed) | off-thesis | EV maker and mega-cap; the Optimus robot is not a business that fits a small/mid automation thesis. |
+| 10 | Symbotic Inc. | US:SYM | external_search label: web-search lead matched a company already held in the platform registry (A3 theme evidence not passed) | Tavily search | 66.0 | eligible_unverified: industry and size unknown (Sept-FY float dropped, D6) | on-thesis (UNCERTAIN on size) | AI-driven warehouse robotics and automation systems; its total cap across all share classes may exceed $10bn. |
+
+**Run E** (a8ce129a)
+
+| Rank | Issuer | Security | Route | Source | Score | Eligibility | Fit | Why it belongs / not |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Rheinmetall AG | XETRA:RHM | curated registry | curated registry (curated_theme_registry, T3) | 80.5 | eligible: size unknown on Xetra, so the soft size did not fail | off-thesis | Defence prime (munitions/vehicles), about EUR80bn: not a materials supplier and not small. |
+| 2 | BAE Systems plc | LSE:BA | curated registry | curated registry (curated_theme_registry, T3) | 80.5 | eligible: size unknown | off-thesis | Defence prime and mega-cap. (The LSE ticker 'BA' is correct but collides with Boeing's US ticker.) |
+| 3 | Saab AB | ST:SAAB-B | curated registry | curated registry (curated_theme_registry, T3) | 80.5 | eligible: size unknown | off-thesis | Defence systems prime, large-cap. |
+| 4 | Lockheed Martin | US:LMT | curated registry | curated registry (curated_theme_registry, T3) | 80.5 | included_with_mismatch: float $106.5bn fails the soft size | off-thesis | Defence prime, mega-cap. |
+| 5 | RTX Corporation | US:RTX | curated registry | curated registry (curated_theme_registry, T3) | 80.5 | included_with_mismatch: float $195bn | off-thesis | Aerospace/defence prime, mega-cap. |
+| 13 | DroneShield Ltd | AU:DRO | route A (official domain page droneshield.com) | Tavily search (mitrade.com 'best ASX defence stocks') | 60.5 | eligible_unverified (industry); small-cap A$1.34bn verified | off-thesis | Counter-drone electronics, not materials. |
+| 14 | Electro Optic Systems Holdings | AU:EOS | route C (ASX regulated passage) | Tavily search (mitrade.com) | 60.5 | eligible_unverified; small-cap A$1.99bn | off-thesis | Weapon stations, counter-drone and space comms: defence systems, not materials. |
+| 15 | HighCom Ltd | AU:HCL | route A (official domain highcom.group) | Tavily search (mitrade.com) | 60.5 | eligible_unverified; micro-cap A$13.9m | adjacent | Makes ballistic armour plates (an advanced-materials application), but it is a finished-goods defence supplier. |
+
+**Run E2** (d6f5d2c6)
+
+| Rank | Issuer | Security | Route | Source | Score | Eligibility | Fit | Why it belongs / not |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Eramet | PA:ERA | platform registry | platform registry (held company) | 30.0 | eligible: size verified EUR1.10bn (Euronext admitted shares x price), small-cap | on-thesis | Manganese, nickel and a new lithium plant (Centenario) supplying electrification; small-cap with capacity catalysts. |
+| 2 | Umicore | BR:UMI | platform registry | platform registry (held company) | 30.0 | eligible: EUR4.34bn, mid-cap | on-thesis | Battery cathode materials, catalysts and recycling: specialty materials (the 'Mining' classification is loose). |
+| 3 | Southern Copper Corp. | US:SCCO | curated registry | curated registry (curated_theme_registry, T3) | 85.0 | eligible: size unknown (float $9.02bn treated as a non-placing lower bound) | adjacent | Copper (a US critical mineral since 2025), but a mega-cap of about $80bn+ that is about 89% owned by Grupo Mexico: not 'smaller'. Rank 3 is too high. |
+| 4 | MP Materials | US:MP | curated registry | curated registry (curated_theme_registry, T3) | 85.0 | eligible: size unknown (float $5.0bn) | on-thesis | The US rare-earth mine plus magnet plant, with a DoD offtake; a capacity catalyst. Size probably mid/large (UNCERTAIN). |
+| 5 | Albemarle | US:ALB | curated registry | curated registry (curated_theme_registry, T3) | 85.0 | eligible: size unknown (float $7.4bn) | on-thesis | Lithium and bromine specialty chemicals; size about mid/large borderline. |
+| 13 | Lindian Resources | AU:LIN | external_search label: web-search lead matched a company already held in the platform registry (A3 theme evidence not passed) | Tavily search | 20.0 | eligible_unverified: industry; size A$795m small-cap | on-thesis | Kangankunde rare-earth project (Malawi), heading toward production. |
+| 14 | Lynas Rare Earths | AU:LYC | external_search label: web-search lead matched a company already held in the platform registry (A3 theme evidence not passed) | Tavily search | 20.0 | eligible_unverified; A$13.1bn mid-cap | on-thesis | The largest non-China separated rare-earth producer, with heavy-RE and US-plant catalysts. One of the best fits, yet ranked 14th with score 20. |
+| 15 | Energy Transition Minerals | AU:ETM | route C (ASX quarterly report passage) - the only search-admitted candidate returned | Tavily search (en.wikipedia.org, value_chain family) + ASX announcements | 20.0 | eligible_unverified; micro-cap A$106m; A3 theme verified_issuer (3 passages) | on-thesis | Rare earths (Kvanefjeld), but the project is blocked by Greenland's uranium ban litigation. The catalyst is legal, not capacity. |
+
+**Run C** (22e664d2): nothing returned. All 7 checked issuers were excluded on cited size (JPM, BAC, WFC, PYPL $71bn, SQ $39bn, SOFI $20bn floats; Complii A$16m micro-cap). The exclusions are correct; recall is the defect.
+
+**Run E3** (b14b96d9, deployed 95ba5f7): the live check of ADR-070 (scores on fit) and ADR-073 (relevance before the cap, `funnel.beyond_cap`). Questions it answers: are scores still constant per source; do theme-verified web names survive the cap; where do Lynas, ETM, Pensana and Rainbow rank; is SCCO still 'eligible' with size unknown.
+
+<!-- PENDING: E3 -->
+
+**What worked:** the geography filter (A), size exclusions with cited floats or caps (B, C), cross-source de-duplication, honest empty results (C), and listing verification against official directories. Lindian, used as company case 4, came from E2.
+
+---
+
+## 12. Defects fixed
+
+'Fixed' means merged to main and deployed. The verification level is stated for each item; only a defect re-observed absent on a live rerun of the same company counts as verified. Defects that disappeared on a rerun without a targeted fix are listed separately and are not counted as fixed.
+
+| ID | Case | Sev | Defect | Hyp. | Status | Fix / note |
+|---|---|---|---|---|---|---|
+| D1 | Discovery B, C | P2 | Thesis autofill took a theme's first sector/industry (grid -> Utilities, payments -> Banks) | J | fixed by a merged PR; verified by offline replay; case not rerun | #296 db5baf8 ADR-063 |
+| D2 | Discovery E | P1 | Materials thesis read as defence, with a hard 'defense' industry constraint; 15/15 off-thesis | J | fixed by a merged PR; verified on a live rerun | #296 db5baf8 ADR-063 (E2: 0/15 -> 12/15) |
+| D3 | Discovery A | P2 | WKN A0NFN3 read as the issuer name; BB Biotech listing rejected | F | fixed by a merged PR; verified by offline replay; case not rerun | #296 db5baf8 ADR-063 |
+| D6 | Discovery D | P2 | MAX_FLOAT_AGE_DAYS 548 dropped current Sept-FY filers' floats (ROK, SYM, POWL); would drop all Dec-FY filers each January | J | fixed by a merged PR; not yet observed live | #299 a68fb71. Not live-verified: Discovery D was not rerun. |
+| D9 | Discovery D | P2 | Off-thesis web leads (DroneShield, WiseTech, TSLA) admitted with circular inherited theme points; WiseTech theme 'verified' on the generic word 'automation' | J | partly fixed | #302 e6570a5 ADR-070 (unverified 66 -> 43.5; WiseTech verified stays 66) |
+| D10 | Discovery A, B, D, E, E2 | P2 | Hypothesis J: relevance score constant per source (E2: 85/30/20); order ignores relevance; cap of 15 silently cut 8 names incl. 6 of 7 theme-verified web candidates (inferred from counts) | J | fixed by a merged PR; not yet observed live | #302 e6570a5 ADR-070 + #306 ebb565e ADR-073. Live check: Discovery E3 b14b96d9 (section 11). |
+| H1 | HON e50cb267 | P0 | Revenue YoY -2.74% instead of +7.85%; synthesis 'slight decline' | B, A | fixed by a merged PR; verified on a live rerun | #297 1f38d38 ADR-062 |
+| H2 | HON e50cb267 | P1 | Latest quarter (Q3 2026 10-Q) acquired but never extracted for US filers | G, C | fixed by a merged PR; verified on a live rerun | #297 1f38d38 ADR-062 (XBRL quarter) |
+| H3 | HON e50cb267, f0be3c4f | P1 | Honeywell Aerospace (HONA, separate registrant) facts filed as HON catalysts/risks | D | partly fixed | #301 ba44c87 ADR-066 (replay: 3 of 4 and 1 of 2 HONA findings dropped; F17/F15 kept by design). HON3 not run. Live on CLLS2 the rule misses a former subsidiary inside the issuer's own 20-F (CLLS2-2). |
+| H5 | HON e50cb267 | P1 | Pre-consolidation EPS 7.36 beside post-consolidation price 218.33 | A, B | fixed by a merged PR; verified on a live rerun | #297 1f38d38 ADR-062 (EPS withheld, basis note) |
+| H7 | HON e50cb267 | P2 | Header '7 agents completed' while the council was 7 done / 1 failed | I | fixed by a merged PR; not yet observed live | #297 1f38d38 ADR-062 s.5 ('N of M agents completed, K failed'). Not live-observed: no later run had a failed council agent. |
+| C1 | CFR f722d620 | P0 | Net cash '8,496 bn EUR' and OCF '4,880 bn EUR' (x1000) | B, C | fixed by a merged PR; verified by offline replay; case not rerun | #298 c940772 ADR-064 (offline replay on the real FY26 PDF: 8,496m / 4,880m). CFR not rerun. No scale error on ANTO or LIN, where the fix was barely exercised (facts_read=0). |
+| C2 | CFR f722d620 | P1 | Jewellery Maisons 'EUR 5 billion' sentence validated as a group figure, manufacturing a conflict (F30) | B, D | fixed by a merged PR; verified by offline replay; case not rerun | #298 c940772 ADR-064 s.3 is the root fix (narrow-gutter column interleave); #304 49ec531 ADR-071 independently stops the manufactured conflict. CFR not rerun. |
+| C3 | CFR f722d620 | P1 | A November 2025 document (H1 FY26 interim) labelled '2026-Q1'; issuer IR labelled 'reported in the press' | G | partly fixed | #300 1b14000 ADR-065 (keying + label). The 2025-11-21 source date stays unexplained. Live on non-US issuers the label half fails without a sourced issuer website (ANTO-6, CLLS-5, LIN-13). |
+| ADBE-2 | ADBE 7b401826 | P1 | Filing-backed figures are badged 'Reported in the press; a filing figure differs' and tagged secondary_web | H | partly fixed | #304 49ec531 ADR-071 fixes the contradiction badge. The 'secondary_web' source kind on a 10-K copy and 'not from a filing' on filed figures are not fixed. ADBE not rerun. |
+| ADBE-6 | ADBE 7b401826 | P1 | Cash conversion printed as '140.69×' (and GOOGL '124.62×') in the peer table | B | fixed by a merged PR; not yet observed live | #303 95772d0. Not exercised live: ADBE not rerun; PYPL had no peer table. |
+| JPM-1 | JPM 30828043 | P0 | 'Total debt' shown as 64,776m = short-term borrowings only; long-term debt (435,206m) omitted | B | fixed by a merged PR; verified by offline replay; case not rerun | #307 75c5389 ADR-067 (replay: 64,776 -> 499,982). JPM not rerun. Live on PYPL the withholding path holds, but no withheld reason reaches the page (PYPL-11). |
+| JPM-2 | JPM 30828043 | P1 | Latest quarter missed: wrong 8-K ingested as 'results_release'; Q3 2026 results absent | G | fixed by a merged PR; verified by offline replay; case not rerun | #305 d576570 ADR-068 (replay resolves the 2026-10-13 Item 2.02 EX-99.1). JPM not rerun. Live on PYPL the EX-99.1 is read and, after ADR-076, feeds a finding. |
+| JPM-3 | JPM 30828043 | P1 | Industrial cash-flow and leverage semantics applied to a bank and promoted to the executive synthesis and chair verdict | B | fixed by a merged PR; verified by offline replay; case not rerun | #308 fbb40e8 ADR-069. JPM not rerun; the bank path was not exercised live. Live on PYPL a non-bank keeps FCF and cash conversion. |
+| PYPL-1 | PYPL f031b73b; rerun PYPL2-2 | P1 | Latest results release acquired but unused; 'headline figures of latest period' reported as not acquired | C, G | partly fixed | #312 95ba5f7 ADR-076: the headline question now searches the corpus; Q3 active accounts (440M) and transactions (6,796M) arrive from the EX-99.1. TPV, TM$, the Q3 decline, FCF, debt and guidance are still missing. |
+| PYPL-4 | PYPL f031b73b; rerun PYPL2-7 | P1 (P2 on rerun) | Payments balance sheet read with industrial leverage semantics in executive synthesis and chair | B | partly fixed | Downgraded to P2 on the rerun: the synthesis is neutral, the red team still reads customer balances as leverage. |
+| PYPL-10 | PYPL f031b73b; rerun PYPL2-12 | P2 | Research state contradicts itself on 10-Q coverage and question status | H, I | partly fixed | The 'only page 1 of the 10-Q' gap is gone and 3 domains now query the corpus. Questions are still 'satisfied' with 0 findings. |
+| ANTO-1 | ANTO a68e6d31 | P0 | Manufactured revenue conflict shows Antofagasta 2024 revenue as $156.6m against South32's $8,296m | B, D | fixed by a merged PR; verified on a live rerun | #310 e052ec2 ADR-074 (a change is not a level; another company's statement on its own site is not the issuer's). ANTO2: no conflict; '$156.6m' sits beside revenue $6,613.4m. |
+| ANTO-2 | ANTO a68e6d31 | P1 | Cross-entity contamination: South32, Lundin and Ecora findings fill the business, competitive, financial and risk sections | D | fixed by a merged PR; verified on a live rerun | #310 e052ec2 ADR-074. ANTO2: other-company findings 10/35 -> 0/40; entity separation score 1 -> 7. |
+| ANTO-3 | ANTO a68e6d31 | P1 | FY2024 balance sheet and labour state presented as current in the synthesis and chair | G | partly fixed | Labour half fixed on the rerun (Centinela strike named). Net debt half open: the synthesis still calls Dec-2024 net debt 'manageable' ($1.6bn vs $3.97bn at 30 Jun 2026). |
+| ANTO-11 | ANTO a68e6d31 | P3 | The executive synthesis is two duplicated sentence pairs with no figures; the subject is called a 'Peer' | - | partly fixed | 'Peer Antofagasta' gone; duplicated synthesis sentences remain. |
+| CLLS-1 | CLLS 1df9100c | P1 | Dual-listed SEC filer researched as a Euronext-only issuer: the CLLS/CIK sibling was never linked, so no 20-F/6-K was read | E, C | partly fixed | #311 09836d0 ADR-075: CIK 1627281 linked by SEC directory name and France domicile; 20-F FY2025 fetched (1010 chunks, was 0); SIC 2836 classification. Still facts_read=0 (XBRL reader is us-gaap only, IFRS not read) and no 6-K interim (CLLS2-1). |
+| CLLS-3 | CLLS 1df9100c | P0 | The chair states false facts about disclosure availability and presents a 2024 snapshot as the current state | H | fixed by a merged PR; verified on a live rerun | Gone on the rerun after #311 09836d0: the council refused (blocking question open) and the chair fell back to a deterministic verdict. No guard was added that stops 'not in evidence' being stated as 'does not exist' (same class as PYPL2-1, LIN-1). |
+| CLLS-6 | CLLS 1df9100c | P2 | A biotech went unclassified: no playbook and non-biotech templates | - | fixed by a merged PR; verified on a live rerun | #311 09836d0 ADR-075: SEC SIC 2836 -> Biotechnology; biotech playbook v1 applies. Mining templates still run beside it (CLLS2-7). |
+| LIN-2 | LIN 796b644d; rerun LIN2-1 | P1 | Cash/funding is stated at the 30-Jun figure; the acquired Sep-2026 Appendix 5B (cash A$45.1m, −58% in one quarter) is never used and no runway is computed | C, G | partly fixed | #312 95ba5f7 ADR-076: the 30-Sep cash A$45.1m now appears (F32, under Catalysts). No runway is computed (5B item 8.7 = 4.50 quarters, about 1.3 with capex). |
+| LIN-4 | LIN 796b644d; rerun LIN2-3 | P1 | Iluka (offtaker/lender) material crowds Lindian's questions, and Iluka is conflated with Lynas | D | partly fixed | #310 e052ec2 ADR-074 removed the Iluka net debt, outlook, disclaimer and environmental items and the Lynas conflation. Implicit-subject Iluka unit costs remain. |
+| LIN-5 | LIN 796b644d; rerun LIN2-4 | P1 | Research state contradicts itself on which documents exist | H | partly fixed | 'No quarterly report is present' is gone; gaps still deny ownership, offtake, cash and acquisition spend that findings state; the V2 memo still says no issuer document exists. |
+
+**Absent on rerun without a targeted fix (not counted as fixed)**
+
+| ID | Case | Sev | Defect | Hyp. | Status | Fix / note |
+|---|---|---|---|---|---|---|
+| PYPL-5 | PYPL f031b73b | P1 | Red team dates FY2025 cash to 2026-09-30 | B | absent on the rerun without a targeted fix; root cause not addressed | The rerun red team dates FY2025 cash correctly. No targeted fix. |
+| ANTO-4 | ANTO a68e6d31 | P1 | F7 joins the Q3 guidance raise to the Q2 rationale and keys it 2026-Q2 | G, B | absent on the rerun without a targeted fix; root cause not addressed | The fused Q2/Q3 statement is now discarded by the period-agreement guard. Side effect: Q3 output and guidance vanished (ANTO2-2). |
+| CLLS-11 | CLLS 1df9100c | P2 | The AstraZeneca '$245m invested' figure conflates a collaboration upfront with equity | B | absent on the rerun without a targeted fix; root cause not addressed | The '$245m invested' finding is invalidated; F28 now uses the 20-F's $80.0m IIA (a consequence of #311, not a targeted fix). |
+| CLLS-12 | CLLS 1df9100c | P3 | The investor summary lists a negative signal as a value driver and repeats price-only boilerplate across 7 agents | - | absent on the rerun without a targeted fix; root cause not addressed |  |
+| LIN-1 | LIN 796b644d | P0 | Executive synthesis says the pre-revenue developer 'mines and sells monazite concentrate' | G | absent on the rerun without a targeted fix; root cause not addressed | Absent on the rerun only because the editor failed (LLMJsonError) and a deterministic synthesis was used. The tense/stage check does not exist. |
+| LIN-6 | LIN 796b644d | P1 | Chair invents a revenue contradiction and cites a disagreement id that does not exist in the council | H, I | absent on the rerun without a targeted fix; root cause not addressed | The rerun chair's single disagreement matches a recorded red-team challenge. No validator was added. |
+
+---
+
+## 13. PRs / SHAs
+
+Every PR had an independent review, often 2–5 rounds. The reviews caught real defects that would otherwise have shipped: a BAC double count; an insurer over-reach that would have stripped UNH, MMC, AON and BRK of their metrics; a regex with catastrophic backtracking on the event loop in the EDGAR index parser (143 s on a 100 KB page, the gunicorn worker-timeout failure mode); a cubic-backtracking trailing-code regex; false split detections; false drops of a subject's own facts; stale holdings reported as 'held'; a clinical 'topline results' 6-K picked as an interim report. No issuer-specific exception was added.
+
+| PR | Squash SHA | ADR | Change | Defects | Independent review | Verification | Deployed in |
+|---|---|---|---|---|---|---|---|
+| #297 | 1f38d38 | ADR-062 | SEC XBRL: restated prior year, latest quarter, segment profit, change of basis | H1, H2, H5, H7 | 2 documented rounds. Caught: a wrong baseline that produced false basis changes; a doubled MRNA cover share count read as a 2-for-1 split (its EPS would have been withheld); GE's 1-for-8 reverse split missed by cent rounding; an old-quarter 10-Q/A treated as the latest quarter. | LIVE (HON f0be3c4f): YoY +7.85%, Q3 2026 facts, change-of-basis notice. Replay on 19 filers: no other filer gained a withholding or basis change. HON3 not run. | 1b14000 |
+| #296 | db5baf8 | ADR-063 | Discovery intent follows the thesis text; a security code is never a name | D1, D2, D3 | 1 round plus a security review. Caught: materials-class over-reach ('specialty chemicals and advanced materials'); a missing word boundary; ambiguous aliases (transmission, grid, lender); B2GOLD/E2OPEN/4IMPRINT stripped as codes; a trailing-code regex with cubic backtracking on long Unicode-space runs that could hold a worker for minutes. | LIVE for D2 (E2 d6f5d2c6: themes critical_materials + mining_materials; thesis fit 0/15 -> 12/15). D1/D3: offline replay only. | 1b14000 |
+| #299 | a68fb71 | (none) | Discovery: a current filer's public float stays usable until its next 10-K (MAX_FLOAT_AGE_DAYS 548 -> 670) | D6 | Independent review (rounds not recorded in an ADR). | Code and test only. Discovery D was not rerun, so ROK/SYM/POWL size placement is not live-verified. | 1b14000 |
+| #298 | c940772 | ADR-064 | A table's unit is printed in the table; narrow-gutter two-column pages (pipeline v20) | C1, C2 (root fix) | 2 documented rounds. Caught: one row's 'EUR 2.1 bn' could scale a table of millions; a bare '000' read as a unit; a page-declared unit overridden by cells; reconstructed tables bypassing the page check; 'EUR 1950 million' read as column years. | Offline replay on the real Richemont FY26 PDF (net cash 8,496m, OCF 4,880m). CFR not rerun. No scale error on ANTO/LIN runs, where it was barely exercised (facts_read=0). | 1b14000 |
+| #300 | 1b14000 | ADR-065 | A quarter is keyed by its fiscal year; the issuer's own release is 'company says' | C3 (partial) | 2 documented rounds. Caught: the UK NSM/ASX title path would have refused real Q1 announcements as 'not begun'; 52/53-week year ends; calendar-quarter forecasts. | Unit tests and replay. CFR not rerun. Live on ANTO the quarter key works (F9 2026-Q3) but the label half fails for issuers without a sourced website (ANTO, CLLS, LIN). | 1b14000 |
+| #301 | ba44c87 | ADR-066 | A separately registered company carrying the issuer's name is not the issuer | H3 (partial) | 2 documented rounds plus a security review. Caught: Entergy subsidiaries (combined 10-K) would have been dropped; clause-level judging dropped the subject's own facts; two empty accession sets read as 'separate'; a hanging data.sec.gov could cost two timeouts per statement. | Replay: e50cb267 drops 3 of 4 HONA findings; f0be3c4f drops 1 of 2. HON3 not run. Live on CLLS2 the rule misses Calyxt risk factors inside Cellectis's own FY2022 20-F (CLLS2-2). | 49ec531 |
+| #302 | e6570a5 | ADR-070 | Discovery relevance ranks by fit, not by source; unverified search theme at half weight | D10 (J), D9 (partial) | Independent review (S1 score basis made visible; S2 matched_theme mislabel and N2 legacy keyword points recorded as limits). | Replay on stored runs (E2 held 30 -> 75, ETM 20 -> 65, unverified 20 -> 42.5; D off-thesis 66 -> 43.5). Live check: Discovery E3 b14b96d9 (section 11). | 49ec531 |
+| #303 | 95772d0 | (none) | Web: peer-table cash conversion is a percentage, not a multiple | ADBE-6 | Independent review (rounds not recorded in an ADR). | Code and test. Not exercised live: ADBE not rerun; PYPL (unclassified) had no peer table. | 49ec531 |
+| #304 | 49ec531 | ADR-071 | A contradiction is two single claims about one named part | ADBE-2 (badge part), C2 (independent guard) | Independent review. Recorded a separate parser defect: 'USD 23,769 millions' read as USD 23,769. | Live: no false press-vs-filing conflict on PYPL, PYPL2, ANTO2, CLLS, CLLS2, LIN, LIN2. FAILED on ANTO a68e6d31 (South32 revenue vs an Antofagasta volume variance, each a single amount with no segment named); that class is fixed by ADR-074 (#310). | 49ec531 |
+| #306 | ebb565e | ADR-073 | Relevance tie-break before the shortlist cap; funnel.beyond_cap names what the cap cut | D10 (J) | Independent review (rounds not recorded in the ADR). | No stored run could be replayed (cut names were never persisted). Live check: Discovery E3 b14b96d9 (section 11). | fbb40e8 |
+| #305 | d576570 | ADR-068 | A results 8-K is Item 2.02, read through its EX-99.1 press release | JPM-2, ADBE-8 (unverified) | Independent review. Caught: a regex on the EDGAR index page took 143 s on a 100 KB adversarial page, on the event loop (the gunicorn worker-timeout failure mode); replaced by str.find parsing in a thread. Also list('2.02,9.01') splitting item codes into characters. | LIVE on PYPL: the Item 2.02 EX-99.1 is read (f031b73b) and, through ADR-076, feeds a finding (39905de8). JPM not rerun (replay resolves the 2026-10-13 EX-99.1). | fbb40e8 |
+| #307 | 75c5389 | ADR-067 | Total debt is one complete, compatible combination of concepts, or nothing | JPM-1 | Independent review. Caught: a BAC double count (commercial paper inside the other-short-term-borrowings line); IBM tagging one line twice (+6,424m overstatement); a filer-total probe. | LIVE on PYPL: total debt withheld (holds) but no withheld reason reaches the page (PYPL-11). Replay on 24 filers: JPM 64,776 -> 499,982; HON 34,580; ADBE 6,210; BAC, NEE, CAT, PYPL withheld. JPM not rerun. | fbb40e8 |
+| #308 | fbb40e8 | ADR-069 | Generic metrics a playbook declares not meaningful are not computed, required or counted (banks) | JPM-3 | Independent review. Caught: insurance over-reach (UNH, MMC, AON, BRK would have lost operating margin, FCF and net debt); a broker-dealer under SIC 6211 inferred as 'Banks' from the word 'banking'. | LIVE on PYPL: FCF and cash conversion kept for a non-bank (the payments path was not exercised: PYPL is unclassified). Replay on JPM 30828043: open categories shrink to dividend_yield and book_value_per_share. JPM not rerun. | fbb40e8 |
+| #310 | e052ec2 | ADR-074 | Investigator: another company's statement on its own site is not the issuer's; a change is not a level | ANTO-1, ANTO-2, LIN-4 (partial) | 3 review rounds. Root cause: foreign_publisher knew only companies in the platform's own table. | LIVE (ANTO2 c971490d): other-company findings 10/35 -> 0/40; the P0 manufactured conflict is gone; entity separation 1 -> 7. LIVE (LIN2 6d4f1c43): one Iluka statement dropped, but implicit-subject Iluka items survive (documented limit). | e052ec2 |
+| #311 | 09836d0 | ADR-075 | SEC filings: an issuer files with the SEC when any verified line of it does | CLLS-1 (partial), CLLS-6, CLLS-3 (indirect) | Independent review. SEC directory name match plus a domicile check; no creation path sets legal_entity_id. | LIVE (CLLS2 686d71f6): sec_basis CIK 1627281; 20-F FY2025 fetched, 1010 chunks (was 0); SIC 2836 -> biotech playbook; the false chair statements are gone (the chair now declines). Still facts_read=0: the XBRL reader is us-gaap only, so IFRS is not read; the quarterly slot is 10-Q only. | 09836d0 |
+| #312 | 95ba5f7 | ADR-076 | Research: recency questions read the newest held documents; 'held but not read' is not 'not acquired' | PYPL-1 (partial), LIN-2 (partial), PYPL-10 (partial) | Independent review. Round 1 caught that one held 2024 document made all three recency questions say 'held but not read'; stale holdings are no longer reported as held. | LIVE (PYPL2 39905de8): Q3 active accounts and transactions from the EX-99.1; TPV, TM$ and guidance still missing. LIVE (LIN2 6d4f1c43): latest-period score 3 -> 6; the 5B cash A$45.1m is present (F32), only under Catalysts and with no runway. | 95ba5f7 |
+
+**Open (pending)**
+
+| PR | Merge SHA | ADR | State | Change | Defects | Review | Verification |
+|---|---|---|---|---|---|---|---|
+| #313 | not merged | ADR-077 (pending) | open; review round 5; CI pending | 6-K interim for 20-F filers | CLLS2-1 | 5 review rounds so far: a BioNTech clinical 'topline results' 6-K was picked at first; then announcements; then stale 6-Ks; finally a content check (statement line items with figures) was added. | Live replay across 13 filers picks the true latest interim. Not merged, not deployed, not rerun. |
+| #314 | not merged | ADR-078 (pending) | open; review in progress | A material corporate event resting only on unvetted web pages is never stated as fact | PYPL2-1 | Review in progress. | Trigger: PYPL2 P0 'Stripe/Advent $53B offer rejected by the board' from a single startupfortune-type page. Not merged, not deployed, not rerun. |
+
+**Shelved**
+
+| PR | Status | ADR | Defect | Summary |
+|---|---|---|---|---|
+| #309 | draft, shelved after 4 review rounds; left open with an explanatory comment | ADR-072 (not merged) | ADBE-3 | Four rounds of independent adversarial review found 13, 19, 21 and 38 false drops of true statements (deny-list, narrower deny-list, full-period allow-list, strict adjacency). Guidance verbs ('lifted FY2026 revenue to', 'set at', 'cut to') and trailing qualifiers ('is the midpoint of its range') read as actuals. Conclusion: actual versus guidance cannot be decided by wording rules after the fact; it needs a statement-kind tag at extraction. ADBE-3 stays OUTSTANDING P1. |
+
+Main and deployed at report time: **95ba5f7**. Final main after #313/#314: <!-- PENDING: #313/#314 merge -->.
+
+---
+
+## 14. Before/after rerun comparisons
+
+These compare measured state only. More generated text is not counted as improvement.
+
+**HON**
+
+| Measure | Before (e50cb267, pre-campaign) | After (f0be3c4f, 1b14000) |
+|---|---|---|
+| Factual errors in validated claims (WRONG / WRONG_SCOPE / WRONG_PERIOD) | 3 (YoY sign, segment profit as group margin, pre-split EPS) | 0 of these three (all verified fixed live) |
+| Wrong-entity findings (HONA) | 4 (Tempe x2, FCA settlement, HONA backlog) | 2 (F33 Tempe; F17 mixed statement) |
+| Open gaps (loop.gaps_open) | 58 | 58 |
+| Issuer-document facts read | 0 (10-K and 10-Q 'figures not yet extracted') | 10 from 6 documents; 1 revenue conflict withheld (mixes an aerospace trade article, a Q1 10-Q figure and the Q2 release under one '2026' key) |
+| Current-period completeness | Q3 2026 10-Q acquired, not extracted | Q3 2026 revenue 4,994m, NI 664m, cash 5,694m, assets 53,098m (single quarter) |
+| Conflicting / inconsistent state | '7 agents completed' with 1 failed; F13 'newest disclosure Q2' | F35 'newest disclosure Q2' persists (H8); chair 'unresolved disagreement' about present Q3 revenue (H11); backlog perimeter mix (H10) |
+| Overall QA score / 15-dim mean | 3 / 4.20 | 6 / 5.73 |
+
+Verdict: Real improvement on the deterministic snapshot (usefulness 3 -> 6). The narrative still mixes perimeters (H10) and carries 2 HONA findings (H3; ADR-066 merged later, HON3 not run).
+
+**PYPL**
+
+| Measure | Before (f031b73b, fbb40e8) | After (39905de8, 95ba5f7) |
+|---|---|---|
+| Independently checked claims | 20 checked: 9 PASS; 5 WRONG/WRONG_SCOPE/WRONG_PERIOD/WRONG_ENTITY; 0 STALE; 2 UNSUPPORTED | 20 checked: 6 PASS; 4 WRONG/WRONG_SCOPE/WRONG_PERIOD/WRONG_ENTITY; 1 STALE; 2 UNSUPPORTED |
+| Audited 'missing' facts (gap audit) | 15 audited: 11 acquired-not-extracted, 0 not acquired, 3 issuer did not disclose | 12 audited: 8 acquired-not-extracted, 1 not acquired, 2 issuer did not disclose |
+| Sector variables captured | yes 0 / partial 5 / no 4 of 9 | yes 2 / partial 4 / no 3 of 9 |
+| Current-period completeness | Q3 XBRL figures shown; the Q3 EX-99.1 was read but used by no finding; 'headline figures of the latest period' = not acquired; stale Q2 third-party product figures stand in for Q3. | ADR-076 adds issuer Q3 active accounts (440M) and transactions (6,796M). TPV $487.1B, TM$, the GAAP OI -8% / NI -14% decline, FCF, $13.5B debt, the buyback and the guidance table are still absent. F10 calls the July release the latest. |
+| Conflicting findings / research-state contradictions | 0 manufactured contradictions (ADR-071 holds); numeric_verification flags a correct chair sentence (PYPL-13). | 0 contradictions; 6 numeric_verification conflicts, at least 2 false; the chair invents a disagreement; gaps deny the Q3 10-Q that findings cite. |
+| P0/P1 defects | P0 0, P1 5 (PYPL-1..5). | PYPL-5 not reproduced; PYPL-1 and PYPL-4 partly fixed; PYPL-2/3 still present; NEW P0 PYPL2-1 (takeover rumour stated as fact in the executive synthesis) and NEW P1 PYPL2-3, PYPL2-5. |
+| Overall usefulness / 15-dim mean | 3 / 3.73 | 3 / 3.87 |
+
+Verdict: No net improvement (usefulness 3 -> 3). One real gain (issuer Q3 operating data) is offset by a new P0 at the top of the report.
+
+**ANTO**
+
+| Measure | Before (a68e6d31, fbb40e8) | After (c971490d, 09836d0) |
+|---|---|---|
+| Independently checked claims | 20 checked: 11 PASS; 4 WRONG/WRONG_SCOPE/WRONG_PERIOD/WRONG_ENTITY; 3 STALE; 0 UNSUPPORTED | 20 checked: 13 PASS; 2 WRONG/WRONG_SCOPE/WRONG_PERIOD/WRONG_ENTITY; 2 STALE; 1 UNSUPPORTED |
+| Audited 'missing' facts (gap audit) | 11 audited: 6 acquired-not-extracted, 3 not acquired, 0 issuer did not disclose | 10 audited: 5 acquired-not-extracted, 1 not acquired, 1 issuer did not disclose |
+| Sector variables captured | yes 0 / partial 8 / no 4 of 12 | yes 1 / partial 8 / no 2 of 11 |
+| Current-period completeness | Financial core FY2024 (two periods stale); FY2025 and H1 2026 results never acquired; Q3 2026 output present; F7 joins the Q3 guidance raise to the Q2 rationale. | Financial core still FY2024; H1 2026 net cost and realised price, 2027 guidance and the Centinela strike present; Q3 2026 output and the 2026 guidance cut lost (ANTO2-2). |
+| Conflicting findings / research-state contradictions | P0 manufactured conflict: South32 revenue $8,296m vs an Antofagasta volume variance $156.6m; the chair invents a net-debt disagreement. | 0 conflicts; the volume variance sits beside revenue $6,613.4m correctly. Gaps still contradict findings (ANTO2-3). |
+| P0/P1 defects | P0 1 (ANTO-1), P1 4 (ANTO-2..5). | ANTO-1 and ANTO-2 fixed live (#310); ANTO-4 not reproduced; ANTO-3 partly fixed; ANTO-5 still present; NEW P1 ANTO2-1 (Centinela capex as Group capex). |
+| Overall usefulness / 15-dim mean | 2 / 2.47 | 4 / 3.80 |
+
+Verdict: Real improvement (usefulness 2 -> 4) from one generic fix (ADR-074). The report is still built on 2024 financials.
+
+**CLLS**
+
+| Measure | Before (1df9100c, fbb40e8) | After (686d71f6, 09836d0) |
+|---|---|---|
+| Independently checked claims | 17 checked: 4 PASS; 1 WRONG/WRONG_SCOPE/WRONG_PERIOD/WRONG_ENTITY; 9 STALE; 0 UNSUPPORTED | 21 checked: 9 PASS; 2 WRONG/WRONG_SCOPE/WRONG_PERIOD/WRONG_ENTITY; 4 STALE; 1 UNSUPPORTED |
+| Audited 'missing' facts (gap audit) | 8 audited: 2 acquired-not-extracted, 5 not acquired, 1 issuer did not disclose | 11 audited: 5 acquired-not-extracted, 2 not acquired, 1 issuer did not disclose |
+| Sector variables captured | yes 0 / partial 3 / no 5 of 8 | yes 0 / partial 2 / no 6 of 8 |
+| Current-period completeness | Newest period Q1 2024, ten quarters behind the Q2 2026 6-K; no SEC filing read ('not an SEC registrant'). | 20-F FY2025 read (1010 chunks) but used mainly for risk boilerplate; newest figures 9M 2025; the H1 2026 6-K and the 2026-09-14 pivot 6-K not read; facts_read=0. |
+| Conflicting findings / research-state contradictions | No recorded contradictions; the legacy council says 'no company disclosures' while the ledger holds issuer documents (CLLS-4). | No recorded contradictions; the chair and tech block say 0 findings while the ledger holds 37 (CLLS2-3); gaps deny findings (CLLS2-8). |
+| P0/P1 defects | P0 1 (CLLS-3), P1 3 (CLLS-1, -2, -4). | CLLS-3 gone (the chair declined); CLLS-1 partly fixed (#311); CLLS-2 and CLLS-4 still present; NEW P1 CLLS2-1 (no 6-K; fix in #313), CLLS2-2 (Calyxt risks as Cellectis's), CLLS2-3, CLLS2-4 (blocking cash_runway ran 0 tools). |
+| Overall usefulness / 15-dim mean | 1 / 2.33 | 2 / 3.07 |
+
+Verdict: Less wrong, not useful (usefulness 1 -> 2). It still describes a CAR-T company that exited CAR-T on 2026-09-14.
+
+**LIN**
+
+| Measure | Before (796b644d, fbb40e8) | After (6d4f1c43, 95ba5f7) |
+|---|---|---|
+| Independently checked claims | 21 checked: 11 PASS; 6 WRONG/WRONG_SCOPE/WRONG_PERIOD/WRONG_ENTITY; 3 STALE; 0 UNSUPPORTED | 23 checked: 13 PASS; 6 WRONG/WRONG_SCOPE/WRONG_PERIOD/WRONG_ENTITY; 2 STALE; 0 UNSUPPORTED |
+| Audited 'missing' facts (gap audit) | 11 audited: 8 acquired-not-extracted, 2 not acquired, 1 issuer did not disclose | 12 audited: 7 acquired-not-extracted, 4 not acquired, 1 issuer did not disclose |
+| Sector variables captured | yes 1 / partial 5 / no 4 of 10 | yes 4 / partial 4 / no 2 of 10 |
+| Current-period completeness | Cash stated at 30 Jun (A$108m) and called sufficient; the acquired Sep-quarter Appendix 5B (A$45.1m) unused; 'no quarterly report is present'. | Sep Quarterly + 5B named as the newest disclosure; A$45.1m and the quarter's spend stated (under Catalysts); energisation and first-concentrate targets present. Financial capacity shows FY2025 aggregator figures; no runway. |
+| Conflicting findings / research-state contradictions | The chair invents a revenue disagreement and cites a disagreement id that does not exist (LIN-6). | The chair's single disagreement matches a recorded red-team challenge. Gaps still deny ownership, offtake and cash that findings state. |
+| P0/P1 defects | P0 1 (LIN-1 'mines and sells'), P1 5 (LIN-2..6). | LIN-1 not reproduced only because the editor failed; LIN-6 not reproduced; LIN-2, LIN-4, LIN-5 partly fixed; LIN-3 still present; NEW P1 LIN2-1 (FY2025 aggregator figures as 'most recent fiscal year'). |
+| Overall usefulness / 15-dim mean | 3 / 3.40 | 4 / 4.13 |
+
+Verdict: Better on currency (latest-period score 3 -> 6, usefulness 3 -> 4). The financial section is still wrong in substance and entity separation is still broken.
+
+**Discovery E (materials)**
+
+| Measure | Before (E a8ce129a, pre-#296) | After (E2 d6f5d2c6, 1b14000) | Second after (E3 b14b96d9, 95ba5f7; filled with the E3 result) |
+|---|---|---|---|
+| Parsed intent | themes [defense]; hard industry 'defense' | themes [critical_materials, mining_materials]; no hard industry |  |
+| Thesis fit of returned | 0/15 | 12/15 |  |
+| Score / rank | registry 80.5 x11, web 60.5 x4; order by eligibility tier then insertion | curated 85 x6, held 30 x4, web 20 x5; ERA/UMI (30) at ranks 1-2; Lynas rank 14 |  |
+| Web candidates admitted -> returned | 5 -> 4 (all defence) | 7 -> 1 (6 cut by the cap, inferred) |  |
+| Size-unknown passing as eligible | RHM, BAE, SAAB 'eligible' | SCCO 'eligible' at rank 3 |  |
+
+Verdict: E -> E2: thesis fit 0/15 -> 12/15 (ADR-063). E2 -> E3 (third column): <!-- PENDING: E3 -->
+
+**Not rerun**
+
+- **CFR.** CFR2 not run (budget/time). C1 (x1000) and C2 (manufactured conflict) are fixed in code and verified by offline replay on the real FY26 PDF only. C3 to C9 unchanged as far as anyone has observed.
+- **ADBE.** ADBE2 not run. ADBE-6 (#303) and the ADBE-2 badge (#304) are fixed in code but not observed live; ADBE-8 may be helped by ADR-068/076 but is unverified. ADBE-1, -3, -4, -5, -7 remain open.
+- **JPM.** JPM2 not run. JPM-1 (#307), JPM-2 (#305) and JPM-3 (#308) are verified by offline replay on the stored JPM data, and the same mechanisms behaved correctly live on PYPL. JPM-4, -5, -6, -11 remain open.
+- **HON (second rerun).** HON3 not run, so ADR-066's HONA drop (H3) is verified by replay only.
+
+---
+
+## 15. Outstanding defects
+
+| Severity | fixed by a merged PR; verified on a live rerun | fixed by a merged PR; verified by offline replay; case not rerun | fixed by a merged PR; not yet observed live | partly fixed | absent on the rerun without a targeted fix; root cause not addressed | fix in an open PR, not merged | open | Total |
+|---|---|---|---|---|---|---|---|---|
+| P0 | 3 | 2 | 0 | 0 | 1 | 1 | 0 | 7 |
+| P1 | 4 | 3 | 1 | 10 | 3 | 1 | 21 | 43 |
+| P2 | 1 | 2 | 3 | 2 | 1 | 0 | 52 | 61 |
+| P3 | 0 | 0 | 0 | 1 | 1 | 0 | 16 | 18 |
+| Total | 8 | 7 | 4 | 13 | 6 | 2 | 89 | 129 |
+
+Outstanding = open, partly fixed, fix in an open PR, or absent on rerun without a fix.
+
+| ID | Case | Sev | Defect | Hyp. | Status | Fix / note |
+|---|---|---|---|---|---|---|
+| D4 | Discovery A, B, C, D, E2 | P2 | Web recall: name-only leads never resolved against exchange directories (NKT, argenx, Zinnwald); ETFs/indices extracted as companies; a GICS heading (Cognex, Ouster) and a ticker (TSLA) used as names; renamed issuers lost (Arafura, GGG/ETM); 77-106 of 145-160 results skipped over budget and PDFs skipped in every run | J, F | open |  |
+| D5 | Discovery B (Siemens), E2 (SCCO) | P2 | Size unknown passes as eligible / eligible_unverified for mega caps | J | open |  |
+| D7 | Discovery D (ABB, Fanuc, Yaskawa, Keyence), E (RHM, BAE, SAAB) | P2 | Non-US curated issuers have no market-cap source; mega caps pass small-cap theses as 'unverified' | J | open |  |
+| D8 | Discovery D | P3 | TSE codes 6954/6506 sent to SEC as CIKs | F | open |  |
+| D9 | Discovery D | P2 | Off-thesis web leads (DroneShield, WiseTech, TSLA) admitted with circular inherited theme points; WiseTech theme 'verified' on the generic word 'automation' | J | partly fixed | #302 e6570a5 ADR-070 (unverified 66 -> 43.5; WiseTech verified stays 66) |
+| D11 | Discovery A, C, E, E2 | P3 | Registry stale identifiers and classifications: Block 'SQ' (now XYZ), GGG (now ETM), Umicore 'Mining', GRML 'Biotechnology' (uncertain), HON 'A&D' after the spin | J | open |  |
+| D12 | Discovery A, B, C, D | P2 | Curated registries hold mega caps per theme and no European biotech; small/mid theses depend on web recall, so C returns 0 by construction | J | open |  |
+| H3 | HON e50cb267, f0be3c4f | P1 | Honeywell Aerospace (HONA, separate registrant) facts filed as HON catalysts/risks | D | partly fixed | #301 ba44c87 ADR-066 (replay: 3 of 4 and 1 of 2 HONA findings dropped; F17/F15 kept by design). HON3 not run. Live on CLLS2 the rule misses a former subsidiary inside the issuer's own 20-F (CLLS2-2). |
+| H4 | HON both runs; Discovery E | P2 | Classification from stale SIC 3724 -> A&D playbook, A&D peers (BAE, Thales, LMT) for post-spin automation company | A | open |  |
+| H6 | HON e50cb267 | P2 | Synthesis omits the spin-off, Solstice and the Quantinuum gain | A, G | open | partly mitigated by the ADR-062 change-of-basis note |
+| H8 | HON both runs | P3 | 'Newest results disclosure is Q2' beside Q3 facts; duplicate backlog findings | H | open |  |
+| H9 | HON e50cb267 | P3 | Honeywell Automation India RPT (2024 subsidiary) in governance | D | open |  |
+| H10 | HON f0be3c4f | P2 | Backlog narrative mixes pre-spin Q1/Q2 ($38.3bn/+15%, $38.0bn/+12%) with post-spin Q3 ($18.8bn/+1%) without a perimeter caveat; chair 'backlog growth' | A | open |  |
+| H11 | HON f0be3c4f | P3 | Chair cites an 'unresolved disagreement' about Q3 revenue that is present (secfin:HON:2026-Q3:revenue) | H | open |  |
+| C3 | CFR f722d620 | P1 | A November 2025 document (H1 FY26 interim) labelled '2026-Q1'; issuer IR labelled 'reported in the press' | G | partly fixed | #300 1b14000 ADR-065 (keying + label). The 2025-11-21 source date stays unexplained. Live on non-US issuers the label half fails without a sourced issuer website (ANTO-6, CLLS-5, LIN-13). |
+| C4 | CFR f722d620 | P2 | Weak/advocacy single sources (NGO, amlnetwork.org) lifted to the executive synthesis as 'regulatory investigations' | - | open |  |
+| C5 | CFR f722d620 | P2 | Current developments are noise; missed Q1 FY27 +20% cc, Avolta stake disposal, Baume & Mercier sale | G | open |  |
+| C6 | CFR f722d620 | P2 | Synthesis omits the latest quarter and the Watchmakers margin collapse (5.3% -> 3.4%) though both are in the report | H | open |  |
+| C7 | CFR f722d620 | P2 | Gaps call OCF, segment sales and latest-period headline 'missing' while they are acquired facts | C | open |  |
+| C8 | CFR f722d620 | P3 | Gross margin under Governance; stale FY2024 findings beside FY2026; 2025 gold projection presented as current | G | open |  |
+| C9 | CFR f722d620 | P3 | Peers = Swatch only; sensitivities 'no research question assigned' | - | open |  |
+| ADBE-1 | ADBE 7b401826 | P1 | Report presents a dissolved three-segment structure as current | A, G | open |  |
+| ADBE-2 | ADBE 7b401826 | P1 | Filing-backed figures are badged 'Reported in the press; a filing figure differs' and tagged secondary_web | H | partly fixed | #304 49ec531 ADR-071 fixes the contradiction badge. The 'secondary_web' source kind on a 10-K copy and 'not from a filing' on filed figures are not fixed. ADBE not rerun. |
+| ADBE-3 | ADBE 7b401826 | P1 | F14 states FY2026 total revenue as reported from a non-existent 'Q4 2026 summary' | G, B | open | #309 (ADR-072) shelved after 4 review rounds of false drops; needs a statement-kind tag at extraction (P-7). |
+| ADBE-4 | ADBE 7b401826 | P1 | Peer set is Tempus AI and Alphabet | - | open |  |
+| ADBE-5 | ADBE 7b401826 | P1 | Research state contradicts itself about the latest filing and the latest-period figures | H, I | open |  |
+| ADBE-7 | ADBE 7b401826 | P2 | Material post-period and in-period events are missing: CEO succession, CFO resignation, Semrush, DOJ settlement, buybacks | G | open |  |
+| ADBE-8 | ADBE 7b401826 | P2 | Q3 FY2026 results are treated as an upcoming event and the release content is not used | G, C | open | #305 d576570 ADR-068 makes the Item 2.02 EX-99.1 readable and #312 ADR-076 routes recency questions to it (live on PYPL2). ADBE not rerun, so the ADBE case is unverified. |
+| ADBE-9 | ADBE 7b401826 | P2 | No issuer facts extracted from the acquired 10-K, 10-Q or 8-K | C | open |  |
+| ADBE-10 | ADBE 7b401826 | P2 | No software playbook; an industrial template drives the questions and web queries | - | open |  |
+| ADBE-11 | ADBE 7b401826 | P2 | Stale balance-sheet framing in the chair and findings | G | open |  |
+| ADBE-12 | ADBE 7b401826 | P2 | Derivative-suit finding has the wrong venue and count | - | open |  |
+| ADBE-13 | ADBE 7b401826 | P2 | Filler and trivia ranked as catalysts and counter-thesis | - | open |  |
+| ADBE-14 | ADBE 7b401826 | P3 | Ambiguous fiscal labels and contradictory period tiles | G | open |  |
+| ADBE-15 | ADBE 7b401826 | P3 | Duplicate findings, stale-source citations and inconsistent gap counts | H | open |  |
+| JPM-4 | JPM 30828043 | P1 | Core bank metrics recorded as 'not acquired' although the acquired 10-K/10-Q and the platform's own XBRL contain them | C | open |  |
+| JPM-5 | JPM 30828043 | P1 | Executive synthesis attributes a subsidiary's (J.P. Morgan SE) ICAAP to the Group; subsidiary findings crowd group sections | D | open |  |
+| JPM-6 | JPM 30828043 | P1 | Council/red-team claims with wrong period and scope (H1 as Q2, Corporate segment as Firm) and wrong ROE | B, H | open |  |
+| JPM-7 | JPM 30828043 | P2 | Stale facts used where the acquired filings hold newer ones; a resolved trial shown as pending | G | open |  |
+| JPM-8 | JPM 30828043 | P2 | Material Q2 2026 one-off (the $4.6B Visa gain) and filed corporate actions absent from V3 research | G | open |  |
+| JPM-9 | JPM 30828043 | P2 | Irrelevant or junk findings fill sections (PJM capacity prices, FASB effective dates as catalysts, meta-findings) | - | open |  |
+| JPM-10 | JPM 30828043 | P3 | Source labels and page-header inconsistencies | - | open |  |
+| JPM-11 | JPM 30828043 | P1 | Blocking bank questions marked 'answered/satisfied' without the metric they ask for | I | open |  |
+| PYPL-1 | PYPL f031b73b; rerun PYPL2-2 | P1 | Latest results release acquired but unused; 'headline figures of latest period' reported as not acquired | C, G | partly fixed | #312 95ba5f7 ADR-076: the headline question now searches the corpus; Q3 active accounts (440M) and transactions (6,796M) arrive from the EX-99.1. TPV, TM$, the Q3 decline, FCF, debt and guidance are still missing. |
+| PYPL-2 | PYPL f031b73b; rerun PYPL2-4 | P1 | Securities litigation misread as 'resolved'; active 2026 Branded Checkout class action omitted | - | open | The 'resolved' misreading is gone only because no litigation finding exists on the rerun; the active 2026 Branded Checkout action is still omitted. |
+| PYPL-3 | PYPL f031b73b; rerun PYPL2-4 | P1 | Gap says no live regulatory action or litigation, contradicting the acquired 10-Q and the report's own F13 | C, H | open | Two rerun gaps still say there is no live litigation or regulatory action, against 10-Q Note 13. |
+| PYPL-4 | PYPL f031b73b; rerun PYPL2-7 | P1 (P2 on rerun) | Payments balance sheet read with industrial leverage semantics in executive synthesis and chair | B | partly fixed | Downgraded to P2 on the rerun: the synthesis is neutral, the red team still reads customer balances as leverage. |
+| PYPL-5 | PYPL f031b73b | P1 | Red team dates FY2025 cash to 2026-09-30 | B | absent on the rerun without a targeted fix; root cause not addressed | The rerun red team dates FY2025 cash correctly. No targeted fix. |
+| PYPL-6 | PYPL f031b73b; rerun PYPL2-6 | P2 | Company unclassified: no payments playbook, mining/industrial template questions and web queries | - | open | Still unclassified on the rerun; mining/industrial template questions persist. |
+| PYPL-7 | PYPL f031b73b; rerun PYPL2-5 | P2 | Stale, third-party Q2 product metrics presented as current | G | open | Escalated on the rerun: the chair splices the stale Q2 figures into a Q3 statement (PYPL2-5, P1). |
+| PYPL-8 | PYPL f031b73b; rerun PYPL2-8 | P2 | Capital allocation omits buybacks that exceed FCF | C | open |  |
+| PYPL-9 | PYPL f031b73b; rerun PYPL2-9 | P2 | CEO change missing; gap says no executive disclosure | G | open |  |
+| PYPL-10 | PYPL f031b73b; rerun PYPL2-12 | P2 | Research state contradicts itself on 10-Q coverage and question status | H, I | partly fixed | The 'only page 1 of the 10-Q' gap is gone and 3 domains now query the corpus. Questions are still 'satisfied' with 0 findings. |
+| PYPL-11 | PYPL f031b73b; rerun PYPL2-10 | P2 | Total debt withheld without the ADR-067 reason; Q3 total that exists is called missing | B | open |  |
+| PYPL-12 | PYPL f031b73b; rerun PYPL2-11 | P2 | Unconfirmed M&A rumours and an irrelevant article listed as current developments | G | open | Worsened into the P0 PYPL2-1 on the rerun. |
+| PYPL-13 | PYPL f031b73b; rerun PYPL2-13 | P3 | numeric_verification withholds a correct chair statement as conflicting | H | open |  |
+| PYPL-14 | PYPL f031b73b | P3 | ISIN shown as a blocking identity gap | - | open |  |
+| PYPL2-1 | PYPL 39905de8 | P0 | Unsupported takeover claim presented as fact in the executive synthesis | H | fix in an open PR, not merged | #314 (ADR-078, open): a material corporate event resting only on unvetted web pages is never stated as fact. |
+| PYPL2-3 | PYPL 39905de8 | P1 | Research state contradicts itself on what the latest issuer disclosure is | H, G | open | F10 calls the 2026-07-28 release the latest while other findings cite Q3; a gap denies the Q3 10-Q. |
+| PYPL2-5 | PYPL 39905de8 | P1 | Chair splices Q2 third-party product growth into the Q3 results statement | B, G | open |  |
+| PYPL2-14 | PYPL 39905de8 | P3 | Period and labelling slips | B | open |  |
+| ANTO-3 | ANTO a68e6d31 | P1 | FY2024 balance sheet and labour state presented as current in the synthesis and chair | G | partly fixed | Labour half fixed on the rerun (Centinela strike named). Net debt half open: the synthesis still calls Dec-2024 net debt 'manageable' ($1.6bn vs $3.97bn at 30 Jun 2026). |
+| ANTO-4 | ANTO a68e6d31 | P1 | F7 joins the Q3 guidance raise to the Q2 rationale and keys it 2026-Q2 | G, B | absent on the rerun without a targeted fix; root cause not addressed | The fused Q2/Q3 statement is now discarded by the period-agreement guard. Side effect: Q3 output and guidance vanished (ANTO2-2). |
+| ANTO-5 | ANTO a68e6d31 | P1 | Research state contradicts itself on what is the latest disclosure, and the chair invents a net-debt disagreement | H | open | Rerun: 'most recent disclosure covers full-year 2025' while H1 and Q3 2026 are cited. |
+| ANTO-6 | ANTO a68e6d31 | P2 | The issuer's own IR documents are labelled 'reported in the press' / 'Unclassified web page' | - | open | ADR-065's label fix does not reach an issuer with no sourced website. |
+| ANTO-7 | ANTO a68e6d31 | P2 | Latest annual and interim financials and the material 2026 events are absent | G, C | open | Partly improved on the rerun (H1 2026 net cost, realised price, 2027 guidance) with no targeted fix; group FY2025/H1 2026 revenue, EBITDA and net debt still absent. |
+| ANTO-8 | ANTO a68e6d31 | P2 | The company is unclassified, so no mining playbook ran and the sector variables are missing | - | open |  |
+| ANTO-9 | ANTO a68e6d31 | P2 | Attributable vs 100% basis is never stated; the mine split mixes bases and omits Centinela | A, B | open | Not exercised on the rerun (no multi-mine split). |
+| ANTO-10 | ANTO a68e6d31 | P2 | Period keys missing on current findings | G | open |  |
+| ANTO-11 | ANTO a68e6d31 | P3 | The executive synthesis is two duplicated sentence pairs with no figures; the subject is called a 'Peer' | - | partly fixed | 'Peer Antofagasta' gone; duplicated synthesis sentences remain. |
+| ANTO2-1 | ANTO c971490d | P1 | Centinela segment capex presented as Antofagasta (Group) capex | A, B | open | Centinela capex ($1,414.0m 2024; $2,478.1m 2025) labelled Group capex (Group: $2,414.9m; $3,684.5m). |
+| ANTO2-2 | ANTO c971490d | P2 | Regression: Q3 2026 production and cost guidance dropped out entirely | G | open | Regression from the period-agreement discard: Q3 2026 output (151.9kt) and the 2026 guidance cut are gone. |
+| ANTO2-3 | ANTO c971490d | P2 | Gaps contradict findings in the same ledger | H, C | open |  |
+| ANTO2-4 | ANTO c971490d | P2 | Chair model unavailable; the deterministic chair is used | I | open | Degraded state is recorded ('no chair model was available'). |
+| ANTO2-5 | ANTO c971490d | P3 | Gap-to-finding links and knowledge-state labels are wrong for entity and period-discard gaps | H | open |  |
+| CLLS-1 | CLLS 1df9100c | P1 | Dual-listed SEC filer researched as a Euronext-only issuer: the CLLS/CIK sibling was never linked, so no 20-F/6-K was read | E, C | partly fixed | #311 09836d0 ADR-075: CIK 1627281 linked by SEC directory name and France domicile; 20-F FY2025 fetched (1010 chunks, was 0); SIC 2836 classification. Still facts_read=0 (XBRL reader is us-gaap only, IFRS not read) and no 6-K interim (CLLS2-1). |
+| CLLS-2 | CLLS 1df9100c | P1 | The most material event, the 2026-09-14 strategic transformation (exit of lasme-cel/eti-cel, pivot to in vivo .HEAL programs, restructuring), was acquired but not used | G, C | open | The 2026-09-14 pivot is missed again; F18 lists the 6-K by date only. |
+| CLLS-4 | CLLS 1df9100c | P1 | The research state contradicts itself on what the evidence holds | H | open |  |
+| CLLS-5 | CLLS 1df9100c | P2 | The issuer's own site is classed unknown_web, and filed interim financial content is labelled '[reported in the press; not from a filing]' | - | open |  |
+| CLLS-7 | CLLS 1df9100c | P2 | Stale facts are presented without recency ranking | G | open |  |
+| CLLS-8 | CLLS 1df9100c | P2 | Garbage scope keys parsed from sentence fragments and question text | B | open | Reduced from 2 instances to 1. |
+| CLLS-9 | CLLS 1df9100c | P2 | The whole professional report was withheld because the safety scan flagged one gap description | - | open | Not exercised on the rerun (no passage flagged). |
+| CLLS-10 | CLLS 1df9100c | P2 | Biotech economics are absent: runway, burn, AZ control/dilution and pipeline stages | C | open |  |
+| CLLS-11 | CLLS 1df9100c | P2 | The AstraZeneca '$245m invested' figure conflates a collaboration upfront with equity | B | absent on the rerun without a targeted fix; root cause not addressed | The '$245m invested' finding is invalidated; F28 now uses the 20-F's $80.0m IIA (a consequence of #311, not a targeted fix). |
+| CLLS-12 | CLLS 1df9100c | P3 | The investor summary lists a negative signal as a value driver and repeats price-only boilerplate across 7 agents | - | absent on the rerun without a targeted fix; root cause not addressed |  |
+| CLLS2-1 | CLLS 686d71f6 | P1 | The interim and current period of a 6-K filer is never acquired because the quarterly slot accepts only 10-Q | E, G | fix in an open PR, not merged | #313 (ADR-077, open): 6-K interim for 20-F filers; live replay across 13 filers picks the true latest interim. |
+| CLLS2-2 | CLLS 686d71f6 | P1 | A former subsidiary's (Calyxt, now Cibus) risk factors are filed as Cellectis's counter-thesis | D, A | open | ADR-066 keys on the document registrant; the text sits in the issuer's own FY2022 20-F. |
+| CLLS2-3 | CLLS 686d71f6 | P1 | The chair and the tech block report 0 findings while the ledger holds 37, and the degraded reason is wrong | I, H | open | The chair and tech block say 0 findings while the ledger holds 37; the degraded reason says 'no findings' instead of 'blocking question cash_runway open'. |
+| CLLS2-4 | CLLS 686d71f6 | P1 | The blocking cash_runway question was never researched although the answer is in the acquired 20-F, and its gap is labelled 'not acquired' | C, I | open | Blocking cash_runway and four other questions ran 0 tools although the 20-F states $208.7m of cash and current financial assets. |
+| CLLS2-5 | CLLS 686d71f6 | P2 | The 20-F in the corpus is undated, so its findings carry no date or period and recency logic cannot run | G | open |  |
+| CLLS2-6 | CLLS 686d71f6 | P2 | Unrelated companies appear as Cellectis 'Current developments', and the peers are irrelevant | D | open |  |
+| CLLS2-7 | CLLS 686d71f6 | P2 | Mining and industrial templates still run on a classified biotech | - | open |  |
+| CLLS2-8 | CLLS 686d71f6 | P2 | Gaps contradict findings in the same report | H | open |  |
+| CLLS2-9 | CLLS 686d71f6 | P2 | The identity record still shows one line, with no ADS, ISIN or reporting currency | E | open | ADR-061's security list never reaches the company record. |
+| CLLS2-10 | CLLS 686d71f6 | P3 | The editor failed and the investigator truncated 12 times | I | open |  |
+| LIN-1 | LIN 796b644d | P0 | Executive synthesis says the pre-revenue developer 'mines and sells monazite concentrate' | G | absent on the rerun without a targeted fix; root cause not addressed | Absent on the rerun only because the editor failed (LLMJsonError) and a deterministic synthesis was used. The tense/stage check does not exist. |
+| LIN-2 | LIN 796b644d; rerun LIN2-1 | P1 | Cash/funding is stated at the 30-Jun figure; the acquired Sep-2026 Appendix 5B (cash A$45.1m, −58% in one quarter) is never used and no runway is computed | C, G | partly fixed | #312 95ba5f7 ADR-076: the 30-Sep cash A$45.1m now appears (F32, under Catalysts). No runway is computed (5B item 8.7 = 4.50 quarters, about 1.3 with capex). |
+| LIN-3 | LIN 796b644d; rerun LIN2-2 | P1 | Subject's own Annual Report statements filed as Iluka's | D | open |  |
+| LIN-4 | LIN 796b644d; rerun LIN2-3 | P1 | Iluka (offtaker/lender) material crowds Lindian's questions, and Iluka is conflated with Lynas | D | partly fixed | #310 e052ec2 ADR-074 removed the Iluka net debt, outlook, disclaimer and environmental items and the Lynas conflation. Implicit-subject Iluka unit costs remain. |
+| LIN-5 | LIN 796b644d; rerun LIN2-4 | P1 | Research state contradicts itself on which documents exist | H | partly fixed | 'No quarterly report is present' is gone; gaps still deny ownership, offtake, cash and acquisition spend that findings state; the V2 memo still says no issuer document exists. |
+| LIN-6 | LIN 796b644d | P1 | Chair invents a revenue contradiction and cites a disagreement id that does not exist in the council | H, I | absent on the rerun without a targeted fix; root cause not addressed | The rerun chair's single disagreement matches a recorded red-team challenge. No validator was added. |
+| LIN-7 | LIN 796b644d; rerun LIN2-7 | P2 | Material Malawi jurisdiction events missing | G | open |  |
+| LIN-8 | LIN 796b644d; rerun LIN2-9 | P2 | Dilution, capital structure and valuation inputs absent | C | open |  |
+| LIN-9 | LIN 796b644d; rerun LIN2-8 | P2 | FY2026 financial statements acquired but not extracted (facts_read=0) | C | open |  |
+| LIN-10 | LIN 796b644d; rerun LIN2-6 | P2 | Guinea tenement IDs assigned to the wrong projects; Lelouma's inactive status missed | - | open | Worse on the rerun: 2020/2562 assigned twice, Woula dropped, granted Tanzanian licences called applications. |
+| LIN-11 | LIN 796b644d; rerun LIN2-7 | P2 | Stale governance and risk items presented undated as current; current ones missed | G | open |  |
+| LIN-12 | LIN 796b644d; rerun LIN2-10 | P2 | Aluminium market research for a rare-earths developer | - | open |  |
+| LIN-13 | LIN 796b644d; rerun LIN2-11 | P3 | Trust labels and dates | - | open |  |
+| LIN2-1 | LIN 6d4f1c43 | P1 | Financial capacity shows FY2025 aggregator figures as 'most recent fiscal year'; the 30-Sep cash sits only in Catalysts; no runway | G, C | open | Financial capacity shows koalagains' FY2025 figures (cash A$3.49m) as 'most recent fiscal year'. |
+| LIN2-5 | LIN 6d4f1c43 | P2 | Editor failed; the executive synthesis is a first-finding-per-section list | I | open |  |
+
+---
+
+## 16. Systemic patterns
+
+| Category | Hyp. | Companies / runs | Sectors | Venues | Frequency | Severity | Generic root cause | Fixed? | Residual risk | Kind |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Acquired but not used; false 'not acquired' gaps | C | all 8 (HON, CFR, ADBE, JPM, PYPL, ANTO, CLLS, LIN) | all | NASDAQ, NYSE, SIX, Euronext Paris, LSE, ASX | 77 of 121 audited gaps (64%); issuer-document facts_read=0 for HON (before), ADBE, JPM, PYPL, ANTO, Cellectis and LIN | P1/P2 (drives P0s downstream) | No statement extraction for 10-K/10-Q/8-K, 20-F IFRS, 6-K, ASX annual reports and 5B, or UK results PDFs; the gap writer asserts absence from a per-question evidence slice; investigators run few corpus queries. | Partly: ADR-062 (US latest quarter via XBRL), ADR-076 (recency questions only) | HIGH | systemic |
+| Research state contradicts the ledger | H, I | all 8 | all | all | 12 of 12 reports had at least one self-contradiction | P1 | Gaps, 'latest disclosure', question status, chair counts and the V2 memo are each computed from a different partial view; nothing reconciles them against the ledger and the document inventory. | No (council header only, ADR-062 s.5) | HIGH | systemic |
+| Synthesis or chair asserts what the ledger does not support | H | HON, PYPL, ANTO, CLLS, LIN | industrial, payments, mining, biotech | NASDAQ, LSE, Euronext Paris, ASX | 3 P0s (CLLS-3, LIN-1, PYPL2-1) and several P1s (H11, ANTO-5, LIN-6, PYPL2-5, CLLS2-3) | P0/P1 | The editor and chair verify citations, figures and banned words, not claim type, tense, stage, period labels or ledger counts; single-source web claims meet the trust bar. | Material-event part pending (#314, ADR-078) | HIGH | systemic |
+| Subject / counterparty firewall | D | HON, JPM, ANTO, CLLS, LIN | industrial, bank, mining, biotech | NASDAQ, NYSE, LSE, Euronext Paris, ASX | 11 WRONG_ENTITY claim verdicts in 231; 5 of 8 companies | P0/P1 | Scope lives in prose; guards cover explicit shapes (namesake registrant, foreign publisher) but not implicit subjects, the issuer's own documents or former subsidiaries. | Partly (ADR-066, ADR-074) | MEDIUM-HIGH | systemic |
+| Non-US issuers lose primary financials | C, E, G | CFR, ANTO, CLLS, LIN | luxury, mining, biotech | SIX, LSE, Euronext Paris, ASX | 4 of 4 non-US companies; 17 of 21 DOCUMENT_NOT_ACQUIRED gaps are non-US | P1 | IFRS XBRL not read; 6-K not fetched; ASX 5B and UK RNS PDFs not extracted; latest UK results PDFs not acquired; issuer website not sourced, so issuer pages are labelled press (ADR-065 cannot fire). | Partly (ADR-075 links the SEC line; ADR-077 pending) | HIGH | systemic |
+| Derived-aggregate and taxonomy integrity | B | HON, CFR, JPM, ADBE, PYPL, ANTO; 7 of 19 replayed filers | industrial, luxury, bank, software, payments, mining | NASDAQ, NYSE, SIX, LSE | 3 P0s on day 1; 7/19 total-debt double counts; new scope errors on reruns | P0/P1 | Period chosen by filing year; partial sums published; unit borrowed from prose; sector-agnostic semantics; LLM layers restate figures with no period/scope check. | Yes for the deterministic snapshot (ADR-062/064/067/069/074, #303); no for LLM layers | MEDIUM | systemic |
+| Currentness and as-of state | G | all 8 | all | all | 32 STALE and 10 WRONG_PERIOD verdicts of 231; every report had a stale headline item | P1/P2 | No event-date vs as-of check; no supersession pass; no statement-kind tag (guidance vs actual); non-results announcements not ranked; 8-K Item 5.02 and 6-K not ingested. | Partly (ADR-062, ADR-065, ADR-068, ADR-076) | HIGH | systemic |
+| Classification, playbook and peers | - | HON, ADBE, JPM, CFR, PYPL, ANTO, CLLS, LIN | all | all | 8 of 8 companies; 3 unclassified (PYPL, ANTO, CLLS run 1); 2 wrong playbooks (HON A&D, ADBE none) | P1/P2 | Classification relies on SEC SIC or a stored sector; no mapping for SIC 7389; no fallback from the issuer's description for non-US names; mining/industrial templates run on every company; peers limited to held companies in a coarse bucket. | Only JPM generic metrics (ADR-069) and Cellectis via SIC 2836 (ADR-075) | HIGH | systemic |
+| Degraded LLM runs | I | ANTO, CLLS, LIN | mining, biotech | LSE, Euronext Paris, ASX | 3 of 4 day-2 reruns (chair unavailable or council refused; editor LLMJsonError) | P1/P2 | Chair model not available at run time; editor JSON output budget; deterministic fallbacks that misreport counts and pick findings by order. | No | MEDIUM-HIGH | systemic |
+| Source weighting, rumours and materiality | - | CFR, ADBE, JPM, PYPL, CLLS, LIN | luxury, software, bank, payments, biotech, mining | SIX, NASDAQ, NYSE, Euronext Paris, ASX | 6 of 8 companies | P0 (PYPL2-1) / P2 | No relevance or claim-status filter on catalyst evidence; single weak sources reach the synthesis; commodity mentions not weighted by asset status. | Material-event part pending (#314) | MEDIUM | systemic |
+| Discovery recall | J, F | runs A, B, C, D, E2 | biotech, electrical, payments, automation, materials | Euronext, CO, NYSE/Nasdaq, TSX/TSXV, AIM, ASX | 5 of 6 inspected runs | P2 (HIGH priority) | VENUE:TICKER-only extraction; no name-to-directory resolution; mega-cap registries; 77-106 of 145-160 results skipped over budget; PDFs skipped. | No | HIGH | systemic |
+| Discovery triage / ranking | J | runs A, B, D, E, E2 | all | all | 5 of 5 runs with items | P2 | Score from source metadata; relevance not in ranking_key; cap before fit; cut names not persisted. | In code (ADR-070, ADR-073); live check E3 (section 11) | MEDIUM (relevance is the last key) | systemic |
+| Size unknown passes as eligible | J | runs B, D, E, E2 | electrical, automation, defence, materials | Xetra, SIX, TSE, LSE, NYSE (float floor) | 4 of 6 runs | P2 | No market-cap source for several venues; a float lower bound cannot place a cap; soft unknown labelled 'eligible'. | Only the float-age bug (#299) | HIGH for small/mid theses | systemic |
+| Isolated | - | ADBE-12, H9, C8, LIN-10/LIN2-6 | - | - | 1 each | P2/P3 | LLM summary of a truncated chunk; section routing; flattened tenement tables. | No | LOW | isolated |
+
+**Isolated vs systemic.** Every category except the last appeared in at least two companies or runs, across at least two sectors and venues. No defect class was specific to one issuer, and no fix special-cases one. Non-US issuers are hit hardest: all four lost primary financials, and none of them scored above 4 on usefulness.
+
+**Hypothesis verdicts in detail**
+
+| Hyp. | Area | Verdict | Evidence |
+|---|---|---|---|
+| A | Corporate actions / economic perimeter | CONFIRMED; FIXED FOR THE US XBRL SNAPSHOT ONLY | HON before: YoY sign wrong against the restated prior year, pre-consolidation EPS beside the post-consolidation price, no perimeter caveat (H1, H5). ADR-062 fixes the prior year, detects the recast and the 1-for-2 consolidation, and prints a change-of-basis note (live on f0be3c4f). Still open: narrative KPIs mix perimeters (H10 backlog); recast detection compares only revenue and EPS; a segment reorganisation is not detected (ADBE-1, three dissolved segments shown as current); a mine's capex is published as Group capex (ANTO2-1); attributable and 100% bases are mixed silently (ANTO-9); a 2023 deconsolidated subsidiary's perimeter leads the Cellectis synthesis and its 2022 risk factors become the counter-thesis (CLLS2-2). |
+| B | Financial taxonomy | CONFIRMED; FIXED ONLY IN THE DETERMINISTIC LAYER | Fixed in the deterministic snapshot: HON segment profit as group operating income and wrong YoY (ADR-062); CFR x1000 (ADR-064); JPM total debt = short-term borrowings only (ADR-067; 7 of 19 replayed filers double-counted); industrial cash conversion and D/E on a bank (ADR-069); a percentage printed as a multiple (#303); a change amount read as a level (ADR-074). Not fixed anywhere above that layer: the council and red team swap periods and scopes (JPM-6: H1 as Q2, Corporate segment as Firm; PYPL2-5: Q2 third-party product growth spliced into Q3); FY2025 margins sit beside Q3 growth (ADBE); customer balances read as leverage (PYPL-4); Dec-2025 comparatives keyed to Q3 2026 (PYPL2-14). |
+| C | Document acquired but fact not extracted | CONFIRMED; LARGEST SYSTEMIC DEFECT; PARTLY MITIGATED FOR RECENCY QUESTIONS ONLY | 77 of 121 independently audited 'missing' facts (64%) were DOCUMENT_ACQUIRED_EXTRACTION_FAILED: the platform held the document. The issuer-document fact channel read 0 facts for the 10-K/10-Q of HON (before), ADBE, JPM and PYPL, the 20-F of Cellectis (IFRS XBRL is not read), the annual report and Appendix 5B of Lindian, and Antofagasta's documents. The blocking cash_runway question ran 0 tools while the 20-F stated $208.7m of cash (CLLS2-4). ADR-062 closed the US latest-quarter slice via XBRL; ADR-076 makes recency questions read the newest held documents and adds the honest reason acquired_not_read (live on PYPL2 and LIN2), but only for recency questions. |
+| D | Subject / counterparty firewall | CONFIRMED; EXPLICIT CASES FIXED; IMPLICIT SUBJECTS AND THE ISSUER'S OWN DOCUMENTS OPEN | Fixed: a separately registered namesake (HONA; ADR-066, replay) and another company's statement cited from its own site (South32, Lundin, Ecora: ANTO 10/35 -> 0/40 live, ADR-074). Open: a statement with an implicit subject (Iluka mineral-sands unit costs answer Lindian's unit-cost question, LIN2-3); the issuer's own annual-report text attributed to its offtaker (LIN-3/LIN2-2); a former subsidiary's risk factors inside the issuer's own old 20-F (Calyxt, CLLS2-2); a regulated subsidiary's ICAAP presented as group capital adequacy (J.P. Morgan SE, JPM-5); unrelated companies in Cellectis 'Current developments' (CLLS2-6). Root cause: scope lives in prose; scope_key is not set from the evidence entity. |
+| E | Multi-listing identity | CONFIRMED ON THE RESEARCH PATH; PARTLY FIXED; NOT OBSERVED IN DISCOVERY | Cellectis run 1 was researched as a Euronext-only issuer: ADR-061's issuer-vs-security identity lived only in Discovery, the CLLS/CIK sibling was never linked, no 20-F or 6-K was read, and classification failed (CLLS-1). ADR-075 (#311) links the SEC line at research time by directory name plus domicile (live on CLLS2: CIK 1627281, 20-F FY2025). Still open: the company record shows one line with no ADS, ratio, ISIN or reporting currency (CLLS2-9); no 6-K interim (CLLS2-1; ADR-077 pending in #313). No ADS double counting or currency mixing was observed. In Discovery no issuer appeared twice; GGG/ETM de-duplicated only because the stale lead was rejected; SIX:CFR vs SEC CFR (Cullen/Frost) is handled by ADR-066. |
+| F | Security-code extraction | CONFIRMED; WKN FAMILY FIXED IN CODE; OTHER TOKEN-AS-NAME CASES OPEN | WKN A0NFN3 read as BB Biotech's name (D3), fixed by ADR-063 (WKN, ISIN, CUSIP, SEDOL, Valor shapes; replay only, Discovery A not rerun). Still open: TSE codes sent to SEC as CIKs (D8); a ticker as the issuer name (TSLA); a GICS heading as the name (Cognex, Ouster); an index and ETFs extracted as companies. In company research, ISIN is a 'blocking' identity gap on US filers that never print one (PYPL-14), and tenement IDs are assigned to the wrong projects (LIN-10). |
+| G | Currentness | CONFIRMED; LATEST NUMBERS PARTLY FIXED; EVENTS, SUPERSESSION AND NON-US INTERIMS OPEN | Fixed live: the US XBRL latest quarter (ADR-062, HON), the results 8-K read through EX-99.1 (ADR-068, PYPL), recency questions reading the newest held documents (ADR-076; LIN2 latest-period score 3 -> 6). Open: Cellectis's 2026-09-14 strategic pivot missed in both runs (CLLS-2); Antofagasta's financial core two periods stale in both runs (ANTO-3, ANTO-7); Lindian's Financial capacity shows FY2025 aggregator figures (LIN2-1); PayPal's CEO change (PYPL-9) and Adobe's CEO succession, CFO exit, Semrush and DOJ settlement missing (ADBE-7); guidance stated as an actual (ADBE-3, fix shelved); 6-K interims never fetched (CLLS2-1, #313 pending); superseded_by_finding_id unused. |
+| H | V2 / V3 coherence | CONFIRMED IN EVERY REPORT; OPEN | Every one of the 12 evaluated reports contradicts itself. Examples: 'newest filing is the 10-K' while the 10-Q is cited (ADBE-5); 'latest disclosure is the July release' while Q3 is cited (PYPL2-3); 'most recent disclosure covers FY2025' while H1 and Q3 2026 are cited (ANTO-5); the V2 memo says no issuer document was found while 5 ASX documents are held (LIN-5); the legacy council says 'no company disclosures' while the ledger holds 17 issuer-filing findings (CLLS-4); the chair says 0 findings while the ledger holds 37 (CLLS2-3); gaps deny facts that findings state (ANTO2-3, CLLS2-8, LIN2-4); 61 gaps on the ADBE page vs 73 in the loop. |
+| I | Council status | CONFIRMED; HEADER FIXED IN CODE; DEGRADED RUNS ARE COMMON AND SIGNALLED UNRELIABLY | HON before: header '7 agents completed' while 1 failed (H7); ADR-062 s.5 prints 'N of M agents completed, K failed' (not live-observed: no later run had a failed agent). Three of the four day-2 reruns were degraded: ANTO2 used the deterministic chair because no chair model was available (recorded in degraded); CLLS2's council refused on a blocking question and the fallback states '0 findings' with the wrong reason (CLLS2-3); the editor failed with LLMJsonError on LIN2 and CLLS2, and LIN2's executive synthesis became a first-finding-per-section list. Completeness also over-states: blocking questions 'satisfied' without their metric (JPM-11) or with 0 findings (PYPL2-12); 'Evidence: Strong' on a report with a P0 (HON before). |
+| J | Discovery triage | CONFIRMED; FIXED IN CODE; LIVE CHECK PENDING (E3) | relevance_score_pre_scan was constant per source in every stored run (B 90 x3; D 86/66; E 80.5/60.5; E2 85/30/20) and did not drive the order (E2 shows 30 above 85). Web items got 45 circular theme points or 0. The cap of 15 silently cut 8 E2 names, including 6 of 7 theme-verified web candidates (inferred from counts; names not persisted). ADR-070 scores dynamic items on the intent and half-weights unverified themes; ADR-073 applies relevance before the cap and records funnel.beyond_cap. Residual by design: relevance is the last sort key after eligibility tier and verified-pass counts, so a size-unknown mega cap can still outrank a better-fitting small cap (D5/D7). Live check: E3 b14b96d9 (section 11). |
+
+---
+
+## 17. Recommended engineering priorities
+
+### CRITICAL
+
+**P-1. Read what was acquired; never call a held fact 'not acquired'**
+
+| Field | Value |
+|---|---|
+| Problem | The platform acquires the right primary documents and extracts no statement facts from them, then tells the reader the facts were not acquired. |
+| Concrete evidence | 77 of 121 audited gaps DOCUMENT_ACQUIRED_EXTRACTION_FAILED. facts_read=0 for the 10-K/10-Q of HON (before), ADBE, JPM and PYPL; the Cellectis 20-F (IFRS XBRL not read; $208.7m cash unread, CLLS2-4); Lindian's annual report and Appendix 5B (no runway, LIN-2); Antofagasta's documents. JPM bank KPIs 'not acquired' beside 2,398 indexed chunks (JPM-4). |
+| Affected cases | 8 of 8 companies |
+| Expected benefit | Closes most open gaps, enables sector metrics (bank KPIs, runway, TPV, copper costs), removes false absence claims from investor pages. |
+| Rough scope | Large, in slices: (a) gap writer checks the corpus, XBRL and document inventory before asserting absence and uses acquired_not_read beyond recency questions; (b) statement-table extraction for 10-K/10-Q and the Item 2.02 EX-99.1; (c) ifrs-full XBRL for 20-F filers and the 6-K interim (ADR-077); (d) ASX annual-report and Appendix 5B layouts; (e) UK RNS/IR results PDFs. |
+| Dependency | ADR-068 and ADR-076 (merged); ADR-077 (#313, open). Slice (a) has none. |
+| Before more owner testing? | YES |
+
+**P-2. One reconciled research state derived from the ledger**
+
+| Field | Value |
+|---|---|
+| Problem | Gaps, 'latest disclosure', question status, chair counts and the V2 memo contradict the findings in the same report. |
+| Concrete evidence | 12 of 12 reports self-contradict: PYPL2-3, ANTO-5, LIN-5/LIN2-4, CLLS-4, CLLS2-3 (0 vs 37 findings), CLLS2-8, ANTO2-3, ADBE-5, H8, H11; questions 'satisfied' with 0 findings (PYPL2-12) or without their metric (JPM-11); 61 vs 73 ADBE gaps. |
+| Affected cases | 8 of 8 companies |
+| Expected benefit | The owner can trust what the page says the platform knows and does not know. Prerequisite for any completeness or readiness label. |
+| Rough scope | Medium-large: compute newest document, latest period, segment structure and ledger counts once per run; derive gaps and question status from the ledger and inventory; make the chair fallback and the V2 memo read the same state. |
+| Dependency | Benefits from P-1; can start independently. |
+| Before more owner testing? | YES |
+
+**P-3. A claim gate on the synthesis and the chair**
+
+| Field | Value |
+|---|---|
+| Problem | The executive synthesis and the chair state things the ledger does not support: rumours as fact, a wrong business stage, spliced periods, invented counts or disagreements. |
+| Concrete evidence | P0s PYPL2-1 (takeover rumour as fact), LIN-1 ('mines and sells' for a pre-revenue developer), CLLS-3 ('no FY2024 results'); P1s PYPL2-5 (Q2 figures in a Q3 statement), CLLS2-3, ANTO-5, LIN-6, H11. LIN-1 and CLLS-3 vanished on rerun only because the editor or chair fell back. |
+| Affected cases | 5 of 8 companies (HON, PYPL, ANTO, CLLS, LIN) |
+| Expected benefit | Removes the most damaging P0 class: a confident sentence at the top of the report that is false. |
+| Rough scope | Medium: claim-type gate for material corporate events (ADR-078, #314); tense/stage check against the ledger's lifecycle facts; period labels carried into chair sentences; chair counts and disagreement ids validated against the ledger; 'not in evidence' never phrased as 'does not exist'. |
+| Dependency | ADR-078 (#314, open) covers the material-event part. |
+| Before more owner testing? | YES |
+
+### HIGH
+
+**P-4. Subject firewall for implicit subjects and the issuer's own documents**
+
+| Field | Value |
+|---|---|
+| Problem | Statements about counterparties, former subsidiaries and regulated subsidiaries are still filed as the subject's. |
+| Concrete evidence | LIN2-2 (Lindian's own AR risks attributed to Iluka), LIN2-3 (Iluka unit costs answer Lindian's question), CLLS2-2 (Calyxt 2022 risks as Cellectis's counter-thesis), JPM-5 (J.P. Morgan SE ICAAP as group), ANTO2-1 (mine capex as Group), H3 residue (F17, F15). |
+| Affected cases | 5 of 8 companies (HON, JPM, ANTO, CLLS, LIN) |
+| Expected benefit | Trustworthy entity handling (judgment D). |
+| Rough scope | Medium: set scope_key from the evidence entity and table heading, not from prose; a subject check for statements with an implicit subject; former-subsidiary periods from the issuer's own filings. |
+| Dependency | None. |
+| Before more owner testing? | YES |
+
+**P-5. Acquire the latest non-US results documents**
+
+| Field | Value |
+|---|---|
+| Problem | Non-US issuers are researched on documents one or two periods old because the latest results are never fetched. |
+| Concrete evidence | ANTO FY2025 and H1 2026 results never acquired in either run (ANTO-7; NSM record unreadable, IR PDFs download with a plain GET); Lindian took 5 of 224 ASX documents and missed the Malawi export regime (LIN-7); Cellectis 6-Ks listed but not fetched (CLLS2-1). 17 of 21 DOCUMENT_NOT_ACQUIRED gaps are non-US. |
+| Affected cases | 4 of 4 non-US companies |
+| Expected benefit | Current financials for UK, ASX and dual-listed issuers. |
+| Rough scope | Medium: issuer-IR fallback for results PDFs when NSM fails; rank non-results price-sensitive ASX announcements by risk relevance; ADR-077 for 6-Ks. |
+| Dependency | ADR-077 (#313). Without P-1 the new documents would also go unread. |
+| Before more owner testing? | YES |
+
+**P-6. Classification and sector playbooks for every company**
+
+| Field | Value |
+|---|---|
+| Problem | Companies without a mapped SEC SIC or stored sector get no playbook, no peers and mining/industrial template questions. |
+| Concrete evidence | PYPL unclassified in both runs (SIC 7389); ANTO unclassified in both runs; Cellectis unclassified until ADR-075; Lindian sector null; ADBE no software playbook; HON on a stale A&D SIC; mining templates still run on a classified biotech (CLLS2-7). |
+| Affected cases | 8 of 8 companies (6 directly) |
+| Expected benefit | Sector-relevant questions (TPV and take rate, copper reserves and C1, runway and burn, ARR and RPO) and credible peers. |
+| Rough scope | Medium: SIC 7389 and description-based fallback; non-US classification from the issuer's description; software and payments playbooks; templates keyed by playbook; refresh after corporate actions. |
+| Dependency | P-1 for the sector metrics to be filled. |
+| Before more owner testing? | YES for sector-specific testing; NO for identity or financial testing |
+
+**P-7. Metric-bearing question contracts**
+
+| Field | Value |
+|---|---|
+| Problem | A blocking question is 'answered' by any finding, or never runs at all. |
+| Concrete evidence | JPM-11 (asset quality and capital satisfied without the metric); CLLS2-4 (blocking cash_runway ran 0 tools); PYPL2-12 (questions satisfied with 0 findings); playbook required_metrics have no consumer. |
+| Affected cases | 3 confirmed (JPM, CLLS, PYPL); every playbook with metric questions |
+| Expected benefit | Completeness labels become truthful; the council blocks instead of writing confident prose. |
+| Rough scope | Medium: wire Playbook.required_metrics into the contract and the completion rule; a blocking question must run its tools, with a corpus fallback. |
+| Dependency | None. Without P-1 more questions will honestly stay open, which is intended. |
+| Before more owner testing? | YES |
+
+**P-8. Statement-kind tag at extraction (actual / guidance / estimate / forecast)**
+
+| Field | Value |
+|---|---|
+| Problem | Guidance and third-party estimates reach findings as reported actuals or as 'management says'. |
+| Concrete evidence | ADBE-3 (FY2026 revenue from a non-existent 'Q4 2026 summary', the low end of guidance); #309 shelved after 4 review rounds (13, 19, 21, 38 false drops) because wording rules after the fact cannot decide it; LIN2-11 (Argus forecasts labelled 'management says'); ANTO-4 (guidance revisions fused). |
+| Affected cases | 3 companies confirmed; every issuer that guides |
+| Expected benefit | Removes forecast-as-fact errors and enables superseded-guidance demotion (hypothesis G). |
+| Rough scope | Medium-large: a statement_kind field in the investigator's structured output, validated against the cited text and consumed by the verifier and editor. |
+| Dependency | None. |
+| Before more owner testing? | YES |
+
+**P-9. Discovery name-to-directory resolution (recall)**
+
+| Field | Value |
+|---|---|
+| Problem | Name-only mentions are dropped, so small/mid theses return few or no web names. |
+| Concrete evidence | D4: NKT A/S, argenx, Zinnwald, Cognex, Ouster lost; C returned 0; A returned 1 of dozens. |
+| Affected cases | 5 of 6 inspected Discovery runs |
+| Expected benefit | Discovery finds genuinely new names (judgment E). |
+| Rough scope | Medium-large: resolve name-only leads against the loaded exchange directories; classify ETFs and indices as non-companies; map renamed issuers. |
+| Dependency | None. |
+| Before more owner testing? | YES for Discovery testing; NO for company-research testing |
+
+### MEDIUM
+
+**P-10. Persist issuer identity: securities, ADS ratio, ISIN, issuer website**
+
+| Field | Value |
+|---|---|
+| Problem | Identity resolved in Discovery or at research time is not stored on the company record. |
+| Concrete evidence | CLLS2-9 (one listing, no ADS or ratio); ISIN, LEI and reporting currency as blocking gaps (PYPL-14, CLLS2); no sourced issuer website, so issuer pages are labelled press (ANTO-6, CLLS-5, LIN-13) and ADR-065 cannot fire. |
+| Affected cases | 5 companies (PYPL, ANTO, CLLS, LIN, CFR) |
+| Expected benefit | Correct trust labels on issuer documents; one identity across Discovery and research. |
+| Rough scope | Small-medium. |
+| Dependency | None. |
+| Before more owner testing? | NO |
+
+**P-11. Period keys for web, IR and comparative-column findings**
+
+| Field | Value |
+|---|---|
+| Problem | Current findings carry no period key or the wrong one, so recency and supersession logic cannot run. |
+| Concrete evidence | ANTO-10 (every 2025/2026 finding None), CLLS-7 (29 of 30 None), CLLS2-5 (20-F undated), PYPL2-14 (Dec-2025 comparatives keyed Q3 2026), C3. |
+| Affected cases | 4 companies |
+| Expected benefit | Recency ranking and supersession become possible. |
+| Rough scope | Small-medium. |
+| Dependency | None. |
+| Before more owner testing? | NO |
+
+**P-12. Size unknown must not read as eligible**
+
+| Field | Value |
+|---|---|
+| Problem | Mega caps pass small/mid theses as 'eligible' or 'unverified'. |
+| Concrete evidence | D5/D7: Siemens (B), ABB/Fanuc/Keyence (D), RHM/BAE/SAAB (E), SCCO rank 3 'eligible' (E2). |
+| Affected cases | 4 of 6 runs |
+| Expected benefit | Sensible small/mid shortlists. |
+| Rough scope | Small-medium: a distinct 'size unknown' state ranked below verified fits; free venue cap sources. |
+| Dependency | None. |
+| Before more owner testing? | NO |
+
+**P-13. Relevance, rumour and materiality filter on current developments**
+
+| Field | Value |
+|---|---|
+| Problem | Noise, rumours and other companies fill catalysts and current developments. |
+| Concrete evidence | C4, C5, ADBE-13, JPM-9, PYPL-12, CLLS2-6 (a boat builder and Vertex as Cellectis developments), LIN-12 (aluminium market research for a rare-earths developer). |
+| Affected cases | 6 of 8 companies |
+| Expected benefit | A current-developments section that leads with what matters. |
+| Rough scope | Medium. |
+| Dependency | P-2; overlaps ADR-078 (#314). |
+| Before more owner testing? | NO |
+
+**P-14. Degraded-run reliability and signalling**
+
+| Field | Value |
+|---|---|
+| Problem | Chair and editor fallbacks were the norm on day 2 and one misreports itself. |
+| Concrete evidence | ANTO2-4 (no chair model), CLLS2-3 (fallback says 0 findings, wrong reason), LIN2-5 and CLLS2-10 (editor LLMJsonError; first-finding-per-section synthesis). |
+| Affected cases | 3 of 4 reruns |
+| Expected benefit | Fewer degraded reports; an owner can see when a run was degraded. |
+| Rough scope | Small-medium: editor output budget; chair routing health check; fallback reads ledger counts; page-level degraded marker. |
+| Dependency | None. |
+| Before more owner testing? | NO |
+
+**P-15. Discovery registry curation**
+
+| Field | Value |
+|---|---|
+| Problem | Registries are mega-cap heavy and carry stale identifiers and classifications. |
+| Concrete evidence | D11, D12: no European biotech; payments registry mega/large only; 'SQ'; Umicore 'Mining'; HON 'A&D'. |
+| Affected cases | 4 of 6 runs |
+| Expected benefit | Better seeds for small/mid theses. |
+| Rough scope | Small. |
+| Dependency | None. |
+| Before more owner testing? | NO |
+
+### LOW
+
+**P-16. Presentation and noise**
+
+| Field | Value |
+|---|---|
+| Problem | Labels, duplicates and wasted calls that do not change conclusions. |
+| Concrete evidence | D8 (TSE codes as CIKs), ADBE-14, ADBE-15, JPM-10, C8, C9, H9, PYPL-13, ANTO2-5, LIN-13 (bare '$' for A$, UTC dates). |
+| Affected cases | all |
+| Expected benefit | Polish. |
+| Rough scope | Small each. |
+| Dependency | None. |
+| Before more owner testing? | NO |
+
+**P-17. Book value per share for banks**
+
+| Field | Value |
+|---|---|
+| Problem | P/B for banks stays blocked because BVPS is never produced. |
+| Concrete evidence | ADR-069 limit; JPM BVPS 133.01 / TBVPS 113.35 disclosed in the 10-Q. |
+| Affected cases | banks |
+| Expected benefit | Bank valuation input. |
+| Rough scope | Small (period-matched derivation with an estimate label, or extraction under P-1). |
+| Dependency | P-1. |
+| Before more owner testing? | NO |
+
+**P-18. Deploy concurrency guard**
+
+| Field | Value |
+|---|---|
+| Problem | Deploy workflows have no concurrency guard; rapid merges race. |
+| Concrete evidence | Day 1: the db5baf8 smoke test failed and was superseded by the next deploy. |
+| Affected cases | operations |
+| Expected benefit | Every merged SHA is deployed and smoke-tested once, in order. |
+| Rough scope | Small. |
+| Dependency | None. |
+| Before more owner testing? | NO |
+
+---
+
+## 18. Recommendation on product readiness
+
+**NOT READY beyond private, owner-supervised use. Do NOT resume broad manual owner testing.**
+
+- Overall usefulness after all fixes is 3-4/10 for six of eight companies (HON 6, Cellectis 2). The fixes made the structured snapshot safer; they did not make the research useful.
+- One P0 is open and unmerged (PYPL2-1, takeover rumour stated as fact; fix in #314). One P0 (LIN-1) vanished only because the editor failed; its root cause is untouched.
+- Two of the three day-1 P0 fixes (C1, JPM-1) are verified by replay only: CFR and JPM were never rerun.
+- The campaign stop condition is not met: open or partly fixed P1 defects remain and none is an external blocker. They are engineering work.
+- Every report contradicts itself about what it holds, and labels overstate quality ('Evidence: Strong' on a report with a P0; 'complete analysis' with blocking questions unanswered). A human approver cannot catch these without independent checking, so human approval before publication remains necessary but is not sufficient.
+
+- **Allowed now:** Targeted owner checks of what was fixed and rerun live: HON perimeter and EPS, the Antofagasta entity firewall, PayPal's Q3 operating data, Lindian's Sep-quarter cash, Discovery materials intent.
+- **Gate for broad owner testing:** P-1, P-2 and P-3 merged, deployed and rerun on at least HON, CFR, JPM, PYPL, Cellectis and Lindian; #313 and #314 merged; P-8 (statement kind) at least designed.
+- **Safety posture:** Unchanged: evidence-first, citation-bound, no public recommendations, human approval before every publication, admin-gated routes. The platform remains private-use; the UK NSM and ASX source terms still require consent before any public launch.
+
+**Campaign stop condition (spec section 20)**
+
+| Stop condition | Status |
+|---|---|
+| All eight company cases read and scored | MET: 8 of 8 scored; 4 of them rerun after fixes (12 evaluated reports). |
+| All feasible Discovery cases inspected | 6 runs inspected (A, B, C, D, E, E2). E3 b14b96d9: section 11. |
+| Important claims independently verified | MET: 231 claims across 12 reports (at least 3 financial, 2 business, 2 current-event and 1 risk claim per report). |
+| All P0/P1 fixed and rerun, or documented as an external blocker | NOT MET: P0 PYPL2-1 pending in #314; P0 LIN-1 root cause unfixed; C1 and JPM-1 replay-only; open or partial P1s remain; none is an external blocker. |
+| Systemic P2 issues ranked | MET (section 17). |
+| Final QA report exists | MET: this document and its JSON twin. |
+
+The campaign is **not** complete under its own stop condition. This report is the final artifact of the campaign window, not a completion claim.
+
+### Product judgment by hypothesis (A–J)
+
+Unsoftened. Each line says whether the owner can rely on that area today.
+
+**A. Corporate actions / economic perimeter: CONFIRMED; FIXED FOR THE US XBRL SNAPSHOT ONLY.** Do not trust perimeter handling outside the US XBRL headline numbers. The one case that was fixed (HON) was fixed because the 10-K tags a restated comparative. Anything narrative, segment-level, mine-level or non-US is unguarded, and the campaign found a new perimeter error (ANTO2-1) on the last day.
+
+**B. Financial taxonomy: CONFIRMED; FIXED ONLY IN THE DETERMINISTIC LAYER.** The structured snapshot now fails closed: it withholds rather than publishes a partial or mis-scoped aggregate. Every LLM-written layer (investigator, council, red team, chair, editor) still mixes periods and scopes, and no verifier stops it. 'Fixed' is true only for the deterministic layer.
+
+**C. Document acquired but fact not extracted: CONFIRMED; LARGEST SYSTEMIC DEFECT; PARTLY MITIGATED FOR RECENCY QUESTIONS ONLY.** This is the product's central failure. 'Missing' in a report usually means 'held and not read', and the reader is told it was not acquired. Until statement extraction works for 10-K/10-Q/EX-99.1, 20-F/6-K (IFRS) and ASX/UK annual and quarterly documents, every report under-states what the platform knows and every completeness label is unreliable.
+
+**D. Subject / counterparty firewall: CONFIRMED; EXPLICIT CASES FIXED; IMPLICIT SUBJECTS AND THE ISSUER'S OWN DOCUMENTS OPEN.** Better than at the start, not trustworthy. Each guard covers one sentence shape. A reader still cannot assume a finding is about the subject, and the failures now sit in the hardest place to spot: the subject's own documents.
+
+**E. Multi-listing identity: CONFIRMED ON THE RESEARCH PATH; PARTLY FIXED; NOT OBSERVED IN DISCOVERY.** A dual-listed foreign filer still loses its interim financials and shows the reader one listing. Identity is resolved just in time at research, not stored. Treat any dual-listed non-US company as under-researched until #313 merges and the security list is persisted.
+
+**F. Security-code extraction: CONFIRMED; WKN FAMILY FIXED IN CODE; OTHER TOKEN-AS-NAME CASES OPEN.** The named example is fixed in code. The general rule (a code, ticker, heading or index is never a company) is not, and Discovery still loses real names to it. Low severity for research, real for Discovery recall.
+
+**G. Currentness: CONFIRMED; LATEST NUMBERS PARTLY FIXED; EVENTS, SUPERSESSION AND NON-US INTERIMS OPEN.** The newest numbers now reach US reports. The newest events do not, and non-US interims mostly do not. A report's 'latest' cannot be trusted for any non-US issuer or for anything that is not a statement figure.
+
+**H. V2 / V3 coherence: CONFIRMED IN EVERY REPORT; OPEN.** The investor page and the technical ledger do not describe the same research state, and nothing reconciles them. Gaps, 'latest disclosure' and question status are written per question from a partial evidence slice, not derived from the ledger and the document inventory.
+
+**I. Council status: CONFIRMED; HEADER FIXED IN CODE; DEGRADED RUNS ARE COMMON AND SIGNALLED UNRELIABLY.** The UI can still imply a normal council run. Degraded states are recorded in report data, but one fallback misstates its own count and reason, and the evaluations did not confirm a page-level marker for editor fallbacks. A degraded run was the norm on day 2, not the exception.
+
+**J. Discovery triage: CONFIRMED; FIXED IN CODE; LIVE CHECK PENDING (E3).** As observed, ranking was meaningless: it measured the source, not the fit. The fix is in code and replays well, but nobody has seen it work live yet. <!-- PENDING: E3 -->
+
+### Spec section 19 questions
+
+**A. Is company research useful today?**
+No, not as research. It is a starting point that an analyst must redo. Final overall-usefulness scores: HON 6 (after fixes), CFR 4, ADBE 4, LIN 4, ANTO 4, JPM 3, PYPL 3, Cellectis 2. Six of eight companies score 3-4 on usefulness after 16 merged corrective PRs. At the latest run the 15-dimension mean is 3.1-4.1 for six of eight (Cellectis 3.07, JPM 3.47, ANTO 3.80, PYPL 3.87, ADBE 4.00, LIN 4.13); only HON (5.73) and CFR (5.20, never rerun) are higher. HON reached 6 only on its deterministic snapshot. XBRL headline numbers are reliable; business model, competition, catalysts, counter-thesis and sector KPIs are stale, generic or wrong in most reports.
+
+**B. Can important financial numbers be trusted?**
+Filed figures quoted with a citation: mostly yes (every FY2025 XBRL figure for ADBE, JPM and PYPL checked exact; CFR revenue, margins and segments PASS). Derived and headline aggregates: only in the deterministic snapshot, where three P0s (HON YoY sign, CFR x1000, JPM total debt 7.7x too low) are fixed and the layer now withholds rather than guesses. Two of those three are verified by replay, not by a live rerun of the affected company. Anything an LLM layer restates (council, red team, chair, synthesis) can carry the wrong period, scope or entity. Trust the cited filed figure; verify everything else.
+
+**C. Can period/scope/entity handling be trusted?**
+No. 59 of 231 independently checked claims (26%) are STALE, WRONG_PERIOD, WRONG_SCOPE or WRONG_ENTITY. On the four rerun companies the share fell from 29% (23 of 78) to 21% (18 of 84): one in five checked claims is still stale or mis-attributed after the fixes. New scope and entity errors appeared on reruns (ANTO2-1 mine capex as Group; CLLS2-2 Calyxt risks as Cellectis's; LIN2-3 Iluka unit costs unattributed).
+
+**D. Is current-event research good enough?**
+No. Catalysts/current scores at the latest run: ADBE 2, JPM 2, CFR 3, PYPL 3, CLLS 1, HON 5, ANTO 5, LIN 5. Missed: Cellectis's strategic pivot (both runs), Adobe's CEO succession, CFO exit, Semrush and DOJ settlement, PayPal's CEO change and litigation, JPM's Q3 results (selection fixed in code) and Apple Card transaction, CFR's Q1 FY27, Avolta disposal and Baume & Mercier sale, Lindian's Malawi export regime. The rerun of PayPal stated an unconfirmed takeover rumour as fact (fix pending in #314).
+
+**E. Is Discovery finding genuinely useful new names?**
+Rarely. When the intent is read correctly (E2 after ADR-063) it returned 12 on-thesis names of 15, including useful small caps (Pensana, Rainbow, Lindian, ABX, Astron, ETM). Elsewhere: A found 1 name (Cellectis, already known), B 1 strict fit of 3, C nothing, D 2 strict fits of 10. Recall is the bottleneck: name-only mentions are dropped and the registries are mega-cap heavy. E3 (materials, after the ranking fixes): section 11 and judgment J.
+
+**F. Is Discovery ranking them sensibly?**
+Not as observed. Scores were constant per source and did not drive the order: Lynas ranked 14th with score 20, SCCO 3rd, and size-unknown mega caps outranked evidenced small caps. ADR-070 and ADR-073 fix the scorer input and apply relevance before the cap, but relevance is still the last sort key and size-unknown still passes as eligible. E3 verdict: section 11 and judgment J.
+
+**G. Which sectors work best?**
+US filers with clean XBRL, for the financial snapshot only: industrials after the fixes (HON 6) and software and payments numbers (ADBE and PYPL figures exact, even on a 52/53-week year). ASX development-stage mining is the best non-US case on facts read straight from ASX documents (Lindian's JORC reserve and resource, licences, ownership and offtake terms PASS; latest-period 6 after ADR-076). Luxury PDFs give good segment and regional facts (CFR 6 of 10 claims PASS).
+
+**H. Which sectors currently work poorly?**
+Dual-listed non-US biotech (Cellectis: usefulness 1 -> 2; no interim, no runway, the pivot missed). UK-listed operating mining (Antofagasta: 2 -> 4; unclassified, financial core two periods stale). Banks (JPM 3: industrial semantics, no bank KPIs extracted, a subsidiary leak). Payments (PayPal 3: unclassified, no payments playbook, a P0 on rerun). Software as research (no playbook, Tempus AI as a peer, dissolved segments). In Discovery: European biotech and small/mid payments (recall).
+
+**I. What is the single biggest remaining generic weakness?**
+The platform acquires the right primary documents and does not read them, then writes a research state that is not derived from what it holds. 77 of 121 audited gaps were DOCUMENT_ACQUIRED_EXTRACTION_FAILED; the issuer-document fact channel read 0 facts for HON (before), ADBE, JPM, PYPL, ANTO, Cellectis and LIN (only CFR, 53 facts, and HON after its fix, 10 facts, read any); and every one of the 12 reports contradicts itself about what it holds.
+
+**J. What are the next THREE engineering priorities?**
+1) P-1: statement extraction from acquired documents (10-K/10-Q/EX-99.1, 20-F/6-K IFRS, ASX annual reports and Appendix 5B, UK results PDFs), with 'held but not read' never reported as 'not acquired'. 2) P-2: one reconciled research state: gaps, 'latest disclosure' and question status derived from the ledger and the document inventory. 3) P-3: a synthesis and chair claim gate: a material event, tense or stage, period label or count that the ledger does not support is never stated (ADR-078 in #314 covers the material-event part).
+
+---
+
+## Appendix — evidence discrepancies and conventions
+
+- campaign_state.md is the source of truth. Its run table lists the ADBE and JPM job ids (b67e3b11, 60e705ec) in the company-id column. The company ids are 4741fc77 (ADBE) and 3f8da8ae (JPM) per the rerun list and the day-1 draft; this report uses those.
+- The defect log says 'score=None for every item' (D, E2). That is wrong: the score lives in items[].relevance_score_pre_scan (a helper read a non-existent 'score' key). The Discovery evaluation recomputed it exactly. Hypothesis J is confirmed on the stored values.
+- E2 thesis fit is 12/15 (SCCO, CLF, FCX adjacent), per the detailed Discovery evaluation. An earlier note said about 13/15.
+- E2 Tavily credits: the run payload stores 20. An earlier campaign note estimated 38. The stored value is used; the daily total of about 287 on 2026-11-01 is the orchestrator's count.
+- The E2 cap cut ('6 of 7 theme-verified web names') is inferred from funnel counts; the payload never stored the cut names. ADR-073 now records them.
+- PR #297 (ADR-062 s.5) also fixed the council-status header (H7), in addition to H1, H2 and H5. Not live-observed, because no later run had a failed agent.
+- Hypothesis B is fixed only in the deterministic layer. Council, red-team, chair and editor period and scope swaps remain (JPM-6, PYPL2-5, ADBE FY margins beside Q3 growth).
+- ADBE-2 is only partly fixed by #304. The contradiction badge is fixed; the 'secondary_web' source kind on a 10-K copy and 'not from a filing' on filed figures are not.
+- C2's root fix was #298 (ADR-064 s.3, the narrow-gutter column interleave). #304 (ADR-071) is an independent guard that also stops the manufactured conflict.
+- #309 (ADR-072, unclosed period) was shelved after 4 review rounds and left open as a draft with an explanatory comment. ADBE-3 stays open (P1).
+- ADR-077 (#313) and ADR-078 (#314) are pending: open PRs, not merged, not deployed. Nothing in this report depends on them being live.
+- ADBE evaluation inconsistencies: the CEO-succession 8-K is dated 2026-09-02 in the claims and 2026-09-08 in ADBE-7; the CFO 8-K 2026-06-08 vs 2026-06-11. Its 'playbook captures economics' opens with 'Largely yes' but its own explanation says the economics are not captured; this report reads it as 'No'.
+- Severity: ADBE-3 (a forecast shown as a reported actual) is P1 in the evaluation but meets the spec's P0 wording ('unsupported claim presented as fact'). Each defect keeps its logged severity here.
+- Status NOT_REPRODUCED marks defects absent on a rerun with no targeted fix (PYPL-5, ANTO-4, CLLS-11, CLLS-12, LIN-1, LIN-6). They are not counted as fixed. CLLS-3 is counted as fixed live because #311 removed its cause (no filings) and the chair declined, but the guard that would stop the same sentence elsewhere does not exist.
+- HON-after's stored issuer-document state labels the annual 'FY2026' and the current period 'H1 2026', and withholds a revenue conflict built from an aerospace trade article, a Q1 10-Q figure and the Q2 release under one '2026' key. It fails closed (no value shown) but is a period-label defect on a US filer.
+- The day-2 Cellectis and Lindian evaluations number findings differently from report.json (LIN2 uses investor-page labels F1..F53). Finding numbers in this report follow each evaluation.
