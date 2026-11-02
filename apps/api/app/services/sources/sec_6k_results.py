@@ -48,6 +48,7 @@ from app.services.sources.sec_filing_documents import (
     INDEX_PAGE_MAX_BYTES,
     SecRateLimiter,
     _fetch_sec_archive_bytes,
+    _strip_tags,
     base_form,
     build_document_url,
     fetch_filing_index_page,
@@ -75,6 +76,17 @@ COVER_WINDOW_CHARS = 6000
 #: An EX-99 exhibit smaller than this is a stub (a cover note, a link list), not the
 #: results document, when a larger EX-99 exhibit sits beside it.
 MIN_RESULTS_EXHIBIT_BYTES = 10_000
+#: Content check (review round 3): a pick made on a headline or a file name must also
+#: show, in the chosen document's own text, that it CARRIES interim results — at least
+#: this much text and this many distinct statement line items each with a figure
+#: nearby. A call notice or a date announcement fails it by construction. 8,000
+#: characters, not 15,000: ASML's Q3 2026 results release (EX-99.1, 41 KB of HTML) is
+#: 12,129 characters of text; a call or date notice is a few hundred to ~3,000.
+MIN_CONTENT_TEXT_CHARS = 8_000
+MIN_CONTENT_LINE_ITEMS = 3
+#: Documents read for the content check per selection, at most (the chosen document's
+#: first ``INDEX_PAGE_MAX_BYTES``; a head already read is reused, not refetched).
+MAX_CONTENT_FETCHES = 3
 #: A line longer than this is a paragraph, not a title (SAP's cover: a 600-character
 #: forward-looking-statements paragraph mentions "financial results").
 TITLE_MAX_CHARS = 200
@@ -121,17 +133,29 @@ _MONTHS = (
 #: results", "Half-Year Report on the Liquidity Contract", "Availability of the
 #: Half-Year Financial Report", "Notice of Q3 2026 earnings release date".
 _ANNOUNCEMENT_TEXT_RE = re.compile(
-    r"\b(?:to|will) (?:report|announce|release|publish)\b"
-    r"|\binvitation\b|\bliquidity contract\b|\bavailability of\b"
-    r"|\b(?:release|results|reporting) date\b"
+    r"\b(?:to|will) (?:report|announce|release|publish|host|hold)\b"
+    r"|\binvitation\b|\b(?:release|results|reporting) date\b"
+    r"|\bdate (?:of|for)\b|\bschedules?\b|\bscheduled\b"
+    r"|\b(?:results|earnings)(?: conference)? call\b"
+    # A future date, month-first ("on November 5") or day-first ("on 5 November").
+    rf"|\bon {_MONTHS}\.? \d{{1,2}}\b|\bon \d{{1,2}}(?:st|nd|rd|th)? {_MONTHS}\b"
+)
+#: Announcements no reporting verb can redeem: they are never results.
+_NOTICE_ONLY_TEXT_RE = re.compile(
+    r"\bliquidity contract\b|\bavailability of\b|\bpublication of\b"
     r"|\breport on (?:the )?(?:share buy[- ]?back|share repurchase|own shares|liquidity)"
 )
-#: A future date ("on November 5") is an announcement only in a line that does not
-#: itself report: "Acme Reports Q3 Results; Call on November 5" still reports.
-_FUTURE_DATE_RE = re.compile(rf"\bon {_MONTHS}\.? \d{{1,2}}\b")
-_REPORTING_VERB_RE = re.compile(
-    r"\b(?:reports|reported|announces|announced|posts|delivers|publishes)\b"
+#: Only a line that itself REPORTS escapes the announcement vetoes: "Acme Reports
+#: Third Quarter 2026 Financial Results; Management to Host Conference Call …".
+#: "Announces" does not ("Announces Q3 2026 Results Conference Call on November 5").
+_REPORTING_VERB_RE = re.compile(r"\b(?:reports|reported|posts|posted|delivers)\b")
+#: A year with no part-year token is a full-year title, never the interim slot's
+#: ("Publication of the 2025 Financial Report"); nor is a full-year / annual title.
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_PART_YEAR_TOKEN_RE = re.compile(
+    rf"\b{_PERIOD}\b|\binterim\b|\bfor the period\b|\bhalf\b"
 )
+_FULL_YEAR_RE = re.compile(r"\b(?:full[- ]year|annual|fiscal year|financial year|fy)\b")
 #: A notice that is ONLY a notice: a line naming a meeting, a vote, a buyback, voting
 #: rights or a prospectus and NO results phrase. "Half-year results including share
 #: buyback update" stays results; a conference call or webcast vetoes nothing.
@@ -176,9 +200,16 @@ def _names_results_phrase(norm: str) -> bool:
 
 
 def _is_announcement(norm: str) -> bool:
-    if _ANNOUNCEMENT_TEXT_RE.search(norm):
+    if _NOTICE_ONLY_TEXT_RE.search(norm):
         return True
-    return bool(_FUTURE_DATE_RE.search(norm)) and not _REPORTING_VERB_RE.search(norm)
+    return bool(_ANNOUNCEMENT_TEXT_RE.search(norm)) and not _REPORTING_VERB_RE.search(norm)
+
+
+def _is_full_year_only(norm: str) -> bool:
+    """A title for a full year, which the INTERIM slot never takes (review round 3)."""
+    if _PART_YEAR_TOKEN_RE.search(norm):
+        return False
+    return bool(_YEAR_RE.search(norm) or _FULL_YEAR_RE.search(norm))
 
 
 def text_names_results(text: str | None) -> bool:
@@ -189,7 +220,11 @@ def text_names_results(text: str | None) -> bool:
     nothing). A meeting, buyback or call mentioned beside a results phrase does not
     veto it. Pure."""
     norm = _norm(text)
-    return _names_results_phrase(norm) and not _is_announcement(norm)
+    return (
+        _names_results_phrase(norm)
+        and not _is_announcement(norm)
+        and not _is_full_year_only(norm)
+    )
 
 
 def text_names_notice(text: str | None) -> bool:
@@ -211,6 +246,63 @@ def name_names_results(name: str | None) -> bool:
     if _CLINICAL_NAME_RE.search(lowered):
         return False
     return bool(_RESULTS_NAME_RE.search(lowered))
+
+
+#: Statement line items, by category. A category counts when one of its labels is
+#: followed by a figure within ``_FIGURE_WINDOW`` characters of visible text.
+_LINE_ITEMS: dict[str, str] = {
+    "revenue": r"revenues?|net sales|sales|turnover|total income",
+    "net_result": r"net (?:loss|income|profit|result)|(?:loss|profit) for the (?:period|quarter)",
+    "operating_result": r"operating (?:loss|income|profit|result)|ebitda?|"
+                        r"(?:loss|profit|income) before (?:income )?tax(?:es)?",
+    "cash": r"cash and cash equivalents|cash position|free cash flow|cash flows? from operat",
+    "balance_sheet": r"total assets|total equity|total liabilities|shareholders'? equity",
+    "per_share": r"earnings per share|loss per share|\beps\b",
+    "expenses": r"research and development (?:expenses|costs)|r&d (?:expenses|costs)"
+                r"|operating expenses|cost of (?:sales|revenues?)|gross (?:profit|margin)",
+}
+_FIGURE_WINDOW = 150
+_LINE_ITEM_RES: dict[str, re.Pattern[str]] = {
+    key: re.compile(rf"\b(?:{terms})\b[^0-9]{{0,{_FIGURE_WINDOW}}}\d")
+    for key, terms in _LINE_ITEMS.items()
+}
+
+
+def document_text(body: bytes | str | None) -> str:
+    """A document's visible text (tags stripped, entities decoded, whitespace
+    collapsed), from its first ``INDEX_PAGE_MAX_BYTES``. Linear; ``""`` when unreadable."""
+    if isinstance(body, bytes):
+        body = body[:INDEX_PAGE_MAX_BYTES].decode("utf-8", errors="replace")
+    if not isinstance(body, str) or not body:
+        return ""
+    page = body[:INDEX_PAGE_MAX_BYTES]
+    start = page.lower().find("<body")
+    text = _strip_tags(page[start if start >= 0 else 0 :])
+    return _WS_RE.sub(" ", html.unescape(text).replace("\xa0", " ")).strip()
+
+
+def content_line_items(text: str) -> list[str]:
+    """The statement line-item categories that appear WITH a figure. Pure."""
+    lowered = text.lower()
+    return [key for key, pattern in _LINE_ITEM_RES.items() if pattern.search(lowered)]
+
+
+def content_shows_results(body: bytes | str | None) -> tuple[bool, str]:
+    """Does a document's own text carry interim financial results? ``(ok, detail)``.
+
+    At least :data:`MIN_CONTENT_TEXT_CHARS` of text and
+    :data:`MIN_CONTENT_LINE_ITEMS` distinct statement line items with a figure nearby
+    (revenue, net result, operating result, cash, balance sheet, per share,
+    expenses). Pure."""
+    text = document_text(body)
+    if not text:
+        return False, "document unreadable"
+    items = content_line_items(text)
+    if len(text) < MIN_CONTENT_TEXT_CHARS:
+        return False, f"{len(text)} characters of text"
+    if len(items) < MIN_CONTENT_LINE_ITEMS:
+        return False, f"{len(items)} statement line item(s) with figures"
+    return True, f"{len(items)} statement line items with figures in {len(text)} characters"
 
 
 _BLOCK_TAGS: frozenset[str] = frozenset({
@@ -415,6 +507,37 @@ def _filed_after(event: Any, day: date | None) -> bool:
     return filed is not None and filed > day
 
 
+def _period_after_annual(
+    period_end: str | None, title: str | None, annual_period_end: str | None
+) -> bool:
+    """Is a pick's own period AFTER the annual report's fiscal period end? True when
+    either is unknown — this check refuses, it never guesses.
+
+    An exact period end (iXBRL) must be later than the annual one. A title period
+    ("Fourth Quarter … 2025") is compared by year: an earlier year is refused; the same
+    year is refused when the annual period ends in December (every period of that
+    calendar year is inside it). Another fiscal calendar in the same year passes."""
+    annual = _parse_day(annual_period_end)
+    if annual is None:
+        return True
+    exact = _parse_day(period_end)
+    if exact is not None:
+        return exact > annual
+    if not title:
+        return True
+    from app.services.sources.document_period import detect_document_period
+
+    found = detect_document_period(title=title)
+    if not found.is_known or found.period.year is None:
+        return True
+    if found.period.is_annual:
+        return False
+    year = int(found.period.year)
+    if year != annual.year:
+        return year > annual.year
+    return annual.month != 12
+
+
 def period_end_of(event: Any) -> str | None:
     """The regulator's "period of report" when it reads as a reporting-period end — a
     date in the last week of a month, 10–200 days before the filing — else ``None``.
@@ -450,8 +573,8 @@ async def fetch_document_head(
     cik: str, accession: str, name: str, *, cfg: Any = None,
     limiter: SecRateLimiter | None = None, client_factory: Any = None,
 ) -> bytes | None:
-    """One small filing document, over the guarded SEC Archives leg; ``None`` on any
-    failure or when it is larger than ``INDEX_PAGE_MAX_BYTES`` (never half-read)."""
+    """The first ``INDEX_PAGE_MAX_BYTES`` of one filing document, over the guarded SEC
+    Archives leg (the rest is never read); ``None`` on any failure."""
     url = build_document_url(cik, accession, name)
     if url is None:
         return None
@@ -465,6 +588,7 @@ async def fetch_document_head(
         resolver=None,
         max_bytes=INDEX_PAGE_MAX_BYTES,
         event_prefix="sec_6k_headline",
+        allow_truncated=True,
     )
 
 
@@ -489,6 +613,12 @@ class SixKSelection:
     heads_unreadable: int = 0
     #: 6-Ks filed on or before the annual report's filing date, never considered.
     before_annual: int = 0
+    #: Results picks refused because the document's own text carries no results
+    #: (content check), or because their period is not after the annual report's.
+    content_failed: int = 0
+    content_fetches: int = 0
+    not_after_annual_period: int = 0
+    content_detail: str | None = None
     since: str | None = None
     reason: str | None = None
     examined_log: list[dict[str, Any]] = field(default_factory=list)
@@ -503,6 +633,10 @@ class SixKSelection:
             "index_unreadable": self.index_unreadable,
             "heads_unreadable": self.heads_unreadable,
             "before_annual": self.before_annual,
+            "content_fetches": self.content_fetches,
+            "content_failed": self.content_failed,
+            "not_after_annual_period": self.not_after_annual_period,
+            "content": self.content_detail,
             "since": self.since,
         }
 
@@ -518,6 +652,13 @@ class SixKSelection:
             notes.append(f"{self.index_unreadable} index page(s) unreadable")
         if self.heads_unreadable:
             notes.append(f"{self.heads_unreadable} headline read(s) failed")
+        if self.content_failed:
+            notes.append(
+                f"{self.content_failed} named results but carried no statement figures")
+        if self.not_after_annual_period:
+            notes.append(
+                f"{self.not_after_annual_period} reported a period not after the annual "
+                "report's")
         return (
             f"{base} among the {self.examined} examined of {self.listed} listed "
             f"({'; '.join(notes)})"
@@ -537,6 +678,8 @@ async def select_results_6k(
     max_headline_fetches: int = MAX_HEADLINE_FETCHES,
     max_unsignalled: int = MAX_UNSIGNALLED_VISITS,
     since: str | None = None,
+    annual_period_end: str | None = None,
+    max_content_fetches: int = MAX_CONTENT_FETCHES,
 ) -> SixKSelection:
     """The newest 6-K among those examined that is a RESULTS release. Never raises.
 
@@ -544,6 +687,8 @@ async def select_results_6k(
     6-K/A are read, newest first. ``since`` is the annual report's filing date: a 6-K
     filed on or before it is never the CURRENT period — Barrick's Q4 iXBRL 6-K of
     2026-02-05 predates its 40-F of 2026-02-27 and reports the same year.
+    ``annual_period_end`` is that report's fiscal period end: a pick whose own period
+    (iXBRL period end, or a period in its title) is not after it is refused.
     ``selection.event is None`` means nothing qualified, and ``selection.reason`` says
     why in words a reader can check.
     """
@@ -606,6 +751,7 @@ async def select_results_6k(
             continue
         verdict, basis = classify_6k(entries, feed_document=feed_name)
         headline: str | None = None
+        bodies: dict[str, bytes] = {}
         # A notice by file name alone may still carry a results release in another
         # exhibit, so its headline is read too (bounded by the same cap).
         if verdict != VERDICT_RESULTS and out.headline_fetches < max_headline_fetches:
@@ -622,6 +768,8 @@ async def select_results_6k(
                     body = None
                 if body is None:
                     out.heads_unreadable += 1
+                else:
+                    bodies[str(document.get("name") or "")] = body
                 headline = headline_of(body, window=window) or None
                 verdict, basis = classify_6k(
                     entries, feed_document=feed_name, headline=headline
@@ -639,14 +787,43 @@ async def select_results_6k(
         name = str((chosen or {}).get("name") or feed_name or "")
         if not name or build_document_url(padded, accession, name) is None:
             continue
+        title = results_title(headline)
+        period_end = period_end_of(event) if basis == BASIS_IXBRL else None
+        if not _period_after_annual(period_end, title, annual_period_end):
+            out.not_after_annual_period += 1
+            out.examined_log[-1]["verdict"] = "not_after_annual_period"
+            continue
+        if basis != BASIS_IXBRL:
+            # A headline or a file name says what a document is CALLED; the content
+            # check asks whether it carries results (review round 3).
+            body = bodies.get(name)
+            if body is None:
+                if out.content_fetches >= max_content_fetches:
+                    out.examined_log[-1]["verdict"] = "content_unchecked"
+                    continue
+                out.content_fetches += 1
+                try:
+                    body = await fetch_head(
+                        padded, accession, name, cfg=cfg,
+                        limiter=limiter, client_factory=client_factory,
+                    )
+                except Exception:  # noqa: BLE001 - an unreadable document proves nothing
+                    body = None
+            ok, detail = content_shows_results(body)
+            out.examined_log[-1]["content"] = detail
+            if not ok:
+                out.content_failed += 1
+                out.examined_log[-1]["verdict"] = "content_failed"
+                continue
+            out.content_detail = detail
         out.event = event
         out.document_name = name
         out.basis = basis
-        out.title = results_title(headline)
+        out.title = title
         # The declared period end is reported only when the evidence is the financial
         # statements themselves: for those EDGAR's period of report IS the balance-sheet
         # date. A press release's "period of report" is its own date.
-        out.period_end = period_end_of(event) if basis == BASIS_IXBRL else None
+        out.period_end = period_end
         return out
     out.reason = out._no_pick_reason()
     return out

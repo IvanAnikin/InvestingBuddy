@@ -5852,10 +5852,18 @@ the newest figures in the report were 9M 2025. H1 2026 (6-K 2026-08-06, iXBRL 6-
       - A title line is at most 200 characters, so a forward-looking-statements
         paragraph that mentions "financial results" is never a title.
       - **Announcements veto a line even beside a results phrase** (review D2, refined
-        in round 2): "to / will report, announce, release, publish", "invitation",
-        "liquidity contract", "availability of", "release / results / reporting date",
-        "report on the share buyback / liquidity / own shares", and a future date ("on
-        November 5") in a line with no reporting verb (reports, announces, posts …).
+        in rounds 2 and 3): "to / will report, announce, release, publish, host, hold",
+        "invitation", "date of / for", "schedule(s/d)", "results / earnings (conference)
+        call", "release / results / reporting date", and a future date month-first ("on
+        November 5") or day-first ("on 5 November"). These are lifted only when the line
+        itself REPORTS ("reports", "reported", "posts", "delivers"); "announces" does not
+        lift them ("Announces Q3 2026 Results Conference Call on November 5"). "Liquidity
+        contract", "availability of", "publication of" and "report on the share buyback
+        / liquidity / own shares" are never lifted.
+      - **A full-year title is not the interim slot's** (round 3, R4): a results line
+        with a year and no part-year token (quarter, Q1–Q4, H1/H2, half, interim, three /
+        six / nine months, "for the period"), or a full-year / annual / fiscal-year line
+        without one ("Publication of the 2025 Financial Report", "Annual Results 2025").
         So "Cellectis to Report Third Quarter 2026 Financial Results … on November 5",
         "Half-Year Report on the Liquidity Contract", "Availability of the Half-Year
         Financial Report", "Invitation to conference call on Q3 2026 results" and
@@ -5883,14 +5891,41 @@ the newest figures in the report were 9M 2025. H1 2026 (6-K 2026-08-06, iXBRL 6-
 
    Anything else is **undecided and never taken**. Reading no 6-K is better than
    reading the wrong one.
-3. **Honest about failures** (review D4, R2). An empty `-index.htm` read is a failed
+3. **A positive content check** (review round 3, the structural fix). A pick made on a
+   description, a headline or a file name — anything but iXBRL statements — must also
+   show in the chosen document's OWN text that it carries interim results:
+   - at least 8,000 characters of visible text, and
+   - at least 3 distinct statement line items, each followed by a figure within 150
+     characters: revenue / sales / turnover; net loss / income / profit; operating
+     result / EBIT(DA) / profit before tax; cash and cash equivalents / free cash flow;
+     total assets / equity / liabilities; earnings or loss per share; R&D / operating
+     expenses / cost of sales / gross profit.
+
+   The document's first 256 KB are read (`fetch_document_head`, now through a
+   truncating mode of `_fetch_sec_archive_bytes`: the rest is never downloaded); a
+   headline already read is reused. At most 3 content reads per selection
+   (`MAX_CONTENT_FETCHES`). A failure is logged per 6-K (`content_failed`) and the walk
+   continues; the reason counts it ("N named results but carried no statement
+   figures"). A call notice or a date announcement fails by construction. The
+   reviewer's "≥ 15 KB of text" example was lowered to 8,000 characters on evidence:
+   ASML's Q3 2026 release (EX-99.1, 41 KB of HTML) is 12,129 characters of text.
+   The regexes run over capped text with bounded gaps; an adversarial 256 KB body
+   checks in ≤ 0.16 s.
+4. **Period after the annual report** (round 3, R4). When the pick's period is known —
+   the iXBRL period end, or a period in its title — it must be after the annual
+   report's fiscal period end (EDGAR's period of report for the 20-F / 40-F): an exact
+   date must be later; a title period of an earlier year is refused, and of the same
+   year when the annual period ends in December. Unknown on either side passes — the
+   check refuses, it never guesses. Counted as "N reported a period not after the
+   annual report's".
+5. **Honest about failures** (review D4, R2). An empty `-index.htm` read is a failed
    read (a real page always lists the complete-submission file). Such a 6-K is
    SKIPPED — never taken on its feed file name, because which document carries the
    results is unknown (on an outage Shell's 12 KB cover would have been read instead
    of its 1.8 MB EX-99.2). Failed index pages and headline reads are counted
    (`index_unreadable`, `heads_unreadable`) and named in the reason, so an outage is
    not reported as "examined and found wanting".
-4. **Bounded.** Reads use the existing guarded, throttled SEC Archives leg
+6. **Bounded.** Reads use the existing guarded, throttled SEC Archives leg
    (`fetch_filing_index_page`, `_fetch_sec_archive_bytes` with the 256 KB cap and the
    `sec_6k_headline_*` events). There is no new host, no new provider, and no URL
    that does not come from the accession. Per selection:
@@ -5901,26 +5936,26 @@ the newest figures in the report were 9M 2025. H1 2026 (6-K 2026-08-06, iXBRL 6-
      month 10–200 days before filing. With this cap a weekly-buyback filer still
      reaches its interim report;
    - a 6-K whose feed file name names a notice costs nothing.
-5. **The document read.**
+7. **The document read.**
    - With iXBRL as the basis: the iXBRL EX-99 exhibit, else the iXBRL 6-K document.
    - Otherwise, as ADR-068: the `EX-99.1` exhibit, else the first `EX-99*`. If that
      exhibit is under 10 KB and a larger EX-99 exists, the larger one is read (Shell's
      3 KB EX-99.1 sits beside a 1.8 MB quarterly report).
    - With no exhibit: the 6-K document.
-6. **Through the same bridge.** `ensure_filing_corpus_evidence(…, document_name=…)` →
+8. **Through the same bridge.** `ensure_filing_corpus_evidence(…, document_name=…)` →
    `acquire_sec_filing(document_name=…)` passes the name as the resolver's
    primary-document hint, which re-validates it against this accession's index. It is
    never a URL. Readiness and indexing are judged on that one document
    (`<accession>/<file>`, escaped, URL must end with it). An exhibit asked for by name
    counts as ready. A held cover page of the same accession cannot answer for it. The
    unnamed path is unchanged.
-7. **Slot output.** It records `form` (6-K / 6-K/A), `filing_date`, `document`, `basis`,
+9. **Slot output.** It records `form` (6-K / 6-K/A), `filing_date`, `document`, `basis`,
    `title` (the document's own results title line, when read), `period_end` and
    `selection` (counts, failures, 6-Ks before the annual report, `since`). `period_end` is EDGAR's period of report, given only when the
    basis is iXBRL: for financial statements it is the balance-sheet date. Nothing
    qualifying gives `not_listed` with "no results 6-K among the N examined of M listed
    (K skipped as notices by file name)".
-8. **current_period.** A ready 6-K slot counts as the interim report. The headline is
+10. **current_period.** A ready 6-K slot counts as the interim report. The headline is
    the slot's `title`, else its form. The period comes only from that title
    ("…Second Quarter 2026" gives "Q2 2026 quarterly report acquired"), or the label
    states "for the period ended 2026-06-30". A lone year in a 6-K title is never read
@@ -5931,9 +5966,25 @@ the newest figures in the report were 9M 2025. H1 2026 (6-K 2026-08-06, iXBRL 6-
 **The picks rest on this replay**, not on a guarantee: the rules are text rules over
 what issuers happen to name and write. User-Agent "InvestingBuddy research
 research@investingbuddy.example". First round 32 SEC requests; review round 1, 5 more;
-review round 2, none (every response cached from earlier rounds). After round 2 the
+review round 2, none (every response cached from earlier rounds); review round 3, 11
+(the content reads). After round 2 the
 eight replayed filers (the five below plus BioNTech, Barrick, Valneva) pick exactly
 what round 1 picked. After the review fixes:
+
+Round 3 (content check on every non-iXBRL pick):
+
+| Filer | 6-K picked | Document · basis | Content check |
+|---|---|---|---|
+| Cellectis | 6-K/A 2026-09-11 | `clls-ex99_1.htm` · iXBRL, period end 2026-06-30 | n/a (iXBRL) |
+| ASML | 2026-10-14 | `pressreleasefinancialresul.htm` · file name | pass: 5 line items, 12,129 chars |
+| Novo Nordisk | 2026-08-04 | `caq22026.htm` · file name | pass: 6 items, 24,033 chars |
+| SAP | 2026-10-26 | `tm2628113d1_ex99-1.htm` · headline | pass: 6 items, 21,324 chars |
+| Shell | 2026-10-29 | `quarterlyexhibit992-q32026.htm` · file name | pass: 6 items, 37,978 chars |
+| BioNTech | 2026-08-04 0001776985-26-000054 | `a991bntx_q22026pressreleas.htm` · file name | pass: 7 items, 32,716 chars (the same-day 000055, 7,939 chars, failed and was passed over) |
+| Barrick | 2026-08-11 | `d67611dex992.htm` · iXBRL, period end 2026-06-30 | n/a (iXBRL) |
+| Valneva | 2026-08-13 | `valn-20260630.htm` · iXBRL, period end 2026-06-30 | n/a (iXBRL) |
+
+Rounds 1–2 (before the content check):
 
 | Filer (CIK) | 6-K picked | Document · basis | Latest interim? |
 |---|---|---|---|
@@ -5957,10 +6008,12 @@ strategic-transformation and conference-call releases; Novo's four newest buybac
 6-Ks; Shell's "Third Quarter 2026 Interim Dividend" and own-share notices.
 
 ### Not changed / known limits
-- **File-name evidence is a risk.** Rule 4 trusts a name with a period token
-  (`…q3…`, `…interim…`). An announcement or notice whose name carries a period and no
-  notice token (e.g. `q3-2026-results-date.htm`) would be taken without its headline
-  being read. Six of the thirteen replay picks rest on file names.
+- **File-name and headline evidence is a risk, now bounded by content.** A name with a
+  period token or a results headline only NOMINATES a 6-K; the content check decides.
+  A document that carries statement figures under a misleading name (a prior-period
+  comparison deck, a prospectus with interim financials) can still pass it.
+- **The content check reads the first 256 KB only.** A results report whose statement
+  figures begin later fails and is passed over, honestly counted.
 - **Toyota-shaped filers** whose results 6-K is named generically and whose release
   is large or iXBRL-free are not picked; the slot says so.
 - **A results release with no signal past the cap is missed.** This covers a newswire

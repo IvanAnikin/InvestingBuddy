@@ -809,14 +809,18 @@ async def _fetch_sec_archive_bytes(
     resolver: Resolver | None,
     max_bytes: int | None = None,
     event_prefix: str = "sec_filing_index",
+    allow_truncated: bool = False,
 ) -> bytes | None:
     """GET one small SEC Archives listing; ``None`` on any failure. Never raises.
 
     The single network leg shared by ``index.json`` and the ``-index.htm`` page: the
     same allowlist re-check with ``resolve_ip=True``, address pinning, declared
     User-Agent, config timeout, byte cap, no redirects, 2xx only. A truncated
-    (over-cap) body is discarded rather than half-parsed. ``max_bytes`` defaults to the
-    ``index.json`` cap; ``event_prefix`` keeps each listing's log events distinct.
+    (over-cap) body is discarded rather than half-parsed — unless ``allow_truncated``,
+    when the first ``max_bytes`` are returned and the rest is never read (ADR-077: the
+    opening of a long results document is enough to check what it carries).
+    ``max_bytes`` defaults to the ``index.json`` cap; ``event_prefix`` keeps each
+    listing's log events distinct.
     """
     cfg = cfg or default_settings
     limiter = limiter or SecRateLimiter(cfg=cfg)
@@ -892,6 +896,8 @@ async def _fetch_sec_archive_bytes(
                     if total > max_bytes:
                         truncated = True
                         break
+                if truncated and allow_truncated:
+                    return b"".join(chunks)[:max_bytes]
                 if truncated:
                     log_event(
                         _logger,

@@ -78,6 +78,23 @@ def _pr(body_lines: list[str]) -> bytes:
     return f"<html><head><title>x</title></head><body>{paras}</body></html>".encode()
 
 
+#: The statement tables a real results release carries (passes the content check).
+_STATEMENTS = [
+    "Revenues were $12.4 million for the six months ended June 30, 2026.",
+    "Net loss attributable to shareholders was $(41.2) million, or $(0.41) per share.",
+    "Operating loss was $(38.9) million compared with $(44.0) million.",
+    "Cash and cash equivalents of $169.0 million as of June 30, 2026.",
+    "Research and development expenses were $34.1 million.",
+]
+_PROSE = ("The Company continued to advance its programs during the period and "
+          "remains focused on disciplined capital allocation. ")
+
+
+def _report(body_lines: list[str]) -> bytes:
+    """A results release: its headline, then statement figures and ~16 KB of text."""
+    return _pr([*body_lines, *_STATEMENTS, _PROSE * 140])
+
+
 class _Sec:
     """Index pages and document heads by accession, counting every read."""
 
@@ -149,7 +166,7 @@ def _clls_sec() -> _Sec:
                 "Cellectis to Host Conference Call and Webcast on September 14 to Provide "
                 "a Business Update",
             ]),
-            "exh_993.htm": _pr([
+            "exh_993.htm": _report([
                 "EXHIBIT 99.1",
                 "Cellectis Reports Financial Results for the Second Quarter 2026",
                 "Pivotal Phase 2 first interim analysis expected in Q4 2026",
@@ -205,6 +222,18 @@ def test_a_results_title_names_results(text: str) -> None:
     "Toyota to announce financial results for the first half of fiscal year ending March 2027",
     "Notice of Q3 2026 earnings release date",
     "Third Quarter 2026 Results on November 5",
+    # Review round 3 (R3): future-results announcements.
+    "Acme to Host Third Quarter 2026 Financial Results Conference Call and Webcast",
+    "Acme to Hold Q3 2026 Earnings Call on 5 November 2026",
+    "Acme Announces Date of Third Quarter 2026 Financial Results",
+    "Acme Sets Date for Third Quarter 2026 Financial Results",
+    "Acme Announces Q3 2026 Results Conference Call on November 5",
+    "Acme Schedules Third Quarter 2026 Earnings Release for November 5",
+    "Acme will host its Q3 2026 results call",
+    # Review round 3 (R4): a full-year title is not the interim slot's.
+    "Publication of the 2025 Financial Report",
+    "Full Year 2025 Financial Results",
+    "Annual Results 2025",
 ])
 def test_a_notice_clinical_or_partnership_title_does_not_name_results(text: str) -> None:
     assert not s6.text_names_results(text)
@@ -264,7 +293,8 @@ async def test_biontech_picks_its_quarterly_report_not_the_topline_release() -> 
                                  _row("exh991.htm", "EX-99.1", 20_000, "EX-99.1")],
         "0001193125-26-000200": [_row("form6-kq22026quarterlyrepo.htm", "6-K", 900_000, "6-K")],
     }, heads={"exh991.htm": _pr([
-        "BioNTech Announces Positive Topline Results from Phase 3 Trial"])})
+        "BioNTech Announces Positive Topline Results from Phase 3 Trial"]),
+        "form6-kq22026quarterlyrepo.htm": _report(["Quarterly Report Q2 2026"])})
     sel = await _select(events, sec)
     assert sel.event is events[1]
     assert sel.document_name == "form6-kq22026quarterlyrepo.htm"
@@ -284,7 +314,7 @@ async def test_an_announcement_of_results_does_not_beat_the_real_results() -> No
                            "Cellectis to Report Third Quarter 2026 Financial Results and "
                            "Business Updates on November 5, 2026",
                            "Cellectis will host a conference call"]),
-        "exh_993.htm": _pr(["Cellectis Reports Financial Results for the Second Quarter 2026",
+        "exh_993.htm": _report(["Cellectis Reports Financial Results for the Second Quarter 2026",
                             "Conference call and webcast today at 8:00 a.m. ET"]),
     })
     sel = await _select(events, sec)
@@ -315,6 +345,93 @@ async def test_an_sec_outage_is_named_in_the_reason() -> None:
                           "(0 skipped as notices by file name; 3 index page(s) unreadable)")
 
 
+def test_the_content_check_passes_a_results_release() -> None:
+    ok, detail = s6.content_shows_results(
+        _report(["Cellectis Reports Financial Results for the Second Quarter 2026"]))
+    assert ok, detail
+
+
+@pytest.mark.parametrize("body", [
+    # A call notice: no statement figures at all.
+    _pr(["Acme to Host Third Quarter 2026 Financial Results Conference Call",
+         "The call will take place on November 5, 2026 at 8:30 a.m. ET.", _PROSE * 140]),
+    # Long enough, but only two line items with figures.
+    _pr(["Acme Q3 2026 results", "Revenues were $12.4 million.",
+         "Cash and cash equivalents of $169.0 million.", _PROSE * 140]),
+    # Every line item, but a one-page note.
+    _pr(["Acme Q3 2026 results", *_STATEMENTS]),
+    None,
+])
+def test_the_content_check_fails_a_document_without_results(body) -> None:
+    assert s6.content_shows_results(body)[0] is False
+
+
+async def test_a_results_named_announcement_fails_the_content_check() -> None:
+    """Review round 3: whatever a 6-K is CALLED, a pick must carry results. A newer
+    file-name-signalled call notice falls through to the real Q2 release."""
+    notice = _Event("6-K", "0000000001-26-000002", "2026-10-28", "", "acme_q3_2026.htm")
+    real = _Event("6-K", "0000000001-26-000001", "2026-08-06", "", "acme_q2_2026.htm")
+    sec = _Sec(pages={
+        "0000000001-26-000002": [_row("acme_q3_2026.htm", "6-K", 12_000, "6-K")],
+        "0000000001-26-000001": [_row("acme_q2_2026.htm", "6-K", 400_000, "6-K")],
+    }, heads={
+        "acme_q3_2026.htm": _pr(["Acme Q3 2026 conference call details", _PROSE * 140]),
+        "acme_q2_2026.htm": _report(["Acme Q2 2026"]),
+    })
+    sel = await _select([notice, real], sec)
+    assert sel.event is real
+    assert sel.content_failed == 1
+    assert sel.examined_log[0]["verdict"] == "content_failed"
+    assert sel.content_detail and "statement line items" in sel.content_detail
+
+
+async def test_r3_announcements_never_beat_the_real_q2() -> None:
+    """Review round 3, as probed: each announcement in a newer 6-K, the real Q2 older."""
+    for title in [
+        "Acme to Host Third Quarter 2026 Financial Results Conference Call and Webcast "
+        "on 5 November 2026",
+        "Acme Announces Date of Third Quarter 2026 Financial Results",
+        "Publication of the 2025 Financial Report",
+    ]:
+        newer = _Event("6-K", "0000000001-26-000002", "2026-10-28", "", "d1d6k.htm")
+        q2 = _Event("6-K", "0000000001-26-000001", "2026-08-06", "", "acme_6-k_q2_2026.htm")
+        sec = _Sec(pages={
+            "0000000001-26-000002": [_row("d1d6k.htm", "6-K", 20_000, "6-K"),
+                                     _row("d1dex991.htm", "EX-99.1", 15_000, "EX-99.1")],
+            "0000000001-26-000001": [_row("acme_6-k_q2_2026.htm", "6-K", 20_000, "6-K")],
+        }, heads={"d1dex991.htm": _pr(["Exhibit 99.1", title]),
+                  "acme_6-k_q2_2026.htm": _report(["Acme Q2 2026 results"])})
+        sel = await _select([newer, q2], sec, since="2026-03-01")
+        assert sel.event is q2, title
+
+
+@pytest.mark.parametrize(("period_end", "title", "annual_end", "expected"), [
+    ("2025-12-31", None, "2025-12-31", False),     # Barrick-shaped Q4 iXBRL 6-K
+    ("2026-06-30", None, "2025-12-31", True),
+    (None, "Fourth Quarter and Full Year 2025 Financial Results", "2025-12-31", False),
+    (None, "Acme Reports Q2 2026 Results", "2025-12-31", True),
+    (None, "Acme Reports Q2 2026 Results", None, True),   # unknown: never a guess
+    (None, None, "2025-12-31", True),
+])
+def test_a_pick_must_report_a_period_after_the_annual_report(
+    period_end, title, annual_end, expected
+) -> None:
+    assert s6._period_after_annual(period_end, title, annual_end) is expected
+
+
+async def test_a_q4_release_after_the_20f_is_refused_by_its_period() -> None:
+    """R4: a Q4/FY release filed after the 20-F reports the year the 20-F covers."""
+    q4 = _Event("6-K", "0000000001-26-000003", "2026-03-25", "", "d9d6k.htm")
+    sec = _Sec(pages={"0000000001-26-000003": [
+        _row("d9d6k.htm", "6-K", 20_000, "6-K"),
+        _row("d9dex991.htm", "EX-99.1", 90_000, "EX-99.1")]},
+        heads={"d9dex991.htm": _report([
+            "Acme Reports Fourth Quarter and Full Year 2025 Financial Results"])})
+    sel = await _select([q4], sec, since="2026-03-20", annual_period_end="2025-12-31")
+    assert sel.event is None and sel.not_after_annual_period == 1
+    assert "1 reported a period not after the annual report's" in (sel.reason or "")
+
+
 async def test_a_call_named_exhibit_never_vetoes_the_results_release() -> None:
     """Review round 2 (R1): an EX-99.2 named "…earningscallpresentation…" had marked
     the Q3 6-K a notice and the Q2 6-K was picked instead — a stale interim."""
@@ -327,7 +444,7 @@ async def test_a_call_named_exhibit_never_vetoes_the_results_release() -> None:
             _row("d123dex992_earningscallpresentation.htm", "EX-99.2", 90_000, "PRESENTATION"),
         ],
         "0000000001-26-000001": [_row("acme_6-k_q2_2026.htm", "6-K", 20_000, "6-K")],
-    }, heads={"d123dex991.htm": _pr([
+    }, heads={"d123dex991.htm": _report([
         "Exhibit 99.1",
         "Acme Reports Third Quarter 2026 Financial Results; Management to Host Conference "
         "Call Today at 8:30 a.m. ET"])})
@@ -479,7 +596,9 @@ async def test_unsignalled_6ks_are_capped_so_a_weekly_buyback_filer_reaches_its_
         for i in range(10)
     ]
     report = _Event("6-K", "0000353278-26-000023", "2026-08-04", "2026-06-30", "caq22026.htm")
-    sec = _Sec(pages={"0000353278-26-000023": [_row("caq22026.htm", "6-K", 1_730_052, "6-K")]})
+    sec = _Sec(pages={"0000353278-26-000023": [_row("caq22026.htm", "6-K", 1_730_052, "6-K")]},
+               heads={"caq22026.htm": _report(["Financial report for the period 1 January "
+                                               "2026 to 30 June 2026"])})
     sel = await _select([*buybacks, report], sec)
     assert sel.event is report and sel.document_name == "caq22026.htm"
     assert sel.basis == s6.BASIS_FILE_NAME

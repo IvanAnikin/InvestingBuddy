@@ -1062,9 +1062,23 @@ async def _ensure_results_6k(
     # review of PR #313): a Q4 6-K filed before the 40-F reports the same year.
     annual = out_annual if isinstance(out_annual, dict) else {}
     since = annual.get("filing_date") if annual.get("form") else None
+    # The annual report's fiscal period end (EDGAR's period of report for a 20-F /
+    # 40-F): a 6-K whose own period is not after it is the same year again.
+    annual_event = next(
+        (
+            e for e in events
+            if str(getattr(e, "form_type", "") or "").upper() in ANNUAL_FORMS
+            and str(getattr(e, "accession_number", "") or "")
+            and str(getattr(e, "filing_date", "") or "") == str(since or "")
+        ),
+        None,
+    ) if since else None
+    annual_period_end = (
+        str(getattr(annual_event, "report_date", "") or "") or None if annual_event else None
+    )
     try:
         selection = await (selector or select_results_6k)(
-            events, cik=cik, cfg=cfg, since=since
+            events, cik=cik, cfg=cfg, since=since, annual_period_end=annual_period_end
         )
     except Exception as exc:  # noqa: BLE001 - selection failing costs the slot only
         return {"state": "not_listed", "forms": forms,
