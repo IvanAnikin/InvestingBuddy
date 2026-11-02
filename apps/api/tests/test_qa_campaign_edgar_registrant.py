@@ -756,3 +756,15 @@ class TestFilingNamesSubject:
         item = _hit("ev:c:x", CBOE_URL, text="NET INCOME was $12.1 million.")
         (checked,) = apply_edgar_registrant([item], subject)
         assert checked.edgar_registrant == EDGAR_OTHER
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Nasdaq Global Market: CLLS", "Nasdaq Global Select Market: CLLS", "Nasdaq Capital Market: CLLS"],
+)
+def test_every_nasdaq_tier_frames_a_ticker(text: str) -> None:
+    import re
+
+    from app.services.web_research.edgar_registrant import _EXCHANGE_CONTEXT
+
+    assert re.search(_EXCHANGE_CONTEXT + "CLLS", text)

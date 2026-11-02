@@ -56,7 +56,7 @@ _OWNERSHIP_RE = re.compile(r"/xslschedule_13[dg](?:_x\d+)?/|/xslf345x0\d/", re.I
 #: A ticker counts only where an exchange (or an ownership form's issuer field) frames
 #: it: "(NASDAQ: NET)", "NYSE: A", "Nasdaq: CLLS". A bare "NET" is "NET INCOME".
 _EXCHANGE_CONTEXT = (
-    r"(?i:\b(?:nasdaq(?:\s*(?:gs|gm|cm|global\s+select(?:\s+market)?))?"
+    r"(?i:\b(?:nasdaq(?:\s*(?:gs|gm|cm|global\s+(?:select\s+)?market|global\s+select|capital\s+market))?"
     r"|nyse(?:\s*(?:american|arca|mkt))?|amex|otc(?:qx|qb|\s+markets)?"
     r"|euronext(?:\s+[a-z]+)?|lse|asx|tsx|six)\s*:\s*)"
 )
