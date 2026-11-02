@@ -54,8 +54,14 @@ async def acquire_sec_filing(
     accession: str,
     form: str | None,
     cfg: "Settings",
+    document_name: str | None = None,
 ) -> AcquireOutcome:
     """Fetch, extract, persist and index one SEC filing. Never raises.
+
+    ``document_name`` (ADR-077) names the document of the filing to read — a results
+    6-K's press release or iXBRL statements rather than its cover page. It travels as
+    the resolver's primary-document hint, which re-validates it as a safe Archives file
+    name of THIS accession; it is never a URL.
 
     The artifact produced here is a *fresh extraction*, which is the whole point: it
     carries blocks, so ``persist_primary_document_artifacts`` creates the derivation and
@@ -79,7 +85,11 @@ async def acquire_sec_filing(
 
     # The only input the SEC resolver needs. `accession_number` and `form_type` come
     # from the regulator's own metadata; no URL is constructed here and none is accepted.
-    filings = [{"accession_number": accession, "form_type": form or "10-K"}]
+    filings: list[dict[str, Any]] = [
+        {"accession_number": accession, "form_type": form or "10-K"}
+    ]
+    if document_name:
+        filings[0]["primary_document"] = document_name
 
     try:
         artifacts = await live_sec_primary_document_extractor(
@@ -147,7 +157,8 @@ async def acquire_sec_filing(
     # nobody asked about, on a path whose cost and failure modes belong to a different
     # request. A filing left un-indexed by some other path is that path's bug to fix.
     indexed = await _index_acquired_version(
-        session, company_id=company_id, accession=accession, cfg=cfg
+        session, company_id=company_id, accession=accession, cfg=cfg,
+        document_name=document_name,
     )
 
     return AcquireOutcome(
@@ -163,7 +174,12 @@ async def acquire_sec_filing(
 
 
 async def _index_acquired_version(
-    session: Any, *, company_id: uuid.UUID, accession: str, cfg: "Settings"
+    session: Any,
+    *,
+    company_id: uuid.UUID,
+    accession: str,
+    cfg: "Settings",
+    document_name: str | None = None,
 ) -> int:
     """Index the current version of the filing just acquired. Never raises.
 
@@ -179,7 +195,7 @@ async def _index_acquired_version(
     from app.services.corpus.indexing import index_version
 
     version = await current_version_for_filing(
-        session, company_id=company_id, accession=accession
+        session, company_id=company_id, accession=accession, document_name=document_name
     )
     if version is None:
         # Persisting produced no current version for this company — the cross-company

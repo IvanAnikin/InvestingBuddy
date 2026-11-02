@@ -52,7 +52,7 @@ from app.services.agent_tools.contracts import ToolBudget
 from app.services.agent_tools.policy import policy_for
 from app.services.agent_tools.registry import ToolRegistry
 from app.services.agent_tools.session import ToolSession
-from app.services.agents.chair import ChairVerdict, LLMChair
+from app.services.agents.chair import FALLBACK_MATERIAL_EVENT, ChairVerdict, LLMChair
 from app.services.agents.investigator import InvestigatorDiagnostics, LLMInvestigator
 from app.services.agents.red_team import LLMRedTeam, LLMResponder
 from app.services.agents.routing import (
@@ -1057,9 +1057,11 @@ async def _run(
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
     #    and the Chair must not see one that was retired.
     council = await council_inputs.assemble(session, run)
-    verdict: ChairVerdict = await LLMChair(client=model_routing.client_for(SLOT_CHAIR)).deliberate(
-        council
-    )
+    verdict: ChairVerdict = await LLMChair(
+        client=model_routing.client_for(SLOT_CHAIR),
+        subject={"name": getattr(company, "name", None),
+                 "ticker": getattr(company, "ticker", None)},
+    ).deliberate(council)
     outcome.chair = verdict.to_dict()
     if verdict.deterministic_fallback:
         # Named, because the two states mean opposite things about the deployment. The
@@ -1069,6 +1071,9 @@ async def _run(
             "the chair returned the deterministic verdict because the council did not "
             "convene (no findings to synthesise)"
             if verdict.fallback_reason == "council_did_not_convene"
+            else "the chair's synthesis stated only material corporate events no vetted "
+            "source supports (ADR-078); the deterministic synthesis stands"
+            if verdict.fallback_reason == FALLBACK_MATERIAL_EVENT
             else "the chair fell back to the deterministic verdict: no chair model was "
             "available"
         )
@@ -1932,7 +1937,8 @@ def _consumption(
             if cost.estimated_usd is None
             else None
         ),
-        "chair_used_a_model": not verdict.deterministic_fallback,
+        "chair_used_a_model": not verdict.deterministic_fallback
+        or getattr(verdict, "fallback_reason", None) == FALLBACK_MATERIAL_EVENT,
     }
 
 

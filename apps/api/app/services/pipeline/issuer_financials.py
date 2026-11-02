@@ -516,6 +516,18 @@ def _annual_state(
     }
 
 
+def _six_k_predates_annual(quarterly: dict[str, Any], core_filings: Any) -> bool:
+    """A 6-K filed on or before the annual report is never the current period: a Q4
+    6-K filed before the 40-F reports the same year (ADR-077). The selector already
+    refuses one; this keeps a slot recorded otherwise from saying "interim"."""
+    if not str(quarterly.get("form") or "").upper().startswith("6-K"):
+        return False
+    annual = core_filings.get("annual") if isinstance(core_filings, dict) else None
+    annual_date = str((annual or {}).get("filing_date") or "")[:10]
+    filed = str(quarterly.get("filing_date") or "")[:10]
+    return bool(annual_date and filed and filed <= annual_date)
+
+
 def _current_state(
     current: list[tuple[str, dict[str, Any]]],
     *,
@@ -540,23 +552,43 @@ def _current_state(
     documents = [d for d in core_disclosures.get("documents") or [] if isinstance(d, dict)]
     document = _acquired(documents, _is_interim_document)
     sec_quarterly = core_filings.get("quarterly") if isinstance(core_filings, dict) else None
+    period_end: str | None = None
+    interim_only = False
     if document is None and isinstance(sec_quarterly, dict) and (
         sec_quarterly.get("state") in _READY_STATES
-    ):
+    ) and not _six_k_predates_annual(sec_quarterly, core_filings):
         document = {
             "document_kind": "interim_report",
-            "headline": sec_quarterly.get("form"),
+            # A results 6-K (ADR-077) carries the headline of the document it was read
+            # through ("… Financial Results for the Second Quarter 2026"); a 10-Q only
+            # its form. The period below comes from that text, or from the issuer's
+            # declared period end, or is left unnamed.
+            "headline": sec_quarterly.get("title") or sec_quarterly.get("form"),
             "filing_date": sec_quarterly.get("filing_date"),
             "source_url": None,
             "source_id": "sec_edgar",
         }
+        period_end = sec_quarterly.get("period_end") or None
+        interim_only = bool(sec_quarterly.get("title"))
     if document is not None:
         hint = _period_hint(document.get("headline"))
+        if interim_only and hint:
+            # An interim document never names a fiscal YEAR: a lone "2026" in a 6-K's
+            # headline is not FY2026 (ADR-077).
+            from app.services.sources.financial_period import (
+                PERIOD_TYPE_ANNUAL,
+                parse_period,
+            )
+
+            if parse_period(hint).period_type == PERIOD_TYPE_ANNUAL:
+                hint = None
         when = document.get("filing_date")
         # A quarterly activities report is not an interim (half-year) report.
         quarterly = "quarter" in str(document.get("headline") or "").lower()
         noun = "quarterly report" if quarterly else "interim report"
         what = f"{hint} {noun}" if hint else noun.capitalize()
+        if not hint and period_end:
+            what = f"{what} for the period ended {period_end}"
         return {
             "state": STATE_ACQUIRED_NOT_EXTRACTED,
             "period": hint,

@@ -162,6 +162,26 @@ def _no_live_filing_acquisition(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(filing_acquisition, "acquire_sec_filing", _inert)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_6k_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ADR-077's results-6-K selector read nothing from the SEC by default.
+
+    ``ensure_core_filings`` reads 6-K index pages for a filer without a 10-Q. A test
+    that lists a 6-K must not reach www.sec.gov because of it; tests that mean to
+    exercise the selection inject ``page_fetcher`` / ``head_fetcher`` themselves.
+    """
+    from app.services.sources import sec_6k_results
+
+    async def _no_page(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return []
+
+    async def _no_head(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return None
+
+    monkeypatch.setattr(sec_6k_results, "fetch_filing_index_page", _no_page)
+    monkeypatch.setattr(sec_6k_results, "fetch_document_head", _no_head)
+
+
 @pytest.fixture
 def real_acquire_sec_filing():  # noqa: ANN201
     """The genuine acquirer, for the tests that mean to exercise it.
