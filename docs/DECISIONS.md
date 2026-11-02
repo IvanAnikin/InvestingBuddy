@@ -5429,3 +5429,129 @@ sector-agnostic, and none of them could ask a playbook anything:
   a V2 profile with no SIC code and a vendor label such as "Investment Banking &
   Brokerage" is still inferred to be Banks (T6 estimate). SIC wins only where a code
   is present.
+
+---
+
+## ADR-074: Another Company's Statement, Cited From Its Own Site, Is Not the Issuer's; a Change Is Not a Level
+
+**Status:** Accepted (cross-sector QA campaign 2026-11, live Antofagasta report a68e6d31)
+
+### Context
+In the Antofagasta report, 10 of 35 findings were about other companies, and all ten
+were web-only. Their sentence subject was another named company, and each cited that
+company's own website. Examples: "South32 FY24 underlying revenue US$8,296m",
+"South32 policy: distribute at least 40% …", "Lundin Mining flags Vicuña JV governance
+risk …", "Ecora (not the company): leverage ratio of 1.5x …". The executive summary
+then presented Lundin's JV risks as Antofagasta's. One of the ten sits in a peer domain
+(`competitive_position`), where another company's facts are the answer, so it is kept
+by design.
+
+**Why the publisher firewall missed them.** `foreign_publisher` does not depend on
+the issuer's domain. It is keyed on `other_company_labels`, which reads the
+`companies` table: other companies the platform itself holds. South32, Lundin Mining
+and Ecora had never been researched on the platform, so the firewall had no label to
+match south32.net or lundinmining.com against. The firewall is correct for the
+companies it knows; it simply knows only those.
+
+A second defect followed from the first. A gap read "Sources disagree on revenue
+(2024): US$8,296m (South32) vs $156.6m". The $156.6m came from "Copper sales volumes
+… fell 2.9% …, reducing revenue by $156.6m". That is a CHANGE in revenue, and
+`_money_disagree` (ADR-071) compared it as the revenue LEVEL. Neither `field_clause`
+nor `money_values` tells a change from a level.
+
+### Decision
+1. **Foreign-subject guard** (`statement_about_foreign_subject`, in `_write_up`
+   beside the other-company and related-registrant guards). It runs outside peer
+   domains, on statements whose cited evidence is all web text, as ADR-066 does. A
+   statement is dropped when all of these hold:
+   - Its sentence subject is a proper-noun name. That is the name it opens with,
+     optionally after the ADR-066 lead-in clause and an article; a possessive ends the
+     name ("Lundin's 2026 outlook").
+   - The name's first word is at least four characters, is not a generic business word
+     (`identity._GENERIC_TOKENS`), is not all capitals (an acronym, "FY24"), and is not
+     an attribution ("X-cited", "X-based"). It is not followed by "cites" or "quotes"
+     (a publisher relaying someone else's figure).
+   - The subject is named nowhere in the statement. The subject counts as named by its
+     ticker (case-sensitive, whole token), by any of its distinctive name words, by a
+     brand that `trust.BRAND_ALIASES` maps to it, or by "the company", "the group" or
+     "the issuer".
+   - EVERY cited item's verified publisher (`trust.publisher_of`, so a claimed origin
+     counts as its real host) is that company's own domain. This uses
+     `identity.issuer_domain_matches` (equality, corporate or venue TLD only), plus one
+     extension: the first name word followed by one generic business word
+     (lundinmining.com for "Lundin", ecora-resources.com for "Ecora").
+   - No cited item is a curated third party's page (press, regulator, association,
+     aggregator). Only `unknown_web` and the company-page classes qualify.
+   - No cited page's text names the subject (a JV partner's page, a brand's page, a
+     buyer's release).
+
+   Separately, a statement in which the writer marks a name as not the subject is
+   dropped: "<Name> (not the company / the issuer / the group / <subject>)". No domain
+   match is needed for this, but the subject must not be named elsewhere in the
+   statement.
+
+   Each drop counts in `statements_about_foreign_subject` (a diagnostics key, pinned in
+   `test_v3_investigator_diagnostics`). The question gets ONE `entity_ambiguous` gap per
+   write-up that names the dropped companies.
+2. **A change amount is not a level** (`trust.level_money_values`, used by
+   `_money_disagree`). An amount is masked before comparison in either of two cases:
+   - It follows "by", "up" or "down", or "a/an/the … increase / decrease / rise / fall
+     / drop / decline / gain / reduction / … of".
+   - It is followed by "increase", "decrease", "rise", "fall", "higher", "lower" and
+     the like ("a $39.9m increase").
+
+   A side left with no level amount never conflicts. "Rose by $300m to $7,900m" still
+   states the level $7,900m.
+
+   The optional "different sentence subjects never conflict" rule was not added. The
+   live sentence's subject is implicit ("Copper sales volumes …"), so it would not have
+   helped here. The guard in (1) now removes the other company's side at the source.
+
+### Replay over the stored campaign reports
+The replay used the stored statements, with persistence labels stripped. Per evidence
+id, it took the origin and class from the report's `web_evidence`, falling back to the
+finding's `acquisition_log` origins. Evidence TEXT is not stored, so the "cited page
+names the subject" keep rule could not fire, and these counts are an upper bound.
+
+| Report | Findings | Judged (non-peer) | Dropped |
+|---|---|---|---|
+| ANTO a68e6d31 | 35 | 33 | 9 |
+| ADBE 7b401826 | 48 | 46 | 0 |
+| CFR f722d620 | 40 | 36 | 0 |
+| HON e50cb267 | 44 | 42 | 0 |
+| HON2 f0be3c4f | 43 | 41 | 0 |
+| JPM 30828043 | 50 | 48 | 0 |
+| PYPL f031b73b | 37 | 37 | 0 |
+
+The ANTO drops are South32 ×5 (revenue, manganese CIF sales, net debt, dividend
+policy, rain), Lundin ×3 (outlook, Vicuña JV risk, named risks) and Ecora ×1 (by its
+"(not the company)" disclaimer; its page was on ecoraroyalties.com). The tenth live
+finding ("South32 describes itself …") is in `competitive_position` and is kept. No
+Antofagasta statement is dropped.
+
+A first draft also dropped ADBE "Trefis cites global creative software market …" and
+"Trefis-cited …", and CFR "WWF-cited McKinsey estimate …". The attribution and
+citing-verb exclusions were added for those three. The live revenue "conflict"
+(US$8,296m vs "reducing revenue by $156.6m") no longer fires.
+
+### Not changed / known limits
+- **Subsidiaries and brands on their own domains.** A subsidiary or brand on its own
+  domain whose page does not name the parent is dropped unless `BRAND_ALIASES` lists
+  it. Venmo for PayPal and a Maison for Richemont are examples. The replay of PYPL and
+  CFR dropped none, but that is no proof.
+- **Research firms' estimates.** "<Firm> estimates the market at …", cited only from
+  the firm's own site, is dropped. The industry figure is then lost, but a gap records
+  it.
+- **Misses, not false drops:**
+  - acronym names ("BHP says …");
+  - names shorter than four characters;
+  - a foreign company in a later clause, or after more than one lead-in;
+  - a foreign company's statement cited from a news site or from mixed sources;
+  - a disclaimer that is not attached to a name.
+- **Subjects that cannot be told apart.** A subject whose name has no distinctive word
+  (all generic, or under four characters) fails open, and nothing is dropped.
+- **Change wording.** Only the words listed above count as change wording. "Revenue
+  grew $5m" (a bare verb with no "by") is still read as a level.
+- **The publisher firewall is unchanged.** It still knows only the `companies` table.
+  The new guard covers companies outside that table only when they are the sentence's
+  subject.

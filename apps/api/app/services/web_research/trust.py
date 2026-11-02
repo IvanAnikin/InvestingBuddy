@@ -1588,13 +1588,52 @@ class Contradiction:
         return f"{head}: " + " vs ".join(rows) + "." + tail
 
 
+#: Wording that makes the amount right after it a CHANGE, not the field's level (ADR-074):
+#: "reducing revenue by $156.6m", "rose by $32m", "an increase of $39.9m", "down $5m".
+#: Read on the text just before the amount; ``_CHANGE_TAIL_RE`` reads just after it.
+_CHANGE_LEAD_RE = re.compile(
+    r"(?:\bby"
+    r"|\b(?:an?\s+|the\s+)?(?:[\w-]+\s+)?(?:increase|decrease|rise|fall|drop|decline|gain|"
+    r"reduction|improvement|deterioration|change|swing|uplift)\s+of"
+    r"|\b(?:up|down))\s*$",
+    re.IGNORECASE,
+)
+#: The same, written after the amount: "a $39.9m increase", "$12m lower".
+_CHANGE_TAIL_RE = re.compile(
+    r"^\s*(?:increase|decrease|rise|fall|drop|decline|gain|reduction|improvement|"
+    r"deterioration|uplift|higher|lower)\b",
+    re.IGNORECASE,
+)
+
+
+def level_money_values(clause: str | None) -> tuple[tuple[str, float, float], ...]:
+    """``rf.money_values`` without the amounts the clause states as a CHANGE.
+
+    "Copper sales volumes fell 2.9%, reducing revenue by $156.6m" states no revenue
+    level at all; "revenue rose by $32.0m to $1,013.2m" states one, $1,013.2m. A change
+    amount compared as the field's value manufactured a revenue "conflict" between
+    another company's revenue and a volume effect (live Antofagasta report, 2026-11-02).
+    """
+    text = clause or ""
+    spans: list[tuple[int, int]] = []
+    for pattern in (rf.MONEY_RE, rf.MONEY_SUFFIX_RE):
+        for match in pattern.finditer(text):
+            if _CHANGE_LEAD_RE.search(
+                text[max(0, match.start() - 40): match.start()]
+            ) or _CHANGE_TAIL_RE.match(text[match.end(): match.end() + 30]):
+                spans.append(match.span())
+    for start, end in spans:
+        text = text[:start] + " " * (end - start) + text[end:]
+    return rf.money_values(text)
+
+
 def _money_disagree(a: ClaimSide, b: ClaimSide, field_key: str) -> bool:
     from app.services.pipeline.gap_reconciliation import DIFFERENT, _Value, compare_values
 
-    va = rf.money_values(rf.field_clause(a.statement, field_key) or a.statement)
-    vb = rf.money_values(rf.field_clause(b.statement, field_key) or b.statement)
+    va = level_money_values(rf.field_clause(a.statement, field_key) or a.statement)
+    vb = level_money_values(rf.field_clause(b.statement, field_key) or b.statement)
     if not va or not vb:
-        return False
+        return False  # one side states no level (none at all, or only a change: ADR-074)
     # A contradiction is two SINGLE claims about one field (ADR-071). A statement that
     # states several amounts for it — a segment breakdown ("Digital Media $17,649,
     # Digital Experience $5,864 … total $23,769"), a margin sentence naming operating
