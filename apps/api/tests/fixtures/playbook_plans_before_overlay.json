@@ -792,7 +792,11 @@
     "required_tools": [
      "search_company_corpus"
     ],
-    "search_intents": [],
+    "search_intents": [
+     "{company} quarterly report results period ended",
+     "{company} quarterly activities cash flow report",
+     "{company} results release announcement"
+    ],
     "series_labels": [],
     "text": "What has the issuer disclosed most recently, and for which period?"
    },
@@ -801,7 +805,7 @@
     "blocking_requires": null,
     "commodity": null,
     "contract": {
-     "allow_external": false,
+     "allow_external": true,
      "max_external_searches": 1,
      "min_distinct_sources": 1,
      "min_items": 1,
@@ -811,7 +815,9 @@
     "depends_on": [],
     "domain": "catalysts",
     "key": "recent_external_developments",
-    "optional_tools": [],
+    "optional_tools": [
+     "search_company_corpus"
+    ],
     "origin": "director",
     "owner_role": "external_research_analyst",
     "per_commodity": false,
@@ -824,7 +830,11 @@
      "fetch_public_source",
      "search_web"
     ],
-    "search_intents": [],
+    "search_intents": [
+     "{company} quarter results revenue reported",
+     "{company} quarterly activities cash flow report",
+     "{company} results release"
+    ],
     "series_labels": [],
     "text": "What were the headline figures of this issuer's most recently reported period, and which primary source states them? Give the figure, the period it covers, and the issuer's own or the regulator's page."
    },
@@ -1831,7 +1841,11 @@
     "required_tools": [
      "search_company_corpus"
     ],
-    "search_intents": [],
+    "search_intents": [
+     "{company} quarterly report results period ended",
+     "{company} quarterly activities cash flow report",
+     "{company} results release announcement"
+    ],
     "series_labels": [],
     "text": "What has the issuer disclosed most recently, and for which period?"
    },
@@ -1840,7 +1854,7 @@
     "blocking_requires": null,
     "commodity": null,
     "contract": {
-     "allow_external": false,
+     "allow_external": true,
      "max_external_searches": 1,
      "min_distinct_sources": 1,
      "min_items": 1,
@@ -1850,7 +1864,9 @@
     "depends_on": [],
     "domain": "catalysts",
     "key": "recent_external_developments",
-    "optional_tools": [],
+    "optional_tools": [
+     "search_company_corpus"
+    ],
     "origin": "director",
     "owner_role": "external_research_analyst",
     "per_commodity": false,
@@ -1863,7 +1879,11 @@
      "fetch_public_source",
      "search_web"
     ],
-    "search_intents": [],
+    "search_intents": [
+     "{company} quarter results revenue reported",
+     "{company} quarterly activities cash flow report",
+     "{company} results release"
+    ],
     "series_labels": [],
     "text": "What were the headline figures of this issuer's most recently reported period, and which primary source states them? Give the figure, the period it covers, and the issuer's own or the regulator's page."
    },
@@ -2996,7 +3016,11 @@
     "required_tools": [
      "search_company_corpus"
     ],
-    "search_intents": [],
+    "search_intents": [
+     "{company} quarterly report results period ended",
+     "{company} quarterly activities cash flow report",
+     "{company} results release announcement"
+    ],
     "series_labels": [],
     "text": "What has the issuer disclosed most recently, and for which period?"
    },
@@ -3005,7 +3029,7 @@
     "blocking_requires": null,
     "commodity": null,
     "contract": {
-     "allow_external": false,
+     "allow_external": true,
      "max_external_searches": 1,
      "min_distinct_sources": 1,
      "min_items": 1,
@@ -3015,7 +3039,9 @@
     "depends_on": [],
     "domain": "catalysts",
     "key": "recent_external_developments",
-    "optional_tools": [],
+    "optional_tools": [
+     "search_company_corpus"
+    ],
     "origin": "director",
     "owner_role": "external_research_analyst",
     "per_commodity": false,
@@ -3028,7 +3054,11 @@
      "fetch_public_source",
      "search_web"
     ],
-    "search_intents": [],
+    "search_intents": [
+     "{company} quarter results revenue reported",
+     "{company} quarterly activities cash flow report",
+     "{company} results release"
+    ],
     "series_labels": [],
     "text": "What were the headline figures of this issuer's most recently reported period, and which primary source states them? Give the figure, the period it covers, and the issuer's own or the regulator's page."
    },
@@ -3873,7 +3903,11 @@
     "required_tools": [
      "search_company_corpus"
     ],
-    "search_intents": [],
+    "search_intents": [
+     "{company} quarterly report results period ended",
+     "{company} quarterly activities cash flow report",
+     "{company} results release announcement"
+    ],
     "series_labels": [],
     "text": "What has the issuer disclosed most recently, and for which period?"
    },
@@ -3882,7 +3916,7 @@
     "blocking_requires": null,
     "commodity": null,
     "contract": {
-     "allow_external": false,
+     "allow_external": true,
      "max_external_searches": 1,
      "min_distinct_sources": 1,
      "min_items": 1,
@@ -3892,7 +3926,9 @@
     "depends_on": [],
     "domain": "catalysts",
     "key": "recent_external_developments",
-    "optional_tools": [],
+    "optional_tools": [
+     "search_company_corpus"
+    ],
     "origin": "director",
     "owner_role": "external_research_analyst",
     "per_commodity": false,
@@ -3905,7 +3941,11 @@
      "fetch_public_source",
      "search_web"
     ],
-    "search_intents": [],
+    "search_intents": [
+     "{company} quarter results revenue reported",
+     "{company} quarterly activities cash flow report",
+     "{company} results release"
+    ],
     "series_labels": [],
     "text": "What were the headline figures of this issuer's most recently reported period, and which primary source states them? Give the figure, the period it covers, and the issuer's own or the regulator's page."
    },

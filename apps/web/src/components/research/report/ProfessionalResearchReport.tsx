@@ -76,6 +76,8 @@ const SERIES_TIER_WORDS: Record<string, string> = {
 
 const UNRESOLVED_REASON_WORDS: Record<string, string> = {
   not_acquired: "evidence not acquired by the platform",
+  // ADR-076 — the corpus held the subject's newer document; the question did not read it.
+  acquired_not_read: "held by the platform but not read for this question",
   // V3.19.13 — a segment check that could not apply: no segment is named in evidence.
   precondition_absent:
     "not applicable — no segment was found in the evidence the platform read",

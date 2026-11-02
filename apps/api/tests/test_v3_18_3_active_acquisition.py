@@ -756,7 +756,10 @@ class TestTheLadder:
             context=QuestionContext(), round_index=0,
         )
         assert "search_web" not in {tool for tool, _ in session.calls}
-        assert [s["rung"] for s in steps] == ["platform_tools", "contract_after_round"]
+        # ADR-076 — a recency question also reads the newest held documents (corpus only).
+        assert [s["rung"] for s in steps] == [
+            "platform_tools", "recency_corpus", "contract_after_round"
+        ]
 
     async def test_a_contract_that_forbids_the_web_stops_and_says_so(self) -> None:
         session = _Session()

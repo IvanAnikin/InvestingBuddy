@@ -104,6 +104,19 @@ MAX_FOLLOWUP_QUERIES = 2
 #: cost of the extra hits is one wider SELECT.
 CORPUS_TOP_K = 12
 
+#: ADR-076 — the recency pass. A question about the issuer's NEWEST disclosure also
+#: searches only the subject's newest held documents: those published within this many
+#: days of the newest dated document the corpus holds for it. Lexical rank alone let a
+#: 261-chunk annual report outrank the newer quarterly cash-flow report on every run, so
+#: the report quoted the older quarter's cash and said no quarterly report was present.
+#: Forty-five days spans one reporting cycle's cluster (a 5B, its activities report and
+#: the results release) without reaching back to the previous quarter.
+RECENCY_WINDOW_DAYS = 45
+#: How many of the recency pass's hits lead the question's evidence. Half a corpus page:
+#: the newest documents come first, and the ordinary search still fills the rest of the
+#: prompt budget.
+RECENCY_MAX_ITEMS = 4
+
 #: How much tool payload reaches the prompt. A model handed the whole corpus is a model
 #: paying for the whole corpus. Eight corpus chunks alone can reach 12,000 characters,
 #: which is what pushed a question's own typed figures out of its prompt entirely
@@ -2077,6 +2090,22 @@ class LLMInvestigator:
                     "tools": sorted({item.kind for item in gathered}),
                 }
             )
+            # Rung 1b — ADR-076: a recency question also reads the subject's NEWEST
+            # held documents. Additive: the ordinary search above is untouched, and
+            # what this finds leads the evidence so the prompt budget reaches it.
+            if used < budget:
+                recent, spent, step = await self._recency_pass(
+                    role_id, role, question, round_index
+                )
+                used += spent
+                if step is not None:
+                    steps.append(step)
+                if recent:
+                    lead = {item.citation_id for item in recent}
+                    evidence[:] = [
+                        *recent,
+                        *(item for item in evidence if item.citation_id not in lead),
+                    ]
         current = verdict()
 
         # Rung 2a — open-web W7: the corpus again, by the platform-built GAP queries whose
@@ -2199,6 +2228,86 @@ class LLMInvestigator:
             }
         )
         return evidence, used, steps
+
+    def _recency_query(self, question: PlannedQuestion) -> str:
+        """The recency pass's terms: every intent's distinctive terms, joined.
+
+        Broader than the ordinary search's single intent on purpose — the WINDOW does
+        the narrowing here, and within the newest documents any of "quarterly", "cash
+        flow" or "results" is a reason to read the chunk.
+        """
+        values = self._intent_values(question)
+        intents = list(getattr(question, "search_intents", ()) or ())
+        query = keyword_query(" ".join(fill_intent(i, values) for i in intents))
+        if query:
+            return query
+        arguments = _corpus_arguments(question, self.company_id, values)
+        return str((arguments or {}).get("query") or "")
+
+    async def _recency_pass(
+        self,
+        role_id: str,
+        role: Any,
+        question: PlannedQuestion,
+        round_index: int,
+    ) -> "tuple[list[_Evidence], int, dict[str, Any] | None]":
+        """ADR-076 — one corpus search over the subject's newest held documents.
+
+        Runs for a recency question (``base_model.RECENCY_QUESTION_KEYS``) whose role
+        can read the corpus. Returns its hits newest first, capped at
+        ``RECENCY_MAX_ITEMS``; the window and what it found are logged as the
+        ``recency_corpus`` step. Never raises.
+        """
+        from app.services.director.base_model import RECENCY_QUESTION_KEYS
+
+        if question.key not in RECENCY_QUESTION_KEYS:
+            return [], 0, None
+        if not role.can_use(TOOL_SEARCH_COMPANY_CORPUS) or (
+            self.available_tools is not None
+            and TOOL_SEARCH_COMPANY_CORPUS not in self.available_tools
+        ):
+            return [], 0, None
+        query = self._recency_query(question)
+        if not query:
+            return [], 0, None
+        step: dict[str, Any] = {
+            "rung": "recency_corpus",
+            "round": round_index,
+            "role": role_id,
+            "query": query,
+            "window_days": RECENCY_WINDOW_DAYS,
+            "tool_calls": 1,
+        }
+        try:
+            result = await self.session.call(
+                TOOL_SEARCH_COMPANY_CORPUS,
+                {
+                    "query": query,
+                    "company_ids": [str(self.company_id)],
+                    "mode": "lexical",
+                    "top_k": CORPUS_TOP_K,
+                    "recent_window_days": RECENCY_WINDOW_DAYS,
+                },
+                task_ref=f"{role_id}:{question.key}",
+            )
+        except Exception:  # noqa: BLE001 - an additional pass must not cost the question
+            step["stopped"] = "error"
+            return [], 1, step
+        if not result.ok:
+            step["stopped"] = f"refused:{getattr(result, 'refusal_reason', None) or 'error'}"
+            return [], 1, step
+        payload = result.payload if isinstance(result.payload, dict) else {}
+        window = payload.get("recency_window") or {}
+        step["newest_held"] = window.get("newest_held")
+        step["published_from"] = window.get("published_from")
+        harvested = _harvest(
+            TOOL_SEARCH_COMPANY_CORPUS, payload, result.contains_untrusted_content
+        )
+        # Newest first; within one date the search's own rank order is kept (stable).
+        harvested.sort(key=lambda item: item.published_at or date.min, reverse=True)
+        recent = harvested[:RECENCY_MAX_ITEMS]
+        step["items"] = len(recent)
+        return recent, 1, step
 
     async def _external_rung(
         self,
