@@ -23,6 +23,8 @@ from app.services.agents.investigator import (
     _Evidence,
     _evidence_of,
     apply_edgar_registrant,
+    foreign_publisher,
+    other_company_labels,
     statement_about_other_registrant,
 )
 from app.services.director.planner import PlannedQuestion
@@ -33,10 +35,12 @@ from app.services.entities.sec_listing import (
     SecListing,
 )
 from app.services.web_research.edgar_registrant import (
+    EDGAR_COUNTERPARTY,
     EDGAR_OTHER,
     EDGAR_OWN,
     EDGAR_UNIDENTIFIED,
     edgar_cik,
+    is_ownership_filing_url,
     normalise_cik,
     registrant_verdict,
 )
@@ -110,42 +114,70 @@ class TestEdgarCik:
 
 class TestVerdict:
     def test_foreign_cik_for_cellectis_is_another_registrant(self) -> None:
-        assert registrant_verdict(
-            CBOE_URL, {CELLECTIS_CIK}, subject_is_sec_registrant=True
-        ) == EDGAR_OTHER
+        assert registrant_verdict(CBOE_URL, {CELLECTIS_CIK}, other_ciks=None) == EDGAR_OTHER
 
     def test_own_cik_with_leading_zeros_is_own(self) -> None:
-        assert registrant_verdict(
-            OWN_20F_URL, {"0001627281"}, subject_is_sec_registrant=True
-        ) == EDGAR_OWN
+        assert registrant_verdict(OWN_20F_URL, {"0001627281"}, other_ciks=None) == EDGAR_OWN
 
-    def test_non_sec_subject_never_owns_an_edgar_filing(self) -> None:
-        assert registrant_verdict(OWN_20F_URL, set(), subject_is_sec_registrant=False) == (
-            EDGAR_OTHER
+    def test_no_basis_only_a_directory_named_other_registrant_is_other(self) -> None:
+        assert registrant_verdict(OWN_20F_URL, set(), other_ciks={"1627281"}) == EDGAR_OTHER
+        assert registrant_verdict(OWN_20F_URL, set(), other_ciks={"999"}) == (
+            EDGAR_UNIDENTIFIED
+        )
+
+    def test_no_basis_and_an_unreadable_directory_is_unidentified(self) -> None:
+        assert registrant_verdict(OWN_20F_URL, set(), other_ciks=frozenset()) == (
+            EDGAR_UNIDENTIFIED
         )
 
     def test_no_cik_is_unidentified_not_issuer(self) -> None:
-        assert registrant_verdict(
-            NO_CIK_URL, {CELLECTIS_CIK}, subject_is_sec_registrant=True
-        ) == EDGAR_UNIDENTIFIED
-
-    def test_sec_subject_with_unresolved_cik_is_unidentified(self) -> None:
-        assert registrant_verdict(CBOE_URL, set(), subject_is_sec_registrant=True) == (
+        assert registrant_verdict(NO_CIK_URL, {CELLECTIS_CIK}, other_ciks=None) == (
             EDGAR_UNIDENTIFIED
         )
+
+    def test_sec_subject_with_unresolved_cik_is_unidentified(self) -> None:
+        assert registrant_verdict(CBOE_URL, set(), other_ciks=None) == EDGAR_UNIDENTIFIED
 
     def test_a_regulator_page_on_sec_gov_is_out_of_scope(self) -> None:
         # Already a regulator publication (T2) by publisher_tiers; not a filing.
         assert registrant_verdict(
             "https://www.sec.gov/newsroom/press-releases/2026-101", {CELLECTIS_CIK},
-            subject_is_sec_registrant=True,
+            other_ciks=None,
         ) is None
 
     def test_a_non_sec_url_is_out_of_scope(self) -> None:
         assert registrant_verdict(
-            "https://www.cellectis.com/en/investors/", {CELLECTIS_CIK},
-            subject_is_sec_registrant=True,
+            "https://www.cellectis.com/en/investors/", {CELLECTIS_CIK}, other_ciks=None
         ) is None
+
+    def test_a_dot_dot_path_reads_as_the_cik_it_resolves_to(self) -> None:
+        # D4: normalised after unquoting, never the first CIK-looking segment.
+        url = "https://www.sec.gov/Archives/edgar/data/1627281/../1234/0001/x.htm"
+        assert edgar_cik(url) == "1234"
+        assert registrant_verdict(url, {CELLECTIS_CIK}, other_ciks=None) == EDGAR_OTHER
+        quoted = "https://www.sec.gov/Archives/edgar/data/1627281/%2E%2E/1234/x.htm"
+        assert edgar_cik(quoted) == "1234"
+
+
+class TestOwnershipUrl:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.sec.gov/Archives/edgar/data/1086364/000108636426000012/"
+            "xslSCHEDULE_13G_X01/primary_doc.xml",
+            "https://www.sec.gov/Archives/edgar/data/1599999/000159999926000003/"
+            "xslF345X05/wk-form4_1767000000.xml",
+            "https://www.sec.gov/Archives/edgar/data/1086364/000119312526000001/d1sc13ga.htm",
+            "https://www.sec.gov/Archives/edgar/data/1599999/000159999926000003/"
+            "wf-form4_1767000000.xml",
+        ],
+    )
+    def test_ownership_forms_are_recognised(self, url: str) -> None:
+        assert is_ownership_filing_url(url)
+
+    @pytest.mark.parametrize("url", [CBOE_URL, OWN_20F_URL, NO_CIK_URL])
+    def test_ordinary_filings_are_not(self, url: str) -> None:
+        assert not is_ownership_filing_url(url)
 
 
 # ---------------------------------------------------------------------------
@@ -153,11 +185,14 @@ class TestVerdict:
 # ---------------------------------------------------------------------------
 
 
-def _hit(cid: str, url: str, *, web: bool = True) -> _Evidence:
+def _hit(
+    cid: str, url: str, *, web: bool = True,
+    text: str = "The Company operates a single reportable segment.",
+) -> _Evidence:
     """A real corpus-hit payload through the real harvesting path."""
     item: dict[str, Any] = {
         "evidence_id": cid,
-        "text": "The Company operates a single reportable segment.",
+        "text": text,
         "canonical_url": url,
         "source_tier": "T1_primary_filing",
         "published_at": "2026-06-26",
@@ -170,7 +205,12 @@ def _hit(cid: str, url: str, *, web: bool = True) -> _Evidence:
     return found
 
 
-CLLS_SUBJECT = EdgarSubject(ciks=frozenset({CELLECTIS_CIK}), is_sec_registrant=True)
+CLLS_SUBJECT = EdgarSubject(
+    ciks=frozenset({CELLECTIS_CIK}), other_ciks=None,
+    aliases=frozenset({"cellectis"}), tickers=("ALCLS", "CLLS"),
+)
+#: No SEC basis, and a directory that names CIK 1627281 as a different company.
+NON_SEC_SUBJECT = EdgarSubject(ciks=frozenset(), other_ciks=frozenset({CELLECTIS_CIK}))
 
 
 class TestRelabel:
@@ -193,8 +233,36 @@ class TestRelabel:
         assert item.edgar_registrant == EDGAR_OWN
 
     def test_a_non_sec_subject_never_gets_an_issuer_filing(self) -> None:
+        (item,) = apply_edgar_registrant([_hit("ev:c:own", OWN_20F_URL)], NON_SEC_SUBJECT)
+        assert item.ref is not None and item.ref.source_kind == "third_party_filing"
+        assert item.edgar_registrant == EDGAR_OTHER
+
+    def test_knowing_nothing_is_unidentified_never_issuer(self) -> None:
         (item,) = apply_edgar_registrant([_hit("ev:c:own", OWN_20F_URL)], EdgarSubject())
         assert item.ref is not None and item.ref.source_kind == "third_party_filing"
+        assert item.edgar_registrant == EDGAR_UNIDENTIFIED
+
+    def test_a_holders_13g_is_a_counterparty_filing(self) -> None:
+        url = (
+            "https://www.sec.gov/Archives/edgar/data/1086364/000108636426000012/"
+            "xslSCHEDULE_13G_X01/primary_doc.xml"
+        )
+        (item,) = apply_edgar_registrant([_hit("ev:c:13g", url)], CLLS_SUBJECT)
+        assert item.edgar_registrant == EDGAR_COUNTERPARTY
+        assert item.ref is not None and item.ref.source_kind == "third_party_filing"
+        assert statement_about_other_registrant([item]) == ()
+
+    def test_an_acquirers_filing_naming_the_subject_is_a_counterparty_filing(self) -> None:
+        item = _hit(
+            "ev:c:8k", CBOE_URL,
+            text="Acquirer Corp entered into an agreement to acquire Cellectis S.A. for cash.",
+        )
+        (checked,) = apply_edgar_registrant([item], CLLS_SUBJECT)
+        assert checked.edgar_registrant == EDGAR_COUNTERPARTY
+        assert statement_about_other_registrant([checked]) == ()
+
+    def test_the_company_in_another_filing_does_not_name_the_subject(self) -> None:
+        (item,) = apply_edgar_registrant([_hit("ev:c:cboe", CBOE_URL)], CLLS_SUBJECT)
         assert item.edgar_registrant == EDGAR_OTHER
 
     def test_a_url_without_cik_is_never_an_issuer_filing(self) -> None:
@@ -208,7 +276,7 @@ class TestRelabel:
         # different CIK in the path, leaves them exactly as they were.
         bridge = _hit("ev:c:bridge", OWN_20F_URL, web=False)
         other_path = _hit("ev:c:bridge2", CBOE_URL, web=False)
-        for subject in (CLLS_SUBJECT, EdgarSubject()):
+        for subject in (CLLS_SUBJECT, EdgarSubject(), NON_SEC_SUBJECT):
             out = apply_edgar_registrant([bridge, other_path], subject)
             assert out == [bridge, other_path]
             assert all(o.ref is not None and o.ref.source_kind == "issuer_filing" for o in out)
@@ -289,6 +357,7 @@ async def _run(
     ticker: str = "ALCLS",
     exchange: str = "EPA",
     domain: str = "business_model",
+    name: str = "Cellectis S.A.",
 ) -> tuple[LLMInvestigator, list[Any], list[Any]]:
     inv = LLMInvestigator(
         session=object(),
@@ -296,7 +365,7 @@ async def _run(
         ticker=ticker,
         exchange=exchange,
         client=_Client(findings),
-        company_name="Cellectis S.A.",
+        company_name=name,
     )
     question = PlannedQuestion(
         key="business_model", text="How does the company make money?", origin="playbook",
@@ -384,17 +453,84 @@ class TestInvestigatorGuard:
         assert [f.source_kinds for f in findings] == [("issuer_filing",)]
         assert inv.diagnostics.statements_about_other_registrant == 1
 
-    async def test_a_non_sec_subject_drops_statements_on_edgar_filings(
+    async def test_a_non_sec_subject_drops_statements_on_a_named_other_registrant(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _patch_subject(monkeypatch, None)
+        _patch_subject(
+            monkeypatch, None,
+            [SimpleNamespace(ticker="CLLS", cik="1627281", name="Cellectis S.A."),
+             SimpleNamespace(ticker="CFR", cik="39263", name="Cullen/Frost Bankers, Inc.")],
+        )
         inv, findings, gaps = await _run(
             [(OWN_STATEMENT, ["ev:c:own"])], [_hit("ev:c:own", OWN_20F_URL)],
-            ticker="CFR", exchange="SIX",
+            ticker="CFR", exchange="SIX", name="Compagnie Financiere Richemont SA",
         )
         assert findings == []
         assert inv.diagnostics.statements_about_other_registrant == 1
         assert [g for g in gaps if g.gap_type == "entity_ambiguous"]
+
+    async def test_no_basis_but_the_directory_names_the_subject_is_own(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D1: sec_listing_for returns None on an unreadable record or an unknown venue
+        # spelling, NOT only for a non-SEC issuer. The filer's own page stays its own.
+        _patch_subject(
+            monkeypatch, None,
+            [SimpleNamespace(ticker="CLLS", cik="1627281", name="CELLECTIS S.A.")],
+        )
+        inv, findings, _gaps = await _run(
+            [(OWN_STATEMENT, ["ev:c:own"])], [_hit("ev:c:own", OWN_20F_URL)],
+            exchange="Euronext Paris (unrecognised spelling)",
+        )
+        assert [f.source_kinds for f in findings] == [("issuer_filing",)]
+        assert inv.diagnostics.statements_about_other_registrant == 0
+
+    async def test_no_basis_and_an_unreadable_directory_keeps_it_unidentified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D1, the verified failure: directory unreadable AND no basis. Before the fix
+        # Cellectis's own /data/1627281/ page was "other" and dropped.
+        _patch_subject(monkeypatch, None)
+
+        async def _unreadable() -> list[Any]:
+            raise OSError("sec.gov unreachable")
+
+        monkeypatch.setattr(inv_mod, "_load_sec_directory", _unreadable)
+        inv, findings, gaps = await _run(
+            [(OWN_STATEMENT, ["ev:c:own"])], [_hit("ev:c:own", OWN_20F_URL)]
+        )
+        assert [f.source_kinds for f in findings] == [("third_party_filing",)]
+        assert inv.diagnostics.statements_about_other_registrant == 0
+        assert not [g for g in gaps if g.gap_type == "entity_ambiguous"]
+
+    async def test_no_basis_and_a_cik_the_directory_does_not_hold_is_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An exchange registrant has no ticker, so the directory does not hold it.
+        _patch_subject(
+            monkeypatch, None,
+            [SimpleNamespace(ticker="CLLS", cik="1627281", name="Cellectis S.A.")],
+        )
+        inv, findings, _gaps = await _run(
+            [(CBOE_STATEMENT, ["ev:c:cboe"])], [_hit("ev:c:cboe", CBOE_URL)]
+        )
+        assert [f.source_kinds for f in findings] == [("third_party_filing",)]
+        assert inv.diagnostics.statements_about_other_registrant == 0
+
+    async def test_an_ownership_filing_about_the_subject_is_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_subject(monkeypatch, SIBLING)
+        url = (
+            "https://www.sec.gov/Archives/edgar/data/1599999/000159999926000003/"
+            "xslF345X05/wk-form4_1767000000.xml"
+        )
+        inv, findings, _gaps = await _run(
+            [("A director bought 10,000 ADSs in October 2026.", ["ev:c:f4"])],
+            [_hit("ev:c:f4", url, text="Form 4. Issuer: Cellectis S.A. (CLLS).")],
+        )
+        assert [f.source_kinds for f in findings] == [("third_party_filing",)]
+        assert inv.diagnostics.statements_about_other_registrant == 0
 
     async def test_an_unresolved_sec_subject_is_unidentified_and_kept(
         self, monkeypatch: pytest.MonkeyPatch
@@ -432,19 +568,6 @@ class TestInvestigatorGuard:
         assert [f.source_kinds for f in findings] == [("issuer_filing",)]
         assert inv.diagnostics.statements_about_other_registrant == 0
         assert calls == []  # no web EDGAR page → no resolution at all
-
-    async def test_a_resolver_failure_fails_to_unidentified(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        async def _boom(session: Any, company: Any, *, cfg: Any = None) -> None:  # noqa: ANN401
-            raise RuntimeError("db gone")
-
-        monkeypatch.setattr(sec_listing, "sec_listing_for", _boom)
-        inv, findings, _gaps = await _run(
-            [(CBOE_STATEMENT, ["ev:c:cboe"])], [_hit("ev:c:cboe", CBOE_URL)]
-        )
-        assert [f.source_kinds for f in findings] == [("third_party_filing",)]
-        assert inv.diagnostics.statements_about_other_registrant == 0
 
     async def test_the_subject_is_resolved_once_per_investigator(
         self, monkeypatch: pytest.MonkeyPatch
@@ -488,3 +611,36 @@ class TestOtherCompaniesReadsTheToolSessionDatabase:
         inv = LLMInvestigator(session=object(), company_id=uuid.uuid4(), ticker="LIN",
                               exchange="ASX", company_name="Lindian Resources")
         assert await inv._other_companies() == {}
+
+
+# ---------------------------------------------------------------------------
+# D3 — a publisher class is never "the other company's own site"
+# ---------------------------------------------------------------------------
+
+
+class TestPublisherFirewallKeepsPublishers:
+    def _item(self, source_class: str) -> _Evidence:
+        return _Evidence(
+            citation_id="ev:c:enx", kind="search_company_corpus", text="{}", web=True,
+            origin_key="euronext.com", source_class=source_class,
+        )
+
+    def test_a_registered_exchange_does_not_own_its_announcements(self) -> None:
+        others = other_company_labels(["Euronext N.V."], "Cellectis S.A.")
+        assert others.get("euronext") == "Euronext N.V."
+        item = self._item("exchange_announcement")
+        assert foreign_publisher(["ev:c:enx"], [item], others) is None
+
+    @pytest.mark.parametrize(
+        "source_class",
+        ["regulatory_filing", "regulator_publication", "government_publication",
+         "statistical_agency", "major_financial_press", "aggregator"],
+    )
+    def test_every_publisher_class_is_kept(self, source_class: str) -> None:
+        others = other_company_labels(["Euronext N.V."], "Cellectis S.A.")
+        assert foreign_publisher(["ev:c:enx"], [self._item(source_class)], others) is None
+
+    def test_the_companys_own_web_page_still_drops(self) -> None:
+        others = other_company_labels(["Euronext N.V."], "Cellectis S.A.")
+        item = self._item("company_web_page")
+        assert foreign_publisher(["ev:c:enx"], [item], others) == "Euronext N.V."

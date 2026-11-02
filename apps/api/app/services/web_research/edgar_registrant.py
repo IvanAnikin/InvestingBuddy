@@ -21,8 +21,9 @@ as ``trust.is_verified_issuer`` judges an ``issuer:`` origin every time.
 
 from __future__ import annotations
 
+import posixpath
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from app.services.sources.publisher_tiers import publisher_tier
@@ -32,15 +33,34 @@ from app.services.sources.taxonomy import T1_PRIMARY_FILING
 EDGAR_OWN = "own"
 #: The URL names another registrant.
 EDGAR_OTHER = "other"
-#: A filing page whose registrant cannot be matched: no CIK in the URL, or a subject
-#: that is an SEC registrant whose CIK could not be resolved this run.
+#: A filing page whose registrant cannot be matched: no CIK in the URL, a subject whose
+#: CIK could not be resolved, or a CIK the SEC directory does not name.
 EDGAR_UNIDENTIFIED = "unidentified"
+#: Another registrant's filing that is ABOUT the subject: a holder's 13D/13G, an
+#: insider's Form 3/4/5, an acquirer's 8-K naming it. A third party's filing, kept.
+EDGAR_COUNTERPARTY = "counterparty"
 
-EDGAR_VERDICTS: frozenset[str] = frozenset({EDGAR_OWN, EDGAR_OTHER, EDGAR_UNIDENTIFIED})
+EDGAR_VERDICTS: frozenset[str] = frozenset(
+    {EDGAR_OWN, EDGAR_OTHER, EDGAR_UNIDENTIFIED, EDGAR_COUNTERPARTY}
+)
 
 _DATA_PATH_RE = re.compile(r"/archives/edgar/data/0*([0-9]{1,10})(?:/|$)", re.I)
 _CIK_FILE_RE = re.compile(r"/CIK0*([0-9]{1,10})(?:\.json|/|$)", re.I)
 _CIK_QUERY_KEYS = ("cik", "ciks")
+#: Ownership forms, filed under the HOLDER's or the insider's CIK and about the issuer:
+#: the EDGAR XSL renderings (``xslSCHEDULE_13G_X01``, ``xslF345X05``) and the classic
+#: document names (``sc13g.htm``, ``d123sc13da.htm``, ``wf-form4_….xml``).
+_OWNERSHIP_RE = re.compile(
+    r"xslschedule_?13|xslf345|sc[-_]?13[dg]|schedule[-_]?13[dg]"
+    r"|(?:^|[/_-])(?:wf-)?form[-_]?[345]a?(?:[-_.]|$)",
+    re.I,
+)
+
+
+def _clean_path(path: str) -> str:
+    """Unquoted and normalised, so ``/data/1627281/../1234/`` reads as ``/data/1234``."""
+    text = unquote(path or "")
+    return posixpath.normpath(text) if text else ""
 
 
 def _host(url: str | None) -> str:
@@ -84,8 +104,8 @@ def edgar_cik(url: str | None) -> str | None:
     except ValueError:
         return None
     query = parse_qs(parts.query)
-    paths = [parts.path or ""]
-    paths.extend(unquote(v) for v in query.get("doc", []))
+    paths = [_clean_path(parts.path or "")]
+    paths.extend(_clean_path(v) for v in query.get("doc", []))
     for path in paths:
         found = _DATA_PATH_RE.search(path) or _CIK_FILE_RE.search(path)
         if found:
@@ -99,44 +119,61 @@ def edgar_cik(url: str | None) -> str | None:
     return None
 
 
+def is_ownership_filing_url(url: str | None) -> bool:
+    """An EDGAR ownership filing (13D/13G, Form 3/4/5), by its document path."""
+    if not is_edgar_filing_url(url):
+        return False
+    try:
+        parts = urlsplit(url or "")
+    except ValueError:
+        return False
+    paths = [_clean_path(parts.path or "")]
+    paths.extend(_clean_path(v) for v in parse_qs(parts.query).get("doc", []))
+    return any(_OWNERSHIP_RE.search(p) for p in paths)
+
+
 def registrant_verdict(
     url: str | None,
-    subject_ciks: Iterable[str],
+    own_ciks: Iterable[str],
     *,
-    subject_is_sec_registrant: bool,
+    other_ciks: Collection[str] | None,
 ) -> str | None:
-    """Whose filing the page at ``url`` is, judged against the subject. None when the
-    URL is not an EDGAR filing page (the rule does not apply).
+    """Whose filing the page at ``url`` is. None when the URL is not an EDGAR filing
+    page (the rule does not apply).
 
-    * the URL's CIK is one of the subject's → ``own``;
-    * the subject is not an SEC registrant at all (no ADR-075 basis) and the URL names a
-      registrant → ``other``: whoever filed it, it was not the subject;
-    * the URL's CIK is known and the subject's are known and differ → ``other``;
-    * no CIK in the URL, or an SEC subject whose CIK could not be resolved →
-      ``unidentified``: never the issuer's filing, and not dropped either.
+    ``other_ciks`` is what the caller can POSITIVELY call someone else's:
+
+    * ``None`` — the subject's own CIK is known (an ADR-075 basis with a CIK), so every
+      other CIK is another registrant's. With no own CIK, nothing can be said;
+    * a set — no SEC basis: only CIKs the SEC directory names as a DIFFERENT registrant
+      are another's. A CIK the directory does not hold, or an unreadable directory
+      (an empty set), is ``unidentified`` — never dropped on a guess.
+
+    The verdict ``own`` needs the URL's CIK in ``own_ciks``; nothing else is the issuer's.
     """
     if not is_edgar_filing_url(url):
         return None
     cik = edgar_cik(url)
     if cik is None:
         return EDGAR_UNIDENTIFIED
-    own = {c for c in (normalise_cik(v) for v in subject_ciks) if c}
+    own = {c for c in (normalise_cik(v) for v in own_ciks) if c}
     if cik in own:
         return EDGAR_OWN
-    if not subject_is_sec_registrant:
-        return EDGAR_OTHER
-    if not own:
-        return EDGAR_UNIDENTIFIED
-    return EDGAR_OTHER
+    if other_ciks is None:
+        return EDGAR_OTHER if own else EDGAR_UNIDENTIFIED
+    others = {c for c in (normalise_cik(v) for v in other_ciks) if c}
+    return EDGAR_OTHER if cik in others else EDGAR_UNIDENTIFIED
 
 
 __all__ = [
+    "EDGAR_COUNTERPARTY",
     "EDGAR_OTHER",
     "EDGAR_OWN",
     "EDGAR_UNIDENTIFIED",
     "EDGAR_VERDICTS",
     "edgar_cik",
     "is_edgar_filing_url",
+    "is_ownership_filing_url",
     "is_sec_host",
     "normalise_cik",
     "registrant_verdict",

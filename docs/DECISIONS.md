@@ -6233,22 +6233,37 @@ Calyxt's FY2022 20-F risk factors into CLLS2.
 1. **`web_research/edgar_registrant.py`** reads the registrant CIK from an EDGAR URL:
    `/Archives/edgar/data/<CIK>/`, `ix?doc=/Archives/edgar/data/<CIK>/…`,
    `browse-edgar?…CIK=`, `data.sec.gov/…/CIK##########.json` and `efts` `ciks=` (one only).
-   Leading zeros are stripped. The accession prefix is never used (it is the filing
-   agent's CIK). A ticker in `CIK=` is not a CIK.
+   - The path is unquoted and `posixpath.normpath`-ed first, so `/data/1627281/../1234/`
+     reads as 1234.
+   - Leading zeros are stripped.
+   - The accession prefix is never used (it is the filing agent's CIK).
+   - A ticker in `CIK=` is not a CIK.
 2. **Verdict per web item on an EDGAR filing page** (`registrant_verdict`):
    - the URL's CIK is the subject's → `own` → `issuer_filing`;
-   - the subject has no SEC basis (ADR-075 `sec_listing_for` is None) and the URL names a
-     registrant → `other`;
-   - the subject's CIKs are known and differ → `other` → `third_party_filing`;
-   - no CIK in the URL, or an SEC subject whose CIK could not be resolved →
-     `unidentified` → `third_party_filing`: never the issuer's, never dropped.
+   - the subject's CIK is known and the URL's differs → `other` → `third_party_filing`;
+   - **no ADR-075 basis:** `other` only when the SEC directory positively names that CIK
+     as a registrant whose name does not agree with the subject's. A CIK whose directory
+     name agrees (ADR-061 `_names_agree`) is `own`. A CIK the directory does not hold, or
+     an unreadable directory, is `unidentified`. Review D1: `sec_listing_for` also
+     returns None when the directory or a domicile record is unreadable, or the venue is
+     spelled in a way it does not know (OTC, NYSE Arca, XNYS, "New York Stock
+     Exchange"). So None is not proof that the subject is not an SEC registrant;
+   - no CIK in the URL, or a basis whose CIK could not be resolved → `unidentified` →
+     `third_party_filing`: never the issuer's, never dropped;
+   - **`other` that is about the subject → `counterparty`** (`third_party_filing`, kept;
+     review D2). This covers an ownership form by URL (`xslSCHEDULE_13…`, `xslF345`,
+     `sc13d/g`, `form4`) and a filing whose cited text names the subject by ticker,
+     distinctive name word or brand (`_names_subject`). "The company" does not count,
+     because every filing says that of its own registrant.
+
    sec.gov pages outside the filing archive are already `regulator_publication` (T2) and
    are not touched.
-3. **The subject's CIKs** (`LLMInvestigator._resolve_edgar_subject`, once per
-   investigator, only when a web EDGAR page is present): ADR-075's `sec_listing_for` CIK,
-   plus every CIK the SEC ticker directory lists for that line's ticker. The sibling
-   line (CLLS for ALCLS) therefore counts as the subject. A resolver failure gives
-   `unidentified`, not `other`.
+3. **The subject** (`LLMInvestigator._resolve_edgar_subject`, once per investigator, only
+   when a web EDGAR page is present):
+   - With a basis: its CIK plus every directory CIK for its ticker, so the sibling line
+     (CLLS for ALCLS) counts as the subject.
+   - Without a basis: the directory name match above.
+   - Any failure leaves nothing known, so every page is `unidentified`.
 4. **Applied in the investigator** (`apply_edgar_registrant`) after acquisition, before
    the evidence contract reads the question's refs, and again (idempotently) in
    `_write_up`. The stored `source_class` is not rewritten: a web version is shared by
@@ -6264,6 +6279,17 @@ Calyxt's FY2022 20-F risk factors into CLLS2.
    (`ensure_filing_corpus_evidence`), core filings and the filings tools produce non-web
    items (`source_class` None). They were fetched for the subject's own CIK by ADR-075's
    resolver, so they keep `issuer_filing`.
+7. **Publisher firewall (review D3).** `foreign_publisher` (ADR-066) never reads an item
+   as another company's own site when its class is a publisher's:
+   - `exchange_announcement`;
+   - `regulatory_filing`, `regulator_publication`, `government_publication`,
+     `statistical_agency`;
+   - `major_financial_press`;
+   - `aggregator`.
+
+   With the firewall now live through `ToolSession.db` (`144a46f`), registering
+   "Euronext N.V." or "Nasdaq, Inc." would otherwise drop every euronext.com or
+   nasdaq.com announcement about the subject.
 
 ### Replay over the 15 stored campaign reports
 Reports store EDGAR URLs only for platform/V2 items. They do not store the URL of a web
@@ -6282,6 +6308,8 @@ corpus chunk, so web sec.gov items are identified by origin `sec.gov`.
 
 No stored EDGAR URL of a subject's own filing changes verdict (33 of 33 `own`, 0 `other`).
 
+The replay was re-run after review fixes D1–D4. It gives the same counts: no stored URL is an ownership form or a `..` path, and every SEC subject in it has a basis.
+
 ### Not changed / known limits
 - **The ADBE verdict is inferred, not read.** The three URLs are in the ledger, not the
   report. If any is another registrant's, its findings are dropped. That is the
@@ -6291,6 +6319,13 @@ No stored EDGAR URL of a subject's own filing changes verdict (33 of 33 `own`, 0
   outside peer domains. Filtering at ingest needs the subject's CIK in the web stage.
 - **A multi-filer accession** (a 13D or a tender offer filed under both the filer's and
   the subject company's CIK) read through the subject's directory counts as `own`.
+- **The no-basis name match uses `_names_agree`, including its prefix branch.**
+  "Honeywell" agrees with "Honeywell Aerospace", so a namesake's CIK counts as `own`. This
+  happens only when ADR-075 found no basis.
+- **Counterparty detection is lexical and fails open.** A ticker that is a common
+  upper-case word, or a name word mentioned in passing, keeps another registrant's
+  statement (as `third_party_filing`) instead of dropping it. A `browse-edgar?type=SC+13G`
+  listing is not recognised as an ownership form.
 - **Mixed support is kept.** A statement citing the subject's 20-F and another
   registrant's page keeps both kinds and is not dropped.
 - **Ladder stop decisions** inside `_acquire` still see the pre-check kinds. The
