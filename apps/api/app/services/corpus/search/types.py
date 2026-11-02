@@ -58,18 +58,23 @@ DISCLOSURE_SOURCE_TIERS: tuple[str, ...] = (
     "T1_primary_company_source",
     "T2_regulator_or_gov",
 )
-#: Open-web source classes that are disclosures. A web page whose class is anything else
-#: — ``company_web_page``, ``government_publication``, ``aggregator``, ``unknown_web``
-#: (a quote page) … — is never a disclosure, whatever tier its class maps to. A chunk
-#: with NO class is a connector-delivered document and is judged by its tier alone.
-#: Same strings as ``app.services.web_research.classify``; a test pins them.
+#: Open-web source classes that may anchor — only what ``classify._classify_host``
+#: assigns on the issuer's own VERIFIED domain (``rule='issuer_domain'``): a press
+#: release or an investor presentation. Such a page carries
+#: ``DISCLOSURE_WEB_ACCESS_CLASS``; a PR-wire ``company_press_release`` is re-labelled
+#: ``public_web`` by ``classify_source`` and never anchors. Every other web class never
+#: anchors, whatever tier it maps to — ``company_web_page``, ``unknown_web`` (a quote
+#: page) and, review D1 of PR #316, web ``exchange_announcement`` (any page on an
+#: exchange host: nasdaq.com quote and article pages, an LSE company page) and web
+#: ``regulatory_filing`` (a sec.gov copy can be another registrant's filing, ADR-079).
+#: A chunk with NO class is a connector / bridge document (SEC bridge, ASX, NSM,
+#: Euronext …) and is judged by its tier alone. Same strings as
+#: ``app.services.web_research.classify`` / ``corpus.policy``; a test pins them.
 DISCLOSURE_SOURCE_CLASSES: tuple[str, ...] = (
-    "issuer_filing",
-    "regulatory_filing",
-    "exchange_announcement",
     "company_press_release",
     "investor_presentation",
 )
+DISCLOSURE_WEB_ACCESS_CLASS = "public_issuer"
 
 
 class VectorOnlyRetrievalError(ValueError):
@@ -299,9 +304,27 @@ class CorpusFilters:
 
 def is_disclosure(chunk: CorpusChunk) -> bool:
     """ADR-076 review: anchor — whether ``chunk`` is an issuer / primary disclosure."""
-    if chunk.source_tier not in DISCLOSURE_SOURCE_TIERS:
+    return is_disclosure_fields(
+        source_tier=chunk.source_tier,
+        source_class=chunk.source_class,
+        access_class=chunk.access_class,
+    )
+
+
+def is_disclosure_fields(
+    *, source_tier: str | None, source_class: str | None, access_class: str | None
+) -> bool:
+    """``is_disclosure`` over the bare fields a search hit carries (the recency pass
+    ranks hits with it). A connector document (no web class) by its tier; a web page
+    only when it is the issuer's own release or presentation on its verified domain."""
+    if source_tier not in DISCLOSURE_SOURCE_TIERS:
         return False
-    return chunk.source_class is None or chunk.source_class in DISCLOSURE_SOURCE_CLASSES
+    if source_class is None:
+        return True
+    return (
+        source_class in DISCLOSURE_SOURCE_CLASSES
+        and access_class == DISCLOSURE_WEB_ACCESS_CLASS
+    )
 
 
 SCOPE_TYPE_MENTION = "mention"
@@ -421,6 +444,7 @@ __all__ = [
     "DEFAULT_TOP_K",
     "DISCLOSURE_SOURCE_CLASSES",
     "DISCLOSURE_SOURCE_TIERS",
+    "DISCLOSURE_WEB_ACCESS_CLASS",
     "MAX_TOP_K",
     "SCOPE_TYPE_MENTION",
     "REQUESTABLE_MODES",
@@ -435,5 +459,6 @@ __all__ = [
     "UnscopedRetrievalError",
     "VectorOnlyRetrievalError",
     "is_disclosure",
+    "is_disclosure_fields",
     "subject_view",
 ]

@@ -375,7 +375,9 @@ async def _search_company_corpus(
                 "items": [],
                 "backend_configured": True,
                 "recency_window": {"newest_held": None, "published_from": None,
-                                   "window_days": window_days},
+                                   "window_days": window_days,
+                                   # ADR-076 review D3: a named stop, not an empty page.
+                                   "stopped": "no_disclosure_anchor"},
                 "consumption": units_for(
                     SEARCH_INSTRUMENTED_UNITS, search_index_queries=0
                 ),

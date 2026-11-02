@@ -83,6 +83,7 @@ from app.services.corpus.search.fusion import (
 from app.services.corpus.search.types import (
     DISCLOSURE_SOURCE_CLASSES,
     DISCLOSURE_SOURCE_TIERS,
+    DISCLOSURE_WEB_ACCESS_CLASS,
     SCOPE_TYPE_MENTION,
     CorpusChunk,
     CorpusFilters,
@@ -220,17 +221,27 @@ def _filter_clauses(filters: CorpusFilters) -> list[Any]:
         document_conditions.append(ResearchDocument.id.in_(themed))
     if filters.disclosures_only:
         # ADR-076 review: anchor. Mirrors ``types.is_disclosure``: a disclosure tier, and
-        # no web class or a disclosure class. Written as NOT EXISTS over a NON-disclosure
-        # class so a NULL class (every connector-delivered version) passes.
+        # EITHER no web class (a connector / bridge version: NOT EXISTS, so a NULL class
+        # passes) OR an issuer-domain class with the issuer access class (review D1).
+        web_class = (
+            select(V.id)
+            .where(V.id == C.research_document_version_id, V.source_class.is_not(None))
+            .exists()
+        )
         clauses.append(C.source_tier.in_(list(DISCLOSURE_SOURCE_TIERS)))
         clauses.append(
-            ~select(V.id)
-            .where(
-                V.id == C.research_document_version_id,
-                V.source_class.is_not(None),
-                V.source_class.not_in(list(DISCLOSURE_SOURCE_CLASSES)),
+            or_(
+                ~web_class,
+                and_(
+                    C.access_class == DISCLOSURE_WEB_ACCESS_CLASS,
+                    select(V.id)
+                    .where(
+                        V.id == C.research_document_version_id,
+                        V.source_class.in_(list(DISCLOSURE_SOURCE_CLASSES)),
+                    )
+                    .exists(),
+                ),
             )
-            .exists()
         )
     if version_conditions or document_conditions:
         versions = select(V.id)

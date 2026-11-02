@@ -5814,15 +5814,20 @@ subject look like it "held a current document".
      - `T1_primary_company_source` (issuer IR material and releases);
      - `T2_regulator_or_gov` (venue announcements from the NSM, Euronext, Nordic and SIX
        connectors);
-   - and the version's open-web `source_class` is either NULL (a connector-delivered
-     document) or one of `issuer_filing`, `regulatory_filing`, `exchange_announcement`,
-     `company_press_release` or `investor_presentation`.
+   - and EITHER the version has no open-web `source_class` (a connector or bridge
+     document: the SEC bridge, ASX, NSM, Euronext …), OR it is the issuer's own web
+     page: class `company_press_release` or `investor_presentation` with access class
+     `public_issuer`. Those are exactly what `classify._classify_host` assigns under
+     `rule='issuer_domain'`. A PR-wire release is re-labelled `public_web` and does not
+     qualify.
 
    Quote, market-data, aggregator, `unknown_web`, generic `company_web_page`, press and
    government pages never anchor the window, whatever their tier.
-   - The memory backend applies the filter in `CorpusFilters._passes`.
-   - PostgreSQL applies it in `_filter_clauses`, as a tier `IN` plus `NOT EXISTS` over a
-     non-disclosure version class, so a NULL class passes.
+   - The memory backend applies the filter in `CorpusFilters._passes`, through
+     `is_disclosure` / `is_disclosure_fields`.
+   - PostgreSQL applies it in `_filter_clauses`: a tier `IN`, then either no web class
+     (`NOT EXISTS`) or an issuer class together with the chunk's `public_issuer` access
+     class.
    - `retrieval.newest_published` sends the filter.
    - `loop.newest_held_document_date` now calls `PostgresSearchBackend.newest_published_at`
      with the same filter, so `acquired_not_read` and the window share one definition.
@@ -5850,6 +5855,31 @@ CLLS3 corpus therefore holds no dated disclosure, so the pass anchors no window 
 so ("no dated issuer or primary disclosure is held"). It no longer runs a window anchored
 on the quote page. The 6-K/A reaches the pass only once core-filing chunks carry their
 filing date. The follow-up below adds that date.
+
+**Review of PR #316 (D1–D4).**
+- **D1 (blocker): web exchange and regulatory pages never anchor.**
+  `classify._classify_host` classes EVERY page on an exchange host as
+  `exchange_announcement` at T1. That includes quote pages and news articles:
+  nasdaq.com/market-activity/stocks/clls, nasdaq.com/articles/…, an LSE company page,
+  asx.com.au/markets/company/lin and an otcmarkets.com quote. A nasdaq article dated the
+  run day would have recreated the df36d6f6 failure.
+  - The fix is in the anchor predicate (above), not in the web classifier, which would be
+    a wider change.
+  - Web `exchange_announcement`, web `regulatory_filing` (a web sec.gov copy can be
+    another registrant's filing, ADR-079) and `issuer_filing` never anchor.
+  - The parity test now covers these five URLs, the PR-wire release and every
+    `CLASS_TABLE` class in both backends.
+- **D2: disclosures rank first in the recency pass.** Before harvesting (which caps the
+  items it reads), the hits are ordered with disclosures first (`is_disclosure_fields`),
+  then newest first. Two newer web pages of two chunks each no longer fill
+  `RECENCY_MAX_ITEMS` ahead of the 6-K/A. The step logs `disclosure_items`.
+- **D3: a named stop.** With no dated disclosure, the tool's `recency_window` and the
+  `recency_corpus` step carry `stopped: "no_disclosure_anchor"`.
+- **D4: no in-memory backfill.** `search.factory.get_search_backend` builds a NEW
+  `InMemorySearchBackend` on every call, so there is no shared index to backfill. Any
+  index built after a backfill reads the stamped rows, because `index_version` copies
+  `published_at` from them; a test pins this. A fresh acquisition is stamped before it
+  is indexed.
 
 **Filing dates on SEC corpus chunks (same amendment, CLLS2-5).**
 `ensure_filing_corpus_evidence` takes a `filing_date`: the SEC filing date, never the

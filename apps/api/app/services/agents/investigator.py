@@ -2303,13 +2303,43 @@ class LLMInvestigator:
         window = payload.get("recency_window") or {}
         step["newest_held"] = window.get("newest_held")
         step["published_from"] = window.get("published_from")
-        harvested = _harvest(
-            TOOL_SEARCH_COMPANY_CORPUS, payload, result.contains_untrusted_content
+        if window.get("stopped"):
+            # ADR-076 review D3: no dated disclosure is held, so no window was anchored.
+            step["stopped"] = window["stopped"]
+        # Disclosures first, then newest first (review D2): two newer web pages must not
+        # crowd the anchoring 6-K/A out of RECENCY_MAX_ITEMS. Ordered BEFORE harvesting,
+        # which caps the items it reads. Python's sort is stable, so within one rank and
+        # date the search's own order is kept.
+        from app.services.corpus.search.types import is_disclosure_fields
+
+        items = [i for i in (payload.get("items") or []) if isinstance(i, dict)]
+        items.sort(
+            key=lambda i: (
+                is_disclosure_fields(
+                    source_tier=i.get("source_tier"),
+                    source_class=i.get("source_class"),
+                    access_class=i.get("access_class"),
+                ),
+                str(i.get("published_at") or ""),
+            ),
+            reverse=True,
         )
-        # Newest first; within one date the search's own rank order is kept (stable).
-        harvested.sort(key=lambda item: item.published_at or date.min, reverse=True)
+        disclosure_ids = {
+            str(i.get("evidence_id")) for i in items
+            if is_disclosure_fields(
+                source_tier=i.get("source_tier"),
+                source_class=i.get("source_class"),
+                access_class=i.get("access_class"),
+            )
+        }
+        harvested = _harvest(
+            TOOL_SEARCH_COMPANY_CORPUS,
+            {**payload, "items": items},
+            result.contains_untrusted_content,
+        )
         recent = harvested[:RECENCY_MAX_ITEMS]
         step["items"] = len(recent)
+        step["disclosure_items"] = sum(1 for e in recent if e.citation_id in disclosure_ids)
         return recent, 1, step
 
     async def _external_rung(

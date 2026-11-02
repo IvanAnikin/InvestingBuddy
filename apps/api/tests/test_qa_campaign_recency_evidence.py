@@ -277,6 +277,7 @@ class TestTheNewerReportReachesTheEvidence:
         evidence, _u, steps, _session = await _acquire(_recent_disclosure(), backend)
         step = next(s for s in steps if s["rung"] == "recency_corpus")
         assert step["newest_held"] is None and step["items"] == 0
+        assert step["stopped"] == "no_disclosure_anchor"  # review D3
         # The ordinary search still read the undated document.
         assert evidence and evidence[0].published_at is None
 
@@ -472,6 +473,14 @@ from app.services.corpus.search.types import (  # noqa: E402
 )
 
 RUN_DAY = date(2026, 11, 2)
+#: Review D1 (PR #316): exchange-host quote / news / company pages. None may anchor.
+_NOT_ANCHORS = (
+    "https://www.nasdaq.com/market-activity/stocks/clls",
+    "https://www.nasdaq.com/articles/cellectis-stock-jumps-on-pivot",
+    "https://www.londonstockexchange.com/stock/ANTO/antofagasta-plc/company-page",
+    "https://www.asx.com.au/markets/company/lin",
+    "https://www.otcmarkets.com/stock/XYZ/quote",
+)
 SIX_K_DATE = date(2026, 9, 11)  # 52 days before the run day
 PIVOT_DATE = date(2026, 9, 14)
 DATA_RELEASE_DATE = date(2026, 10, 27)  # 46 days after the 6-K/A
@@ -495,11 +504,13 @@ def _doc_chunk(
     *,
     tier: str,
     source_class: str | None = None,
+    access_class: str | None = None,
 ) -> CorpusChunk:
     return dataclasses.replace(
         _chunk(doc, n, text, published),
         source_tier=tier,
         source_class=source_class,
+        access_class=access_class,
         document_type="web_page" if source_class else "interim_report",
     )
 
@@ -555,7 +566,8 @@ class TestTheAnchorIsADisclosure:
             _doc_chunk("pivot", 0, _PIVOT_TEXT, PIVOT_DATE, tier="T5_api_aggregator",
                        source_class="unknown_web"),
             _doc_chunk("data", 0, "Data release: first patient dosed {n}.", DATA_RELEASE_DATE,
-                       tier="T1_primary_company_source", source_class="company_press_release"),
+                       tier="T1_primary_company_source", source_class="company_press_release",
+                       access_class="public_issuer"),
         ])
         payload = await _windowed_payload(backend)
         assert payload["recency_window"]["newest_held"] == DATA_RELEASE_DATE.isoformat()
@@ -572,7 +584,30 @@ class TestTheAnchorIsADisclosure:
         payload = await _windowed_payload(backend)
         assert payload["items"] == []
         assert payload["recency_window"]["newest_held"] is None
+        assert payload["recency_window"]["stopped"] == "no_disclosure_anchor"
         assert "disclosure" in payload["summary"]
+
+    async def test_newer_web_pages_do_not_crowd_the_anchoring_6k_out(self) -> None:
+        """Review D2 (PR #316): two web pages newer than the 6-K/A, two chunks each,
+        would fill RECENCY_MAX_ITEMS (4) on date order alone. Disclosures rank first."""
+        backend = InMemorySearchBackend()
+        await backend.index([
+            _six_k(0), _six_k(1),
+            *(_doc_chunk("web_a", n, _QUOTE_TEXT, date(2026, 10, 20),
+                         tier="T5_api_aggregator", source_class="unknown_web")
+              for n in range(2)),
+            *(_doc_chunk("web_b", n, _QUOTE_TEXT, date(2026, 10, 25),
+                         tier="T4_quality_media", source_class="major_financial_press")
+              for n in range(2)),
+        ])
+        evidence, _u, steps, _s = await _acquire(_recent_disclosure(), backend)
+        step = next(s for s in steps if s["rung"] == "recency_corpus")
+        assert step["newest_held"] == SIX_K_DATE.isoformat()
+        assert step["items"] == inv.RECENCY_MAX_ITEMS
+        assert step["disclosure_items"] == 2
+        assert [e.published_at for e in evidence[:2]] == [SIX_K_DATE, SIX_K_DATE]
+        # The web pages still follow, newest first.
+        assert evidence[2].published_at == date(2026, 10, 25)
 
     async def test_a_generic_issuer_web_page_does_not_anchor_but_a_release_does(self) -> None:
         backend = InMemorySearchBackend()
@@ -585,7 +620,8 @@ class TestTheAnchorIsADisclosure:
         assert await backend.newest_published_at(filters) == SIX_K_DATE
         await backend.index([
             _doc_chunk("pr", 0, "Press release {n}", PIVOT_DATE,
-                       tier="T1_primary_company_source", source_class="company_press_release"),
+                       tier="T1_primary_company_source", source_class="company_press_release",
+                       access_class="public_issuer"),
         ])
         assert await backend.newest_published_at(filters) == PIVOT_DATE
 
@@ -596,14 +632,12 @@ class TestTheAnchorIsADisclosure:
         assert set(DISCLOSURE_SOURCE_TIERS) <= VALID_TIER_CODES
         assert set(DISCLOSURE_SOURCE_CLASSES) <= SOURCE_CLASSES
         disclosing = {
-            klass for klass, (tier, _access) in CLASS_TABLE.items()
+            klass for klass, (tier, access) in CLASS_TABLE.items()
             if is_disclosure(CorpusChunk(chunk_id="x", text="", source_tier=tier,
-                                         source_class=klass))
+                                         source_class=klass, access_class=access))
         }
-        assert disclosing == {
-            "issuer_filing", "regulatory_filing", "exchange_announcement",
-            "company_press_release", "investor_presentation",
-        }
+        # Review D1: only what the issuer's own verified domain yields may anchor.
+        assert disclosing == {"company_press_release", "investor_presentation"}
 
     @pytest.mark.parametrize(
         ("tier", "klass", "expected"),
@@ -614,12 +648,42 @@ class TestTheAnchorIsADisclosure:
             ("T4_quality_media", None, False),            # local-language press connector
             ("T5_api_aggregator", "unknown_web", False),  # the quote page
             ("T2_regulator_or_gov", "statistical_agency", False),
+            ("T1_primary_filing", "exchange_announcement", False),  # review D1
+            ("T1_primary_filing", "regulatory_filing", False),      # ADR-079
+            ("T1_primary_filing", "issuer_filing", False),
             (None, None, False),
         ],
     )
     def test_is_disclosure(self, tier: str | None, klass: str | None, expected: bool) -> None:
         chunk = CorpusChunk(chunk_id="x", text="", source_tier=tier, source_class=klass)
         assert is_disclosure(chunk) is expected
+
+    @pytest.mark.parametrize("url", _NOT_ANCHORS)
+    def test_an_exchange_or_market_page_never_anchors(self, url: str) -> None:
+        """Review D1 (PR #316): every page on an exchange host is classed
+        ``exchange_announcement`` at T1 — quote pages and news articles included."""
+        from app.services.web_research.classify import classify_source
+
+        c = classify_source(url)
+        chunk = CorpusChunk(chunk_id="x", text="", source_tier=c.tier,
+                            source_class=c.source_class, access_class=c.access_class)
+        assert not is_disclosure(chunk), (url, c.source_class, c.tier)
+
+    def test_only_the_issuers_own_release_or_presentation_anchors(self) -> None:
+        from app.services.web_research.classify import classify_source
+
+        def anchors(url: str, domains: tuple[str, ...] = ()) -> bool:
+            c = classify_source(url, issuer_domains=domains)
+            return is_disclosure(CorpusChunk(
+                chunk_id="x", text="", source_tier=c.tier, source_class=c.source_class,
+                access_class=c.access_class))
+
+        issuer = ("cellectis.com",)
+        assert anchors("https://www.cellectis.com/en/press/cellectis-reports-h1-2026", issuer)
+        assert anchors("https://www.cellectis.com/investors/presentation-2026.pdf", issuer)
+        assert not anchors("https://www.cellectis.com/en/about-us/", issuer)  # web page
+        # The same release on a PR wire is not the issuer's verified voice.
+        assert not anchors("https://www.businesswire.com/news/home/2026091400001/en/")
 
 
 async def _seed_quote_page_version(
@@ -711,6 +775,7 @@ async def _pg_document(
     text: str,
     chunks: int = 2,
     url: str | None = None,
+    access_class: str | None = None,
 ) -> list[ResearchDocumentChunk]:
     from app.models.research_derivation import ResearchDocumentDerivation
     from app.models.research_document import ResearchDocument, ResearchDocumentVersion
@@ -727,7 +792,7 @@ async def _pg_document(
         id=uuid.uuid4(), research_document_id=document.id,
         content_hash=uuid.uuid4().hex * 2, canonical_url=url or f"https://example.test/{key}",
         transport="open_web" if source_class else "sec_edgar", source_tier=tier,
-        access_class="public_web" if source_class else "public_official",
+        access_class=access_class or ("public_web" if source_class else "public_official"),
         published_at=published, retrieved_at=now, extraction_status="extracted",
         is_current=True, source_class=source_class,
     )
@@ -749,6 +814,7 @@ async def _pg_document(
             derivation_id=derivation.id, research_document_version_id=version.id,
             company_id=company_id, kind="prose", ordinal=n, text=body, char_start=0,
             char_end=len(body), source_tier=tier, published_at=published,
+            access_class=access_class or ("public_web" if source_class else "public_official"),
             indexable=True, indexed_at=now,
         )
         session.add(row)
@@ -803,23 +869,35 @@ class TestTheAnchorOnPostgres:
         """``_filter_clauses`` and ``CorpusFilters.matches`` decide the same chunks."""
         from app.models.company import Company
         from app.services.corpus.search.backends.postgres import _filter_clauses
-        from app.services.web_research.classify import CLASS_TABLE
+        from app.services.web_research.classify import CLASS_TABLE, classify_source
 
         company_id = uuid.uuid4()
         pg_session.add(Company(id=company_id, ticker=f"P{uuid.uuid4().hex[:5]}",
                                exchange="NASDAQ", name="Parity", status="new"))
         await pg_session.flush()
         expected: dict[str, bool] = {}
-        cases = [(tier, klass) for klass, (tier, _a) in CLASS_TABLE.items()]
-        cases += [("T1_primary_filing", None), ("T2_regulator_or_gov", None),
-                  ("T4_quality_media", None)]
-        for tier, klass in cases:
-            rows = await _pg_document(pg_session, company_id, key=f"{tier}-{klass}",
+        cases: list[tuple[str, str | None, str | None]] = [
+            (tier, klass, access) for klass, (tier, access) in CLASS_TABLE.items()
+        ]
+        # The PR-wire press release, re-labelled public_web by classify_source.
+        cases.append(("T1_primary_company_source", "company_press_release", "public_web"))
+        cases += [("T1_primary_filing", None, "public_official"),
+                  ("T2_regulator_or_gov", None, "public_official"),
+                  ("T4_quality_media", None, "public_web")]
+        # Review D1: the five exchange-host pages, as classify_source classes them.
+        for url in _NOT_ANCHORS:
+            c = classify_source(url)
+            cases.append((c.tier, c.source_class, c.access_class))
+        for n, (tier, klass, access) in enumerate(cases):
+            rows = await _pg_document(pg_session, company_id, key=f"{n}-{tier}-{klass}",
                                       published=RUN_DAY, tier=tier, source_class=klass,
-                                      text="x {n}", chunks=1)
+                                      text="x {n}", chunks=1, access_class=access)
             expected[rows[0].chunk_id] = is_disclosure(
-                CorpusChunk(chunk_id="x", text="", source_tier=tier, source_class=klass)
+                CorpusChunk(chunk_id="x", text="", source_tier=tier, source_class=klass,
+                            access_class=access)
             )
+        # 2 issuer-domain web classes + the T1 and T2 connector rows.
+        assert sum(expected.values()) == 4
         admitted = set((await pg_session.execute(
             select(ResearchDocumentChunk.chunk_id).where(*_filter_clauses(
                 CorpusFilters(company_ids=(company_id,), disclosures_only=True)
