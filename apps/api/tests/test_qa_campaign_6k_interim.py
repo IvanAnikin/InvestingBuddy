@@ -168,6 +168,17 @@ def _clls_sec() -> _Sec:
     "Half-year report 2026",
     "Quarterly Statement dated October 21, 2026",
     "Interim report for the six months ended 30 June 2026",
+    # Review round 2 (R1): a call, a webcast or a buyback beside a results phrase
+    # vetoes nothing.
+    "Q3 2026 results and conference call details",
+    "Half-year results including share buyback update",
+    "Acme Reports Third Quarter 2026 Financial Results; Management to Host Conference "
+    "Call Today at 8:30 a.m. ET",
+    "Acme Q3 2026 results - webcast at 9am",
+    "Q2 2026 results webcast",
+    "Acme Reports Q3 2026 Results; Conference Call on November 5",
+    "Novo Nordisk: Company announcement - Financial report for the period 1 January 2026 "
+    "to 30 June 2026",
 ])
 def test_a_results_title_names_results(text: str) -> None:
     assert s6.text_names_results(text)
@@ -193,7 +204,7 @@ def test_a_results_title_names_results(text: str) -> None:
     "Half-year report on share buyback programme",
     "Toyota to announce financial results for the first half of fiscal year ending March 2027",
     "Notice of Q3 2026 earnings release date",
-    "Q2 2026 results webcast",
+    "Third Quarter 2026 Results on November 5",
 ])
 def test_a_notice_clinical_or_partnership_title_does_not_name_results(text: str) -> None:
     assert not s6.text_names_results(text)
@@ -220,9 +231,9 @@ def test_a_paragraph_is_never_a_title() -> None:
     "earnings.htm",
     "financialstatements.htm",
     "resultsofagm.htm",
-    "conferencecallq3.htm",
-    "pr-q3-call-invite.htm",
-    "q2-interim-data.htm",
+    "q2-phase3-interim.htm",
+    "h1-liquidity.htm",
+    "pr-q3-invitation.htm",
 ])
 def test_a_file_name_without_a_period_or_about_a_trial_is_not_results(name: str) -> None:
     assert not s6.name_names_results(name) or s6.name_names_notice(name)
@@ -233,6 +244,8 @@ def test_a_file_name_without_a_period_or_about_a_trial_is_not_results(name: str)
     "form6-kq22026quarterlyrepo.htm",   # BioNTech's real Q2 report
     "clls_6-k_q2_2026.htm", "caq22026.htm", "shellq320266-k.htm",
     "form6-kquarterlyfilings.htm", "h1-2026-report.htm", "fy2025results.htm",
+    # Review round 2: not a trial, not clinical data, and a call is not a notice.
+    "industrialq32026results.htm", "q3-2026-supplementarydata.htm", "conferencecallq3.htm",
 ])
 def test_a_file_name_with_a_period_is_results(name: str) -> None:
     assert s6.name_names_results(name)
@@ -300,6 +313,40 @@ async def test_an_sec_outage_is_named_in_the_reason() -> None:
     assert sel.index_unreadable == 3
     assert sel.reason == ("no results 6-K among the 3 examined of 3 listed "
                           "(0 skipped as notices by file name; 3 index page(s) unreadable)")
+
+
+async def test_a_call_named_exhibit_never_vetoes_the_results_release() -> None:
+    """Review round 2 (R1): an EX-99.2 named "…earningscallpresentation…" had marked
+    the Q3 6-K a notice and the Q2 6-K was picked instead — a stale interim."""
+    q3 = _Event("6-K", "0000000001-26-000002", "2026-10-28", "", "d123d6k.htm")
+    q2 = _Event("6-K", "0000000001-26-000001", "2026-08-06", "", "acme_6-k_q2_2026.htm")
+    sec = _Sec(pages={
+        "0000000001-26-000002": [
+            _row("d123d6k.htm", "6-K", 20_000, "6-K"),
+            _row("d123dex991.htm", "EX-99.1", 90_000, "PRESS RELEASE"),
+            _row("d123dex992_earningscallpresentation.htm", "EX-99.2", 90_000, "PRESENTATION"),
+        ],
+        "0000000001-26-000001": [_row("acme_6-k_q2_2026.htm", "6-K", 20_000, "6-K")],
+    }, heads={"d123dex991.htm": _pr([
+        "Exhibit 99.1",
+        "Acme Reports Third Quarter 2026 Financial Results; Management to Host Conference "
+        "Call Today at 8:30 a.m. ET"])})
+    sel = await _select([q3, q2], sec, since="2026-03-01")
+    assert sel.event is q3 and sel.document_name == "d123dex991.htm"
+    assert sel.basis == s6.BASIS_HEADLINE
+
+
+async def test_an_unreadable_index_page_is_skipped_not_taken_on_its_file_name() -> None:
+    """Review round 2 (R2): on an outage Shell's 12 KB cover was taken by its name."""
+    async def boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("SEC down")
+
+    q3 = _Event("6-K", "0001628280-26-068044", "2026-10-29", "2026-09-30",
+                "shellq320266-k.htm")
+    sel = await s6.select_results_6k([q3], cik=CIK, page_fetcher=boom, head_fetcher=boom)
+    assert sel.event is None and sel.index_unreadable == 1
+    assert sel.examined_log[0]["verdict"] == "index_unreadable"
+    assert "1 index page(s) unreadable" in (sel.reason or "")
 
 
 def test_ixbrl_statements_make_a_6k_a_results_release() -> None:

@@ -111,30 +111,48 @@ _PERIOD_RESULTS_RE = re.compile(
 _CLINICAL_RE = re.compile(
     r"\b(?:top[- ]?line|trial|phase [1-3i]+|study|clinical|patients?|data|dosing)\b"
 )
-#: A notice, or an ANNOUNCEMENT about results rather than the results (review of
-#: PR #313): "Cellectis to Report Third Quarter 2026 Financial Results … on November 5",
-#: "Half-Year Report on the Liquidity Contract", "Availability of the Half-Year
-#: Financial Report", "Invitation to conference call on Q3 2026 results". Checked BEFORE
-#: any results rule: a line that names one of these is never a results title.
+_MONTHS = (
+    r"(?:january|february|march|april|may|june|july|august|september|october|november"
+    r"|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+)
+#: An ANNOUNCEMENT about results, not the results — vetoes a line even when it names a
+#: results phrase (review of PR #313): "Cellectis to Report Third Quarter 2026
+#: Financial Results … on November 5", "Invitation to conference call on Q3 2026
+#: results", "Half-Year Report on the Liquidity Contract", "Availability of the
+#: Half-Year Financial Report", "Notice of Q3 2026 earnings release date".
+_ANNOUNCEMENT_TEXT_RE = re.compile(
+    r"\b(?:to|will) (?:report|announce|release|publish)\b"
+    r"|\binvitation\b|\bliquidity contract\b|\bavailability of\b"
+    r"|\b(?:release|results|reporting) date\b"
+    r"|\breport on (?:the )?(?:share buy[- ]?back|share repurchase|own shares|liquidity)"
+)
+#: A future date ("on November 5") is an announcement only in a line that does not
+#: itself report: "Acme Reports Q3 Results; Call on November 5" still reports.
+_FUTURE_DATE_RE = re.compile(rf"\bon {_MONTHS}\.? \d{{1,2}}\b")
+_REPORTING_VERB_RE = re.compile(
+    r"\b(?:reports|reported|announces|announced|posts|delivers|publishes)\b"
+)
+#: A notice that is ONLY a notice: a line naming a meeting, a vote, a buyback, voting
+#: rights or a prospectus and NO results phrase. "Half-year results including share
+#: buyback update" stays results; a conference call or webcast vetoes nothing.
 _NOTICE_TEXT_RE = re.compile(
     r"\b(?:agm|egm|annual general meeting|general meeting|shareholders'? meeting"
     r"|voting rights|vote|voting|share capital|total number of (?:shares|voting)"
     r"|own shares|share (?:re)?purchase|share buy[- ]?back|buy[- ]?back|prospectus"
-    r"|prospectus supplement|notice of"
-    r"|to (?:report|announce|release|publish|present|host)|will (?:report|announce|release"
-    r"|publish|present|host)|conference call|webcast|invitation|invites?"
-    r"|liquidity contract|availability of|publication of|release date)\b"
+    r"|prospectus supplement|notice of)\b"
 )
 #: File names concatenate words ("form6-kagmdisclosure"), so these are substrings.
 _NOTICE_NAME_TOKENS: tuple[str, ...] = (
     "agm", "vote", "voting", "meeting", "prospectus", "buyback", "repurchase",
     "ownshares", "own_shares", "sharecapital", "share_capital", "424b",
-    "call", "invite", "invitation", "webcast", "liquidity",
+    "invitation", "liquidity",
 )
 #: A file name about a trial is never results evidence: BioNTech's
-#: ``form6-ktpamtoplineresultsb.htm`` is a Phase 3 topline-results release.
-_CLINICAL_NAME_TOKENS: tuple[str, ...] = (
-    "topline", "top-line", "top_line", "trial", "phase", "clinical", "study", "data",
+#: ``form6-ktpamtoplineresultsb.htm`` is a Phase 3 topline-results release. Substrings,
+#: since names concatenate words — but "industrial…" is not a trial, and "data" is
+#: not clinical ("q3-2026-supplementarydata.htm").
+_CLINICAL_NAME_RE = re.compile(
+    r"top[-_]?line|clinical|phase[-_]?(?:[1-3]|iii|ii|i(?![a-z]))|(?<!indus)trial|study"
 )
 #: A file name names results only through a PERIOD: a quarter or half, an interim or
 #: quarterly report, or a fiscal / full year next to "results". A bare "results" or
@@ -151,23 +169,36 @@ def _norm(text: str | None) -> str:
     return _WS_RE.sub(" ", str(text or "").replace("\xa0", " ")).strip().lower()
 
 
-def text_names_results(text: str | None) -> bool:
-    """Does a short text (a description, a headline line) name financial results?
-
-    A line that names a notice or an announcement ABOUT results is never results — the
-    notice rule runs first. Pure."""
-    norm = _norm(text)
-    if _NOTICE_TEXT_RE.search(norm):
-        return False
+def _names_results_phrase(norm: str) -> bool:
     if _FINANCIAL_TEXT_RE.search(norm):
         return True
     return bool(_PERIOD_RESULTS_RE.search(norm)) and not _CLINICAL_RE.search(norm)
 
 
+def _is_announcement(norm: str) -> bool:
+    if _ANNOUNCEMENT_TEXT_RE.search(norm):
+        return True
+    return bool(_FUTURE_DATE_RE.search(norm)) and not _REPORTING_VERB_RE.search(norm)
+
+
+def text_names_results(text: str | None) -> bool:
+    """Does a short text (a description, a headline line) name financial results?
+
+    It must name a results phrase and must not be an ANNOUNCEMENT about results ("to
+    report …", "invitation", "availability of", a future date in a line that reports
+    nothing). A meeting, buyback or call mentioned beside a results phrase does not
+    veto it. Pure."""
+    norm = _norm(text)
+    return _names_results_phrase(norm) and not _is_announcement(norm)
+
+
 def text_names_notice(text: str | None) -> bool:
-    """Does a short text name a meeting, vote, buyback, share-capital or prospectus
-    notice? Pure."""
-    return bool(_NOTICE_TEXT_RE.search(_norm(text)))
+    """Is a short text a notice: an announcement about results, or a meeting / vote /
+    buyback / voting-rights / prospectus notice that names no results? Pure."""
+    norm = _norm(text)
+    if _is_announcement(norm):
+        return True
+    return bool(_NOTICE_TEXT_RE.search(norm)) and not _names_results_phrase(norm)
 
 
 def name_names_notice(name: str | None) -> bool:
@@ -177,7 +208,7 @@ def name_names_notice(name: str | None) -> bool:
 
 def name_names_results(name: str | None) -> bool:
     lowered = str(name or "").lower()
-    if any(token in lowered for token in _CLINICAL_NAME_TOKENS):
+    if _CLINICAL_NAME_RE.search(lowered):
         return False
     return bool(_RESULTS_NAME_RE.search(lowered))
 
@@ -293,8 +324,6 @@ def classify_6k(
     names = [str(e.get("name") or "") for e in docs]
     if feed_document:
         names.append(feed_document)
-    if any(name_names_notice(n) for n in names):
-        return VERDICT_NOTICE, None
     descriptions = [str(e.get("description") or "") for e in docs]
     if any(text_names_results(d) for d in descriptions):
         return VERDICT_RESULTS, BASIS_DESCRIPTION
@@ -308,8 +337,13 @@ def classify_6k(
         text_names_notice(line) for line in lines
     ):
         return VERDICT_NOTICE, None
-    if any(name_names_results(n) for n in names):
+    # Per document: one exhibit's notice-shaped name ("…earningscall…") never vetoes
+    # another document that names results, and a name that is itself a notice
+    # ("6-ka_agm_vote_results.htm", "h1-liquidity.htm") is no results evidence.
+    if any(name_names_results(n) and not name_names_notice(n) for n in names):
         return VERDICT_RESULTS, BASIS_FILE_NAME
+    if any(name_names_notice(n) for n in names):
+        return VERDICT_NOTICE, None
     return VERDICT_UNDECIDED, None
 
 
@@ -558,10 +592,23 @@ async def select_results_6k(
         except Exception:  # noqa: BLE001 - one unreadable index costs that 6-K only
             entries = []
         if not entries:
+            # Unreadable or empty (a real page always lists the complete-submission
+            # file). Never taken on its feed file name alone: which document carries
+            # the results is unknown (Shell's 12 KB cover vs its 1.8 MB EX-99.2).
             out.index_unreadable += 1
+            out.examined_log.append({
+                "accession": getattr(event, "accession_number", None),
+                "form": getattr(event, "form_type", None),
+                "filing_date": getattr(event, "filing_date", None),
+                "verdict": "index_unreadable",
+                "basis": None,
+            })
+            continue
         verdict, basis = classify_6k(entries, feed_document=feed_name)
         headline: str | None = None
-        if verdict == VERDICT_UNDECIDED and out.headline_fetches < max_headline_fetches:
+        # A notice by file name alone may still carry a results release in another
+        # exhibit, so its headline is read too (bounded by the same cap).
+        if verdict != VERDICT_RESULTS and out.headline_fetches < max_headline_fetches:
             target = _headline_document(entries)
             if target is not None:
                 document, window = target

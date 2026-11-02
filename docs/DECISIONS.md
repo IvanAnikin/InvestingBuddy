@@ -5834,46 +5834,62 @@ the newest figures in the report were 9M 2025. H1 2026 (6-K 2026-08-06, iXBRL 6-
    1. **iXBRL statements.** A 6-K / EX-99 document marked iXBRL on the index page
       means results. A 6-K has no iXBRL cover requirement, so iXBRL here is financial
       data. `parse_filing_index_page` now records `ixbrl` per row.
-   2. **A notice by file name.** File names naming an AGM, vote, meeting, prospectus,
-      buyback, repurchase, own shares, share capital, call, invitation, webcast or
-      liquidity mean a notice. This wins even over "results"
-      (`6-ka_agm_vote_results.htm`).
-   3. **Results by description or headline title line.** The headline is read only
-      when undecided. It comes from the press-release exhibit's first 400 characters,
-      or, when that exhibit is over 256 KB or absent, the 6-K document's first 6,000
-      characters (its exhibit list or the newswire announcement). A title line is at
-      most 200 characters, so a forward-looking-statements paragraph that mentions
-      "financial results" is never a title.
-      - **The notice check runs first, line by line** (review D2). A line naming a
-        meeting, vote, buyback, share capital, prospectus, or an ANNOUNCEMENT about
-        results is never a results line: "to report / announce / release / publish /
-        present / host", "will report …", "conference call", "webcast", "invitation",
-        "liquidity contract", "availability of", "publication of", "release date",
-        "notice of". So "Cellectis to Report Third Quarter 2026 Financial Results … on
-        November 5", "Half-Year Report on the Liquidity Contract", "Availability of the
-        Half-Year Financial Report", "Invitation to conference call on Q3 2026 results"
-        and "Half-year report on share buyback" are notices. A real results release
-        whose sub-head mentions its conference call still qualifies on its title line.
+   2. **Results by description or headline title line** (below).
+   3. **A notice by description or headline line** (below).
+   4. **Results by file name — per document.** Only a document whose own name is not
+      a notice counts, so one exhibit's name ("…earningscallpresentation…") never vetoes
+      another document that names results (review round 2, R1).
+   5. **A notice by file name**: AGM, vote, meeting, prospectus, buyback, repurchase,
+      own shares, share capital, invitation, liquidity. `6-ka_agm_vote_results.htm` is a
+      notice: "results" alone is no results evidence (rule 4). A 6-K judged a notice
+      by name alone still has its headline read, within the cap.
+
+   Details of rules 2–4:
+      - The headline is read when the 6-K is not yet results. It comes from the
+        press-release exhibit's first 400 characters, or, when that exhibit is over
+        256 KB or absent, the 6-K document's first 6,000 characters (its exhibit list
+        or the newswire announcement).
+      - A title line is at most 200 characters, so a forward-looking-statements
+        paragraph that mentions "financial results" is never a title.
+      - **Announcements veto a line even beside a results phrase** (review D2, refined
+        in round 2): "to / will report, announce, release, publish", "invitation",
+        "liquidity contract", "availability of", "release / results / reporting date",
+        "report on the share buyback / liquidity / own shares", and a future date ("on
+        November 5") in a line with no reporting verb (reports, announces, posts …).
+        So "Cellectis to Report Third Quarter 2026 Financial Results … on November 5",
+        "Half-Year Report on the Liquidity Contract", "Availability of the Half-Year
+        Financial Report", "Invitation to conference call on Q3 2026 results" and
+        "Half-year report on share buyback" are notices.
+      - **Meeting, vote, buyback, voting-rights, share-capital and prospectus words
+        veto only a line with NO results phrase.** A call, webcast or "host" vetoes
+        nothing. So "Q3 2026 results and conference call details", "Half-year results
+        including share buyback update", "Acme Reports Third Quarter 2026 Financial
+        Results; Management to Host Conference Call…" and "Q3 2026 results - webcast
+        at 9am" stay results (round 1 had wrongly refused them, R1).
       - Results phrases: "financial results/report" (not "annual financial report"),
         "interim / half-year / quarterly report or statement(s)", "earnings release".
       - A period next to "results" also counts (Q1–Q4, H1/H2, first/second … quarter,
         half-year, first half, three/six/nine months), but not in a line about a trial
         (topline, phase, study, clinical, data).
       - A headline naming a notice and no results means a notice.
-   4. **Results by file name — only through a period** (review D1): `q[1-4]`, `h1`/`h2`,
+      - File names name results **only through a period** (review D1): `q[1-4]`, `h1`/`h2`,
       half-year, first half, interim, quarter, or fy / full-year next to results
       (`clls_6-k_q2_2026.htm`, `caq22026.htm`, `shellq320266-k.htm`). A bare "results",
       "earnings" or "financial statements" is not evidence, and a name with topline,
-      trial, phase, clinical, study or data never is: BioNTech's
+      trial (not "industrial"), phase 1–3, clinical or study never is (round 2: "data"
+      is not clinical, `q3-2026-supplementarydata.htm`): BioNTech's
       `form6-ktpamtoplineresultsb.htm` (a Phase 3 topline release, 2026-10-26) had been
       picked over its Q2 report.
-   5. Anything else is **undecided and never taken**. Reading no 6-K is better than
-      reading the wrong one.
-3. **Honest about failures** (review D4). An empty `-index.htm` read is a failed read
-   (a real page always lists the complete-submission file); failed index pages and
-   failed headline reads are counted (`index_unreadable`, `heads_unreadable`) and
-   named in the reason, so an SEC outage is not reported as "examined and found
-   wanting".
+
+   Anything else is **undecided and never taken**. Reading no 6-K is better than
+   reading the wrong one.
+3. **Honest about failures** (review D4, R2). An empty `-index.htm` read is a failed
+   read (a real page always lists the complete-submission file). Such a 6-K is
+   SKIPPED — never taken on its feed file name, because which document carries the
+   results is unknown (on an outage Shell's 12 KB cover would have been read instead
+   of its 1.8 MB EX-99.2). Failed index pages and headline reads are counted
+   (`index_unreadable`, `heads_unreadable`) and named in the reason, so an outage is
+   not reported as "examined and found wanting".
 4. **Bounded.** Reads use the existing guarded, throttled SEC Archives leg
    (`fetch_filing_index_page`, `_fetch_sec_archive_bytes` with the 256 KB cap and the
    `sec_6k_headline_*` events). There is no new host, no new provider, and no URL
@@ -5914,8 +5930,10 @@ the newest figures in the report were 9M 2025. H1 2026 (6-K 2026-08-06, iXBRL 6-
 ### Live replay (read-only, 2026-11-02)
 **The picks rest on this replay**, not on a guarantee: the rules are text rules over
 what issuers happen to name and write. User-Agent "InvestingBuddy research
-research@investingbuddy.example". First round 32 SEC requests; the post-review round
-5 more (the rest from cached responses of both replays). After the review fixes:
+research@investingbuddy.example". First round 32 SEC requests; review round 1, 5 more;
+review round 2, none (every response cached from earlier rounds). After round 2 the
+eight replayed filers (the five below plus BioNTech, Barrick, Valneva) pick exactly
+what round 1 picked. After the review fixes:
 
 | Filer (CIK) | 6-K picked | Document · basis | Latest interim? |
 |---|---|---|---|
