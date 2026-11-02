@@ -109,6 +109,18 @@ def _url_fragment(accession_canonical: str) -> str:
     return accession_canonical.replace("-", "")
 
 
+def _document_fragment(accession_canonical: str, document_name: str | None) -> str | None:
+    """``<accession>/<file>`` for ONE named document of a filing, or ``None`` when the
+    name could never be a safe Archives file name (ADR-077: a results 6-K is read
+    through its press release or its iXBRL statements, not its cover page)."""
+    from app.services.sources.sec_filing_documents import build_document_url
+
+    name = str(document_name or "").strip()
+    if not name or build_document_url("1", accession_canonical, name) is None:
+        return None
+    return f"{_url_fragment(accession_canonical)}/{name}"
+
+
 # ---------------------------------------------------------------------------
 # Readiness — one definition
 # ---------------------------------------------------------------------------
@@ -139,6 +151,7 @@ async def filing_evidence_state(
     *,
     company_id: uuid.UUID | None,
     accession: str | int | None,
+    document_name: str | None = None,
 ) -> FilingEvidenceState:
     """Classify one filing into A / B / C without touching the network.
 
@@ -154,6 +167,19 @@ async def filing_evidence_state(
     if canonical is None:
         return FilingEvidenceState(
             state=STATE_ABSENT, detail="accession could not be normalised"
+        )
+    if document_name is not None:
+        # ONE named document of the filing (ADR-077). It may be an exhibit — the caller
+        # asked for that exhibit — and the filing's cover page cannot answer for it.
+        fragment = _document_fragment(canonical, document_name)
+        if fragment is None:
+            return FilingEvidenceState(
+                state=STATE_ABSENT, accession=canonical,
+                detail="document name could not be validated",
+            )
+        return await _evidence_state_for_fragment(
+            session, company_id=company_id, fragment=fragment, label=canonical,
+            accept_exhibit=True,
         )
     return await _evidence_state_for_fragment(
         session, company_id=company_id, fragment=_url_fragment(canonical), label=canonical
@@ -228,6 +254,7 @@ async def _evidence_state_for_fragment(
     fragment: str,
     label: str,
     document_ref: str | None = None,
+    accept_exhibit: bool = False,
 ) -> FilingEvidenceState:
     # An accession for the SEC entry point; the transport's document id otherwise. The
     # two are never mixed: a document ref must not reach anything that builds an SEC
@@ -246,7 +273,8 @@ async def _evidence_state_for_fragment(
         )
     else:
         version = await current_version_for_fragment(
-            session, company_id=company_id, fragment=fragment
+            session, company_id=company_id, fragment=fragment,
+            exact_document=accept_exhibit,
         )
 
     if version is None:
@@ -331,7 +359,12 @@ async def _evidence_state_for_fragment(
             or 0
         )
 
-    if derivation is not None and indexable > 0 and is_exhibit_url(version.canonical_url):
+    if (
+        derivation is not None
+        and indexable > 0
+        and not accept_exhibit
+        and is_exhibit_url(version.canonical_url)
+    ):
         # Searchable, and not the filing. Reacquiring now selects the body, because the
         # selector no longer mistakes an "…exhibit96…" name for a body document.
         return FilingEvidenceState(
@@ -403,6 +436,7 @@ async def current_version_for_filing(
     *,
     company_id: uuid.UUID | None,
     accession: str | int | None,
+    document_name: str | None = None,
 ) -> ResearchDocumentVersion | None:
     """The CURRENT corpus version of one filing, for one company, or ``None``.
 
@@ -417,6 +451,13 @@ async def current_version_for_filing(
     canonical = canonical_accession(accession)
     if canonical is None or company_id is None:
         return None
+    if document_name is not None:
+        fragment = _document_fragment(canonical, document_name)
+        if fragment is None:
+            return None
+        return await current_version_for_fragment(
+            session, company_id=company_id, fragment=fragment, exact_document=True
+        )
     return await current_version_for_fragment(
         session, company_id=company_id, fragment=_url_fragment(canonical)
     )
@@ -500,9 +541,13 @@ async def current_version_for_fragment(
     company_id: uuid.UUID | None,
     fragment: str,
     whole_segment: bool = False,
+    exact_document: bool = False,
 ) -> ResearchDocumentVersion | None:
     """The CURRENT corpus version whose canonical URL carries ``fragment``, for one
     company. The shared body of both lookups above.
+
+    ``exact_document`` (ADR-077): ``fragment`` is ``<accession>/<file>`` and the URL
+    must END with it — escaped, so the ``_`` in ``exh_991.htm`` is not a wildcard.
 
     ``whole_segment`` (document refs): the SQL narrows by an ESCAPED ``ref`` substring
     and the result is then required to carry ``ref`` as a whole path segment or as a
@@ -526,7 +571,7 @@ async def current_version_for_fragment(
                         ResearchDocumentVersion.canonical_url.contains(
                             fragment, autoescape=True
                         )
-                        if whole_segment
+                        if whole_segment or exact_document
                         else ResearchDocumentVersion.canonical_url.contains(fragment)
                     ),
                     # REQUIRED, not merely preferred. See `filing_evidence_state`.
@@ -544,6 +589,8 @@ async def current_version_for_fragment(
     )
     if whole_segment:
         rows = [v for v in rows if url_has_document_segment(v.canonical_url, fragment)]
+    if exact_document:
+        rows = [v for v in rows if str(v.canonical_url or "").endswith("/" + fragment)]
     if not rows:
         return None
     # THE FILING BODY, not an exhibit filed beside it. A 10-K's exhibits live in the same
@@ -644,6 +691,7 @@ class FilingAcquirer(Protocol):
         accession: str,
         form: str | None,
         cfg: "Settings",
+        document_name: str | None = None,
     ) -> "AcquireOutcome": ...
 
 
@@ -704,8 +752,13 @@ async def ensure_filing_corpus_evidence(
     cfg: "Settings",
     acquire: FilingAcquirer | None = None,
     ready_only: bool = False,
+    document_name: str | None = None,
 ) -> FilingEvidenceResult:
     """Guarantee that a filing is searchable, or say honestly why it is not.
+
+    ``document_name`` (ADR-077) names ONE document of the filing — a results 6-K's
+    press release or iXBRL statements — and readiness is then judged on that document,
+    not on whichever document of the accession happens to be held.
 
     ``ready_only`` answers from the database and never acquires — the caller's
     acquisition budget is spent, and the honest answer for anything not already held is
@@ -742,7 +795,7 @@ async def ensure_filing_corpus_evidence(
     # This is the branch that makes a repeat run free, and it is checked first for
     # exactly that reason.
     state = await filing_evidence_state(
-        session, company_id=company_id, accession=canonical
+        session, company_id=company_id, accession=canonical, document_name=document_name
     )
     if state.is_ready:
         return FilingEvidenceResult(
@@ -797,6 +850,8 @@ async def ensure_filing_corpus_evidence(
             accession=canonical,
             form=form,
             cfg=cfg,
+            # Only when named, so an acquirer written before ADR-077 keeps working.
+            **({"document_name": document_name} if document_name is not None else {}),
         )
     except Exception as exc:  # noqa: BLE001 - acquisition must not end a run
         logger.exception("Filing acquisition failed for %s", canonical)
@@ -817,7 +872,7 @@ async def ensure_filing_corpus_evidence(
     # indexing produces nothing — a partial outcome that would otherwise be recorded as
     # success and leave a specialist searching an empty document.
     after = await filing_evidence_state(
-        session, company_id=company_id, accession=canonical
+        session, company_id=company_id, accession=canonical, document_name=document_name
     )
     if after.is_ready:
         return FilingEvidenceResult(
@@ -878,6 +933,7 @@ async def ensure_core_filings(
     company: Any,
     cfg: "Settings",
     provider: Any = None,
+    sixk_selector: Any = None,
 ) -> dict[str, Any]:
     """Put the subject's LATEST annual report and quarterly report into the corpus.
 
@@ -893,6 +949,14 @@ async def ensure_core_filings(
     SEC registrants only — but an issuer is an SEC registrant when ANY verified line of it
     is (ADR-075): a Paris-listed company whose same-issuer ADS trades on Nasdaq has its
     20-F read through that line, and the basis is recorded under ``sec_basis``.
+
+    A foreign private issuer reports its quarter or half year on a Form 6-K, not a 10-Q
+    (ADR-077). When no 10-Q is listed and the annual report is not a 10-K, the quarterly
+    slot takes the newest 6-K whose own documents show it is a RESULTS release
+    (``sec_6k_results.select_results_6k``: bounded index reads, no new host) and reads
+    the document that carries the results — the press release or the iXBRL statements —
+    through the same bridge. No such 6-K among those examined stays ``not_listed``,
+    with the reason.
 
     Never raises; returns what happened for each filing.
     """
@@ -938,6 +1002,13 @@ async def ensure_core_filings(
         event = next(
             (e for e in events if str(getattr(e, "form_type", "")).upper() in forms), None
         )
+        if event is None and slot == "quarterly" and _reads_6k_interims(out, events):
+            out[slot] = await _ensure_results_6k(
+                session, company=company, cfg=cfg, events=events,
+                cik=getattr(listed, "cik", None), selector=sixk_selector,
+                out_annual=out.get("annual"),
+            )
+            continue
         if event is None:
             out[slot] = {"state": "not_listed", "forms": list(forms)}
             continue
@@ -955,3 +1026,85 @@ async def ensure_core_filings(
             **result.to_dict(),
         }
     return out
+
+
+def _reads_6k_interims(out: dict[str, Any], events: list[Any]) -> bool:
+    """A 6-K filer with no 10-K: only a foreign private issuer files a 6-K, and one
+    that files a 10-K reports its quarters on a 10-Q (ADR-077)."""
+    annual = out.get("annual") if isinstance(out.get("annual"), dict) else {}
+    if str((annual or {}).get("form") or "").upper() == "10-K":
+        return False
+    from app.services.sources.sec_6k_results import SIXK_FORMS
+
+    return any(str(getattr(e, "form_type", "") or "").upper() in SIXK_FORMS for e in events)
+
+
+async def _ensure_results_6k(
+    session: Any,
+    *,
+    company: Any,
+    cfg: "Settings",
+    events: list[Any],
+    cik: Any,
+    selector: Any = None,
+    out_annual: Any = None,
+) -> dict[str, Any]:
+    """The quarterly slot of a 20-F / 40-F filer: its newest results 6-K, read through
+    the bridge, or ``not_listed`` with the reason. Never raises."""
+    from app.services.sources.sec_6k_results import select_results_6k
+
+    forms = ["6-K", "6-K/A"]
+    if not getattr(cfg, "primary_document_sec_body_enabled", False):
+        # No body would be fetched, so no index page is read to choose one either.
+        return {"state": "not_listed", "forms": forms,
+                "reason": "SEC filing-body fetch is disabled"}
+    # Only a 6-K filed AFTER the annual report can carry a later period (ADR-077,
+    # review of PR #313): a Q4 6-K filed before the 40-F reports the same year.
+    annual = out_annual if isinstance(out_annual, dict) else {}
+    since = annual.get("filing_date") if annual.get("form") else None
+    # The annual report's fiscal period end (EDGAR's period of report for a 20-F /
+    # 40-F): a 6-K whose own period is not after it is the same year again.
+    annual_event = next(
+        (
+            e for e in events
+            if str(getattr(e, "form_type", "") or "").upper() in ANNUAL_FORMS
+            and str(getattr(e, "accession_number", "") or "")
+            and str(getattr(e, "filing_date", "") or "") == str(since or "")
+        ),
+        None,
+    ) if since else None
+    annual_period_end = (
+        str(getattr(annual_event, "report_date", "") or "") or None if annual_event else None
+    )
+    try:
+        selection = await (selector or select_results_6k)(
+            events, cik=cik, cfg=cfg, since=since, annual_period_end=annual_period_end
+        )
+    except Exception as exc:  # noqa: BLE001 - selection failing costs the slot only
+        return {"state": "not_listed", "forms": forms,
+                "reason": f"6-K selection failed ({type(exc).__name__})"}
+    if selection.event is None:
+        return {"state": "not_listed", "forms": forms, "reason": selection.reason,
+                "selection": selection.selection_dict()}
+    event = selection.event
+    result = await ensure_filing_corpus_evidence(
+        session,
+        company_id=getattr(company, "id", None),
+        cik=cik,
+        accession=getattr(event, "accession_number", None),
+        form=str(getattr(event, "form_type", "")),
+        cfg=cfg,
+        document_name=selection.document_name,
+    )
+    return {
+        "form": str(getattr(event, "form_type", "")),
+        "filing_date": str(getattr(event, "filing_date", "") or "") or None,
+        "document": selection.document_name,
+        "basis": selection.basis,
+        # The document's own headline when it was read; the issuer's declared period
+        # end only when the evidence was its iXBRL statements. Neither is ever guessed.
+        "title": selection.title,
+        "period_end": selection.period_end,
+        "selection": selection.selection_dict(),
+        **result.to_dict(),
+    }
