@@ -479,6 +479,8 @@ class TestDiagnosticsCarryNoSensitiveContent:
             "statements_about_another_company",
             # QA 2026-11-01 (ADR-066) — a name-sharing registrant's web news. A count.
             "statements_about_related_registrant",
+            # QA 2026-11-02 (ADR-074) — another company's statement on its own site.
+            "statements_about_foreign_subject",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 
