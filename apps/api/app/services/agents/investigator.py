@@ -1072,6 +1072,256 @@ def statement_about_related_registrant(
     return found
 
 
+# -- Foreign subject on its own site (ADR-074) -------------------------------------------
+
+#: The ADR-066 lead-in, read on the statement's OWN casing (the opening name is found by
+#: its capital letter, so the text is not folded first).
+_LEAD_IN_CASED_RE = re.compile(_LEAD_IN_RE.pattern, re.IGNORECASE)
+_ARTICLE_CASED_RE = re.compile(r"^the\s+", re.IGNORECASE)
+#: A proper-noun name: up to four capitalised words ("South32", "Lundin Mining", "Vexmoor
+#: Robotics Corp."). A possessive ("Lundin's") ends the name.
+_OPENING_NAME_RE = re.compile(r"[A-Z][\w&.'’-]*(?:[ \t]+[A-Z][\w&.'’-]*){0,3}")
+#: The writer saying itself that a name is not the subject: "Ecora (not the company)",
+#: "Vexmoor (not Acme)". The parenthesis must say ONLY that — "(not the group's statutory
+#: profit)" contrasts a measure, not a company (review round 1) — and the name before it
+#: is read from a bounded window (the regex is never run over an unbounded text).
+_NOT_PAREN_RE = re.compile(r"\(\s*not\s+(?P<who>[^()]{1,60})\)", re.IGNORECASE)
+_NAME_BEFORE_RE = re.compile(
+    r"(?P<name>[A-Z][\w&.'’-]{0,40}(?:[ \t]+[A-Z][\w&.'’-]{0,40}){0,3})"
+    r"(?:[ \t,]+(?:plc|inc|ltd|limited|corp|co|sa|ag|nv|se|llc|lp)\.?)?\s*$"
+)
+#: Words that make a capitalised phrase a MEASURE or a reporting perimeter, never a
+#: company name: "Attributable EBITDA (not the company)", "Holding Company (not the
+#: company) cash", "Standalone Revenue …" (review round 2).
+_MEASURE_WORDS: frozenset[str] = frozenset(
+    {
+        "adjusted", "attributable", "basis", "capex", "cash", "company", "consolidated",
+        "debt", "dividend", "dividends", "earnings", "ebit", "ebitda", "eps", "equity",
+        "flow", "free", "gross", "group", "guidance", "holding", "income", "loss",
+        "margin", "net", "only", "operating", "parent", "proforma", "profit", "revenue",
+        "revenues", "sales", "segment", "standalone", "statutory", "total", "underlying",
+    }
+)
+#: Only "the company" / "the issuer" / "the subject" — "(not the group)" is how a writer
+#: sets a parent-only or attributable figure against the consolidated group (review 2).
+_NOT_WHO_PHRASE_RE = re.compile(
+    r"the\s+(?:company|issuer|subject)(?:\s+itself)?\s*", re.IGNORECASE
+)
+#: The opening name only RELAYS someone else's figure: "Vexmoor cites…", "…quoting".
+_CITING_RE = re.compile(r"^\s+(?:cites?|cited|citing|quotes?|quoting)\b", re.IGNORECASE)
+_SUBJECT_PHRASE_RE = re.compile(r"\bthe\s+(?:company|group|issuer)\b", re.IGNORECASE)
+#: Web source classes a company's OWN site can carry. A page a curated third party
+#: published (financial or trade press, a regulator, an association, an aggregator) is
+#: that publisher's page, whatever company it writes about — "Reuters reports…".
+_OWN_SITE_CLASSES: frozenset[str | None] = frozenset(
+    {None, "unknown_web", "company_web_page", "company_press_release", "investor_presentation"}
+)
+
+
+def _name_words(name: str) -> list[str]:
+    """The words of a matched name, a trailing possessive and full stop removed."""
+    out = []
+    for word in name.split():
+        word = re.sub(r"['’]s$", "", word).rstrip(".")
+        if word:
+            out.append(word)
+    return out
+
+
+def subject_aliases(subject_name: str | None) -> frozenset[str]:
+    """The subject's distinctive name words, folded (generic and short words dropped).
+    Empty → the subject cannot be told apart, and the guard fails open."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+    return frozenset(
+        t for t in name_tokens(subject_name or "") if t not in _GENERIC_TOKENS and len(t) >= 4
+    )
+
+
+def _names_subject(
+    text: str, aliases: "frozenset[str]", subject_ticker: str | None
+) -> bool:
+    """The subject is named anywhere: its ticker (case-sensitive, whole token), one of its
+    distinctive name words, a brand of it, or "the company" / "the group" / "the issuer"."""
+    from app.services.discovery.identity import _fold  # noqa: PLC2701
+    from app.services.web_research.trust import BRAND_ALIASES
+
+    ticker = (subject_ticker or "").strip()
+    if ticker and re.search(
+        rf"(?<![A-Za-z0-9.-]){re.escape(ticker)}(?![A-Za-z0-9-])", text
+    ):
+        return True
+    if _SUBJECT_PHRASE_RE.search(text):
+        return True
+    words = re.findall(r"[a-z0-9&]+", _fold(text))
+    return any(w in aliases or BRAND_ALIASES.get(w) in aliases for w in words)
+
+
+def _opening_names(text: str) -> list[list[str]]:
+    """The proper-noun names that may be the sentence's grammatical subject: the one it
+    opens with, and the one after an optional ADR-066 lead-in clause, each after an
+    optional article. Never a name in a later clause."""
+
+    def _at(head: str) -> list[str]:
+        head = _ARTICLE_CASED_RE.sub("", head.lstrip())
+        match = _OPENING_NAME_RE.match(head)
+        if not match:
+            return []
+        words = _name_words(match.group(0))
+        if re.match(r"[A-Z][\w&.-]*['’]s\b", head):
+            words = words[:1]  # a possessive ends the name: "Lundin's 2026 outlook"
+        if not words or words[0].isupper() or re.search(r"-[a-z]", words[0]):
+            # An all-capitals word (an acronym, "FY24", "CEO") is not read as a name, nor
+            # is "Vexmoor-cited" / "Vexmoor-based": an attribution, not a subject.
+            return []
+        if _CITING_RE.match(head[match.end():]):
+            return []  # "Vexmoor cites a market of $100bn": a publisher relaying others
+        return words
+
+    out = [_at(text)]
+    lead = _LEAD_IN_CASED_RE.match(text)
+    if lead:
+        out.append(_at(text[lead.end():]))
+    return [words for words in out if words]
+
+
+def publisher_is_named_company(origin_key: str | None, words: "Sequence[str]") -> int:
+    """How many of the name's words the publisher's registrable domain stands for
+    (0: it is not the named company's own domain): south32.net ↔ South32,
+    lundinmining.com ↔ Lundin Mining, ecora-resources.com ↔ Ecora. By equality
+    (``identity.issuer_domain_matches``), never similarity; a domain extending the
+    first word with ONE generic business word is the same company's."""
+    from app.services.discovery.identity import (  # noqa: PLC2701
+        _GENERIC_TOKENS,
+        _fold,
+        issuer_domain_matches,
+        registrable_label,
+    )
+    from app.services.web_research.trust import publisher_of
+
+    host = publisher_of(origin_key) or ""
+    if not host or not re.fullmatch(r"[a-z0-9.-]{3,120}", host) or not words:
+        return 0
+    for k in range(1, len(words) + 1):
+        if issuer_domain_matches(host, " ".join(words[:k])):
+            return k
+    first = re.sub(r"[^a-z0-9]", "", _fold(words[0]))
+    label = (registrable_label(host) or "").replace("-", "")
+    rest = label[len(first):] if first and label.startswith(first) else ""
+    return int(rest in _GENERIC_TOKENS and issuer_domain_matches(host, f"{first} {rest}"))
+
+
+def _who_is_only_the_subject(
+    who: str, aliases: "frozenset[str]", subject_ticker: str | None
+) -> bool:
+    """The parenthesis names the subject and nothing else: "the company", "Acme",
+    "Acme plc" — never "the group's largest mine" or "Acme's guidance"."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+    if _NOT_WHO_PHRASE_RE.fullmatch(who):
+        return True
+    if re.search(r"['’]s\b", who):
+        return False
+    ticker = (subject_ticker or "").strip().lower()
+    words = name_tokens(who)  # legal suffixes ("plc", "Inc.") removed
+    named = [w for w in words if w in aliases or (ticker and w == ticker)]
+    return bool(named) and all(w in aliases or w == ticker or w in _GENERIC_TOKENS for w in words)
+
+
+def _disclaimed_name(
+    text: str, aliases: "frozenset[str]", subject_ticker: str | None
+) -> "tuple[list[str], int, int] | None":
+    """The name a "(not the company)" parenthesis follows, with the span of name and
+    parenthesis; None when there is none, or the name is not read as a company name
+    (an acronym, a short or generic first word — the ``_opening_names`` filters)."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, _fold  # noqa: PLC2701
+
+    if "(" not in text:
+        return None
+    for paren in _NOT_PAREN_RE.finditer(text):
+        if not _who_is_only_the_subject(paren.group("who").strip(), aliases, subject_ticker):
+            continue
+        window_start = max(0, paren.start() - 200)
+        before = _NAME_BEFORE_RE.search(text[window_start: paren.start()])
+        if not before:
+            continue
+        words = _name_words(before.group("name"))
+        if not words or words[0].isupper():
+            continue
+        first = re.sub(r"[^a-z0-9]", "", _fold(words[0]))
+        if len(first) < 4 or first in _GENERIC_TOKENS:
+            continue
+        if any(re.sub(r"[^a-z0-9]", "", _fold(w)) in _MEASURE_WORDS for w in words):
+            continue  # a measure or a perimeter, not a company
+        return words, window_start + before.start("name"), paren.end()
+    return None
+
+
+def statement_about_foreign_subject(
+    statement: str,
+    cited: "Sequence[_Evidence]",
+    subject_name: str | None,
+    subject_ticker: str | None = None,
+) -> str | None:
+    """The OTHER company a web statement is about, when the platform can tell; else None.
+
+    Dropped (returns the name):
+    - "Vexmoor FY24 revenue US$8,296m", every cited item served from vexmoor.net and
+      none of them a curated third party's page (press, regulator, association), and the
+      subject never named — not in the statement, not in the cited text;
+    - "Vexmoor (not the company): leverage of 1.5x…" — the writer said so itself.
+    Kept: anything naming the subject ("Acme and Vexmoor both…", "Acme's Centinela…"),
+    a name the domain does not match (a news site writing about Vexmoor), mixed support.
+    """
+    from app.services.discovery.identity import (  # noqa: PLC2701
+        _GENERIC_TOKENS,
+        _fold,
+        issuer_domain_matches,
+        registrable_label,
+    )
+    from app.services.web_research.trust import publisher_of
+
+    aliases = subject_aliases(subject_name)
+    if not aliases or not cited or not all(e.web for e in cited):
+        return None  # cannot tell the subject apart, or not resting on web text alone
+    text = statement.strip()
+
+    disclaimer = _disclaimed_name(text, aliases, subject_ticker)
+    if disclaimer is not None and any(
+        issuer_domain_matches(publisher_of(item.origin_key) or "", subject_name or "")
+        or (registrable_label(publisher_of(item.origin_key) or "") or "").replace("-", "")
+        in aliases
+        for item in cited
+    ):
+        return None  # cited from the subject's OWN site: a contrast within its own report
+    if disclaimer is not None:
+        words, start, end = disclaimer
+        rest = text[:start] + text[end:]
+        if not _names_subject(" ".join(words), aliases, subject_ticker) and not _names_subject(
+            rest, aliases, subject_ticker
+        ):
+            return " ".join(words)[:60]
+        return None
+
+    if _names_subject(text, aliases, subject_ticker):
+        return None
+    if any(item.source_class not in _OWN_SITE_CLASSES for item in cited):
+        return None  # a curated third party's page: its subject is its own business
+    if any(
+        _names_subject(_SUBJECT_PHRASE_RE.sub("", item.text or ""), aliases, subject_ticker)
+        for item in cited
+    ):
+        return None  # the page itself names the subject (a brand, a JV, a buyer)
+    for words in _opening_names(text):
+        first = re.sub(r"[^a-z0-9]", "", _fold(words[0]))
+        if len(first) < 4 or first in _GENERIC_TOKENS:
+            continue
+        named = [publisher_is_named_company(item.origin_key, words) for item in cited]
+        if all(named):
+            return " ".join(words[: max(named)])[:60]
+    return None
+
+
 async def _load_sec_directory() -> "list[Any]":
     """The SEC company-tickers directory (cached per process per day; [] when unreadable).
     A seam: the test suite makes it inert, as it does every other live SEC lookup."""
@@ -1515,6 +1765,9 @@ class InvestigatorDiagnostics:
     #: A statement about a SEPARATELY registered company that carries the issuer's name
     #: (Honeywell Aerospace beside Honeywell), resting only on web text (QA, 2026-11-01).
     statements_about_related_registrant: int = 0
+    #: A web statement whose sentence subject is ANOTHER named company and which rests
+    #: only on that company's own site, or says "(not the company)" (ADR-074).
+    statements_about_foreign_subject: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -1542,6 +1795,7 @@ class InvestigatorDiagnostics:
         self.statements_about_related_registrant += (
             other.statements_about_related_registrant
         )
+        self.statements_about_foreign_subject += other.statements_about_foreign_subject
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -1562,6 +1816,7 @@ class InvestigatorDiagnostics:
             "statements_about_related_registrant": (
                 self.statements_about_related_registrant
             ),
+            "statements_about_foreign_subject": self.statements_about_foreign_subject,
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -2458,6 +2713,7 @@ class LLMInvestigator:
         findings: list[FindingDraft] = []
         gaps: list[GapDraft] = []
         related_dropped: dict[str, RelatedRegistrant] = {}
+        foreign_dropped: dict[str, str] = {}
         for raw in (payload.get("findings") or [])[:MAX_FINDINGS_PER_QUESTION]:
             if not isinstance(raw, dict):
                 continue
@@ -2539,6 +2795,17 @@ class LLMInvestigator:
                     # news comes from the same domain, so only the regulator separates them.
                     self.diagnostics.statements_about_related_registrant += 1
                     related_dropped.setdefault(related.phrase, related)
+                    continue
+                foreign_subject = statement_about_foreign_subject(
+                    statement, cited_items, self.company_name, self.ticker
+                )
+                if foreign_subject is not None:
+                    # ADR-074: "Vexmoor FY24 revenue US$8,296m" cited only from
+                    # vexmoor.net is Vexmoor's fact. The publisher firewall above knows
+                    # only companies the platform holds, so a peer it never researched
+                    # passed straight through and stood in the subject's sections.
+                    self.diagnostics.statements_about_foreign_subject += 1
+                    foreign_dropped.setdefault(foreign_subject.lower(), foreign_subject)
                     continue
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
@@ -2622,6 +2889,26 @@ class LLMInvestigator:
                         "A company that files on its own reports its own results, "
                         "backlog and events; filing them under the issuer attributes "
                         "another company's facts."
+                    ),
+                    sources_tried=tuple(sorted({e.kind for e in evidence})),
+                )
+            )
+
+        if foreign_dropped:
+            names = "; ".join(sorted(foreign_dropped.values())[:5])
+            gaps.append(
+                GapDraft(
+                    gap_type=ledger.GAP_ENTITY_AMBIGUOUS,
+                    description=(
+                        f"Web statements about {names} — another company, cited only from "
+                        "its own website or marked by the writer as not the issuer — were "
+                        "not filed under the issuer."
+                    )[:600],
+                    question_key=question.key,
+                    why_it_matters=(
+                        "Another company's results, policies and risks are not the "
+                        "issuer's; filing them under the issuer attributes another "
+                        "company's facts."
                     ),
                     sources_tried=tuple(sorted({e.kind for e in evidence})),
                 )
