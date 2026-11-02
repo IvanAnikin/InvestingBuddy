@@ -5521,3 +5521,13 @@ not have fixed it.
   safe.
 - Discovery's verified `securities` are still not persisted to the entity master. Doing
   so would make step 2 the live path.
+- Review (PR #311), not blocking:
+  - The SEC directory loader (`parse_sec`) drops OTC rows, so the uniqueness check
+    cannot see an OTC namesake. Rio Tinto Ltd (CIK 887028) is invisible next to Rio
+    Tinto plc. The registrant-domicile check is what refuses such a link today. Counting
+    OTC rows when judging ambiguity is a follow-up.
+  - The name scan is linear over about 7.7k rows (around 68 ms per call, once per
+    research run). It should become a daily name index.
+  - The V2 classification call (`company_analysis`) goes through the same resolver, by
+    way of `classification/service.py`.
+  - The display ticker is the first one alphabetically.
