@@ -6205,3 +6205,95 @@ before and after the review fixes.
   out of summaries.
 - **V1 council output is out of scope.** It does not read V3 findings. No live run yet;
   acceptance needs a PYPL rerun after deploy.
+
+## ADR-079: A Web Copy of an EDGAR Filing Is the Issuer's Only When Its CIK Is
+
+**Date:** 2026-11-02 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, live Cellectis rerun `df36d6f6`, defect
+CLLS3-1 (P0). Web search put a Cboe EDGA Exchange, Inc. financial-statement exhibit from
+`sec.gov/Archives/edgar/data/<another CIK>/…` into Cellectis's corpus. F1–F3 said "The
+company operates a single reportable segment: an electronic market…", "29% of its total
+revenues from its largest two customers" and "the Parent Company's CEO is the chief
+operating decision maker". They were labelled "issuer filing", led the executive
+synthesis, and replaced the 20-F's "Therapeutics segment" finding. The same path brought
+Calyxt's FY2022 20-F risk factors into CLLS2.
+
+### Where the class came from
+- `web_research/classify.classify_source`: the host (`publisher_tier(sec.gov/Archives…)`
+  = T1) gives `regulatory_filing`. It is stored on the web version at ingest
+  (`web_research/ingest.py`) for whichever company the search ran for.
+- `director/contracts.evidence_ref_for`: a T1 item maps to `issuer_filing`. Web leads are
+  forced to `third_party_filing` unless `issuer_match` is set, but `search_company_corpus`
+  hits were exempt. So every web EDGAR page in the subject's corpus became the
+  subject's issuer filing, and the finding's `source_kinds` said so.
+- The ADR-066/074 guards key on a named other company or on its own domain. "The
+  company" on sec.gov passes both.
+
+### Decision
+1. **`web_research/edgar_registrant.py`** reads the registrant CIK from an EDGAR URL:
+   `/Archives/edgar/data/<CIK>/`, `ix?doc=/Archives/edgar/data/<CIK>/…`,
+   `browse-edgar?…CIK=`, `data.sec.gov/…/CIK##########.json` and `efts` `ciks=` (one only).
+   Leading zeros are stripped. The accession prefix is never used (it is the filing
+   agent's CIK). A ticker in `CIK=` is not a CIK.
+2. **Verdict per web item on an EDGAR filing page** (`registrant_verdict`):
+   - the URL's CIK is the subject's → `own` → `issuer_filing`;
+   - the subject has no SEC basis (ADR-075 `sec_listing_for` is None) and the URL names a
+     registrant → `other`;
+   - the subject's CIKs are known and differ → `other` → `third_party_filing`;
+   - no CIK in the URL, or an SEC subject whose CIK could not be resolved →
+     `unidentified` → `third_party_filing`: never the issuer's, never dropped.
+   sec.gov pages outside the filing archive are already `regulator_publication` (T2) and
+   are not touched.
+3. **The subject's CIKs** (`LLMInvestigator._resolve_edgar_subject`, once per
+   investigator, only when a web EDGAR page is present): ADR-075's `sec_listing_for` CIK,
+   plus every CIK the SEC ticker directory lists for that line's ticker. The sibling
+   line (CLLS for ALCLS) therefore counts as the subject. A resolver failure gives
+   `unidentified`, not `other`.
+4. **Applied in the investigator** (`apply_edgar_registrant`) after acquisition, before
+   the evidence contract reads the question's refs, and again (idempotently) in
+   `_write_up`. The stored `source_class` is not rewritten: a web version is shared by
+   content hash, so "the subject's filing" is a per-run judgement, as with
+   `trust.is_verified_issuer`.
+5. **Statement guard** (beside ADR-066/074, outside peer domains): a statement whose
+   cited items are ALL web pages of another registrant is dropped. It is counted in
+   `statements_about_other_registrant` (diagnostics, pinned). The question gets one
+   `entity_ambiguous` gap naming the registrants by CIK, and by name when the SEC ticker
+   directory knows the CIK. Page text never supplies a name. In `competitive_position` the
+   statement is kept, labelled `third_party_filing`.
+6. **Platform SEC evidence is never re-judged.** The filing bridge
+   (`ensure_filing_corpus_evidence`), core filings and the filings tools produce non-web
+   items (`source_class` None). They were fetched for the subject's own CIK by ADR-075's
+   resolver, so they keep `issuer_filing`.
+
+### Replay over the 15 stored campaign reports
+Reports store EDGAR URLs only for platform/V2 items. They do not store the URL of a web
+corpus chunk, so web sec.gov items are identified by origin `sec.gov`.
+
+| Report | Stored EDGAR URLs (own / other) | Web sec.gov items | Findings resting only on them | Under ADR-079 |
+|---|---|---|---|---|
+| ADBE | 5 / 0 | 3 | 6 | kept if Adobe's CIK 796343 (dated 2022-12-02, 2025-11-28 = Adobe FY ends; statements name Adobe) |
+| HON, HON2 | 4, 6 / 0 | 0 | 0 | unchanged |
+| JPM | 6 / 0 | 0 | 0 | unchanged |
+| PYPL, PYPL2, PYPL3 | 4 each / 0 | 0 | 0 | unchanged |
+| CLLS | 0 | 0 | 0 | unchanged |
+| CLLS2 | 0 | 1 (FY2022 risk factors on Calyxt) | 1 (`counter_thesis`) | URL not stored: under CIK 1627281 (Cellectis's own FY2022 20-F) it is kept — a staleness defect, not a registrant one; under Calyxt's CIK it is dropped |
+| CLLS3 | 0 | 1 (Cboe EDGA exhibit) | 3 (F1–F3, `business_model`) | dropped, gap names the CIK; 20-F finding stands |
+| ANTO, ANTO2, CFR, LIN, LIN2 | 0 | 0 | 0 | unchanged (non-SEC) |
+
+No stored EDGAR URL of a subject's own filing changes verdict (33 of 33 `own`, 0 `other`).
+
+### Not changed / known limits
+- **The ADBE verdict is inferred, not read.** The three URLs are in the ledger, not the
+  report. If any is another registrant's, its findings are dropped. That is the
+  intended behaviour.
+- **Admission is unchanged.** Another registrant's page is still stored in the subject's
+  corpus and can still be retrieved. It can no longer be cited as the issuer's word
+  outside peer domains. Filtering at ingest needs the subject's CIK in the web stage.
+- **A multi-filer accession** (a 13D or a tender offer filed under both the filer's and
+  the subject company's CIK) read through the subject's directory counts as `own`.
+- **Mixed support is kept.** A statement citing the subject's 20-F and another
+  registrant's page keeps both kinds and is not dropped.
+- **Ladder stop decisions** inside `_acquire` still see the pre-check kinds. The
+  recorded contract outcome uses the checked kinds.
+- **Not wired:** discovery's council pack and W6 theme runs (no subject CIK), and the V2
+  path.
