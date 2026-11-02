@@ -1057,9 +1057,11 @@ async def _run(
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
     #    and the Chair must not see one that was retired.
     council = await council_inputs.assemble(session, run)
-    verdict: ChairVerdict = await LLMChair(client=model_routing.client_for(SLOT_CHAIR)).deliberate(
-        council
-    )
+    verdict: ChairVerdict = await LLMChair(
+        client=model_routing.client_for(SLOT_CHAIR),
+        subject={"name": getattr(company, "name", None),
+                 "ticker": getattr(company, "ticker", None)},
+    ).deliberate(council)
     outcome.chair = verdict.to_dict()
     if verdict.deterministic_fallback:
         # Named, because the two states mean opposite things about the deployment. The

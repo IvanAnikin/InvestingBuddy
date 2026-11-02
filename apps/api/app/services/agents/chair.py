@@ -29,14 +29,24 @@ DEGRADING IS PART OF THE CONTRACT
 =================================
 No model, or a model failure, produces a **deterministic** chair verdict computed from the
 ledger — the property V3.0 established. A run never loses its conclusion to a provider.
+
+MATERIAL EVENTS NEED A VETTED SOURCE (ADR-078)
+==============================================
+A takeover offer, insolvency, delisting, a CEO or CFO leaving, fraud, a restatement or
+an enforcement action is not stated by the chair — in a key point or in its synthesis —
+unless a finding on a vetted source (issuer filing or release, regulator, official
+filing system, curated press) states it. Enforced after the reply, like the labels.
 """
 
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services import material_events
 from app.services.council_v2.inputs import CouncilInput
 from app.services.llm.schemas import (
     ALLOWED_COMMITTEE_LABELS,
@@ -90,7 +100,39 @@ class ChairVerdict:
         }
 
 
-def deterministic_verdict(council_input: CouncilInput) -> ChairVerdict:
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(])")
+
+
+def _gate_material_events(
+    verdict: ChairVerdict, council_input: CouncilInput, subject: Mapping[str, Any] | None
+) -> ChairVerdict:
+    """ADR-078 — drop key points and synthesis sentences that state a material event no
+    finding on a vetted source states. Dropped, not repaired."""
+    by_id = {str(f.finding_id): f for f in council_input.findings}
+    verdict.key_points = [
+        point for point in verdict.key_points
+        if not material_events.sentence_blocked(
+            str(point.get("text") or ""),
+            [by_id[str(point.get("finding_id"))]] if str(point.get("finding_id")) in by_id
+            else [],
+            subject,
+        )
+    ]
+    vetted = material_events.vetted_event_types(council_input.findings, subject)
+    sentences = [p for p in _SENTENCE_RE.split(verdict.synthesis or "") if p.strip()]
+    kept = [
+        sentence for sentence in sentences
+        if (event := material_events.material_event(sentence, subject)) is None
+        or event in vetted
+    ]
+    if len(kept) != len(sentences):
+        verdict.synthesis = " ".join(kept)
+    return verdict
+
+
+def deterministic_verdict(
+    council_input: CouncilInput, subject: Mapping[str, Any] | None = None
+) -> ChairVerdict:
     """The Chair when no model is available. Computed, never guessed.
 
     The label follows from the ledger's own state: nothing verified is
@@ -109,7 +151,7 @@ def deterministic_verdict(council_input: CouncilInput) -> ChairVerdict:
         label, setup = "requires_more_evidence", "mixed"
     else:
         label, setup = "internal_research_candidate", "constructive"
-    return ChairVerdict(
+    verdict = ChairVerdict(
         label=label,
         fundamental_setup=setup,
         synthesis=(
@@ -132,6 +174,7 @@ def deterministic_verdict(council_input: CouncilInput) -> ChairVerdict:
         ],
         deterministic_fallback=True,
     )
+    return _gate_material_events(verdict, council_input, subject)
 
 
 @dataclass
@@ -139,6 +182,9 @@ class LLMChair:
     """The Chair, over the ledger, with the safety vocabulary enforced after the fact."""
 
     client: Any = None
+    #: ``{"name", "ticker"}`` of the run's company, so a material event can be told to
+    #: be ABOUT it (ADR-078). Optional: without it, "the company" / "the board" still is.
+    subject: Mapping[str, Any] | None = None
 
     async def deliberate(self, council_input: CouncilInput) -> ChairVerdict:
         # The conflict the Chair is required to surface, taken from the ledger BEFORE
@@ -147,7 +193,7 @@ class LLMChair:
             str(d.disagreement_id) for d in council_input.unresolved_disagreements
         ]
         if self.client is None or not council_input.convened:
-            verdict = deterministic_verdict(council_input)
+            verdict = deterministic_verdict(council_input, self.subject)
             verdict.unresolved_disagreement_ids = unresolved_ids
             # Which of the two it was. Checked in this order because a council that did
             # not convene has nothing to synthesise even where a model is available, and
@@ -174,6 +220,11 @@ class LLMChair:
             "more authoritative and why. Do NOT quietly pick one.\n"
             "6. Group and segment figures are different; annual and interim are "
             "different. Never merge them.\n"
+            "7. Never state a takeover offer, merger, going-private, insolvency, "
+            "delisting, CEO or CFO departure, fraud, restatement or enforcement action "
+            "as fact unless a finding whose source_kinds include issuer_filing, "
+            "issuer_ir, government_or_regulator, third_party_filing or quality_media "
+            "states it.\n"
             "\n"
             'Return ONLY JSON: {"label": str, "fundamental_setup": str, "synthesis": '
             'str, "key_points": [{"text": str, "finding_id": str}]}'
@@ -182,7 +233,7 @@ class LLMChair:
         try:
             payload = await self._complete_json(system, user)
         except Exception:  # noqa: BLE001 - a chair failure falls back, never fails a run
-            verdict = deterministic_verdict(council_input)
+            verdict = deterministic_verdict(council_input, self.subject)
             verdict.unresolved_disagreement_ids = unresolved_ids
             return verdict
 
@@ -212,7 +263,7 @@ class LLMChair:
         if setup not in ALLOWED_FUNDAMENTAL_SETUPS:
             setup = DEFAULT_FUNDAMENTAL_SETUP
 
-        return ChairVerdict(
+        verdict = ChairVerdict(
             label=label,
             fundamental_setup=setup,
             synthesis=str(payload.get("synthesis") or "").strip()[:4000],
@@ -223,6 +274,7 @@ class LLMChair:
             unresolved_disagreement_ids=unresolved_ids,
             discarded_citations=discarded,
         )
+        return _gate_material_events(verdict, council_input, self.subject)
 
     def _prompt(self, council_input: CouncilInput) -> str:
         lines = ["FINDINGS (cite by finding_id):"]
@@ -237,6 +289,7 @@ class LLMChair:
                         "period_key": finding.period_key,
                         "scope_key": finding.scope_key,
                         "verification_status": finding.verification_status,
+                        "source_kinds": list(finding.source_kinds),
                         # Migration 043 — a superseded finding is PRIOR guidance; the
                         # newer one it names is current.
                         "source_published_at": getattr(finding, "source_published_at", None),
