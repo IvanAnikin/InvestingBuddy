@@ -890,9 +890,13 @@ async def ensure_core_filings(
     same guarantees: accessions from the regulator, URLs built from code constants, never
     from a model.
 
-    SEC registrants only. Never raises; returns what happened for each filing.
+    SEC registrants only — but an issuer is an SEC registrant when ANY verified line of it
+    is (ADR-075): a Paris-listed company whose same-issuer ADS trades on Nasdaq has its
+    20-F read through that line, and the basis is recorded under ``sec_basis``.
+
+    Never raises; returns what happened for each filing.
     """
-    from app.services.exchange_registry import is_sec_eligible
+    from app.services.entities.sec_listing import sec_listing_for
 
     out: dict[str, Any] = {"annual": None, "quarterly": None}
     if not (
@@ -901,11 +905,13 @@ async def ensure_core_filings(
     ):
         out["skipped"] = "filings tool or filing bridge disabled"
         return out
-    ticker = getattr(company, "ticker", None)
-    exchange = getattr(company, "exchange", None)
-    if not ticker or not is_sec_eligible(exchange):
+    basis = await sec_listing_for(session, company, cfg=cfg)
+    if basis is None:
         out["skipped"] = "not an SEC registrant"
         return out
+    ticker, exchange = basis.ticker, basis.exchange
+    if basis.is_sibling:
+        out["sec_basis"] = basis.to_dict()
     if provider is None:
         from app.integrations.providers.sec_recent_filings_provider import (
             SecRecentFilingsProvider,
@@ -918,6 +924,7 @@ async def ensure_core_filings(
             exchange=exchange,
             lookback_days=CORE_FILINGS_LOOKBACK_DAYS,
             max_events=80,
+            **({"cik": basis.cik} if basis.cik else {}),
         )
     except Exception as exc:  # noqa: BLE001 - discovery failing costs the step only
         out["skipped"] = f"filing list unavailable ({type(exc).__name__})"

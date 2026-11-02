@@ -85,6 +85,23 @@ def _no_live_sec_directory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_sec_sibling_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ADR-075's same-issuer SEC listing resolver read an EMPTY SEC directory and NO
+    registrant record, so a non-US company in any test resolves to "not an SEC
+    registrant" exactly as before. Tests of the resolver patch both themselves."""
+    from app.services.entities import sec_listing
+
+    async def _empty(cfg: object = None) -> list:  # noqa: ANN202
+        return []
+
+    async def _unread(cik: str, cfg: object = None) -> None:
+        return None
+
+    monkeypatch.setattr(sec_listing, "_load_sec_directory", _empty)
+    monkeypatch.setattr(sec_listing, "_registrant_domicile", _unread)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_sec_classification(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the classification layer's SEC lookup inert for every test by default.
 
