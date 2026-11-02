@@ -710,6 +710,7 @@ async def _pg_document(
     source_class: str | None,
     text: str,
     chunks: int = 2,
+    url: str | None = None,
 ) -> list[ResearchDocumentChunk]:
     from app.models.research_derivation import ResearchDocumentDerivation
     from app.models.research_document import ResearchDocument, ResearchDocumentVersion
@@ -724,7 +725,7 @@ async def _pg_document(
     await session.flush()
     version = ResearchDocumentVersion(
         id=uuid.uuid4(), research_document_id=document.id,
-        content_hash=uuid.uuid4().hex * 2, canonical_url=f"https://example.test/{key}",
+        content_hash=uuid.uuid4().hex * 2, canonical_url=url or f"https://example.test/{key}",
         transport="open_web" if source_class else "sec_edgar", source_tier=tier,
         access_class="public_web" if source_class else "public_official",
         published_at=published, retrieved_at=now, extraction_status="extracted",
@@ -825,3 +826,50 @@ class TestTheAnchorOnPostgres:
             ))
         )).scalars())
         assert admitted == {cid for cid, ok in expected.items() if ok}
+
+    async def test_a_6k_ingested_undated_is_dated_by_the_bridge_and_read_in_the_window(
+        self, pg_session
+    ) -> None:
+        """CLLS2-5 + CLLS3-3 on PostgreSQL: the 6-K/A held undated is dated with its SEC
+        filing date when the bridge meets it, and the window then includes it beside a
+        quote page dated today."""
+        from app.models.company import Company
+        from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
+        from app.services.corpus.search.backends.postgres import PostgresSearchBackend
+
+        company_id = uuid.uuid4()
+        pg_session.add(Company(id=company_id, ticker=f"C{uuid.uuid4().hex[:5]}",
+                               exchange="NASDAQ", name="Cellectis Test", status="new"))
+        await pg_session.flush()
+        today = date.today()
+        filed = date.fromordinal(today.toordinal() - 52)
+        await _pg_document(pg_session, company_id, key="quote", published=today,
+                           tier="T5_api_aggregator", source_class="unknown_web",
+                           text=_QUOTE_TEXT)
+        url = ("https://www.sec.gov/Archives/edgar/data/1627281/000119312526389336/"
+               "clls-ex99_1.htm")
+        await _pg_document(pg_session, company_id, key="six_k", published=None,
+                           tier="T1_primary_filing", source_class=None, text=_SIX_K_TEXT,
+                           url=url)
+        backend = PostgresSearchBackend(pg_session)
+        anchor = CorpusFilters(company_ids=(company_id,), disclosures_only=True)
+        assert await backend.newest_published_at(anchor) is None, "precondition: undated"
+
+        cfg = SimpleNamespace(v3_filing_body_bridge_enabled=True, v3_corpus_enabled=True)
+        result = await ensure_filing_corpus_evidence(
+            pg_session, company_id=company_id, cik="1627281",
+            accession="0001193125-26-389336", form="6-K/A", cfg=cfg,
+            document_name="clls-ex99_1.htm", filing_date=filed.isoformat(),
+        )
+        assert result.state == "ready" and result.reused is True
+        assert await backend.newest_published_at(anchor) == filed
+
+        validated = validate_search_company_corpus(
+            {"query": "results release cash flow", "company_ids": [str(company_id)],
+             "mode": "lexical", "top_k": 12, "recent_window_days": inv.RECENCY_WINDOW_DAYS}
+        )
+        payload = await _search_company_corpus(
+            SimpleNamespace(search_backend=backend, cfg=_CFG, session=pg_session), validated
+        )
+        assert payload["recency_window"]["newest_held"] == filed.isoformat()
+        assert filed.isoformat() in {i["published_at"] for i in payload["items"]}

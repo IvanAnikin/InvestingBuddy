@@ -5849,7 +5849,42 @@ Cellectis's issuer pages are also classed `unknown_web` (CLLS-5). Under this ame
 CLLS3 corpus therefore holds no dated disclosure, so the pass anchors no window and says
 so ("no dated issuer or primary disclosure is held"). It no longer runs a window anchored
 on the quote page. The 6-K/A reaches the pass only once core-filing chunks carry their
-filing date, which is a separate fix.
+filing date. The follow-up below adds that date.
+
+**Filing dates on SEC corpus chunks (same amendment, CLLS2-5).**
+`ensure_filing_corpus_evidence` takes a `filing_date`: the SEC filing date, never the
+period end.
+- The callers pass what they already hold:
+  - `ensure_core_filings` passes the EDGAR submissions `filingDate` of the 10-K, 20-F,
+    40-F or 10-Q event;
+  - the ADR-077 results-6-K slot passes the selected 6-K's index-row `filing_date`;
+  - the `get_recent_filings` tool bridge passes each item's `filing_date`. This is also
+    the bridge route by which an 8-K reaches the corpus.
+- `filing_evidence.stamp_filing_date` sets `published_at` on the version and on its
+  chunks, with an `UPDATE … WHERE published_at IS NULL` in a SAVEPOINT. It never
+  overwrites a recorded date, is idempotent and never raises.
+  - It runs whenever a filing is found searchable: on a reuse, which backfills filings
+    first stored undated without a migration, and after an acquisition.
+  - `acquire_sec_filing` also stamps the version **before** `index_version`, so a
+    backend that copies the date at index time (the memory backend) carries it too.
+  - The acquirer receives `filing_date` only when one is known, so an acquirer written
+    before this change still works.
+- Scope:
+  - Only the corpus version and its chunks are dated. The V2 `ExtractedDocument.doc_date`
+    is left alone, because `issuer_financials` orders by it.
+  - SEC documents persisted outside the bridge, by the legacy council's
+    `company_evidence` primary-document path (including its ADR-068 8-K EX-99.1
+    selection), are still undated until the bridge meets them.
+  - Period logic runs only at version creation, so a later stamp cannot change a
+    period.
+- Tests (`tests/test_v3_filing_corpus_bridge.py`, plus one PostgreSQL case in the
+  recency file):
+  - an acquired 6-K/A with filing date 2026-09-11 is dated and anchors the window over a
+    quote page dated today;
+  - the window includes it, end to end;
+  - an undated held filing is backfilled, and a recorded date is never overwritten;
+  - the date is stamped before indexing;
+  - the filings tool dates a held filing.
 
 **Tests** (`tests/test_qa_campaign_recency_evidence.py`, 41 run on SQLite plus 2 on
 PostgreSQL):

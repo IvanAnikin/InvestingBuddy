@@ -669,6 +669,9 @@ async def test_the_quarterly_slot_of_a_20f_filer_reads_the_results_6k(bridged) -
     # The bridge was asked for THE exhibit, not the 6-K's cover page.
     assert bridged[1]["document_name"] == "clls-ex99_1.htm"
     assert bridged[1]["accession"] == "0001193125-26-389336"
+    # ADR-076 review: anchor — both slots pass their EDGAR filing date (never a period end).
+    assert bridged[1]["filing_date"] == "2026-09-11"
+    assert bridged[0]["filing_date"] == out["annual"]["filing_date"]
 
 
 async def test_no_results_6k_is_not_listed_with_the_reason(bridged) -> None:

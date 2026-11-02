@@ -419,6 +419,9 @@ async def _ensure_filing_bodies(
                 form=item.get("form_type"),
                 cfg=cfg,
                 ready_only=budget <= 0,
+                # EDGAR submissions ``filingDate`` — dates the corpus chunks (ADR-076
+                # review: anchor).
+                filing_date=item.get("filing_date"),
             )
             # One slot per ATTEMPT, success or failure. A failure that refunded its
             # slot would let the same failing filings be retried without limit.
