@@ -45,7 +45,7 @@ linear in the statement's length.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -212,11 +212,30 @@ _PART_SALE_RE = re.compile(
 )
 _OFFER_NOUN = r"(?:offer|bid|approach(?!\s+to\s+(?!acquire|buy|purchase|take)))"
 _VERDICT = r"(?:rejected|rebuffed|spurned|turned\s+down|accepted|refused|rejects|accepts|rebuffs)"
-_TAKEOVER_MODIFIER_RE = re.compile(
-    r"\b(?:takeover|take-over|acquisition|buyout|buy-out|merger|unsolicited|hostile|"
-    r"all-cash|per-share|indicative|non-binding)\b|[$€£]\s?\d|\bbillion\b|\bper[\s-]share\b",
+#: A deal word, a price or a valuation word. An offer accepted or rejected is a takeover
+#: only beside one: "PayPal accepted an offer to join the FedNow pilot" is not.
+_DEAL_CONTEXT_RE = re.compile(
+    r"\b(?:takeover|take-over|acquisition|acquir\w*|buyout|buy-out|bid|tender|go-private|"
+    r"take-private|going\s+private|merger|unsolicited|hostile|all-cash|per-share|"
+    r"indicative|non-binding|inadequate|undervalu\w*|premium|valuation|"
+    r"approach(?!\s+to\b))\b|[$€£]\s?\d|\bbillion\b|\bper[\s-]share\b",
     _I,
 )
+#: "a $53 billion proposal": a priced proposal, offer or bid at takeover scale. Debt,
+#: buyback and exchange offers are not takeovers.
+_PRICED_PROPOSAL_RE = re.compile(
+    r"(?:[$€£]\s?\d[\d.,]*\s*(?:billion|bn|b)\b|\b\d[\d.,]*\s*(?:billion|bn)\b)[\s-]+"
+    r"(?:(?!(?:notes?|bonds?|debt|debentures?|buyback|repurchase|exchange|tender|credit)\b)"
+    r"[\w-]+\s+){0,3}?(?:proposal|offer|bid)\b",
+    _I,
+)
+#: "The board found it inadequate": the verdict on an offer, in valuation words.
+_INADEQUATE_RE = re.compile(
+    r"\b(?:deemed|found|finds|judged|considered|called|described|viewed|regards?|"
+    r"regarded)\b.{0,40}?\b(?:inadequate|too\s+low|undervalu\w+)\b",
+    _I,
+)
+_OFFER_WORD_RE = re.compile(r"\b(?:offer|bid|proposal|approach)\b", _I)
 #: Phrases that are takeover events when the statement is about the subject.
 _TAKEOVER_RES: tuple[re.Pattern[str], ...] = (
     re.compile(
@@ -230,14 +249,15 @@ _TAKEOVER_RES: tuple[re.Pattern[str], ...] = (
     # A PENDING merger. "Completed its merger with X" is the subject acquiring X.
     re.compile(
         r"(?<!its\s)\bmerger\s+(?:agreement|of\s+equals|talks|proposal)\b|"
-        r"\b(?:agreed|agrees|plans?|proposes?|proposed)\s+to\s+merge\b|"
+        r"\b(?:agreed|agrees|plans?|proposes?|proposed)\s+to\s+merge\b"
+        r"(?!\s+(?:its|their|the|our)\b)|"
         r"\b(?:to|will|would)\s+merge\s+with\b|\bmerging\s+with\b|"
         r"\b(?:proposed|potential|pending|planned|possible|announced|rumou?red|reported)\s+"
         r"merger\b", _I,
     ),
     re.compile(
         r"\b(?:explor\w*|weigh\w*|consider\w*|review\w*|evaluat\w*)\s+(?:a\s+)?"
-        r"(?:(?:potential|possible)\s+)?(?:sale\b(?!\s+of\s+(?:its|the|a|their)\b)|"
+        r"(?:(?:potential|possible)\s+)?(?:sale\b(?!\s+of\b)|"
         r"strategic\s+alternatives)|\bsell\s+itself\b", _I,
     ),
 )
@@ -253,6 +273,7 @@ _TARGETED_TEMPLATES: tuple[str, ...] = (
     r"considering|exploring|agreed|agrees|tried|trying|attempt(?:s|ed|ing)?)\s+to\s+"
     r"(?:buy|acquire|take\s+over|purchase|take\s+private)\s+{S}",
     r"\btak(?:e|es|en|ing)\s+{S}\s+private\b",
+    r"\bapproach(?:ed|es|ing)\s+{S}",
     r"\bdelisting\s+of\s+{S}",
 )
 #: "offered $53B for PayPal": an offer with a price, for the subject.
@@ -352,14 +373,50 @@ def _takeover(text: str, s: _Subject) -> bool:
         if _actor_before(text, match.start(), s):
             return True
     part_sale = bool(_PART_SALE_RE.search(text))
-    if not part_sale and rejecter.search(text):
+    deal = bool(_DEAL_CONTEXT_RE.search(text))
+    if not part_sale and deal and (rejecter.search(text) or _PASSIVE_VERDICT_RE.search(text)):
         return True
-    if not part_sale and (
-        (re.search(r"\bboard\b", text, _I) or _TAKEOVER_MODIFIER_RE.search(text))
-        and _PASSIVE_VERDICT_RE.search(text)
+    if not part_sale and _PRICED_PROPOSAL_RE.search(text) and _about_subject(text, s):
+        return True
+    if _INADEQUATE_RE.search(text) and (
+        re.search(r"\bboard\b", text, _I) or _OFFER_WORD_RE.search(text)
     ):
         return True
     return any(r.search(text) for r in _TAKEOVER_RES) and _about_subject(text, s)
+
+
+#: After "retire"/"retirement (of)"/"successor": a word that shows the verb is about a
+#: PERSON leaving ("retired in 2023", "successor was named"), not a thing being retired
+#: ("the retirement of legacy checkout", "retire the notes", "successor product").
+_PERSON_SENSE_WORDS: frozenset[str] = frozenset(
+    {
+        "in", "as", "at", "after", "from", "on", "effective", "earlier", "last", "this",
+        "next", "and", "with", "following", "by", "before", "early", "when", "while", "to",
+        "for", "that", "which", "who", "but", "or", "during", "upon", "later", "soon",
+        "was", "is", "has", "had", "will", "would", "named", "appointed", "search", "plan",
+        "ceo", "cfo", "chief", "managing", "finance", "president", "chair", "chairman",
+        "chairwoman", "founder", "co-founder", "executive", "officer", "director", "mr",
+        "ms", "mrs", "dr", "his", "her",
+    }
+)
+_AFTER_VERB_RE = re.compile(
+    r"\s+(?:of\s+)?(?:(?:the|its|our|their|a|an)\s+)?([A-Za-z][\w-]*)"
+)
+
+
+def _is_departure(window: str, match: re.Match[str]) -> bool:
+    """A departure verb about a person or a role, never a product or a system."""
+    word = match.group(0).lower()
+    if not word.startswith(("retire", "succeed", "successor")):
+        return True
+    rest = window[match.end():]
+    if word.startswith("succeed") and re.match(r"\s+in\b", rest, _I):
+        return False  # "succeeded in cutting costs"
+    after = _AFTER_VERB_RE.match(rest)
+    if after is None:
+        return True  # "will retire.", "retired, succeeded by …"
+    following = after.group(1)
+    return following[0].isupper() or following.lower() in _PERSON_SENSE_WORDS
 
 
 def _departures(text: str, s: _Subject) -> set[str]:
@@ -367,7 +424,7 @@ def _departures(text: str, s: _Subject) -> set[str]:
     for role_re, event in ((_CEO_RE, EV_CEO_DEPARTURE), (_CFO_RE, EV_CFO_DEPARTURE)):
         for role in role_re.finditer(text):
             window = text[max(0, role.start() - 80): role.end() + 80]
-            if not _DEPARTURE_RE.search(window):
+            if not any(_is_departure(window, m) for m in _DEPARTURE_RE.finditer(window)):
                 continue
             owner = _ROLE_OWNER_RE.search(text[max(0, role.start() - 40): role.start()])
             if owner and not _names_subject(owner.group(1), s):
@@ -409,6 +466,86 @@ def material_event(text: str | None, subject: Mapping[str, Any] | None = None) -
     or ``None``."""
     types = event_types(text, subject)
     return min(types) if types else None
+
+
+#: Words that hint at each event type in a sentence that names the counterparty of an
+#: unvetted event: "Stripe's interest is undiminished" after a rumoured Stripe offer.
+_TYPE_HINTS: dict[str, re.Pattern[str]] = {
+    EV_TAKEOVER: re.compile(
+        r"\b(?:offer\w*|bid\w*|proposal|approach\w*|interest|deal|acquir\w*|buy\w*|"
+        r"merg\w*|takeover|valuation|inadequate|premium|board|suitor|sale)\b", _I),
+    EV_GOING_PRIVATE: re.compile(r"\b(?:private|buyout|delist\w*)\b", _I),
+    EV_INSOLVENCY: re.compile(
+        r"\b(?:bankrupt\w*|insolven\w*|administration|creditors?|chapter|liquidat\w*)\b", _I),
+    EV_DELISTING: re.compile(r"\b(?:list\w*|exchange)\b", _I),
+    EV_CEO_DEPARTURE: re.compile(
+        r"\b(?:CEO|chief\s+executive|leader\w*|step\w*|resign\w*|depart\w*|oust\w*|"
+        r"exit\w*|replac\w*|success\w*|retire\w*)\b", _I),
+    EV_CFO_DEPARTURE: re.compile(
+        r"\b(?:CFO|chief\s+financial|finance\s+chief|step\w*|resign\w*|depart\w*|"
+        r"oust\w*|exit\w*|replac\w*|success\w*|retire\w*)\b", _I),
+    EV_MISCONDUCT: re.compile(
+        r"\b(?:fraud\w*|restat\w*|enforcement|regulators?|investigat\w*|probe|fine[sd]?|"
+        r"penalt\w*|charge[sd]?|sanction\w*|settle\w*)\b", _I),
+}
+_PROPER_NAME_RE = re.compile(r"\b[A-Z][A-Za-z&\-]{2,}\b")
+_NOT_A_COUNTERPARTY: frozenset[str] = frozenset(
+    {
+        "the", "and", "for", "its", "this", "that", "these", "those", "after", "before",
+        "according", "reports", "reported", "shares", "board", "company", "group",
+        "management", "analysts", "investors", "sources", "media", "press", "inc", "ltd",
+        "plc", "corp", "chief", "executive", "financial", "officer", "president", "ceo",
+        "cfo", "sec", "usd", "eur", "gbp", "gaap", "january", "february", "march", "april",
+        "may", "june", "july", "august", "september", "october", "november", "december",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    }
+)
+
+
+def counterparties(
+    findings: Iterable[Mapping[str, Any] | Any], subject: Mapping[str, Any] | None = None
+) -> dict[str, set[str]]:
+    """Event type -> the other parties NAMED in findings that state it on unvetted
+    sources only (the would-be acquirer, the ousted executive), minus the subject."""
+    s = _subject(subject)
+    own = {w.casefold() for n in s.names for w in n.split()}
+    if s.ticker:
+        own.add(s.ticker.casefold())
+    out: dict[str, set[str]] = {}
+    for finding in findings:
+        if is_vetted(_get(finding, "source_kinds")):
+            continue
+        statement = str(_get(finding, "statement") or "")[:MAX_SCAN_CHARS]
+        types = event_types(statement, subject)
+        if not types:
+            continue
+        names = {
+            w for w in _PROPER_NAME_RE.findall(statement)
+            if w.casefold() not in own and w.casefold() not in _NOT_A_COUNTERPARTY
+        }
+        for event in types:
+            out.setdefault(event, set()).update(names)
+    return out
+
+
+def uncited_sentence_blocked(
+    sentence: str,
+    vetted: Collection[str],
+    unvetted_parties: Mapping[str, Collection[str]],
+    subject: Mapping[str, Any] | None = None,
+) -> bool:
+    """For prose that cites nothing (the chair's synthesis): drop a sentence stating an
+    event type no vetted finding of the run states, or naming the counterparty of an
+    unvetted event in words about that same type."""
+    if not set(event_types(sentence, subject)) <= set(vetted):
+        return True
+    body = sentence[:MAX_SCAN_CHARS]
+    for event, names in unvetted_parties.items():
+        if event in vetted or not _TYPE_HINTS[event].search(body):
+            continue
+        if any(re.search(r"\b" + re.escape(n) + r"\b", body) for n in names):
+            return True
+    return False
 
 
 def is_vetted(source_kinds: Iterable[str] | None) -> bool:
@@ -470,11 +607,13 @@ __all__ = [
     "EVENT_TYPES",
     "REASON",
     "VETTED_SOURCE_KINDS",
+    "counterparties",
     "event_types",
     "is_vetted",
     "material_event",
     "sentence_blocked",
     "subject_names",
+    "uncited_sentence_blocked",
     "unvetted_event",
     "vetted_event_types",
 ]

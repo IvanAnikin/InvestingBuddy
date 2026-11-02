@@ -5895,6 +5895,27 @@ The finding stays in the ledger and in its section with its honest source.
 - **Bounds:** input is capped at 8,000 characters and every window is bounded, so a
   1 MB adversarial string scans in under 0.1 s.
 
+**Review round 2.**
+- An accepted or rejected "offer/approach" is a takeover only beside one of:
+  - a deal word (takeover, buyout, acquisition, acquire, bid, tender, go-private,
+    merger);
+  - a price;
+  - a valuation word (inadequate, undervalues, premium).
+
+  "PayPal accepted an offer to join the FedNow pilot" stays an ordinary fact.
+- Newly detected:
+  - "a $53 billion proposal" (billion scale, not debt or buyback);
+  - "approached <subject>/the company";
+  - "deemed/found … inadequate" (with "board" or an offer word present).
+- No longer detected:
+  - "sale of <named asset>", "merge its …";
+  - "retire"/"successor" about a product or system ("the retirement of legacy checkout",
+    "retire the notes", "successor platform", "succeeded in cutting costs").
+- **Chair only:** a synthesis sentence is also dropped when it names a counterparty of an
+  unvetted event finding (a proper name in that finding other than the subject, e.g.
+  Stripe, Advent) together with a hint word for the same event type ("Stripe's interest
+  in the company persists"). "Stripe competes in online checkout" is kept.
+
 ### Not flagged (pinned in tests)
 Acquisitions BY the subject:
 - "PayPal acquired Xoom in 2015", "Xoom was acquired by PayPal";

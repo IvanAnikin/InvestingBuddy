@@ -71,6 +71,14 @@ FALSE_POSITIVES = [
     "The company delisted its preferred shares from the NYSE in 2023.",
     "The company's growth strategy depends on its ability to acquire it new customers.",
     "PayPal's CEO Alex Chriss, who replaced Dan Schulman in 2023, outlined a turnaround.",
+    # Review round 2 (R1): ordinary issuer prose.
+    "PayPal accepted an offer to join the FedNow pilot.",
+    "The company's merchants accepted the offer.",
+    "The CEO announced the retirement of legacy checkout.",
+    "PayPal is exploring a sale of Xoom.",
+    "PayPal plans to merge its Venmo and PayPal apps.",
+    "The CEO succeeded in cutting costs.",
+    "The company will retire the notes, the CFO said.",
 ]
 
 #: Review D4 — generic name words are not the subject.
@@ -121,6 +129,11 @@ class TestDetection:
             "The company rejected the offer as inadequate.",
             "Advent sought to buy PayPal.",
             "PayPal is exploring a sale.",
+            # Review round 2 (R2).
+            "PayPal received a $53 billion proposal from Stripe and Advent.",
+            "The board found it inadequate.",
+            "Stripe and Advent approached the company.",
+            "The board deemed the proposal inadequate.",
         ],
     )
     def test_rewordings_of_the_offer_are_takeovers(self, text) -> None:
@@ -238,6 +251,24 @@ class TestCitationMix:
                         "source_kinds": ["secondary_web"]}}
         assert pr.validate_sentence(
             "The company is taking private-label share [F5].", cited, SUBJECT) == (True, None)
+
+
+class TestIssuerProseIsKept:
+    """Review round 2 (R1): a filed fact in event-like words keeps its sentence."""
+
+    def test_an_offer_to_join_a_pilot_is_not_a_takeover(self) -> None:
+        cited = {"F2": {"statement": "PayPal accepted an offer to join the FedNow pilot.",
+                        "source_kinds": ["issuer_filing"]}}
+        assert pr.validate_sentence(
+            "PayPal accepted an offer to join the FedNow pilot [F2].", cited, SUBJECT
+        ) == (True, None)
+
+    def test_retiring_a_product_is_not_an_executive_leaving(self) -> None:
+        cited = {"F2": {"statement": "The CEO announced the retirement of legacy checkout.",
+                        "source_kinds": ["secondary_web"]}}
+        assert pr.validate_sentence(
+            "The chief executive is retiring the legacy checkout flow [F2].", cited, SUBJECT
+        ) == (True, None)
 
 
 class TestProfessionalReport:
@@ -405,6 +436,39 @@ class TestChair:
         verdict = await LLMChair(client=_ChairClient(payload), subject=SUBJECT).deliberate(
             self._council(retired, cfo))
         assert verdict.synthesis == "Revenue grew."
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "PayPal received a $53 billion proposal from Stripe and Advent.",
+            "The board found it inadequate.",
+            "Stripe and Advent approached the company.",
+            "Stripe's interest in the company persists.",
+        ],
+    )
+    async def test_round_two_rewordings_are_dropped_from_the_chair(self, sentence) -> None:
+        offer = _ref(OFFER, ("secondary_web",))
+        fact = _ref("FY2025 revenue was USD 33,172 million.", ("issuer_filing",))
+        payload = {"label": "x", "fundamental_setup": "y",
+                   "synthesis": f"Revenue grew. {sentence} Gaps remain.", "key_points": []}
+        verdict = await LLMChair(client=_ChairClient(payload), subject=SUBJECT).deliberate(
+            self._council(offer, fact))
+        assert verdict.synthesis == "Revenue grew. Gaps remain."
+
+    async def test_the_counterparty_in_unrelated_words_is_kept(self) -> None:
+        offer = _ref(OFFER, ("secondary_web",))
+        payload = {"label": "x", "fundamental_setup": "y",
+                   "synthesis": "Revenue grew. Stripe competes in online checkout.",
+                   "key_points": []}
+        verdict = await LLMChair(client=_ChairClient(payload), subject=SUBJECT).deliberate(
+            self._council(offer))
+        assert verdict.synthesis == "Revenue grew. Stripe competes in online checkout."
+
+    def test_counterparties_come_from_unvetted_event_findings_only(self) -> None:
+        parties = me.counterparties(
+            [RUMOUR, {"statement": "Visa agreed to merge with PayPal.",
+                      "source_kinds": ["issuer_filing"]}], SUBJECT)
+        assert parties == {me.EV_TAKEOVER: {"Stripe", "Advent"}}
 
     async def test_an_emptied_synthesis_falls_back_to_the_ledger_state(self) -> None:
         offer = _ref(OFFER, ("secondary_web",))

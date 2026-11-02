@@ -124,11 +124,14 @@ def _gate_material_events(
     # The synthesis cites nothing, so a sentence stating event type T is kept only when
     # some finding of this run on a vetted source states T (the CEO and CFO are
     # different types).
+    # A sentence naming the counterparty of an unvetted event in words about that event
+    # ("Stripe's interest in the company remains") goes too.
     vetted = material_events.vetted_event_types(council_input.findings, subject)
+    parties = material_events.counterparties(council_input.findings, subject)
     sentences = [p for p in _SENTENCE_RE.split(verdict.synthesis or "") if p.strip()]
     kept = [
         sentence for sentence in sentences
-        if material_events.event_types(sentence, subject) <= vetted
+        if not material_events.uncited_sentence_blocked(sentence, vetted, parties, subject)
     ]
     if len(kept) != len(sentences):
         verdict.synthesis = " ".join(kept)
