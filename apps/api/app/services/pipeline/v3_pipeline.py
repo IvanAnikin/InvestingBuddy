@@ -1938,7 +1938,7 @@ def _consumption(
             else None
         ),
         "chair_used_a_model": not verdict.deterministic_fallback
-        or verdict.fallback_reason == FALLBACK_MATERIAL_EVENT,
+        or getattr(verdict, "fallback_reason", None) == FALLBACK_MATERIAL_EVENT,
     }
 
 
