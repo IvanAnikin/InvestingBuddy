@@ -6040,3 +6040,168 @@ strategic-transformation and conference-call releases; Novo's four newest buybac
   does not alter.
 - **No live research run yet.** Production acceptance needs a Cellectis rerun after
   deploy.
+
+## ADR-078: A Material Corporate Event Needs a Vetted Source Before a Summary States It
+
+**Date:** 2026-11-02 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, defect PYPL2-1 (P0), live PayPal rerun
+`39905de8`. The executive synthesis said "A recent acquisition offer was rejected by the
+board as inadequate, reflecting ongoing strategic considerations. [F14]". F14 read
+"Stripe/Advent's $60.50-per-share, $53B offer for PayPal was rejected by the board as
+inadequate on July 20, 2026". Its evidence was one web page (`source_kinds:
+["secondary_web"]`, class `unknown_web`, confidence 0.6, `unverified`). EDGAR held no 8-K,
+no SC 14D9 and no 425, and neither 10-Q mentions Stripe, Advent or a proposal.
+
+### How it got there
+1. The event analyst wrote F14 from the page. W4's `trust.classify_claim` returned
+   `claim_type: null`: `_EVENT_RE` knows "acquisition" and "takeover" but not "offer",
+   "bid" or "rejected by the board". The finding was therefore stored without a
+   `[single source]` label.
+2. `professional_research.edit` asked the editor model for a synthesis.
+   `validate_sentence` checks citations, figures, prohibited words and absence claims.
+   A sentence with a label, no digit and no rating word passed every check, because
+   nothing asked whether the cited SOURCE could carry the claim.
+3. The chair (`agents/chair.py`) has the same gap: key points are checked for a citable
+   `finding_id` and the label for its vocabulary, nothing more. On this run the chair
+   happened not to repeat the claim.
+
+### Decision
+New module `app/services/material_events.py`. The rule is a deterministic gate, not a
+prompt request.
+
+**Material event types about the subject:**
+- `takeover`: an approach, offer or bid for the subject, its acceptance or rejection, a
+  pending merger, or a strategic-sale review;
+- `going_private`;
+- `insolvency`: bankruptcy, administration, receivership;
+- `delisting`;
+- `ceo_departure` and `cfo_departure`, which are separate types;
+- `fraud_restatement_or_enforcement`.
+
+**Vetted support:** a finding whose `source_kinds` include one of:
+- `issuer_filing` or `issuer_ir`;
+- `government_or_regulator`;
+- `third_party_filing`: a filing on an official filing system, e.g. a bidder's
+  tender-offer document;
+- `quality_media`: the T4 tier, i.e. major financial, trade and local press. It is not
+  a curated subset.
+
+**Gate (option (a): exclude, dropped not repaired):**
+- **Editor synthesis sentences and section leads** (`validate_sentence`, reason
+  `material_event_unvetted_source`). Two sets must be covered by the event types that
+  the sentence's cited VETTED findings state:
+  - every event type the sentence states;
+  - every event type that ANY cited finding states on unvetted sources only.
+
+  So an ordinary 10-K revenue fact cited beside the rumour does not launder it. A filed
+  "completed its merger with X" does not vouch for a takeover offer either, because it is
+  not a takeover of the subject.
+- **The deterministic synthesis** never picks an unvetted-event finding.
+- **Chair key points** use the same rule against the finding they cite.
+- **Chair synthesis** (prose with no citations): a sentence is dropped unless every event
+  type it states is stated by some vetted finding of the run. A filed CEO succession
+  does not unlock a rumoured CFO ouster. If nothing survives, the synthesis becomes the
+  ledger state. `deterministic_fallback` is set with
+  `fallback_reason = "synthesis_removed_by_material_event_gate"`, and the run's degraded
+  list says so.
+- Both apply to the model verdict and to the deterministic verdict. `LLMChair` takes the
+  run's `subject` (name and ticker).
+- **Prompts (an addition, not the safeguard):**
+  - the editor sees `(UNVETTED WEB SOURCE ONLY)` after such findings, plus rule 4a;
+  - the chair sees each finding's `source_kinds`, plus rule 7.
+- `editor.checks` names the new check.
+
+The finding stays in the ledger and in its section with its honest source.
+
+**Detection** is a word-bounded vocabulary of event PHRASES, never a bare noun.
+- **Offers:**
+  - "offer/bid/approach for <subject>";
+  - "offered $53B for <subject>" (a price is required);
+  - "(in talks | seeks | plans | agreed | bid …) to buy/acquire/take over <subject>";
+  - "<subject | the company | the board> rejected/accepted … offer/bid/approach";
+  - a passive "offer/bid/approach … was rejected/rebuffed", when the board, a takeover
+    modifier or a price is present.
+- **Passive acquisition:** "<subject> will be / is being / agreed to be acquired [by X]",
+  where X is not the subject.
+- **Pending merger:** "merger agreement", "agreed to merge", "proposed merger".
+- **Strategic sale:** "exploring a sale", "strategic alternatives", "sell itself".
+- **Insolvency, delisting and going private:** the subject must be the one ACTING. That
+  means the nearest subject reference in the same clause within 60 characters before
+  the phrase, not possessive, and no customer, supplier, peer, unit, etc. in between.
+- **Leadership:** "CEO/CFO … step down / resigned / ousted / retired / succeeded",
+  except when the role belongs to another named company ("Codelco's CEO").
+- **Misconduct:** "accounting fraud", "restatement", "enforcement action", "the SEC
+  charged".
+- **What counts as the subject:** its core name ("Southern Copper"), its distinctive
+  words with generic ones removed (copper, materials, mining, resources, energy, bank,
+  …), its ticker (case kept), "the company", or "the/its board".
+- **Bounds:** input is capped at 8,000 characters and every window is bounded, so a
+  1 MB adversarial string scans in under 0.1 s.
+
+**Review round 2.**
+- An accepted or rejected "offer/approach" is a takeover only beside one of:
+  - a deal word (takeover, buyout, acquisition, acquire, bid, tender, go-private,
+    merger);
+  - a price;
+  - a valuation word (inadequate, undervalues, premium).
+
+  "PayPal accepted an offer to join the FedNow pilot" stays an ordinary fact.
+- Newly detected:
+  - "a $53 billion proposal" (billion scale, not debt or buyback);
+  - "approached <subject>/the company";
+  - "deemed/found … inadequate" (with "board" or an offer word present).
+- No longer detected:
+  - "sale of <named asset>", "merge its …";
+  - "retire"/"successor" about a product or system ("the retirement of legacy checkout",
+    "retire the notes", "successor platform", "succeeded in cutting costs").
+- **Chair only:** a synthesis sentence is also dropped when it names a counterparty of an
+  unvetted event finding (a proper name in that finding other than the subject, e.g.
+  Stripe, Advent) together with a hint word for the same event type ("Stripe's interest
+  in the company persists"). "Stripe competes in online checkout" is kept.
+
+### Not flagged (pinned in tests)
+Acquisitions BY the subject:
+- "PayPal acquired Xoom in 2015", "Xoom was acquired by PayPal";
+- "completed its/the merger with Honey Science";
+- "the board accepted the bid … for its Honey unit".
+
+Ordinary uses of event words:
+- "customer acquisition cost", "acquired 440M active accounts", "offers Buy Now Pay
+  Later";
+- a debt tender offer, "delisted its preferred shares";
+- "fraud losses / fraud detection", "restated for the new segment structure", "amended
+  and restated" plans;
+- "private-label", "Brazil went private; the company …".
+
+Other parties:
+- "merchants who went into administration", directors (not CEO/CFO) resigning,
+  "Codelco's CEO";
+- "copper smelters filed for bankruptcy" and "acquisition of copper concessions" for
+  Southern Copper;
+- a merger between two other companies.
+
+### Replay over the 12 stored campaign reports
+HON, HON2, ADBE, JPM, CFR, PYPL, PYPL2, ANTO, ANTO2, CLLS, CLLS2, LIN: findings,
+synthesis sentences, leads, and chair key points and synthesis. Results are the same
+before and after the review fixes.
+- **PYPL2:** 1 summary sentence blocked (the synthesis sentence above). F14 is the only
+  unvetted-event finding.
+- **Every other report:** 0 blocked, 0 unvetted-event findings and 0 vetted-event
+  findings. Keyword-bearing true negatives include ANTO2 "agreed to acquire
+  Mineralinvest's 49% interest" and "CEO targets ~30% copper growth", HON2 "four
+  Honeywell directors resigned", PYPL "amended and restated", and CLLS "after the Merger
+  closed".
+
+### Not changed / known limits
+- **Labels unchanged.** W4's `classify_claim` still does not tier "offer/bid" claims as
+  corporate events, so F14 in its section carries no `[single source]` label. That is a
+  separate change to persisted trust labels.
+- **Detection is lexical.** An event phrased outside the vocabulary is still caught in
+  a summary sentence that cites only such a finding (via the cited finding). It is
+  missed in uncited chair prose when the chair words it outside the vocabulary.
+- **Vetting is per finding, not per claim.** A finding citing a 10-Q and a rumour page
+  counts as vetted even when only the page states the event.
+- **A CFPB/SEC investigation being opened counts as enforcement.** Unvetted, it is kept
+  out of summaries.
+- **V1 council output is out of scope.** It does not read V3 findings. No live run yet;
+  acceptance needs a PYPL rerun after deploy.
