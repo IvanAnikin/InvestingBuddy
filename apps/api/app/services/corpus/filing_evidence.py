@@ -1006,6 +1006,7 @@ async def ensure_core_filings(
             out[slot] = await _ensure_results_6k(
                 session, company=company, cfg=cfg, events=events,
                 cik=getattr(listed, "cik", None), selector=sixk_selector,
+                out_annual=out.get("annual"),
             )
             continue
         if event is None:
@@ -1046,6 +1047,7 @@ async def _ensure_results_6k(
     events: list[Any],
     cik: Any,
     selector: Any = None,
+    out_annual: Any = None,
 ) -> dict[str, Any]:
     """The quarterly slot of a 20-F / 40-F filer: its newest results 6-K, read through
     the bridge, or ``not_listed`` with the reason. Never raises."""
@@ -1056,8 +1058,14 @@ async def _ensure_results_6k(
         # No body would be fetched, so no index page is read to choose one either.
         return {"state": "not_listed", "forms": forms,
                 "reason": "SEC filing-body fetch is disabled"}
+    # Only a 6-K filed AFTER the annual report can carry a later period (ADR-077,
+    # review of PR #313): a Q4 6-K filed before the 40-F reports the same year.
+    annual = out_annual if isinstance(out_annual, dict) else {}
+    since = annual.get("filing_date") if annual.get("form") else None
     try:
-        selection = await (selector or select_results_6k)(events, cik=cik, cfg=cfg)
+        selection = await (selector or select_results_6k)(
+            events, cik=cik, cfg=cfg, since=since
+        )
     except Exception as exc:  # noqa: BLE001 - selection failing costs the slot only
         return {"state": "not_listed", "forms": forms,
                 "reason": f"6-K selection failed ({type(exc).__name__})"}

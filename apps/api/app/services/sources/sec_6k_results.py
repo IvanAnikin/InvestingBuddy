@@ -111,20 +111,38 @@ _PERIOD_RESULTS_RE = re.compile(
 _CLINICAL_RE = re.compile(
     r"\b(?:top[- ]?line|trial|phase [1-3i]+|study|clinical|patients?|data|dosing)\b"
 )
+#: A notice, or an ANNOUNCEMENT about results rather than the results (review of
+#: PR #313): "Cellectis to Report Third Quarter 2026 Financial Results … on November 5",
+#: "Half-Year Report on the Liquidity Contract", "Availability of the Half-Year
+#: Financial Report", "Invitation to conference call on Q3 2026 results". Checked BEFORE
+#: any results rule: a line that names one of these is never a results title.
 _NOTICE_TEXT_RE = re.compile(
     r"\b(?:agm|egm|annual general meeting|general meeting|shareholders'? meeting"
     r"|voting rights|vote|voting|share capital|total number of (?:shares|voting)"
     r"|own shares|share (?:re)?purchase|share buy[- ]?back|buy[- ]?back|prospectus"
-    r"|prospectus supplement|notice of)\b"
+    r"|prospectus supplement|notice of"
+    r"|to (?:report|announce|release|publish|present|host)|will (?:report|announce|release"
+    r"|publish|present|host)|conference call|webcast|invitation|invites?"
+    r"|liquidity contract|availability of|publication of|release date)\b"
 )
 #: File names concatenate words ("form6-kagmdisclosure"), so these are substrings.
 _NOTICE_NAME_TOKENS: tuple[str, ...] = (
     "agm", "vote", "voting", "meeting", "prospectus", "buyback", "repurchase",
     "ownshares", "own_shares", "sharecapital", "share_capital", "424b",
+    "call", "invite", "invitation", "webcast", "liquidity",
 )
+#: A file name about a trial is never results evidence: BioNTech's
+#: ``form6-ktpamtoplineresultsb.htm`` is a Phase 3 topline-results release.
+_CLINICAL_NAME_TOKENS: tuple[str, ...] = (
+    "topline", "top-line", "top_line", "trial", "phase", "clinical", "study", "data",
+)
+#: A file name names results only through a PERIOD: a quarter or half, an interim or
+#: quarterly report, or a fiscal / full year next to "results". A bare "results" or
+#: "earnings" is not enough (review of PR #313, BioNTech).
 _RESULTS_NAME_RE = re.compile(
     r"q[1-4](?![a-z])|(?<![a-z])h[12](?![a-z0-9])|half[-_ ]?year|first[-_ ]?half"
-    r"|interim|quarter|results|earnings|financial[-_ ]?(?:statements|report|results)"
+    r"|interim|quarter"
+    r"|(?:fy|full[-_ ]?year)[-_ ]?\d{0,4}[-_ ]?(?:results|earnings)"
 )
 _WS_RE = re.compile(r"\s+")
 
@@ -134,8 +152,13 @@ def _norm(text: str | None) -> str:
 
 
 def text_names_results(text: str | None) -> bool:
-    """Does a short text (a description, a headline) name financial results? Pure."""
+    """Does a short text (a description, a headline line) name financial results?
+
+    A line that names a notice or an announcement ABOUT results is never results — the
+    notice rule runs first. Pure."""
     norm = _norm(text)
+    if _NOTICE_TEXT_RE.search(norm):
+        return False
     if _FINANCIAL_TEXT_RE.search(norm):
         return True
     return bool(_PERIOD_RESULTS_RE.search(norm)) and not _CLINICAL_RE.search(norm)
@@ -153,7 +176,10 @@ def name_names_notice(name: str | None) -> bool:
 
 
 def name_names_results(name: str | None) -> bool:
-    return bool(_RESULTS_NAME_RE.search(str(name or "").lower()))
+    lowered = str(name or "").lower()
+    if any(token in lowered for token in _CLINICAL_NAME_TOKENS):
+        return False
+    return bool(_RESULTS_NAME_RE.search(lowered))
 
 
 _BLOCK_TAGS: frozenset[str] = frozenset({
@@ -348,6 +374,13 @@ def _parse_day(raw: Any) -> date | None:
         return None
 
 
+def _filed_after(event: Any, day: date | None) -> bool:
+    if day is None:
+        return True
+    filed = _parse_day(getattr(event, "filing_date", None))
+    return filed is not None and filed > day
+
+
 def period_end_of(event: Any) -> str | None:
     """The regulator's "period of report" when it reads as a reporting-period end — a
     date in the last week of a month, 10–200 days before the filing — else ``None``.
@@ -415,6 +448,14 @@ class SixKSelection:
     index_fetches: int = 0
     headline_fetches: int = 0
     skipped_by_name: int = 0
+    #: Index pages / heads that could not be read (an SEC outage, a refusal). A real
+    #: ``-index.htm`` page always lists at least the complete-submission file, so an
+    #: empty page is a failed read, never "a 6-K with no documents".
+    index_unreadable: int = 0
+    heads_unreadable: int = 0
+    #: 6-Ks filed on or before the annual report's filing date, never considered.
+    before_annual: int = 0
+    since: str | None = None
     reason: str | None = None
     examined_log: list[dict[str, Any]] = field(default_factory=list)
 
@@ -425,7 +466,28 @@ class SixKSelection:
             "index_fetches": self.index_fetches,
             "headline_fetches": self.headline_fetches,
             "skipped_by_name": self.skipped_by_name,
+            "index_unreadable": self.index_unreadable,
+            "heads_unreadable": self.heads_unreadable,
+            "before_annual": self.before_annual,
+            "since": self.since,
         }
+
+    def _no_pick_reason(self) -> str:
+        base = (
+            f"no results 6-K since the annual report of {self.since}"
+            if self.since else "no results 6-K"
+        )
+        if self.listed == 0:
+            return f"{base}: no 6-K filed after it" if self.since else "no 6-K filings listed"
+        notes = [f"{self.skipped_by_name} skipped as notices by file name"]
+        if self.index_unreadable:
+            notes.append(f"{self.index_unreadable} index page(s) unreadable")
+        if self.heads_unreadable:
+            notes.append(f"{self.heads_unreadable} headline read(s) failed")
+        return (
+            f"{base} among the {self.examined} examined of {self.listed} listed "
+            f"({'; '.join(notes)})"
+        )
 
 
 async def select_results_6k(
@@ -440,22 +502,34 @@ async def select_results_6k(
     max_index_fetches: int = MAX_INDEX_FETCHES,
     max_headline_fetches: int = MAX_HEADLINE_FETCHES,
     max_unsignalled: int = MAX_UNSIGNALLED_VISITS,
+    since: str | None = None,
 ) -> SixKSelection:
     """The newest 6-K among those examined that is a RESULTS release. Never raises.
 
     ``events`` are the regulator's recent filings (any forms, any order); only 6-K and
-    6-K/A are read, newest first. ``selection.event is None`` means nothing qualified,
-    and ``selection.reason`` says why in words a reader can check.
+    6-K/A are read, newest first. ``since`` is the annual report's filing date: a 6-K
+    filed on or before it is never the CURRENT period — Barrick's Q4 iXBRL 6-K of
+    2026-02-05 predates its 40-F of 2026-02-27 and reports the same year.
+    ``selection.event is None`` means nothing qualified, and ``selection.reason`` says
+    why in words a reader can check.
     """
+    since_day = _parse_day(since)
+    all_sixks = [
+        e for e in events if str(getattr(e, "form_type", "") or "").upper() in SIXK_FORMS
+    ]
     sixks = sorted(
-        (e for e in events if str(getattr(e, "form_type", "") or "").upper() in SIXK_FORMS),
+        (e for e in all_sixks if _filed_after(e, since_day)),
         key=lambda e: str(getattr(e, "filing_date", "") or ""),
         reverse=True,
     )
-    out = SixKSelection(listed=len(sixks))
+    out = SixKSelection(
+        listed=len(sixks),
+        before_annual=len(all_sixks) - len(sixks),
+        since=since_day.isoformat() if since_day else None,
+    )
     padded = normalize_cik(cik)
     if not sixks or padded is None:
-        out.reason = "no 6-K filings listed" if not sixks else "no usable CIK"
+        out.reason = out._no_pick_reason() if not sixks else "no usable CIK"
         return out
     fetch_page = page_fetcher or fetch_filing_index_page
     fetch_head = head_fetcher or fetch_document_head
@@ -483,6 +557,8 @@ async def select_results_6k(
             )
         except Exception:  # noqa: BLE001 - one unreadable index costs that 6-K only
             entries = []
+        if not entries:
+            out.index_unreadable += 1
         verdict, basis = classify_6k(entries, feed_document=feed_name)
         headline: str | None = None
         if verdict == VERDICT_UNDECIDED and out.headline_fetches < max_headline_fetches:
@@ -497,6 +573,8 @@ async def select_results_6k(
                     )
                 except Exception:  # noqa: BLE001 - an unreadable head decides nothing
                     body = None
+                if body is None:
+                    out.heads_unreadable += 1
                 headline = headline_of(body, window=window) or None
                 verdict, basis = classify_6k(
                     entries, feed_document=feed_name, headline=headline
@@ -523,10 +601,7 @@ async def select_results_6k(
         # date. A press release's "period of report" is its own date.
         out.period_end = period_end_of(event) if basis == BASIS_IXBRL else None
         return out
-    out.reason = (
-        f"no results 6-K among the {out.examined} examined of {out.listed} listed "
-        f"({out.skipped_by_name} skipped as notices by file name)"
-    )
+    out.reason = out._no_pick_reason()
     return out
 
 

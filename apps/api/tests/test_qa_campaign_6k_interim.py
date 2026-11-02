@@ -183,6 +183,17 @@ def test_a_results_title_names_results(text: str) -> None:
     "Novo Nordisk A/S - Share repurchase programme",
     "Prospectus supplement dated October 1, 2026",
     "Annual financial report 2025",
+    # Review of PR #313 (D2): announcements and notices ABOUT results.
+    "Cellectis to Report Third Quarter 2026 Financial Results and Business Updates on "
+    "November 5, 2026",
+    "BioNTech to Report Third Quarter 2026 Financial Results on November 3",
+    "Cellectis: Half-Year Report on the Liquidity Contract with Oddo BHF",
+    "Availability of the Half-Year Financial Report",
+    "Invitation to conference call on Q3 2026 results",
+    "Half-year report on share buyback programme",
+    "Toyota to announce financial results for the first half of fiscal year ending March 2027",
+    "Notice of Q3 2026 earnings release date",
+    "Q2 2026 results webcast",
 ])
 def test_a_notice_clinical_or_partnership_title_does_not_name_results(text: str) -> None:
     assert not s6.text_names_results(text)
@@ -199,6 +210,96 @@ def test_a_paragraph_is_never_a_title() -> None:
     assert s6.results_title(head) == "Quarterly Statement dated October 21, 2026"
     only_boilerplate = s6.headline_of(_pr([boilerplate]), window=6000)
     assert s6.classify_6k(_newswire("tm_6k.htm"), headline=only_boilerplate)[0] == "undecided"
+
+
+@pytest.mark.parametrize("name", [
+    "form6-ktpamtoplineresultsb.htm",   # BioNTech's Phase 3 topline release (D1)
+    "trialresults.htm",
+    "ex99-1_topline_results.htm",
+    "results.htm",
+    "earnings.htm",
+    "financialstatements.htm",
+    "resultsofagm.htm",
+    "conferencecallq3.htm",
+    "pr-q3-call-invite.htm",
+    "q2-interim-data.htm",
+])
+def test_a_file_name_without_a_period_or_about_a_trial_is_not_results(name: str) -> None:
+    assert not s6.name_names_results(name) or s6.name_names_notice(name)
+    assert s6.classify_6k([_row(name, "6-K", 9_000, "6-K")])[0] != "results"
+
+
+@pytest.mark.parametrize("name", [
+    "form6-kq22026quarterlyrepo.htm",   # BioNTech's real Q2 report
+    "clls_6-k_q2_2026.htm", "caq22026.htm", "shellq320266-k.htm",
+    "form6-kquarterlyfilings.htm", "h1-2026-report.htm", "fy2025results.htm",
+])
+def test_a_file_name_with_a_period_is_results(name: str) -> None:
+    assert s6.name_names_results(name)
+
+
+async def test_biontech_picks_its_quarterly_report_not_the_topline_release() -> None:
+    """Review of PR #313, D1, as filed."""
+    events = [
+        _Event("6-K", "0001193125-26-000300", "2026-10-26", "2026-10-26",
+               "form6-ktpamtoplineresultsb.htm"),
+        _Event("6-K", "0001193125-26-000200", "2026-08-04", "2026-08-04",
+               "form6-kq22026quarterlyrepo.htm"),
+    ]
+    sec = _Sec(pages={
+        "0001193125-26-000300": [_row("form6-ktpamtoplineresultsb.htm", "6-K", 30_000, "6-K"),
+                                 _row("exh991.htm", "EX-99.1", 20_000, "EX-99.1")],
+        "0001193125-26-000200": [_row("form6-kq22026quarterlyrepo.htm", "6-K", 900_000, "6-K")],
+    }, heads={"exh991.htm": _pr([
+        "BioNTech Announces Positive Topline Results from Phase 3 Trial"])})
+    sel = await _select(events, sec)
+    assert sel.event is events[1]
+    assert sel.document_name == "form6-kq22026quarterlyrepo.htm"
+    assert sel.examined_log[0]["verdict"] != "results"
+
+
+async def test_an_announcement_of_results_does_not_beat_the_real_results() -> None:
+    """D2, as reproduced: "to Report Third Quarter 2026 Financial Results … on November 5"
+    must not become the current period."""
+    events = [_Event("6-K", "0001171843-26-006873", "2026-10-28", "", "f6k_102826.htm"),
+              _Event("6-K", "0001171843-26-005324", "2026-08-06", "", "f6k_080626.htm")]
+    sec = _Sec(pages={
+        "0001171843-26-006873": _newswire("f6k_102826.htm", "exh_ann.htm", 15_000),
+        "0001171843-26-005324": _newswire("f6k_080626.htm", "exh_993.htm", 90_000),
+    }, heads={
+        "exh_ann.htm": _pr(["Exhibit 99.1",
+                           "Cellectis to Report Third Quarter 2026 Financial Results and "
+                           "Business Updates on November 5, 2026",
+                           "Cellectis will host a conference call"]),
+        "exh_993.htm": _pr(["Cellectis Reports Financial Results for the Second Quarter 2026",
+                            "Conference call and webcast today at 8:00 a.m. ET"]),
+    })
+    sel = await _select(events, sec)
+    assert sel.event is events[1]
+    assert sel.title == "Cellectis Reports Financial Results for the Second Quarter 2026"
+    assert [log["verdict"] for log in sel.examined_log] == ["notice", "results"]
+
+
+async def test_a_6k_filed_before_the_annual_report_is_never_the_current_period() -> None:
+    """D3, Barrick-shaped: a Q4 iXBRL 6-K filed 2026-02-05, the 40-F on 2026-02-27."""
+    q4 = _Event("6-K", "0001193125-26-000100", "2026-02-05", "2025-12-31", "abx-20251231.htm")
+    sec = _Sec(pages={"0001193125-26-000100": [
+        _row("abx-20251231.htm", "6-K", 900_000, "6-K", ixbrl=True)]})
+    sel = await _select([q4], sec, since="2026-02-27")
+    assert sel.event is None and sec.page_calls == []
+    assert sel.reason == "no results 6-K since the annual report of 2026-02-27: no 6-K filed after it"
+    # Without an annual report to anchor on, the same 6-K is read.
+    assert (await _select([q4], _Sec(pages=sec.pages))).event is q4
+
+
+async def test_an_sec_outage_is_named_in_the_reason() -> None:
+    """D4: an unreadable index page is not "examined and found wanting"."""
+    events = [_Event("6-K", f"0001171843-26-{9100 + i:06d}", f"2026-10-{20 - i:02d}", "",
+                     f"f6k_{i}.htm") for i in range(3)]
+    sel = await _select(events, _Sec(pages={}))
+    assert sel.index_unreadable == 3
+    assert sel.reason == ("no results 6-K among the 3 examined of 3 listed "
+                          "(0 skipped as notices by file name; 3 index page(s) unreadable)")
 
 
 def test_ixbrl_statements_make_a_6k_a_results_release() -> None:
@@ -266,9 +367,10 @@ async def test_a_20f_filer_with_mixed_6ks_picks_the_results_one() -> None:
     assert sel.document_name == "clls-ex99_1.htm"
     assert sel.basis == s6.BASIS_IXBRL
     assert sel.period_end == "2026-06-30"
-    # The data, pivot and conference-call releases were read and refused.
+    # The data and pivot releases were read and refused; the conference-call
+    # announcement is a notice.
     assert [log["verdict"] for log in sel.examined_log] == [
-        "undecided", "undecided", "undecided", "results"]
+        "undecided", "undecided", "notice", "results"]
 
 
 async def test_a_newer_results_press_release_wins_over_an_older_one() -> None:
@@ -413,7 +515,9 @@ async def test_no_results_6k_is_not_listed_with_the_reason(bridged) -> None:
     out = await fe.ensure_core_filings(None, company=_company(), cfg=_cfg(),
                                        provider=_Provider(CLLS_EVENTS), sixk_selector=selector)
     assert out["quarterly"]["state"] == "not_listed"
-    assert out["quarterly"]["reason"].startswith("no results 6-K among the ")
+    assert out["quarterly"]["reason"] == (
+        "no results 6-K since the annual report of 2026-03-20 among the 5 examined of 6 "
+        "listed (1 skipped as notices by file name; 5 index page(s) unreadable)")
     assert len(bridged) == 1  # the 20-F only
 
 
@@ -595,6 +699,15 @@ def test_a_lone_year_in_a_6k_title_is_not_a_fiscal_year() -> None:
                    "title": "Quarterly Statement dated October 21, 2026"})
     assert cp["period"] is None
     assert cp["label"].startswith("Quarterly report acquired (2026-10-26)")
+
+
+def test_a_6k_slot_older_than_the_annual_report_is_not_the_current_period() -> None:
+    cp = build_financial_statements_state([], core_filings={
+        "annual": {"state": "ready", "form": "40-F", "filing_date": "2026-02-27"},
+        "quarterly": {"state": "ready", "form": "6-K", "filing_date": "2026-02-05",
+                      "title": None, "period_end": "2025-12-31"},
+    })["current_period"]
+    assert cp["state"] == STATE_NOT_ACQUIRED
 
 
 def test_an_unread_6k_is_still_no_interim_report() -> None:

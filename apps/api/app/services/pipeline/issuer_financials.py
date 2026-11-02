@@ -516,6 +516,18 @@ def _annual_state(
     }
 
 
+def _six_k_predates_annual(quarterly: dict[str, Any], core_filings: Any) -> bool:
+    """A 6-K filed on or before the annual report is never the current period: a Q4
+    6-K filed before the 40-F reports the same year (ADR-077). The selector already
+    refuses one; this keeps a slot recorded otherwise from saying "interim"."""
+    if not str(quarterly.get("form") or "").upper().startswith("6-K"):
+        return False
+    annual = core_filings.get("annual") if isinstance(core_filings, dict) else None
+    annual_date = str((annual or {}).get("filing_date") or "")[:10]
+    filed = str(quarterly.get("filing_date") or "")[:10]
+    return bool(annual_date and filed and filed <= annual_date)
+
+
 def _current_state(
     current: list[tuple[str, dict[str, Any]]],
     *,
@@ -544,7 +556,7 @@ def _current_state(
     interim_only = False
     if document is None and isinstance(sec_quarterly, dict) and (
         sec_quarterly.get("state") in _READY_STATES
-    ):
+    ) and not _six_k_predates_annual(sec_quarterly, core_filings):
         document = {
             "document_kind": "interim_report",
             # A results 6-K (ADR-077) carries the headline of the document it was read
