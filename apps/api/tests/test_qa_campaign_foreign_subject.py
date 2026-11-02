@@ -448,3 +448,12 @@ def test_a_measure_or_the_subjects_own_site_is_never_a_disclaimed_company(
 )
 def test_disclaimer_variants_still_drop(statement: str) -> None:
     assert _judge(statement, _ev("ostararoyalties.com")) is not None
+
+
+def test_own_site_by_a_distinctive_name_word_keeps_a_disclaimer() -> None:
+    statement = "Specialist Watchmakers (not the company) sales fell 10%."
+    item = _ev("calderon.com")
+    assert (
+        statement_about_foreign_subject(statement, [item], "Compagnie Financiere Calderon SA")
+        is None
+    )

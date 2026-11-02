@@ -1277,6 +1277,7 @@ def statement_about_foreign_subject(
         _GENERIC_TOKENS,
         _fold,
         issuer_domain_matches,
+        registrable_label,
     )
     from app.services.web_research.trust import publisher_of
 
@@ -1288,6 +1289,8 @@ def statement_about_foreign_subject(
     disclaimer = _disclaimed_name(text, aliases, subject_ticker)
     if disclaimer is not None and any(
         issuer_domain_matches(publisher_of(item.origin_key) or "", subject_name or "")
+        or (registrable_label(publisher_of(item.origin_key) or "") or "").replace("-", "")
+        in aliases
         for item in cited
     ):
         return None  # cited from the subject's OWN site: a contrast within its own report
