@@ -3,12 +3,11 @@
     "title": "Autonomous cross-sector research QA campaign 2026-11",
     "written": "2026-11-02",
     "markdown": "docs/autonomous-cross-sector-research-qa-2026-11.md",
-    "pending_marker_form": "<!-- PENDING: ... -->",
-    "note": "Values equal to a pending marker are filled in once the Discovery E3 result and the #313/#314 merge SHAs are known."
+    "note": "One value is still to come: before_after.pending_reruns.result (the CLLS3 and PYPL3 live reruns)."
   },
   "executive_summary": {
     "verdict": "Not yet a trustworthy research system. Overall usefulness after the fixes is 3-4/10 for six of eight companies.",
-    "merged_corrective_prs": 16,
+    "merged_corrective_prs": 18,
     "reports_evaluated": 12,
     "companies": 8,
     "claims": {
@@ -36,8 +35,8 @@
     "defects_by_severity": {
       "P0": 7,
       "P1": 43,
-      "P2": 61,
-      "P3": 18
+      "P2": 66,
+      "P3": 20
     },
     "open_or_partial_p1": [
       "H3",
@@ -63,7 +62,6 @@
       "CLLS-1",
       "CLLS-2",
       "CLLS-4",
-      "CLLS2-1",
       "CLLS2-2",
       "CLLS2-3",
       "CLLS2-4",
@@ -91,7 +89,7 @@
       },
       {
         "id": "PYPL2-1",
-        "status": "PENDING_PR",
+        "status": "FIXED_REPLAY",
         "title": "Unsupported takeover claim presented as fact in the executive synthesis"
       },
       {
@@ -117,14 +115,14 @@
     "Main SHA at campaign start": "d64228a (PR #295, 2026-11-01 13:20 +0100), the last commit before the first campaign merge (#297 at 17:36 +0100), from git history.",
     "Deployed API / web SHA at campaign start": "Not recorded during the campaign. The before runs (HON e50cb267, CFR f722d620) ran on the pre-campaign deployment.",
     "Production health at start": "Healthy enough to complete research jobs and Discovery runs; no formal health snapshot was kept.",
-    "Alembic head": "044 (044_add_web_documents_to_corpus). No campaign PR added a migration: git log d64228a..95ba5f7 shows no change under apps/api/alembic.",
+    "Alembic head": "044 (044_add_web_documents_to_corpus). No campaign PR added a migration: git log d64228a..48b5777 shows no change under apps/api/alembic.",
     "Enabled research feature flags": "A full flag dump was not captured. Observed from run behaviour: SEC filings and XBRL, UK FCA NSM and ASX disclosure connectors, open-web search and fetch (Tavily), corpus search, and dynamic Discovery were active. DeepSeek search was off.",
-    "Tavily": "Available. Daily cap 300 credits, not raised. About 287 credits used on 2026-11-01 (orchestrator count). About 171 on 2026-11-02 before Discovery E3 (E3 usage: section 11).",
+    "Tavily": "Available. Daily cap 300 credits, not raised. About 287 credits used on 2026-11-01 (orchestrator count). On 2026-11-02 about 171 before Discovery E3, which used 38, so about 209 before the CLLS3 and PYPL3 reruns.",
     "DeepSeek search": "OFF throughout (not enabled).",
     "Test-suite baseline": "9,893 passed, 195 skipped (full API suite, pre-campaign, 2026-11-01). mypy on app: 81 errors at both the campaign baseline and head.",
     "Day-1 deploys (2026-11-01)": "1b14000 (HON rerun f0be3c4f, Discovery E2 d6f5d2c6). Fixes merged up to 49ec531 were deployed that day; the last deploy was 49ec531. The ADBE (7b401826) and JPM (30828043) runs started after the HON rerun; their exact deployed SHA (1b14000 or ba44c87) was not recorded.",
-    "Day-2 deploys (2026-11-02)": "fbb40e8 (#305, #306, #307, #308; PYPL, ANTO, CLLS, LIN first runs) -> e052ec2 (#310, ADR-074) -> 09836d0 (#311, ADR-075; ANTO2, CLLS2) -> 95ba5f7 (#312, ADR-076; PYPL2, LIN2, Discovery E3).",
-    "Main / deployed SHA at report time": "95ba5f7 on main and deployed (API and web). Final main after #313/#314 merge: <!-- PENDING: #313/#314 merge -->.",
+    "Day-2 deploys (2026-11-02)": "fbb40e8 (#305, #306, #307, #308; PYPL, ANTO, CLLS, LIN first runs) -> e052ec2 (#310, ADR-074) -> 09836d0 (#311, ADR-075; ANTO2, CLLS2) -> 95ba5f7 (#312, ADR-076; PYPL2, LIN2, Discovery E3) -> 48b5777 (#313 merged as 342b660, ADR-077; #314 merged as 48b5777, ADR-078). No scored run used 48b5777.",
+    "Main / deployed SHA at report time": "48b5777 on main and deployed (API and web). It contains #313 (ADR-077, merged as 342b660) and #314 (ADR-078, merged as 48b5777).",
     "Extraction pipeline": "v19 -> v20 (ADR-064). Held documents are re-read on the next run."
   },
   "campaign_conduct": [
@@ -387,14 +385,428 @@
       "run_id": "b14b96d9-df16-4c20-9423-c95fbfbf908f",
       "deployed": "95ba5f7",
       "filters": "same as E2",
-      "tavily": "see section 11",
-      "funnel": "Result recorded in section 11 (Run E3).",
-      "returned": "see section 11",
-      "on_thesis": "see section 11",
-      "key_failures": "see section 11",
-      "result": "<!-- PENDING: E3 -->"
+      "tavily": "38 (20 discovery queries + 18 candidate-evidence queries)",
+      "funnel": "160 results -> 40 selected -> 18 pages fetched (6 with mentions) -> 26 web leads + 15 registry leads -> 27 verified issuers -> 7 web-admitted (4 more also_surfaced) -> 10 met all hard constraints, 13 eligible_unverified, 0 excluded -> 23 shortlisted -> cap 15; beyond_cap 8 (LIN, LYC, CRML, ARA, NB, PKX, AAPL, GEV)",
+      "returned": 15,
+      "on_thesis": "12/15 (SCCO, CLF, FCX adjacent)",
+      "key_failures": "A verified size outranks fit before the cap: 4 web-admitted names cut while theme-unverified ABX and ATR returned (E3-2); registry scores still constant (85/75); theme verification never satisfies the industry constraint (E3-1); SCCO eligible with size unknown at rank 3 (E3-3); Meteoric's pending Lynas takeover not flagged (E3-4)"
     }
   ],
+  "discovery_e3_evaluation": {
+    "run_id": "b14b96d9-df16-4c20-9423-c95fbfbf908f",
+    "deployed_sha": "95ba5f7",
+    "thesis": "Thesis E (materials), rerun E3 AFTER ADR-063 + ADR-070 (dynamic items scored on the intent; unverified theme at half weight) + ADR-073 (relevance tie-break before cap; beyond_cap stated)",
+    "intent": "discovery_intent themes [critical_materials, mining_materials], industries [Metals & Mining], sectors [Materials], size SOFT (micro/small/mid), end_markets [semiconductors, electrification, defence], materials_role product. Legacy parsed_thesis_json top level still reads themes [defense, semiconductors, grid_electrification] / industries [A&D, Semiconductors, ...], but the scorer no longer uses it: registry items earn the 45 theme points for mining_materials and curated items the 10 industry points for 'Metals & Mining', which only the intent contains. 'specialty', 'advanced manufacturing', 'capacity', 'project' remain unmatched_terms; materials list empty.",
+    "funnel": {
+      "search_results": "160 seen; 40 selected (95 over_budget, 12 duplicate_url, 13 denylisted); 20 discovery queries (14 template incl. 3 local-language + 6 LLM expansion, all about critical minerals/mining) + 18 candidate-evidence queries (3 each for Defense Metals, CoTec, Aclara, Mkango, NACM, Ucore) = 38 Tavily credits (E2: 20)",
+      "pages": "31 attempted, 18 fetched, 13 not retrievable (403/captcha/robots); 16 ingested and extracted (2 empty), 6 with mentions; PDFs skipped (over half the wall-clock budget spent); 11 regulated documents acquired; 6 official domains resolved",
+      "entities_extracted": "32 mentions -> 26 web leads (3 names rejected, 2 name-only dropped) + 15 registry leads = 41 raw leads",
+      "listing_verified": "11 web listing-verified (web funnel); 27 verified issuers overall; 13 rejected leads = 5 registry duplicates (FCX, SCCO, MP, LAC, CLF) + 8 web identity_unverified (no_ticker 5: Endomines, Green Transition, Majestic, Newsfile, Zinnwald; name_mismatch 3: Northern Minerals NTU, Arafura ARU, Mkango MKA)",
+      "theme_evidence": "path A 1 / B 1 / C 7 qualified; 7 admitted (A 1, B 1, C 5); 16 labelled; 4 also_surfaced for theme_evidence_missing (Defense Metals, CoTec, North Atlantic Critical Metals, Ucore) even after 12 candidate-evidence queries on them. Aclara left also_surfaced (E2) and is now in beyond_cap",
+      "hard_constraints": "27 checked; 10 met all hard constraints (9 eligible + FCX included_with_mismatch on size); 13 eligible_unverified (industry unknown); 0 excluded; no screening-investigation provider (registry/directory/page evidence only)",
+      "admitted": "7 web-admitted; 3 returned (MEI, ILU, KNI); the other 4 are in beyond_cap (DEDUCED: 7 admitted - 3 returned, 0 excluded, also_surfaced holds none; per-name state is not stored for cut names. Most likely CRML, ARA, NB, PKX: under ranking_key a 65-point admitted name can sit below ATR only with soft_passes 0, i.e. size unknown, which fits US/TSX/ADR listings; LIN/LYC have ASX-verified sizes so they are the 42.5 labelled ones)",
+      "shortlisted": "23 non-excluded -> cap 15 (requested max_universe 40, max_candidates 15)",
+      "beyond_cap": {
+        "count": 8,
+        "names": [
+          "AU:LIN",
+          "AU:LYC",
+          "US:CRML",
+          "TO:ARA",
+          "US:NB",
+          "US:PKX",
+          "US:AAPL",
+          "US:GEV"
+        ],
+        "where": "funnel.beyond_cap is an INTEGER; the names appear only in universe_json.dynamic.warnings[0] / run warnings (code UNCLASSIFIED), as exchange:ticker with no company name, admission state, score, or per-name reason"
+      },
+      "returned": 15
+    },
+    "candidates": [
+      {
+        "rank": 1,
+        "issuer": "Eramet",
+        "security": "PA:ERA",
+        "admission_route": "platform registry (labelled; A3 not run)",
+        "source": "platform registry (held company)",
+        "scoring_inputs": {
+          "theme": "mining_materials",
+          "sector": "Materials",
+          "industry": "Mining",
+          "region": "Europe",
+          "relevance_score_pre_scan_breakdown": "stored 75.0 = theme 45 (mining_materials, intent) + kw 0 + sector 10 + industry 0 ('Mining' != intent 'Metals & Mining') + region 12 (none requested) + catalyst 4 + conf 4 - penalty 0",
+          "ranking_key": "eligible, hard 2, soft 1 (size verified), rel 75"
+        },
+        "eligibility": "eligible: EUR1.10bn (Euronext admitted shares x price, 2026-11-02) = $1.23bn small-cap",
+        "why_surfaced_payload": "held company classified Mining; score basis: matches theme 'mining_materials'; sector 'Materials'",
+        "thesis_fit": "on-thesis",
+        "fit_reasoning": "Manganese, nickel and the Centenario lithium plant feed electrification and alloys; small-cap with capacity catalysts. Deserves a top rank."
+      },
+      {
+        "rank": 2,
+        "issuer": "Umicore",
+        "security": "BR:UMI",
+        "admission_route": "platform registry (labelled)",
+        "source": "platform registry (held company)",
+        "scoring_inputs": {
+          "theme": "mining_materials",
+          "sector": "Materials",
+          "industry": "Mining",
+          "region": "Europe",
+          "relevance_score_pre_scan_breakdown": "stored 75.0 = theme 45 (mining_materials, intent) + kw 0 + sector 10 + industry 0 ('Mining' != intent 'Metals & Mining') + region 12 (none requested) + catalyst 4 + conf 4 - penalty 0",
+          "ranking_key": "eligible, hard 2, soft 1, rel 75"
+        },
+        "eligibility": "eligible: EUR4.45bn = $4.99bn mid-cap",
+        "why_surfaced_payload": "held company classified Mining",
+        "thesis_fit": "on-thesis",
+        "fit_reasoning": "Battery cathode materials, catalysts and recycling: specialty materials. The 'Mining' registry class is still wrong."
+      },
+      {
+        "rank": 3,
+        "issuer": "Southern Copper Corp.",
+        "security": "US:SCCO",
+        "admission_route": "curated registry (labelled)",
+        "source": "curated_theme_registry T3",
+        "scoring_inputs": {
+          "theme": "mining_materials",
+          "sector": "Materials",
+          "industry": "Metals & Mining",
+          "region": "North America",
+          "relevance_score_pre_scan_breakdown": "stored 85.0 = theme 45 + kw 0 + sector 10 + industry 10 ('Metals & Mining') + region 12 + catalyst 4 + conf 4 - penalty 0",
+          "ranking_key": "eligible, hard 2, soft 0 (size unknown), rel 85"
+        },
+        "eligibility": "eligible although size UNKNOWN (public float $9.02bn at 2025-06-30 as a lower bound)",
+        "why_surfaced_payload": "classified Metals & Mining in curated_theme_registry",
+        "thesis_fit": "adjacent",
+        "fit_reasoning": "Copper is a critical mineral, but SCCO is a mega-cap (~89% Grupo Mexico, so the float understates size by ~10x): not 'smaller', no capacity-catalyst angle specific to the thesis. Rank 3 is too high (same as E2)."
+      },
+      {
+        "rank": 4,
+        "issuer": "MP Materials",
+        "security": "US:MP",
+        "admission_route": "curated registry (labelled)",
+        "source": "curated_theme_registry T3",
+        "scoring_inputs": {
+          "theme": "mining_materials",
+          "sector": "Materials",
+          "industry": "Metals & Mining",
+          "region": "North America",
+          "relevance_score_pre_scan_breakdown": "stored 85.0 = theme 45 + kw 0 + sector 10 + industry 10 ('Metals & Mining') + region 12 + catalyst 4 + conf 4 - penalty 0",
+          "ranking_key": "eligible, hard 2, soft 0, rel 85"
+        },
+        "eligibility": "eligible, size unknown (float $5.00bn lower bound)",
+        "why_surfaced_payload": "classified Metals & Mining in curated_theme_registry",
+        "thesis_fit": "on-thesis",
+        "fit_reasoning": "US rare-earth mine plus magnet plant with DoD (and Apple) offtakes: a capacity catalyst. Size is probably above mid-cap (UNCERTAIN)."
+      },
+      {
+        "rank": 5,
+        "issuer": "Albemarle",
+        "security": "US:ALB",
+        "admission_route": "curated registry (labelled)",
+        "source": "curated_theme_registry T3",
+        "scoring_inputs": {
+          "theme": "mining_materials",
+          "sector": "Materials",
+          "industry": "Metals & Mining",
+          "region": "North America",
+          "relevance_score_pre_scan_breakdown": "stored 85.0 = theme 45 + kw 0 + sector 10 + industry 10 ('Metals & Mining') + region 12 + catalyst 4 + conf 4 - penalty 0",
+          "ranking_key": "eligible, hard 2, soft 0, rel 85"
+        },
+        "eligibility": "eligible, size unknown (float $7.40bn)",
+        "why_surfaced_payload": "classified Metals & Mining in curated_theme_registry",
+        "thesis_fit": "on-thesis",
+        "fit_reasoning": "Lithium and bromine specialty chemicals for batteries and electronics; size is mid/large borderline."
+      }
+    ],
+    "bottom_3": [
+      {
+        "rank": 13,
+        "issuer": "Kuniko Limited",
+        "security": "AU:KNI",
+        "admission_route": "web-admitted (A1, A2, A3 verified_issuer with 3 issuer and 3 regulated passages, A4)",
+        "source": "Tavily search + ASX announcements",
+        "scoring_inputs": {
+          "theme": "critical_materials (inherited, verified)",
+          "sector": null,
+          "industry": null,
+          "region": "Oceania",
+          "relevance_score_pre_scan_breakdown": "stored 65.0 = theme 45 (critical_materials, inherited, theme_unverified=false) + kw 0 + sector 0 (no sector) + industry 0 + region 12 + catalyst 4 + conf 4",
+          "ranking_key": "eligible_unverified, hard 1, soft 1, rel 65"
+        },
+        "eligibility": "eligible_unverified (industry unknown); market cap A$6.55m (ASX header confirms A$6,554,732 at A$0.02) shown as '$0.00bn' micro-cap",
+        "why_surfaced_payload": "'no verified statement of what the company does names the requested theme; score basis: matches theme critical_materials', which contradicts its A3 verified_issuer status",
+        "thesis_fit": "on-thesis (weak)",
+        "fit_reasoning": "A battery-metals (Ni-Cu-Co) explorer in Norway plus a silica project. It has exploration catalysts (EM survey, Oct 2026) but no capacity catalyst, and is a nano-cap. It is ranked above ABX/ATR only on its verified theme."
+      },
+      {
+        "rank": 14,
+        "issuer": "ABX Group",
+        "security": "AU:ABX",
+        "admission_route": "labelled web lead (A3 not passed)",
+        "source": "Tavily search",
+        "scoring_inputs": {
+          "theme": "critical_materials (inherited, UNVERIFIED, half weight)",
+          "sector": null,
+          "industry": null,
+          "region": "Oceania",
+          "relevance_score_pre_scan_breakdown": "stored 42.5 = theme 22.5 (critical_materials, theme_unverified=true, half weight) + sector 0 + industry 0 + region 12 + catalyst 4 + conf 4",
+          "ranking_key": "eligible_unverified, hard 1, soft 1, rel 42.5"
+        },
+        "eligibility": "eligible_unverified; A$10.8m micro-cap",
+        "why_surfaced_payload": "score basis: searched for theme 'critical_materials' (not yet verified; half weight)",
+        "thesis_fit": "on-thesis",
+        "fit_reasoning": "Ionic-clay rare earths (Deep Leads) and aluminium-fluoride; a micro-cap with a project catalyst. Its fit is good but its evidence is weaker than the 4 cut admitted names."
+      },
+      {
+        "rank": 15,
+        "issuer": "Astron Limited",
+        "security": "AU:ATR",
+        "admission_route": "labelled web lead (A3 not passed)",
+        "source": "Tavily search",
+        "scoring_inputs": {
+          "theme": "critical_materials (inherited, UNVERIFIED, half weight)",
+          "sector": null,
+          "industry": null,
+          "region": "Oceania",
+          "relevance_score_pre_scan_breakdown": "stored 42.5 = theme 22.5 (critical_materials, theme_unverified=true, half weight) + sector 0 + industry 0 + region 12 + catalyst 4 + conf 4",
+          "ranking_key": "eligible_unverified, hard 1, soft 1, rel 42.5"
+        },
+        "eligibility": "eligible_unverified; A$258m micro-cap",
+        "why_surfaced_payload": "score basis: searched for theme 'critical_materials' (not yet verified; half weight)",
+        "thesis_fit": "on-thesis",
+        "fit_reasoning": "Donald mineral-sands project (zircon, rare-earth concentrate): a construction-stage project catalyst."
+      }
+    ],
+    "other_returned": [
+      {
+        "rank": 6,
+        "security": "US:LAC Lithium Americas",
+        "score": 85.0,
+        "fit": "on-thesis",
+        "reason": "Thacker Pass lithium (DOE loan and stake); small-cap"
+      },
+      {
+        "rank": 7,
+        "security": "US:CLF Cleveland-Cliffs",
+        "score": 85.0,
+        "fit": "adjacent",
+        "reason": "Steel; electrical steel is a minor angle"
+      },
+      {
+        "rank": 8,
+        "security": "LSE:PRE Pensana",
+        "score": 75.0,
+        "fit": "on-thesis",
+        "reason": "Longonjo rare earths (Angola); size not verified"
+      },
+      {
+        "rank": 9,
+        "security": "LSE:RBW Rainbow Rare Earths",
+        "score": 75.0,
+        "fit": "on-thesis",
+        "reason": "Phalaborwa rare-earth tailings"
+      },
+      {
+        "rank": 10,
+        "security": "US:FCX Freeport-McMoRan",
+        "score": 85.0,
+        "fit": "adjacent (size flagged)",
+        "reason": "Copper mega-cap, correctly included_with_mismatch (float $61.9bn)"
+      },
+      {
+        "rank": 11,
+        "security": "AU:MEI Meteoric Resources",
+        "score": 65.0,
+        "fit": "on-thesis, but subject to a pending takeover",
+        "reason": "Web-admitted (A3 verified_issuer, 2 passages); Caldeira ionic-clay rare earths (Brazil); A$640m small-cap. ASX 2026-09-30: 'Lynas Rare Earths to Acquire Meteoric Resources'. The run does not flag this"
+      },
+      {
+        "rank": 12,
+        "security": "AU:ILU Iluka Resources",
+        "score": 65.0,
+        "fit": "on-thesis",
+        "reason": "Web-admitted (3 issuer + 3 regulated passages); Eneabba rare-earth refinery (government-funded) is a capacity catalyst; A$2.5bn = $1.76bn small-cap. One of the best fits, ranked 12th"
+      }
+    ],
+    "flags": {
+      "irrelevant_high_ranks": [
+        "SCCO (mega-cap, Grupo Mexico controlled) is still rank 3 and CLF (steel) rank 7, both ahead of every web-admitted name",
+        "The displayed score still contradicts the rank: 75 at ranks 1-2, 85 at 3-7, 75 at 8-9, 85 at 10, 65 at 11-13. The order is eligibility, then hard passes, then SOFT passes (size verified), and only then relevance"
+      ],
+      "excellent_candidates_low_or_zero": [
+        "Iluka (rank 12) and Meteoric (rank 11) rank below adjacent SCCO/CLF/FCX",
+        "Lynas (AU:LYC) and Lindian (AU:LIN), both returned in E2, are now beyond the cap, while the theme-UNVERIFIED ABX and ATR (42.5) are returned",
+        "4 theme-verified web-admitted names are beyond the cap (deduced; most likely CRML Tanbreez, ARA Aclara heavy rare earths, NB NioCorp Elk Creek, PKX)",
+        "Defense Metals, Ucore, NACM and CoTec remain also_surfaced despite 3 candidate-evidence queries each",
+        "Arafura (ARU) is rejected on a name mismatch again; Northern Minerals (NTU) is rejected because a page said 'Northern Mineral Limited'"
+      ],
+      "geography_mistakes": [],
+      "ticker_security_code_confusion": [
+        "Candidate-evidence searches for 'North Atlantic Critical Metals Corp.' returned mostly Critical Metals Corp (NASDAQ:CRML) pages: a name-collision risk. No misattribution was observed (NACM stayed also_surfaced)"
+      ],
+      "duplicate_issuers_multi_listing": [
+        "None in the output. The 5 registry duplicates were collapsed"
+      ],
+      "stale_or_misclassified": [
+        "MEI is the target of an announced Lynas acquisition (ASX, 2026-09-30); the run does not flag it",
+        "Umicore is still classified 'Mining'",
+        "US:AAPL and US:GEV (and arguably US:PKX) are described as having 'met the requirements' (in reality eligible_unverified with industry unknown): false industry matches that only the cap kept out of the output"
+      ],
+      "score_constant_per_source": "PARTLY. Web scores now vary: 65 (theme verified) vs 42.5 (unverified). Registry scores are still constant per registry: curated 85 x6, platform 75 x4. The 10-point curated-vs-platform gap comes from the industry label string ('Metals & Mining' vs 'Mining'), not from fit"
+    },
+    "on_thesis_count": "12/15 (SCCO, CLF, FCX adjacent; KNI on-thesis but weak; MEI on-thesis but under a pending takeover)",
+    "fix_checks": {
+      "ADR-063_intent": {
+        "verdict": "PASS (holds)",
+        "evidence": "discovery_intent themes [critical_materials, mining_materials], industries [Metals & Mining], size soft, end_markets [semiconductors, electrification, defence]; all 20 discovery queries are about critical minerals and mining (no defence-prime or semiconductor-equipment queries). The legacy top-level parse is still wrong (defense/semis/grid) but no longer drives scoring.",
+        "caveat": "The intent turns 'critical OR specialty materials' into a hard industry constraint [critical_materials, mining_materials] and Metals & Mining only: no query targets specialty-materials producers (chemicals, high-purity materials, wafers/gases), and such a producer could never pass the industry constraint unless the registry miscalls it 'Mining' (Umicore)."
+      },
+      "ADR-070_score_varies_and_basis": {
+        "verdict": "PARTIAL PASS",
+        "evidence": "Within the web source, scores now vary: MEI/ILU/KNI 65 (theme verified, 45 pts) vs ABX/ATR 42.5 (theme_unverified=true, 22.5 pts), and every value recomputes exactly with score_thesis_relevance on the intent. Registry items now score on the intent too (platform 75, was 30). Basis is visible in relevance_reason ('score basis: matches theme ...' / 'searched for theme ... (not yet verified; half weight)') plus the theme_unverified flag.",
+        "gaps": [
+          "Scores are still constant within each registry source (85 x6 curated, 75 x4 platform)",
+          "Curated items in items[] show no 'score basis' clause, and no numeric breakdown is stored anywhere",
+          "For the admitted MEI/ILU/KNI the relevance_reason begins 'no verified statement of what the company does names the requested theme', which contradicts A3 verified_issuer (2-3 passages)"
+        ]
+      },
+      "ADR-073_tiebreak_and_beyond_cap": {
+        "verdict": "PARTIAL",
+        "evidence": "The cut is no longer silent: warnings[0] names 8 tickers (AU:LIN, AU:LYC, US:CRML, TO:ARA, US:NB, US:PKX, US:AAPL, US:GEV), and 3/7 admitted names are returned (E2: 1/7). The relevance tie-break works within a tier: MEI/ILU/KNI (65) rank ahead of ABX/ATR (42.5).",
+        "failures": [
+          "ranking_key = (eligibility, -hard_passes, -soft_passes, -relevance): a verified size (soft pass) outranks thesis fit, so 4 theme-verified admitted names (65, size unknown) were cut while the theme-UNVERIFIED ABX/ATR (42.5, size verified) were kept (deduced from the counts and the key)",
+          "A3 theme verification never satisfies the industry hard constraint, so every web-admitted name stays eligible_unverified and ranks below all 10 registry names, including adjacent SCCO/CLF/FCX",
+          "funnel.beyond_cap is a count only; names live in a free-text warning (code UNCLASSIFIED) with no name, state, score or reason per cut candidate"
+        ]
+      }
+    },
+    "before_after": {
+      "E2_run": "d6f5d2c6-0a4b-4be5-bb1e-6ad2d0807c54",
+      "E3_run": "b14b96d9-df16-4c20-9423-c95fbfbf908f",
+      "thesis_fit": "12/15 -> 12/15 (the same 3 adjacent: SCCO, CLF, FCX)",
+      "web_admitted_returned": "1/7 (ETM) -> 3/7 (MEI, ILU, KNI)",
+      "cut_by_cap": "8 silently (names inferred) -> 8 named by ticker (4 of them admitted, deduced)",
+      "also_surfaced_theme_missing": "6 (incl. Aclara) -> 4 (Aclara promoted via candidate-evidence search)",
+      "scores": "curated 85 / platform 30 / web 20 (constant per source; dynamic items scored on the legacy parse) -> curated 85 / platform 75 / web 65 or 42.5 (scored on the intent; varies only within web)",
+      "rank_vs_score": "contradictory -> still contradictory (soft passes precede relevance)",
+      "top5": "ERA, UMI, SCCO, MP, ALB -> unchanged",
+      "lost_from_output": "LIN, LYC (on-thesis) and ETM; gained MEI, ILU, KNI",
+      "tavily_credits": "20 -> 38 (+18 candidate-evidence queries; 4 of 6 targets still lack theme evidence)",
+      "net": "Better: an honest score basis, named cut list, and 2 more evidenced names returned. Unchanged: rank 3-10 still held by registry names, including 3 adjacent large caps, and the fix does not reach the eligibility/soft-pass layers that drive the order."
+    },
+    "defects": [
+      {
+        "id": "E3-1",
+        "severity": "P2",
+        "title": "A3 theme verification does not feed the industry hard constraint",
+        "evidence": "MEI/ILU/KNI: admission A3 verified_issuer (2-3 issuer passages, ILU/KNI 3 regulated) but constraint_results.industry = unknown, eligibility eligible_unverified, relevance_reason 'no verified statement of what the company does names the requested theme'",
+        "expected": "Theme-verified admitted names should pass (or at least not be 'unknown' on) the industry constraint and rank with registry names",
+        "root_cause_hypothesis": "pipeline.evaluate(): the industry constraint reads registry classification/screening only; the W6b A3 theme_evidence is not passed into it. relevance_reason is built from industry_result.basis",
+        "systemic": "yes"
+      },
+      {
+        "id": "E3-2",
+        "severity": "P2",
+        "title": "Soft size-verification outranks thesis fit before the cap",
+        "evidence": "ranking_key (constraints.py:612) orders by -soft_passes before -relevance; 4 admitted (65 pts) are beyond the cap while labelled ABX/ATR (42.5, theme_unverified) are returned; LIN/LYC are cut while SCCO/CLF/FCX are kept",
+        "expected": "Within a tier, rank on relevance (or on admitted-vs-labelled) before soft-preference counts, or treat 'size unknown' as neutral",
+        "root_cause_hypothesis": "ADR-073 appended relevance as the LAST key element; size is verifiable only on ASX/Euronext, so venue coverage decides rank",
+        "systemic": "yes"
+      },
+      {
+        "id": "E3-3",
+        "severity": "P2",
+        "title": "'Size unknown' mega-cap ranked as fully eligible at rank 3",
+        "evidence": "SCCO size 'unknown' (float $9.02bn lower bound) yet eligible, rank 3, above every small cap",
+        "expected": "Size unknown should demote (included as unverified) or use a market-cap source; a float/ownership flag should catch a controlled company",
+        "root_cause_hypothesis": "constraints: an unknown SOFT constraint does not affect the eligibility status; there is no market-cap source for US names beyond the dei float",
+        "systemic": "yes (persists from E2)"
+      },
+      {
+        "id": "E3-4",
+        "severity": "P2",
+        "title": "Pending acquisition not flagged",
+        "evidence": "AU:MEI returned at rank 11; ASX announcement 2026-09-30 'Lynas Rare Earths to Acquire Meteoric Resources Presentation' (asx.api.markitdigital.com MEI announcements); an InvestorNews snippet in the run's own results says 'Lynas ... with Meteoric Bid'",
+        "expected": "Discovery flags candidates under an announced takeover (spec: stale/acquired check)",
+        "root_cause_hypothesis": "No corporate-action check exists in the discovery eligibility stage; ASX announcement headlines are acquired for A3 but not scanned for M&A",
+        "systemic": "yes"
+      },
+      {
+        "id": "E3-5",
+        "severity": "P2",
+        "title": "False industry matches reach the shortlistable set",
+        "evidence": "US:AAPL and US:GEV (and US:PKX POSCO) are in the 23 non-excluded candidates, described as having 'met the requirements'; only the cap kept them out. Apple appears in the results only as MP's offtake customer",
+        "expected": "Customers and OEMs named on a materials page should not become candidates; at minimum they should be labelled, not described as having met the requirements",
+        "root_cause_hypothesis": "W6b mention extractor + the A4 eligibility path: industry 'unknown' is not exclusion, and the warning text treats eligible_unverified as 'met'",
+        "systemic": "yes"
+      },
+      {
+        "id": "E3-6",
+        "severity": "P2",
+        "title": "Renamed or variant issuer names still fail the listing match",
+        "evidence": "Arafura Resources -> ARU name_mismatch_with_listing (again; it was renamed Arafura Rare Earths); 'Northern Mineral Limited' -> NTU rejected; Mkango -> MKA rejected",
+        "expected": "Fuzzy or former-name matching against the exchange directory",
+        "root_cause_hypothesis": "identity verification uses a strict normalised-name equality",
+        "systemic": "yes (persists from E2)"
+      },
+      {
+        "id": "E3-7",
+        "severity": "P2",
+        "title": "Intent narrows 'critical or specialty materials' to mining",
+        "evidence": "intent industries [Metals & Mining] with a hard industry constraint on [critical_materials, mining_materials]; all 20 queries are about minerals; 'specialty' is in unmatched_terms",
+        "expected": "Specialty-materials producers (chemicals, high-purity materials, semiconductor materials) are searched and can pass",
+        "root_cause_hypothesis": "intent parser theme vocabulary has no specialty-materials theme",
+        "systemic": "unknown"
+      },
+      {
+        "id": "E3-8",
+        "severity": "P3",
+        "title": "beyond_cap is not structured",
+        "evidence": "funnel.beyond_cap = 8 (int); names only in a warning string, as exchange:ticker, code UNCLASSIFIED, with no name, admission state, score or reason",
+        "expected": "A beyond_cap list with ticker, name, eligibility, admission state, relevance and the key that cut it",
+        "root_cause_hypothesis": "pipeline.py:912-936 records only len(beyond_cap)",
+        "systemic": "yes"
+      },
+      {
+        "id": "E3-9",
+        "severity": "P3",
+        "title": "Displayed score contradicts the rank; registry score gap is a label artefact",
+        "evidence": "Ranks 1-2 score 75, ranks 3-7 score 85, ranks 8-9 score 75, rank 10 scores 85; curated 'Metals & Mining' earns +10 industry points over platform 'Mining'",
+        "expected": "The score shown should explain the order, and classification synonyms should be normalised",
+        "root_cause_hypothesis": "score_thesis_relevance does exact industry-string matching; ranking_key puts eligibility and passes ahead of the score",
+        "systemic": "yes"
+      },
+      {
+        "id": "E3-10",
+        "severity": "P3",
+        "title": "Market cap rendered as '$0.00bn'",
+        "evidence": "KNI size basis 'market cap 6,554,732 AUD ≈ $0.00bn → micro-cap'",
+        "expected": "Show the amount in $m below $0.1bn",
+        "root_cause_hypothesis": "size basis formatter uses a fixed 2-decimal bn",
+        "systemic": "yes"
+      },
+      {
+        "id": "E3-11",
+        "severity": "P3",
+        "title": "Umicore still classified 'Mining'",
+        "evidence": "UMI industry 'Mining' from platform_company_registry",
+        "expected": "A materials-technology / specialty-chemicals classification",
+        "root_cause_hypothesis": "platform registry classification",
+        "systemic": "no"
+      }
+    ],
+    "notes": [
+      "Only stored data was used, plus two ASX markitdigital GETs (MEI and KNI header and announcements) to check the takeover and the market cap. No discovery or research job was run.",
+      "The mapping of which 4 beyond-cap names are admitted is a deduction, not stored data."
+    ],
+    "folded_into": {
+      "E3-2": "D10",
+      "E3-9": "D10",
+      "E3-3": "D5",
+      "E3-11": "D11"
+    }
+  },
   "score_dimensions": {
     "identity": "Identity",
     "primary_source_quality": "Primary-source quality",
@@ -5543,29 +5955,27 @@
     "counts": {
       "P0": {
         "FIXED_LIVE": 3,
-        "FIXED_REPLAY": 2,
-        "PENDING_PR": 1,
+        "FIXED_REPLAY": 3,
         "NOT_REPRODUCED": 1
       },
       "P1": {
         "FIXED_LIVE": 4,
         "PARTIAL": 10,
-        "FIXED_REPLAY": 3,
+        "FIXED_REPLAY": 4,
         "OPEN": 21,
         "FIXED_CODE": 1,
-        "NOT_REPRODUCED": 3,
-        "PENDING_PR": 1
+        "NOT_REPRODUCED": 3
       },
       "P2": {
         "FIXED_REPLAY": 2,
-        "OPEN": 52,
-        "FIXED_CODE": 3,
-        "PARTIAL": 2,
+        "OPEN": 57,
+        "FIXED_CODE": 2,
+        "PARTIAL": 3,
         "FIXED_LIVE": 1,
         "NOT_REPRODUCED": 1
       },
       "P3": {
-        "OPEN": 16,
+        "OPEN": 18,
         "PARTIAL": 1,
         "NOT_REPRODUCED": 1
       }
@@ -5639,12 +6049,12 @@
         "hypothesis": "J",
         "root_cause": "Unknown size is soft; float lower bound cannot place a cap; label hides it",
         "status": "OPEN",
-        "fix": "",
+        "fix": "Persists on E3 b14b96d9: SCCO eligible at rank 3 with size unknown (E3-3).",
         "sections": [
           11
         ],
         "day": 1,
-        "rerun_ref": ""
+        "rerun_ref": "E3-3"
       },
       {
         "id": "D6",
@@ -5713,13 +6123,13 @@
         "title": "Hypothesis J: relevance score constant per source (E2: 85/30/20); order ignores relevance; cap of 15 silently cut 8 names incl. 6 of 7 theme-verified web candidates (inferred from counts)",
         "hypothesis": "J",
         "root_cause": "ranking_key called without relevance; dynamic items scored on the legacy parse; cut names not persisted",
-        "status": "FIXED_CODE",
-        "fix": "#302 e6570a5 ADR-070 + #306 ebb565e ADR-073. Live check: Discovery E3 b14b96d9 (section 11).",
+        "status": "PARTIAL",
+        "fix": "#302 e6570a5 ADR-070 + #306 ebb565e ADR-073. Live on E3 b14b96d9: web scores vary (65 theme-verified vs 42.5 unverified) and the cut is named by ticker; registry scores still constant (curated 85, platform 75), the score basis contradicts A3 for MEI, ILU and KNI, and a verified size still outranks relevance (E3-2, E3-9).",
         "sections": [
           11
         ],
         "day": 1,
-        "rerun_ref": ""
+        "rerun_ref": "E3-2, E3-9"
       },
       {
         "id": "D11",
@@ -5729,12 +6139,12 @@
         "hypothesis": "J",
         "root_cause": "Registry data not refreshed against directories",
         "status": "OPEN",
-        "fix": "",
+        "fix": "Persists on E3 b14b96d9: Umicore still classified 'Mining' (E3-11).",
         "sections": [
           11
         ],
         "day": 1,
-        "rerun_ref": ""
+        "rerun_ref": "E3-11"
       },
       {
         "id": "D12",
@@ -6639,8 +7049,8 @@
         "title": "Unsupported takeover claim presented as fact in the executive synthesis",
         "hypothesis": "H",
         "root_cause": "(1) The trust ladder has no claim type for corporate-control events, so a single-source unknown_web statement 'meets' the bar. (2) The executive-synthesis verifier checks citations, figures and prohibited words, not the source class or corroboration of the cited finding. (3) There is no rule that M&A/control claims need an issuer filing (8-K 1.01/7.01/8.01, SC 14D9, 425) or carry a 'reported' label like F13's.",
-        "status": "PENDING_PR",
-        "fix": "#314 (ADR-078, open): a material corporate event resting only on unvetted web pages is never stated as fact.",
+        "status": "FIXED_REPLAY",
+        "fix": "#314 48b5777 ADR-078 (merged and deployed after the PayPal rerun): a material corporate event resting only on unvetted web pages is never stated in the synthesis or chair output. Replay over all 13 stored reports blocks only this sentence, 0 false drops. Live confirmation: PYPL3 rerun, pending (section 14).",
         "sections": [
           7
         ],
@@ -7106,8 +7516,8 @@
         "title": "The interim and current period of a 6-K filer is never acquired because the quarterly slot accepts only 10-Q",
         "hypothesis": "E, G",
         "root_cause": "ADR-075 maps the annual form to 20-F for a foreign private issuer but leaves the quarterly form list at the domestic ['10-Q'] default. ensure_core_filings has no 6-K exhibit classifier (interim report vs press release).",
-        "status": "PENDING_PR",
-        "fix": "#313 (ADR-077, open): 6-K interim for 20-F filers; live replay across 13 filers picks the true latest interim.",
+        "status": "FIXED_REPLAY",
+        "fix": "#313 342b660 ADR-077 (merged; deployed in 48b5777): a 20-F filer's interim results are read from its results 6-K. Live replay picks the true latest interim for 12 of 13 filers, Cellectis included (Toyota: no pick). Live confirmation: CLLS3 rerun, pending (section 14).",
         "sections": [
           8,
           10
@@ -7460,6 +7870,111 @@
         "sections": [],
         "day": 2,
         "rerun_ref": ""
+      },
+      {
+        "id": "E3-1",
+        "case": "Discovery E3 b14b96d9",
+        "severity": "P2",
+        "title": "A3 theme verification does not feed the industry hard constraint",
+        "hypothesis": "J",
+        "root_cause": "pipeline.evaluate(): the industry constraint reads registry classification/screening only; the W6b A3 theme_evidence is not passed into it. relevance_reason is built from industry_result.basis",
+        "status": "OPEN",
+        "fix": "Evidence: MEI/ILU/KNI: admission A3 verified_issuer (2-3 issuer passages, ILU/KNI 3 regulated) but constraint_results.industry = unknown, eligibility eligible_unverified, relevance_reason 'no verified statement of what the company does names the requested theme'",
+        "sections": [
+          11
+        ],
+        "day": 2,
+        "rerun_ref": ""
+      },
+      {
+        "id": "E3-4",
+        "case": "Discovery E3 b14b96d9",
+        "severity": "P2",
+        "title": "Pending acquisition not flagged",
+        "hypothesis": "J",
+        "root_cause": "No corporate-action check exists in the discovery eligibility stage; ASX announcement headlines are acquired for A3 but not scanned for M&A",
+        "status": "OPEN",
+        "fix": "Evidence: AU:MEI returned at rank 11; ASX announcement 2026-09-30 'Lynas Rare Earths to Acquire Meteoric Resources Presentation' (asx.api.markitdigital.com MEI announcements); an InvestorNews snippet in the run's own results says 'Lynas ... with Meteoric Bid'",
+        "sections": [
+          11
+        ],
+        "day": 2,
+        "rerun_ref": ""
+      },
+      {
+        "id": "E3-5",
+        "case": "Discovery E3 b14b96d9",
+        "severity": "P2",
+        "title": "False industry matches reach the shortlistable set",
+        "hypothesis": "J",
+        "root_cause": "W6b mention extractor + the A4 eligibility path: industry 'unknown' is not exclusion, and the warning text treats eligible_unverified as 'met'",
+        "status": "OPEN",
+        "fix": "Evidence: US:AAPL and US:GEV (and US:PKX POSCO) are in the 23 non-excluded candidates, described as having 'met the requirements'; only the cap kept them out. Apple appears in the results only as MP's offtake customer",
+        "sections": [
+          11
+        ],
+        "day": 2,
+        "rerun_ref": ""
+      },
+      {
+        "id": "E3-6",
+        "case": "Discovery E3 b14b96d9",
+        "severity": "P2",
+        "title": "Renamed or variant issuer names still fail the listing match",
+        "hypothesis": "J",
+        "root_cause": "identity verification uses a strict normalised-name equality",
+        "status": "OPEN",
+        "fix": "Evidence: Arafura Resources -> ARU name_mismatch_with_listing (again; it was renamed Arafura Rare Earths); 'Northern Mineral Limited' -> NTU rejected; Mkango -> MKA rejected",
+        "sections": [
+          11
+        ],
+        "day": 2,
+        "rerun_ref": ""
+      },
+      {
+        "id": "E3-7",
+        "case": "Discovery E3 b14b96d9",
+        "severity": "P2",
+        "title": "Intent narrows 'critical or specialty materials' to mining",
+        "hypothesis": "J",
+        "root_cause": "intent parser theme vocabulary has no specialty-materials theme",
+        "status": "OPEN",
+        "fix": "Evidence: intent industries [Metals & Mining] with a hard industry constraint on [critical_materials, mining_materials]; all 20 queries are about minerals; 'specialty' is in unmatched_terms",
+        "sections": [
+          11
+        ],
+        "day": 2,
+        "rerun_ref": ""
+      },
+      {
+        "id": "E3-8",
+        "case": "Discovery E3 b14b96d9",
+        "severity": "P3",
+        "title": "beyond_cap is not structured",
+        "hypothesis": "J",
+        "root_cause": "pipeline.py:912-936 records only len(beyond_cap)",
+        "status": "OPEN",
+        "fix": "Evidence: funnel.beyond_cap = 8 (int); names only in a warning string, as exchange:ticker, code UNCLASSIFIED, with no name, admission state, score or reason",
+        "sections": [
+          11
+        ],
+        "day": 2,
+        "rerun_ref": ""
+      },
+      {
+        "id": "E3-10",
+        "case": "Discovery E3 b14b96d9",
+        "severity": "P3",
+        "title": "Market cap rendered as '$0.00bn'",
+        "hypothesis": "J",
+        "root_cause": "size basis formatter uses a fixed 2-decimal bn",
+        "status": "OPEN",
+        "fix": "Evidence: KNI size basis 'market cap 6,554,732 AUD ≈ $0.00bn → micro-cap'",
+        "sections": [
+          11
+        ],
+        "day": 2,
+        "rerun_ref": ""
       }
     ]
   },
@@ -7565,7 +8080,7 @@
           "D9 (partial)"
         ],
         "review": "Independent review (S1 score basis made visible; S2 matched_theme mislabel and N2 legacy keyword points recorded as limits).",
-        "verification": "Replay on stored runs (E2 held 30 -> 75, ETM 20 -> 65, unverified 20 -> 42.5; D off-thesis 66 -> 43.5). Live check: Discovery E3 b14b96d9 (section 11).",
+        "verification": "Replay on stored runs (E2 held 30 -> 75, ETM 20 -> 65, unverified 20 -> 42.5; D off-thesis 66 -> 43.5). Live on Discovery E3 b14b96d9 (95ba5f7): partial. Web scores vary and the cut is named by ticker; registry scores stay constant and a verified size outranks fit (E3-2; section 11).",
         "state": "merged",
         "merged_day": "2026-11-01",
         "deployed_in": "49ec531"
@@ -7608,7 +8123,7 @@
           "D10 (J)"
         ],
         "review": "Independent review (rounds not recorded in the ADR).",
-        "verification": "No stored run could be replayed (cut names were never persisted). Live check: Discovery E3 b14b96d9 (section 11).",
+        "verification": "No stored run could be replayed (cut names were never persisted). Live on Discovery E3 b14b96d9 (95ba5f7): partial. Web scores vary and the cut is named by ticker; registry scores stay constant and a verified size outranks fit (E3-2; section 11).",
         "state": "merged",
         "merged_day": "2026-11-01",
         "deployed_in": "fbb40e8"
@@ -7703,34 +8218,37 @@
         ],
         "review": "Independent review. Round 1 caught that one held 2024 document made all three recency questions say 'held but not read'; stale holdings are no longer reported as held.",
         "verification": "LIVE (PYPL2 39905de8): Q3 active accounts and transactions from the EX-99.1; TPV, TM$ and guidance still missing. LIVE (LIN2 6d4f1c43): latest-period score 3 -> 6; the 5B cash A$45.1m is present (F32), only under Catalysts and with no runway."
-      }
-    ],
-    "pending": [
+      },
       {
         "pr": 313,
-        "sha": "not merged",
-        "adr": "ADR-077 (pending)",
-        "state": "open; review round 5; CI pending",
-        "title": "6-K interim for 20-F filers",
+        "sha": "342b660",
+        "adr": "ADR-077",
+        "state": "merged",
+        "merged_day": "2026-11-02",
+        "deployed_in": "48b5777",
+        "title": "SEC filings: a 20-F filer's interim results are read from its results 6-K",
         "defects": [
           "CLLS2-1"
         ],
-        "review": "5 review rounds so far: a BioNTech clinical 'topline results' 6-K was picked at first; then announcements; then stale 6-Ks; finally a content check (statement line items with figures) was added.",
-        "verification": "Live replay across 13 filers picks the true latest interim. Not merged, not deployed, not rerun."
+        "review": "5 review rounds. Caught: BioNTech's clinical 'topline results' release picked as the interim; future-results announcements picked; stale 6-Ks picked; real results releases that mention a call or webcast rejected; TSMC's 3.8k-character release failing an 8k-character floor. Final rule: notices are checked first; only 6-Ks filed after the annual report qualify; every non-iXBRL pick must pass a content check (at least 4 statement line items with figures in at least 1,500 characters, or at least 3 in at least 8,000).",
+        "verification": "Live replay picks the true latest interim for Cellectis, ASML, Novo, SAP, Shell, BioNTech, Barrick, Valneva, HSBC, Philips, TSMC and argenx; Toyota gets no pick. Not yet observed in a research run: CLLS3 pending (section 14)."
       },
       {
         "pr": 314,
-        "sha": "not merged",
-        "adr": "ADR-078 (pending)",
-        "state": "open; review in progress",
-        "title": "A material corporate event resting only on unvetted web pages is never stated as fact",
+        "sha": "48b5777",
+        "adr": "ADR-078",
+        "state": "merged",
+        "merged_day": "2026-11-02",
+        "deployed_in": "48b5777",
+        "title": "Synthesis: a material corporate event resting only on unvetted web pages is never stated as fact",
         "defects": [
           "PYPL2-1"
         ],
-        "review": "Review in progress.",
-        "verification": "Trigger: PYPL2 P0 'Stripe/Advent $53B offer rejected by the board' from a single startupfortune-type page. Not merged, not deployed, not rerun."
+        "review": "3 review rounds, plus one CI regression fixed (fallback_reason was read on verdict-shaped test fakes). Events covered: takeover offer or rejection, going private, insolvency, delisting, CEO/CFO departure, fraud or enforcement. A deterministic gate in validate_sentence, deterministic_synthesis and the chair; a vetted source of the same event type unlocks it.",
+        "verification": "Replay over all 13 stored reports: only the PYPL2 sentence ('Stripe/Advent $53B offer rejected by the board', from a single unvetted page) is blocked; 0 false drops. Not yet observed in a research run: PYPL3 pending (section 14)."
       }
     ],
+    "pending": [],
     "shelved": [
       {
         "pr": 309,
@@ -7740,7 +8258,7 @@
         "summary": "Four rounds of independent adversarial review found 13, 19, 21 and 38 false drops of true statements (deny-list, narrower deny-list, full-period allow-list, strict adjacency). Guidance verbs ('lifted FY2026 revenue to', 'set at', 'cut to') and trailing qualifiers ('is the midpoint of its range') read as actuals. Conclusion: actual versus guidance cannot be decided by wording rules after the fact; it needs a statement-kind tag at extraction. ADBE-3 stays OUTSTANDING P1."
       }
     ],
-    "final_main_after_313_314": "<!-- PENDING: #313/#314 merge -->"
+    "main_and_deployed_at_report_time": "48b5777"
   },
   "before_after": {
     "cases": [
@@ -7820,7 +8338,7 @@
           [
             "P0/P1 defects",
             "P0 0, P1 5 (PYPL-1..5).",
-            "PYPL-5 not reproduced; PYPL-1 and PYPL-4 partly fixed; PYPL-2/3 still present; NEW P0 PYPL2-1 (takeover rumour stated as fact in the executive synthesis) and NEW P1 PYPL2-3, PYPL2-5."
+            "PYPL-5 not reproduced; PYPL-1 and PYPL-4 partly fixed; PYPL-2/3 still present; NEW P0 PYPL2-1 (takeover rumour stated as fact in the executive synthesis; fixed in code by #314 after this run, PYPL3 pending) and NEW P1 PYPL2-3, PYPL2-5."
           ],
           [
             "Overall usefulness / 15-dim mean",
@@ -7906,7 +8424,7 @@
           [
             "P0/P1 defects",
             "P0 1 (CLLS-3), P1 3 (CLLS-1, -2, -4).",
-            "CLLS-3 gone (the chair declined); CLLS-1 partly fixed (#311); CLLS-2 and CLLS-4 still present; NEW P1 CLLS2-1 (no 6-K; fix in #313), CLLS2-2 (Calyxt risks as Cellectis's), CLLS2-3, CLLS2-4 (blocking cash_runway ran 0 tools)."
+            "CLLS-3 gone (the chair declined); CLLS-1 partly fixed (#311); CLLS-2 and CLLS-4 still present; NEW P1 CLLS2-1 (no 6-K; fixed in code by #313 after this run, CLLS3 pending), CLLS2-2 (Calyxt risks as Cellectis's), CLLS2-3, CLLS2-4 (blocking cash_runway ran 0 tools)."
           ],
           [
             "Overall usefulness / 15-dim mean",
@@ -7969,34 +8487,40 @@
             "Parsed intent",
             "themes [defense]; hard industry 'defense'",
             "themes [critical_materials, mining_materials]; no hard industry",
-            ""
+            "themes [critical_materials, mining_materials]; industries [Metals & Mining] as a hard constraint; 'specialty' unmatched, so no specialty-materials producer is searched (E3-7)"
           ],
           [
             "Thesis fit of returned",
             "0/15",
             "12/15",
-            ""
+            "12/15 (the same 3 adjacent: SCCO, CLF, FCX); top 5 unchanged (ERA, UMI, SCCO, MP, ALB)"
           ],
           [
             "Score / rank",
             "registry 80.5 x11, web 60.5 x4; order by eligibility tier then insertion",
             "curated 85 x6, held 30 x4, web 20 x5; ERA/UMI (30) at ranks 1-2; Lynas rank 14",
-            ""
+            "curated 85 x6, platform 75 x4, web 65 (theme verified) or 42.5 (unverified); scores now vary only within the web source; the shown score still contradicts the rank (75 at ranks 1-2, 85 at 3-7) because soft passes (size verified) precede relevance"
           ],
           [
             "Web candidates admitted -> returned",
             "5 -> 4 (all defence)",
             "7 -> 1 (6 cut by the cap, inferred)",
-            ""
+            "7 -> 3 (MEI, ILU, KNI); funnel.beyond_cap = 8, named by ticker only in a warning (LIN, LYC, CRML, ARA, NB, PKX, AAPL, GEV); 4 admitted names cut (deduced) while theme-unverified ABX and ATR (42.5) were returned"
           ],
           [
             "Size-unknown passing as eligible",
             "RHM, BAE, SAAB 'eligible'",
             "SCCO 'eligible' at rank 3",
-            ""
+            "SCCO still 'eligible' at rank 3 with size unknown (E3-3)"
+          ],
+          [
+            "Tavily credits",
+            "20",
+            "20",
+            "38 (+18 candidate-evidence queries; 4 of 6 targets still lack theme evidence)"
           ]
         ],
-        "verdict": "E -> E2: thesis fit 0/15 -> 12/15 (ADR-063). E2 -> E3 (third column): <!-- PENDING: E3 -->"
+        "verdict": "E -> E2: thesis fit 0/15 -> 12/15 (ADR-063). E2 -> E3: thesis fit unchanged at 12/15 and the top 5 unchanged. Better: an honest score basis for web names, a named cut list, and 3 of 7 evidenced web names returned instead of 1. Not better: ranks 3-10 are still registry names, including 3 adjacent large caps, while Iluka (12th) and Meteoric (11th) sit below them and Lynas and Lindian were cut. ADR-070 and ADR-073 do not reach the eligibility and soft-pass layers that decide the order."
       }
     ],
     "not_rerun": [
@@ -8016,7 +8540,16 @@
         "case": "HON (second rerun)",
         "note": "HON3 not run, so ADR-066's HONA drop (H3) is verified by replay only."
       }
-    ]
+    ],
+    "pending_reruns": {
+      "cases": [
+        "CLLS3",
+        "PYPL3"
+      ],
+      "deployed": "48b5777",
+      "purpose": "Confirm ADR-077 (CLLS2-1) and ADR-078 (PYPL2-1) in a live research run; both are replay-verified only.",
+      "result": "<!-- PENDING: CLLS3/PYPL3 -->"
+    }
   },
   "hypotheses": [
     {
@@ -8052,7 +8585,7 @@
       "name": "Multi-listing identity",
       "verdict": "CONFIRMED ON THE RESEARCH PATH; PARTLY FIXED; NOT OBSERVED IN DISCOVERY",
       "status": "PARTIAL",
-      "evidence": "Cellectis run 1 was researched as a Euronext-only issuer: ADR-061's issuer-vs-security identity lived only in Discovery, the CLLS/CIK sibling was never linked, no 20-F or 6-K was read, and classification failed (CLLS-1). ADR-075 (#311) links the SEC line at research time by directory name plus domicile (live on CLLS2: CIK 1627281, 20-F FY2025). Still open: the company record shows one line with no ADS, ratio, ISIN or reporting currency (CLLS2-9); no 6-K interim (CLLS2-1; ADR-077 pending in #313). No ADS double counting or currency mixing was observed. In Discovery no issuer appeared twice; GGG/ETM de-duplicated only because the stale lead was rejected; SIX:CFR vs SEC CFR (Cullen/Frost) is handled by ADR-066."
+      "evidence": "Cellectis run 1 was researched as a Euronext-only issuer: ADR-061's issuer-vs-security identity lived only in Discovery, the CLLS/CIK sibling was never linked, no 20-F or 6-K was read, and classification failed (CLLS-1). ADR-075 (#311) links the SEC line at research time by directory name plus domicile (live on CLLS2: CIK 1627281, 20-F FY2025). Still open: the company record shows one line with no ADS, ratio, ISIN or reporting currency (CLLS2-9); no 6-K interim (CLLS2-1; ADR-077 merged in #313 as 342b660 after the Cellectis rerun, replay-verified on 13 filers, CLLS3 live rerun pending). No ADS double counting or currency mixing was observed. In Discovery no issuer appeared twice; GGG/ETM de-duplicated only because the stale lead was rejected; SIX:CFR vs SEC CFR (Cullen/Frost) is handled by ADR-066."
     },
     {
       "id": "F",
@@ -8066,7 +8599,7 @@
       "name": "Currentness",
       "verdict": "CONFIRMED; LATEST NUMBERS PARTLY FIXED; EVENTS, SUPERSESSION AND NON-US INTERIMS OPEN",
       "status": "PARTIAL",
-      "evidence": "Fixed live: the US XBRL latest quarter (ADR-062, HON), the results 8-K read through EX-99.1 (ADR-068, PYPL), recency questions reading the newest held documents (ADR-076; LIN2 latest-period score 3 -> 6). Open: Cellectis's 2026-09-14 strategic pivot missed in both runs (CLLS-2); Antofagasta's financial core two periods stale in both runs (ANTO-3, ANTO-7); Lindian's Financial capacity shows FY2025 aggregator figures (LIN2-1); PayPal's CEO change (PYPL-9) and Adobe's CEO succession, CFO exit, Semrush and DOJ settlement missing (ADBE-7); guidance stated as an actual (ADBE-3, fix shelved); 6-K interims never fetched (CLLS2-1, #313 pending); superseded_by_finding_id unused."
+      "evidence": "Fixed live: the US XBRL latest quarter (ADR-062, HON), the results 8-K read through EX-99.1 (ADR-068, PYPL), recency questions reading the newest held documents (ADR-076; LIN2 latest-period score 3 -> 6). Open: Cellectis's 2026-09-14 strategic pivot missed in both runs (CLLS-2); Antofagasta's financial core two periods stale in both runs (ANTO-3, ANTO-7); Lindian's Financial capacity shows FY2025 aggregator figures (LIN2-1); PayPal's CEO change (PYPL-9) and Adobe's CEO succession, CFO exit, Semrush and DOJ settlement missing (ADBE-7); guidance stated as an actual (ADBE-3, fix shelved); 6-K interims never fetched in any scored run (CLLS2-1; ADR-077 merged in #313 after the last Cellectis run, not yet observed live); superseded_by_finding_id unused."
     },
     {
       "id": "H",
@@ -8085,9 +8618,9 @@
     {
       "id": "J",
       "name": "Discovery triage",
-      "verdict": "CONFIRMED; FIXED IN CODE; LIVE CHECK PENDING (E3)",
-      "status": "FIXED_CODE",
-      "evidence": "relevance_score_pre_scan was constant per source in every stored run (B 90 x3; D 86/66; E 80.5/60.5; E2 85/30/20) and did not drive the order (E2 shows 30 above 85). Web items got 45 circular theme points or 0. The cap of 15 silently cut 8 E2 names, including 6 of 7 theme-verified web candidates (inferred from counts; names not persisted). ADR-070 scores dynamic items on the intent and half-weights unverified themes; ADR-073 applies relevance before the cap and records funnel.beyond_cap. Residual by design: relevance is the last sort key after eligibility tier and verified-pass counts, so a size-unknown mega cap can still outrank a better-fitting small cap (D5/D7). Live check: E3 b14b96d9 (section 11)."
+      "verdict": "CONFIRMED; PARTLY FIXED (LIVE ON E3)",
+      "status": "PARTIAL",
+      "evidence": "relevance_score_pre_scan was constant per source in every stored run (B 90 x3; D 86/66; E 80.5/60.5; E2 85/30/20) and did not drive the order (E2 shows 30 above 85). Web items got 45 circular theme points or 0. The cap of 15 silently cut 8 E2 names, including 6 of 7 theme-verified web candidates (inferred from counts; names not persisted). ADR-070 scores dynamic items on the intent and half-weights unverified themes; ADR-073 applies relevance before the cap and records funnel.beyond_cap. Residual by design: relevance is the last sort key after eligibility tier and verified-pass counts, so a size-unknown mega cap can still outrank a better-fitting small cap (D5/D7). Live on E3 b14b96d9 (95ba5f7): web scores now vary (65 theme-verified vs 42.5 unverified) and each recomputes on the intent; 3 of 7 admitted web names returned (E2: 1 of 7); the cut is named, by ticker only. Registry scores are still constant (curated 85 x6, platform 75 x4); the score basis of admitted MEI, ILU and KNI says no verified statement names the theme, contradicting their A3 verification; a verified size outranks fit, so 4 admitted names were cut while theme-unverified ABX and ATR were returned (E3-2); theme verification never satisfies the industry constraint, so every web name ranks below all 10 registry names, including adjacent SCCO, CLF and FCX (E3-1). Thesis fit stayed 12/15."
     }
   ],
   "systemic_patterns": [
@@ -8126,7 +8659,7 @@
       "frequency": "3 P0s (CLLS-3, LIN-1, PYPL2-1) and several P1s (H11, ANTO-5, LIN-6, PYPL2-5, CLLS2-3)",
       "severity": "P0/P1",
       "root_cause": "The editor and chair verify citations, figures and banned words, not claim type, tense, stage, period labels or ledger counts; single-source web claims meet the trust bar.",
-      "fixed": "Material-event part pending (#314, ADR-078)",
+      "fixed": "Material-event part in code (#314, ADR-078; replay only, PYPL3 pending)",
       "residual": "HIGH",
       "kind": "systemic"
     },
@@ -8152,7 +8685,7 @@
       "frequency": "4 of 4 non-US companies; 17 of 21 DOCUMENT_NOT_ACQUIRED gaps are non-US",
       "severity": "P1",
       "root_cause": "IFRS XBRL not read; 6-K not fetched; ASX 5B and UK RNS PDFs not extracted; latest UK results PDFs not acquired; issuer website not sourced, so issuer pages are labelled press (ADR-065 cannot fire).",
-      "fixed": "Partly (ADR-075 links the SEC line; ADR-077 pending)",
+      "fixed": "Partly (ADR-075 links the SEC line; ADR-077 reads the 6-K interim, replay only)",
       "residual": "HIGH",
       "kind": "systemic"
     },
@@ -8217,7 +8750,7 @@
       "frequency": "6 of 8 companies",
       "severity": "P0 (PYPL2-1) / P2",
       "root_cause": "No relevance or claim-status filter on catalyst evidence; single weak sources reach the synthesis; commodity mentions not weighted by asset status.",
-      "fixed": "Material-event part pending (#314)",
+      "fixed": "Material-event part in code (#314, ADR-078; replay only)",
       "residual": "MEDIUM",
       "kind": "systemic"
     },
@@ -8227,7 +8760,7 @@
       "companies": "runs A, B, C, D, E2",
       "sectors": "biotech, electrical, payments, automation, materials",
       "venues": "Euronext, CO, NYSE/Nasdaq, TSX/TSXV, AIM, ASX",
-      "frequency": "5 of 6 inspected runs",
+      "frequency": "6 of 7 inspected runs (E3: 4 names left also_surfaced after 12 targeted queries; 3 rejected on a renamed or misspelt name, E3-6)",
       "severity": "P2 (HIGH priority)",
       "root_cause": "VENUE:TICKER-only extraction; no name-to-directory resolution; mega-cap registries; 77-106 of 145-160 results skipped over budget; PDFs skipped.",
       "fixed": "No",
@@ -8240,11 +8773,11 @@
       "companies": "runs A, B, D, E, E2",
       "sectors": "all",
       "venues": "all",
-      "frequency": "5 of 5 runs with items",
+      "frequency": "6 of 6 runs with items (E3 after the fixes)",
       "severity": "P2",
       "root_cause": "Score from source metadata; relevance not in ranking_key; cap before fit; cut names not persisted.",
-      "fixed": "In code (ADR-070, ADR-073); live check E3 (section 11)",
-      "residual": "MEDIUM (relevance is the last key)",
+      "fixed": "Partly (ADR-070, ADR-073): live on E3 web scores vary and the cut is named; registry scores constant; size verification outranks fit (E3-2)",
+      "residual": "MEDIUM-HIGH (relevance is the last key)",
       "kind": "systemic"
     },
     {
@@ -8253,7 +8786,7 @@
       "companies": "runs B, D, E, E2",
       "sectors": "electrical, automation, defence, materials",
       "venues": "Xetra, SIX, TSE, LSE, NYSE (float floor)",
-      "frequency": "4 of 6 runs",
+      "frequency": "5 of 7 runs (E3: SCCO rank 3)",
       "severity": "P2",
       "root_cause": "No market-cap source for several venues; a float lower bound cannot place a cap; soft unknown labelled 'eligible'.",
       "fixed": "Only the float-age bug (#299)",
@@ -8284,7 +8817,7 @@
       "affected": "8 of 8 companies",
       "benefit": "Closes most open gaps, enables sector metrics (bank KPIs, runway, TPV, copper costs), removes false absence claims from investor pages.",
       "scope": "Large, in slices: (a) gap writer checks the corpus, XBRL and document inventory before asserting absence and uses acquired_not_read beyond recency questions; (b) statement-table extraction for 10-K/10-Q and the Item 2.02 EX-99.1; (c) ifrs-full XBRL for 20-F filers and the 6-K interim (ADR-077); (d) ASX annual-report and Appendix 5B layouts; (e) UK RNS/IR results PDFs.",
-      "dependency": "ADR-068 and ADR-076 (merged); ADR-077 (#313, open). Slice (a) has none.",
+      "dependency": "ADR-068, ADR-076 and ADR-077 (#313, 342b660) merged; ADR-077 is replay-verified only. Slice (a) has none.",
       "before_owner_testing": "YES"
     },
     {
@@ -8307,8 +8840,8 @@
       "evidence": "P0s PYPL2-1 (takeover rumour as fact), LIN-1 ('mines and sells' for a pre-revenue developer), CLLS-3 ('no FY2024 results'); P1s PYPL2-5 (Q2 figures in a Q3 statement), CLLS2-3, ANTO-5, LIN-6, H11. LIN-1 and CLLS-3 vanished on rerun only because the editor or chair fell back.",
       "affected": "5 of 8 companies (HON, PYPL, ANTO, CLLS, LIN)",
       "benefit": "Removes the most damaging P0 class: a confident sentence at the top of the report that is false.",
-      "scope": "Medium: claim-type gate for material corporate events (ADR-078, #314); tense/stage check against the ledger's lifecycle facts; period labels carried into chair sentences; chair counts and disagreement ids validated against the ledger; 'not in evidence' never phrased as 'does not exist'.",
-      "dependency": "ADR-078 (#314, open) covers the material-event part.",
+      "scope": "Medium: claim-type gate for material corporate events (ADR-078, #314, merged); tense/stage check against the ledger's lifecycle facts; period labels carried into chair sentences; chair counts and disagreement ids validated against the ledger; 'not in evidence' never phrased as 'does not exist'.",
+      "dependency": "ADR-078 (#314, 48b5777, merged; replay only, PYPL3 pending) covers the material-event part.",
       "before_owner_testing": "YES"
     },
     {
@@ -8328,11 +8861,11 @@
       "id": "P-5",
       "title": "Acquire the latest non-US results documents",
       "problem": "Non-US issuers are researched on documents one or two periods old because the latest results are never fetched.",
-      "evidence": "ANTO FY2025 and H1 2026 results never acquired in either run (ANTO-7; NSM record unreadable, IR PDFs download with a plain GET); Lindian took 5 of 224 ASX documents and missed the Malawi export regime (LIN-7); Cellectis 6-Ks listed but not fetched (CLLS2-1). 17 of 21 DOCUMENT_NOT_ACQUIRED gaps are non-US.",
+      "evidence": "ANTO FY2025 and H1 2026 results never acquired in either run (ANTO-7; NSM record unreadable, IR PDFs download with a plain GET); Lindian took 5 of 224 ASX documents and missed the Malawi export regime (LIN-7); Cellectis 6-Ks listed but not fetched (CLLS2-1; ADR-077 merged after the run). 17 of 21 DOCUMENT_NOT_ACQUIRED gaps are non-US.",
       "affected": "4 of 4 non-US companies",
       "benefit": "Current financials for UK, ASX and dual-listed issuers.",
-      "scope": "Medium: issuer-IR fallback for results PDFs when NSM fails; rank non-results price-sensitive ASX announcements by risk relevance; ADR-077 for 6-Ks.",
-      "dependency": "ADR-077 (#313). Without P-1 the new documents would also go unread.",
+      "scope": "Medium: issuer-IR fallback for results PDFs when NSM fails; rank non-results price-sensitive ASX announcements by risk relevance; ADR-077 (merged) for 6-Ks.",
+      "dependency": "ADR-077 (#313, merged; replay only). Without P-1 the new documents would also go unread.",
       "before_owner_testing": "YES"
     },
     {
@@ -8522,7 +9055,7 @@
         "id": "E",
         "name": "Multi-listing identity",
         "verdict": "CONFIRMED ON THE RESEARCH PATH; PARTLY FIXED; NOT OBSERVED IN DISCOVERY",
-        "judgment": "A dual-listed foreign filer still loses its interim financials and shows the reader one listing. Identity is resolved just in time at research, not stored. Treat any dual-listed non-US company as under-researched until #313 merges and the security list is persisted."
+        "judgment": "A dual-listed foreign filer still loses its interim financials and shows the reader one listing. Identity is resolved just in time at research, not stored. Treat any dual-listed non-US company as under-researched until a live rerun shows the 6-K interim reaching the report (CLLS3 is pending) and the security list is persisted."
       },
       {
         "id": "F",
@@ -8551,15 +9084,15 @@
       {
         "id": "J",
         "name": "Discovery triage",
-        "verdict": "CONFIRMED; FIXED IN CODE; LIVE CHECK PENDING (E3)",
-        "judgment": "As observed, ranking was meaningless: it measured the source, not the fit. The fix is in code and replays well, but nobody has seen it work live yet. <!-- PENDING: E3 -->"
+        "verdict": "CONFIRMED; PARTLY FIXED (LIVE ON E3)",
+        "judgment": "As observed, ranking was meaningless: it measured the source, not the fit. After ADR-070 and ADR-073 it measures fit only inside the web source, and only after eligibility, hard passes and size verification. Live on E3 that is not enough: the best-evidenced small caps (Iluka 12th, Meteoric 11th; Lynas and Lindian cut) still sit below adjacent large caps, and a candidate under an announced takeover (Meteoric) is not flagged. Discovery triage is better than before and still not an order a reader can rely on."
       }
     ],
     "spec_section_19": [
       {
         "q": "A",
         "question": "Is company research useful today?",
-        "answer": "No, not as research. It is a starting point that an analyst must redo. Final overall-usefulness scores: HON 6 (after fixes), CFR 4, ADBE 4, LIN 4, ANTO 4, JPM 3, PYPL 3, Cellectis 2. Six of eight companies score 3-4 on usefulness after 16 merged corrective PRs. At the latest run the 15-dimension mean is 3.1-4.1 for six of eight (Cellectis 3.07, JPM 3.47, ANTO 3.80, PYPL 3.87, ADBE 4.00, LIN 4.13); only HON (5.73) and CFR (5.20, never rerun) are higher. HON reached 6 only on its deterministic snapshot. XBRL headline numbers are reliable; business model, competition, catalysts, counter-thesis and sector KPIs are stale, generic or wrong in most reports."
+        "answer": "No, not as research. It is a starting point that an analyst must redo. Final overall-usefulness scores: HON 6 (after fixes), CFR 4, ADBE 4, LIN 4, ANTO 4, JPM 3, PYPL 3, Cellectis 2. Six of eight companies score 3-4 on usefulness at their latest run, after up to 16 merged corrective PRs (#313 and #314 merged after the last scored run). At the latest run the 15-dimension mean is 3.1-4.1 for six of eight (Cellectis 3.07, JPM 3.47, ANTO 3.80, PYPL 3.87, ADBE 4.00, LIN 4.13); only HON (5.73) and CFR (5.20, never rerun) are higher. HON reached 6 only on its deterministic snapshot. XBRL headline numbers are reliable; business model, competition, catalysts, counter-thesis and sector KPIs are stale, generic or wrong in most reports."
       },
       {
         "q": "B",
@@ -8574,17 +9107,17 @@
       {
         "q": "D",
         "question": "Is current-event research good enough?",
-        "answer": "No. Catalysts/current scores at the latest run: ADBE 2, JPM 2, CFR 3, PYPL 3, CLLS 1, HON 5, ANTO 5, LIN 5. Missed: Cellectis's strategic pivot (both runs), Adobe's CEO succession, CFO exit, Semrush and DOJ settlement, PayPal's CEO change and litigation, JPM's Q3 results (selection fixed in code) and Apple Card transaction, CFR's Q1 FY27, Avolta disposal and Baume & Mercier sale, Lindian's Malawi export regime. The rerun of PayPal stated an unconfirmed takeover rumour as fact (fix pending in #314)."
+        "answer": "No. Catalysts/current scores at the latest run: ADBE 2, JPM 2, CFR 3, PYPL 3, CLLS 1, HON 5, ANTO 5, LIN 5. Missed: Cellectis's strategic pivot (both runs), Adobe's CEO succession, CFO exit, Semrush and DOJ settlement, PayPal's CEO change and litigation, JPM's Q3 results (selection fixed in code) and Apple Card transaction, CFR's Q1 FY27, Avolta disposal and Baume & Mercier sale, Lindian's Malawi export regime. The rerun of PayPal stated an unconfirmed takeover rumour as fact (fixed in code by #314, ADR-078, after that run; the PYPL3 live rerun is pending)."
       },
       {
         "q": "E",
         "question": "Is Discovery finding genuinely useful new names?",
-        "answer": "Rarely. When the intent is read correctly (E2 after ADR-063) it returned 12 on-thesis names of 15, including useful small caps (Pensana, Rainbow, Lindian, ABX, Astron, ETM). Elsewhere: A found 1 name (Cellectis, already known), B 1 strict fit of 3, C nothing, D 2 strict fits of 10. Recall is the bottleneck: name-only mentions are dropped and the registries are mega-cap heavy. E3 (materials, after the ranking fixes): section 11 and judgment J."
+        "answer": "Rarely. When the intent is read correctly (E2 after ADR-063) it returned 12 on-thesis names of 15, including useful small caps (Pensana, Rainbow, Lindian, ABX, Astron, ETM). Elsewhere: A found 1 name (Cellectis, already known), B 1 strict fit of 3, C nothing, D 2 strict fits of 10. Recall is the bottleneck: name-only mentions are dropped and the registries are mega-cap heavy. E3 (after the ranking fixes) kept 12 of 15 on thesis and returned 3 of 7 evidenced web names (E2: 1), but still ranked adjacent SCCO, CLF and FCX above Iluka and Meteoric and cut Lynas and Lindian."
       },
       {
         "q": "F",
         "question": "Is Discovery ranking them sensibly?",
-        "answer": "Not as observed. Scores were constant per source and did not drive the order: Lynas ranked 14th with score 20, SCCO 3rd, and size-unknown mega caps outranked evidenced small caps. ADR-070 and ADR-073 fix the scorer input and apply relevance before the cap, but relevance is still the last sort key and size-unknown still passes as eligible. E3 verdict: section 11 and judgment J."
+        "answer": "Not as observed. Scores were constant per source and did not drive the order: Lynas ranked 14th with score 20, SCCO 3rd, and size-unknown mega caps outranked evidenced small caps. ADR-070 and ADR-073 fix the scorer input and apply relevance before the cap, but relevance is still the last sort key and size-unknown still passes as eligible. Live on E3 the fix is partial: web scores vary and the cut is named, but registry scores stay constant (85/75) and a verified size outranks fit, so 4 evidenced names were cut while two theme-unverified ones were returned."
       },
       {
         "q": "G",
@@ -8604,7 +9137,7 @@
       {
         "q": "J",
         "question": "What are the next THREE engineering priorities?",
-        "answer": "1) P-1: statement extraction from acquired documents (10-K/10-Q/EX-99.1, 20-F/6-K IFRS, ASX annual reports and Appendix 5B, UK results PDFs), with 'held but not read' never reported as 'not acquired'. 2) P-2: one reconciled research state: gaps, 'latest disclosure' and question status derived from the ledger and the document inventory. 3) P-3: a synthesis and chair claim gate: a material event, tense or stage, period label or count that the ledger does not support is never stated (ADR-078 in #314 covers the material-event part)."
+        "answer": "1) P-1: statement extraction from acquired documents (10-K/10-Q/EX-99.1, 20-F/6-K IFRS, ASX annual reports and Appendix 5B, UK results PDFs), with 'held but not read' never reported as 'not acquired'. 2) P-2: one reconciled research state: gaps, 'latest disclosure' and question status derived from the ledger and the document inventory. 3) P-3: a synthesis and chair claim gate: a material event, tense or stage, period label or count that the ledger does not support is never stated (ADR-078, merged in #314, covers the material-event part; replay only)."
       }
     ]
   },
@@ -8612,13 +9145,13 @@
     "recommendation": "NOT READY beyond private, owner-supervised use. Do NOT resume broad manual owner testing.",
     "reasons": [
       "Overall usefulness after all fixes is 3-4/10 for six of eight companies (HON 6, Cellectis 2). The fixes made the structured snapshot safer; they did not make the research useful.",
-      "One P0 is open and unmerged (PYPL2-1, takeover rumour stated as fact; fix in #314). One P0 (LIN-1) vanished only because the editor failed; its root cause is untouched.",
+      "One P0 (PYPL2-1, takeover rumour stated as fact) is fixed in code by #314 (ADR-078) and verified by replay only; the PYPL3 live rerun is pending. One P0 (LIN-1) vanished only because the editor failed; its root cause is untouched.",
       "Two of the three day-1 P0 fixes (C1, JPM-1) are verified by replay only: CFR and JPM were never rerun.",
       "The campaign stop condition is not met: open or partly fixed P1 defects remain and none is an external blocker. They are engineering work.",
       "Every report contradicts itself about what it holds, and labels overstate quality ('Evidence: Strong' on a report with a P0; 'complete analysis' with blocking questions unanswered). A human approver cannot catch these without independent checking, so human approval before publication remains necessary but is not sufficient."
     ],
     "allowed_now": "Targeted owner checks of what was fixed and rerun live: HON perimeter and EPS, the Antofagasta entity firewall, PayPal's Q3 operating data, Lindian's Sep-quarter cash, Discovery materials intent.",
-    "gate": "P-1, P-2 and P-3 merged, deployed and rerun on at least HON, CFR, JPM, PYPL, Cellectis and Lindian; #313 and #314 merged; P-8 (statement kind) at least designed.",
+    "gate": "P-1, P-2 and P-3 merged, deployed and rerun on at least HON, CFR, JPM, PYPL, Cellectis and Lindian; #313 and #314 confirmed on live reruns (CLLS3, PYPL3); P-8 (statement kind) at least designed.",
     "safety": "Unchanged: evidence-first, citation-bound, no public recommendations, human approval before every publication, admin-gated routes. The platform remains private-use; the UK NSM and ASX source terms still require consent before any public launch."
   },
   "stop_condition": [
@@ -8628,7 +9161,7 @@
     },
     {
       "condition": "All feasible Discovery cases inspected",
-      "status": "6 runs inspected (A, B, C, D, E, E2). E3 b14b96d9: section 11."
+      "status": "MET: 7 runs inspected (A, B, C, D, E, E2, E3)."
     },
     {
       "condition": "Important claims independently verified",
@@ -8636,7 +9169,7 @@
     },
     {
       "condition": "All P0/P1 fixed and rerun, or documented as an external blocker",
-      "status": "NOT MET: P0 PYPL2-1 pending in #314; P0 LIN-1 root cause unfixed; C1 and JPM-1 replay-only; open or partial P1s remain; none is an external blocker."
+      "status": "NOT MET: P0 PYPL2-1 fixed in code (#314) with replay proof only, PYPL3 pending; P0 LIN-1 root cause unfixed; C1 and JPM-1 replay-only; open or partial P1s remain; none is an external blocker."
     },
     {
       "condition": "Systemic P2 issues ranked",
@@ -8658,7 +9191,8 @@
     "ADBE-2 is only partly fixed by #304. The contradiction badge is fixed; the 'secondary_web' source kind on a 10-K copy and 'not from a filing' on filed figures are not.",
     "C2's root fix was #298 (ADR-064 s.3, the narrow-gutter column interleave). #304 (ADR-071) is an independent guard that also stops the manufactured conflict.",
     "#309 (ADR-072, unclosed period) was shelved after 4 review rounds and left open as a draft with an explanatory comment. ADBE-3 stays open (P1).",
-    "ADR-077 (#313) and ADR-078 (#314) are pending: open PRs, not merged, not deployed. Nothing in this report depends on them being live.",
+    "ADR-077 (#313, 342b660) and ADR-078 (#314, 48b5777) merged on 2026-11-02 after every scored run and are deployed at 48b5777. Their effect is verified by replay only; no score in this report reflects them. The CLLS3 and PYPL3 reruns that would show them live are pending (section 14).",
+    "Discovery E3: which 4 of the 8 beyond-cap names are web-admitted is a deduction from the funnel counts and the ranking key (most likely CRML, ARA, NB, PKX), not stored data; per-name state is not persisted for cut names (E3-8). The E3 evaluation used stored data plus two ASX announcement-page reads (MEI, KNI) to check the takeover and the market cap.",
     "ADBE evaluation inconsistencies: the CEO-succession 8-K is dated 2026-09-02 in the claims and 2026-09-08 in ADBE-7; the CFO 8-K 2026-06-08 vs 2026-06-11. Its 'playbook captures economics' opens with 'Largely yes' but its own explanation says the economics are not captured; this report reads it as 'No'.",
     "Severity: ADBE-3 (a forecast shown as a reported actual) is P1 in the evaluation but meets the spec's P0 wording ('unsupported claim presented as fact'). Each defect keeps its logged severity here.",
     "Status NOT_REPRODUCED marks defects absent on a rerun with no targeted fix (PYPL-5, ANTO-4, CLLS-11, CLLS-12, LIN-1, LIN-6). They are not counted as fixed. CLLS-3 is counted as fixed live because #311 removed its cause (no filings) and the chair declined, but the guard that would stop the same sentence elsewhere does not exist.",
