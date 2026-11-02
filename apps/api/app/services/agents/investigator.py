@@ -1365,8 +1365,8 @@ class EdgarSubject:
     investigator. The default — nothing known — makes every web EDGAR page
     ``unidentified``: never the issuer's filing, never dropped."""
 
-    #: The subject's CIKs (ADR-075 basis, its ticker in the SEC directory, or — with no
-    #: basis — the directory CIKs whose registrant name agrees with the subject's).
+    #: The subject's CIKs: ADR-075's basis and its ticker in the SEC directory. Empty
+    #: with no basis — a name match is never proof of identity (review N1).
     ciks: frozenset[str] = frozenset()
     #: CIKs positively another registrant's. ``None``: the subject's CIK is known, so
     #: every other CIK is. A set (empty when the directory was unreadable): only these.
@@ -1374,9 +1374,9 @@ class EdgarSubject:
     #: CIK → registrant name, from the SEC ticker directory (platform data only), for
     #: naming another registrant in a gap.
     names: "dict[str, str]" = field(default_factory=dict)
-    #: The subject's distinctive name words and tickers, for "the cited filing names the
-    #: subject" (a counterparty's filing about it).
-    aliases: frozenset[str] = frozenset()
+    #: The subject's names (its own, and the SEC's for its CIK) and tickers, for "the
+    #: cited filing names the subject" (a counterparty's filing about it, review N2).
+    match_names: tuple[str, ...] = ()
     tickers: tuple[str, ...] = ()
 
 
@@ -1400,6 +1400,7 @@ def apply_edgar_registrant(
         EDGAR_OTHER,
         EDGAR_OWN,
         edgar_cik,
+        filing_names_subject,
         is_ownership_filing_url,
         registrant_verdict,
     )
@@ -1413,9 +1414,13 @@ def apply_edgar_registrant(
         if verdict is None:
             out.append(item)
             continue
-        if verdict == EDGAR_OTHER and (
-            is_ownership_filing_url(item.url) or _filing_names_subject(item, subject)
+        if verdict == EDGAR_OTHER and filing_names_subject(
+            item.text, subject.match_names, subject.tickers,
+            ownership_form=is_ownership_filing_url(item.url),
         ):
+            # A holder's 13G, an insider's Form 4, an acquirer's 8-K: another
+            # registrant's filing ABOUT the subject — third party, kept. Only when the
+            # filing names the subject by its full name or an exchange-framed ticker.
             verdict = EDGAR_COUNTERPARTY
         kind = ISSUER_FILING if verdict == EDGAR_OWN else THIRD_PARTY_FILING
         ref = item.ref
@@ -1425,18 +1430,6 @@ def apply_edgar_registrant(
             replace(item, ref=ref, edgar_registrant=verdict, edgar_cik=edgar_cik(item.url))
         )
     return out
-
-
-def _filing_names_subject(item: _Evidence, subject: EdgarSubject) -> bool:
-    """The cited filing text names the subject — by ticker, distinctive name word or
-    brand (``_names_subject``), never by "the company", which every filing says of its
-    own registrant. An acquirer's 8-K or S-4 about the subject."""
-    if not subject.aliases and not subject.tickers:
-        return False
-    text = _SUBJECT_PHRASE_RE.sub("", item.text or "")
-    return any(
-        _names_subject(text, subject.aliases, ticker) for ticker in (subject.tickers or (None,))
-    )
 
 
 def statement_about_other_registrant(cited_items: "Sequence[_Evidence]") -> tuple[str, ...]:
@@ -2870,10 +2863,13 @@ class LLMInvestigator:
           document's CIK is in this set by construction.
         * No basis is NOT proof of "not an SEC registrant": the resolver also returns
           None when the directory or a domicile record is unreadable, or the venue is
-          spelled in a way it does not know. So the directory is read here: a CIK whose
-          registrant name agrees with the subject's (ADR-061 ``_names_agree``) is the
-          subject's; a CIK it names as a different registrant is another's; anything
-          else — an unreadable directory, a CIK it does not hold — is unidentified.
+          spelled in a way it does not know. So the directory is read here: a CIK it
+          names as a registrant whose name does NOT agree with the subject's is
+          another's. A name-agreeing CIK is NOT the subject's (review N1: "The Sage
+          Group" agrees with Sage Therapeutics under ``_names_agree``'s prefix rule) —
+          it is merely not "another's", so it stays unidentified, as does a CIK the
+          directory does not hold or an unreadable directory. With no basis nothing is
+          ever ``own``.
         """
         if self._edgar_subject is not None:
             return self._edgar_subject
@@ -2932,25 +2928,31 @@ class LLMInvestigator:
                               basis.ticker if basis is not None else None)
                 ) if t
             )
-            aliases = subject_aliases(subject_name)
             if basis is not None:
                 ciks = {c for c in (normalise_cik(basis.cik),) if c}
                 ciks |= by_ticker.get((basis.ticker or "").strip().upper(), set())
+                match_names = tuple(
+                    dict.fromkeys(
+                        [subject_name, *(names[c] for c in sorted(ciks) if names.get(c))]
+                    )
+                )
                 subject = EdgarSubject(
                     ciks=frozenset(ciks), other_ciks=None, names=names,
-                    aliases=aliases, tickers=tickers,
+                    match_names=tuple(n for n in match_names if n), tickers=tickers,
                 )
             else:
                 wanted = normalised_name(subject_name)
-                own = {
+                agreeing = {
                     cik for cik, name in names.items()
                     if wanted and _names_agree(wanted, normalised_name(name))
                 }
                 subject = EdgarSubject(
-                    ciks=frozenset(own),
+                    ciks=frozenset(),
                     # No name to compare against: nobody can be called someone else.
-                    other_ciks=frozenset(names) - own if wanted else frozenset(),
-                    names=names, aliases=aliases, tickers=tickers,
+                    other_ciks=frozenset(names) - agreeing if wanted else frozenset(),
+                    names=names,
+                    match_names=(subject_name,) if subject_name else (),
+                    tickers=tickers,
                 )
         except Exception as exc:  # noqa: BLE001 - a guard that cannot read must not crash
             # Cannot tell, so nothing is the subject's filing and nothing is dropped.

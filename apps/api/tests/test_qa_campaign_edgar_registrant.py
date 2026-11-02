@@ -10,6 +10,7 @@ Therapeutics-segment finding. The same path brought Calyxt's FY2022 20-F into CL
 
 from __future__ import annotations
 
+import json
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -40,6 +41,7 @@ from app.services.web_research.edgar_registrant import (
     EDGAR_OWN,
     EDGAR_UNIDENTIFIED,
     edgar_cik,
+    filing_names_subject,
     is_ownership_filing_url,
     normalise_cik,
     registrant_verdict,
@@ -167,15 +169,23 @@ class TestOwnershipUrl:
             "xslSCHEDULE_13G_X01/primary_doc.xml",
             "https://www.sec.gov/Archives/edgar/data/1599999/000159999926000003/"
             "xslF345X05/wk-form4_1767000000.xml",
-            "https://www.sec.gov/Archives/edgar/data/1086364/000119312526000001/d1sc13ga.htm",
-            "https://www.sec.gov/Archives/edgar/data/1599999/000159999926000003/"
-            "wf-form4_1767000000.xml",
+            "https://www.sec.gov/Archives/edgar/data/1086364/000108636426000012/"
+            "xslSCHEDULE_13D_X01/primary_doc.xml",
         ],
     )
     def test_ownership_forms_are_recognised(self, url: str) -> None:
         assert is_ownership_filing_url(url)
 
-    @pytest.mark.parametrize("url", [CBOE_URL, OWN_20F_URL, NO_CIK_URL])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            CBOE_URL, OWN_20F_URL, NO_CIK_URL,
+            # N3: a document NAME is the filer's choice, never read as a form type.
+            "https://www.sec.gov/Archives/edgar/data/1086364/000119312526000001/"
+            "exhibit-form-3-of-agreement.htm",
+            "https://www.sec.gov/Archives/edgar/data/1086364/000119312526000001/d1sc13ga.htm",
+        ],
+    )
     def test_ordinary_filings_are_not(self, url: str) -> None:
         assert not is_ownership_filing_url(url)
 
@@ -207,7 +217,7 @@ def _hit(
 
 CLLS_SUBJECT = EdgarSubject(
     ciks=frozenset({CELLECTIS_CIK}), other_ciks=None,
-    aliases=frozenset({"cellectis"}), tickers=("ALCLS", "CLLS"),
+    match_names=("Cellectis S.A.",), tickers=("ALCLS", "CLLS"),
 )
 #: No SEC basis, and a directory that names CIK 1627281 as a different company.
 NON_SEC_SUBJECT = EdgarSubject(ciks=frozenset(), other_ciks=frozenset({CELLECTIS_CIK}))
@@ -242,15 +252,35 @@ class TestRelabel:
         assert item.ref is not None and item.ref.source_kind == "third_party_filing"
         assert item.edgar_registrant == EDGAR_UNIDENTIFIED
 
-    def test_a_holders_13g_is_a_counterparty_filing(self) -> None:
+    def test_a_holders_13g_naming_the_subject_is_a_counterparty_filing(self) -> None:
         url = (
             "https://www.sec.gov/Archives/edgar/data/1086364/000108636426000012/"
             "xslSCHEDULE_13G_X01/primary_doc.xml"
         )
-        (item,) = apply_edgar_registrant([_hit("ev:c:13g", url)], CLLS_SUBJECT)
-        assert item.edgar_registrant == EDGAR_COUNTERPARTY
-        assert item.ref is not None and item.ref.source_kind == "third_party_filing"
-        assert statement_about_other_registrant([item]) == ()
+        item = _hit("ev:c:13g", url, text="Name of issuer: CELLECTIS S.A. Ordinary shares.")
+        (checked,) = apply_edgar_registrant([item], CLLS_SUBJECT)
+        assert checked.edgar_registrant == EDGAR_COUNTERPARTY
+        assert checked.ref is not None and checked.ref.source_kind == "third_party_filing"
+        assert statement_about_other_registrant([checked]) == ()
+
+    def test_an_ownership_form_not_naming_the_subject_is_another_registrants(self) -> None:
+        # N3: the form type alone does not make a filing about the subject.
+        url = (
+            "https://www.sec.gov/Archives/edgar/data/1086364/000108636426000012/"
+            "xslSCHEDULE_13G_X01/primary_doc.xml"
+        )
+        item = _hit("ev:c:13g", url, text="Name of issuer: Vexmoor Holdings Inc.")
+        (checked,) = apply_edgar_registrant([item], CLLS_SUBJECT)
+        assert checked.edgar_registrant == EDGAR_OTHER
+
+    def test_a_form4_issuer_trading_symbol_names_the_subject(self) -> None:
+        url = (
+            "https://www.sec.gov/Archives/edgar/data/1599999/000159999926000003/"
+            "xslF345X05/wk-form4_1767000000.xml"
+        )
+        item = _hit("ev:c:f4", url, text="<issuerTradingSymbol>CLLS</issuerTradingSymbol>")
+        (checked,) = apply_edgar_registrant([item], CLLS_SUBJECT)
+        assert checked.edgar_registrant == EDGAR_COUNTERPARTY
 
     def test_an_acquirers_filing_naming_the_subject_is_a_counterparty_filing(self) -> None:
         item = _hit(
@@ -469,11 +499,12 @@ class TestInvestigatorGuard:
         assert inv.diagnostics.statements_about_other_registrant == 1
         assert [g for g in gaps if g.gap_type == "entity_ambiguous"]
 
-    async def test_no_basis_but_the_directory_names_the_subject_is_own(
+    async def test_no_basis_and_a_name_agreeing_cik_is_kept_but_not_own(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # D1: sec_listing_for returns None on an unreadable record or an unknown venue
-        # spelling, NOT only for a non-SEC issuer. The filer's own page stays its own.
+        # spelling, NOT only for a non-SEC issuer, so the filer's own page is not
+        # dropped. N1: nor is it the issuer's filing — a name match is not identity.
         _patch_subject(
             monkeypatch, None,
             [SimpleNamespace(ticker="CLLS", cik="1627281", name="CELLECTIS S.A.")],
@@ -482,7 +513,26 @@ class TestInvestigatorGuard:
             [(OWN_STATEMENT, ["ev:c:own"])], [_hit("ev:c:own", OWN_20F_URL)],
             exchange="Euronext Paris (unrecognised spelling)",
         )
-        assert [f.source_kinds for f in findings] == [("issuer_filing",)]
+        assert [f.source_kinds for f in findings] == [("third_party_filing",)]
+        assert inv.diagnostics.statements_about_other_registrant == 0
+
+    async def test_a_namesake_is_never_the_issuer_with_no_basis(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # N1: "The Sage Group plc" (LSE) agrees with Sage Therapeutics under the prefix
+        # rule of _names_agree. Its 10-K must never become Sage Group's issuer filing.
+        _patch_subject(
+            monkeypatch, None,
+            [SimpleNamespace(ticker="SAGE", cik="1597553", name="Sage Therapeutics, Inc.")],
+        )
+        url = "https://www.sec.gov/Archives/edgar/data/1597553/000159755326000010/sage-10k.htm"
+        inv, findings, _gaps = await _run(
+            [("Revenue rose on subscription growth.", ["ev:c:sage"])],
+            [_hit("ev:c:sage", url)],
+            ticker="SGE", exchange="LSE", name="The Sage Group plc",
+        )
+        assert [f.source_kinds for f in findings] == [("third_party_filing",)]
+        assert "issuer_filing" not in findings[0].source_kinds
         assert inv.diagnostics.statements_about_other_registrant == 0
 
     async def test_no_basis_and_an_unreadable_directory_keeps_it_unidentified(
@@ -644,3 +694,65 @@ class TestPublisherFirewallKeepsPublishers:
         others = other_company_labels(["Euronext N.V."], "Cellectis S.A.")
         item = self._item("company_web_page")
         assert foreign_publisher(["ev:c:enx"], [item], others) == "Euronext N.V."
+
+
+# ---------------------------------------------------------------------------
+# N2 — "names the subject" needs its full name or an exchange-framed ticker
+# ---------------------------------------------------------------------------
+
+
+class TestFilingNamesSubject:
+    @pytest.mark.parametrize(
+        ("text", "names", "tickers"),
+        [
+            ("NET INCOME attributable to common stockholders rose.", ["Cloudflare, Inc."],
+             ["NET"]),
+            ("A summary of significant accounting policies follows.",
+             ["Agilent Technologies, Inc."], ["A"]),
+            ("CASH and cash equivalents at end of period.", ["Pathward Financial"], ["CASH"]),
+            ("The exchange operates an electronic trading platform.",
+             ["Electronic Arts Inc."], ["EA"]),
+            ("Total stockholders' equity increased.", ["Equity Commonwealth"], ["EQC"]),
+            ("Next year the company expects growth.", ["Next plc"], ["NXT"]),
+            ("The Company operates a single reportable segment.", ["Cellectis S.A."],
+             ["CLLS", "ALCLS"]),
+        ],
+    )
+    def test_words_and_bare_tickers_never_name_the_subject(
+        self, text: str, names: list[str], tickers: list[str]
+    ) -> None:
+        assert not filing_names_subject(text, names, tickers)
+
+    @pytest.mark.parametrize(
+        ("text", "names", "tickers"),
+        [
+            ("Cloudflare, Inc. (NYSE: NET) agreed to a partnership.", ["Zzz"], ["NET"]),
+            ("Agilent (NYSE: A) will supply instruments.", ["Zzz"], ["A"]),
+            ("We agreed to acquire Electronic Arts Inc. for cash.", ["Electronic Arts Inc."],
+             ["EA"]),
+            ("A licence with Cellectis covers TALEN editing.", ["Cellectis S.A."], ["CLLS"]),
+            ("Holders of ADSs (Nasdaq: CLLS) may tender.", ["Zzz"], ["CLLS"]),
+        ],
+    )
+    def test_a_full_name_or_an_exchange_framed_ticker_does(
+        self, text: str, names: list[str], tickers: list[str]
+    ) -> None:
+        assert filing_names_subject(text, names, tickers)
+
+    def test_a_json_record_is_read_through_its_strings(self) -> None:
+        text = json.dumps({"text": "Accord avec Compagnie Financière Richemont SA."})
+        assert filing_names_subject(text, ["Compagnie Financière Richemont SA"], ["CFR"])
+
+    def test_issuer_trading_symbol_counts_only_on_an_ownership_form(self) -> None:
+        text = "<issuerTradingSymbol>NET</issuerTradingSymbol>"
+        assert not filing_names_subject(text, ["Cloudflare, Inc."], ["NET"])
+        assert filing_names_subject(text, ["Cloudflare, Inc."], ["NET"], ownership_form=True)
+
+    def test_a_net_income_filing_stays_another_registrants(self) -> None:
+        subject = EdgarSubject(
+            ciks=frozenset({"1477333"}), other_ciks=None,
+            match_names=("Cloudflare, Inc.",), tickers=("NET",),
+        )
+        item = _hit("ev:c:x", CBOE_URL, text="NET INCOME was $12.1 million.")
+        (checked,) = apply_edgar_registrant([item], subject)
+        assert checked.edgar_registrant == EDGAR_OTHER

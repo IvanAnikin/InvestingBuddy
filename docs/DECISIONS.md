@@ -6242,19 +6242,34 @@ Calyxt's FY2022 20-F risk factors into CLLS2.
    - the URL's CIK is the subject's → `own` → `issuer_filing`;
    - the subject's CIK is known and the URL's differs → `other` → `third_party_filing`;
    - **no ADR-075 basis:** `other` only when the SEC directory positively names that CIK
-     as a registrant whose name does not agree with the subject's. A CIK whose directory
-     name agrees (ADR-061 `_names_agree`) is `own`. A CIK the directory does not hold, or
-     an unreadable directory, is `unidentified`. Review D1: `sec_listing_for` also
+     as a registrant whose name does not agree with the subject's. Nothing is ever `own`
+     without a basis (review N1). A name-agreeing CIK (ADR-061 `_names_agree`) is only
+     taken out of `other`, so it is `unidentified`. `_names_agree`'s prefix rule would
+     otherwise make "The Sage Group plc" own Sage Therapeutics' 10-K, "Compass Group"
+     Compass Minerals', and "Next plc" Next Bridge Hydrocarbons'. A CIK the directory
+     does not hold, or an unreadable directory, is also `unidentified`. Review D1: `sec_listing_for` also
      returns None when the directory or a domicile record is unreadable, or the venue is
      spelled in a way it does not know (OTC, NYSE Arca, XNYS, "New York Stock
      Exchange"). So None is not proof that the subject is not an SEC registrant;
    - no CIK in the URL, or a basis whose CIK could not be resolved → `unidentified` →
      `third_party_filing`: never the issuer's, never dropped;
-   - **`other` that is about the subject → `counterparty`** (`third_party_filing`, kept;
-     review D2). This covers an ownership form by URL (`xslSCHEDULE_13…`, `xslF345`,
-     `sc13d/g`, `form4`) and a filing whose cited text names the subject by ticker,
-     distinctive name word or brand (`_names_subject`). "The company" does not count,
-     because every filing says that of its own registrant.
+   - **`other` that names the subject → `counterparty`** (`third_party_filing`, kept;
+     reviews D2, N2 and N3). This covers a holder's 13D/13G, an insider's Form 3/4/5 and
+     an acquirer's 8-K, S-4 or SC TO. `edgar_registrant.filing_names_subject` decides
+     whether the cited filing names the subject. The filing must carry one of:
+     - the subject's full identifying name, every word in order after legal suffixes are
+       dropped ("Cellectis", "Electronic Arts", "Sage Therapeutics"). A one-word name
+       counts only if it has at least 5 letters, is not a generic word and appears
+       capitalised;
+     - a ticker framed by an exchange ("(NASDAQ: NET)", "NYSE: A", "Nasdaq: CLLS");
+     - on an ownership form only, `issuerTradingSymbol`.
+
+     A bare ticker ("NET INCOME", "A summary…", a CASH line) never names the subject.
+     Neither does one word of a longer name ("electronic", "equity") or "the company".
+     An ownership form is recognised only by EDGAR's own XSL directories
+     (`xslSCHEDULE_13D|13G…/`, `xslF345X0n/`), never by a document name
+     ("exhibit-form-3-of-agreement.htm"). An ownership form that does not name the
+     subject stays `other`.
 
    sec.gov pages outside the filing archive are already `regulator_publication` (T2) and
    are not touched.
@@ -6262,7 +6277,9 @@ Calyxt's FY2022 20-F risk factors into CLLS2.
    when a web EDGAR page is present):
    - With a basis: its CIK plus every directory CIK for its ticker, so the sibling line
      (CLLS for ALCLS) counts as the subject.
-   - Without a basis: the directory name match above.
+   - Without a basis: no own CIKs; the directory only says which CIKs are another's.
+   - The names matched for `counterparty` are the subject's own name, plus the SEC's name
+     for its CIK when there is a basis.
    - Any failure leaves nothing known, so every page is `unidentified`.
 4. **Applied in the investigator** (`apply_edgar_registrant`) after acquisition, before
    the evidence contract reads the question's refs, and again (idempotently) in
@@ -6308,7 +6325,7 @@ corpus chunk, so web sec.gov items are identified by origin `sec.gov`.
 
 No stored EDGAR URL of a subject's own filing changes verdict (33 of 33 `own`, 0 `other`).
 
-The replay was re-run after review fixes D1–D4. It gives the same counts: no stored URL is an ownership form or a `..` path, and every SEC subject in it has a basis.
+The replay was re-run after review fixes D1–D4 and N1–N3. It gives the same counts: no stored URL is an ownership form or a `..` path, and every SEC subject in it has a basis.
 
 ### Not changed / known limits
 - **The ADBE verdict is inferred, not read.** The three URLs are in the ledger, not the
@@ -6319,13 +6336,15 @@ The replay was re-run after review fixes D1–D4. It gives the same counts: no s
   outside peer domains. Filtering at ingest needs the subject's CIK in the web stage.
 - **A multi-filer accession** (a 13D or a tender offer filed under both the filer's and
   the subject company's CIK) read through the subject's directory counts as `own`.
-- **The no-basis name match uses `_names_agree`, including its prefix branch.**
-  "Honeywell" agrees with "Honeywell Aerospace", so a namesake's CIK counts as `own`. This
-  happens only when ADR-075 found no basis.
-- **Counterparty detection is lexical and fails open.** A ticker that is a common
-  upper-case word, or a name word mentioned in passing, keeps another registrant's
-  statement (as `third_party_filing`) instead of dropping it. A `browse-edgar?type=SC+13G`
-  listing is not recognised as an ownership form.
+- **Without a basis, the subject's own web filing is `unidentified`.** It is kept as
+  `third_party_filing`, not counted as `issuer_filing`, until ADR-075 resolves a basis.
+- **Counterparty detection is lexical.**
+  - A one-word name that is also a capitalised common word ("Target" at the start of a
+    sentence) still counts as naming the subject.
+  - A subject with a short single-word name ("Next", "Sage") is recognised only by an
+    exchange-framed ticker.
+  - A filing that names the subject only in a passage outside the cited excerpt is not
+    recognised.
 - **Mixed support is kept.** A statement citing the subject's 20-F and another
   registrant's page keeps both kinds and is not dropped.
 - **Ladder stop decisions** inside `_acquire` still see the pre-check kinds. The

@@ -21,6 +21,7 @@ as ``trust.is_verified_issuer`` judges an ``issuer:`` origin every time.
 
 from __future__ import annotations
 
+import json
 import posixpath
 import re
 from collections.abc import Collection, Iterable
@@ -48,13 +49,18 @@ _DATA_PATH_RE = re.compile(r"/archives/edgar/data/0*([0-9]{1,10})(?:/|$)", re.I)
 _CIK_FILE_RE = re.compile(r"/CIK0*([0-9]{1,10})(?:\.json|/|$)", re.I)
 _CIK_QUERY_KEYS = ("cik", "ciks")
 #: Ownership forms, filed under the HOLDER's or the insider's CIK and about the issuer:
-#: the EDGAR XSL renderings (``xslSCHEDULE_13G_X01``, ``xslF345X05``) and the classic
-#: document names (``sc13g.htm``, ``d123sc13da.htm``, ``wf-form4_….xml``).
-_OWNERSHIP_RE = re.compile(
-    r"xslschedule_?13|xslf345|sc[-_]?13[dg]|schedule[-_]?13[dg]"
-    r"|(?:^|[/_-])(?:wf-)?form[-_]?[345]a?(?:[-_.]|$)",
-    re.I,
+#: only EDGAR's own XSL rendering directories (``xslSCHEDULE_13G_X01/primary_doc.xml``,
+#: ``xslF345X05/…``). A document NAME is the filer's choice — "exhibit-form-3-of-
+#: agreement.htm" is not a Form 3 — so names are never read.
+_OWNERSHIP_RE = re.compile(r"/xslschedule_13[dg](?:_x\d+)?/|/xslf345x0\d/", re.I)
+#: A ticker counts only where an exchange (or an ownership form's issuer field) frames
+#: it: "(NASDAQ: NET)", "NYSE: A", "Nasdaq: CLLS". A bare "NET" is "NET INCOME".
+_EXCHANGE_CONTEXT = (
+    r"(?i:\b(?:nasdaq(?:\s*(?:gs|gm|cm|global\s+select(?:\s+market)?))?"
+    r"|nyse(?:\s*(?:american|arca|mkt))?|amex|otc(?:qx|qb|\s+markets)?"
+    r"|euronext(?:\s+[a-z]+)?|lse|asx|tsx|six)\s*:\s*)"
 )
+_ISSUER_SYMBOL_CONTEXT = r"(?i:issuertradingsymbol>\s*)"
 
 
 def _clean_path(path: str) -> str:
@@ -132,6 +138,89 @@ def is_ownership_filing_url(url: str | None) -> bool:
     return any(_OWNERSHIP_RE.search(p) for p in paths)
 
 
+def _strings(text: str) -> str:
+    """The string values of a JSON evidence record (so ``\\u00e8`` is ``è`` again), or
+    the text itself when it is not JSON."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    out: list[str] = []
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return " ".join(reversed(out))
+
+
+def _name_phrase(name: str | None) -> tuple[str, ...]:
+    """A name as the words that identify it — legal suffixes, "the" and "group" dropped
+    (``identity.normalised_name``). A single word must be distinctive: five letters or
+    more and not a generic business word; else it identifies nobody."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, normalised_name
+
+    words = tuple(normalised_name(name).split())
+    if len(words) == 1 and (len(words[0]) < 5 or words[0] in _GENERIC_TOKENS):
+        return ()
+    return words
+
+
+def filing_names_subject(
+    text: str | None,
+    names: Iterable[str],
+    tickers: Iterable[str],
+    *,
+    ownership_form: bool = False,
+) -> bool:
+    """Does another registrant's filing NAME the subject? (ADR-079 review N2.)
+
+    * its full name — every identifying word, in order ("Cellectis", "Electronic Arts",
+      "Sage Therapeutics"); a one-word name must also appear capitalised, as a proper
+      noun ("Cloudflare", never "cloudflare-hosted" prose about clouds);
+    * or a ticker an exchange frames ("(NASDAQ: NET)", "NYSE: A"), or an ownership
+      form's ``issuerTradingSymbol``.
+
+    Never a bare ticker ("NET INCOME", "A summary…") and never a single word of a longer
+    name ("electronic" for Electronic Arts, "equity" for Equity Commonwealth).
+    """
+    from app.services.discovery.identity import normalised_name
+
+    raw = _strings(text or "")
+    if not raw.strip():
+        return False
+    tokens = normalised_name(raw).split()
+    for name in names:
+        phrase = _name_phrase(name)
+        if not phrase:
+            continue
+        n = len(phrase)
+        if not any(tuple(tokens[i:i + n]) == phrase for i in range(len(tokens) - n + 1)):
+            continue
+        if n > 1:
+            return True
+        word = phrase[0]
+        if re.search(
+            rf"(?<![A-Za-z0-9])(?:{re.escape(word.capitalize())}|{re.escape(word.upper())})"
+            r"(?![A-Za-z0-9])",
+            raw,
+        ):
+            return True
+    contexts = [_EXCHANGE_CONTEXT] + ([_ISSUER_SYMBOL_CONTEXT] if ownership_form else [])
+    for ticker in tickers:
+        symbol = str(ticker or "").strip().upper()
+        if not symbol:
+            continue
+        for context in contexts:
+            if re.search(rf"{context}{re.escape(symbol)}(?![A-Za-z0-9])", raw):
+                return True
+    return False
+
+
 def registrant_verdict(
     url: str | None,
     own_ciks: Iterable[str],
@@ -172,6 +261,7 @@ __all__ = [
     "EDGAR_UNIDENTIFIED",
     "EDGAR_VERDICTS",
     "edgar_cik",
+    "filing_names_subject",
     "is_edgar_filing_url",
     "is_ownership_filing_url",
     "is_sec_host",
