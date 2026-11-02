@@ -413,3 +413,38 @@ def test_the_disclaimer_scan_is_linear_on_adversarial_text() -> None:
 def test_higher_than_is_a_comparison_not_a_change() -> None:
     assert trust.level_money_values("Revenue of $7.9bn higher than consensus")
     assert not trust.level_money_values("Revenue was $12m lower")
+
+
+# -- Review round 2 (PR #310) ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "statement,origin",
+    [
+        ("Attributable EBITDA (not the company) was US$2.1bn.", "calderon.co.uk"),
+        ("Standalone Revenue (not the group) was US$1bn.", "calderon.co.uk"),
+        ("Parent Company Only (not the group) net debt was US$0.5bn.", "calderon.co.uk"),
+        ("Holding Company (not the group) cash was US$2bn.", "calderon.co.uk"),
+        # Same measure shapes cited from a site that is not the subject's.
+        ("Attributable EBITDA (not the company) was US$2.1bn.", "minesreport.cl"),
+        ("Holding Company (not the company) cash was US$2bn.", "minesreport.cl"),
+        # A real disclaimer, but cited from the subject's own site: kept.
+        ("Ostara (not the company) holds a royalty over Rio Seco.", "calderon.co.uk"),
+    ],
+)
+def test_a_measure_or_the_subjects_own_site_is_never_a_disclaimed_company(
+    statement: str, origin: str
+) -> None:
+    assert _judge(statement, _ev(origin)) is None
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Ostara (Not the company): leverage ratio of 1.5x.",
+        "Ostara Resources plc (not the company) reported net debt of $40m.",
+        "Ostara (not the company itself) holds a 2% royalty.",
+    ],
+)
+def test_disclaimer_variants_still_drop(statement: str) -> None:
+    assert _judge(statement, _ev("ostararoyalties.com")) is not None

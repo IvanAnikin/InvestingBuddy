@@ -5493,7 +5493,15 @@ nor `money_values` tells a change from a level.
    contrasts a measure, not a company, and is kept (review round 1 found the first
    draft dropped exactly these). The disclaimed name passes the opening-name filters
    (no acronym, first word ≥ 4 characters, not generic), and is read from a bounded
-   200-character window before the parenthesis, so the scan stays linear.
+   200-character window before the parenthesis, so the scan stays linear. Review round 2
+   tightened it further:
+   - "(not the group)" is no longer a disclaimer, because writers use it to set a
+     parent-only or attributable figure against the consolidated group;
+   - a name containing a measure or perimeter word (EBITDA, Revenue, Attributable,
+     Holding, Company, Parent, Standalone …) is never read as a company;
+   - a disclaimer cited from the subject's own site is kept.
+   It accepts "(Not the company)", "(not the company itself)" and a trailing legal suffix
+   ("Ostara Resources plc (not the company)").
 
    Each drop counts in `statements_about_foreign_subject` (a diagnostics key, pinned in
    `test_v3_investigator_diagnostics`). The question gets ONE `entity_ambiguous` gap per

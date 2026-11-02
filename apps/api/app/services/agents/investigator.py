@@ -1085,11 +1085,28 @@ _OPENING_NAME_RE = re.compile(r"[A-Z][\w&.'’-]*(?:[ \t]+[A-Z][\w&.'’-]*){0,3
 #: "Vexmoor (not Acme)". The parenthesis must say ONLY that — "(not the group's statutory
 #: profit)" contrasts a measure, not a company (review round 1) — and the name before it
 #: is read from a bounded window (the regex is never run over an unbounded text).
-_NOT_PAREN_RE = re.compile(r"\(\s*not\s+(?P<who>[^()]{1,60})\)")
+_NOT_PAREN_RE = re.compile(r"\(\s*not\s+(?P<who>[^()]{1,60})\)", re.IGNORECASE)
 _NAME_BEFORE_RE = re.compile(
-    r"(?P<name>[A-Z][\w&.'’-]{0,40}(?:[ \t]+[A-Z][\w&.'’-]{0,40}){0,3})\s*$"
+    r"(?P<name>[A-Z][\w&.'’-]{0,40}(?:[ \t]+[A-Z][\w&.'’-]{0,40}){0,3})"
+    r"(?:[ \t,]+(?:plc|inc|ltd|limited|corp|co|sa|ag|nv|se|llc|lp)\.?)?\s*$"
 )
-_NOT_WHO_PHRASE_RE = re.compile(r"the\s+(?:company|issuer|group|subject)\s*", re.IGNORECASE)
+#: Words that make a capitalised phrase a MEASURE or a reporting perimeter, never a
+#: company name: "Attributable EBITDA (not the company)", "Holding Company (not the
+#: company) cash", "Standalone Revenue …" (review round 2).
+_MEASURE_WORDS: frozenset[str] = frozenset(
+    {
+        "adjusted", "attributable", "basis", "capex", "cash", "company", "consolidated",
+        "debt", "dividend", "dividends", "earnings", "ebit", "ebitda", "eps", "equity",
+        "flow", "free", "gross", "group", "guidance", "holding", "income", "loss",
+        "margin", "net", "only", "operating", "parent", "proforma", "profit", "revenue",
+        "revenues", "sales", "segment", "standalone", "statutory", "total", "underlying",
+    }
+)
+#: Only "the company" / "the issuer" / "the subject" — "(not the group)" is how a writer
+#: sets a parent-only or attributable figure against the consolidated group (review 2).
+_NOT_WHO_PHRASE_RE = re.compile(
+    r"the\s+(?:company|issuer|subject)(?:\s+itself)?\s*", re.IGNORECASE
+)
 #: The opening name only RELAYS someone else's figure: "Vexmoor cites…", "…quoting".
 _CITING_RE = re.compile(r"^\s+(?:cites?|cited|citing|quotes?|quoting)\b", re.IGNORECASE)
 _SUBJECT_PHRASE_RE = re.compile(r"\bthe\s+(?:company|group|issuer)\b", re.IGNORECASE)
@@ -1234,6 +1251,8 @@ def _disclaimed_name(
         first = re.sub(r"[^a-z0-9]", "", _fold(words[0]))
         if len(first) < 4 or first in _GENERIC_TOKENS:
             continue
+        if any(re.sub(r"[^a-z0-9]", "", _fold(w)) in _MEASURE_WORDS for w in words):
+            continue  # a measure or a perimeter, not a company
         return words, window_start + before.start("name"), paren.end()
     return None
 
@@ -1254,7 +1273,12 @@ def statement_about_foreign_subject(
     Kept: anything naming the subject ("Acme and Vexmoor both…", "Acme's Centinela…"),
     a name the domain does not match (a news site writing about Vexmoor), mixed support.
     """
-    from app.services.discovery.identity import _GENERIC_TOKENS, _fold  # noqa: PLC2701
+    from app.services.discovery.identity import (  # noqa: PLC2701
+        _GENERIC_TOKENS,
+        _fold,
+        issuer_domain_matches,
+    )
+    from app.services.web_research.trust import publisher_of
 
     aliases = subject_aliases(subject_name)
     if not aliases or not cited or not all(e.web for e in cited):
@@ -1262,6 +1286,11 @@ def statement_about_foreign_subject(
     text = statement.strip()
 
     disclaimer = _disclaimed_name(text, aliases, subject_ticker)
+    if disclaimer is not None and any(
+        issuer_domain_matches(publisher_of(item.origin_key) or "", subject_name or "")
+        for item in cited
+    ):
+        return None  # cited from the subject's OWN site: a contrast within its own report
     if disclaimer is not None:
         words, start, end = disclaimer
         rest = text[:start] + text[end:]
