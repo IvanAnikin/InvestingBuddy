@@ -100,6 +100,9 @@ class ChairVerdict:
         }
 
 
+#: Why a model verdict's synthesis was replaced by the deterministic one (ADR-078).
+FALLBACK_MATERIAL_EVENT = "synthesis_removed_by_material_event_gate"
+
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(])")
 
 
@@ -118,16 +121,38 @@ def _gate_material_events(
             subject,
         )
     ]
+    # The synthesis cites nothing, so a sentence stating event type T is kept only when
+    # some finding of this run on a vetted source states T (the CEO and CFO are
+    # different types).
     vetted = material_events.vetted_event_types(council_input.findings, subject)
     sentences = [p for p in _SENTENCE_RE.split(verdict.synthesis or "") if p.strip()]
     kept = [
         sentence for sentence in sentences
-        if (event := material_events.material_event(sentence, subject)) is None
-        or event in vetted
+        if material_events.event_types(sentence, subject) <= vetted
     ]
     if len(kept) != len(sentences):
         verdict.synthesis = " ".join(kept)
+        if not kept and not verdict.deterministic_fallback:
+            # Nothing of the chair's prose survived: the ledger's own state stands.
+            verdict.synthesis = (
+                f"{_ledger_state(council_input)} The chair's own synthesis was withheld: "
+                "it stated only material corporate events that no filing, regulator or "
+                "established press source in this run supports."
+            )
+            verdict.deterministic_fallback = True
+            verdict.fallback_reason = FALLBACK_MATERIAL_EVENT
     return verdict
+
+
+def _ledger_state(council_input: CouncilInput) -> str:
+    verified = len(council_input.verified_findings)
+    unresolved = len(council_input.unresolved_disagreements)
+    open_gaps = len([g for g in council_input.gaps if g.status == "open"])
+    return (
+        f"Deterministic synthesis: {len(council_input.findings)} finding(s), "
+        f"{verified} verified, {open_gaps} open gap(s), {unresolved} unresolved "
+        "disagreement(s)."
+    )
 
 
 def deterministic_verdict(
@@ -155,10 +180,8 @@ def deterministic_verdict(
         label=label,
         fundamental_setup=setup,
         synthesis=(
-            f"Deterministic synthesis: {len(council_input.findings)} finding(s), "
-            f"{verified} verified, {open_gaps} open gap(s), {unresolved} unresolved "
-            "disagreement(s). No model was available, so this is the ledger's own state "
-            "rather than an interpretation of it."
+            f"{_ledger_state(council_input)} No model was available, so this is the "
+            "ledger's own state rather than an interpretation of it."
         ),
         key_points=[
             {
@@ -337,4 +360,10 @@ class LLMChair:
         return payload if isinstance(payload, dict) else {}
 
 
-__all__ = ["MAX_FINDINGS_IN_PROMPT", "ChairVerdict", "LLMChair", "deterministic_verdict"]
+__all__ = [
+    "FALLBACK_MATERIAL_EVENT",
+    "MAX_FINDINGS_IN_PROMPT",
+    "ChairVerdict",
+    "LLMChair",
+    "deterministic_verdict",
+]

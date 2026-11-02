@@ -5826,84 +5826,118 @@ no SC 14D9 and no 425, and neither 10-Q mentions Stripe, Advent or a proposal.
 New module `app/services/material_events.py`. The rule is a deterministic gate, not a
 prompt request.
 
-**Material event about the subject:**
-- a takeover approach, offer or bid for the subject, or the board accepting or rejecting
-  one;
-- a merger;
-- going private;
-- insolvency, bankruptcy or administration;
-- delisting;
-- the CEO or CFO leaving;
-- fraud, a restatement, or a regulatory enforcement action.
+**Material event types about the subject:**
+- `takeover`: an approach, offer or bid for the subject, its acceptance or rejection, a
+  pending merger, or a strategic-sale review;
+- `going_private`;
+- `insolvency`: bankruptcy, administration, receivership;
+- `delisting`;
+- `ceo_departure` and `cfo_departure`, which are separate types;
+- `fraud_restatement_or_enforcement`.
 
-**Vetted support:** at least one cited finding whose `source_kinds` include
-`issuer_filing`, `issuer_ir`, `government_or_regulator`, `third_party_filing` (a filing on
-an official filing system, e.g. a bidder's tender-offer document) or `quality_media`
-(curated press, which the classifier tiers T4 only when curated).
+**Vetted support:** a finding whose `source_kinds` include one of:
+- `issuer_filing` or `issuer_ir`;
+- `government_or_regulator`;
+- `third_party_filing`: a filing on an official filing system, e.g. a bidder's
+  tender-offer document;
+- `quality_media`: the T4 tier, i.e. major financial, trade and local press. It is not
+  a curated subset.
 
 **Gate (option (a): exclude, dropped not repaired):**
-- **Editor synthesis sentences and section leads** (`validate_sentence`) are rejected
-  with reason `material_event_unvetted_source` in either case:
-  - the sentence states an event and no cited vetted finding states an event of the same
-    type;
-  - every cited finding is an unvetted material event, whatever words the sentence uses.
-    This catches the paraphrase.
-- **The deterministic synthesis** never picks an unvetted-event finding as a section's
-  sentence.
-- **Chair:**
-  - key points citing an unvetted event are dropped;
-  - synthesis sentences stating an event type that no vetted finding states are dropped.
-  - Both apply to the model verdict and to the deterministic verdict. `LLMChair` takes
-    the run's `subject` (name and ticker).
+- **Editor synthesis sentences and section leads** (`validate_sentence`, reason
+  `material_event_unvetted_source`). Two sets must be covered by the event types that
+  the sentence's cited VETTED findings state:
+  - every event type the sentence states;
+  - every event type that ANY cited finding states on unvetted sources only.
+
+  So an ordinary 10-K revenue fact cited beside the rumour does not launder it. A filed
+  "completed its merger with X" does not vouch for a takeover offer either, because it is
+  not a takeover of the subject.
+- **The deterministic synthesis** never picks an unvetted-event finding.
+- **Chair key points** use the same rule against the finding they cite.
+- **Chair synthesis** (prose with no citations): a sentence is dropped unless every event
+  type it states is stated by some vetted finding of the run. A filed CEO succession
+  does not unlock a rumoured CFO ouster. If nothing survives, the synthesis becomes the
+  ledger state. `deterministic_fallback` is set with
+  `fallback_reason = "synthesis_removed_by_material_event_gate"`, and the run's degraded
+  list says so.
+- Both apply to the model verdict and to the deterministic verdict. `LLMChair` takes the
+  run's `subject` (name and ticker).
 - **Prompts (an addition, not the safeguard):**
   - the editor sees `(UNVETTED WEB SOURCE ONLY)` after such findings, plus rule 4a;
   - the chair sees each finding's `source_kinds`, plus rule 7.
+- `editor.checks` names the new check.
 
-The finding stays in the ledger and in its section with its honest source. The report
-does not promote it to fact.
+The finding stays in the ledger and in its section with its honest source.
 
-**Detection** is a word-bounded vocabulary of event PHRASES, never a bare noun:
-- "offer for <subject>", "acquisition offer", "unsolicited approach", "rejected by the
-  board" (with "board" present);
-- "to be acquired by X" (X not the subject), "agreed to merge";
-- "go private", "filed for Chapter 11", "entered administration", "delisted";
-- "CEO … step down" (not "Stripe's CEO");
-- "accounting fraud", "restatement", "enforcement action", "the SEC charged".
-
-Bare "offer", "acquired", "acquisition", "fraud", "restated" and "tender offer" do not
-count. The subject must be named (distinctive name words or ticker) or referred to
-("the company", "the board").
+**Detection** is a word-bounded vocabulary of event PHRASES, never a bare noun.
+- **Offers:**
+  - "offer/bid/approach for <subject>";
+  - "offered $53B for <subject>" (a price is required);
+  - "(in talks | seeks | plans | agreed | bid …) to buy/acquire/take over <subject>";
+  - "<subject | the company | the board> rejected/accepted … offer/bid/approach";
+  - a passive "offer/bid/approach … was rejected/rebuffed", when the board, a takeover
+    modifier or a price is present.
+- **Passive acquisition:** "<subject> will be / is being / agreed to be acquired [by X]",
+  where X is not the subject.
+- **Pending merger:** "merger agreement", "agreed to merge", "proposed merger".
+- **Strategic sale:** "exploring a sale", "strategic alternatives", "sell itself".
+- **Insolvency, delisting and going private:** the subject must be the one ACTING. That
+  means the nearest subject reference in the same clause within 60 characters before
+  the phrase, not possessive, and no customer, supplier, peer, unit, etc. in between.
+- **Leadership:** "CEO/CFO … step down / resigned / ousted / retired / succeeded",
+  except when the role belongs to another named company ("Codelco's CEO").
+- **Misconduct:** "accounting fraud", "restatement", "enforcement action", "the SEC
+  charged".
+- **What counts as the subject:** its core name ("Southern Copper"), its distinctive
+  words with generic ones removed (copper, materials, mining, resources, energy, bank,
+  …), its ticker (case kept), "the company", or "the/its board".
+- **Bounds:** input is capped at 8,000 characters and every window is bounded, so a
+  1 MB adversarial string scans in under 0.1 s.
 
 ### Not flagged (pinned in tests)
-"PayPal acquired Xoom in 2015", "Xoom was acquired by PayPal", "the company completed its
-acquisition of …", "customer acquisition cost", "acquired 440M active accounts", "offers
-Buy Now Pay Later", a debt tender offer, "fraud losses / fraud detection", "restated for
-the new segment structure", "amended and restated" plans, directors (not CEO/CFO)
-resigning, another company's CEO, and a merger between two other companies.
+Acquisitions BY the subject:
+- "PayPal acquired Xoom in 2015", "Xoom was acquired by PayPal";
+- "completed its/the merger with Honey Science";
+- "the board accepted the bid … for its Honey unit".
+
+Ordinary uses of event words:
+- "customer acquisition cost", "acquired 440M active accounts", "offers Buy Now Pay
+  Later";
+- a debt tender offer, "delisted its preferred shares";
+- "fraud losses / fraud detection", "restated for the new segment structure", "amended
+  and restated" plans;
+- "private-label", "Brazil went private; the company …".
+
+Other parties:
+- "merchants who went into administration", directors (not CEO/CFO) resigning,
+  "Codelco's CEO";
+- "copper smelters filed for bankruptcy" and "acquisition of copper concessions" for
+  Southern Copper;
+- a merger between two other companies.
 
 ### Replay over the 12 stored campaign reports
 HON, HON2, ADBE, JPM, CFR, PYPL, PYPL2, ANTO, ANTO2, CLLS, CLLS2, LIN: findings,
-synthesis sentences, leads, and chair key points and synthesis.
-- **PYPL2:** 1 summary sentence blocked (the synthesis sentence above). F14 is the one
-  finding classified as an unvetted event.
+synthesis sentences, leads, and chair key points and synthesis. Results are the same
+before and after the review fixes.
+- **PYPL2:** 1 summary sentence blocked (the synthesis sentence above). F14 is the only
+  unvetted-event finding.
 - **Every other report:** 0 blocked, 0 unvetted-event findings and 0 vetted-event
-  findings. 15 keyword-bearing statements were checked by hand as true negatives,
-  including "CEO targets ~30% copper growth" (ANTO2), "agreed to acquire Mineralinvest's
-  49% interest" (ANTO2), "four Honeywell directors resigned" (HON2), "amended and
-  restated" (PYPL) and "after the Merger closed" (CLLS, Calyxt/Cibus).
+  findings. Keyword-bearing true negatives include ANTO2 "agreed to acquire
+  Mineralinvest's 49% interest" and "CEO targets ~30% copper growth", HON2 "four
+  Honeywell directors resigned", PYPL "amended and restated", and CLLS "after the Merger
+  closed".
 
 ### Not changed / known limits
 - **Labels unchanged.** W4's `classify_claim` still does not tier "offer/bid" claims as
   corporate events, so F14 in its section carries no `[single source]` label. That is a
   separate change to persisted trust labels.
-- **Detection is lexical.** An event phrased outside the vocabulary ("Stripe and Advent
-  approached the company") is still caught in a summary sentence that cites only such a
-  finding. It is not caught in chair synthesis prose, which carries no citations.
+- **Detection is lexical.** An event phrased outside the vocabulary is still caught in
+  a summary sentence that cites only such a finding (via the cited finding). It is
+  missed in uncited chair prose when the chair words it outside the vocabulary.
 - **Vetting is per finding, not per claim.** A finding citing a 10-Q and a rumour page
   counts as vetted even when only the page states the event.
-- **The subject check is lexical too.** An insolvency or delisting statement about
-  another company is not flagged unless it also names the subject. One that names both,
-  such as "PayPal customer X filed for bankruptcy", is flagged. Exclusion then costs one
-  summary sentence, never the finding.
+- **A CFPB/SEC investigation being opened counts as enforcement.** Unvetted, it is kept
+  out of summaries.
 - **V1 council output is out of scope.** It does not read V3 findings. No live run yet;
   acceptance needs a PYPL rerun after deploy.

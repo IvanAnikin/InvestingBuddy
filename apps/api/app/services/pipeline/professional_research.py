@@ -1160,7 +1160,10 @@ async def edit(report: dict[str, Any], client: Any) -> dict[str, Any]:
         "leads_kept": leads_kept,
         "rejected_by_reason": dict(sorted(rejected.items())),
         "fallback": synthesis["author"] == "deterministic",
-        "checks": "citations, figures (none allowed), prohibited language; not meaning",
+        "checks": (
+            "citations, figures (none allowed), prohibited language, material corporate "
+            "events on unvetted sources only (ADR-078); not meaning"
+        ),
     }
     return report
 
