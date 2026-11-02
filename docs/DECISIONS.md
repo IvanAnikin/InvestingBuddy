@@ -5568,3 +5568,103 @@ citing-verb exclusions were added for those three. The live revenue "conflict"
 - **The publisher firewall is unchanged.** It still knows only the `companies` table.
   The new guard covers companies outside that table only when they are the sentence's
   subject.
+
+## ADR-075: An Issuer Files With the SEC When Any Verified Line of It Does
+
+**Date:** 2026-11-02 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, live Cellectis report `1df9100c`. The job ran
+on the company row `ALCLS` / Euronext Paris. Cellectis S.A. is also an SEC registrant: CIK
+1627281, ADS `CLLS` on Nasdaq, filing 20-F and 6-K. The pipeline treated it as non-SEC:
+- `ensure_core_filings` skipped with "not an SEC registrant";
+- classification failed with `SecExchangeNotSupportedError`, so no playbook was applied;
+- `facts_read=0`, no 20-F or 6-K was read, and the newest period was Q1 2024;
+- the chair said "no FY2024 results available" (P0).
+
+### Context
+Every SEC step decided "registrant or not" from `is_sec_eligible(company.exchange)`, i.e.
+from the line the job started on. ADR-061 separated the issuer from its securities in
+discovery, but nothing persists those links:
+- no company-creation path sets `companies.legal_entity_id`: not candidate promotion, not
+  `ensure_company` (the manual-ticker and discovery path), and not `POST /companies`;
+- the backfill is "called by nothing", and when run it writes only the row's own listing;
+- the discovery identity's secondary securities live in the candidate's payload only.
+
+So the live `ALCLS` row has no linked `CLLS` listing, and a legal-entity lookup alone could
+not have fixed it.
+
+### Decision
+1. **One resolver**, `entities.sec_listing.sec_listing_for(session, company)`, returns the
+   ticker, exchange, CIK and basis the SEC knows the company by, or None. In order:
+   1. **The company's own line** when it is SEC-eligible. This is unchanged: no lookup.
+   2. **A listing of the same legal entity** with all of these:
+      - `security_listings` under `companies.legal_entity_id`;
+      - an open window, not delisted or suspended;
+      - an SEC-eligible venue (an unnamed venue is not eligible).
+
+      It counts only when verified: either the entity holds an open CIK identifier that
+      the SEC list does not contradict, or the SEC list carries that ticker under a name
+      that agrees with the entity's name (the ticker-anchored rule). This step requires
+      `V3_ENTITY_MASTER_ENABLED`.
+   3. **The SEC company-tickers directory**, only when all of these hold:
+      - the company has a real name (not its ticker);
+      - its country (the row's, else its venue's) is known and is not the US;
+      - exactly one CIK in the directory carries the **exact** same normalised name (legal
+        suffixes dropped, exchange abbreviations expanded). This is ADR-061's name-only
+        rule; the prefix branch of `_names_agree` is not used;
+      - that registrant's own submissions record states a domicile equal to the company's
+        country. The incorporation country is used, else the business address. A US
+        state code counts only when the business address is not foreign (ADR-061 §4,
+        the Shell `DC` trap).
+2. **Wired into** `ensure_core_filings` (the resolved CIK is passed to the provider, and
+   `core_filings.sec_basis` records the basis, e.g. "SEC filings via CLLS·NASDAQ (…)"),
+   classification by SIC, and `get_recent_filings`. The tool uses the resolved line only
+   when the ticker and venue asked for are the session subject's own line, resolved by id.
+   A model cannot use it to reach another issuer.
+3. A namesake is never read as the issuer:
+   - several CIKs with the name are refused before any record is read;
+   - a different stated domicile is refused;
+   - an unreadable directory or record gives no link.
+
+### Replay (real SEC directory 2026-11-02; cached submissions)
+- `ALCLS`/PA "CELLECTIS", France → one hit, Cellectis S.A., CIK 1627281, incorporated in
+  France with a French business address → **CLLS·NASDAQ, CIK 1627281**.
+- Orion Oyj (Helsinki) → Orion S.A. and Orion Group Holdings → ambiguous, not used.
+- UBS Group AG (SIX) → UBS Group AG and its registered subsidiary UBS AG → ambiguous, not
+  used.
+- Tetra Technologies → TETRA TECH INC ("tech" expands) and TETRA TECHNOLOGIES INC →
+  ambiguous, not used.
+- Compass Group PLC → "Compass, Inc." (the suffix "Group" is stripped). This reaches the
+  domicile gate. Its record was not fetched for the replay, and an unread record gives no
+  link. A US record would also refuse it.
+- Synthetic Paris namesakes of ADOBE INC., PayPal Holdings and JPMORGAN CHASE & CO → US
+  domicile, not used.
+
+### Not changed / known limits
+- **`QUARTERLY_FORMS` is still only 10-Q.** A 20-F filer's interim results come on a 6-K,
+  so for one the quarterly slot reads "not_listed". The 6-K that carries the results is not
+  yet singled out. ADR-068 does this for 8-K Item 2.02.
+- **Not wired:**
+  - the V2 `company_analysis` SEC fundamentals and recent-filings legs;
+  - the SEC connector;
+  - `company_evidence`'s SEC document leg;
+  - the peer-financials subject;
+  - jurisdiction source classes;
+  - the investigator's related-registrant guard.
+
+  SEC XBRL normalisation reads `us-gaap` only, so an IFRS 20-F filer would gain nothing
+  from the facts path until `ifrs-full` is supported.
+- A holding domiciled outside its listing country gets no link through the directory
+  step: Ferrari or Stellantis on Milan (Dutch N.V.), Aegon (now Bermuda). This fails
+  safe.
+- Discovery's verified `securities` are still not persisted to the entity master. Doing
+  so would make step 2 the live path.
+- Review (PR #311), not blocking:
+  - The SEC directory loader (`parse_sec`) drops OTC rows, so the uniqueness check
+    cannot see an OTC namesake. Rio Tinto Ltd (CIK 887028) is invisible next to Rio
+    Tinto plc. The registrant-domicile check is what refuses such a link today. Counting
+    OTC rows when judging ambiguity is a follow-up.
+  - The name scan is linear over about 7.7k rows (around 68 ms per call, once per
+    research run). It should become a daily name index.
+  - The V2 classification call (`company_analysis`) goes through the same resolver, by
+    way of `classification/service.py`.
+  - The display ticker is the first one alphabetically.

@@ -117,7 +117,18 @@ async def _get_recent_filings(
     if normalize_exchange(arguments["exchange"] or "") in (VENUE_LSE, VENUE_ASX):
         return await _get_official_disclosures(context, arguments)
 
-    if not is_sec_eligible(arguments["exchange"]):
+    ticker, exchange, cik = arguments["ticker"], arguments["exchange"], None
+    sec_basis: dict[str, Any] | None = None
+    if not is_sec_eligible(exchange):
+        # ADR-075 — the research SUBJECT's own non-US line, whose issuer files with the
+        # SEC through a verified same-issuer line (Cellectis ALCLS·PA → CLLS·Nasdaq).
+        # Only the session's subject, resolved by id; never a ticker the model typed.
+        basis = await _subject_sec_basis(context, ticker, exchange)
+        if basis is not None:
+            ticker, exchange, cik = basis.ticker, basis.exchange, basis.cik
+            sec_basis = basis.to_dict()
+
+    if not is_sec_eligible(exchange):
         # The Boeing/BAE rule, applied here: SEC's ticker index covers US registrants,
         # and looking a non-US local ticker up in it returns an unrelated US issuer.
         return {
@@ -137,10 +148,11 @@ async def _get_recent_filings(
 
     provider = SecRecentFilingsProvider()
     result = await provider.get_recent_events(
-        arguments["ticker"],
-        exchange=arguments["exchange"],
+        ticker,
+        exchange=exchange,
         lookback_days=arguments["lookback_days"],
         max_events=arguments["limit"],
+        **({"cik": cik} if cik else {}),
     )
     wanted = set(arguments["form_types"])
     items: list[dict[str, Any]] = []
@@ -183,6 +195,7 @@ async def _get_recent_filings(
     return {
         "items": items,
         "cik": result.cik,
+        **({"sec_basis": sec_basis} if sec_basis else {}),
         "corpus": bridge,
         "population": {
             "definition": (
@@ -194,7 +207,8 @@ async def _get_recent_filings(
         },
         "warnings": list(result.warnings),
         "summary": (
-            f"{len(items)} filing(s) on record with the regulator. Metadata only — the "
+            (f"{sec_basis['description']}. " if sec_basis else "")
+            + f"{len(items)} filing(s) on record with the regulator. Metadata only — the "
             "filing's contents are not returned, because turning a filing into citable "
             "text is the corpus's job. "
             + _bridge_summary(bridge)
@@ -202,6 +216,35 @@ async def _get_recent_filings(
         # Headlines are the issuer's own words, from outside the platform.
         "contains_untrusted_content": True,
     }
+
+
+async def _subject_sec_basis(
+    context: "ToolContext", ticker: str, exchange: str | None
+) -> Any:
+    """The session subject's SEC listing via a same-issuer line (ADR-075), or None.
+
+    None unless the ticker and venue asked for ARE the subject's own line, so a model
+    cannot use this to reach another issuer's filings."""
+    from app.models.company import Company
+    from app.services.entities.sec_listing import sec_listing_for
+    from app.services.exchange_registry import normalize_exchange
+
+    session = getattr(context, "session", None)
+    company_id = getattr(context, "company_id", None)
+    if session is None or company_id is None:
+        return None
+    try:
+        company = await session.get(Company, company_id)
+    except Exception:  # noqa: BLE001 - no subject read means no sibling, never an error
+        return None
+    if company is None:
+        return None
+    if (str(company.ticker or "").upper() != ticker
+            or normalize_exchange(company.exchange or "")
+            != normalize_exchange(exchange or "")):
+        return None
+    basis = await sec_listing_for(session, company, cfg=context.cfg)
+    return basis if basis is not None and basis.is_sibling else None
 
 
 async def _get_official_disclosures(

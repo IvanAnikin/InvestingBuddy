@@ -212,8 +212,21 @@ async def ensure_company_classification(
     if sic_code:
         notes.append(f"Reusing SEC SIC {sic_code} — no classification request needed.")
     elif allow_fetch:
+        ticker = getattr(company, "ticker", "") or ""
+        exchange = getattr(company, "exchange", None)
+        # ADR-075 — a non-US line whose issuer files with the SEC through a verified
+        # same-issuer line (Cellectis ALCLS·PA → CLLS·Nasdaq) is classified through that
+        # line. The company's own SEC-eligible line is used unchanged.
+        from app.services.entities.sec_listing import sec_listing_for
+        from app.services.exchange_registry import is_sec_eligible
+
+        if ticker and not is_sec_eligible(exchange):
+            sec_basis = await sec_listing_for(session, company)
+            if sec_basis is not None and sec_basis.is_sibling:
+                ticker, exchange = sec_basis.ticker, sec_basis.exchange
+                notes.append(f"SEC classification read via {sec_basis.describe()}.")
         fetched_code, fetched_desc, reason = await _fetch_sec_classification(
-            getattr(company, "ticker", "") or "", getattr(company, "exchange", None)
+            ticker, exchange
         )
         if fetched_code:
             sic_code = fetched_code
