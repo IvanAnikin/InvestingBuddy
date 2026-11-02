@@ -428,3 +428,19 @@ class TestTheUnresolvedReasonIsHonest:
     def test_the_new_reason_is_in_the_closed_vocabulary(self) -> None:
         assert ledger.UNRESOLVED_ACQUIRED_NOT_READ in ledger.UNRESOLVED_REASONS
         assert len(ledger.UNRESOLVED_ACQUIRED_NOT_READ) <= 40  # the column's width
+
+
+# -- Review round 1 (PR #312) ---------------------------------------------------------------
+
+
+def test_a_stale_newest_holding_is_not_a_current_holding() -> None:
+    from datetime import date, datetime, timezone
+
+    from app.services.director.loop import CURRENT_HOLDING_MAX_AGE_DAYS, _is_current_holding
+
+    today = date(2026, 11, 2)
+    assert _is_current_holding(date(2026, 9, 30), today=today)
+    assert _is_current_holding(datetime(2026, 7, 6, tzinfo=timezone.utc), today=today)
+    assert not _is_current_holding(date(2024, 9, 1), today=today)
+    assert not _is_current_holding(None, today=today)
+    assert CURRENT_HOLDING_MAX_AGE_DAYS == 120

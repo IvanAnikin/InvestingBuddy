@@ -5728,9 +5728,14 @@ Three defects, verified on `09836d0`:
      them. With no dated document held, no window is anchored and the pass returns
      nothing; it says so instead of guessing.
 3. **An honest unresolved reason.** A new closed-vocabulary value, `acquired_not_read`
-   (`ledger.UNRESOLVED_ACQUIRED_NOT_READ`). It applies when a recency question ends with
-   nothing cited while the subject's own indexed corpus holds a dated document. Every
-   such document is newer than nothing cited.
+   (`ledger.UNRESOLVED_ACQUIRED_NOT_READ`). It applies when a recency question ends
+   unsatisfied and retrieved nothing it could use, while the subject's own indexed corpus
+   holds a CURRENT dated document: its newest `published_at` is within
+   `CURRENT_HOLDING_MAX_AGE_DAYS` (120) of the run. A newest holding older than that
+   means the latest disclosure was never fetched, so the reason stays `not_acquired`
+   (review round 1: one held 2024 document had made all three recency questions say
+   "held but not read"). A question that retrieved evidence but did not cite it is
+   judged by its contract as before.
    - The lookup is `loop.newest_held_document_date`. It runs once per run, in a SAVEPOINT,
      and any failure falls back to `not_acquired`.
    - Consumers checked:

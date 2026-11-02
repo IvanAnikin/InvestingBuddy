@@ -889,7 +889,7 @@ async def _record_unresolved(
     async def _holds_a_document() -> bool:
         if not held:
             held.append(await newest_held_document_date(session, run))
-        return held[0] is not None
+        return _is_current_holding(held[0])
 
     for row in rows:
         if row.contract_status == "satisfied":
@@ -909,10 +909,11 @@ async def _record_unresolved(
         elif row.question_key not in evidence_so_far and row.contract_status is None:
             reason = ledger.UNRESOLVED_NOT_REACHED
         elif row.question_key in RECENCY_QUESTION_KEYS and await _holds_a_document():
-            # ADR-076 — nothing was cited, and the corpus holds a dated document of the
-            # subject, every one of which is newer than nothing. The newest disclosure
-            # was HELD and not read into the answer; "not acquired" would send a reader
-            # to fetch what the platform already stores.
+            # ADR-076 — the question retrieved nothing it could use, while the corpus
+            # holds a CURRENT dated document of the subject (dated within
+            # CURRENT_HOLDING_MAX_AGE_DAYS). That disclosure was HELD and not read into
+            # the answer; "not acquired" would send a reader to fetch what the platform
+            # already stores. A stale newest holding stays "not acquired" (review 1).
             reason = ledger.UNRESOLVED_ACQUIRED_NOT_READ
         else:
             reason = ledger.UNRESOLVED_NOT_ACQUIRED
@@ -920,6 +921,25 @@ async def _record_unresolved(
             row.contract_status = "unmet"
         row.unresolved_reason = reason
     await session.flush()
+
+
+#: ADR-076 review 1 — a newest held document older than this is not "the latest
+#: disclosure held": the latest one was never fetched, so the reason stays not_acquired.
+CURRENT_HOLDING_MAX_AGE_DAYS = 120
+
+
+def _is_current_holding(newest: Any, *, today: Any = None) -> bool:
+    """True when ``newest`` (a date/datetime) is within CURRENT_HOLDING_MAX_AGE_DAYS."""
+    from datetime import date, datetime, timezone
+
+    if newest is None:
+        return False
+    if isinstance(newest, datetime):
+        newest = newest.date()
+    if not isinstance(newest, date):
+        return False
+    today = today or datetime.now(timezone.utc).date()
+    return (today - newest).days <= CURRENT_HOLDING_MAX_AGE_DAYS
 
 
 async def newest_held_document_date(session: Any, run: Any) -> Any:
