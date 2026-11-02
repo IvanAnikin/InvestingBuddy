@@ -84,6 +84,13 @@ MIN_RESULTS_EXHIBIT_BYTES = 10_000
 #: 12,129 characters of text; a call or date notice is a few hundred to ~3,000.
 MIN_CONTENT_TEXT_CHARS = 8_000
 MIN_CONTENT_LINE_ITEMS = 3
+#: Review round 4: a SHORT results release is still results when the line items say so.
+#: TSMC's Q3 2026 release (EX-99.1) is 3,764 characters with 5 statement line items;
+#: BioNTech's Q2 report yields 7,939 characters from its first 256 KB. So: at least
+#: STRONG_CONTENT_LINE_ITEMS items with figures in at least MIN_SHORT_TEXT_CHARS of text
+#: is enough at any length — a call or date notice carries no statement figures.
+STRONG_CONTENT_LINE_ITEMS = 4
+MIN_SHORT_TEXT_CHARS = 1_500
 #: Documents read for the content check per selection, at most (the chosen document's
 #: first ``INDEX_PAGE_MAX_BYTES``; a head already read is reused, not refetched).
 MAX_CONTENT_FETCHES = 3
@@ -290,14 +297,17 @@ def content_line_items(text: str) -> list[str]:
 def content_shows_results(body: bytes | str | None) -> tuple[bool, str]:
     """Does a document's own text carry interim financial results? ``(ok, detail)``.
 
-    At least :data:`MIN_CONTENT_TEXT_CHARS` of text and
-    :data:`MIN_CONTENT_LINE_ITEMS` distinct statement line items with a figure nearby
+    At least :data:`STRONG_CONTENT_LINE_ITEMS` distinct statement line items with a figure
+    nearby in at least :data:`MIN_SHORT_TEXT_CHARS` of text; or at least
+    :data:`MIN_CONTENT_TEXT_CHARS` of text and :data:`MIN_CONTENT_LINE_ITEMS` items
     (revenue, net result, operating result, cash, balance sheet, per share,
     expenses). Pure."""
     text = document_text(body)
     if not text:
         return False, "document unreadable"
     items = content_line_items(text)
+    if len(items) >= STRONG_CONTENT_LINE_ITEMS and len(text) >= MIN_SHORT_TEXT_CHARS:
+        return True, f"{len(items)} statement line items with figures in {len(text)} characters"
     if len(text) < MIN_CONTENT_TEXT_CHARS:
         return False, f"{len(text)} characters of text"
     if len(items) < MIN_CONTENT_LINE_ITEMS:

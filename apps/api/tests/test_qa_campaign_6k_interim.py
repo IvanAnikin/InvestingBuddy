@@ -881,3 +881,29 @@ def test_an_unread_6k_is_still_no_interim_report() -> None:
                    "reason": "no results 6-K among the 6 examined of 30 listed"})
     assert cp["state"] == STATE_NOT_ACQUIRED
     assert cp["label"] == "No interim report acquired"
+
+
+# -- Review round 4 (PR #313) ---------------------------------------------------------------
+
+
+def test_a_short_release_with_four_statement_items_is_results() -> None:
+    from app.services.sources.sec_6k_results import content_shows_results
+
+    body = (
+        "Acme Semiconductor Reports Third Quarter 2026 Results. "
+        "Revenue was NT$1,046.1 billion, up 30.3% year over year. "
+        "Net income was NT$452.3 billion and diluted earnings per share were NT$17.44. "
+        "Operating income was NT$520.8 billion. Gross margin was 59.5%. "
+    ) * 8
+    ok, detail = content_shows_results(body)
+    assert 1_500 <= len(body) < 8_000
+    assert ok, detail
+
+
+def test_a_short_call_notice_is_still_refused() -> None:
+    from app.services.sources.sec_6k_results import content_shows_results
+
+    body = ("Acme will host its Q3 2026 results conference call on November 5 at 9am. "
+            "Dial-in details and the webcast link are on the investor site. ") * 20
+    ok, _detail = content_shows_results(body)
+    assert not ok

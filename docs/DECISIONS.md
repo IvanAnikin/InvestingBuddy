@@ -5961,6 +5961,12 @@ the newest figures in the report were 9M 2025. H1 2026 (6-K 2026-08-06, iXBRL 6-
    states "for the period ended 2026-06-30". A lone year in a 6-K title is never read
    as a fiscal year. `gap_reconciliation.ready_documents` already maps a ready
    quarterly slot to an interim document.
+   Review round 4 found the floor refused real short releases: TSMC's Q3 2026 EX-99.1 is
+   3,764 characters with 5 statement line items, and it was refused, so TSMC got no
+   pick. When an older results 6-K was within the caps, that one was picked and
+   labelled current instead. Now ≥ 4 distinct line items with figures in ≥ 1,500
+   characters qualify at any length. The 8,000-character / 3-item rule remains the
+   second route.
 
 ### Live replay (read-only, 2026-11-02)
 **The picks rest on this replay**, not on a guarantee: the rules are text rules over
