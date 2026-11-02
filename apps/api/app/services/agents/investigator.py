@@ -2776,8 +2776,16 @@ class LLMInvestigator:
 
                 from app.models.company import Company
 
+                # The investigator's session is a ToolSession; the database handle is
+                # its ``db``. Calling ``execute`` on the ToolSession itself raised an
+                # AttributeError that the guard below swallowed, so the ADR-066
+                # publisher firewall silently ran with no other companies at all.
+                db = getattr(self.session, "db", None)
+                if db is None:
+                    self._other_names = {}
+                    return self._other_names
                 rows = (
-                    await self.session.execute(
+                    await db.execute(
                         sa.select(Company.name).where(Company.id != self.company_id)
                     )
                 ).scalars().all()

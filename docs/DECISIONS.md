@@ -6297,3 +6297,17 @@ No stored EDGAR URL of a subject's own filing changes verdict (33 of 33 `own`, 0
   recorded contract outcome uses the checked kinds.
 - **Not wired:** discovery's council pack and W6 theme runs (no subject CIK), and the V2
   path.
+
+### Same slice: the ADR-066 publisher firewall was never live
+
+`LLMInvestigator._other_companies` called `execute` on the investigator's `ToolSession`,
+which has no such method (the database handle is `ToolSession.db`). The guard's
+`except Exception` swallowed the `AttributeError`, so in production the registered-companies
+list was always empty and `foreign_publisher` never dropped anything. It now reads through
+`session.db`, the way ADR-079's subject resolution does.
+
+Replay against the 121 companies registered in production and every web publisher in the
+15 stored campaign reports: no news or data host collides with a registered company's
+label. The only collision is `iluka.com` (Iluka Resources) in the two Lindian reports, where
+it drops 4 + 3 findings resting solely on Iluka's own site: Iluka unit costs, production and
+outlook filed as Lindian's (campaign defect LIN-3). That is the behaviour ADR-066 specified.

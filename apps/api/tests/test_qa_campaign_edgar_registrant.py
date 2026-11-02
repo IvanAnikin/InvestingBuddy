@@ -456,3 +456,35 @@ class TestInvestigatorGuard:
         await inv._registrant_checked(evidence)
         await inv._registrant_checked(evidence)
         assert calls == [1]
+
+
+class TestOtherCompaniesReadsTheToolSessionDatabase:
+    """The ADR-066 publisher firewall reads the other registered companies through
+    the ToolSession's ``db``. It used to call ``execute`` on the ToolSession itself,
+    which has no such method; the swallowed AttributeError left the firewall with no
+    other companies in production."""
+
+    async def test_other_company_names_come_from_the_session_db(self) -> None:
+        executed: list[Any] = []
+
+        class _Result:
+            def scalars(self) -> Any:
+                return SimpleNamespace(all=lambda: ["Iluka Resources Limited", "Lindian Resources"])
+
+        class _Db:
+            async def execute(self, stmt: Any) -> _Result:
+                executed.append(stmt)
+                return _Result()
+
+        tool_session = SimpleNamespace(db=_Db())  # a ToolSession exposes db, not execute
+        inv = LLMInvestigator(session=tool_session, company_id=uuid.uuid4(), ticker="LIN",
+                              exchange="ASX", company_name="Lindian Resources")
+        names = await inv._other_companies()
+        assert len(executed) == 1
+        assert names, "the firewall must learn about other registered companies"
+        assert all("lindian" not in label for label in names)
+
+    async def test_a_session_without_db_yields_no_names_and_never_raises(self) -> None:
+        inv = LLMInvestigator(session=object(), company_id=uuid.uuid4(), ticker="LIN",
+                              exchange="ASX", company_name="Lindian Resources")
+        assert await inv._other_companies() == {}
