@@ -276,40 +276,152 @@ def _hit(sentence: str, state: dict[str, Any], site: str = inv.SITE_RECORD) -> s
     return hit.rule if hit else None
 
 
+#: Withheld in the stored reports and confirmed by review (scratchpad replay): each is an
+#: UNQUALIFIED claim that the evidence holds no issuer document, while it held 2-7.
+_REAL_INVENTORY_DENIALS = [
+    # PYPL3 gaps[13]
+    "No issuer-own press release or filing in evidence, so latest issuer disclosure "
+    "date/period unconfirmed.",
+    # CLLS3/4/5, LIN, LIN2 legacy council
+    "No primary filings, financial statements, or company disclosures are included "
+    "in the evidence pack.",
+    "No primary filings, financial statements, or company disclosures are present in "
+    "the evidence pack.",
+    "Not yet acquired by InvestingBuddy (platform evidence gap): No company disclosures, "
+    "filings, or press releases are present to provide context on business developments "
+    "or strategy.",
+    "Not yet acquired by InvestingBuddy (platform evidence gap): No company disclosures, "
+    "press releases, or regulatory filings are included to provide insight into recent "
+    "business developments or strategic initiatives.",
+    "Not yet acquired by InvestingBuddy (platform evidence gap): No primary regulatory "
+    "filings or company disclosures are included, limiting verification of data and "
+    "insight into corporate governance or strategic developments.",
+    "Not yet acquired by InvestingBuddy (platform evidence gap): No primary filings or "
+    "official company disclosures are included, preventing verification of financial "
+    "performance or strategic developments.",
+    "No company disclosures or press releases are available to identify potential "
+    "strategic developments or partnerships.",
+    "The absence of primary financial data and company disclosures limits the ability to "
+    "assess CELLECTIS's business performance, financial health, and strategic outlook.",
+    "However, the absence of fundamental financial data or company disclosures limits "
+    "deeper analysis of business performance or upcoming catalysts.",
+    "There is a notable absence of fundamental financial data and primary filings, which "
+    "restricts the ability to assess the company's financial health.",
+    "The absence of fundamental financial data and primary regulatory filings severely "
+    "limits the ability to evaluate the company's operational performance.",
+    "There is a complete absence of fundamental financial data and company disclosures, "
+    "which prevents a reliable assessment of the company's economic fundamentals.",
+    "Not yet acquired by InvestingBuddy (platform evidence gap): Lack of primary filings, "
+    "financial statements, and company disclosures severely limits fundamental analysis.",
+    # CLLS3 legacy council
+    "There is no primary financial data, regulatory filings, or company disclosures "
+    "included, which severely restricts the ability to analyze the company's financial "
+    "health.",
+    "The absence of fundamental financial data and primary disclosures limits the "
+    "ability to assess the company's operational performance.",
+]
+
+#: QA review N2: claims about a SUBSET of the inventory, or not about it at all. Each is
+#: true (or not contradicted) while the issuer's documents are held and cited.
+_INVENTORY_NEAR_MISSES = [
+    "No issuer filing in evidence breaks out revenue by segment.",
+    "No issuer release for Q4 2026 is in evidence.",
+    "No issuer filing states the covenant headroom.",
+    "Lack of any forthcoming company disclosures or filings.",
+    "No 10-Q has been filed yet for Q3.",
+    "No 10-Q has been filed yet for Q4 2026.",
+    "The company has not issued a press release on the acquisition.",
+    "No issuer press release is available on the acquisition.",
+    "No issuer press release on the restructuring is in evidence.",
+    "No company announcement about the CEO succession is available.",
+    "No company filing is available yet for the fourth quarter.",
+    "No official guidance document is available.",
+    "No company documents are available that quantify the buyback.",
+    "No primary filing is available in English.",
+    "The evidence includes no issuer press releases with guidance.",
+    "The evidence includes no issuer press release with guidance.",
+    "The evidence includes no issuer press releases confirming the guidance.",
+    # PYPL3 chair.key_points[7] — scoped by "confirming" (withheld before review).
+    "The evidence includes no issuer press releases or filings confirming the latest "
+    "disclosure dates or forward-looking guidance, limiting temporal context.",
+    "The evidence contains no company filings regarding the lawsuit.",
+    "The evidence pack contains no company announcements for Q4.",
+    "The evidence pack contains no company announcement for Q4.",
+    "The record has no issuer filing in German.",
+    "The record has no issuer filings in German.",
+    "The lack of any company disclosures on pricing limits the analysis.",
+    "Lack of primary filings for the subsidiary limits analysis.",
+    "The absence of financial statements and issuer filings for the Venmo segment "
+    "limits analysis.",
+    "Without issuer filings since the merger, the analysis relies on press.",
+    "No issuer filings are available, for the December quarter at least.",
+    "No issuer press release is available to confirm the Q3 date.",
+    # "verified" scopes the claim: the ledger may hold documents it has not verified.
+    "No verified company disclosures, filings, or press releases are available to "
+    "provide context on operational performance.",
+    "No primary company filings, financial statements, or verified company disclosures "
+    "are included in the evidence pack.",
+    "No audited company filings are available.",
+]
+
+
 class TestNoIssuerDocument:
     """PYPL3-1, CLLS-4: denying the issuer's documents while they are held and cited."""
 
-    @pytest.mark.parametrize("sentence", [
-        "No issuer-own press release or filing in evidence, so latest issuer disclosure "
-        "date/period unconfirmed.",
-        "No primary filings, financial statements, or company disclosures are included "
-        "in the evidence pack.",
-        "The evidence includes no issuer press releases or filings confirming the latest "
-        "disclosure dates or forward-looking guidance, limiting temporal context.",
-        "The absence of fundamental financial data and primary regulatory filings "
-        "severely limits the ability to evaluate the company.",
-        "No company disclosures, filings, or press releases are present to provide "
-        "context on business operations.",
-    ])
+    @pytest.mark.parametrize("sentence", _REAL_INVENTORY_DENIALS)
     def test_fires(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally())) == inv.RULE_NO_ISSUER_DOC
 
-    @pytest.mark.parametrize("sentence", [
-        "No issuer filing in evidence breaks out revenue by segment.",
-        "No issuer release for Q4 2026 is in evidence.",
-        "No issuer filing states the covenant headroom.",
-        "Lack of any forthcoming company disclosures or filings.",
-    ])
+    @pytest.mark.parametrize("sentence", _INVENTORY_NEAR_MISSES)
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
-        assert _hit(sentence, _state(tally=_tally())) is None
+        for site in (inv.SITE_CHAIR, inv.SITE_RECORD, inv.SITE_LEGACY):
+            assert _hit(sentence, _state(tally=_tally()), site) is None
 
     def test_does_not_fire_when_nothing_is_cited(self) -> None:
         sentence = "No primary filings are present in the evidence pack."
         assert _hit(sentence, _state(tally=_tally(primary=0))) is None
 
 
+def _lin_state() -> dict[str, Any]:
+    """An ASX issuer: annual report 24 Sep, quarterly report 25 Oct (core disclosures)."""
+    payload = _payload(
+        core_filings={},
+        core_disclosures={"documents": [
+            {"state": "ready", "filing_date": "2026-09-24", "document_kind": "annual_report",
+             "headline": "Annual Report 2026", "document_ref": "03140001"},
+            {"state": "ready", "filing_date": "2026-10-25",
+             "document_kind": "results_release", "headline": "September Quarterly Report",
+             "document_ref": "03157011"},
+        ]},
+        financial_statements_state={
+            "current_period": {"state": "report_acquired_facts_not_extracted",
+                               "document": {"headline": "September Quarterly Report",
+                                            "filing_date": "2026-10-25"}},
+        },
+    )
+    return _state(payload, tally=_tally())
+
+
+def _hon_state() -> dict[str, Any]:
+    """The subject's 10-Q filed 22 Oct, and a cited issuer-IR page of a spun-off
+    subsidiary published 28 Oct (QA review N1)."""
+    payload = _payload(
+        core_filings={"quarterly": {"form": "10-Q", "state": "ready",
+                                    "accession": "0000773840-26-000143",
+                                    "filing_date": "2026-10-22", "period_end": "2026-09-30"}},
+        financial_statements_state={},
+        findings=[
+            _issuer_finding("Q3 2026 sales rose.", "2026-10-22", "2026-Q3"),
+            {"finding_id": "aero", "statement": "Aerospace Q2 2026 sales.",
+             "source_kinds": ["issuer_ir", "secondary_web"],
+             "source_published_at": "2026-10-28", "period_key": "2026-Q2"},
+        ],
+    )
+    return _state(payload, tally=_tally())
+
+
 class TestOlderDocumentNamedAsNewest:
-    """PYPL2-3, ADBE-5, ANTO-5, LIN-5."""
+    """PYPL2-3, ADBE-5, LIN-5: an older DOCUMENT named as the newest."""
 
     def test_fires_on_an_older_dated_release(self) -> None:
         sentence = ("Issuer's own latest disclosure in evidence is a press release dated "
@@ -321,16 +433,14 @@ class TestOlderDocumentNamedAsNewest:
                     "0001633917-26-000024.")
         assert _hit(sentence, _state(tally=_tally())) == inv.RULE_STALE_LATEST
 
-    def test_fires_on_an_older_period(self) -> None:
-        payload = _payload(findings=[
-            *_payload()["findings"],
-            {"finding_id": "q3", "statement": "Q3 2026 copper output rose.",
-             "source_kinds": ["secondary_web"], "source_published_at": "2026-10-15",
-             "period_key": "2026-Q3"},
-        ])
-        sentence = ("Most recent disclosure referenced is the 2024 Annual Report and "
-                    "Financial Statements, group scope.")
-        assert _hit(sentence, _state(payload, tally=_tally())) == inv.RULE_STALE_LATEST
+    def test_fires_on_an_older_filing_date(self) -> None:
+        assert _hit("The most recent filing is the 10-K filed 2026-02-04.",
+                    _state(tally=_tally())) == inv.RULE_STALE_LATEST
+
+    def test_fires_on_an_older_publication_date_lin(self) -> None:
+        sentence = ("The newest issuer disclosure in the evidence is the Annual Report "
+                    "2026, published 24 September 2026, for the annual period 2026.")
+        assert _hit(sentence, _lin_state()) == inv.RULE_STALE_LATEST
 
     @pytest.mark.parametrize("sentence", [
         # The newest IS named (a period-end date older than it is not the document).
@@ -341,13 +451,83 @@ class TestOlderDocumentNamedAsNewest:
         "the older annual report 10-K 0001633917-26-000024 also appears.",
         # Qualified: the newest filing WITH period figures.
         "Latest primary filing with period figures: 10-K, published 2026-02-03.",
+        "The latest filing with segment detail is the 10-K filed 2026-02-04.",
         # Ordinal: not a claim about the newest.
         "Second-newest: 10-K published 2026-02-03.",
         # Not a document claim at all.
         "The newest period in evidence is a quarter, not a year.",
+        # A press release may be the latest PRESS RELEASE while a later 10-Q is held.
+        "The latest press release dated 2026-07-28 announced Q2 results.",
+        "The latest earnings release, dated 2026-07-28, reported Q2 results.",
+        # "latest disclosure IN THE 10-K" is a disclosure inside one document.
+        "Latest disclosure in the 10-K (2026-02-04) shows 2,000 employees.",
+        "The latest annual report is the 10-K for FY2025.",
+        "The latest annual report, the FY2025 10-K, shows revenue of USD 31.8bn.",
+        "The latest 10-K, filed 2026-02-04, reports revenue of USD 31.8bn.",
+        "The newest document in the pack, dated 2026-10-27, is the 10-Q.",
+        # QA review B3: covered-period dates and periods are not the document's date.
+        "The latest filing covers 1 July 2026 to 30 September 2026.",
+        "The latest filing covers the period from 1 July 2026 through 30 September 2026.",
+        "The most recent filing, for the quarter ended September 30, 2026, was filed on "
+        "October 27, 2026.",
+        "The latest filing reports cash of USD 6.1bn at 30 September 2026.",
+        "The latest filing shows the share count on 2026-09-30.",
+        "The latest filing reports the three months to September 30, 2026 and the nine "
+        "months since January 1, 2026.",
+        "The most recent disclosure reports Q3 2026 revenue of USD 8.4bn.",
+        "The latest filing compares Q3 2026 with Q3 2025.",
+        "The latest filing compares revenue with FY2025.",
+        "The newest filing restates FY2024 figures.",
+        # ANTO: a period in a document's title is not a document date (withheld before
+        # review on a secondary finding's period).
+        "Most recent disclosure referenced is the 2024 Annual Report and Financial "
+        "Statements, group scope.",
+        # HON2: the three months ended June 30 is a covered period.
+        "Newest results disclosure is for the three months ended June 30, 2026; "
+        "discontinued operations shown in Q3.",
     ])
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
-        assert _hit(sentence, _state(tally=_tally())) is None
+        assert _hit(sentence, _state(tally=_tally()), inv.SITE_CHAIR) is None
+
+    @pytest.mark.parametrize("sentence", [
+        "The latest annual report is the Annual Report 2026, published 24 September 2026.",
+        "The newest annual report in evidence, published 24 September 2026, covers FY2026.",
+        "The latest annual report was published 24 September 2026.",
+        "The most recent disclosure is the September Quarterly Report dated 25 Oct 2026, "
+        "about the quarter ended 30 Sep 2026.",
+    ])
+    def test_near_miss_does_not_fire_lin(self, sentence: str) -> None:
+        assert _hit(sentence, _lin_state(), inv.SITE_CHAIR) is None
+
+    def test_newest_is_a_held_document_not_a_cited_page(self) -> None:
+        """QA review N1: a subsidiary's issuer-IR page cited later must not outrank the
+        subject's own 10-Q as the newest document."""
+        state = _hon_state()
+        newest = state["documents"]["newest_issuer_document"]
+        assert (newest["form"], newest["date"]) == ("10-Q", "2026-10-22")
+        assert state["documents"]["newest_cited_issuer_document"]["date"] == "2026-10-28"
+        for sentence in (
+            "The latest filing is the 10-Q filed 2026-10-22.",
+            "The newest issuer filing in evidence is the 10-Q dated 22 October 2026.",
+            "The company's most recent filing is the Q3 2026 10-Q.",
+        ):
+            assert _hit(sentence, state, inv.SITE_CHAIR) is None
+
+    def test_the_latest_period_comes_from_issuer_or_verified_findings(self) -> None:
+        """QA review N3: an unverified secondary finding about 2026-Q3 does not make
+        2026-Q3 the latest reported period."""
+        payload = _payload(core_filings={}, financial_statements_state={}, findings=[
+            _issuer_finding("FY2025 revenue.", "2026-03-01", "FY2025"),
+            {"finding_id": "q3", "statement": "Q3 2026 copper output rose.",
+             "source_kinds": ["secondary_web"], "source_published_at": "2026-10-15",
+             "period_key": "2026-Q3", "verification_status": "unverified"},
+        ])
+        state = _state(payload, tally=_tally())
+        assert state["documents"]["latest_reporting_period"] == "FY2025"
+        payload["findings"][1]["verification_status"] = "verified"
+        state = _state(payload, tally=_tally())
+        assert state["documents"]["latest_reporting_period"] == "2026-Q3"
+        assert state["documents"]["latest_reporting_period_source"] == "verified_finding"
 
     def test_a_forward_period_tag_is_not_the_latest_period(self) -> None:
         """CLLS4-2: 'runway into H2 2028' tagged 2028-H2 must not become the latest
@@ -359,9 +539,14 @@ class TestOlderDocumentNamedAsNewest:
 
 class TestLatestPeriodDenied:
     def test_fires_when_the_quarterly_report_is_held(self) -> None:
+        # LIN gaps[16]
         sentence = ("No disclosure newer than 24 September 2026 appears in the evidence, "
                     "and no quarterly report is present.")
         assert _hit(sentence, _state(tally=_tally())) == inv.RULE_LATEST_PERIOD
+        assert _hit(sentence, _lin_state()) == inv.RULE_LATEST_PERIOD
+        assert _hit("No quarterly report is present.", _lin_state()) == inv.RULE_LATEST_PERIOD
+        assert _hit("No quarterly report is present in the evidence pack.",
+                    _lin_state()) == inv.RULE_LATEST_PERIOD
 
     def test_fires_on_latest_quarter_not_in_this_report(self) -> None:
         assert _hit("Latest quarter: Not in this report.",
@@ -373,9 +558,21 @@ class TestLatestPeriodDenied:
         # A field of the latest quarter, not the quarter itself.
         "The latest quarter's segment split is not in evidence.",
         "No quarterly report figure for capex is present.",
+        # QA review N2: scoped to another period, venue, or a rule — not the inventory.
+        "No quarterly report is present for the December quarter.",
+        "No quarterly report has been filed with the SEC.",
+        "No quarterly report is available on EDGAR because the company is ASX-listed.",
+        "No quarterly report is required for ASX main-board issuers.",
+        "No interim report is required because the company reports semi-annually.",
+        "No interim report is available, for the subsidiary.",
+        "The latest quarterly results are not yet available for Q4.",
+        "The latest quarter's figures are not available.",
+        "Latest quarter figures are not in this report.",
+        "The latest quarter: not available for the segment breakdown.",
     ])
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally())) is None
+        assert _hit(sentence, _lin_state()) is None
 
     def test_does_not_fire_when_nothing_is_held(self) -> None:
         payload = _payload(core_filings={}, financial_statements_state={})
@@ -391,9 +588,14 @@ class TestNoRecentDevelopments:
     def test_fires(self) -> None:
         assert _hit("There were no recent developments.", self._state()) == inv.RULE_NO_RECENT
 
-    def test_near_miss_does_not_fire(self) -> None:
-        assert _hit("No recent developments in the litigation were disclosed.",
-                    self._state()) is None
+    @pytest.mark.parametrize("sentence", [
+        "No recent developments in the litigation were disclosed.",
+        "No recent developments regarding the litigation.",
+        "There were no new announcements on the dividend.",
+        "No new disclosures were found about the merger.",
+    ])
+    def test_near_miss_does_not_fire(self, sentence: str) -> None:
+        assert _hit(sentence, self._state()) is None
 
     def test_does_not_fire_without_a_current_disclosure(self) -> None:
         payload = _payload(core_filings={}, financial_statements_state={},
@@ -412,6 +614,11 @@ class TestNoCashFlow:
         "Lack of free cash flow data prevents a full assessment.",
         # Qualified to a period.
         "No cash-flow figure for the latest quarter is in evidence.",
+        "No free cash flow guidance is provided.",
+        "No cash flow hedge accounting is applied.",
+        "There is no operating cash flow data for the segment.",
+        "No cash flow data is available for the segment.",
+        "Lack of cash flow data for the subsidiary limits analysis.",
     ])
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally())) is None
@@ -495,8 +702,7 @@ class TestChairDisagreements:
 
     def test_a_narrated_disagreement_with_none_recorded_is_withheld(self) -> None:
         payload = _payload(chair={
-            "synthesis": "Revenue grew 4%. There is a notable disagreement in the evidence "
-                         "regarding revenue from mineral sales.",
+            "synthesis": "Revenue grew 4%. The red team disputed the net debt figure.",
             "key_points": [{"text": "Unresolved disagreements exist on net debt.",
                             "finding_id": "f"}],
             "unresolved_disagreement_ids": [],
@@ -512,6 +718,27 @@ class TestChairDisagreements:
         rules = {v.rule for v in inv.enforce(payload, state).violations}
         # Only the stale council block count is repaired; the sentence stands.
         assert rules == {inv.RULE_COUNCIL_COUNTS}
+
+    @pytest.mark.parametrize("sentence", [
+        # CFR chair.synthesis — TRUE, and about the evidence, not a ledger disagreement
+        # (withheld before review).
+        "However, there is conflicting data on FY2026 Group operating profit, reported as "
+        "both EUR 4.5 billion and 'to EUR 5 billion'.",
+        "Analysts disagree on the timing of the margin recovery.",
+        "Management's FY2026 guidance contradicts the consensus estimate.",
+        "Revenue and EBITDA figures conflict between the 10-Q and the press release.",
+        "There are conflicting reports about the CEO's departure.",
+        "Two findings give conflicting figures for FY2026 operating profit.",
+        "Peers disagree with the company's pricing strategy.",
+        "This contradicts the bear case.",
+        "There is a notable disagreement in the evidence regarding revenue.",
+        "The red team found no disagreements.",
+        "No unresolved disagreements remain.",
+    ])
+    def test_a_disagreement_about_the_world_is_kept(self, sentence: str) -> None:
+        state = _state(tally=_tally())
+        assert state["disagreements"]["total"] == 0
+        assert _hit(sentence, state, inv.SITE_CHAIR) is None
 
     def test_a_negated_disagreement_is_not_narration(self) -> None:
         payload = _payload(chair={"synthesis": "No disagreements were recorded."})
@@ -647,3 +874,162 @@ def test_the_replay_detects_and_repairs_on_a_stored_shape(tmp_path: Path) -> Non
                          "source_summary_json": {"v3_research": payload}})
     assert out["state"]["derived_from"] == "payload"
     assert out["result"]["by_rule"][inv.RULE_FINDING_COUNT] == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. Withholding removes only the withheld span (QA review M1)
+# ---------------------------------------------------------------------------
+
+
+_DENIAL = "No primary filings, financial statements, or company disclosures are present."
+
+
+class TestWithheldSpanOnly:
+    def _text(self, value: str) -> str:
+        enforcer = inv._Enforcer(_state(tally=_tally()))
+        return enforcer.text(value, "x", inv.SITE_LEGACY)
+
+    def test_separators_and_newlines_are_kept(self) -> None:
+        value = "Revenue rose.  Margins held.\n\nCapex fell. " + _DENIAL + "\nDebt is low."
+        assert self._text(value) == "Revenue rose.  Margins held.\n\nCapex fell.\nDebt is low."
+
+    def test_one_false_bullet_does_not_withhold_the_block(self) -> None:
+        value = "- Revenue rose 4%.\n- " + _DENIAL + "\n- Net debt fell.\n  * Capex flat."
+        assert self._text(value) == "- Revenue rose 4%.\n- Net debt fell.\n  * Capex flat."
+
+    def test_a_bullet_keeps_its_true_sentence(self) -> None:
+        value = "1. Revenue rose 4%. " + _DENIAL + "\n2. Net debt fell."
+        assert self._text(value) == "1. Revenue rose 4%.\n2. Net debt fell."
+
+    def test_an_untouched_text_is_returned_as_is(self) -> None:
+        value = "Revenue rose.\n\n  - Margins held.  \n"
+        assert self._text(value) is value
+
+    def test_a_text_with_nothing_left_becomes_a_notice(self) -> None:
+        assert self._text("- " + _DENIAL).startswith("[Withheld at report assembly:")
+
+    def test_an_over_long_sentence_is_not_checked(self) -> None:
+        sentence = _DENIAL[:-1] + ", " + "and so on, " * 80 + "end."
+        assert len(sentence) > inv.MAX_SENTENCE_CHARS
+        assert _hit(sentence, _state(tally=_tally())) is None
+
+
+# ---------------------------------------------------------------------------
+# 7. Every pattern and rule runs in linear time (QA review B1)
+# ---------------------------------------------------------------------------
+
+#: The review's ReDoS repros, and inputs built to make each kind of quantifier backtrack.
+_DEGENERATE = [
+    "No issuer " + "press releases " * 10 + "mention it.",
+    "No issuer " + "filings " * 14 + "mention it.",
+    "No issuer " + "press releases " * 200 + "mention it.",
+    "No issuer " + "filings " * 400 + "x",
+    "No issuer filings, " * 300 + "x",
+    "No issuer " + "press releases, or " * 300 + "x",
+    "The evidence includes no issuer " + "filings or " * 300 + "x",
+    "absence of " + "financial data and " * 300 + "x",
+    "lack of " + "any primary " * 400 + "x",
+    "no " * 2000,
+    " " * 8000 + "x",
+    "\t" * 8000,
+    ", or " * 1500,
+    "latest quarter" + " " * 5000 + "x",
+    "latest quarterly " + "report " * 1000,
+    "newest " * 1500 + "filing",
+    "most recent " + "issuer " * 1000 + "filing",
+    "a" * 10000,
+    "1" * 10000,
+    "2026-" * 2000,
+    "dated " * 1500 + "2026-01-01",
+    "10-K " * 2000,
+    "cash flow " * 1000,
+    "no cash flow " * 600,
+    "evidence is " * 1000,
+    "unresolved " * 1500,
+    "no unresolved " * 1000,
+    "red team " * 1000,
+    "disagreement " * 1000,
+    "." * 10000,
+    ". " * 5000 + "A",
+    "\n" * 10000,
+    "- " * 5000,
+    "Deterministic synthesis: " + "1 " * 3000,
+    "September " * 1500 + "2026",
+    "30 " * 3000 + "September 2026",
+    "in the " * 1500 + "evidence",
+]
+_BUDGET_SECONDS = 0.05
+
+
+def _patterns() -> list[tuple[str, Any]]:
+    import re
+
+    from app.services.ledger import canonical_state as cs
+
+    out: list[tuple[str, Any]] = []
+    for module in (inv, cs):
+        short = module.__name__.rsplit(".", 1)[1]
+        for name, value in vars(module).items():
+            if isinstance(value, re.Pattern):
+                out.append((f"{short}.{name}", value))
+            elif isinstance(value, tuple):
+                for i, item in enumerate(value):
+                    pattern = item[0] if isinstance(item, tuple) and item else item
+                    if isinstance(pattern, re.Pattern):
+                        out.append((f"{short}.{name}[{i}]", pattern))
+    return out
+
+
+def _worst(fn: Any) -> tuple[float, str]:
+    import time
+
+    worst = (0.0, "")
+    for text in _DEGENERATE:
+        start = time.perf_counter()
+        fn(text)
+        elapsed = time.perf_counter() - start
+        if elapsed > worst[0]:
+            worst = (elapsed, text[:40])
+    return worst
+
+
+def test_the_pattern_inventory_is_complete() -> None:
+    names = {name.split(".", 1)[1] for name, _ in _patterns()}
+    assert {"_TOKEN_RE", "_LATEST_DOC_RE", "_DOC_DATE_BEFORE_RE", "_SENTENCE_RE",
+            "_BULLET_RE", "_LEDGER_DISAGREEMENT_RE", "_LATEST_UNAVAILABLE_RES[1]",
+            "_NO_CASH_FLOW_RES[0]", "_CASH_FLOW_RE"} <= names
+
+
+@pytest.mark.parametrize("name,pattern", _patterns(), ids=[n for n, _ in _patterns()])
+def test_every_pattern_is_linear_on_degenerate_input(name: str, pattern: Any) -> None:
+    def run(text: str) -> None:
+        pattern.search(text)
+        for _ in pattern.finditer(text):
+            pass
+        pattern.match(text)
+
+    elapsed, text = _worst(run)
+    assert elapsed < _BUDGET_SECONDS, f"{name} took {elapsed:.3f}s on {text!r}"
+
+
+@pytest.mark.parametrize("rule", inv._CHAIR_RULES, ids=lambda r: r.__name__)
+def test_every_rule_is_linear_on_degenerate_input(rule: Any) -> None:
+    state = _state(tally=_tally())
+    # The rules are called directly, past the sentence-length cap.
+    elapsed, text = _worst(lambda t: rule(t, state))
+    assert elapsed < _BUDGET_SECONDS, f"{rule.__name__} took {elapsed:.3f}s on {text!r}"
+
+
+def test_the_token_scan_is_linear_on_degenerate_input() -> None:
+    elapsed, text = _worst(inv._denies_issuer_documents)
+    assert elapsed < _BUDGET_SECONDS, f"took {elapsed:.3f}s on {text!r}"
+
+
+def test_a_whole_degenerate_text_is_checked_quickly() -> None:
+    import time
+
+    enforcer = inv._Enforcer(_state(tally=_tally()))
+    start = time.perf_counter()
+    for text in _DEGENERATE:
+        enforcer.text(text, "x", inv.SITE_CHAIR)
+    assert time.perf_counter() - start < 1.0

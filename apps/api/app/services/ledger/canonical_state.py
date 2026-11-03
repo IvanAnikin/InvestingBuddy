@@ -14,8 +14,9 @@ This module computes the run's state ONCE, from the ledger and the run's documen
 inventory, and every reader takes it from here:
 
 * finding / verified / primary-source counts, gap counts by status, disagreements;
-* the newest issuer document held (date, form, reference, period) and the latest
-  reporting period any finding is about;
+* the newest issuer document HELD (date, form, reference, period) — a cited finding's
+  publication date is recorded separately and never stands in for it — and the latest
+  completed reporting period the issuer's own (or verified) findings are about;
 * current-period status, evidence status, chair status and council status.
 
 It is persisted on the report as ``v3_research.canonical_state`` with a version number,
@@ -385,11 +386,16 @@ def _latest_period(
         if best[1] is None or effective > best[1]:
             best = (period_end.isoformat(), effective, "core_filings")
     for finding in _all_findings(v3):
-        consider(
-            finding.get("period_key"),
-            as_date(finding.get("source_published_at")),
-            "issuer_finding" if _is_issuer(finding) else "finding",
-        )
+        # Only a finding from the issuer's own documents, or one the platform verified,
+        # can establish what the latest reported period is: a secondary page about a
+        # peer or a forecast is not the issuer's report (QA review N3).
+        if _is_issuer(finding):
+            origin = "issuer_finding"
+        elif finding.get("verification_status") == "verified":
+            origin = "verified_finding"
+        else:
+            continue
+        consider(finding.get("period_key"), as_date(finding.get("source_published_at")), origin)
     return best
 
 
@@ -693,8 +699,16 @@ def build_canonical_state(
 
     inventory = document_inventory(v3)
     issuer_docs = [d for d in inventory if d.origin != "cited_finding"]
-    newest = max(inventory, key=lambda d: (d.published, d.origin != "cited_finding"),
-                 default=None)
+    # The newest document is one the platform HOLDS (filings, disclosures, statement
+    # documents). A cited finding's publication date is not: the finding may be about a
+    # different issuer the page also names (QA review N1: a spun-off subsidiary's page
+    # outranked the subject's own 10-Q). Cited dates still count for "recently cited".
+    newest = max(issuer_docs, key=lambda d: d.published, default=None)
+    newest_cited = max(
+        (d for d in inventory if d.origin == "cited_finding"),
+        key=lambda d: d.published,
+        default=None,
+    )
     period_key, period_end, period_origin = _latest_period(v3, today)
 
     routing_chair = _mapping(_mapping(_mapping(v3.get("routing")).get("slots")).get("chair"))
@@ -757,6 +771,7 @@ def build_canonical_state(
             "issuer_documents_held": len(issuer_docs),
             "issuer_documents_cited": tally.primary_source > 0,
             "newest_issuer_document": newest.to_dict() if newest else None,
+            "newest_cited_issuer_document": newest_cited.to_dict() if newest_cited else None,
             "inventory": [d.to_dict() for d in sorted(
                 issuer_docs, key=lambda d: d.published, reverse=True)[:12]],
             "latest_reporting_period": period_key,

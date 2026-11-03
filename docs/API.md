@@ -3413,7 +3413,9 @@ No new route. A report with a V3 run gains additive keys under
 
 - `canonical_state` (`version: 1`): the run's one research state (finding / gap /
   disagreement counts, document inventory, current-period, evidence, chair and council
-  status with `council.status_text`).
+  status with `council.status_text`). `documents.newest_issuer_document` is the newest
+  document the platform HOLDS; the newest publication date of a cited issuer finding is
+  `documents.newest_cited_issuer_document`.
 - `state_invariants`: the report-status sentences repaired or withheld at assembly
   (`violations_total`, `by_rule`, `by_action`, `violations[]`).
 - `legacy_council` (only beside a V2 council): `{legacy, label, status_text}`.

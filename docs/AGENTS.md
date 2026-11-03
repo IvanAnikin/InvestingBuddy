@@ -1635,6 +1635,12 @@ reader takes its counts and status lines from it.
   documents, chair disagreements, council status). Counts and reasons are repaired;
   free-text claims are withheld per sentence with a recorded reason
   (`v3_research.state_invariants`). The V2 council is labelled legacy through
-  `v3_research.legacy_council`.
+  `v3_research.legacy_council`. Only UNQUALIFIED claims about the whole evidence
+  inventory are withheld ("no issuer press release ON the acquisition" is kept); the
+  inventory-denial scan is a linear token scan, "newest document" compares only dates
+  tied to a document against the newest document HELD (never a cited finding's date or
+  a covered period), disagreement narration counts only ledger phrasing ("unresolved
+  disagreement", "the red team disputed"), and only the withheld sentence is removed
+  (bullets and newlines are kept). Sentences over 600 characters are not checked.
 - `scripts/qa_replay_ledger_state.py <reports-dir>` replays the checker over stored
   report payloads, with the state derived from the payload. It makes no network call.

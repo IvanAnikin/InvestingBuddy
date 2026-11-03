@@ -17,7 +17,9 @@ At minimum these are made impossible (QA campaign 2026-11, P-2 / P-4):
 * an older document named as the latest / newest disclosure;
 * "no issuer filing / release is in evidence" while one is held and cited;
 * a chair disagreement id the ledger does not record (dropped), and a chair sentence
-  narrating a disagreement when none is recorded (withheld);
+  narrating a RESEARCH disagreement ("unresolved disagreement", "the red team
+  disputed …", a disagreement id) when none is recorded (withheld) — a sentence about
+  the world disagreeing ("conflicting data on FY2026 operating profit") is kept;
 * "N agents completed" while the council was degraded.
 
 REPAIR, OR WITHHOLD WITH A REASON — NEVER SILENTLY KEEP
@@ -39,7 +41,7 @@ from __future__ import annotations
 
 import copy
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -50,7 +52,6 @@ from app.services.ledger.canonical_state import (
     FALLBACK_NOT_CONVENED,
     REFUSAL_WORDS,
     as_date,
-    period_bounds,
 )
 
 INVARIANTS_VERSION = 1
@@ -91,87 +92,261 @@ SITE_CHAIR = "chair"
 SITE_RECORD = "record"
 SITE_LEGACY = "legacy"
 
-#: Days by which a held document must be newer than the one named as newest, and a
-#: held period later than the one named, before a sentence is called stale. Margins in
-#: the direction of keeping a sentence: same-week documents and fiscal-vs-calendar
-#: labelling are not contradictions.
+#: Days by which a held document must be newer than the one named as newest before a
+#: sentence is called stale (a margin in the direction of keeping a sentence: same-week
+#: documents are not a contradiction).
 DOCUMENT_MARGIN_DAYS = 3
-PERIOD_MARGIN_DAYS = 90
 
-_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(\[])")
+#: Sentences longer than this are not checked (kept as written). A sentence about the
+#: research inventory is short; the cap bounds what any one sentence can cost.
+MAX_SENTENCE_CHARS = 600
+
+#: A sentence boundary inside one line. Lines are split first (``_Enforcer.text``), so a
+#: bullet list is never treated as one sentence.
+_SENTENCE_RE = re.compile(r"(?<=[.!?])[ \t]+(?=[A-Z\"'(\[])")
+_BULLET_RE = re.compile(r"^[ \t]*(?:[-*•+]|\d{1,3}[.)])[ \t]+")
 
 
 # ---------------------------------------------------------------------------
 # The reviewed phrase table
+#
+# LINEAR BY CONSTRUCTION (QA review B1): the inventory claims ("no issuer filings,
+# financial statements, or company disclosures are present") are recognised by a token
+# scan with a closed vocabulary and MANDATORY list separators, not by a regex with a
+# repeated optional word — that shape backtracked exponentially on "No issuer press
+# releases press releases …". Every remaining regex has disjoint adjacent quantifiers
+# or a fixed bound; ``tests/test_qa_closure_ledger_state.py`` times each one on
+# degenerate input.
+#
+# UNQUALIFIED CLAIMS ONLY (QA review N2): a sentence is withheld only when it makes a
+# claim about the WHOLE evidence inventory. "No issuer press release is available ON
+# the acquisition", "no quarterly report is present FOR the December quarter", "lack
+# of primary filings FOR the subsidiary" are claims about a subset and are kept.
 # ---------------------------------------------------------------------------
 
-_ISSUER_ADJ = (
-    r"(?:issuer(?:'s)?(?:[- ]own)?|issuer's\s+own|company(?:[- ]owned)?|company's\s+own"
-    r"|primary(?:\s+regulatory)?|official|regulatory)"
-)
-_DOC = r"(?:press\s+releases?|releases?|filings?|disclosures?|documents?|announcements?)"
-_LIST_ITEM = rf"(?:{_ISSUER_ADJ}\s+)?(?:financial\s+statements|(?:\w+\s+)?{_DOC})"
-_INVENTORY_PRED = (
-    r"(?:(?:present|included|available|found|held|acquired)"
-    r"(?:\s+in\s+(?:the\s+)?(?:evidence(?:\s+pack)?|pack))?"
-    r"|in\s+(?:the\s+)?evidence(?:\s+pack)?|in\s+the\s+pack)"
-)
-#: "No issuer filing [, X, or Y] is in evidence" — the claim must END at the
-#: predicate (or continue with a connective): "no issuer filing in evidence breaks out
-#: revenue by segment" is a claim about segments, not about the inventory.
-_NO_ISSUER_DOC_RE = re.compile(
-    rf"\bno\s+{_ISSUER_ADJ}\s+(?:\w+\s+)?{_DOC}"
-    rf"(?:\s*,?\s*(?:(?:or|and|nor)\s+)?{_LIST_ITEM})*"
-    rf"\s*,?\s*(?:(?:is|are|was|were|has\s+been|have\s+been)\s+)?{_INVENTORY_PRED}"
-    r"(?=\s*(?:[.,;:)—–-]|$)|\s+(?:so|to|and|which|limiting|leaving)\b)",
-    re.I,
-)
-_EVIDENCE_HAS_NO_RE = re.compile(
-    rf"\b(?:evidence(?:\s+pack)?|record)\s+(?:includes|contains|has|shows)\s+no\s+"
-    rf"{_ISSUER_ADJ}\s+(?:\w+\s+)?{_DOC}(?:\s*,?\s*(?:or|and)\s+(?:\w+\s+)?{_DOC})*"
-    r"(?!\s+(?:for|on|about|covering|of|from|dated|in|after|before|since)\b)",
-    re.I,
-)
-#: Only descriptive words may sit between "absence of" and the documents: "lack of any
-#: FORTHCOMING company disclosures" is about the future, not the inventory.
-_ABSENCE_OF_FILINGS_RE = re.compile(
-    r"\b(?:absence|lack)\s+of\s+(?:(?:any|fundamental|financial|primary|operational"
-    r"|operating|audited|verified|data|information|statements?|and|or),?\s+){0,6}"
-    r"(?:primary\s+(?:regulatory\s+)?filings|company\s+disclosures"
-    r"|issuer\s+(?:filings|disclosures|documents))\b",
-    re.I,
-)
+_TOKEN_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?(?:-[a-z0-9]+)*|[^\sa-z0-9]")
+#: Words that may describe an issuer DOCUMENT (and make it the issuer's).
+_ISSUER_MODS: frozenset[str] = frozenset({
+    "issuer", "issuer's", "issuers", "issuer-own", "own", "company", "company's",
+    "company-owned", "company-own", "primary", "regulatory",
+})
+#: Other words allowed inside a listed item. A closed set: "official GUIDANCE
+#: document", "FORTHCOMING company disclosures" are not inventory items, and "no
+#: VERIFIED / AUDITED company disclosures" is a claim about a subset (the ledger may
+#: hold the issuer's documents and still have verified none of them).
+_OTHER_MODS: frozenset[str] = frozenset({
+    "any", "official", "fundamental", "financial", "operational", "operating",
+    "corporate", "press",
+})
+_MODS = _ISSUER_MODS | _OTHER_MODS
+_DOC_HEADS: frozenset[str] = frozenset({
+    "filing", "filings", "disclosure", "disclosures", "document", "documents",
+    "announcement", "announcements", "release", "releases",
+})
+#: Nouns that may share a list with documents but are not documents themselves.
+_DATA_HEADS: frozenset[str] = frozenset({"statements", "data", "information"})
+_HEADS = _DOC_HEADS | _DATA_HEADS
+_LIST_JOINERS: frozenset[str] = frozenset({"or", "and", "nor"})
+_MAX_LIST_ITEMS = 8
+_MAX_ITEM_MODS = 4
+_COPULAS: frozenset[str] = frozenset({"is", "are", "was", "were"})
+_INVENTORY_PREDICATES: frozenset[str] = frozenset({
+    "present", "included", "available", "found", "held", "acquired",
+})
+_HAS_VERBS: frozenset[str] = frozenset({"includes", "contains", "has", "shows", "holds"})
+_INVENTORY_NOUNS: frozenset[str] = frozenset({"evidence", "record", "pack"})
+
+#: What may follow a complete inventory claim for it still to be UNQUALIFIED.
+_TAIL_STOPS: frozenset[str] = frozenset({".", ";", ":", ")", "!", "?", "—", "–", "-"})
+_TAIL_CONNECTIVES: frozenset[str] = frozenset({
+    "so", "and", "which", "thus", "therefore", "limiting", "leaving", "preventing",
+    "restricting", "constraining", "hampering", "hindering", "meaning", "making",
+})
+#: "… are present TO PROVIDE context" is a purpose, not a scope; "… is available TO
+#: CONFIRM the Q3 date" is a scope. Only purpose verbs are accepted.
+_TO_VERBS: frozenset[str] = frozenset({
+    "provide", "identify", "assess", "evaluate", "inform", "offer", "give",
+})
+#: After "absence of X": the verb of the sentence, or an adverb before it.
+_ABSENCE_VERBS: frozenset[str] = frozenset({
+    "limits", "limit", "limited", "severely", "significantly", "substantially",
+    "greatly", "seriously", "restricts", "prevents", "constrains", "hampers", "hinders",
+    "precludes", "undermines", "makes", "leaves", "means", "is", "remains", "reduces",
+    "weakens", "impairs",
+})
+#: A word after a comma that turns the claim into a scoped one.
+_QUALIFIERS: frozenset[str] = frozenset({
+    "for", "on", "about", "regarding", "concerning", "covering", "in", "from", "of",
+    "since", "after", "before", "with", "confirming", "because", "as", "given",
+    "beyond", "other", "except", "outside", "until", "prior", "besides", "apart",
+    "dated", "relating", "related", "addressing", "mentioning", "discussing",
+    "describing", "showing", "containing", "specifically", "specific", "that", "due",
+    "owing", "under", "at", "by", "via", "through", "within", "per",
+})
+
+
+def _tokens(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text.lower().replace("’", "'"))
+
+
+def _at(tokens: list[str], k: int) -> str | None:
+    return tokens[k] if 0 <= k < len(tokens) else None
+
+
+def _item(tokens: list[str], i: int) -> tuple[int, bool] | None:
+    """One listed item from ``tokens[i]``: up to four modifiers and a head noun.
+    Returns (index after it, whether it is an issuer DOCUMENT)."""
+    j, issuer = i, False
+    while j < len(tokens) and j - i < _MAX_ITEM_MODS and tokens[j] in _MODS:
+        issuer = issuer or tokens[j] in _ISSUER_MODS
+        j += 1
+    head = _at(tokens, j)
+    if head not in _HEADS:
+        return None
+    return j + 1, issuer and head in _DOC_HEADS
+
+
+def _item_list(tokens: list[str], i: int) -> tuple[int, bool] | None:
+    """A list of items separated by a comma and/or a conjunction (MANDATORY between
+    items, so the scan is linear). Returns (index after the list, whether any item is an
+    issuer document)."""
+    end: int | None = None
+    issuer = False
+    pos = i
+    for _ in range(_MAX_LIST_ITEMS):
+        parsed = _item(tokens, pos)
+        if parsed is None:
+            break
+        end, is_doc = parsed
+        issuer = issuer or is_doc
+        k = end
+        if _at(tokens, k) == ",":
+            k += 1
+        if _at(tokens, k) in _LIST_JOINERS:
+            k += 1
+        if k == end:
+            break
+        pos = k
+    return (end, issuer) if end is not None else None
+
+
+def _in_evidence(tokens: list[str], k: int) -> int | None:
+    """``in (the) evidence (pack)`` / ``in the pack`` from ``k``: the index after it."""
+    if _at(tokens, k) != "in":
+        return None
+    k += 1
+    if _at(tokens, k) == "the":
+        k += 1
+    if _at(tokens, k) == "evidence":
+        k += 1
+        return k + 1 if _at(tokens, k) == "pack" else k
+    return k + 1 if _at(tokens, k) == "pack" else None
+
+
+def _tail_unqualified(tokens: list[str], k: int, verbs: frozenset[str] = frozenset()) -> bool:
+    """True when what follows a complete claim leaves it a claim about the whole
+    inventory: the end, a stop, a connective, a purpose clause — not a scope."""
+    tok = _at(tokens, k)
+    if tok is None or tok in _TAIL_STOPS or tok in _TAIL_CONNECTIVES or tok in verbs:
+        return True
+    if tok == ",":
+        nxt = _at(tokens, k + 1)
+        return nxt is None or nxt not in _QUALIFIERS
+    if tok == "to":
+        return _at(tokens, k + 1) in _TO_VERBS
+    return False
+
+
+def _denies_issuer_documents(text: str) -> bool:
+    """An UNQUALIFIED claim that no issuer document is in the evidence:
+
+    * "no <list> [is/are/has been] present|included|… [in the evidence]" ;
+    * "the evidence/record includes|contains|has no <list>" ;
+    * "absence / lack of <list>" followed by the sentence's verb.
+
+    ``<list>`` must name at least one issuer DOCUMENT (an issuer word + a document noun).
+    """
+    tokens = _tokens(text)
+    for i, tok in enumerate(tokens):
+        if tok == "no":
+            parsed = _item_list(tokens, i + 1)
+            if parsed is None or not parsed[1]:
+                continue
+            k = parsed[0]
+            prev = _at(tokens, i - 1)
+            if prev in _HAS_VERBS and _at(tokens, i - 2) in _INVENTORY_NOUNS:
+                if _tail_unqualified(tokens, k):
+                    return True
+                continue
+            if _at(tokens, k) in _COPULAS:
+                k += 1
+            elif _at(tokens, k) in ("has", "have") and _at(tokens, k + 1) == "been":
+                k += 2
+            after_in = _in_evidence(tokens, k)
+            if after_in is not None:
+                k = after_in
+            elif _at(tokens, k) in _INVENTORY_PREDICATES:
+                k += 1
+                k = _in_evidence(tokens, k) or k
+            else:
+                continue
+            if _tail_unqualified(tokens, k):
+                return True
+        elif tok in ("absence", "lack") and _at(tokens, i + 1) == "of":
+            parsed = _item_list(tokens, i + 2)
+            if parsed is None or not parsed[1]:
+                continue
+            k = _in_evidence(tokens, parsed[0]) or parsed[0]
+            if _tail_unqualified(tokens, k, _ABSENCE_VERBS):
+                return True
+    return False
+
+
+def _unqualified_after(text: str, end: int, verbs: frozenset[str] = frozenset()) -> bool:
+    """The tail check for a regex-matched claim ending at ``end``."""
+    return _tail_unqualified(_tokens(text[end: end + 80]), 0, verbs)
+
 
 _LATEST_DOC_RE = re.compile(
     r"(?<![\w-])(?:newest|latest|most\s+recent)\s+(?:dated\s+)?"
     r"(?:(?:issuer|issuer's|primary|results|official|company|company's|regulatory|own)\s+)"
-    r"{0,2}(?:press\s+release|disclosure|filing|release|document|evidence|announcement)s?\b"
-    # A QUALIFIED claim ("latest filing WITH period figures", "newest release FOR Q2")
-    # is about a subset, and a newer document outside it does not contradict it.
-    r"(?!\s+(?:with|for|of|on|about|covering|containing|that|which|reporting|from)\b)",
+    # Generic nouns only: "the latest PRESS RELEASE dated …" may truly be the latest
+    # press release while a later 10-Q is held — a different kind is no contradiction.
+    r"{0,2}(?:disclosure|filing|document|evidence)s?\b"
+    # A QUALIFIED claim ("latest filing WITH period figures", "newest disclosure FOR
+    # Q2", "latest disclosure IN the 10-K") is about a subset, and a newer document
+    # outside it does not contradict it. "in (the) evidence / pack" is not a subset.
+    r"(?!\s+(?:with|for|of|on|about|covering|containing|that|which|reporting|from)\b)"
+    r"(?!\s+in\s+(?!(?:the\s+)?(?:evidence|pack|record)\b))",
     re.I,
 )
-#: A date that is a period END ("quarter ended 30 Sep 2026"), not a publication date.
-_PERIOD_END_BEFORE_RE = re.compile(
-    r"(?:ended|ending|as\s+(?:at|of)|at|through|to)\s*$", re.I
-)
 _ORDINAL_BEFORE_RE = re.compile(r"(?:second|next|third|previous|prior|earlier)[\s-]*$", re.I)
+#: A date is the DOCUMENT's only when the words before it say so ("dated", "filed on",
+#: "published", "released") or it follows a form type ("the 10-Q (2026-10-27)") — never
+#: a covered-period date ("covers 1 July 2026 to 30 September 2026", "share count on
+#: 2026-09-30"). QA review B3.
+_DOC_DATE_BEFORE_RE = re.compile(
+    r"(?:\b(?:dated|filed|published|released|issued|lodged)(?:\s+on)?"
+    r"|\b(?:10-K|10-Q|20-F|40-F|6-K(?:/A)?|8-K)\s*[(,]?)[ \t,]*$",
+    re.I,
+)
 
 _LATEST_UNAVAILABLE_RES = (
     re.compile(
         r"\b(?:latest|current|most\s+recent|newest)\s+"
         r"(?:quarter(?:ly)?|interim|half[- ]year(?:ly)?|reporting\s+period|period)(?:'s)?"
         r"(?:\s+(?P<noun>report|results|figures|filing|statements?|accounts))?"
-        r"\s*(?::\s*|\s(?:is|are|was|were|has\s+been|have\s+been)\s+)"
+        r"(?::[ \t]*|\s+(?:is|are|was|were|has\s+been|have\s+been)\s+)"
         r"(?:not\s+(?:in\s+this\s+report|available|acquired|yet\s+acquired"
-        r"|in\s+(?:the\s+)?evidence)|unavailable|missing|absent)\b",
+        r"|in\s+(?:the\s+)?evidence(?:\s+pack)?)|unavailable|missing|absent)\b",
         re.I,
     ),
     re.compile(
         r"\bno\s+(?:current[- ]period|interim|quarterly|half[- ]year(?:ly)?)\s+"
         r"(?P<noun>report|filing|results|statements?|figures|accounts)\s+"
         r"(?:is|are|was|were|has\s+been|have\s+been)\s+"
-        r"(?:acquired|available|present|found|held|in\s+(?:the\s+)?evidence)\b",
+        r"(?:(?:acquired|available|present|found|held)(?:\s+in\s+(?:the\s+)?evidence(?:\s+pack)?)?"
+        r"|in\s+(?:the\s+)?evidence(?:\s+pack)?)\b",
         re.I,
     ),
 )
@@ -180,7 +355,7 @@ _FIGURE_NOUNS = frozenset({"results", "figures", "statement", "statements", "acc
 _NO_RECENT_RE = re.compile(
     r"\bno\s+(?:recent|current|new)\s+(?:developments|news|disclosures|announcements"
     r"|events)(?:\s+(?:were|was|have\s+been|has\s+been|are|is)\s+(?:found|identified"
-    r"|reported|disclosed|sourced|recorded|available))?(?=\s*(?:[.;,]|$))",
+    r"|reported|disclosed|sourced|recorded|available))?\b",
     re.I,
 )
 
@@ -188,8 +363,7 @@ _NO_CASH_FLOW_RES = (
     re.compile(
         r"\bno\s+(?:operating\s+|free\s+)?cash[- ]flow(?:\s+(?:data|figures?|statements?"
         r"|information|disclosure))?\s+(?:(?:is|are|was|were)\s+)?(?:available|disclosed"
-        r"|present|reported|provided|in\s+(?:the\s+)?evidence)"
-        r"(?=\s*(?:[.;,]|$)|\s+(?:so|and|to)\b)",
+        r"|present|reported|provided|in\s+(?:the\s+)?evidence(?:\s+pack)?)\b",
         re.I,
     ),
     re.compile(
@@ -205,18 +379,23 @@ _EVIDENCE_ADEQUATE_RE = re.compile(
     r"\bevidence(?:\s+base|\s+pack)?\s+(?:is|was|appears|remains)\s+"
     r"(?:adequate|sufficient|complete)"
     r"(?:\s+for\s+(?:a|the)\s+(?:full|complete)\s+(?:analysis|assessment))?"
-    r"(?=\s*(?:[.;]|$))",
+    r"(?=[ \t]*(?:[.;]|$))",
     re.I,
 )
 
-_DISAGREEMENT_RE = re.compile(
-    r"\b(?:disagreements?|disagree(?:s|d)?|contradict(?:s|ion|ions|ory)?"
-    r"|conflicting\s+(?:evidence|findings|figures|data|sources|reports))\b",
+#: A disagreement the LEDGER would record (QA review B2): "unresolved disagreement",
+#: "the red team disputed …", a disagreement id. A sentence about the WORLD disagreeing
+#: — "conflicting data on FY2026 operating profit", "analysts disagree", "guidance
+#: contradicts the consensus" — is a claim about the company, not about the research.
+_LEDGER_DISAGREEMENT_RE = re.compile(
+    r"\b(?:unresolved\s+(?:disagreements?|disputes?|challenges?)"
+    r"|red[- ]team\s+(?:disputed|disputes|challenged|challenges|contested|contests)"
+    r"|disagreement\s+(?:id\s+)?[0-9a-f]{8}\b)",
     re.I,
 )
 _NEGATED_DISAGREEMENT_RE = re.compile(
-    r"\b(?:no|without|nor|0)\s+(?:\w+\s+){0,2}(?:disagreements?|contradictions?"
-    r"|conflict(?:s|ing)?)\b",
+    r"\b(?:no|without|nor|0|zero|none)\s+(?:\w+\s+){0,2}(?:disagreements?|disputes?"
+    r"|challenges?)\b",
     re.I,
 )
 
@@ -241,29 +420,15 @@ _DATE_ISO_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 _DATE_DMY_RE = re.compile(rf"\b(\d{{1,2}})\s+{_MONTH}\s+(\d{{4}})\b", re.I)
 _DATE_MDY_RE = re.compile(rf"\b{_MONTH}\s+(\d{{1,2}}),?\s+(\d{{4}})\b", re.I)
 _ACCESSION_RE = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
-_FORM_RE = re.compile(r"\b(10-K|10-Q|20-F|40-F|6-K(?:/A)?|8-K)\b", re.I)
-_PERIOD_TEXT_RES: tuple[tuple[re.Pattern[str], Callable[[re.Match[str]], str]], ...] = (
-    (re.compile(r"\bFY\s?(\d{4})\b", re.I), lambda m: m.group(1)),
-    (re.compile(r"\bfull[- ]year\s+(\d{4})\b", re.I), lambda m: m.group(1)),
-    (re.compile(r"\b(\d{4})\s+annual\s+report\b", re.I), lambda m: m.group(1)),
-    (re.compile(r"\bannual\s+report\s+(\d{4})\b", re.I), lambda m: m.group(1)),
-    (re.compile(r"\b(\d{4})-([QH][1-4])\b", re.I), lambda m: f"{m.group(1)}-{m.group(2)}"),
-    (re.compile(r"\b([QH][1-4])\s+(\d{4})\b", re.I), lambda m: f"{m.group(2)}-{m.group(1)}"),
-    (re.compile(r"\b(first|second)\s+half\s+(?:of\s+)?(\d{4})\b", re.I),
-     lambda m: f"{m.group(2)}-H{1 if m.group(1).lower() == 'first' else 2}"),
-)
 
 
-def _dates_in(text: str) -> tuple[list[date], list[date]]:
-    """``(publication-like dates, period-end dates)`` named in a text. A date preceded
-    by "ended", "as at" … is a period end and is compared with periods, not with the
-    newest document's publication date."""
-    published: list[date] = []
-    ends: list[date] = []
+def _document_dates(text: str) -> list[date]:
+    """The dates a text ties to a DOCUMENT (see ``_DOC_DATE_BEFORE_RE``)."""
+    out: list[date] = []
 
     def put(m: re.Match[str], value: date) -> None:
-        before = text[max(0, m.start() - 24): m.start()]
-        (ends if _PERIOD_END_BEFORE_RE.search(before) else published).append(value)
+        if _DOC_DATE_BEFORE_RE.search(text[max(0, m.start() - 32): m.start()]):
+            out.append(value)
 
     for m in _DATE_ISO_RE.finditer(text):
         try:
@@ -280,16 +445,6 @@ def _dates_in(text: str) -> tuple[list[date], list[date]]:
             put(m, date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))))
         except (ValueError, KeyError):
             continue
-    return published, ends
-
-
-def _period_ends_in(text: str) -> list[date]:
-    out: list[date] = []
-    for pattern, key in _PERIOD_TEXT_RES:
-        for m in pattern.finditer(text):
-            bounds = period_bounds(key(m).upper())
-            if bounds:
-                out.append(bounds[1])
     return out
 
 
@@ -374,13 +529,7 @@ def _newest(state: Mapping[str, Any]) -> tuple[date | None, str]:
 def _rule_no_issuer_doc(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     held = int(_g(state, "documents", "issuer_documents_held") or 0)
     cited = int(_g(state, "findings", "primary_source") or 0)
-    if not (held and cited):
-        return None
-    if not (
-        _NO_ISSUER_DOC_RE.search(sentence)
-        or _EVIDENCE_HAS_NO_RE.search(sentence)
-        or _ABSENCE_OF_FILINGS_RE.search(sentence)
-    ):
+    if not (held and cited) or not _denies_issuer_documents(sentence):
         return None
     _, newest = _newest(state)
     return _Hit(
@@ -392,64 +541,40 @@ def _rule_no_issuer_doc(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
 
 
 def _rule_stale_latest(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """An older DOCUMENT named as the newest. Only a date the sentence ties to the
+    document it names (after the "newest/latest" anchor), or an accession the inventory
+    dates, is compared — never a covered period (QA review B3)."""
     match = None
     for candidate in _LATEST_DOC_RE.finditer(sentence):
-        if not _ORDINAL_BEFORE_RE.search(sentence[: candidate.start()]):
+        before = sentence[max(0, candidate.start() - 24): candidate.start()]
+        if not _ORDINAL_BEFORE_RE.search(before):
             match = candidate
             break
     if match is None:
         return None
     newest_date, newest_text = _newest(state)
+    if newest_date is None:
+        return None
     margin = timedelta(days=DOCUMENT_MARGIN_DAYS)
-    published, period_end_dates = _dates_in(sentence)
-    if published:
-        # The newest date the sentence names decides: "newest is X (2026-10-27) about
-        # the quarter ended 30 Sep" is not stale because a period end is older.
-        if newest_date and max(published) < newest_date - margin:
-            return _Hit(
-                RULE_STALE_LATEST,
-                f"it names a document dated {max(published).isoformat()} as the newest, "
-                f"while the issuer's {newest_text} is recorded",
-            )
-        return None
-    inventory = _g(state, "documents", "inventory") or []
-    named_dates = [
-        as_date(d.get("date"))
-        for accession in _ACCESSION_RE.findall(sentence)
-        for d in inventory
-        if d.get("ref") == accession
-    ]
-    named_dates_known = [d for d in named_dates if d]
-    if named_dates_known:
-        if newest_date and max(named_dates_known) < newest_date - margin:
-            return _Hit(
-                RULE_STALE_LATEST,
-                f"it names a document dated {max(named_dates_known).isoformat()} as the "
-                f"newest, while the issuer's {newest_text} is recorded",
-            )
-        return None
-    ends = _period_ends_in(sentence) + period_end_dates
-    latest_end = as_date(_g(state, "documents", "latest_reporting_period_end"))
-    if ends and latest_end and latest_end - max(ends) >= timedelta(days=PERIOD_MARGIN_DAYS):
+    named = sentence[match.start():]
+    published = _document_dates(named)
+    if not published:
+        inventory = _g(state, "documents", "inventory") or []
+        published = [
+            d
+            for accession in _ACCESSION_RE.findall(named)
+            for entry in inventory
+            if isinstance(entry, Mapping) and entry.get("ref") == accession
+            and (d := as_date(entry.get("date"))) is not None
+        ]
+    # The newest date the sentence names decides: "newest is X, filed 2026-10-27, about
+    # the quarter ended 30 Sep" is not stale because something else in it is older.
+    if published and max(published) < newest_date - margin:
         return _Hit(
             RULE_STALE_LATEST,
-            "it names an older period as the most recent disclosure, while findings are "
-            f"about {_g(state, 'documents', 'latest_reporting_period')}",
+            f"it names a document dated {max(published).isoformat()} as the newest, "
+            f"while the issuer's {newest_text} is recorded",
         )
-    if ends:
-        return None
-    forms = {f.upper() for f in _FORM_RE.findall(sentence)}
-    if len(forms) == 1 and newest_date and not _ACCESSION_RE.search(sentence):
-        form = next(iter(forms))
-        same = [as_date(d.get("date")) for d in inventory
-                if str(d.get("form") or "").upper() == form]
-        same_dates = [d for d in same if d]
-        if same_dates and max(same_dates) < newest_date - margin:
-            return _Hit(
-                RULE_STALE_LATEST,
-                f"it names the {form} (dated {max(same_dates).isoformat()}) as the newest, "
-                f"while the issuer's {newest_text} is recorded",
-            )
     return None
 
 
@@ -459,7 +584,7 @@ def _rule_latest_period(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
         return None
     for pattern in _LATEST_UNAVAILABLE_RES:
         m = pattern.search(sentence)
-        if not m:
+        if not m or not _unqualified_after(sentence, m.end()):
             continue
         noun = (m.groupdict().get("noun") or "").lower()
         if noun in _FIGURE_NOUNS and status != "facts_validated":
@@ -480,7 +605,8 @@ def _rule_latest_period(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
 def _rule_no_recent(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     if not _g(state, "evidence", "recent_issuer_disclosure_cited"):
         return None
-    if not _NO_RECENT_RE.search(sentence):
+    m = _NO_RECENT_RE.search(sentence)
+    if m is None or not _unqualified_after(sentence, m.end()):
         return None
     _, newest = _newest(state)
     return _Hit(
@@ -491,7 +617,12 @@ def _rule_no_recent(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
 
 
 def _rule_no_cash_flow(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
-    match = next((m for p in _NO_CASH_FLOW_RES if (m := p.search(sentence))), None)
+    match = None
+    for verbs, pattern in zip((frozenset(), _ABSENCE_VERBS), _NO_CASH_FLOW_RES, strict=True):
+        m = pattern.search(sentence)
+        if m is not None and _unqualified_after(sentence, m.end(), verbs):
+            match = m
+            break
     if match is None:
         return None
     by_kind = _g(state, "evidence", "cash_flow_findings_by_kind") or {}
@@ -521,16 +652,19 @@ def _rule_evidence_adequate(sentence: str, state: Mapping[str, Any]) -> _Hit | N
 
 
 def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """A LEDGER disagreement narrated while the ledger records none. Only phrasing that
+    refers to the research's own disagreements counts (QA review B2)."""
     if sentence.startswith("Deterministic synthesis:"):
         return None
     unresolved = _g(state, "disagreements", "unresolved")
     total = _g(state, "disagreements", "total")
     if unresolved != 0 or (total not in (0, None)):
         return None
-    if not _DISAGREEMENT_RE.search(sentence) or _NEGATED_DISAGREEMENT_RE.search(sentence):
+    m = _LEDGER_DISAGREEMENT_RE.search(sentence)
+    if m is None or _NEGATED_DISAGREEMENT_RE.search(sentence):
         return None
     return _Hit(RULE_UNBACKED_DISAGREEMENT,
-                "it narrates a disagreement, while the ledger records none")
+                "it narrates a research disagreement, while the ledger records none")
 
 
 def _rule_det_counts(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
@@ -602,7 +736,10 @@ _CHAIR_RULES = (
 def check_sentence(
     sentence: str, state: Mapping[str, Any], *, site: str = SITE_RECORD
 ) -> _Hit | None:
-    """The first invariant one sentence breaks, or ``None``. Pure."""
+    """The first invariant one sentence breaks, or ``None``. Pure. A sentence longer
+    than ``MAX_SENTENCE_CHARS`` is not checked."""
+    if len(sentence) > MAX_SENTENCE_CHARS:
+        return None
     for rule in _CHAIR_RULES if site == SITE_CHAIR else _RECORD_RULES:
         hit = rule(sentence, state)
         if hit is not None:
@@ -633,22 +770,32 @@ class _Enforcer:
         self.state = state
         self.violations: list[Violation] = []
 
-    def text(self, value: Any, path: str, site: str) -> Any:
-        """Check one text; return it repaired, with offending sentences withheld."""
-        if not isinstance(value, str) or not value.strip():
-            return value
-        sentences = [s for s in _SENTENCE_RE.split(value) if s.strip()]
-        kept: list[str] = []
-        reasons: list[str] = []
+    def _line(self, line: str, path: str, site: str, reasons: list[str]) -> tuple[str | None, bool]:
+        """One line: ``(the line as it stays, changed)``; the line is ``None`` when every
+        sentence in it was withheld. Separators between kept sentences, the bullet marker
+        and trailing whitespace are kept as written (QA review M1)."""
+        bullet = _BULLET_RE.match(line)
+        prefix = bullet.group(0) if bullet else line[: len(line) - len(line.lstrip())]
+        body = line[len(prefix):]
+        core = body.rstrip()
+        if not core:
+            return line, False
+        pieces: list[tuple[str, str]] = []
+        start = 0
+        for m in _SENTENCE_RE.finditer(core):
+            pieces.append((core[start: m.start()], m.group(0)))
+            start = m.end()
+        pieces.append((core[start:], ""))
+        kept: list[tuple[str, str]] = []
         changed = False
-        for sentence in sentences:
+        for sentence, separator in pieces:
             hit = check_sentence(sentence, self.state, site=site)
             if hit is None:
-                kept.append(sentence)
+                kept.append((sentence, separator))
                 continue
             changed = True
             if hit.replacement is not None:
-                kept.append(hit.replacement)
+                kept.append((hit.replacement, separator))
                 self.violations.append(Violation(hit.rule, path, sentence, "repaired",
                                                  hit.reason, hit.replacement))
             else:
@@ -656,10 +803,32 @@ class _Enforcer:
                 self.violations.append(Violation(hit.rule, path, sentence, "withheld",
                                                  hit.reason))
         if not changed:
-            return value
+            return line, False
         if not kept:
+            return None, True
+        text = "".join(s + sep for s, sep in kept[:-1]) + kept[-1][0]
+        return prefix + text + body[len(core):], True
+
+    def text(self, value: Any, path: str, site: str) -> Any:
+        """Check one text; return it repaired, with offending sentences withheld. Only
+        the withheld span is removed: a bullet whose every sentence is withheld is
+        dropped, its neighbours are not. A text left with nothing is replaced by a notice
+        naming the reason."""
+        if not isinstance(value, str) or not value.strip():
+            return value
+        lines: list[str] = []
+        reasons: list[str] = []
+        changed = False
+        for line in value.split("\n"):
+            kept_line, line_changed = self._line(line, path, site, reasons)
+            changed = changed or line_changed
+            if kept_line is not None:
+                lines.append(kept_line)
+        if not changed:
+            return value
+        if not any(line.strip() for line in lines):
             return withheld_notice(reasons[0] if reasons else "it contradicted the record")
-        return " ".join(kept)
+        return "\n".join(lines)
 
 
 def _walk_report(enforcer: _Enforcer, report: Any) -> None:
