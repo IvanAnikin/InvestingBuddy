@@ -481,6 +481,8 @@ class TestDiagnosticsCarryNoSensitiveContent:
             "statements_about_related_registrant",
             # QA 2026-11-02 (ADR-074) — another company's statement on its own site.
             "statements_about_foreign_subject",
+            # QA 2026-11-02 (ADR-079) — another registrant's EDGAR filing. A count.
+            "statements_about_other_registrant",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 
