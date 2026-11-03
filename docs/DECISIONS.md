@@ -7240,6 +7240,25 @@ was another entity:
      Two passages naming different scopes are a `conflicting_sources` gap, as in
      `_inherited`;
    - **any passage is unresolved** → kept exactly as before.
+   - **A relationship with the subject is the subject's fact** (review). A sentence
+     resolving to a customer, supplier, counterparty or other issuer is admitted as the
+     subject's (`framed`; the relationship stays recorded) when the subject anchors it
+     (the subject owns the document, the topic before the sentence is the subject, or
+     the sentence holds a masked subject reference: "our largest customer", "a customer
+     of the Company", "the Company's lender") AND either
+     - its predicate is the relationship: concentration ("accounted for 40% of
+       revenue", "N% of consolidated net sales/purchases"), a copular role ("is our sole
+       supplier"), contract terms (offtake; loan / credit facility; supply, purchase,
+       royalty or licence agreement; interest rate; repayable; drawn; secured by), a
+       commitment ("agreed to purchase / lend"), an interest "held by", a funding share
+       ("funds 50% of the cash calls"); or
+     - it carries the role frame and does not report the entity's OWN facts ("reported",
+       "generated", "produced", "its revenue / costs / output / risks").
+
+     "Our largest customer, Vexmoor Inc., reported revenue of $4.2 billion" is still
+     Vexmoor's and dropped; so is "Vexmoor Inc. reported revenue…" with no frame. A
+     former subsidiary, a peer, a regulator and a separately reporting namesake are
+     never admitted this way.
 3. **The model is not asked.** The statement's naming of the subject never overrides a
    passage whose sentence resolves to another entity ("Corvalis may be unable to
    maintain its Nasdaq listing" over the former subsidiary's text is dropped). The
@@ -7256,7 +7275,11 @@ was another entity:
 | Peer table rows, even on the subject's own slide | other: Brindle Mining Corp, PEER |
 | Article titled with the subject, paragraph switches to a rival | other: Kestrel32 Ltd, PEER |
 | Subject's filing on its largest customer's revenue | other: Vexmoor Inc, CUSTOMER |
-| Subject's filing on its supplier's price rise | other: Tessaro GmbH, SUPPLIER |
+| Subject's filing on its supplier's own output fall ("reported a 12% fall in its production output") | other: Tessaro GmbH, SUPPLIER |
+| Subject's filing: "Vexmoor Inc. reported revenue of $4.2 billion" (no frame) | other: Vexmoor Inc, OTHER_ISSUER |
+| Customer concentration ("Vexmoor Inc., our largest customer, accounted for 40% of revenue"; "a customer of the Company, represented 31% of consolidated net sales") | subject (framed, CUSTOMER) |
+| Supplier dependency ("is our sole supplier … under a supply agreement"); supplier price rise with the "our principal supplier" frame | subject (framed, SUPPLIER) |
+| Offtake terms in the subject's AR; lender facility terms (rate, repayable); JV partner's funding share | subject (framed, COUNTERPARTY) |
 | JV entity's production | scoped: `segment:compañía minera zaldívar spa` |
 | Former subsidiary's risk factors in the subject's own 20-F (named, and pronoun-only) | other: Plantyx, Inc, FORMER_SUBSIDIARY |
 | "<Name> SE" ICAAP and capital ratio (defined term "the Bank", alias "JPMSE") | scoped: `segment:j.p. morgan se` |
@@ -7272,7 +7295,8 @@ Vexmoor Inc.", "a loan facility to the Company", "ahead of peers such as Kestrel
 "are our main competitors. Revenue rose…", "we acquired Brightline Ltd… Revenue rose…",
 "Revenue from Vexmoor Inc., our largest customer, was 40%", the subject's offtake
 announcement, a capitals topic heading, a spelled-out measure acronym, a defined
-"the Company"): 0 dropped, 0 scoped. The ADR-066/074/079 suites pass unchanged.
+"the Company"): 0 dropped, 0 scoped. Plus 7 relationship-framed passages (above): 0
+dropped. The ADR-066/074/079 suites pass unchanged.
 
 ### Not changed / known limits
 - **An unplaced SEC namesake.** A namesake the SEC record cannot place (`_reports_separately` False, including "unreadable") is not passed as a
@@ -7283,9 +7307,10 @@ announcement, a capitals topic heading, a spelled-out measure acronym, a defined
   said…", "at Centinela") is not an entity unless the platform holds it or the passage
   names it with a suffix elsewhere; such sentences stay UNKNOWN and are kept. A
   passage with no name at all (an offtaker's page that never names itself) is kept.
-- **A counterparty fact with no subject reference** ("Vexmoor Inc., our largest
-  customer, accounted for 40% of revenue") is dropped as the customer's: the role
-  phrase is masked and nothing else in the sentence refers to the subject.
+- **Relationship frames are lexical.** A relationship stated with a predicate the
+  table does not hold, and with no role frame ("Vexmoor Inc. took 40% of output" in
+  the subject's filing), is still read as the other entity's; a framed sentence with
+  an own-fact verb the table misses is still admitted.
 - **A former subsidiary described as a current one** (the FY2022 20-F said "our
   majority-owned subsidiary") is SUBSIDIARY: kept at the subsidiary's scope, not
   dropped. Whether it has since left the perimeter needs the entity master's

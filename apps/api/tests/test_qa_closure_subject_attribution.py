@@ -136,15 +136,27 @@ REGRESSION_CASES: list[tuple[str, str, SubjectIdentity, Passage, str, str | None
         ps.VERDICT_OTHER, "Vexmoor Inc", ps.CUSTOMER,
     ),
     (
-        "filing-discusses-supplier",
-        "Prices rose 8% in 2024.",
+        "filing-discusses-supplier-own-output",
+        "Production output fell 12% in 2024.",
         HARROWFIELD,
         Passage(
             "ev:1",
-            "Our principal supplier, Tessaro GmbH, raised its prices by 8% in 2024.",
+            "Our principal supplier, Tessaro GmbH, reported a 12% fall in its production "
+            "output in 2024.",
             owner=OWNER_SUBJECT,
         ),
         ps.VERDICT_OTHER, "Tessaro GmbH", ps.SUPPLIER,
+    ),
+    (
+        "customer-own-revenue-no-frame",
+        "Revenue was $4.2 billion in 2024.",
+        HARROWFIELD,
+        Passage(
+            "ev:1",
+            "Vexmoor Inc. reported revenue of $4.2 billion in 2024.",
+            owner=OWNER_SUBJECT,
+        ),
+        ps.VERDICT_OTHER, "Vexmoor Inc", ps.OTHER_ISSUER,
     ),
     (
         "joint-venture-entity",
@@ -371,6 +383,67 @@ KEEP_CASES: list[tuple[str, str, SubjectIdentity, Passage]] = [
      Passage("k", "Lindian Resources Limited (“Lindian” or “the Company”) reported revenue of "
              "$12.4 million in FY2026.")),
 ]
+
+#: The subject's relationship with a named party, stated in the subject's own document
+#: (coordinator review): (id, statement, subject, passage, recorded relationship).
+FRAMED_CASES: list[tuple[str, str, SubjectIdentity, Passage, str]] = [
+    ("customer-concentration", "The largest customer accounted for 40% of revenue in 2024.",
+     HARROWFIELD,
+     Passage("f", "Vexmoor Inc., our largest customer, accounted for 40% of revenue in 2024.",
+             owner=OWNER_SUBJECT), ps.CUSTOMER),
+    ("customer-share-of-company-sales", "Vexmoor represented 31% of net sales.", HARROWFIELD,
+     Passage("f", "Vexmoor Inc., a customer of the Company, represented 31% of consolidated "
+             "net sales in 2024."), ps.CUSTOMER),
+    ("supplier-dependency", "Tessaro is the sole supplier of cathode foil until 2028.",
+     HARROWFIELD,
+     Passage("f", "Tessaro GmbH is our sole supplier of cathode foil under a supply agreement "
+             "running to 2028.", owner=OWNER_SUBJECT), ps.SUPPLIER),
+    ("supplier-price-rise-framed", "The principal supplier raised prices by 8% in 2024.",
+     HARROWFIELD,
+     Passage("f", "Our principal supplier, Tessaro GmbH, raised its prices by 8% in 2024.",
+             owner=OWNER_SUBJECT), ps.SUPPLIER),
+    ("offtake-terms-in-subject-AR", "Iluka will buy 6,000 tpa of concentrate for 15 years.",
+     LINDIAN,
+     Passage("f", "Iluka Resources Limited will purchase 6,000 tonnes per annum of "
+             "concentrate for 15 years under the offtake agreement, priced by reference to "
+             "the NdPr price it realises.", owner=OWNER_SUBJECT), ps.COUNTERPARTY),
+    ("lender-facility-terms", "The A$140 million facility carries 8% interest, repayable 2031.",
+     LINDIAN,
+     Passage("f", "Iluka Resources Limited, the Company's lender, provides a A$140 million "
+             "secured loan facility at an interest rate of 8%, repayable in 2031.",
+             owner=OWNER_SUBJECT), ps.COUNTERPARTY),
+    ("jv-partner-funding", "The joint venture partner funds 50% of cash calls.", CALDERON,
+     Passage("f", "Barrick Gold Corp, our joint venture partner at Zaldívar, funds 50% of "
+             "the cash calls.", owner=OWNER_SUBJECT), ps.COUNTERPARTY),
+]
+
+
+@pytest.mark.parametrize(
+    "statement,subject,passage,relationship",
+    [case[1:] for case in FRAMED_CASES],
+    ids=[case[0] for case in FRAMED_CASES],
+)
+def test_a_relationship_with_the_subject_is_the_subjects_fact(
+    statement: str, subject: SubjectIdentity, passage: Passage, relationship: str
+) -> None:
+    result = _one(statement, subject, passage)
+    assert result.verdict == ps.VERDICT_SUBJECT, result.passages
+    (attribution,) = result.passages
+    # Admitted as the subject's, with the relationship still recorded.
+    assert attribution.framed
+    assert attribution.relationship == relationship
+
+
+def test_a_frame_without_the_subjects_context_does_not_admit() -> None:
+    # The same concentration sentence on the offtaker's own site, about ITS customer:
+    # nothing anchors it to the subject.
+    result = _one(
+        "The largest customer accounted for 40% of revenue in 2024.",
+        HARROWFIELD,
+        Passage("f", "Kestrel32 Ltd said Vexmoor Inc. accounted for 40% of its revenue in 2024.",
+                company_site_host="kestrel32.com"),
+    )
+    assert result.verdict != ps.VERDICT_SUBJECT
 
 
 @pytest.mark.parametrize(
@@ -776,6 +849,27 @@ class TestInvestigator:
         assert findings == []
         assert inv.diagnostics.statements_about_implicit_other_entity == 1
         assert any("Iluka Resources Limited" in g.description for g in gaps)
+
+    async def test_customer_concentration_kept_customer_revenue_dropped(self) -> None:
+        evidence = [
+            _corpus("ev:c:conc", "Vexmoor Inc., our largest customer, accounted for 40% of "
+                    "revenue in 2024."),
+            _corpus("ev:c:own", "Our largest customer, Vexmoor Inc., reported revenue of "
+                    "$4.2 billion in 2024."),
+        ]
+        inv, findings, _gaps = await _run(
+            [
+                ("The largest customer accounted for 40% of revenue in 2024.", ["ev:c:conc"]),
+                ("Revenue was $4.2 billion in 2024.", ["ev:c:own"]),
+            ],
+            evidence, name="Harrowfield Systems Inc.", ticker="HRWF",
+            domain="business_model",
+        )
+        assert [f.statement for f in findings] == [
+            "The largest customer accounted for 40% of revenue in 2024."
+        ]
+        assert findings[0].scope_key == "group"
+        assert inv.diagnostics.statements_about_implicit_other_entity == 1
 
     async def test_a_peer_domain_question_keeps_them(self) -> None:
         evidence = [

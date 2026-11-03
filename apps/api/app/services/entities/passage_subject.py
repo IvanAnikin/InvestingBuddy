@@ -169,9 +169,16 @@ class PassageAttribution:
     relationship: str
     #: A narrower reporting scope (a subsidiary, a JV, a mine/segment heading).
     scope_name: str | None = None
+    #: The sentence is about another entity, but framed by its relationship TO the
+    #: subject in the subject's own context ("Vexmoor, our largest customer, accounted
+    #: for 40% of revenue"; offtake or facility terms): the subject's fact. The
+    #: relationship stays recorded (CUSTOMER, COUNTERPARTY…); the verdict is subject.
+    framed: bool = False
 
     @property
     def verdict(self) -> str:
+        if self.framed:
+            return VERDICT_SUBJECT
         if self.relationship == SUBJECT:
             return VERDICT_SCOPED if self.scope_name else VERDICT_SUBJECT
         if self.relationship in SCOPED_RELATIONSHIPS:
@@ -529,6 +536,56 @@ _STOPWORDS: frozenset[str] = frozenset(
         "years", "million", "billion", "thousand", "percent",
     }
 )
+#: A sentence whose predicate IS the relationship with the subject: concentration
+#: ("accounted for 40% of revenue"), a copular role ("is our sole supplier"), contract
+#: terms (offtake, facility, supply or purchase agreement, royalty, interest rate,
+#: repayable, drawn), a commitment ("agreed to purchase / lend"), an interest held by
+#: someone, a funding share. Read only where the subject anchors the sentence.
+_ROLE_WORDS = (
+    r"(?:customers?|clients?|suppliers?|off-?takers?|lenders?|financiers?|partners?|"
+    r"joint[- ]venture\s+partners?|JV\s+partners?|distributors?|licensees?|licensors?|"
+    r"contractors?|buyers?|purchasers?)"
+)
+_RELATIONAL_PREDICATE_RE = re.compile(
+    r"\b(?:accounted|accounts|accounting|represented|represents|representing|comprised|"
+    r"comprises|made[ \t]+up|contributed|contributes)[ \t]+(?:for[ \t]+)?"
+    r"(?:(?:approximately|about|around|over|nearly|some|almost|roughly)[ \t]+)?"
+    r"\d{1,3}(?:\.\d{1,2})?[ \t]*%"
+    r"|\b\d{1,3}(?:\.\d{1,2})?[ \t]*%[ \t]+of[ \t]+(?:(?:our|its|the|total|consolidated|"
+    r"group|net|annual|company['’]s|group['’]s)[ \t]+){0,3}(?:revenues?|sales|purchases|"
+    r"turnover|receivables|cost[ \t]+of[ \t]+(?:sales|goods))\b"
+    r"|\b(?:is|was|are|were|remains?|remained|became|has[ \t]+been|will[ \t]+be|acts?"
+    r"[ \t]+as|serves?[ \t]+as)[ \t]+(?:(?:the|our|a|an|one[ \t]+of[ \t]+(?:our|the)|"
+    r"the[ \t]+company['’]s|the[ \t]+group['’]s)[ \t]+)?(?:[\w-]{1,20}[ \t]+){0,2}?"
+    + _ROLE_WORDS
+    + r"\b"
+    r"|\boff-?take\b|\b(?:loan|credit|debt|financing|bridge|revolving)[ \t]+facilit(?:y|ies)\b"
+    r"|\b(?:supply|purchase|sales|offtake|streaming|royalty|licen[cs]e|collaboration|"
+    r"shareholders['’]?)[ \t]+(?:agreement|contract)s?\b|\broyalty\b"
+    r"|\b(?:agreed|agrees|committed|commits)[ \t]+to[ \t]+(?:purchase|buy|acquire|take|"
+    r"lend|provide|advance|fund|supply)\b"
+    r"|\binterest[ \t]+rate\b|\brepayable\b|\b(?:un)?drawn\b|\bsecured[ \t]+(?:by|against|over)\b"
+    r"|\b\d{1,3}(?:\.\d{1,2})?[ \t]*%[ \t]+(?:equity[ \t]+)?(?:interest|stake|shareholding|"
+    r"ownership)\b[^.;]{0,40}\b(?:held|owned)[ \t]+by\b"
+    r"|\b(?:funds?|funded|funding|contribut\w*)\b[^.;]{0,40}?\d{1,3}(?:\.\d{1,2})?[ \t]*%",
+    re.IGNORECASE,
+)
+#: The other entity's OWN facts: its results, costs, output, risks. A role label in
+#: front of them ("Our largest customer, Vexmoor, reported revenue of $4.2bn") does not
+#: make them the subject's.
+_OWN_FACT_RE = re.compile(
+    r"\b(?:reported|reports|posted|generated|recorded|produced|earned|booked|delivered)\b"
+    r"|\bits[ \t]+(?:own[ \t]+)?(?:revenues?|sales|costs?|production|output|profits?|"
+    r"earnings|net[ \t]+income|ebitda|debt|risks?|guidance|outlook|results|margins?)\b",
+    re.IGNORECASE,
+)
+#: Relationships a frame back to the subject can admit. Not a former subsidiary (it left
+#: the perimeter), a peer or a regulator (not a party to the subject's business), nor a
+#: separately reporting namesake.
+_FRAMEABLE: frozenset[str] = frozenset(
+    {CUSTOMER, SUPPLIER, COUNTERPARTY, OTHER_ISSUER}
+)
+
 #: The least a sentence must share with the statement to be "the" sentence.
 _MIN_MATCH_SCORE = 2
 
@@ -1168,6 +1225,8 @@ def attribute_passage(
     last_subject: _Entity | None = None
     resolved_entity: _Entity | None = None
     previous_start = -1
+    topic_before: _Entity | None = topic
+    anchored = False
     for index, (start, end) in enumerate(spans[: best + 1]):
         for pos, _scope, heading_entity in headings:
             if previous_start < pos <= start and heading_entity is not None:
@@ -1187,6 +1246,12 @@ def attribute_passage(
                 topic = grammatical
         if index == best:
             resolved_entity = seg_entity if seg_entity is not None else topic
+            anchored = (
+                reader.owner == OWNER_SUBJECT
+                or topic_before is reader.subj
+                or _subject_frame(reader, start, end)
+            )
+        topic_before = topic
 
     inline = [scope for pos, scope, _entity in headings if pos <= spans[best][0]]
     scope = inline[-1] if inline else section_scope
@@ -1204,12 +1269,45 @@ def attribute_passage(
     relationship = resolved_entity.relationship
     if relationship == UNKNOWN:
         relationship = OTHER_ISSUER
+    seg_start, seg_end = spans[best]
+    framed = (
+        anchored
+        and relationship in _FRAMEABLE
+        and not resolved_entity.separate
+        and _framed_to_subject(reader, seg_start, seg_end)
+    )
     return PassageAttribution(
         passage.citation_id, reader.owner,
         reader.owner_entity.name if reader.owner_entity else None,
         names, best, resolved_entity.name, relationship,
         resolved_entity.name if relationship in SCOPED_RELATIONSHIPS else None,
+        framed=framed,
     )
+
+
+def _subject_frame(reader: _Reader, start: int, end: int) -> bool:
+    """A masked reference to the subject in the sentence: the anchor of a role phrase
+    ("our largest customer", "a lender to the Company", "Lindian's offtaker")."""
+    for mention in reader.mentions:
+        if not (start <= mention.start < end and mention.masked):
+            continue
+        if mention.entity is reader.subj:
+            return True
+        if mention.implicit == _DEFINED and mention.term in {"company", "group", "issuer"}:
+            return reader.owner != OWNER_OTHER
+        if mention.implicit == _FIRST and reader.owner == OWNER_SUBJECT:
+            return True
+    return False
+
+
+def _framed_to_subject(reader: _Reader, start: int, end: int) -> bool:
+    """The sentence states the relationship with the subject, not the other entity's own
+    facts. A relational predicate admits it; failing that, a role frame back to the
+    subject admits it unless the sentence reports the entity's own results."""
+    sentence = reader.text[start:end]
+    if _RELATIONAL_PREDICATE_RE.search(sentence):
+        return True
+    return _subject_frame(reader, start, end) and not _OWN_FACT_RE.search(sentence)
 
 
 def _resolve_segment(
