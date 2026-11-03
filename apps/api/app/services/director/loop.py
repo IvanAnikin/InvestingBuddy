@@ -916,19 +916,24 @@ async def _record_unresolved(
             reason = ledger.UNRESOLVED_BUDGET_EXHAUSTED
         elif row.question_key not in evidence_so_far and row.contract_status is None:
             reason = ledger.UNRESOLVED_NOT_REACHED
-        elif reread_found_held_documents(row.acquisition_log_json):
-            # ADR-084 — beyond the recency questions: the question's own re-read covered
-            # the subject's HELD primary documents (the run's document inventory, not the
-            # question's evidence window) and nothing it could use came back. The
-            # documents were held and not read into an answer; "not acquired" would send
-            # a reader to fetch what the platform already stores.
-            reason = ledger.UNRESOLVED_ACQUIRED_NOT_READ
-        elif row.question_key in RECENCY_QUESTION_KEYS and await _holds_a_document():
+        elif row.question_key in RECENCY_QUESTION_KEYS:
             # ADR-076 — the question retrieved nothing it could use, while the corpus
             # holds a CURRENT dated document of the subject (dated within
             # CURRENT_HOLDING_MAX_AGE_DAYS). That disclosure was HELD and not read into
             # the answer; "not acquired" would send a reader to fetch what the platform
-            # already stores. A stale newest holding stays "not acquired" (review 1).
+            # already stores. A stale newest holding stays "not acquired" (review 1) —
+            # whatever the ADR-084 re-read searched (ADR-084 review M1).
+            reason = (
+                ledger.UNRESOLVED_ACQUIRED_NOT_READ
+                if await _holds_a_document()
+                else ledger.UNRESOLVED_NOT_ACQUIRED
+            )
+        elif reread_found_held_documents(row.acquisition_log_json):
+            # ADR-084 — beyond the recency questions: the question's own re-read SEARCHED
+            # the subject's held primary documents (the run's document inventory, not the
+            # question's evidence window) and nothing it could use came back. The
+            # documents were held and not read into an answer; "not acquired" would send
+            # a reader to fetch what the platform already stores.
             reason = ledger.UNRESOLVED_ACQUIRED_NOT_READ
         else:
             reason = ledger.UNRESOLVED_NOT_ACQUIRED
@@ -938,16 +943,30 @@ async def _record_unresolved(
     await session.flush()
 
 
+def reread_searched(step: Any) -> bool:
+    """ADR-084 review M1 — whether one ``primary_document_reread`` step actually SEARCHED
+    held documents: at least one is held and at least one query ran without an error or
+    a refusal. A re-read that stopped first (nothing indexed, no query, the role cannot
+    read the corpus) or whose every query failed read nothing — so it cannot say the
+    documents were "held but not read"."""
+    if not isinstance(step, dict):
+        return False
+    try:
+        held = int(step.get("held_primary_documents") or 0)
+        ran = int(step.get("queries_run") or 0)
+    except (TypeError, ValueError):
+        return False
+    return held > 0 and ran > 0
+
+
 def reread_found_held_documents(log: Any) -> bool:
-    """ADR-084 — did the question's primary-document re-read cover a HELD document?"""
-    for step in log or ():
-        if (
-            isinstance(step, dict)
-            and step.get("rung") == "primary_document_reread"
-            and int(step.get("held_primary_documents") or 0) > 0
-        ):
-            return True
-    return False
+    """ADR-084 — did the question's primary-document re-read SEARCH a held document?"""
+    return any(
+        isinstance(step, dict)
+        and step.get("rung") == "primary_document_reread"
+        and reread_searched(step)
+        for step in log or ()
+    )
 
 
 #: ADR-076 review 1 — a newest held document older than this is not "the latest

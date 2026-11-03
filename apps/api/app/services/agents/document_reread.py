@@ -43,7 +43,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
+
+from app.services.corpus.query_terms import keyword_query
 
 # ── The extraction-status vocabulary (closed) ──────────────────────────────── #
 
@@ -109,7 +112,7 @@ TOPICS: tuple[ReadTopic, ...] = (
     # ── Funding, liquidity and cash flow ──────────────────────────────────────
     ReadTopic(
         "total_debt", "total debt and borrowings",
-        (r"\btotal\s+debt\b", r"\bborrowings\b", r"\blong-?term\s+debt\b",
+        (r"\btotal\s+debt\b", r"\bborrowings\b", r"\blong[\s-]?term\s+debt\b",
          r"\b(?:senior|convertible)\s+notes\b", r"\bnotes\s+payable\b",
          r"\b(?:revolving\s+)?credit\s+facilit(?:y|ies)\b", r"\bdebt\s+maturities\b"),
         "total debt borrowings long-term notes payable credit facility maturities",
@@ -125,7 +128,7 @@ TOPICS: tuple[ReadTopic, ...] = (
     ),
     ReadTopic(
         "operating_cash_flow", "operating cash flow",
-        (r"\bnet\s+cash\s+(?:provided\s+by|from|used\s+in|generated\s+(?:by|from))\s+"
+        (r"\bnet\s+cash\s+(?:provided\s+by(?:\s+\(?used\s+in\)?)?|from|used\s+in|generated\s+(?:by|from))\s+"
          r"operating\s+activities\b", r"\boperating\s+cash\s*flows?\b",
          r"\bcash\s+flows?\s+from\s+operati(?:ng|ons)\b", r"\bcash\s+burn\b",
          r"\bcash\s+conversion\b", r"\bocf\b"),
@@ -138,7 +141,7 @@ TOPICS: tuple[ReadTopic, ...] = (
         "capex", "capital expenditure",
         (r"\bcapital\s+expenditures?\b", r"\bcapex\b",
          r"\bpurchases?\s+of\s+property(?:,)?\s+(?:plant\s+)?(?:and\s+)?equipment\b",
-         r"\bpayments?\s+for\s+property(?:,)?\s+plant\b",
+         r"\bpayments?\s+(?:for|to\s+acquire)\s+property(?:,)?\s+plant\b",
          r"\bcapital\s+(?:spend(?:ing)?|outlays?)\b"),
         "capital expenditures purchases property equipment investing activities",
         (r"\bcash\s+flows?\b", r"\binvesting\b", r"\bcapital\s+expenditure"),
@@ -313,7 +316,7 @@ TOPICS: tuple[ReadTopic, ...] = (
     # ── Bank KPIs ──────────────────────────────────────────────────────────────
     ReadTopic(
         "net_interest_income", "net interest income",
-        (r"\bnet\s+interest\s+income\b", r"\bnii\b"),
+        (r"\bnet\s+interest\s+income\b", r"\bnii\b", r"\binterest\s+income\s+expense\s+net\b"),
         "net interest income",
         (r"\bnet\s+interest\b", r"\bresults\s+of\s+operations\b"),
         ("net_interest_income",),
@@ -418,9 +421,36 @@ _COMPILED_SECTIONS: dict[str, tuple[re.Pattern[str], ...]] = {
     t.key: tuple(re.compile(p) for p in t.sections) for t in TOPICS
 }
 
+#: Metric keys too generic to name the metric in PROSE: "cash" is every cash-flow line,
+#: "deposits" a mining issuer's mineral deposits. A typed record naming them exactly
+#: still carries them (``record_metrics``).
+_PROSE_UNSAFE_ALIASES: frozenset[str] = frozenset({"cash", "deposits"})
+
+
+def _alias_pattern(alias: str) -> str:
+    return r"\b" + r"[\s-]+".join(re.escape(w) for w in alias.split("_") if w) + r"\b"
+
+
+#: What CARRIES a metric: its mentions, plus every metric key that asks for it written
+#: as words ("net_margin" → "net margin", "rnd_expense" → "rnd expense"). A requirement
+#: derived from a key the evidence could never be recognised as carrying would hold the
+#: question open for ever (review L1). Narrative topics are never required metrics.
+_CARRIED: dict[str, tuple[re.Pattern[str], ...]] = {
+    t.key: _COMPILED[t.key] + tuple(
+        re.compile(_alias_pattern(a)) for a in t.metric_aliases
+        if t.needs_figure and a not in _PROSE_UNSAFE_ALIASES
+    )
+    for t in TOPICS
+}
+
+#: An XBRL concept name ("ResearchAndDevelopmentExpense", "LongTermDebt"): read as words.
+_CAMEL_RE = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+\b")
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
 
 def _normal(text: str | None) -> str:
-    return str(text or "").lower().replace("_", " ")
+    raw = _CAMEL_RE.sub(lambda m: _CAMEL_SPLIT_RE.sub(" ", m.group(0)), str(text or ""))
+    return raw.lower().replace("_", " ")
 
 
 def label_of(topic_key: str) -> str:
@@ -542,7 +572,7 @@ def metrics_carried(text: str | None, topics: Iterable[str] | None = None) -> fr
     out: set[str] = set()
     for key in keys:
         topic = TOPICS_BY_KEY[key]
-        for pattern in _COMPILED[key]:
+        for pattern in _CARRIED[key]:
             for match in pattern.finditer(low):
                 if not topic.needs_figure:
                     out.add(key)
@@ -557,6 +587,50 @@ def metrics_carried(text: str | None, topics: Iterable[str] | None = None) -> fr
                     break
             if key in out:
                 break
+    return frozenset(out)
+
+
+#: Where a TYPED record (a fact, a statement line, a calculation) names its metric...
+_RECORD_NAME_KEYS: tuple[str, ...] = (
+    "label", "line", "definition_key", "metric", "metric_key", "concept", "tag", "name",
+)
+#: ...and where it holds the figure.
+_RECORD_VALUE_KEYS: tuple[str, ...] = (
+    "value", "value_numeric", "numeric_value", "amount", "result", "value_text",
+)
+
+
+def record_has_figure(record: Mapping[str, Any]) -> bool:
+    """Whether a typed record holds a figure (a number, or a numeric as-printed string)."""
+    for key in _RECORD_VALUE_KEYS:
+        value = record.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        if isinstance(value, (int, float, Decimal)):
+            return True
+        if isinstance(value, str) and _has_figure(_normal(value)):
+            return True
+    return False
+
+
+def record_metrics(record: Mapping[str, Any]) -> frozenset[str]:
+    """Topic keys a TYPED record carries: its metric is named — by a playbook metric key
+    ("cash_and_equivalents", "net_margin"), an XBRL concept ("LongTermDebt") or a label —
+    and the record holds a figure. Read from the record's own fields, never from a
+    serialised (escaped, truncated) copy of it."""
+    if not record_has_figure(record):
+        return frozenset()
+    out: set[str] = set()
+    for key in _RECORD_NAME_KEYS:
+        value = record.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        out.update(topics_for_metrics([value]))
+        low = _normal(value)
+        out.update(
+            t.key for t in TOPICS
+            if t.needs_figure and any(p.search(low) for p in _CARRIED[t.key])
+        )
     return frozenset(out)
 
 
@@ -660,9 +734,14 @@ def reread_plan(
     for topic in question_topics(question):
         if topic not in order:
             order.append(topic)
-    plan = [RereadQuery(t, TOPICS_BY_KEY[t].query) for t in order[: max(0, limit)]]
+    # Distinctive terms only (review M3): the backends OR-join every token, so a
+    # stopword in a query matches nearly every chunk of every document.
+    plan = [
+        RereadQuery(t, keyword_query(TOPICS_BY_KEY[t].query) or TOPICS_BY_KEY[t].query)
+        for t in order[: max(0, limit)]
+    ]
     if not plan and fallback_query and limit > 0:
-        plan = [RereadQuery(None, fallback_query)]
+        plan = [RereadQuery(None, keyword_query(fallback_query) or fallback_query)]
     return plan
 
 
@@ -757,6 +836,8 @@ __all__ = [
     "metrics_carried",
     "question_topics",
     "rank_hits",
+    "record_has_figure",
+    "record_metrics",
     "required_metrics",
     "reread_plan",
     "section_matches",

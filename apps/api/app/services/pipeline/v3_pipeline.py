@@ -952,6 +952,8 @@ async def _run(
                 primary_documents=(
                     tuple(primary_inventory) if primary_inventory is not None else None
                 ),
+                # ADR-084 review M2: a re-read near the run's cap runs one query.
+                max_tool_calls=limits.max_tool_calls,
             )
             result = await worker.investigate(
                 role_id=role_id,

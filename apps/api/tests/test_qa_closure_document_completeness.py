@@ -403,6 +403,183 @@ class TestTheReread:
         assert director_loop.corpus_intents_in([step]) == 0
 
 
+# ── 2b. Review H1: the whole chunk, read from the raw record ────────────────── #
+
+
+def _full_hit(text: str) -> dict[str, Any]:
+    """A hit in ``corpus_search._hit_payload``'s exact shape — every key, in its order."""
+    return {
+        "evidence_id": "ev:t1", "text": text, "score": 0.42, "lexical_score": 0.42,
+        "semantic_score": None,
+        "matched_terms": ["capital", "cet1", "common", "equity", "ratio", "tier"],
+        "citation_label": "JPMorgan Chase & Co. 10-Q (2026-10-30), p. 45, table 4",
+        "canonical_url": TEN_Q,
+        "title": "JPMorgan Chase & Co. Form 10-Q for the quarterly period ended September 30, 2026",
+        "document_type": "10-Q", "source_tier": "T1_primary_filing", "access_class": "public",
+        "period_key": "Q3-2026", "period_type": "quarter", "scope_type": "group",
+        "scope_name": None, "scope_key": "group", "via_subject": False,
+        "page_start": 45, "page_end": 45,
+        "section_path": "Management's discussion and analysis > Capital Risk Management > "
+                        "Regulatory capital",
+        "table_location": "table 4", "published_at": "2026-10-30",
+        "company_id": str(SUBJECT), "source_class": None, "origin_key": None,
+        "injection_suspect": False,
+    }
+
+
+def _long_capital_table(rows: int = 18) -> str:
+    """A newline-separated statement table whose CET1 row sits past character 900."""
+    body = "\n".join(
+        f"Risk-weighted assets component {i} | {1000 + i * 37:,} | {990 + i * 35:,}"
+        for i in range(rows)
+    )
+    return ("Periods: Q3 2026, Q4 2025\n" + body
+            + "\nCommon equity Tier 1 (CET1) capital ratio | 15.7% | 15.0%")
+
+
+class TestTheWholeChunk:
+    def test_a_metric_row_past_char_900_satisfies_the_contract(self) -> None:
+        import asyncio
+
+        table = _long_capital_table()
+        assert table.find("CET1") > 900 and "\n" in table
+        session = _Session(ordinary=[_hit("ev:n1", NARRATIVE, TEN_K)], primary=[_full_hit(table)])
+        question = _playbook_question("banks_financials", "capital_adequacy")
+        evidence, _used, steps = asyncio.run(
+            _acquire(_worker(session), question, "financial_analyst")
+        )
+        assert "ev:t1" in [e.citation_id for e in evidence]
+        final = next(s for s in steps if s["rung"] == "contract_after_round")
+        assert final["status"] == "satisfied", final
+        item = next(e for e in evidence if e.citation_id == "ev:t1")
+        assert item.ref is not None and "cet1" in item.ref.metrics
+
+    def test_the_rendered_prompt_carries_the_full_chunk(self) -> None:
+        import json
+
+        from app.services.agents.investigator import _build_prompt, _harvest
+
+        table = _long_capital_table(rows=38)  # near the chunker's 2,000-character maximum
+        assert 1_800 < len(table) <= 2_000
+        (item,) = _harvest(CORPUS, {"items": [_full_hit(table)]}, True)
+        _system, user = _build_prompt(
+            _playbook_question("banks_financials", "capital_adequacy"), [item],
+            "financial_analyst",
+        )
+        assert json.dumps(table)[1:-1] in user
+        # The passage comes right after its id, and the retrieval internals never ship.
+        shown = json.loads(item.text)
+        assert list(shown)[:2] == ["evidence_id", "text"]
+        assert "matched_terms" not in shown and "lexical_score" not in shown
+        assert shown["citation_label"].startswith("JPMorgan")
+
+    def test_rendering_keeps_the_key_order(self) -> None:
+        from app.services.agents.investigator import _render_untrusted
+
+        value = {"evidence_id": "e", "text": "t", "nested": {"a": 1, "b": [{"x": 1, "y": 2}]},
+                 "z": None}
+        out = _render_untrusted(value)
+        assert out == value
+        assert list(out) == ["evidence_id", "text", "nested", "z"]
+        assert list(out["nested"]) == ["a", "b"] and list(out["nested"]["b"][0]) == ["x", "y"]
+
+
+class TestMetricRecognition:
+    """Review L1 — every metric a playbook can require is recognisable in evidence."""
+
+    @pytest.mark.parametrize("text, topic", [
+        ("Non-performing loan ratio 1.2%", "non_performing_loans"),
+        ("rnd_expense 412.5", "rnd_expense"),
+        ("Net margin 12.4%", "operating_margin"),
+        ("Share count 2,804m", "share_count"),
+        ("Dilution of 3.1% from the placement", "share_count"),
+        ("Leverage ratio 6.1%", "slr"),
+        ("capacity 120,000 tpa", "production_capacity"),
+        ("Operating KPIs: 1,234 active merchants", "operating_kpis"),
+        ("Debt of $4.2bn at quarter end", "total_debt"),
+    ])
+    def test_every_alias_is_recognised_in_text(self, text: str, topic: str) -> None:
+        assert topic in dr.metrics_carried(text)
+
+    def test_every_figure_metric_alias_is_carried_somewhere(self) -> None:
+        for topic in dr.TOPICS:
+            if not topic.needs_figure:
+                continue
+            for alias in topic.metric_aliases:
+                record = {"label": alias, "value": 1.0}
+                assert topic.key in dr.record_metrics(record), (topic.key, alias)
+
+    @pytest.mark.parametrize("concept, topic", [
+        ("ResearchAndDevelopmentExpense", "rnd_expense"),
+        ("LongTermDebt", "total_debt"),
+        ("CashAndCashEquivalentsAtCarryingValue", "cash"),
+        ("NetCashProvidedByUsedInOperatingActivities", "operating_cash_flow"),
+        ("PaymentsToAcquirePropertyPlantAndEquipment", "capex"),
+        ("ProvisionForLoanLossesExpensed", "provision_for_credit_losses"),
+        ("CommonStockSharesOutstanding", "share_count"),
+        ("InterestIncomeExpenseNet", "net_interest_income"),
+    ])
+    def test_an_xbrl_concept_name_is_read_as_words(self, concept: str, topic: str) -> None:
+        assert topic in dr.record_metrics({"concept": concept, "value": 1_000_000})
+        assert topic in dr.metrics_carried(f"{concept} 1,000,000")
+
+    def test_a_record_without_a_figure_carries_nothing(self) -> None:
+        assert dr.record_metrics({"label": "cet1_ratio", "value": None}) == frozenset()
+        assert dr.record_metrics({"label": "cet1_ratio", "value_text": "n/a"}) == frozenset()
+
+    def test_a_segment_fact_carries_segment(self) -> None:
+        from app.services.agents.investigator import _harvest
+
+        payload = {"items": [{"scope_key": "segment:cib", "reported_names": ["CIB"], "facts": [
+            {"fact_id": "f1", "label": "Revenue", "value_numeric": 71_000.0,
+             "period_key": "FY2025", "scope_key": "segment:cib"},
+        ]}]}
+        (item,) = _harvest("get_segment_facts", payload, False)
+        assert item.ref is not None and {"segment", "revenue"} <= item.ref.metrics
+
+    def test_a_peer_record_never_carries_the_subjects_metric(self) -> None:
+        from app.services.agents.investigator import _harvest
+
+        payload = {"items": [{"id": "peer:1", "metric": "cet1_ratio", "value": 13.1,
+                              "ticker": "BAC"}]}
+        (item,) = _harvest("get_peer_financials", payload, False)
+        assert item.ref is None or not item.ref.metrics
+
+
+class TestRereadBounds:
+    def test_queries_are_distinctive_terms_only(self) -> None:
+        """Review M3 — the backends OR-join every token; a stopword matches everything."""
+        from app.services.corpus.query_terms import STOPWORDS
+
+        question = _playbook_question("banks_financials", "capital_adequacy")
+        for planned in dr.reread_plan(question, missing_metrics=("cet1",)):
+            tokens = planned.query.lower().split()
+            assert tokens and not set(tokens) & STOPWORDS, planned.query
+
+    async def test_a_low_run_budget_runs_one_query(self) -> None:
+        """Review M2 — below a quarter of the run's max_tool_calls, one re-read query."""
+        session = _Session(ordinary=[_hit("ev:n1", NARRATIVE, TEN_K)])
+        worker = _worker(session)
+        worker.max_tool_calls = 40
+        question = _playbook_question("banks_financials", "capital_adequacy")
+        _evidence, _used, steps = await _acquire(worker, question, "financial_analyst", budget=8)
+        reread = next(s for s in steps if s["rung"] == "primary_document_reread")
+        assert reread["query_ceiling"] == "run_tool_budget_low"
+        assert len(reread["queries"]) == 1
+        reread_calls = [a for t, a in session.calls if a.get("primary_documents_only")]
+        assert len(reread_calls) == 1
+
+    async def test_a_healthy_budget_keeps_two_queries(self) -> None:
+        session = _Session(ordinary=[_hit("ev:n1", NARRATIVE, TEN_K)])
+        worker = _worker(session)
+        worker.max_tool_calls = 40
+        question = _playbook_question("banks_financials", "asset_quality")
+        _evidence, _used, steps = await _acquire(worker, question, "financial_analyst", budget=30)
+        reread = next(s for s in steps if s["rung"] == "primary_document_reread")
+        assert "query_ceiling" not in reread
+        assert len(reread["queries"]) == 2
+
+
 # ── 3. The fact-tool fallback ────────────────────────────────────────────────── #
 
 
@@ -494,12 +671,65 @@ class TestHeldButUnreadGaps:
         assert "NOT READ" in label and "NOT YET ACQUIRED" not in label
 
     def test_the_loop_reads_the_reread_step(self) -> None:
-        log = [{"rung": "primary_document_reread", "held_primary_documents": 2}]
+        log = [{"rung": "primary_document_reread", "held_primary_documents": 2,
+                "queries_run": 1}]
         assert director_loop.reread_found_held_documents(log)
         assert not director_loop.reread_found_held_documents(
-            [{"rung": "primary_document_reread", "held_primary_documents": 0}]
+            [{"rung": "primary_document_reread", "held_primary_documents": 0,
+              "queries_run": 1}]
         )
         assert not director_loop.reread_found_held_documents(None)
+
+    def test_a_reread_that_searched_nothing_is_not_held_but_unread(self) -> None:
+        """Review M1 — held only when at least one query actually ran: nothing indexed,
+        every query raising or refused, no query at all → not "held but not read"."""
+        for step in (
+            {"held_primary_documents": 2, "stopped": "no_held_primary_document_is_indexed"},
+            {"held_primary_documents": 2, "queries": ["a"], "tool_calls": 1, "errors": 1,
+             "queries_run": 0},
+            {"held_primary_documents": 2, "queries": ["a"], "tool_calls": 1,
+             "refused": ["error"], "queries_run": 0},
+            {"held_primary_documents": 2, "stopped": "no_query"},
+        ):
+            log = [{"rung": "primary_document_reread", **step}]
+            assert not director_loop.reread_found_held_documents(log), step
+
+    async def test_every_query_failing_leaves_the_gap_unclaimed(self) -> None:
+        @dataclass
+        class _Failing(_Session):
+            async def call(self, tool: str, arguments: dict, task_ref: str = "") -> _Result:
+                if arguments.get("primary_documents_only"):
+                    raise RuntimeError("index unavailable")
+                return await super().call(tool, arguments, task_ref)
+
+        question = planned_from(base_question("material_risks"), origin="director")
+        outcome = await _worker(_Failing()).investigate(
+            role_id="risk_analyst", questions=[question], round_index=0,
+            remaining_tool_calls=30,
+        )
+        gap = outcome.gaps[0]
+        assert gap.knowledge_state is None
+        assert "held but not read" not in gap.description
+        assert "re-read" not in gap.description
+
+    async def test_a_recency_question_keeps_adr_076(self) -> None:
+        """A recency question's held-but-unread verdict is the loop's ADR-076 rule (the
+        newest holding's age), never the re-read's."""
+        from app.services.director.base_model import RECENCY_QUESTION_KEYS
+
+        assert "recent_disclosure" in RECENCY_QUESTION_KEYS
+        question = planned_from(base_question("recent_disclosure"), origin="director")
+        session = _Session()
+        outcome = await _worker(session).investigate(
+            role_id=question.owner_role or "business_analyst", questions=[question],
+            round_index=0, remaining_tool_calls=30,
+        )
+        # The re-read itself ran — it is the GAP's verdict that stays ADR-076's.
+        assert any(a.get("primary_documents_only") for _t, a in session.calls)
+        assert outcome.gaps
+        for gap in outcome.gaps:
+            assert gap.knowledge_state is None
+            assert "held but not read" not in gap.description
 
 
 @pytest.fixture
@@ -534,7 +764,7 @@ class _UnreadInvestigator:
             held = q.key == "material_risks"
             if held:
                 steps.append({"rung": "primary_document_reread", "round": round_index,
-                              "held_primary_documents": 2,
+                              "held_primary_documents": 2, "queries_run": 1,
                               "documents": [dr.document_name(d) for d in INVENTORY]})
             outcome.acquisition_steps[q.key] = steps
             outcome.gaps.append(GapDraft(
@@ -596,7 +826,7 @@ class TestCoverageAudit:
         step = {
             "rung": "primary_document_reread", "held_primary_documents": 2,
             "documents": [dr.document_name(d) for d in INVENTORY],
-            "queries": ["q1", "q2"], "table_hits": 1, "candidate_sections": 2,
+            "queries": ["q1", "q2"], "queries_run": 2, "table_hits": 1, "candidate_sections": 2,
             "metric_passages": 1,
             "extraction_status": [
                 {"document": dr.document_name(INVENTORY[0]),
@@ -648,7 +878,7 @@ class TestCoverageAudit:
         await db_session.flush()
 
         async def _doc(key: str, url: str, tier: str, source_class: str | None,
-                       tables: int, chunks: int) -> None:
+                       tables: int, chunks: int) -> Any:
             doc = ResearchDocument(id=uuid.uuid4(), company_id=SUBJECT, document_key=key,
                                    document_type="filing", title=key)
             db_session.add(doc)
@@ -671,16 +901,39 @@ class TestCoverageAudit:
                     source_tier=tier, indexed_at=datetime.now(UTC),
                 ))
             await db_session.flush()
+            return version
 
-        await _doc("tenq", TEN_Q, "T1_primary_filing", None, tables=2, chunks=5)
+        tenq = await _doc("tenq", TEN_Q, "T1_primary_filing", None, tables=2, chunks=5)
         await _doc("news", "https://news.example/a", "T4_quality_media", "news_article",
                    tables=0, chunks=3)
+        # Review M4 — only chunks the re-read could RETRIEVE count: not another company's
+        # chunk of the same version, not an unindexable one; an unindexed one counts as
+        # held but not as indexed.
+        other = Company(id=uuid.uuid4(), name="Other plc", ticker="OTH", exchange="LSE",
+                        status="new")
+        db_session.add(other)
+        await db_session.flush()
+        for n, (company_id, indexable, indexed) in enumerate(
+            ((other.id, True, True), (SUBJECT, False, True), (SUBJECT, True, False))
+        ):
+            db_session.add(ResearchDocumentChunk(
+                id=uuid.uuid4(), chunk_id=f"extra-{n}", derivation_id=uuid.uuid4(),
+                research_document_version_id=tenq.id, company_id=company_id, kind="prose",
+                ordinal=100 + n, text="x", char_start=0, char_end=1, page_end=1,
+                section_path="s0", source_tier="T1_primary_filing", indexable=indexable,
+                indexed_at=datetime.now(UTC) if indexed else None,
+            ))
+        await db_session.flush()
+        # A held primary document with nothing retrievable is still LISTED.
+        await _doc("tenk", TEN_K, "T1_primary_filing", None, tables=0, chunks=0)
         inventory = await document_coverage.held_primary_documents(db_session, SUBJECT)
-        assert inventory is not None and len(inventory) == 1
-        held = inventory[0]
-        assert held["canonical_url"] == TEN_Q
-        assert (held["chunks"], held["indexed_chunks"], held["table_chunks"]) == (5, 5, 2)
+        assert inventory is not None and len(inventory) == 2
+        held = next(d for d in inventory if d["canonical_url"] == TEN_Q)
+        assert (held["chunks"], held["indexed_chunks"], held["table_chunks"]) == (6, 5, 2)
         assert held["pages"] == 5 and held["sections"] == 2
+        bare = next(d for d in inventory if d["canonical_url"] == TEN_K)
+        assert (bare["chunks"], bare["indexed_chunks"]) == (0, 0)
+        assert all(d["canonical_url"] != "https://news.example/a" for d in inventory)
 
     async def test_an_unknown_inventory_is_none_not_empty(self) -> None:
         class _Broken:

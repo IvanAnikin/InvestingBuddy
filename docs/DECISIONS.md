@@ -6798,3 +6798,90 @@ Verified on `90a3c51`:
 - **One re-read per question**, in its first round. A follow-up round does not repeat
   it.
 - **No live run yet.** Acceptance needs JPM, PYPL, CLLS and LIN reruns after deploy.
+
+### ADR-084 review (2026-11-03): the whole chunk, the raw record, and an honest "held"
+The independent review of PR #321 returned NO-GO. Two findings were blocking, and part
+of the first was already present on `main`.
+
+- **H1: the model saw about a third of each chunk.** This was pre-existing on `main`.
+  - **The defect:**
+    - `investigator._render_untrusted` rebuilt every dict in work-stack pop order, which
+      reversed its keys;
+    - `_evidence_of` then cut the JSON at 1,500 characters;
+    - a corpus hit's `text` therefore started around character 870, so only about 630
+      characters of a 2,000-character chunk reached the prompt;
+    - ADR-084's metric detection ran on that cut, escaped copy, where a newline is
+      `\n` and defeats the figure test.
+  - **The fix:**
+    - rendering inserts keys in source order;
+    - a platform corpus item is serialised `evidence_id`, `text`, then its citation
+      fields, dropping empty fields and the retrieval internals (`lexical_score`,
+      `semantic_score`, `matched_terms`);
+    - corpus items are cut at `_CORPUS_ITEM_PROMPT_CHARS` = 3,000, which is above the
+      chunker's 2,000-character hard maximum plus its roughly 770-character envelope;
+      other items stay at 1,500;
+    - a ref's `metrics` are computed once, at harvest, from the RAW record
+      (`_raw_metrics`): a chunk's or lead's own text, and for the subject's fact tools
+      the record's fields.
+  - **Prompt budget:**
+    - `MAX_EVIDENCE_CHARS` (16,000) is unchanged and still bounds the block;
+    - a typical 1,200-character chunk now costs about 1,970 characters (about 8 per
+      block) and a 2,000-character chunk about 2,770 (about 5 per block), where 10 cut
+      items used to fit;
+    - fewer chunks are shown, but each one is whole; items that do not fit are still
+      counted and announced to the model, as before.
+- **M1: "held" was claimed too easily.**
+  - The ADR-076 rule now runs first for the recency questions: a stale newest holding
+    stays `not_acquired`, whatever the re-read did. The investigator does not mark a
+    recency question's gap `acquired_not_read` either.
+  - A question counts as held-but-unread only when a re-read query actually searched
+    (`queries_run` > 0 together with held documents; `loop.reread_searched`). A re-read
+    that found nothing indexed, ran no query, or had every query raise or be refused
+    claims nothing.
+  - The gap wording no longer says "relevant" in the gap text or in the audit note.
+- **M2:** with the run's `max_tool_calls` known, a re-read runs one query instead of two
+  once fewer than 25% of the run's tool calls remain, so a QUICK run's later questions
+  are not starved.
+- **M3:** re-read queries pass through `keyword_query`, as in rung 2 and the recency
+  pass. The backends OR-join every token, so stopwords used to match nearly every chunk.
+- **M4:** the inventory applies the disclosure rule in SQL:
+  - chunks are counted with the search backend's own `_filter_clauses(disclosures_only)`
+    predicate, so only the company's indexable disclosure chunks count, and
+    `indexed_chunks` counts only those that are indexed;
+  - versions are listed by the same rule over their own tier, class and access, so a
+    held filing with nothing retrievable is still listed;
+  - the outer version is aliased so that the predicate's correlated subqueries keep
+    their own FROM.
+- **L1: required metrics are now recognisable in evidence.**
+  - Every multi-word metric key a topic answers to is also recognised written as words
+    ("net margin", "rnd expense", "non performing loan ratio", "leverage ratio",
+    "operating kpis", "share count", plus "dilution", "capacity" and "debt").
+  - "cash" and "deposits" are not matched as bare words in prose.
+  - XBRL concept names are split into words, and four lexicon patterns were widened:
+    "long term debt", "provided by used in operating activities", "payments to acquire
+    property", and "interest income expense net".
+  - Typed fact records carry a metric through `record_metrics`: a metric key, a concept
+    or a label, beside a figure.
+  - A segment fact with a figure carries `segment`. A peer's record carries nothing for
+    the subject.
+
+**Tests:** `tests/test_qa_closure_document_completeness.py` now has 67 tests (30 new).
+- **H1:**
+  - the reviewer's case: a full `_hit_payload`-shaped hit whose CET1 row sits past
+    character 900 of a newline-separated table, which now satisfies the contract;
+  - the rendered prompt contains a 1,900-character chunk whole;
+  - the key order is preserved.
+- **L1:**
+  - every figure-metric alias is carried by a typed record;
+  - the reviewer's aliases are recognised in text;
+  - eight XBRL concepts are read as words;
+  - segment facts carry `segment`, and peer records carry nothing.
+- **M2:** one query when the run budget is low, two when it is healthy.
+- **M3:** no stopword appears in a re-read query.
+- **M1:**
+  - four "searched nothing" step shapes are rejected;
+  - when every query fails, the gap is left unclaimed;
+  - a recency question keeps ADR-076.
+- **M4:** the inventory excludes another company's chunk, an unindexable chunk and a web
+  page; it counts an unindexed chunk as held but not indexed, and lists a held filing
+  with no retrievable chunk.

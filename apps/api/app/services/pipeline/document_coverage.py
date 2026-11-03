@@ -11,7 +11,7 @@ Two things, both bounded and never raising:
   ``v3_research.primary_document_coverage`` (an admin / technical surface): documents
   acquired; pages, sections and chunks parsed; tables inspected; candidate fact
   sections; metric-bearing passages read; extraction failures; and the questions left
-  unresolved although a relevant primary document was held.
+  unresolved after a re-read searched the held primary documents.
 
 "Facts extracted" here counts metric-bearing PASSAGES the re-read put in front of the
 investigator. Statement-table extraction into structured facts is a separate, later
@@ -32,6 +32,7 @@ from app.services.agents.document_reread import (
     EXTRACTION_STATUSES,
     document_name,
 )
+from app.services.director.loop import reread_searched
 
 logger = logging.getLogger(__name__)
 
@@ -55,31 +56,68 @@ async def held_primary_documents(
     """
     if session is None or company_id is None:
         return None
-    from sqlalchemy import case, func, or_, select
+    from sqlalchemy import and_, case, func, or_, select
+    from sqlalchemy.orm import aliased
 
     from app.models.research_chunk import ResearchDocumentChunk as C
     from app.models.research_document import ResearchDocument as D
-    from app.models.research_document import ResearchDocumentVersion as V
-    from app.services.corpus.search.types import is_disclosure_fields
+    from app.models.research_document import ResearchDocumentVersion
+    from app.services.corpus.search.backends.postgres import _filter_clauses
 
+    # An ALIAS for the listed version: the backend's disclosure predicate carries its
+    # own correlated ``SELECT … FROM research_document_versions`` subqueries, which
+    # would otherwise auto-correlate to this query's version and lose their FROM.
+    V = aliased(ResearchDocumentVersion)
+    from app.services.corpus.search.types import (
+        DISCLOSURE_SOURCE_CLASSES,
+        DISCLOSURE_SOURCE_TIERS,
+        DISCLOSURE_WEB_ACCESS_CLASS,
+        CorpusFilters,
+    )
+
+    # Review M4 — the disclosure rule in SQL, not over an over-fetched row set:
+    # * a chunk is COUNTED only when the re-read could retrieve it — the company's own,
+    #   indexable, disclosure chunk: the search backend's own predicate
+    #   (``_filter_clauses`` with ``disclosures_only``), so the two cannot disagree;
+    # * a version is LISTED only when it is a disclosure itself (``is_disclosure_fields``
+    #   over the version's tier / class / access), so a document held with no
+    #   retrievable chunk still appears — as acquired, not parsed.
+    retrievable = and_(
+        C.research_document_version_id == V.id,
+        *_filter_clauses(CorpusFilters(company_ids=(company_id,), disclosures_only=True)),
+    )
+    version_is_disclosure = and_(
+        V.source_tier.in_(list(DISCLOSURE_SOURCE_TIERS)),
+        or_(
+            V.source_class.is_(None),
+            and_(
+                V.source_class.in_(list(DISCLOSURE_SOURCE_CLASSES)),
+                V.access_class == DISCLOSURE_WEB_ACCESS_CLASS,
+            ),
+        ),
+    )
     owned_versions = select(C.research_document_version_id).where(C.company_id == company_id)
     stmt = (
         select(
             V.id, V.title, D.title, D.document_type, V.canonical_url, V.published_at,
-            V.source_tier, V.source_class, V.access_class, V.extraction_status,
+            V.source_tier, V.extraction_status,
             func.count(C.id), func.count(C.indexed_at),
             func.sum(case((C.kind == "table", 1), else_=0)),
             func.max(C.page_end), func.count(func.distinct(C.section_path)),
         )
         .join(D, D.id == V.research_document_id)
-        .outerjoin(C, C.research_document_version_id == V.id)
-        .where(V.is_current.is_(True), or_(D.company_id == company_id, V.id.in_(owned_versions)))
+        .outerjoin(C, retrievable)
+        .where(
+            V.is_current.is_(True),
+            or_(D.company_id == company_id, V.id.in_(owned_versions)),
+            version_is_disclosure,
+        )
         .group_by(
             V.id, V.title, D.title, D.document_type, V.canonical_url, V.published_at,
-            V.source_tier, V.source_class, V.access_class, V.extraction_status,
+            V.source_tier, V.extraction_status,
         )
         .order_by(V.published_at.desc().nulls_last())
-        .limit(max(limit * 3, limit))
+        .limit(limit)
     )
     try:
         async with session.begin_nested():
@@ -89,12 +127,8 @@ async def held_primary_documents(
         return None
     out: list[dict[str, Any]] = []
     for row in rows:
-        (version_id, v_title, d_title, doc_type, url, published, tier, source_class,
-         access_class, extraction, chunks, indexed, tables, pages, sections) = row
-        if not is_disclosure_fields(
-            source_tier=tier, source_class=source_class, access_class=access_class
-        ):
-            continue
+        (version_id, v_title, d_title, doc_type, url, published, tier, extraction,
+         chunks, indexed, tables, pages, sections) = row
         out.append(
             {
                 "version_id": str(version_id),
@@ -185,7 +219,11 @@ def build_coverage(
                 if isinstance(row, Mapping) and row.get("status") in EXTRACTION_STATUSES:
                     status_rows.append({"question_key": key, "document": row.get("document"),
                                         "status": row.get("status")})
-        held = max((int(s.get("held_primary_documents") or 0) for s in steps), default=0)
+        # Only a re-read whose queries actually SEARCHED held documents (review M1).
+        held = max(
+            (int(s.get("held_primary_documents") or 0) for s in steps if reread_searched(s)),
+            default=0,
+        )
         if question.get("contract_status") != "satisfied" and held:
             named = next(
                 (list(s.get("documents") or []) for s in reversed(steps) if s.get("documents")),
@@ -248,8 +286,10 @@ def build_coverage(
         "unresolved_despite_documents": unresolved[:MAX_UNRESOLVED],
         "note": (
             "Admin / technical audit. A question listed under unresolved_despite_documents "
-            "was left open while a primary document the platform holds was relevant to it: "
-            "the gap is in what was read, not evidence that the information does not exist."
+            "was left open after a re-read searched the subject's held primary documents "
+            "and found no passage answering it (per-document outcomes are under "
+            "extraction_status): the gap is in what was read, not evidence that the "
+            "information does not exist."
         ),
     }
 
