@@ -473,6 +473,17 @@ class TestTheWholeChunk:
         assert "matched_terms" not in shown and "lexical_score" not in shown
         assert shown["citation_label"].startswith("JPMorgan")
 
+    def test_a_non_ascii_chunk_is_not_escaped_past_the_cut(self) -> None:
+        """Re-review L1: 1,900 accented characters escaped to six each overran the cut, so
+        a CET1 row read for the metric check never reached the prompt."""
+        from app.services.agents.investigator import _harvest
+
+        text = "Capitaux propres réglementaires — " + "é" * 1_850 + "\nCET1 capital ratio 15.7%"
+        assert len(text) <= 2_000
+        (item,) = _harvest(CORPUS, {"items": [_full_hit(text)]}, True)
+        assert "CET1 capital ratio 15.7%" in item.text
+        assert item.ref is not None and "cet1" in item.ref.metrics
+
     def test_rendering_keeps_the_key_order(self) -> None:
         from app.services.agents.investigator import _render_untrusted
 

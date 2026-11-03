@@ -764,6 +764,12 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
             {k: v for k, v in item.items()
              if k not in _CORPUS_PROMPT_OMITTED_KEYS and v is not None},
             default=str,
+            # Characters as written, not \uXXXX escapes (review: a French or CJK chunk
+            # escaped to six characters per letter overran the cut, so a row the metric
+            # check read from the raw text never reached the prompt). Safe: untrusted
+            # strings were already rendered by ``_render_untrusted`` above; a TRUSTED item
+            # is never rendered, so it keeps the escapes (W3 S-M1).
+            ensure_ascii=not untrusted,
         )
     else:
         text = json.dumps(
