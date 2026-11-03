@@ -138,13 +138,19 @@ def is_ownership_filing_url(url: str | None) -> bool:
     return any(_OWNERSHIP_RE.search(p) for p in paths)
 
 
+_UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
 def _strings(text: str) -> str:
     """The string values of a JSON evidence record (so ``\\u00e8`` is ``è`` again), or
     the text itself when it is not JSON."""
     try:
         data = json.loads(text)
     except (TypeError, ValueError):
-        return text
+        # Evidence text is a JSON record cut at a fixed length, so a long one no longer
+        # parses. Its ``\\uXXXX`` escapes still hide every non-ASCII letter ("Herm\\u00e8s"
+        # would never match "Hermès"), so decode them here (ADR-079 review S1).
+        return _UNICODE_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), str(text or ""))
     out: list[str] = []
     stack = [data]
     while stack:

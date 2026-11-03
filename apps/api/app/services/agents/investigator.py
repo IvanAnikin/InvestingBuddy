@@ -3356,17 +3356,24 @@ class LLMInvestigator:
             named = []
             for cik in sorted(registrants_dropped)[:5]:
                 name = subject.names.get(cik)
-                if cik == "unknown":
-                    named.append("an EDGAR document with no registrant in its address")
-                else:
+                if cik != "unknown":
                     named.append(f"{name} (CIK {cik})" if name else f"CIK {cik}")
+            parts = []
+            if named:
+                parts.append(
+                    f"SEC filings of another registrant — {'; '.join(named)} —"
+                )
+            if "unknown" in registrants_dropped:
+                parts.append(
+                    "EDGAR documents with no registrant in their address that never name "
+                    "the issuer"
+                )
             gaps.append(
                 GapDraft(
                     gap_type=ledger.GAP_ENTITY_AMBIGUOUS,
                     description=(
-                        f"Statements resting only on SEC filings of another registrant — "
-                        f"{'; '.join(named)} — found by web search on sec.gov were not "
-                        "filed under the issuer."
+                        f"Statements resting only on {' and on '.join(parts)}, found by web "
+                        "search on sec.gov, were not filed under the issuer."
                     )[:600],
                     question_key=question.key,
                     why_it_matters=(

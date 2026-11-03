@@ -799,7 +799,7 @@ class TestAnEdgarPageWithNoRegistrantInItsAddress:
         assert [f.statement for f in findings] == [OWN_STATEMENT]
         assert inv.diagnostics.statements_about_other_registrant == 1
         (entity,) = [g for g in gaps if g.gap_type == "entity_ambiguous"]
-        assert "no registrant in its address" in entity.description
+        assert "no registrant in their address" in entity.description
 
     async def test_a_cik_less_page_that_names_the_subject_is_kept_as_third_party(
         self, monkeypatch: pytest.MonkeyPatch
@@ -824,3 +824,16 @@ class TestAnEdgarPageWithNoRegistrantInItsAddress:
     def test_nothing_known_about_the_subject_never_drops(self) -> None:
         (item,) = inv_mod.apply_edgar_registrant([_hit("ev:c:vprr", VPRR_URL)], EdgarSubject())
         assert item.edgar_registrant == "unidentified"
+
+
+def test_a_cut_json_record_still_names_a_subject_with_accents() -> None:
+    """ADR-079 review S1: evidence text is a JSON record cut at 1,500 characters, so a
+    long one no longer parses and its \\u escapes must still be read as letters."""
+    import json
+
+    from app.services.web_research.edgar_registrant import filing_names_subject
+
+    record = json.dumps({"text": "Hermès International reported " + "revenue " * 300})
+    cut = record[:1500]
+    assert "\\u00e8" in cut
+    assert filing_names_subject(cut, ("Hermès International",), ("RMS",))
