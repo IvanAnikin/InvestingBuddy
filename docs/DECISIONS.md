@@ -7178,13 +7178,13 @@ was another entity:
      `other` page; another company when the page is served from that company's own
      site AND the passage names it; otherwise unknown;
    - the **entities the passage names**: the subject (distinctive name words, ticker,
-     its own legal name); organisation names ending in a legal suffix (Ltd, Limited,
-     plc, Inc, Corp, SE, AG, SA, NV, LLC, GmbH, Pty, SpA, N.A., Co); the platform's
-     registered companies, by their distinctive first word unless the next capitalised
-     word is not theirs ("Southern Africa" is not Southern Copper); ADR-066 separately
-     reporting namesakes that `_reports_separately` confirms; an acronym beside
-     its spelled-out name whose initials agree ("IBA (Ion Beam Applications)", but
-     never a financial term such as EBITDA or ICAAP); aliases the passage defines
+     its own legal name, its initials such as "TSMC", "J.P. Morgan"); organisation names
+     ending in a legal suffix (Ltd, Limited, plc, Inc, Corp, SE, AG, SA, NV, LLC, GmbH,
+     Pty, SpA, N.A., Co — the two-letter forms never after a comma, "N.A." only after
+     "Bank"); the platform's registered companies, by their FULL registered name (see
+     the review below); ADR-066 separately reporting namesakes that
+     `_reports_separately` confirms; an acronym beside its spelled-out name only when
+     that name is a registered company; aliases the passage defines
      ("J.P. Morgan SE (“JPMSE” or “the Bank”)"); a governing heading entity ("Risks
      Related to <Name>", when the name recurs in the passage);
    - the **matched sentence**: the sentence or clause (split at sentence ends,
@@ -7235,10 +7235,9 @@ was another entity:
      characters and reduced to letters, digits and `&.,'()-`;
    - **a passage is a subsidiary's, a joint venture's or sits under a mine/segment
      heading** → kept, with `scope_key = segment:<casefolded name>` (`fact_scope`'s own
-     key for a named non-Group scope) when the evidence gave none or `group`, counted
-     in `statements_scoped_to_entity`. An evidence segment scope is never overwritten.
-     Two passages naming different scopes are a `conflicting_sources` gap, as in
-     `_inherited`;
+     key for a named non-Group scope) only when the evidence gave none, counted in
+     `statements_scoped_to_entity`. An evidence-typed scope, `group` included, is never
+     overwritten. Two passages naming different scopes keep the statement, unscoped;
    - **any passage is unresolved** → kept exactly as before.
    - **A relationship with the subject is the subject's fact** (review). A sentence
      resolving to a customer, supplier, counterparty or other issuer is admitted as the
@@ -7287,7 +7286,7 @@ was another entity:
 | Subject's own AR, offtaker named nearby (LIN-3 inverse), and "The consolidated entity will adopt…" | subject (kept) |
 | Plain "The Company…" passage | subject (kept) |
 | Offtaker's unit costs on its own site (LIN2-3) | other: Iluka Resources Limited |
-| Equipment maker's price (CLLS5-4) | other: Ion Beam Applications (IBA) |
+| Equipment maker's price (CLLS5-4), IBA a registered company | other: Ion Beam Applications SA |
 | Separately reporting namesake's plant (H3) | other: Honeywell Aerospace Inc |
 
 **False drops measured** on 12 subject passages that name other companies ("We sell to
@@ -7322,3 +7321,88 @@ dropped. The ADR-066/074/079 suites pass unchanged.
 - **Peer domains** (`competitive_position`) are not judged, as for the other firewalls.
 - **Not replayed against the stored campaign reports**: they do not store the cited
   passage text, so the live cases above are reproduced as fixtures.
+
+### Independent review of PR #320 (NO-GO on false drops) — what changed
+The review ran 118 repros (b1–b10) and found 58 verdicts wrong, most of them false drops
+of the subject's own facts. The rules above are amended:
+
+- **B1 — no topic carry-over in the subject's own document.** There, a sentence that
+  names no one is the owner's, never the previously named entity's ("AstraZeneca
+  Holdings B.V. completed its investment… R&D expenses were $90 million" is Cellectis's
+  R&D). Only a governing heading entity, or a separately reporting namesake, sets the
+  topic. Pages the subject does not own keep the carry-over (the Kestrel32 "It
+  generated…" case is still dropped).
+- **B2 — an acronym is not a company.** "Definitive Feasibility Study (DFS)", "Building
+  Automation (BA)", "Acute Myeloid Leukemia (AML)", "Prudential Regulation Authority
+  (PRA)", "Current Expected Credit Losses (CECL)" name no one. An acronym is an entity
+  only when its spelled-out name is a registered company, or as a defined alias after
+  a legal-form name ("Ion Beam Applications SA (IBA)").
+- **B3 — in the subject's own document, only three things drop:** a FORMER_SUBSIDIARY's
+  sentence, a separately reporting namesake's (ADR-066), and a named entity's OWN
+  reported results ("reported / posted / generated / earned / booked", "its revenue /
+  costs / output…", or a table row that is only the name and its figures). A
+  counterparty, customer, supplier, peer, regulator or other company named as the
+  grammatical subject is otherwise context for the subject's fact: kept (`contained`,
+  verdict unknown, relationship recorded) — "Servier SAS paid a $10m milestone",
+  "AstraZeneca holds 44%", "LG Energy Solution will take 150,000 dmt", "Citigroup
+  acted as lead manager", "Iluka … is our offtaker. It will purchase 100%…", a
+  competitor's product as counter-thesis risk, "Oyu Tolgoi LLC produced…". A
+  transaction verb (invest, pay, lend, purchase, fund, hold, own) admits it as the
+  subject's (`framed`). Current subsidiaries never drop: they scope at most. A
+  namesake in a subsidiary legal form the subject's name does not carry ("Linde AG"
+  under "Linde plc") is a SUBSIDIARY (scoped), not the subject. Pages the subject does
+  not own keep the earlier logic, plus **M4**: on a page that names the subject, another
+  company's transaction with an unnamed counterparty ("Cellectis shares jumped 20%.
+  AstraZeneca plc will invest $140 million") is the subject's; without the subject's
+  name it is unknown (kept), never dropped.
+- **B4 — legal-form false entities.** "Crescent Valley, NV", "Victor, CO", "Backlog
+  N.A.": two-letter forms (SE, AG, SA, NV, BV, Co) never follow a comma, "near" ends a
+  name, and "N.A." is a form only after "Bank".
+- **B5 — registered companies by their full name.** "Pilbara shipments", "Target capital
+  ratio", "Northern region", "Visa processing" are not Pilbara Minerals, Target, Northern
+  Star or Visa. A registered company is named by its full registered name (legal form
+  optional), or, for a one-word name, by name + legal form; once named, its first word
+  is its alias for the rest of that passage.
+- **H1 — heading scope.** A capitals heading scopes a sentence only when the sentence has
+  no Group wording (Group, total, consolidated, Firm, Corporation, Company, we/our/us,
+  net debt, dividend, earnings per share) and is not a note reference ("Note 23
+  Borrowings"). Line-item headings (BORROWINGS, GOODWILL, CONTINGENCIES, OWN FUNDS,
+  PROVISIONS…) are never scopes. The investigator fills a scope only where the
+  evidence has none; an evidence-typed `group` is never overridden.
+- **H2 — the filer's own labels.** "the Firm", "the Corporation", "Firmwide" and bare
+  "Group" ("Group CET1 ratio") are defined self-references: the subject in its own
+  document.
+- **H3 — two scopes keep the statement unscoped** (verdict unknown, `conflict`): no
+  discard and no gap.
+- **M1** — an entity named twice is one entity (stored and raw names fold the same way).
+  **M2** — the registered-name index is compiled once per name list (`lru_cache`; the
+  investigator builds its list once), and the reader scans at most 6,000 characters of
+  one passage (evidence is cut at 1,500): 3,000 registered names cost the same as none.
+- **M3 — a subject with no distinctive name word of four or more letters gets no
+  guard.** "BHP Group Limited" ("bhp" is three letters, "group" generic), "Global Mining
+  plc": every passage is UNKNOWN and every statement kept, exactly as before ADR-083.
+
+**Before / after on the reviewer's repros** (121 distinct cases; the 118 that must be
+kept, scoped or dropped are `REVIEW_CASES` in `tests/test_qa_closure_subject_attribution.py`):
+before, 61 verdicts differed from the reviewer's — 37 false drops (a subject, scoped or
+unknown fact returned `other`), 17 wrong scopes (a Group sentence scoped to a heading,
+a subsidiary or a topic word), 2 missed drops and 5 others. After: 0 false drops, 0
+wrong scopes; 9 differ, all keeps: BHP (M3), Oyu Tolgoi (unknown, not scoped), three
+counterparty / competitor sentences kept as unknown rather than subject, a JV
+operator's budget kept as subject rather than unknown, and three the reviewer expected
+DROPPED which are kept — "The CET1 ratio of HSBC Bank Canada, a former subsidiary"
+(the name follows "of"), "Calyxt, Inc. completed its merger with Cibus" (another
+company's event, no cue) and "Pfizer Inc. received FDA approval for its competing
+product" (no own-results verb; dropped before). The last two name the other company in
+the statement, where ADR-074 drops them.
+The keep corpus adds 14 cases (reference-free sentences after an investor, a litigant,
+an acquiree and a subsidiary; a study, segment and regulator acronym; the Firm, the
+Corporation, bare Group; a state code and "N.A."; a regulator and an investor acting
+on the subject): 0 dropped, 0 scoped.
+
+**Limits added by the review.** An unregistered acronym company ("IBA (Ion Beam
+Applications)" when IBA is not in the platform's table) and a registered company named
+by its first word alone ("Iluka said…") are no longer entities: such sentences are
+UNKNOWN and kept — CLLS5-4 is caught only when the equipment maker is registered or
+named with its legal form. In the subject's own document, another company's operational
+sentence without an own-results verb is kept even when it is not the subject's.

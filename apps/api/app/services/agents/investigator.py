@@ -2243,6 +2243,8 @@ class LLMInvestigator:
     #: registrant CIK → does it report separately? Remembered, failures included, so one
     #: write-up never asks the regulator about the same registrant twice (review round 2).
     _separate: "dict[str, bool]" = field(default_factory=dict, repr=False)
+    #: ADR-083 — the registered names the passage reader looks for, built once.
+    _attribution_known: "tuple[str, ...] | None" = field(default=None, repr=False)
     #: Lazily-resolved ADR-079 subject (its CIKs) for the EDGAR registrant check.
     _edgar_subject: "EdgarSubject | None" = field(default=None, repr=False)
     #: Open-web W7 — ``async (question_key, candidates, round_index, max_fetches, terms)
@@ -3483,11 +3485,15 @@ class LLMInvestigator:
                     related
                 ):
                     separate.append((related.phrase, related.name))
-            others = await self._other_companies() if prose else {}
+            if prose and self._attribution_known is None:
+                # Built once per investigator: the passage reader compiles its name
+                # index once per distinct tuple (ADR-083 review M2).
+                others = await self._other_companies()
+                self._attribution_known = tuple(sorted(set(others.values())))
             subject = SubjectIdentity(
                 name=self.company_name,
                 ticker=self.ticker,
-                known_entities=tuple(sorted(set(others.values()))),
+                known_entities=self._attribution_known or (),
                 separate_registrants=tuple(separate),
             )
             return attribute_statement(statement, passages, subject)
@@ -3710,26 +3716,10 @@ class LLMInvestigator:
                         implicit_dropped.setdefault(other_name.casefold(), (other_name, role))
                     continue
                 if attribution.verdict == VERDICT_SCOPED:
-                    if attribution.conflict:
-                        gaps.append(
-                            GapDraft(
-                                gap_type=ledger.GAP_CONFLICTING_SOURCES,
-                                description=(
-                                    "A statement was discarded because the passages it "
-                                    "cites belong to different parts of the issuer's "
-                                    "perimeter (subsidiaries, joint ventures or segments)."
-                                ),
-                                question_key=question.key,
-                                why_it_matters=(
-                                    "One statement cannot carry two scopes, and neither "
-                                    "of them is the Group."
-                                ),
-                                sources_tried=tuple(sorted({e.kind for e in evidence})),
-                            )
-                        )
-                        continue
-                    # A subsidiary's, a joint venture's or a mine's fact: kept, at that
-                    # scope, so no Group-level consumer reads it as the Group's.
+                    # Passages naming two different scopes come back ``unknown`` and are
+                    # kept unscoped (ADR-083 review H3). A subsidiary's, a joint
+                    # venture's or a mine's fact: kept, at that scope, so no Group-level
+                    # consumer reads it as the Group's.
                     entity_scope = attribution.scope_key
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
@@ -3763,8 +3753,9 @@ class LLMInvestigator:
                     )
                 )
                 continue
-            if entity_scope and scope_key in (None, "group"):
-                # ADR-083: the passage's own entity or heading narrows the scope.
+            if entity_scope and scope_key is None:
+                # ADR-083: the passage's own entity or heading narrows an UNTYPED scope.
+                # An evidence-typed scope (``group`` included) is never overridden.
                 scope_key = entity_scope
                 self.diagnostics.statements_scoped_to_entity += 1
             findings.append(
