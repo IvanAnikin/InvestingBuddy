@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from app.services.corpus.filing_evidence import AcquireOutcome
@@ -55,8 +56,12 @@ async def acquire_sec_filing(
     form: str | None,
     cfg: "Settings",
     document_name: str | None = None,
+    filing_date: date | None = None,
 ) -> AcquireOutcome:
     """Fetch, extract, persist and index one SEC filing. Never raises.
+
+    ``filing_date`` (ADR-076 review: anchor) dates the new version and its chunks
+    BEFORE they are indexed, so the search backend indexes the date too.
 
     ``document_name`` (ADR-077) names the document of the filing to read — a results
     6-K's press release or iXBRL statements rather than its cover page. It travels as
@@ -158,7 +163,7 @@ async def acquire_sec_filing(
     # request. A filing left un-indexed by some other path is that path's bug to fix.
     indexed = await _index_acquired_version(
         session, company_id=company_id, accession=accession, cfg=cfg,
-        document_name=document_name,
+        document_name=document_name, filing_date=filing_date,
     )
 
     return AcquireOutcome(
@@ -180,6 +185,7 @@ async def _index_acquired_version(
     accession: str,
     cfg: "Settings",
     document_name: str | None = None,
+    filing_date: date | None = None,
 ) -> int:
     """Index the current version of the filing just acquired. Never raises.
 
@@ -191,7 +197,10 @@ async def _index_acquired_version(
     retrievable, and the readiness predicate says so rather than letting a caller believe
     otherwise.
     """
-    from app.services.corpus.filing_evidence import current_version_for_filing
+    from app.services.corpus.filing_evidence import (
+        current_version_for_filing,
+        stamp_filing_date,
+    )
     from app.services.corpus.indexing import index_version
 
     version = await current_version_for_filing(
@@ -202,6 +211,8 @@ async def _index_acquired_version(
         # `content_hash` dedup does this. Saying nothing was indexed is the truth, and
         # the bridge's own re-read will report the filing unavailable.
         return 0
+    # Dated before indexing (NULL-only, idempotent): the index then carries the date.
+    await stamp_filing_date(session, version_id=version.id, filing_date=filing_date)
 
     try:
         from app.services.corpus.search.factory import get_search_backend

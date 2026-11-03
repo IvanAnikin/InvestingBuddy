@@ -308,12 +308,15 @@ async def newest_published(
     cfg: "Settings",
     company_ids: "Sequence[uuid.UUID]",
 ) -> date | None:
-    """ADR-076 — the publication date of the companies' newest HELD, dated document.
+    """ADR-076 — the publication date of the companies' newest HELD, dated DISCLOSURE.
 
     What the recency pass anchors its window on: "the subject's newest documents" is a
-    fact about the corpus, never about the clock. ``None`` when the corpus is disabled,
-    when the backend cannot say, or when nothing dated is held — the caller then runs
-    no recency pass rather than guessing a window. Never raises.
+    fact about the corpus, never about the clock. Only an issuer / primary disclosure
+    may set it (``CorpusFilters.disclosures_only``, ADR-076 review: anchor): a quote or
+    market-data page stamped with the crawl day once moved the window past the H1 6-K/A
+    it existed to surface. ``None`` when the corpus is disabled, when the backend cannot
+    say, or when no dated disclosure is held — the caller then runs no recency pass
+    rather than guessing a window. Never raises.
     """
     if not getattr(cfg, "v3_corpus_enabled", False) or not company_ids:
         return None
@@ -321,7 +324,9 @@ async def newest_published(
     if not callable(probe):
         return None
     try:
-        value = await probe(CorpusFilters(company_ids=tuple(company_ids)))
+        value = await probe(
+            CorpusFilters(company_ids=tuple(company_ids), disclosures_only=True)
+        )
     except Exception:  # noqa: BLE001 - no anchor means no recency pass, never a failure
         return None
     return value if isinstance(value, date) else None

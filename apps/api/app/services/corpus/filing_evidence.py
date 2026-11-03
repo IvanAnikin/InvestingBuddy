@@ -63,9 +63,10 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.models.research_chunk import ResearchDocumentChunk
 from app.models.research_derivation import ResearchDocumentDerivation
@@ -692,7 +693,63 @@ class FilingAcquirer(Protocol):
         form: str | None,
         cfg: "Settings",
         document_name: str | None = None,
+        filing_date: date | None = None,
     ) -> "AcquireOutcome": ...
+
+
+def filing_date_of(raw: Any) -> date | None:
+    """The SEC filing date as a ``date``, or ``None``. Accepts a ``date``, a
+    ``datetime`` or an ISO ``YYYY-MM-DD`` string (EDGAR submissions ``filingDate``, a
+    6-K index row); anything else is ``None`` — never a guess."""
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    text = str(raw or "").strip()[:10]
+    try:
+        return date.fromisoformat(text) if len(text) == 10 else None
+    except ValueError:
+        return None
+
+
+async def stamp_filing_date(
+    session: Any, *, version_id: uuid.UUID | None, filing_date: Any
+) -> int:
+    """ADR-076 review: anchor — date a filing's corpus version and chunks. Never raises.
+
+    Sets ``published_at`` to the SEC FILING date (never the period end, never the
+    retrieval time) on the version and on every chunk of it, but only where it is NULL:
+    a date already recorded is never overwritten, so this is idempotent and also
+    backfills a filing first ingested undated (CLLS2-5) when it is met again. Returns how
+    many chunks were dated.
+    """
+    when = filing_date_of(filing_date)
+    if version_id is None or when is None:
+        return 0
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                update(ResearchDocumentVersion)
+                .where(
+                    ResearchDocumentVersion.id == version_id,
+                    ResearchDocumentVersion.published_at.is_(None),
+                )
+                .values(published_at=when)
+                .execution_options(synchronize_session="fetch")
+            )
+            result = await session.execute(
+                update(ResearchDocumentChunk)
+                .where(
+                    ResearchDocumentChunk.research_document_version_id == version_id,
+                    ResearchDocumentChunk.published_at.is_(None),
+                )
+                .values(published_at=when)
+                .execution_options(synchronize_session="fetch")
+            )
+        return int(result.rowcount or 0)
+    except Exception:  # noqa: BLE001 - an undated filing is still a usable filing
+        logger.warning("Could not record the filing date on version %s", version_id)
+        return 0
 
 
 @dataclass
@@ -753,8 +810,14 @@ async def ensure_filing_corpus_evidence(
     acquire: FilingAcquirer | None = None,
     ready_only: bool = False,
     document_name: str | None = None,
+    filing_date: Any = None,
 ) -> FilingEvidenceResult:
     """Guarantee that a filing is searchable, or say honestly why it is not.
+
+    ``filing_date`` (ADR-076 review: anchor) is the SEC filing date the caller already
+    holds (EDGAR ``filingDate``, a 6-K index row). A searchable filing's version and
+    chunks are dated with it where they carry no date — on acquisition, and on every
+    re-encounter of a filing first stored undated. Never the period end.
 
     ``document_name`` (ADR-077) names ONE document of the filing — a results 6-K's
     press release or iXBRL statements — and readiness is then judged on that document,
@@ -798,6 +861,9 @@ async def ensure_filing_corpus_evidence(
         session, company_id=company_id, accession=canonical, document_name=document_name
     )
     if state.is_ready:
+        await stamp_filing_date(
+            session, version_id=state.version_id, filing_date=filing_date
+        )
         return FilingEvidenceResult(
             state=STATE_READY,
             accession=canonical,
@@ -842,6 +908,14 @@ async def ensure_filing_corpus_evidence(
 
         acquire = acquire_sec_filing
 
+    # Each only when known, so an acquirer written before it keeps working: the 6-K
+    # document (ADR-077), and the filing date, stamped before indexing so every backend
+    # indexes it (ADR-076 review: anchor).
+    optional: dict[str, Any] = {}
+    if document_name is not None:
+        optional["document_name"] = document_name
+    if filing_date_of(filing_date) is not None:
+        optional["filing_date"] = filing_date_of(filing_date)
     try:
         outcome = await acquire(
             session,
@@ -850,8 +924,7 @@ async def ensure_filing_corpus_evidence(
             accession=canonical,
             form=form,
             cfg=cfg,
-            # Only when named, so an acquirer written before ADR-077 keeps working.
-            **({"document_name": document_name} if document_name is not None else {}),
+            **optional,
         )
     except Exception as exc:  # noqa: BLE001 - acquisition must not end a run
         logger.exception("Filing acquisition failed for %s", canonical)
@@ -875,6 +948,9 @@ async def ensure_filing_corpus_evidence(
         session, company_id=company_id, accession=canonical, document_name=document_name
     )
     if after.is_ready:
+        await stamp_filing_date(
+            session, version_id=after.version_id, filing_date=filing_date
+        )
         return FilingEvidenceResult(
             state=STATE_READY,
             accession=canonical,
@@ -914,7 +990,9 @@ __all__ = [
     "FilingEvidenceState",
     "canonical_accession",
     "ensure_filing_corpus_evidence",
+    "filing_date_of",
     "filing_evidence_state",
+    "stamp_filing_date",
     "is_corpus_search_ready",
 ]
 
@@ -1019,6 +1097,7 @@ async def ensure_core_filings(
             accession=getattr(event, "accession_number", None),
             form=str(getattr(event, "form_type", "")),
             cfg=cfg,
+            filing_date=getattr(event, "filing_date", None),
         )
         out[slot] = {
             "form": str(getattr(event, "form_type", "")),
@@ -1095,6 +1174,7 @@ async def _ensure_results_6k(
         form=str(getattr(event, "form_type", "")),
         cfg=cfg,
         document_name=selection.document_name,
+        filing_date=getattr(event, "filing_date", None),
     )
     return {
         "form": str(getattr(event, "form_type", "")),

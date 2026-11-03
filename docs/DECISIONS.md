@@ -5796,6 +5796,142 @@ byte-for-byte replay of PostgreSQL.
   window. Subject-row (`via_subject`) admission is not part of the pass.
 - No live run yet. Production acceptance needs a LIN and a PYPL rerun after deploy.
 
+### Amendment 2026-11-02 — ADR-076 review: anchor
+**Trigger:** live Cellectis rerun `df36d6f6`. The `recency_corpus` steps logged
+`newest_held: 2026-11-02` (the run day), so the window started on 2026-09-18. The only
+holding dated that day was a Boursorama Sanofi quote page (`unknown_web`, with its date taken
+from the page text). The window therefore missed the H1 2026 6-K/A (filed 2026-09-11) and
+the 2026-09-14 pivot article, which are the documents the pass exists to surface.
+`loop.newest_held_document_date` had the same flaw: a quote page dated today made the
+subject look like it "held a current document".
+
+**Decision.**
+1. **Only an issuer or primary disclosure anchors the window.** There is one rule,
+   `corpus.search.types.is_disclosure`, exposed as the filter
+   `CorpusFilters.disclosures_only`. It uses columns the corpus already has:
+   - the chunk's `source_tier` is in `DISCLOSURE_SOURCE_TIERS`:
+     - `T1_primary_filing` (issuer or regulatory filings);
+     - `T1_primary_company_source` (issuer IR material and releases);
+     - `T2_regulator_or_gov` (venue announcements from the NSM, Euronext, Nordic and SIX
+       connectors);
+   - and EITHER the version has no open-web `source_class` (a connector or bridge
+     document: the SEC bridge, ASX, NSM, Euronext …), OR it is the issuer's own web
+     page: class `company_press_release` or `investor_presentation` with access class
+     `public_issuer`. Those are exactly what `classify._classify_host` assigns under
+     `rule='issuer_domain'`. A PR-wire release is re-labelled `public_web` and does not
+     qualify.
+
+   Quote, market-data, aggregator, `unknown_web`, generic `company_web_page`, press and
+   government pages never anchor the window, whatever their tier.
+   - The memory backend applies the filter in `CorpusFilters._passes`, through
+     `is_disclosure` / `is_disclosure_fields`.
+   - PostgreSQL applies it in `_filter_clauses`: a tier `IN`, then either no web class
+     (`NOT EXISTS`) or an issuer class together with the chunk's `public_issuer` access
+     class.
+   - `retrieval.newest_published` sends the filter.
+   - `loop.newest_held_document_date` now calls `PostgresSearchBackend.newest_published_at`
+     with the same filter, so `acquired_not_read` and the window share one definition.
+
+   Only the **anchor** is restricted. The window still searches every subject chunk dated
+   on or after its start, including web pages and the pivot article.
+2. **The window is 75 days, not 45** (option (a)). Anchoring on disclosures alone fixes
+   this run's anchor, but the next miss is a minor disclosure filed weeks after the
+   results. Cellectis's 2026-10-27 data release is 46 days after the 6-K/A, so a 45-day
+   window anchored on it starts on 2026-09-12 and misses the 6-K/A by one day. A 75-day
+   window starts on 2026-08-13 and includes both the 6-K/A and the pivot. It still stops
+   short of the previous quarter's results, about 91 days back; LIN's 2026-07-30 annual
+   report, 88 days before its 5B, stays outside.
+
+   Option (b), the newest N disclosure documents, would need per-document grouping in both
+   backends. It would also not reach the pivot, because a trade article is not a
+   disclosure. It is the larger change and does no better here.
+3. Everything else in ADR-076 is unchanged: the additive pass, NULL-dated chunks outside a
+   window, `acquired_not_read` and the 120-day staleness rule.
+
+**What this does NOT fix in CLLS3.** The 6-K/A and 20-F chunks are **undated**:
+`corpus.filing_evidence` never sets `published_at` from the filing date (CLLS2-5).
+Cellectis's issuer pages are also classed `unknown_web` (CLLS-5). Under this amendment, the
+CLLS3 corpus therefore holds no dated disclosure, so the pass anchors no window and says
+so ("no dated issuer or primary disclosure is held"). It no longer runs a window anchored
+on the quote page. The 6-K/A reaches the pass only once core-filing chunks carry their
+filing date. The follow-up below adds that date.
+
+**Review of PR #316 (D1–D4).**
+- **D1 (blocker): web exchange and regulatory pages never anchor.**
+  `classify._classify_host` classes EVERY page on an exchange host as
+  `exchange_announcement` at T1. That includes quote pages and news articles:
+  nasdaq.com/market-activity/stocks/clls, nasdaq.com/articles/…, an LSE company page,
+  asx.com.au/markets/company/lin and an otcmarkets.com quote. A nasdaq article dated the
+  run day would have recreated the df36d6f6 failure.
+  - The fix is in the anchor predicate (above), not in the web classifier, which would be
+    a wider change.
+  - Web `exchange_announcement`, web `regulatory_filing` (a web sec.gov copy can be
+    another registrant's filing, ADR-079) and `issuer_filing` never anchor.
+  - The parity test now covers these five URLs, the PR-wire release and every
+    `CLASS_TABLE` class in both backends.
+- **D2: disclosures rank first in the recency pass.** Before harvesting (which caps the
+  items it reads), the hits are ordered with disclosures first (`is_disclosure_fields`),
+  then newest first. Two newer web pages of two chunks each no longer fill
+  `RECENCY_MAX_ITEMS` ahead of the 6-K/A. The step logs `disclosure_items`.
+- **D3: a named stop.** With no dated disclosure, the tool's `recency_window` and the
+  `recency_corpus` step carry `stopped: "no_disclosure_anchor"`.
+- **D4: no in-memory backfill.** `search.factory.get_search_backend` builds a NEW
+  `InMemorySearchBackend` on every call, so there is no shared index to backfill. Any
+  index built after a backfill reads the stamped rows, because `index_version` copies
+  `published_at` from them; a test pins this. A fresh acquisition is stamped before it
+  is indexed.
+
+**Filing dates on SEC corpus chunks (same amendment, CLLS2-5).**
+`ensure_filing_corpus_evidence` takes a `filing_date`: the SEC filing date, never the
+period end.
+- The callers pass what they already hold:
+  - `ensure_core_filings` passes the EDGAR submissions `filingDate` of the 10-K, 20-F,
+    40-F or 10-Q event;
+  - the ADR-077 results-6-K slot passes the selected 6-K's index-row `filing_date`;
+  - the `get_recent_filings` tool bridge passes each item's `filing_date`. This is also
+    the bridge route by which an 8-K reaches the corpus.
+- `filing_evidence.stamp_filing_date` sets `published_at` on the version and on its
+  chunks, with an `UPDATE … WHERE published_at IS NULL` in a SAVEPOINT. It never
+  overwrites a recorded date, is idempotent and never raises.
+  - It runs whenever a filing is found searchable: on a reuse, which backfills filings
+    first stored undated without a migration, and after an acquisition.
+  - `acquire_sec_filing` also stamps the version **before** `index_version`, so a
+    backend that copies the date at index time (the memory backend) carries it too.
+  - The acquirer receives `filing_date` only when one is known, so an acquirer written
+    before this change still works.
+- Scope:
+  - Only the corpus version and its chunks are dated. The V2 `ExtractedDocument.doc_date`
+    is left alone, because `issuer_financials` orders by it.
+  - SEC documents persisted outside the bridge, by the legacy council's
+    `company_evidence` primary-document path (including its ADR-068 8-K EX-99.1
+    selection), are still undated until the bridge meets them.
+  - Period logic runs only at version creation, so a later stamp cannot change a
+    period.
+- Tests (`tests/test_v3_filing_corpus_bridge.py`, plus one PostgreSQL case in the
+  recency file):
+  - an acquired 6-K/A with filing date 2026-09-11 is dated and anchors the window over a
+    quote page dated today;
+  - the window includes it, end to end;
+  - an undated held filing is backfilled, and a recorded date is never overwritten;
+  - the date is stamped before indexing;
+  - the filings tool dates a held filing.
+
+**Tests** (`tests/test_qa_campaign_recency_evidence.py`, 41 run on SQLite plus 2 on
+PostgreSQL):
+- a quote page dated today plus a 6-K dated 52 days earlier: the window is anchored on the
+  6-K and includes it, through both the tool and the investigator pass;
+- a 6-K plus a data release 46 days later: the 75-day window includes the 6-K and the
+  pivot, and a 45-day window would not;
+- with no dated disclosure, no window is anchored, even beside a dated quote page;
+- a `company_web_page` does not anchor the window, and a `company_press_release` does;
+- the disclosure vocabulary is pinned to the taxonomy and to `classify.CLASS_TABLE`;
+- the loop: a quote page, or a T1-tier `company_web_page`, leaves `not_acquired`;
+  `newest_held_document_date` skips the quote page.
+- PostgreSQL (`V3_TEST_POSTGRES_URL`, a UTF8 scratch database migrated to 044 and dropped
+  afterwards): the same quote page plus 6-K case through `PostgresSearchBackend`, the tool
+  and the loop. A parity test checks that `_filter_clauses` and `is_disclosure` admit the
+  same chunks for every web class.
+
 ---
 
 ## ADR-077: A 20-F Filer's Interim Results Are Read From Its Results 6-K
@@ -6205,3 +6341,187 @@ before and after the review fixes.
   out of summaries.
 - **V1 council output is out of scope.** It does not read V3 findings. No live run yet;
   acceptance needs a PYPL rerun after deploy.
+
+## ADR-079: A Web Copy of an EDGAR Filing Is the Issuer's Only When Its CIK Is
+
+**Date:** 2026-11-02 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, live Cellectis rerun `df36d6f6`, defect
+CLLS3-1 (P0). Web search put a Cboe EDGA Exchange, Inc. financial-statement exhibit from
+`sec.gov/Archives/edgar/data/<another CIK>/…` into Cellectis's corpus. F1–F3 said "The
+company operates a single reportable segment: an electronic market…", "29% of its total
+revenues from its largest two customers" and "the Parent Company's CEO is the chief
+operating decision maker". They were labelled "issuer filing", led the executive
+synthesis, and replaced the 20-F's "Therapeutics segment" finding. The same path brought
+Calyxt's FY2022 20-F risk factors into CLLS2.
+
+### Where the class came from
+- `web_research/classify.classify_source`: the host (`publisher_tier(sec.gov/Archives…)`
+  = T1) gives `regulatory_filing`. It is stored on the web version at ingest
+  (`web_research/ingest.py`) for whichever company the search ran for.
+- `director/contracts.evidence_ref_for`: a T1 item maps to `issuer_filing`. Web leads are
+  forced to `third_party_filing` unless `issuer_match` is set, but `search_company_corpus`
+  hits were exempt. So every web EDGAR page in the subject's corpus became the
+  subject's issuer filing, and the finding's `source_kinds` said so.
+- The ADR-066/074 guards key on a named other company or on its own domain. "The
+  company" on sec.gov passes both.
+
+### Decision
+1. **`web_research/edgar_registrant.py`** reads the registrant CIK from an EDGAR URL:
+   `/Archives/edgar/data/<CIK>/`, `ix?doc=/Archives/edgar/data/<CIK>/…`,
+   `browse-edgar?…CIK=`, `data.sec.gov/…/CIK##########.json` and `efts` `ciks=` (one only).
+   - The path is unquoted and `posixpath.normpath`-ed first, so `/data/1627281/../1234/`
+     reads as 1234.
+   - Leading zeros are stripped.
+   - The accession prefix is never used (it is the filing agent's CIK).
+   - A ticker in `CIK=` is not a CIK.
+2. **Verdict per web item on an EDGAR filing page** (`registrant_verdict`):
+   - the URL's CIK is the subject's → `own` → `issuer_filing`;
+   - the subject's CIK is known and the URL's differs → `other` → `third_party_filing`;
+   - **no ADR-075 basis:** `other` only when the SEC directory positively names that CIK
+     as a registrant whose name does not agree with the subject's. Nothing is ever `own`
+     without a basis (review N1). A name-agreeing CIK (ADR-061 `_names_agree`) is only
+     taken out of `other`, so it is `unidentified`. `_names_agree`'s prefix rule would
+     otherwise make "The Sage Group plc" own Sage Therapeutics' 10-K, "Compass Group"
+     Compass Minerals', and "Next plc" Next Bridge Hydrocarbons'. A CIK the directory
+     does not hold, or an unreadable directory, is also `unidentified`. Review D1: `sec_listing_for` also
+     returns None when the directory or a domicile record is unreadable, or the venue is
+     spelled in a way it does not know (OTC, NYSE Arca, XNYS, "New York Stock
+     Exchange"). So None is not proof that the subject is not an SEC registrant;
+   - no CIK in the URL, or a basis whose CIK could not be resolved → `unidentified` →
+     `third_party_filing`: never the issuer's, never dropped;
+   - **`other` that names the subject → `counterparty`** (`third_party_filing`, kept;
+     reviews D2, N2 and N3). This covers a holder's 13D/13G, an insider's Form 3/4/5 and
+     an acquirer's 8-K, S-4 or SC TO. `edgar_registrant.filing_names_subject` decides
+     whether the cited filing names the subject. The filing must carry one of:
+     - the subject's full identifying name, every word in order after legal suffixes are
+       dropped ("Cellectis", "Electronic Arts", "Sage Therapeutics"). A one-word name
+       counts only if it has at least 5 letters, is not a generic word and appears
+       capitalised;
+     - a ticker framed by an exchange ("(NASDAQ: NET)", "NYSE: A", "Nasdaq: CLLS");
+     - on an ownership form only, `issuerTradingSymbol`.
+
+     A bare ticker ("NET INCOME", "A summary…", a CASH line) never names the subject.
+     Neither does one word of a longer name ("electronic", "equity") or "the company".
+     An ownership form is recognised only by EDGAR's own XSL directories
+     (`xslSCHEDULE_13D|13G…/`, `xslF345X0n/`), never by a document name
+     ("exhibit-form-3-of-agreement.htm"). An ownership form that does not name the
+     subject stays `other`.
+
+   sec.gov pages outside the filing archive are already `regulator_publication` (T2) and
+   are not touched.
+3. **The subject** (`LLMInvestigator._resolve_edgar_subject`, once per investigator, only
+   when a web EDGAR page is present):
+   - With a basis: its CIK plus every directory CIK for its ticker, so the sibling line
+     (CLLS for ALCLS) counts as the subject.
+   - Without a basis: no own CIKs; the directory only says which CIKs are another's.
+   - The names matched for `counterparty` are the subject's own name, plus the SEC's name
+     for its CIK when there is a basis.
+   - Any failure leaves nothing known, so every page is `unidentified`.
+4. **Applied in the investigator** (`apply_edgar_registrant`) after acquisition, before
+   the evidence contract reads the question's refs, and again (idempotently) in
+   `_write_up`. The stored `source_class` is not rewritten: a web version is shared by
+   content hash, so "the subject's filing" is a per-run judgement, as with
+   `trust.is_verified_issuer`.
+5. **Statement guard** (beside ADR-066/074, outside peer domains): a statement whose
+   cited items are ALL web pages of another registrant is dropped. It is counted in
+   `statements_about_other_registrant` (diagnostics, pinned). The question gets one
+   `entity_ambiguous` gap naming the registrants by CIK, and by name when the SEC ticker
+   directory knows the CIK. Page text never supplies a name. In `competitive_position` the
+   statement is kept, labelled `third_party_filing`.
+6. **Platform SEC evidence is never re-judged.** The filing bridge
+   (`ensure_filing_corpus_evidence`), core filings and the filings tools produce non-web
+   items (`source_class` None). They were fetched for the subject's own CIK by ADR-075's
+   resolver, so they keep `issuer_filing`.
+7. **Publisher firewall (review D3).** `foreign_publisher` (ADR-066) never reads an item
+   as another company's own site when its class is a publisher's:
+   - `exchange_announcement`;
+   - `regulatory_filing`, `regulator_publication`, `government_publication`,
+     `statistical_agency`;
+   - `major_financial_press`;
+   - `aggregator`.
+
+   With the firewall now live through `ToolSession.db` (`144a46f`), registering
+   "Euronext N.V." or "Nasdaq, Inc." would otherwise drop every euronext.com or
+   nasdaq.com announcement about the subject.
+
+### Replay over the 15 stored campaign reports
+Reports store EDGAR URLs only for platform/V2 items. They do not store the URL of a web
+corpus chunk, so web sec.gov items are identified by origin `sec.gov`.
+
+| Report | Stored EDGAR URLs (own / other) | Web sec.gov items | Findings resting only on them | Under ADR-079 |
+|---|---|---|---|---|
+| ADBE | 5 / 0 | 3 | 6 | kept if Adobe's CIK 796343 (dated 2022-12-02, 2025-11-28 = Adobe FY ends; statements name Adobe) |
+| HON, HON2 | 4, 6 / 0 | 0 | 0 | unchanged |
+| JPM | 6 / 0 | 0 | 0 | unchanged |
+| PYPL, PYPL2, PYPL3 | 4 each / 0 | 0 | 0 | unchanged |
+| CLLS | 0 | 0 | 0 | unchanged |
+| CLLS2 | 0 | 1 (FY2022 risk factors on Calyxt) | 1 (`counter_thesis`) | URL not stored: under CIK 1627281 (Cellectis's own FY2022 20-F) it is kept — a staleness defect, not a registrant one; under Calyxt's CIK it is dropped |
+| CLLS3 | 0 | 1 (Cboe EDGA exhibit) | 3 (F1–F3, `business_model`) | dropped, gap names the CIK; 20-F finding stands |
+| ANTO, ANTO2, CFR, LIN, LIN2 | 0 | 0 | 0 | unchanged (non-SEC) |
+
+No stored EDGAR URL of a subject's own filing changes verdict (33 of 33 `own`, 0 `other`).
+
+The replay was re-run after review fixes D1–D4 and N1–N3. It gives the same counts: no stored URL is an ownership form or a `..` path, and every SEC subject in it has a basis.
+
+### Not changed / known limits
+- **The ADBE verdict is inferred, not read.** The three URLs are in the ledger, not the
+  report. If any is another registrant's, its findings are dropped. That is the
+  intended behaviour.
+- **Admission is unchanged.** Another registrant's page is still stored in the subject's
+  corpus and can still be retrieved. It can no longer be cited as the issuer's word
+  outside peer domains. Filtering at ingest needs the subject's CIK in the web stage.
+- **A multi-filer accession** (a 13D or a tender offer filed under both the filer's and
+  the subject company's CIK) read through the subject's directory counts as `own`.
+- **Without a basis, the subject's own web filing is `unidentified`.** It is kept as
+  `third_party_filing`, not counted as `issuer_filing`, until ADR-075 resolves a basis.
+- **Counterparty detection is lexical.**
+  - A one-word name that is also a capitalised common word ("Target" at the start of a
+    sentence) still counts as naming the subject.
+  - A subject with a short single-word name ("Next", "Sage") is recognised only by an
+    exchange-framed ticker.
+  - A filing that names the subject only in a passage outside the cited excerpt is not
+    recognised.
+- **Mixed support is kept.** A statement citing the subject's 20-F and another
+  registrant's page keeps both kinds and is not dropped.
+- **Ladder stop decisions** inside `_acquire` still see the pre-check kinds. The
+  recorded contract outcome uses the checked kinds.
+- **Not wired:** discovery's council pack and W6 theme runs (no subject CIK), and the V2
+  path.
+
+### Same slice: the ADR-066 publisher firewall was never live
+
+`LLMInvestigator._other_companies` called `execute` on the investigator's `ToolSession`,
+which has no such method (the database handle is `ToolSession.db`). The guard's
+`except Exception` swallowed the `AttributeError`, so in production the registered-companies
+list was always empty and `foreign_publisher` never dropped anything. It now reads through
+`session.db`, the way ADR-079's subject resolution does.
+
+Replay against the 121 companies registered in production and every web publisher in the
+15 stored campaign reports: no news or data host collides with a registered company's
+label. The only collision is `iluka.com` (Iluka Resources) in the two Lindian reports, where
+it drops 4 + 3 findings resting solely on Iluka's own site: Iluka unit costs, production and
+outlook filed as Lindian's (campaign defect LIN-3). That is the behaviour ADR-066 specified.
+
+### ADR-079 review (2026-11-03): an EDGAR page with no registrant in its address
+
+The live Cellectis rerun on `a8f8f8a` (report 55f96fc3) still led with "The company operates
+a single reportable segment: an electronic market…". The page was a Cboe EDGA Exchange
+X-17A-5 PDF at `sec.gov/Archives/edgar/vprr/2600/26000283.pdf`. It is a paper filing, so its
+address carries no CIK. ADR-079 kept every CIK-less EDGAR page as `unidentified`, so the page
+was relabelled `third_party_filing` but nothing was dropped.
+
+**Rule.** A CIK-less EDGAR page whose own text never names the subject is `other`, by the
+strict `filing_names_subject` test (full name in order, or an exchange-framed ticker). A
+statement resting only on such pages is dropped, with an `entity_ambiguous` gap ("an EDGAR
+document with no registrant in its address").
+
+**Exceptions.** None of these is dropped:
+- a CIK-less page that names the subject (kept as `third_party_filing`);
+- a CIK-bearing page that the directory cannot place (still `unidentified`, review D1);
+- any page when nothing is known about the subject (no names).
+
+**Replay over all 15 campaign jobs' fetched sec.gov URLs.** The only CIK-less EDGAR URL is
+this vprr PDF, which appears in CLLS, CLLS2 and CLLS4. Every other URL carries a CIK. The
+"Calyxt" risk factors seen in CLLS2 came from Cellectis's own 2017 20-F (CIK 1627281), so
+that is a staleness defect, not an entity one. `aclx-20251231.htm` (CIK 1786205) is
+another registrant and is already handled.
