@@ -96,6 +96,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from app.core.config import settings as default_settings
+from app.core.outbound_identity import USER_AGENT_HEADER, crawler_user_agent
 from app.core.structured_logging import log_event
 from app.models.web_research import WebFetchAttempt
 from app.services.sources import pinned_transport as _pinned
@@ -106,7 +107,6 @@ from app.services.sources.ingestion_status import (
 )
 from app.services.sources.public_suffix import aregistrable_domain
 from app.services.sources.safe_web_fetcher import (
-    _USER_AGENT,
     BODY_DEADLINE_EXCEEDED,
     BODY_DECOMPRESSION_RATIO,
     BODY_UNSUPPORTED_ENCODING,
@@ -526,7 +526,7 @@ async def _request(
         return _Answer(failure_code=FAILURE_PINNING_UNAVAILABLE)
     kwargs = guarded_client_kwargs(
         timeout=max(1, int(getattr(cfg, "source_connector_timeout_seconds", 10) or 10)),
-        headers={"User-Agent": _USER_AGENT, "Accept": _ACCEPT},
+        headers={USER_AGENT_HEADER: crawler_user_agent(cfg), "Accept": _ACCEPT},
         transport=transport,
     )
     try:

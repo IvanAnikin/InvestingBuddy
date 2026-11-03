@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 from app.integrations.financial_data_provider import (
     CompanyProfileData,
     DataQuality,
@@ -74,8 +75,6 @@ _EXCHANGE_TO_STOOQ_SUFFIX: dict[str, str] = {
     "STO": "SE",
     "SE": "SE",
 }
-
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
 
 
 def _stooq_symbol(ticker: str, exchange: str | None) -> str:
@@ -267,7 +266,7 @@ class StooqProvider(FinancialDataProvider):
         source_url = f"{_STOOQ_BASE_URL}?s={symbol}&i=d"
 
         async with httpx.AsyncClient(
-            headers={"User-Agent": _USER_AGENT},
+            headers={USER_AGENT_HEADER: research_user_agent()},
             timeout=15.0,
             follow_redirects=True,
         ) as client:

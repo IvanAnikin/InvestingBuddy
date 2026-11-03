@@ -54,6 +54,7 @@ from urllib.parse import urlsplit
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 from app.core.structured_logging import log_event
 from app.services.sources.document_discovery import (
     DOC_KIND_ANNUAL_REPORT,
@@ -94,9 +95,8 @@ _logger = logging.getLogger("app.services.sources.sec_filing_documents")
 
 SEC_ALLOWED_DOMAINS: tuple[str, ...] = ("sec.gov",)
 SEC_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
-SEC_USER_AGENT = (
-    "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
-)
+# The SEC fair-access User-Agent is built per request by
+# ``app.core.outbound_identity.research_user_agent`` (ADR-081); there is no copy here.
 
 # Preference order: the richest primary-disclosure form first.
 SUPPORTED_FORMS: tuple[str, ...] = ("10-K", "20-F", "10-Q", "6-K", "8-K")
@@ -865,7 +865,7 @@ async def _fetch_sec_archive_bytes(
         # W0 / D6: no environment proxy may reroute a guarded fetch.
         "trust_env": False,
         "headers": {
-            "User-Agent": SEC_USER_AGENT,
+            USER_AGENT_HEADER: research_user_agent(cfg),
             "Accept": accept,
         },
     }
@@ -1654,7 +1654,6 @@ async def fetch_filing_body(
 __all__ = [
     "SEC_ALLOWED_DOMAINS",
     "SEC_ARCHIVES_BASE",
-    "SEC_USER_AGENT",
     "STRATEGY_SEC_ACCESSION",
     "SUPPORTED_FORMS",
     "SecFilingDocument",

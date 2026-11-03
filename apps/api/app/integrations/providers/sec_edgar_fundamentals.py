@@ -42,6 +42,7 @@ from typing import Any
 
 import httpx
 
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 from app.integrations.financial_data_provider import (
     CompanyProfileData,
     DataQuality,
@@ -83,7 +84,6 @@ class SecExchangeNotSupportedError(ValueError):
 
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _COMPANY_FACTS_URL = f"{_EDGAR_BASE_URL}/api/xbrl/companyfacts/CIK{{cik}}.json"
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
 
 # Annual form types to accept when selecting the most recent filing value
 _ANNUAL_FORMS = {"10-K", "20-F", "10-K/A", "20-F/A"}
@@ -427,7 +427,7 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
             raise SecExchangeNotSupportedError(ticker, exchange)
 
         async with httpx.AsyncClient(
-            headers={"User-Agent": _USER_AGENT},
+            headers={USER_AGENT_HEADER: research_user_agent()},
             timeout=15.0,
         ) as client:
             response = await client.get(_TICKERS_URL)
@@ -502,7 +502,7 @@ class SecEdgarFundamentalsProvider(SecEdgarProvider):
         url = _COMPANY_FACTS_URL.format(cik=padded)
 
         async with httpx.AsyncClient(
-            headers={"User-Agent": _USER_AGENT},
+            headers={USER_AGENT_HEADER: research_user_agent()},
             timeout=30.0,
         ) as client:
             response = await client.get(url)

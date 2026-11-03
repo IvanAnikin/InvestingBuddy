@@ -37,6 +37,7 @@ from typing import Any
 
 import httpx
 
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 from app.integrations.exchange_source_registry import (
     extract_domain,
     resolve_media_tier,
@@ -302,7 +303,7 @@ class GdeltNewsProvider(NewsProvider):
                 resp = await client.get(
                     self._base_url,
                     params=params,
-                    headers={"User-Agent": "InvestingBuddy-Research-Platform/1.0"},
+                    headers={USER_AGENT_HEADER: research_user_agent()},
                 )
                 resp.raise_for_status()
                 payload = resp.json()
