@@ -917,6 +917,21 @@ def _clean(value: Any) -> str | None:
     return text or None
 
 
+def _is_forecast_period(period_key: str, published_at: date | None) -> bool:
+    """True when ``period_key`` had not begun by ``published_at`` under ANY reading.
+
+    The evidence does not say whether its key is fiscal, so the fiscal (lenient) reading
+    is used: a fiscal key may begin up to a year before its calendar reading, and a key
+    that had not begun even then is certainly a forecast. Undated evidence is never one.
+    """
+    if published_at is None:
+        return False
+    from app.services.sources.disclosure_period_policy import period_began_by
+    from app.services.sources.document_period import BASIS_FISCAL_LABEL
+
+    return not period_began_by(period_key, published_at, basis=BASIS_FISCAL_LABEL)
+
+
 def _inherited(
     cited: "list[str]", evidence: "Sequence[_Evidence]"
 ) -> tuple[str | None, str | None, list[str]]:
@@ -930,10 +945,19 @@ def _inherited(
 
     Unknown stays unknown: evidence with no period contributes nothing rather than
     voting for "no period".
+
+    ADR-080 (defensive; the fix is at the source): a period that had not begun when its
+    evidence was published is a forecast, not the period the evidence reports, and it
+    contributes nothing either. QA campaign CLLS5-1: a 6-K published 2026-10-28 held as
+    "2028-H2" discarded the H1 2026 net-loss statement that cited it beside the H1 report.
     """
     by_id = {item.citation_id: item for item in evidence}
     periods: set[str] = {
-        key for c in cited if c in by_id and (key := by_id[c].period_key) is not None
+        key
+        for c in cited
+        if c in by_id
+        and (key := by_id[c].period_key) is not None
+        and not _is_forecast_period(key, by_id[c].published_at)
     }
     scopes: set[str] = {
         key for c in cited if c in by_id and (key := by_id[c].scope_key) is not None

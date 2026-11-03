@@ -25,14 +25,36 @@ its URL as the issuer published it, its leading headings. Nothing is derived
 from a fiscal calendar, a publication date or a company registry, because a
 document that does not state its period simply has none here (``UNKNOWN``), and
 an unknown document period changes no existing behaviour.
+
+ADR-080 (QA campaign CLLS5-1 / CLLS4-2) adds two refusals and one stronger source:
+
+* a mention is read as the document's period only when it is FRAMED as the period the
+  document reports (``date_semantics``). "Cash runway into H2 2028" stamped a 2026
+  strategic-update 6-K "2028-H2"; a runway, a guidance year, a maturity or a readout is
+  now skipped and the scan moves on;
+* a period that had not begun by the document's publication date (``as_of``, when the
+  caller knows it) is a forecast and is skipped the same way. The date only ever
+  REFUSES a period; it never supplies one;
+* ``sec_period_of_report`` reads the regulator's structured period of report (EDGAR
+  ``reportDate``) consistently with the form. Filing metadata outranks every rule here.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any
 
+from app.services.sources.date_semantics import (
+    ROLE_BODY,
+    ROLE_HEADING,
+    ROLE_TITLE,
+    is_reporting_period,
+)
 from app.services.sources.financial_period import (
+    PERIOD_TYPE_ANNUAL,
     PERIOD_TYPE_HALF,
     PERIOD_TYPE_QUARTER,
     UNKNOWN_PERIOD,
@@ -52,6 +74,13 @@ BASIS_PERIOD_END_PHRASE = "period_end_phrase"
 #: FISCAL year (2027-Q1), so it is fiscal for every rule that asks whether the period
 #: had begun when the document was published.
 BASIS_FISCAL_PERIOD_END = "fiscal_period_end_phrase"
+#: ADR-080 — the regulator's structured "period of report" (EDGAR ``reportDate``), read
+#: consistently with the form. Filing METADATA rather than the document's prose, so it
+#: outranks every rule below that reads words.
+BASIS_SEC_PERIOD_OF_REPORT = "sec_period_of_report"
+#: The same, for a quarter whose key names a FISCAL year other than its end year (a June
+#: year-end's quarter ended September 2026 is 2027-Q1): fiscal for the began-by rule.
+BASIS_SEC_FISCAL_PERIOD_OF_REPORT = "sec_fiscal_period_of_report"
 
 #: Hard bound on how much document text is scanned. The period is stated in the
 #: title and the first headings; scanning a whole annual report would only add
@@ -202,34 +231,110 @@ def _normalise(text: str) -> str:
     return _WS_RE.sub(" ", lowered).strip()
 
 
-def _match_fiscal_label(text: str) -> DocumentPeriod | None:
-    for regex in (_FISCAL_FIRST_RE, _PERIOD_FIRST_RE):
-        match = regex.search(text)
+#: ADR-080 — where a sentence ends in body text. Used only to bound the window a date
+#: mention is classified in, so "…FY27 Q1 guidance. Q3 2026 results" does not read the
+#: previous sentence's "guidance" as framing the Q3 label. Matching is unaffected.
+#: A sentence ends only where the next one starts with a capital, a quote or a bracket,
+#: so "Sept. 30, 2026" and "U.S. $5" are never split.
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?;])\s+(?=[A-Z\"'(\[“‘])|\n+")
+
+
+@dataclass(frozen=True)
+class _Source:
+    """One normalised source, with where its segments start and how it is framed."""
+
+    text: str
+    #: Offsets in ``text`` where a segment (a sentence, a heading) starts.
+    bounds: tuple[int, ...]
+    role: str
+
+
+def _source(parts: "list[str] | tuple[str, ...]", role: str) -> _Source:
+    """Normalise each part on its own and join them with one space.
+
+    The joined text is what ``_normalise`` makes of the parts joined with whitespace —
+    the rules read exactly the text they always read — and the segment starts are kept
+    for the classifier.
+    """
+    pieces: list[str] = []
+    bounds: list[int] = []
+    offset = 0
+    for part in parts:
+        piece = _normalise(part)
+        if not piece:
+            continue
+        if pieces:
+            offset += 1
+        bounds.append(offset)
+        pieces.append(piece)
+        offset += len(piece)
+    return _Source(" ".join(pieces), tuple(bounds), role)
+
+
+def _frames_a_reporting_period(source: _Source, start: int, end: int) -> bool:
+    """Is ``source.text[start:end]`` framed as the period the document reports?
+
+    The classification window is the segment(s) the mention sits in."""
+    low = max((b for b in source.bounds if b <= start), default=0)
+    high = min((b for b in source.bounds if b >= end), default=len(source.text))
+    segment = source.text[low:high]
+    return is_reporting_period(segment, start - low, end - low, role=source.role)
+
+
+#: A candidate: the period, and where in the normalised text it was read.
+_Candidate = tuple[DocumentPeriod, int, int]
+
+
+def _overlapping(regex: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
+    """Every match, overlapping ones included: in "…half of 2031 Q3 2026 results" the
+    refused "2031 Q3" must not swallow the "Q3" of "Q3 2026"."""
+    pos = 0
+    while True:
+        match = regex.search(text, pos)
         if match is None:
-            continue
-        year = _expand_year(match.group("year"))
+            return
+        yield match
+        pos = match.start() + 1
+
+
+def _fiscal_label_candidates(text: str) -> Iterator[_Candidate]:
+    for regex in (_FISCAL_FIRST_RE, _PERIOD_FIRST_RE):
+        for match in _overlapping(regex, text):
+            year = _expand_year(match.group("year"))
+            if year is None:
+                break
+            period = _period_of(match.group("kind"), int(match.group("ordinal")), year)
+            if period is None:
+                break
+            yield DocumentPeriod(period, BASIS_FISCAL_LABEL, match.group(0)), *match.span()
+
+
+def _period_label_candidates(text: str) -> Iterator[_Candidate]:
+    for match in _overlapping(_LABEL_RE, text):
+        kind = match.group("kind1") or match.group("kind2")
+        ordinal = match.group("ord1") or match.group("ord2")
+        year_text = match.group("y1") or match.group("y2")
+        year = _expand_year(year_text)
         if year is None:
-            continue
-        period = _period_of(match.group("kind"), int(match.group("ordinal")), year)
-        if period is not None:
-            return DocumentPeriod(period, BASIS_FISCAL_LABEL, match.group(0))
+            return
+        period = _period_of(kind, int(ordinal), year)
+        if period is None:
+            return
+        yield DocumentPeriod(period, BASIS_PERIOD_LABEL, match.group(0)), *match.span()
+
+
+def _first(candidates: Iterator[_Candidate]) -> DocumentPeriod | None:
+    for found, _start, _end in candidates:
+        return found
     return None
 
 
+def _match_fiscal_label(text: str) -> DocumentPeriod | None:
+    return _first(_fiscal_label_candidates(text))
+
+
 def _match_period_label(text: str) -> DocumentPeriod | None:
-    match = _LABEL_RE.search(text)
-    if match is None:
-        return None
-    kind = match.group("kind1") or match.group("kind2")
-    ordinal = match.group("ord1") or match.group("ord2")
-    year_text = match.group("y1") or match.group("y2")
-    year = _expand_year(year_text)
-    if year is None:
-        return None
-    period = _period_of(kind, int(ordinal), year)
-    if period is None:
-        return None
-    return DocumentPeriod(period, BASIS_PERIOD_LABEL, match.group(0))
+    return _first(_period_label_candidates(text))
 
 
 #: The END month of a quarter, only inside an "ended / ending / to / through" clause, so
@@ -289,48 +394,70 @@ def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
     because it is the issuer's own answer to which fiscal year the quarter
     belongs to; this rule is the fallback for a document that never states one.
     """
+    return _first(_period_end_candidates(text))
+
+
+def _period_end_candidates(text: str) -> Iterator[_Candidate]:
+    """Every period-end phrase, in table order and then text order. A phrase whose
+    first reading names no period this model can state is abandoned, exactly as before
+    ADR-080; a later occurrence is read only after an earlier one was REFUSED by the
+    caller (a forward mention, or a period that had not begun)."""
     for phrase, period_type, ordinal in _ORDINAL_WORDS:
         index = text.find(phrase)
-        if index < 0:
-            continue
-        window = text[index : index + _PERIOD_END_WINDOW]
-        year_match = _YEAR_RE.search(window)
-        if year_match is None:
-            continue
-        year = _expand_year(year_match.group(1))
-        if year is None:
-            continue
-        if period_type == PERIOD_TYPE_HALF:
-            # Review round 2, H2 — "half year ended 31 December 2025" is the first half
-            # of a JUNE fiscal year, not calendar H1 2025. A half that ends in another
-            # month than its calendar half's names no half this model can state.
-            end_month = _MONTH_IN_WINDOW_RE.search(window[: year_match.start()])
-            if end_month is not None and end_month.group(1) != ("jun" if ordinal == 1 else "dec"):
-                continue
-        if period_type == PERIOD_TYPE_QUARTER:
-            end_month = _QUARTER_END_MONTH_RE.search(window[: year_match.start()])
-            if end_month is not None:
-                day_text = end_month.group("day_before") or end_month.group("day_after")
-                fiscal_year = _fiscal_year_of_quarter(
-                    ordinal, end_month.group("month"), year,
-                    int(day_text) if day_text else None,
-                )
-                if fiscal_year is None:
-                    continue
-                period = _period_of("q", ordinal, fiscal_year)
-                if period is None:
-                    continue
-                # Only a SHIFTED year is fiscal. A calendar quarter keeps the strict
-                # began-by rule, so "guidance for the first quarter ending March 31,
-                # 2027" published in 2026 is still a forecast (review round 4).
-                basis = (BASIS_FISCAL_PERIOD_END if fiscal_year != year
-                         else BASIS_PERIOD_END_PHRASE)
-                return DocumentPeriod(period, basis, window.strip()[:120])
-        kind = "q" if period_type == PERIOD_TYPE_QUARTER else "h"
-        period = _period_of(kind, ordinal, year)
-        if period is not None:
-            return DocumentPeriod(period, BASIS_PERIOD_END_PHRASE, window.strip()[:120])
-    return None
+        while index >= 0:
+            found = _period_end_at(text, index, period_type, ordinal)
+            if found is None:
+                break
+            yield found
+            index = text.find(phrase, index + 1)
+
+
+def _period_end_at(text: str, index: int, period_type: str, ordinal: int) -> _Candidate | None:
+    window = text[index : index + _PERIOD_END_WINDOW]
+    year_match = _YEAR_RE.search(window)
+    if year_match is None:
+        return None
+    year = _expand_year(year_match.group(1))
+    if year is None:
+        return None
+    end = index + year_match.end()
+    if period_type == PERIOD_TYPE_HALF:
+        # Review round 2, H2 — "half year ended 31 December 2025" is the first half
+        # of a JUNE fiscal year, not calendar H1 2025. A half that ends in another
+        # month than its calendar half's names no half this model can state.
+        end_month = _MONTH_IN_WINDOW_RE.search(window[: year_match.start()])
+        if end_month is not None and end_month.group(1) != ("jun" if ordinal == 1 else "dec"):
+            return None
+    if period_type == PERIOD_TYPE_QUARTER:
+        quarter_end = _QUARTER_END_MONTH_RE.search(window[: year_match.start()])
+        if quarter_end is not None:
+            day_text = quarter_end.group("day_before") or quarter_end.group("day_after")
+            fiscal_year = _fiscal_year_of_quarter(
+                ordinal, quarter_end.group("month"), year,
+                int(day_text) if day_text else None,
+            )
+            if fiscal_year is None:
+                return None
+            period = _period_of("q", ordinal, fiscal_year)
+            if period is None:
+                return None
+            # Only a SHIFTED year is fiscal. A calendar quarter keeps the strict
+            # began-by rule, so "guidance for the first quarter ending March 31,
+            # 2027" published in 2026 is still a forecast (review round 4).
+            basis = (BASIS_FISCAL_PERIOD_END if fiscal_year != year
+                     else BASIS_PERIOD_END_PHRASE)
+            return DocumentPeriod(period, basis, window.strip()[:120]), index, end
+    kind = "q" if period_type == PERIOD_TYPE_QUARTER else "h"
+    period = _period_of(kind, ordinal, year)
+    if period is None:
+        return None
+    return DocumentPeriod(period, BASIS_PERIOD_END_PHRASE, window.strip()[:120]), index, end
+
+
+def _began_by(found: DocumentPeriod, as_of: date | None) -> bool:
+    from app.services.sources.disclosure_period_policy import period_began_by
+
+    return period_began_by(found.period.key or "", as_of, basis=found.basis)
 
 
 def detect_document_period(
@@ -339,6 +466,7 @@ def detect_document_period(
     url: str | None = None,
     headings: "list[str] | tuple[str, ...] | None" = None,
     text: str | None = None,
+    as_of: date | None = None,
 ) -> DocumentPeriod:
     """Resolve the period a document covers from its OWN words. Never raises.
 
@@ -348,27 +476,187 @@ def detect_document_period(
     run strongest-first: a combined fiscal label, then an unambiguous
     four-digit period label, then a period-end sentence.
 
+    ADR-080 — a candidate is SKIPPED, and the scan moves on, when:
+
+    * its mention is not framed as the period the document reports
+      (``date_semantics.classify_date_mention``): "cash runway into H2 2028", "FY27 Q1
+      guidance", "notes maturing Q1 2031", "readout expected H2 2027". In body text an
+      un-framed mention is skipped too — fail closed;
+    * ``as_of`` (the document's publication or filing date) is known and the period had
+      not begun by it (``disclosure_period_policy.period_began_by``, fiscal-aware).
+
     Returns ``UNKNOWN_DOCUMENT_PERIOD`` when the document states no period —
     which is the common case for an annual report, and which leaves every
     existing behaviour exactly as it was.
     """
+    if isinstance(as_of, datetime):
+        as_of = as_of.date()
     try:
         sources = [
-            _normalise(title or ""),
-            _normalise(url or ""),
-            _normalise(" ".join((headings or [])[:_MAX_HEADINGS])),
-            _normalise((text or "")[:_MAX_SCAN_CHARS]),
+            _source([title or ""], ROLE_TITLE),
+            _source([url or ""], ROLE_TITLE),
+            _source(list((headings or [])[:_MAX_HEADINGS]), ROLE_HEADING),
+            _source(_SENTENCE_END_RE.split((text or "")[:_MAX_SCAN_CHARS]), ROLE_BODY),
         ]
-        for rule in (_match_fiscal_label, _match_period_label, _match_period_end_phrase):
+        for rule in (_fiscal_label_candidates, _period_label_candidates,
+                     _period_end_candidates):
             for source in sources:
-                if not source:
+                if not source.text:
                     continue
-                found = rule(source)
-                if found is not None:
+                for found, start, end in rule(source.text):
+                    if rule is not _period_end_candidates and any(
+                        start < b < end for b in source.bounds
+                    ):
+                        # A label is one token pair: "…of 2031. Q3 2026" is not "2031 Q3".
+                        continue
+                    if not _frames_a_reporting_period(source, start, end):
+                        continue
+                    if as_of is not None and not _began_by(found, as_of):
+                        continue
                     return found
     except (AttributeError, TypeError, ValueError):  # pragma: no cover - defensive
         return UNKNOWN_DOCUMENT_PERIOD
     return UNKNOWN_DOCUMENT_PERIOD
+
+
+# ── ADR-080 — the regulator's structured period of report ─────────────────── #
+
+_ANNUAL_SEC_FORMS: frozenset[str] = frozenset({"10-K", "20-F", "40-F"})
+_QUARTERLY_SEC_FORMS: frozenset[str] = frozenset({"10-Q"})
+_INTERIM_SEC_FORMS: frozenset[str] = frozenset({"6-K"})
+#: A period of report more than this long before the filing is not trusted to be one.
+_MAX_REPORT_LAG_DAYS = 400
+#: A period end falls in a month's last week, or (52/53-week years) its first days.
+_MONTH_END_FROM_DAY = 24
+_MONTH_ABBR = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+               "nov", "dec")
+
+
+def _day_of(raw: Any) -> date | None:
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    text = str(raw or "").strip()[:10]
+    try:
+        return date.fromisoformat(text) if len(text) == 10 else None
+    except ValueError:
+        return None
+
+
+def _period_end_month(day: date) -> tuple[int, int] | None:
+    """``(year, month)`` a period ending on ``day`` ends in, or ``None`` for a mid-month
+    day. A 52/53-week period ending in a month's first days ends in the month before."""
+    if day.day <= _WEEK_YEAR_SPILL_DAYS:
+        return (day.year, day.month - 1) if day.month > 1 else (day.year - 1, 12)
+    if day.day >= _MONTH_END_FROM_DAY:
+        return day.year, day.month
+    return None
+
+
+def fiscal_year_end_month_of(report_date: Any) -> int | None:
+    """The month an issuer's fiscal year ends in, read from an ANNUAL filing's period of
+    report — or ``None``. Never a default calendar."""
+    day = _day_of(report_date)
+    found = _period_end_month(day) if day is not None else None
+    return found[1] if found is not None else None
+
+
+def sec_period_of_report(
+    *,
+    form: str | None,
+    report_date: Any,
+    filing_date: Any,
+    fiscal_year_end_month: int | None = None,
+    results_title: str | None = None,
+) -> DocumentPeriod:
+    """The period an SEC filing reports, from EDGAR's ``reportDate``. Never raises.
+
+    Read consistently with the form, and ``UNKNOWN`` whenever it cannot be:
+
+    * **10-K / 20-F / 40-F** → the fiscal year, named by the year it ends in (SEC's
+      ``fy`` convention). A year ending in January or February is named both ways
+      (Walmart / Home Depot), so it states none.
+    * **10-Q** → the fiscal quarter, which needs the fiscal year end
+      (``fiscal_year_end_month``, from the annual filing's own period of report); the
+      fiscal year follows ``_fiscal_year_of_quarter``, the rule the prose reader uses.
+    * **6-K** → a half or a quarter only for an interim-RESULTS document whose own
+      headline (``results_title``) names the period that ends on the period of report.
+      A 6-K's period of report is otherwise just its filing date — nothing is invented.
+
+    Requires the filing date: EDGAR's feed reader fills a missing ``reportDate`` with the
+    filing date, and a period of report on or after the filing is not one.
+    """
+    try:
+        base = (form or "").strip().upper()
+        if base.endswith("/A"):
+            base = base[:-2]
+        report = _day_of(report_date)
+        filed = _day_of(filing_date)
+        if report is None or filed is None:
+            return UNKNOWN_DOCUMENT_PERIOD
+        lag = (filed - report).days
+        if lag <= 0 or lag > _MAX_REPORT_LAG_DAYS:
+            return UNKNOWN_DOCUMENT_PERIOD
+        ends = _period_end_month(report)
+        if ends is None:
+            return UNKNOWN_DOCUMENT_PERIOD
+        end_year, end_month = ends
+        evidence = f"{base} period of report {report.isoformat()}"
+        if base in _ANNUAL_SEC_FORMS:
+            if end_month in (1, 2):
+                return UNKNOWN_DOCUMENT_PERIOD
+            period = ReportingPeriod(PERIOD_TYPE_ANNUAL, end_year, None, str(end_year))
+            return DocumentPeriod(period, BASIS_SEC_PERIOD_OF_REPORT, evidence)
+        if base in _QUARTERLY_SEC_FORMS:
+            return _quarter_of_report(report, end_month, fiscal_year_end_month, evidence)
+        if base in _INTERIM_SEC_FORMS:
+            return _interim_of_report(end_year, end_month, results_title, filed, evidence)
+    except (AttributeError, TypeError, ValueError):  # pragma: no cover - defensive
+        return UNKNOWN_DOCUMENT_PERIOD
+    return UNKNOWN_DOCUMENT_PERIOD
+
+
+def _quarter_of_report(
+    report: date, end_month: int, fiscal_year_end_month: int | None, evidence: str
+) -> DocumentPeriod:
+    if fiscal_year_end_month is None or not 1 <= int(fiscal_year_end_month) <= 12:
+        return UNKNOWN_DOCUMENT_PERIOD
+    offset = (end_month - int(fiscal_year_end_month)) % 12
+    if offset % 3 != 0 or not 1 <= offset // 3 <= 3:
+        # Not a quarter end of this fiscal year (a changed year end), or its fourth
+        # quarter — which no 10-Q reports.
+        return UNKNOWN_DOCUMENT_PERIOD
+    ordinal = offset // 3
+    fiscal_year = _fiscal_year_of_quarter(
+        ordinal, _MONTH_ABBR[report.month - 1], report.year, report.day
+    )
+    if fiscal_year is None:
+        return UNKNOWN_DOCUMENT_PERIOD
+    period = _period_of("q", ordinal, fiscal_year)
+    if period is None:
+        return UNKNOWN_DOCUMENT_PERIOD
+    basis = (BASIS_SEC_FISCAL_PERIOD_OF_REPORT if fiscal_year != report.year
+             else BASIS_SEC_PERIOD_OF_REPORT)
+    return DocumentPeriod(period, basis, evidence)
+
+
+def _interim_of_report(
+    end_year: int, end_month: int, results_title: str | None, filed: date, evidence: str
+) -> DocumentPeriod:
+    if not results_title:
+        return UNKNOWN_DOCUMENT_PERIOD
+    stated = detect_document_period(title=results_title, as_of=filed)
+    if not stated.is_interim or stated.basis not in (BASIS_PERIOD_LABEL,
+                                                      BASIS_PERIOD_END_PHRASE):
+        return UNKNOWN_DOCUMENT_PERIOD
+    period = stated.period
+    span = 6 if period.period_type == PERIOD_TYPE_HALF else 3
+    if period.year != end_year or (period.ordinal or 0) * span != end_month:
+        # The headline names another period than the one that ends on the period of
+        # report: two sources disagree, and neither is chosen.
+        return UNKNOWN_DOCUMENT_PERIOD
+    return DocumentPeriod(period, BASIS_SEC_PERIOD_OF_REPORT, evidence)
 
 
 def document_period_of(
@@ -376,6 +664,7 @@ def document_period_of(
     title: str | None,
     url: str | None,
     extraction: object | None = None,
+    as_of: date | None = None,
 ) -> DocumentPeriod:
     """``detect_document_period`` for an already-extracted document.
 
@@ -386,6 +675,9 @@ def document_period_of(
 
     Duck-typed on purpose: this module stays free of extractor imports so it
     remains a pure value layer. Never raises.
+
+    ``as_of`` (ADR-080) is the document's publication or filing date when the caller
+    knows it: a period that had not begun by then is a forecast and is skipped.
     """
     headings: list[str] = []
     texts: list[str] = []
@@ -403,7 +695,7 @@ def document_period_of(
     except (AttributeError, TypeError):  # pragma: no cover - defensive
         headings, texts = [], []
     return detect_document_period(
-        title=title, url=url, headings=headings, text=" ".join(texts)
+        title=title, url=url, headings=headings, text="\n".join(texts), as_of=as_of
     )
 
 
@@ -414,9 +706,13 @@ __all__ = [
     "BASIS_FISCAL_PERIOD_END",
     "BASIS_PERIOD_END_PHRASE",
     "BASIS_PERIOD_LABEL",
+    "BASIS_SEC_FISCAL_PERIOD_OF_REPORT",
+    "BASIS_SEC_PERIOD_OF_REPORT",
     "BASIS_UNKNOWN",
     "UNKNOWN_DOCUMENT_PERIOD",
     "DocumentPeriod",
     "detect_document_period",
     "document_period_of",
+    "fiscal_year_end_month_of",
+    "sec_period_of_report",
 ]

@@ -803,8 +803,14 @@ class TestEvidenceIntegrityFixes:
         assert not document_period_for(title=title, url=None, extraction=None,
                                        title_only=True,
                                        published_at=_date(2026, 9, 1)).is_known
-        assert document_period_for(title=title, url=None, extraction=None,
-                                   title_only=True,
+        # ADR-080: "Q1 2028 first production" names when an EVENT happens, never the
+        # period the document reports — refused at any date. A period that had begun is
+        # still kept when the title frames it as the document's own.
+        assert not document_period_for(title=title, url=None, extraction=None,
+                                       title_only=True,
+                                       published_at=_date(2028, 4, 2)).is_known
+        assert document_period_for(title="Pensana Plc - Q1 2028 production update",
+                                   url=None, extraction=None, title_only=True,
                                    published_at=_date(2028, 4, 2)).is_known
         # A fiscal quarter of a June year-end began before its calendar reading
         # (code review): kept, while a fiscal year still years away is not.

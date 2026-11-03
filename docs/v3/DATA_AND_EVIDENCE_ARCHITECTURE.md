@@ -97,6 +97,18 @@ reads a year **only** where it sits beside the document's own name for itself
 ("Annual Report 2025"), refuses when two candidate years disagree, and is
 corpus-only: it never reaches a fact's period, and a test enforces that.
 
+**A forward date is never a document's period (ADR-080).** A document's period is
+taken, in priority order, from: structured filing metadata (EDGAR's period of report,
+read with the form); a reporting-period heading; the title; a fact's own context; and
+only then body text. Body text counts only when the mention is framed as the period
+the document reports (`sources/date_semantics.py`). A cash runway, a guidance year, a
+maturity, a deadline or a readout date is skipped, and so is any period that had not
+begun when the document was published. This applies on every period policy. A filing
+whose period came from its period of report is keyed by its address, so it never
+merges with the issuer's own report of the same period. When the filing bridge meets a
+filing again, it clears a stored forecast period from that version and its chunks
+(`reconcile_filing_period`).
+
 **Retention is a policy field, not a code branch.** Whether raw bytes may be
 stored is `rights_policy` on the version (see
 [SECURITY_DATA_GOVERNANCE_AND_LICENSING.md](SECURITY_DATA_GOVERNANCE_AND_LICENSING.md)).

@@ -223,13 +223,15 @@ class TestProvenanceAndPeriod:
         version = (await session.execute(select(ResearchDocumentVersion))).scalar_one()
         assert version.period_key is None  # NOT 2028-Q1: missing means missing
 
-    async def test_without_the_policy_the_body_forecast_would_stamp_it(self, session):
-        """The guard is load-bearing: the default body read DOES take the forecast."""
+    async def test_without_the_policy_the_body_forecast_is_still_refused(self, session):
+        """ADR-080: this test used to show the default body read TAKING the forecast
+        ("First production is expected in Q1 2028"). A forward mention is now refused on
+        every path, title-only or not."""
         from app.models.research_document import ResearchDocumentVersion
 
         await _persist(session, title="Project update", policy=None)
         version = (await session.execute(select(ResearchDocumentVersion))).scalar_one()
-        assert version.period_key is not None and "2028" in version.period_key
+        assert version.period_key is None
 
     async def test_the_official_title_still_states_a_real_period(self, session):
         from app.models.research_document import ResearchDocumentVersion
@@ -413,9 +415,16 @@ class TestTitleOnlyEverywhere:
                                      url="https://x.example/q1-2028.html",
                                      extraction=extraction, title_only=True)
         assert period.basis == "unknown" and period.period.year is None
+        # What the policy prevents: the URL is read without it…
+        url_read = document_period_for(title="Project update",
+                                       url="https://x.example/q1-2028.html",
+                                       extraction=extraction, title_only=False)
+        assert url_read.period.year == 2028
+        # …while the body's forecast ("expected in Q1 2028") is refused on every path
+        # since ADR-080.
         body_read = document_period_for(title="Project update", url=None,
                                         extraction=extraction, title_only=False)
-        assert body_read.period.year == 2028  # what the policy prevents
+        assert body_read.period.year is None
 
     async def test_the_facts_default_period_is_title_only_on_the_live_path(self, monkeypatch):
         """``_artifact_from_fetch`` validates facts against the document period; with

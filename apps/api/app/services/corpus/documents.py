@@ -58,7 +58,11 @@ from app.services.sources.disclosure_period_policy import (
     document_period_for,
     is_title_only,
 )
-from app.services.sources.document_period import DocumentPeriod
+from app.services.sources.document_period import (
+    BASIS_SEC_FISCAL_PERIOD_OF_REPORT,
+    BASIS_SEC_PERIOD_OF_REPORT,
+    DocumentPeriod,
+)
 from app.services.sources.redaction import canonicalize_source_url
 
 if TYPE_CHECKING:
@@ -87,6 +91,12 @@ _DATE_SOURCE_MAX = 20
 _SOURCE_CLASS_MAX = 40
 
 STATUS_EXTRACTED = "extracted"
+
+#: ADR-080 — periods read from a regulator's structured filing metadata (EDGAR's period
+#: of report). Such a document is keyed by its address, never by "<kind>:<period>".
+_FILING_METADATA_BASES: frozenset[str] = frozenset(
+    {BASIS_SEC_PERIOD_OF_REPORT, BASIS_SEC_FISCAL_PERIOD_OF_REPORT}
+)
 
 
 def _utcnow() -> datetime:
@@ -259,6 +269,13 @@ async def upsert_document_version(
         # document falls back to the rule that reads a year only beside the document's
         # own name for itself.
         period_key, period_type, period_basis = None, None, None
+    if period_key and not _period_began_by(period_key, payload.published_at, period_basis):
+        # ADR-080 — on EVERY policy, not only title-only: a period that had not STARTED
+        # when the document was published is a forecast. QA campaign CLLS5-1: a 6-K
+        # published 2026-10-28 said its cash runway reached "into H2 2028", and the body
+        # read stored it as an interim report for 2028-H2. Refused before the annual
+        # fallback below, so a forecast never blocks the document's own name for itself.
+        period_key, period_type, period_basis = None, None, None
     if period_key is None:
         # ``document_period`` found nothing, which for an annual report is the
         # normal outcome — it refuses a bare year on purpose. Fall back to the
@@ -272,9 +289,7 @@ async def upsert_document_version(
             url=None if payload.period_policy == PERIOD_POLICY_TITLE_ONLY else canonical,
         )
     title_only = payload.period_policy == PERIOD_POLICY_TITLE_ONLY
-    if title_only and period_key and not _period_began_by(
-        period_key, payload.published_at, period_basis
-    ):
+    if period_key and not _period_began_by(period_key, payload.published_at, period_basis):
         # A period that had not even STARTED when the document was published is a
         # forecast, wherever it was read — a title says "Q1 2028 first production
         # update" as readily as a body does. Missing is honest; a future period is not.
@@ -283,9 +298,14 @@ async def upsert_document_version(
     # "<kind>:<period>": a half-year report and the results presentation of the same
     # half are two documents, and keying both "interim_report:2025-H1" made the later
     # fetch supersede the report and drop it out of current-only search.
+    #
+    # ADR-080: so is a filing whose period came from the regulator's period of report.
+    # A 20-F and the issuer's own annual report of the same year are two documents;
+    # keying both "annual_report:2025" would make one supersede the other.
+    address_keyed = title_only or period_basis in _FILING_METADATA_BASES
     key = document_key_for(
-        document_type=None if title_only else doc_type,
-        period_key=None if title_only else period_key,
+        document_type=None if address_keyed else doc_type,
+        period_key=None if address_keyed else period_key,
         canonical_url=canonical,
     )
 
@@ -531,13 +551,19 @@ async def ingest_extracted_document(
     title_only = is_title_only(
         policy=getattr(artifact, "period_policy", None), source_type=document.source_type
     )
-    period = document_period_for(
-        title=getattr(artifact, "title", None),
-        url=getattr(artifact, "source_url", None),
-        extraction=extraction,
-        title_only=title_only,
-        published_at=document.doc_date,
-    )
+    # ADR-080 priority (1): the regulator's structured period of report, when the
+    # acquirer knew it, outranks everything read from the document's words.
+    structured = getattr(artifact, "structured_period", None)
+    if isinstance(structured, DocumentPeriod) and structured.is_known:
+        period = structured
+    else:
+        period = document_period_for(
+            title=getattr(artifact, "title", None),
+            url=getattr(artifact, "source_url", None),
+            extraction=extraction,
+            title_only=title_only,
+            published_at=document.doc_date,
+        )
     payload = DocumentVersionInput(
         content_hash=document.content_hash,
         canonical_url=document.canonical_url,
