@@ -107,7 +107,10 @@ begun when the document was published. This applies on every period policy. A fi
 whose period came from its period of report is keyed by its address, so it never
 merges with the issuer's own report of the same period. When the filing bridge meets a
 filing again, it clears a stored forecast period from that version and its chunks
-(`reconcile_filing_period`).
+(`reconcile_filing_period`). Every V3 research run also starts with a bounded sweep of
+the company's current versions (`corpus/period_sweep.py`). The sweep clears any dated
+period that had not begun at publication, from the version, its chunks and a document
+carrying the same period. Its counts are recorded as `period_sweep` on the run outcome.
 
 **Retention is a policy field, not a code branch.** Whether raw bytes may be
 stored is `rights_policy` on the version (see

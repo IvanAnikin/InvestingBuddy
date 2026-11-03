@@ -6982,6 +6982,27 @@ The cause, confirmed in code:
    - The document key is an identity and is not rewritten.
 
    Without this, the live rerun would reuse the CLLS rows stored as 2027-H2 and 2028-H2.
+
+   **Start-of-run sweep** (`corpus/period_sweep.sweep_forecast_periods`). The bridge repair
+   reaches only filings the run meets again. Every V3 research run (`v3_pipeline._run`,
+   corpus on) therefore first sweeps the subject company's corpus, before
+   `ensure_core_filings` and whether or not anything is acquired.
+   - Scope: every CURRENT version of the company's documents with a period and a
+     `published_at`, from any transport (SEC, IR PDF, NSM/ASX, web).
+   - Rule: a period that had not begun by `published_at` is cleared, read the way the
+     corpus write path reads it (`period_began_by`: strict for a calendar basis, lenient
+     only for a fiscal basis). It is cleared on the version, on that version's chunks
+     carrying the same key, and on the document when it carries the same key. Nothing is
+     filled.
+   - Bounds: one SELECT of at most 5,000 versions (a capped sweep says so, and the next run
+     continues), then three UPDATEs per stale key per batch of 500 ids. It runs in a
+     savepoint, is flush-only and never raises.
+   - The counts are recorded as `period_sweep` on the run's outcome and report payload
+     (versions examined and cleared, chunks cleared, documents cleared, `capped`, `error`).
+     A failure adds a `degraded` line.
+
+   The live CLLS 6-K stored as 2027-H2 and published 2026-10-28 is cleared by this sweep
+   even though the guard's lenient reading (item 6) would let it vote.
 6. **Investigator guard** (`_inherited`, defensive). A cited period that had not begun by
    its evidence's published date is a forecast and does not vote. The guard does not know
    whether a key is fiscal, so it uses the lenient fiscal reading: a key counts as a forecast
@@ -7008,8 +7029,10 @@ The cause, confirmed in code:
 - **The 10-Q quarter needs the annual filing in the same EDGAR list.** On the filings-tool
   path, which has no fiscal year end and no headline, only annual forms get a period of
   report.
-- **The repair runs only when the bridge meets the filing again.** Rows never re-encountered
-  keep their stored period until then. Search indexes outside PostgreSQL that copied the
-  old period are refreshed only when the version is re-indexed.
+- **Repair and sweep need a publication date.** An undated version keeps its stored period
+  until the bridge dates it (`stamp_filing_date`), which only happens for SEC filings. The
+  sweep reaches only the researched company's own current versions. Search indexes outside
+  PostgreSQL that copied the old period are refreshed only when the version is re-indexed.
 - **The guard's lenient reading** still lets a forecast up to 12 months ahead vote (a
-  "2027-H2" key on a document published 2026-10-28). Items 2–5 fix that at the source.
+  "2027-H2" key on a document published 2026-10-28). For dated corpus rows the start-of-run
+  sweep clears such keys first. Items 2–5 fix it at the source.

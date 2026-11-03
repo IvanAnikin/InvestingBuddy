@@ -167,6 +167,10 @@ class V3ResearchOutcome:
     #: the platform held, parsed and read per question. EMPTY — and absent from
     #: ``to_dict()`` — when the held-document inventory is unknown.
     primary_document_coverage: dict[str, Any] = field(default_factory=dict)
+    #: ADR-080 — what the start-of-run sweep of the company's corpus did: forecast
+    #: periods (not begun by the document's publication date) cleared from versions,
+    #: chunks and documents. EMPTY — and absent from ``to_dict()`` — when the corpus is off.
+    period_sweep: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -184,6 +188,8 @@ class V3ResearchOutcome:
             payload["not_meaningful_metrics"] = dict(self.not_meaningful_metrics)
         if self.primary_document_coverage:
             payload["primary_document_coverage"] = dict(self.primary_document_coverage)
+        if self.period_sweep:
+            payload["period_sweep"] = dict(self.period_sweep)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -466,6 +472,20 @@ async def _run(
             outcome.degraded.append(
                 f"corpus search unavailable ({type(exc).__name__}); "
                 "the internal corpus was not searched"
+            )
+
+    # ADR-080 — before anything reads or adds to the corpus: forecast periods stored on
+    # the subject's documents before ADR-080 (a 6-K held as "2027-H2" because its body
+    # said "cash runway into H2 2027") are cleared, whether or not this run ever meets
+    # those documents again. Bounded, flush-only, never raises.
+    if getattr(cfg, "v3_corpus_enabled", False) and getattr(company, "id", None):
+        from app.services.corpus.period_sweep import sweep_forecast_periods
+
+        sweep = await sweep_forecast_periods(session, company_id=company.id)
+        outcome.period_sweep = sweep.to_dict()
+        if sweep.error:
+            outcome.degraded.append(
+                f"stored forecast periods could not be swept ({sweep.error})"
             )
 
     # V3.18 live acceptance — the corpus the specialists search must be INDEXED. A

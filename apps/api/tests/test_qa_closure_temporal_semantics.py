@@ -741,3 +741,179 @@ def test_an_undated_period_still_votes() -> None:
     ]
     _period, _scope, conflicts = _inherited(["a", "b"], evidence)
     assert conflicts
+
+
+# --------------------------------------------------------------------------- #
+# 6. The start-of-run sweep — rows no run will ever re-encounter               #
+# --------------------------------------------------------------------------- #
+
+
+async def _held(  # noqa: ANN202
+    session, company, *, period_key: str | None, published: date | None,  # noqa: ANN001
+    basis: str | None = BASIS_PERIOD_LABEL, doc_period: str | None = "same",
+    is_current: bool = True, url: str | None = None,
+):
+    """One document → version → two chunks, as the corpus holds them."""
+    from app.models.research_chunk import ResearchDocumentChunk
+    from app.models.research_derivation import ResearchDocumentDerivation
+    from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+
+    now = datetime.now(timezone.utc)
+    period_type = PERIOD_TYPE_HALF if period_key and "H" in period_key else (
+        "quarter" if period_key else None)
+    stored_doc_period = period_key if doc_period == "same" else doc_period
+    doc = ResearchDocument(
+        id=uuid.uuid4(), company_id=company.id,
+        document_key=f"url:{uuid.uuid4().hex[:16]}", document_type="interim_report",
+        period_key=stored_doc_period, period_type=period_type if stored_doc_period else None,
+    )
+    session.add(doc)
+    await session.flush()
+    version = ResearchDocumentVersion(
+        id=uuid.uuid4(), research_document_id=doc.id, content_hash=uuid.uuid4().hex * 2,
+        canonical_url=url or f"https://issuer.test/{uuid.uuid4().hex[:8]}.pdf",
+        transport="company_ir", source_tier="T1_primary_company_source",
+        access_class="public_issuer", extraction_status="extracted", retrieved_at=now,
+        is_current=is_current, period_key=period_key, period_type=period_type,
+        period_basis=basis if period_key else None, published_at=published,
+    )
+    session.add(version)
+    await session.flush()
+    deriv = ResearchDocumentDerivation(
+        id=uuid.uuid4(), research_document_version_id=version.id, pipeline_version=15,
+        extraction_profile="live", extraction_method="html", status="complete",
+        is_active=True, pages_persisted=1, page_count=1, char_count=30,
+    )
+    session.add(deriv)
+    await session.flush()
+    for n in (1, 2):
+        session.add(ResearchDocumentChunk(
+            id=uuid.uuid4(), chunk_id=f"{version.id}:{n}", derivation_id=deriv.id,
+            research_document_version_id=version.id, company_id=company.id, ordinal=n,
+            kind="prose", text="Cash runway into H2 2027.", char_start=0, char_end=25,
+            indexable=True, indexed_at=now, source_tier="T1_primary_company_source",
+            access_class="public_issuer", period_key=period_key, period_type=period_type,
+            published_at=published,
+        ))
+    await session.flush()
+    return doc, version
+
+
+async def test_the_sweep_clears_every_stored_forecast_and_nothing_else(session) -> None:  # noqa: ANN001
+    from app.services.corpus.period_sweep import sweep_forecast_periods
+    from app.services.sources.document_period import BASIS_FISCAL_LABEL
+
+    company = await _company(session)
+    other = Company(id=uuid.uuid4(), ticker="OTHR", exchange="NASDAQ", name="Other",
+                    status="new")
+    session.add(other)
+    await session.flush()
+    # The live CLLS row: 2027-H2 on a 6-K published 2026-10-28. The guard's lenient
+    # reading lets it vote; the sweep's STRICT calendar reading clears it.
+    pivot = await _held(session, company, period_key="2027-H2", published=PUBLISHED)
+    far = await _held(session, company, period_key="2028-H2", published=PUBLISHED)
+    real = await _held(session, company, period_key="2026-H1", published=date(2026, 9, 11))
+    fiscal = await _held(session, company, period_key="2027-Q1", basis=BASIS_FISCAL_LABEL,
+                         published=date(2026, 7, 17))
+    undated = await _held(session, company, period_key="2028-H2", published=None)
+    superseded = await _held(session, company, period_key="2028-H2", published=PUBLISHED,
+                             is_current=False)
+    other_doc = await _held(session, company, period_key="2027-H2", published=PUBLISHED,
+                            doc_period="2026-H1")
+    foreign = await _held(session, other, period_key="2028-H2", published=PUBLISHED)
+
+    result = await sweep_forecast_periods(session, company_id=company.id)
+    assert result.error is None
+    assert result.versions_examined == 5  # current, dated, with a period, this company
+    assert (result.versions_cleared, result.chunks_cleared,
+            result.documents_cleared) == (3, 6, 2)
+
+    for doc, version in (pivot, far):
+        doc, version, chunks = await _rows(session, doc.id, version.id)
+        assert version.period_key is None and version.period_basis is None
+        assert doc.period_key is None
+        assert all(c.period_key is None and c.period_type is None for c in chunks)
+    doc, version, chunks = await _rows(session, other_doc[0].id, other_doc[1].id)
+    assert version.period_key is None and all(c.period_key is None for c in chunks)
+    assert doc.period_key == "2026-H1", "a document carrying another period is kept"
+    for doc, version, key in ((real[0], real[1], "2026-H1"),
+                              (fiscal[0], fiscal[1], "2027-Q1"),
+                              (undated[0], undated[1], "2028-H2"),
+                              (superseded[0], superseded[1], "2028-H2"),
+                              (foreign[0], foreign[1], "2028-H2")):
+        doc, version, chunks = await _rows(session, doc.id, version.id)
+        assert version.period_key == key and doc.period_key == key
+        assert all(c.period_key == key for c in chunks)
+
+    again = await sweep_forecast_periods(session, company_id=company.id)
+    assert (again.versions_cleared, again.chunks_cleared, again.documents_cleared) == (0, 0, 0)
+
+
+async def test_the_sweep_is_bounded_and_reports_the_cap(session) -> None:  # noqa: ANN001
+    from app.services.corpus.period_sweep import sweep_forecast_periods
+
+    company = await _company(session)
+    for _ in range(3):
+        await _held(session, company, period_key="2028-H2", published=PUBLISHED)
+    first = await sweep_forecast_periods(session, company_id=company.id, limit=2)
+    assert first.capped is True and first.versions_cleared == 2
+    assert first.to_dict()["capped"] is True
+    second = await sweep_forecast_periods(session, company_id=company.id, limit=2)
+    assert second.versions_cleared == 1 and second.capped is False
+
+
+async def test_the_sweep_never_raises() -> None:
+    from app.services.corpus.period_sweep import sweep_forecast_periods
+
+    class _Broken:
+        def begin_nested(self):  # noqa: ANN202
+            raise RuntimeError("no database")
+
+    result = await sweep_forecast_periods(_Broken(), company_id=uuid.uuid4())
+    assert result.error == "RuntimeError" and result.versions_cleared == 0
+    assert (await sweep_forecast_periods(_Broken(), company_id=None)).error is None
+
+
+async def test_every_research_run_sweeps_first_even_with_nothing_acquired(
+    session, monkeypatch  # noqa: ANN001
+) -> None:
+    """The V3 pipeline sweeps the company's corpus before anything else touches it."""
+    from app.services.corpus import filing_evidence
+    from app.services.pipeline import v3_pipeline as v3
+
+    order: list[str] = []
+    real_core = filing_evidence.ensure_core_filings
+
+    async def _core(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        order.append("core_filings")
+        return await real_core(*a, **k)
+
+    monkeypatch.setattr(filing_evidence, "ensure_core_filings", _core)
+    from app.services.corpus import period_sweep
+
+    real_sweep = period_sweep.sweep_forecast_periods
+
+    async def _sweep(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        order.append("sweep")
+        return await real_sweep(*a, **k)
+
+    monkeypatch.setattr(period_sweep, "sweep_forecast_periods", _sweep)
+
+    company = await _company(session)
+    pivot = await _held(session, company, period_key="2027-H2", published=PUBLISHED)
+    cfg = _cfg(app_env="test", v3_pipeline_enabled=True, v3_agent_tools_enabled=True,
+               v3_filings_tool_enabled=False, v3_filing_body_bridge_enabled=False,
+               v3_run_max_web_searches=0, v3_artifact_store_backend="none")
+    outcome = await v3.run_v3_research(session, company, cfg=cfg)
+    assert order[:2] == ["sweep", "core_filings"]
+    assert outcome.period_sweep["versions_cleared"] == 1
+    assert outcome.period_sweep["chunks_cleared"] == 2
+    assert outcome.to_dict()["period_sweep"] == outcome.period_sweep
+    _doc, version, _chunks = await _rows(session, pivot[0].id, pivot[1].id)
+    assert version.period_key is None
+
+
+def test_without_the_corpus_the_outcome_has_no_sweep_key() -> None:
+    from app.services.pipeline import v3_pipeline as v3
+
+    assert "period_sweep" not in v3.V3ResearchOutcome().to_dict()
