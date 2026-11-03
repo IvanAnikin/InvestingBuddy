@@ -214,7 +214,9 @@ def test_every_outbound_client_imports_the_central_builder():
 
 
 def test_default_contact_is_the_service_mailbox():
-    assert default_settings.outbound_contact == DEFAULT_OUTBOUND_CONTACT
+    from app.core.config import Settings
+
+    assert Settings.model_fields["outbound_contact"].default == DEFAULT_OUTBOUND_CONTACT
     assert contact_refusal_reason(DEFAULT_OUTBOUND_CONTACT, identity_tokens=()) is None
 
 
@@ -703,3 +705,17 @@ def test_sec_get_keeps_the_sec_spacing_across_invocations(tmp_path, monkeypatch)
     )
     assert code == helper.EXIT_OK
     assert slept and abs(slept[0] - 0.3) < 1e-6
+
+
+@pytest.mark.parametrize(
+    ("contact", "tokens"),
+    [
+        ("research@investingbuddy.com", {"investingbuddy"}),
+        ("ops@rootstock-research.com", {"root"}),
+        ("research@ivanhoe-capital.com", {"ivan"}),
+    ],
+)
+def test_organisation_domain_is_not_a_personal_identity(contact, tokens):
+    """PR #319 review L1: a login or a hostname label that happens to occur in an
+    organisation's DOMAIN never refuses that organisation's service mailbox."""
+    assert contact_refusal_reason(contact, identity_tokens=tokens) is None

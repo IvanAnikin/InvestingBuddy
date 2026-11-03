@@ -193,9 +193,12 @@ def contact_refusal_reason(
         t = token.strip().lower()
         if not t:
             continue
-        if t in (value, local, domain) or t == domain.split(".", 1)[0]:
+        # Only the LOCAL part names a person. The domain names an organisation, so a
+        # login "root" or a hostname "investingbuddy" never refuses a service mailbox on
+        # an organisation's domain (PR #319 review L1).
+        if t in (value, local, domain):  # a full hostname as the domain is a machine
             return "matches_local_identity"
-        if len(t) >= _MIN_SUBSTRING_TOKEN and t in value:
+        if len(t) >= _MIN_SUBSTRING_TOKEN and t in local:
             return "derived_from_local_identity"
     return None
 

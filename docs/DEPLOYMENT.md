@@ -1197,7 +1197,7 @@ report IDs, SQL evidence, and the two corrective-hotfix root causes.
   test exercises real TLS/SNI against `sec.gov` or an issuer CDN.
 - **H2. SEC access preconditions.** Confirm `company_identity.cik` is populated for
   AAPL — a NULL CIK makes the whole SEC body path a silent no-op. Confirm SEC
-  returns 200 (not 403) for the declared `SEC_USER_AGENT`, and that its contact
+  returns 200 (not 403) for `research_user_agent()` (contact from `OUTBOUND_CONTACT`, ADR-081), and that its contact
   mailbox is real per SEC fair-access policy.
 - **I. Timing.** Discovery + fetch + extraction durations recorded; total analysis
   stays well under the ~230s gateway (no 502/504); SEC throttle observed.
