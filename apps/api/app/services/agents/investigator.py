@@ -707,6 +707,28 @@ def _raw_metrics(tool: str, item: dict[str, Any]) -> frozenset[str]:
     return frozenset(carried)
 
 
+#: Unicode categories that never reach a prompt raw: controls, format characters,
+#: surrogates and the line / paragraph separators (U+2028/2029, and NEL in Cc). With
+#: ``ensure_ascii=False`` the renderer's fixed blocklist was the only guard, and it let
+#: these through — a U+2028 could fake a new evidence line (PR #321 security F2).
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def _escape_invisible(serialised: str) -> str:
+    """``serialised`` with every invisible / line-breaking character as a ``\\uXXXX``
+    escape — inert text, as it was before ``ensure_ascii=False``. JSON already escapes
+    the C0 controls, so what remains are the non-ASCII ones."""
+    import unicodedata
+
+    if serialised.isascii():
+        return serialised
+    return "".join(
+        f"\\u{ord(ch):04x}" if ord(ch) > 0x7F and unicodedata.category(ch) in _INVISIBLE_CATEGORIES
+        else ch
+        for ch in serialised
+    )
+
+
 def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence | None:
     citation = _citation_of(item)
     if not citation:
@@ -771,6 +793,8 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
             # is never rendered, so it keeps the escapes (W3 S-M1).
             ensure_ascii=not untrusted,
         )
+        if untrusted:
+            text = _escape_invisible(text)
     else:
         text = json.dumps(
             {k: v for k, v in item.items() if k not in {"payload", "raw"}},

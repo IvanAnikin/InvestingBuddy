@@ -753,14 +753,27 @@ def document_key(item: Mapping[str, Any]) -> str:
     return str(item.get("canonical_url") or item.get("title") or "").strip()
 
 
+#: An SEC-style form label ("10-Q", "6-K/A", "20-F"); anything else is not a form.
+_FORM_RE = re.compile(r"^[0-9A-Z][0-9A-Z/-]{0,9}$")
+#: A platform document-kind label ("annual_report", "interim_report").
+_KIND_RE = re.compile(r"^[a-z][a-z_]{0,39}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
 def document_name(doc: Mapping[str, Any]) -> str:
-    """A reader's name for a held document: "10-Q · 2026-10-30 · <title>"."""
-    parts = [
-        str(doc.get("form") or doc.get("document_type") or "").strip(),
-        str(doc.get("published_at") or "").strip(),
-        str(doc.get("title") or "").strip()[:120],
-    ]
-    return " · ".join(p for p in parts if p) or document_key(doc) or "held document"
+    """A reader's name for a held document: "10-Q · 2026-10-30".
+
+    PLATFORM-DERIVED FIELDS ONLY (PR #321 security F1). The name reaches gap prose and,
+    through it, the chair's trusted GAPS section, so a page title — text the page
+    author chose, which can carry instructions (PI-09) — never forms part of it. A form
+    or kind that does not match the platform's own vocabulary is dropped.
+    """
+    form = str(doc.get("form") or "").strip()
+    kind = str(doc.get("document_type") or "").strip()
+    label = next((v for v in (form, kind) if _FORM_RE.match(v) or _KIND_RE.match(v)), "")
+    published = _DATE_RE.match(str(doc.get("published_at") or "").strip())
+    parts = [label.replace("_", " "), published.group(0) if published else ""]
+    return " · ".join(p for p in parts if p) or "held document"
 
 
 def document_statuses(
