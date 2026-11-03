@@ -943,30 +943,26 @@ def _is_current_holding(newest: Any, *, today: Any = None) -> bool:
 
 
 async def newest_held_document_date(session: Any, run: Any) -> Any:
-    """ADR-076 — the newest ``published_at`` of the subject's own INDEXED corpus chunks.
+    """ADR-076 — the newest ``published_at`` of the subject's own INDEXED DISCLOSURES.
 
-    ``None`` when the run has no company, nothing dated is held, or the lookup fails —
-    and ``None`` keeps the honest default (``not_acquired``). Never raises.
+    Only an issuer / primary disclosure counts (ADR-076 review: anchor): a quote page
+    dated the crawl day is not "a current document held". The lookup is the PostgreSQL
+    backend's own ``newest_published_at``, so it means exactly what the recency window's
+    anchor means. ``None`` when the run has no company, no dated disclosure is held, or
+    the lookup fails — and ``None`` keeps the honest default (``not_acquired``). Never
+    raises.
     """
     company_id = getattr(run, "company_id", None)
     if not company_id:
         return None
     try:
-        from sqlalchemy import func, select
-
-        from app.models.research_chunk import ResearchDocumentChunk as C
+        from app.services.corpus.search.backends.postgres import PostgresSearchBackend
+        from app.services.corpus.search.types import CorpusFilters
 
         async with session.begin_nested():
-            return (
-                await session.execute(
-                    select(func.max(C.published_at)).where(
-                        C.company_id == company_id,
-                        C.indexed_at.is_not(None),
-                        C.indexable.is_(True),
-                        C.published_at.is_not(None),
-                    )
-                )
-            ).scalar_one_or_none()
+            return await PostgresSearchBackend(session).newest_published_at(
+                CorpusFilters(company_ids=(company_id,), disclosures_only=True)
+            )
     except Exception:  # noqa: BLE001 - an unknown holding is reported as not acquired
         return None
 

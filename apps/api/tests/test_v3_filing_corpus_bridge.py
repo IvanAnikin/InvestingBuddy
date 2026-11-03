@@ -865,3 +865,247 @@ async def test_already_ready_filings_never_consume_attempt_budget(session, monke
     ready_flags = {i["accession_number"]: i["corpus_ready"] for i in out["items"]}
     assert ready_flags[ready_a] is True
     assert ready_flags[ready_b] is True
+
+
+# ---------------------------------------------------------------------------
+# ADR-076 review: anchor — a filing's corpus chunks carry its SEC FILING date
+# ---------------------------------------------------------------------------
+#
+# CLLS2-5 / CLLS3-3: the 20-F and the H1 6-K/A were held with no ``published_at``, so a
+# recency window anchored on disclosures could never include them.
+
+from datetime import date  # noqa: E402
+
+SIXK_ACCESSION = "0001193125-26-389336"
+SIXK_DOC = "clls-ex99_1.htm"
+SIXK_URL = (
+    f"https://www.sec.gov/Archives/edgar/data/{CIK}/000119312526389336/{SIXK_DOC}"
+)
+SIXK_FILED = date(2026, 9, 11)
+
+
+async def _version_and_chunks(session, version_id):  # noqa: ANN001, ANN202
+    from sqlalchemy import select
+
+    from app.models.research_chunk import ResearchDocumentChunk
+    from app.models.research_document import ResearchDocumentVersion
+
+    version = await session.get(ResearchDocumentVersion, version_id)
+    await session.refresh(version)
+    chunks = (
+        await session.execute(
+            select(ResearchDocumentChunk).where(
+                ResearchDocumentChunk.research_document_version_id == version_id
+            )
+        )
+    ).scalars().all()
+    return version, list(chunks)
+
+
+async def _quote_page(session, company):  # noqa: ANN001, ANN202
+    """A Boursorama-like quote page held for the subject, dated today."""
+    from app.models.research_chunk import ResearchDocumentChunk
+    from app.models.research_derivation import ResearchDocumentDerivation
+    from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+
+    today = date.today()
+    doc = ResearchDocument(id=uuid.uuid4(), company_id=company.id,
+                           document_key=f"url:{uuid.uuid4().hex[:12]}", document_type="web_page")
+    session.add(doc)
+    await session.flush()
+    version = ResearchDocumentVersion(
+        id=uuid.uuid4(), research_document_id=doc.id, content_hash="q" * 64,
+        canonical_url="https://www.boursorama.com/cours/1rPSAN/", transport="open_web",
+        source_tier="T5_api_aggregator", access_class="public_web",
+        extraction_status="extracted", retrieved_at=datetime.now(timezone.utc),
+        is_current=True, published_at=today, source_class="unknown_web",
+    )
+    session.add(version)
+    await session.flush()
+    deriv = ResearchDocumentDerivation(
+        id=uuid.uuid4(), research_document_version_id=version.id, pipeline_version=15,
+        extraction_profile="live", extraction_method="html", status="complete",
+        is_active=True, pages_persisted=1, page_count=1, char_count=90,
+    )
+    session.add(deriv)
+    await session.flush()
+    session.add(ResearchDocumentChunk(
+        id=uuid.uuid4(), chunk_id=f"q:{company.id}:1", derivation_id=deriv.id,
+        research_document_version_id=version.id, company_id=company.id, ordinal=1,
+        kind="prose", text="Cours action results release cash flow cotation.", char_start=0,
+        char_end=48, indexable=True, indexed_at=datetime.now(timezone.utc),
+        source_tier="T5_api_aggregator", access_class="public_web", published_at=today,
+    ))
+    await session.flush()
+    return version
+
+
+def test_the_filing_date_is_parsed_or_refused():
+    from app.services.corpus.filing_evidence import filing_date_of
+
+    assert filing_date_of("2026-09-11") == SIXK_FILED
+    assert filing_date_of(SIXK_FILED) == SIXK_FILED
+    assert filing_date_of(datetime(2026, 9, 11, 22, tzinfo=timezone.utc)) == SIXK_FILED
+    assert filing_date_of("2026-09-11T00:00:00") == SIXK_FILED
+    for bad in (None, "", "2026-13-01", "Sep 11 2026", "2026"):
+        assert filing_date_of(bad) is None
+
+
+async def test_an_acquired_6k_is_dated_with_its_filing_date_and_anchors_the_window(session):
+    from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
+    from app.services.corpus.search.backends.postgres import PostgresSearchBackend
+    from app.services.corpus.search.types import CorpusFilters
+    from app.services.director.loop import newest_held_document_date
+
+    company = await _company(session, ticker="CLLS")
+    await _quote_page(session, company)
+    seen: list[dict] = []
+    held: list = []
+
+    async def _acquire(session_, **kw):  # noqa: ANN001, ANN003, ANN202
+        from app.services.corpus.filing_evidence import AcquireOutcome
+
+        seen.append(kw)
+        # The chain a real acquisition writes — UNDATED, as persist leaves it.
+        held.append(await _make_searchable(session_, company, accession=SIXK_ACCESSION,
+                                           url=SIXK_URL))
+        return AcquireOutcome(acquired=True, fetched=True)
+
+    result = await ensure_filing_corpus_evidence(
+        session, company_id=company.id, cik=CIK, accession=SIXK_ACCESSION, form="6-K/A",
+        cfg=_cfg(), acquire=_acquire, document_name=SIXK_DOC, filing_date="2026-09-11",
+    )
+    assert result.state == "ready"
+    assert seen[0]["filing_date"] == SIXK_FILED, "the acquirer is told the date"
+    version, chunks = await _version_and_chunks(session, held[0].id)
+    assert version.published_at == SIXK_FILED
+    assert chunks and all(c.published_at == SIXK_FILED for c in chunks)
+
+    # The quote page is the newest dated holding; the 6-K/A is the newest DISCLOSURE.
+    anchor = await PostgresSearchBackend(session).newest_published_at(
+        CorpusFilters(company_ids=(company.id,), disclosures_only=True)
+    )
+    assert anchor == SIXK_FILED
+    run = type("Run", (), {"company_id": company.id})()
+    assert await newest_held_document_date(session, run) == SIXK_FILED
+
+
+async def test_with_a_quote_page_dated_today_the_window_includes_the_6k(session):
+    """The CLLS3 scene end to end on the memory backend: both documents indexed from
+    their stored rows, then the recency pass's own tool call."""
+    from types import SimpleNamespace
+
+    from app.services.agent_tools.corpus_search import (
+        _search_company_corpus,
+        validate_search_company_corpus,
+    )
+    from app.services.agents.investigator import RECENCY_WINDOW_DAYS
+    from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
+    from app.services.corpus.indexing import index_version
+    from app.services.corpus.search.backends.memory import InMemorySearchBackend
+
+    company = await _company(session, ticker="CLLS")
+    quote = await _quote_page(session, company)
+    sixk = await _make_searchable(session, company, accession=SIXK_ACCESSION, url=SIXK_URL)
+    # Held from an earlier run, undated (CLLS2-5); met again with its filing date.
+    await ensure_filing_corpus_evidence(
+        session, company_id=company.id, cik=CIK, accession=SIXK_ACCESSION, form="6-K/A",
+        cfg=_cfg(), document_name=SIXK_DOC, filing_date="2026-09-11",
+    )
+    backend = InMemorySearchBackend()
+    for version in (quote, sixk):
+        await index_version(session, research_document_version_id=version.id,
+                            backend=backend, cfg=_cfg())
+    cfg = SimpleNamespace(v3_corpus_enabled=True)
+    validated = validate_search_company_corpus({
+        "query": "clinical pipeline results release", "company_ids": [str(company.id)],
+        "mode": "lexical", "top_k": 12, "recent_window_days": RECENCY_WINDOW_DAYS,
+    })
+    payload = await _search_company_corpus(
+        SimpleNamespace(search_backend=backend, cfg=cfg, session=session), validated
+    )
+    assert payload["recency_window"]["newest_held"] == SIXK_FILED.isoformat()
+    assert SIXK_FILED.isoformat() in {i["published_at"] for i in payload["items"]}
+
+
+async def test_an_undated_held_filing_is_backfilled_and_a_date_is_never_overwritten(session):
+    from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
+
+    company = await _company(session)
+    version = await _make_searchable(session, company)
+
+    async def _never(*a, **k):  # noqa: ANN002, ANN003, ANN202
+        raise AssertionError("a searchable filing must never be re-fetched")
+
+    async def _ensure(filing_date):  # noqa: ANN001, ANN202
+        return await ensure_filing_corpus_evidence(
+            session, company_id=company.id, cik=CIK, accession=ACCESSION, form="10-K",
+            cfg=_cfg(), acquire=_never, filing_date=filing_date,
+        )
+
+    assert (await _ensure(None)).reused is True
+    v, chunks = await _version_and_chunks(session, version.id)
+    assert v.published_at is None and all(c.published_at is None for c in chunks)
+
+    await _ensure("2026-02-20")
+    v, chunks = await _version_and_chunks(session, version.id)
+    assert v.published_at == date(2026, 2, 20)
+    assert all(c.published_at == date(2026, 2, 20) for c in chunks)
+
+    # Idempotent, and a recorded date is never overwritten — not even by a later one.
+    await _ensure("2026-02-20")
+    await _ensure("2026-10-01")
+    v, chunks = await _version_and_chunks(session, version.id)
+    assert v.published_at == date(2026, 2, 20)
+    assert all(c.published_at == date(2026, 2, 20) for c in chunks)
+
+
+async def test_without_a_filing_date_an_old_acquirer_is_called_as_before(session):
+    from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
+
+    company = await _company(session)
+
+    async def _old(session_, *, company_id, cik, accession, form, cfg):  # noqa: ANN001, ANN202
+        from app.services.corpus.filing_evidence import AcquireOutcome
+
+        await _make_searchable(session_, company)
+        return AcquireOutcome(acquired=True, fetched=True)
+
+    result = await ensure_filing_corpus_evidence(
+        session, company_id=company.id, cik=CIK, accession=ACCESSION, form="10-K",
+        cfg=_cfg(), acquire=_old,
+    )
+    assert result.state == "ready"
+
+
+async def test_a_fresh_acquisition_is_dated_before_it_is_indexed(session, monkeypatch):
+    """``acquire_sec_filing`` dates the version before indexing, so the INDEX carries the
+    date — on the memory backend too, which copies it at index time."""
+    from app.services.corpus import filing_acquisition as acq
+    from app.services.corpus.search import factory
+    from app.services.corpus.search.backends.memory import InMemorySearchBackend
+    from app.services.corpus.search.types import CorpusFilters
+
+    company = await _company(session)
+    await _make_searchable(session, company)
+    backend = InMemorySearchBackend()
+    monkeypatch.setattr(factory, "get_search_backend", lambda cfg, session=None: backend)
+
+    indexed = await acq._index_acquired_version(
+        session, company_id=company.id, accession=ACCESSION, cfg=_cfg(),
+        filing_date=date(2026, 2, 20),
+    )
+    assert indexed == 1
+    assert await backend.newest_published_at(
+        CorpusFilters(company_ids=(company.id,), disclosures_only=True)
+    ) == date(2026, 2, 20)
+
+
+async def test_the_filings_tool_dates_a_held_filing_from_edgar(session, monkeypatch):
+    company = await _company(session)
+    version = await _make_searchable(session, company)
+    out = await _call_tool(session, company, _cfg(), monkeypatch, [_Event(ACCESSION)])
+    assert out["items"][0]["corpus_ready"] is True
+    v, chunks = await _version_and_chunks(session, version.id)
+    assert v.published_at == date(2026, 2, 20)  # _Event.filing_date, EDGAR filingDate
+    assert all(c.published_at == date(2026, 2, 20) for c in chunks)

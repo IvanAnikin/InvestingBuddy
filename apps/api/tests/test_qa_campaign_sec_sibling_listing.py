@@ -369,7 +369,7 @@ def acquired(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, str, str]]:
     calls: list[tuple[Any, str, str]] = []
 
     async def _ensure(session: Any, *, company_id: Any, cik: Any, accession: Any,
-                      form: str, cfg: Any) -> Any:
+                      form: str, cfg: Any, **_: Any) -> Any:
         calls.append((cik, accession, form))
         return NS(to_dict=lambda: {"state": "acquired"})
 

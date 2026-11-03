@@ -111,12 +111,15 @@ CORPUS_TOP_K = 12
 
 #: ADR-076 — the recency pass. A question about the issuer's NEWEST disclosure also
 #: searches only the subject's newest held documents: those published within this many
-#: days of the newest dated document the corpus holds for it. Lexical rank alone let a
-#: 261-chunk annual report outrank the newer quarterly cash-flow report on every run, so
-#: the report quoted the older quarter's cash and said no quarterly report was present.
-#: Forty-five days spans one reporting cycle's cluster (a 5B, its activities report and
-#: the results release) without reaching back to the previous quarter.
-RECENCY_WINDOW_DAYS = 45
+#: days of the newest dated issuer / primary DISCLOSURE the corpus holds for it. Lexical
+#: rank alone let a 261-chunk annual report outrank the newer quarterly cash-flow report
+#: on every run, so the report quoted the older quarter's cash and said no quarterly
+#: report was present.
+#: Seventy-five days, not 45 (ADR-076 review: anchor): the newest disclosure is often a
+#: minor one filed weeks after the results. Cellectis's 2026-10-27 data release sits 46
+#: days after its H1 6-K/A (2026-09-11), one day outside a 45-day window. Seventy-five
+#: days still stops short of the previous quarter's results (~91 days back).
+RECENCY_WINDOW_DAYS = 75
 #: How many of the recency pass's hits lead the question's evidence. Half a corpus page:
 #: the newest documents come first, and the ordinary search still fills the rest of the
 #: prompt budget.
@@ -2438,13 +2441,43 @@ class LLMInvestigator:
         window = payload.get("recency_window") or {}
         step["newest_held"] = window.get("newest_held")
         step["published_from"] = window.get("published_from")
-        harvested = _harvest(
-            TOOL_SEARCH_COMPANY_CORPUS, payload, result.contains_untrusted_content
+        if window.get("stopped"):
+            # ADR-076 review D3: no dated disclosure is held, so no window was anchored.
+            step["stopped"] = window["stopped"]
+        # Disclosures first, then newest first (review D2): two newer web pages must not
+        # crowd the anchoring 6-K/A out of RECENCY_MAX_ITEMS. Ordered BEFORE harvesting,
+        # which caps the items it reads. Python's sort is stable, so within one rank and
+        # date the search's own order is kept.
+        from app.services.corpus.search.types import is_disclosure_fields
+
+        items = [i for i in (payload.get("items") or []) if isinstance(i, dict)]
+        items.sort(
+            key=lambda i: (
+                is_disclosure_fields(
+                    source_tier=i.get("source_tier"),
+                    source_class=i.get("source_class"),
+                    access_class=i.get("access_class"),
+                ),
+                str(i.get("published_at") or ""),
+            ),
+            reverse=True,
         )
-        # Newest first; within one date the search's own rank order is kept (stable).
-        harvested.sort(key=lambda item: item.published_at or date.min, reverse=True)
+        disclosure_ids = {
+            str(i.get("evidence_id")) for i in items
+            if is_disclosure_fields(
+                source_tier=i.get("source_tier"),
+                source_class=i.get("source_class"),
+                access_class=i.get("access_class"),
+            )
+        }
+        harvested = _harvest(
+            TOOL_SEARCH_COMPANY_CORPUS,
+            {**payload, "items": items},
+            result.contains_untrusted_content,
+        )
         recent = harvested[:RECENCY_MAX_ITEMS]
         step["items"] = len(recent)
+        step["disclosure_items"] = sum(1 for e in recent if e.citation_id in disclosure_ids)
         return recent, 1, step
 
     async def _external_rung(

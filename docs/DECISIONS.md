@@ -5796,6 +5796,142 @@ byte-for-byte replay of PostgreSQL.
   window. Subject-row (`via_subject`) admission is not part of the pass.
 - No live run yet. Production acceptance needs a LIN and a PYPL rerun after deploy.
 
+### Amendment 2026-11-02 — ADR-076 review: anchor
+**Trigger:** live Cellectis rerun `df36d6f6`. The `recency_corpus` steps logged
+`newest_held: 2026-11-02` (the run day), so the window started on 2026-09-18. The only
+holding dated that day was a Boursorama Sanofi quote page (`unknown_web`, with its date taken
+from the page text). The window therefore missed the H1 2026 6-K/A (filed 2026-09-11) and
+the 2026-09-14 pivot article, which are the documents the pass exists to surface.
+`loop.newest_held_document_date` had the same flaw: a quote page dated today made the
+subject look like it "held a current document".
+
+**Decision.**
+1. **Only an issuer or primary disclosure anchors the window.** There is one rule,
+   `corpus.search.types.is_disclosure`, exposed as the filter
+   `CorpusFilters.disclosures_only`. It uses columns the corpus already has:
+   - the chunk's `source_tier` is in `DISCLOSURE_SOURCE_TIERS`:
+     - `T1_primary_filing` (issuer or regulatory filings);
+     - `T1_primary_company_source` (issuer IR material and releases);
+     - `T2_regulator_or_gov` (venue announcements from the NSM, Euronext, Nordic and SIX
+       connectors);
+   - and EITHER the version has no open-web `source_class` (a connector or bridge
+     document: the SEC bridge, ASX, NSM, Euronext …), OR it is the issuer's own web
+     page: class `company_press_release` or `investor_presentation` with access class
+     `public_issuer`. Those are exactly what `classify._classify_host` assigns under
+     `rule='issuer_domain'`. A PR-wire release is re-labelled `public_web` and does not
+     qualify.
+
+   Quote, market-data, aggregator, `unknown_web`, generic `company_web_page`, press and
+   government pages never anchor the window, whatever their tier.
+   - The memory backend applies the filter in `CorpusFilters._passes`, through
+     `is_disclosure` / `is_disclosure_fields`.
+   - PostgreSQL applies it in `_filter_clauses`: a tier `IN`, then either no web class
+     (`NOT EXISTS`) or an issuer class together with the chunk's `public_issuer` access
+     class.
+   - `retrieval.newest_published` sends the filter.
+   - `loop.newest_held_document_date` now calls `PostgresSearchBackend.newest_published_at`
+     with the same filter, so `acquired_not_read` and the window share one definition.
+
+   Only the **anchor** is restricted. The window still searches every subject chunk dated
+   on or after its start, including web pages and the pivot article.
+2. **The window is 75 days, not 45** (option (a)). Anchoring on disclosures alone fixes
+   this run's anchor, but the next miss is a minor disclosure filed weeks after the
+   results. Cellectis's 2026-10-27 data release is 46 days after the 6-K/A, so a 45-day
+   window anchored on it starts on 2026-09-12 and misses the 6-K/A by one day. A 75-day
+   window starts on 2026-08-13 and includes both the 6-K/A and the pivot. It still stops
+   short of the previous quarter's results, about 91 days back; LIN's 2026-07-30 annual
+   report, 88 days before its 5B, stays outside.
+
+   Option (b), the newest N disclosure documents, would need per-document grouping in both
+   backends. It would also not reach the pivot, because a trade article is not a
+   disclosure. It is the larger change and does no better here.
+3. Everything else in ADR-076 is unchanged: the additive pass, NULL-dated chunks outside a
+   window, `acquired_not_read` and the 120-day staleness rule.
+
+**What this does NOT fix in CLLS3.** The 6-K/A and 20-F chunks are **undated**:
+`corpus.filing_evidence` never sets `published_at` from the filing date (CLLS2-5).
+Cellectis's issuer pages are also classed `unknown_web` (CLLS-5). Under this amendment, the
+CLLS3 corpus therefore holds no dated disclosure, so the pass anchors no window and says
+so ("no dated issuer or primary disclosure is held"). It no longer runs a window anchored
+on the quote page. The 6-K/A reaches the pass only once core-filing chunks carry their
+filing date. The follow-up below adds that date.
+
+**Review of PR #316 (D1–D4).**
+- **D1 (blocker): web exchange and regulatory pages never anchor.**
+  `classify._classify_host` classes EVERY page on an exchange host as
+  `exchange_announcement` at T1. That includes quote pages and news articles:
+  nasdaq.com/market-activity/stocks/clls, nasdaq.com/articles/…, an LSE company page,
+  asx.com.au/markets/company/lin and an otcmarkets.com quote. A nasdaq article dated the
+  run day would have recreated the df36d6f6 failure.
+  - The fix is in the anchor predicate (above), not in the web classifier, which would be
+    a wider change.
+  - Web `exchange_announcement`, web `regulatory_filing` (a web sec.gov copy can be
+    another registrant's filing, ADR-079) and `issuer_filing` never anchor.
+  - The parity test now covers these five URLs, the PR-wire release and every
+    `CLASS_TABLE` class in both backends.
+- **D2: disclosures rank first in the recency pass.** Before harvesting (which caps the
+  items it reads), the hits are ordered with disclosures first (`is_disclosure_fields`),
+  then newest first. Two newer web pages of two chunks each no longer fill
+  `RECENCY_MAX_ITEMS` ahead of the 6-K/A. The step logs `disclosure_items`.
+- **D3: a named stop.** With no dated disclosure, the tool's `recency_window` and the
+  `recency_corpus` step carry `stopped: "no_disclosure_anchor"`.
+- **D4: no in-memory backfill.** `search.factory.get_search_backend` builds a NEW
+  `InMemorySearchBackend` on every call, so there is no shared index to backfill. Any
+  index built after a backfill reads the stamped rows, because `index_version` copies
+  `published_at` from them; a test pins this. A fresh acquisition is stamped before it
+  is indexed.
+
+**Filing dates on SEC corpus chunks (same amendment, CLLS2-5).**
+`ensure_filing_corpus_evidence` takes a `filing_date`: the SEC filing date, never the
+period end.
+- The callers pass what they already hold:
+  - `ensure_core_filings` passes the EDGAR submissions `filingDate` of the 10-K, 20-F,
+    40-F or 10-Q event;
+  - the ADR-077 results-6-K slot passes the selected 6-K's index-row `filing_date`;
+  - the `get_recent_filings` tool bridge passes each item's `filing_date`. This is also
+    the bridge route by which an 8-K reaches the corpus.
+- `filing_evidence.stamp_filing_date` sets `published_at` on the version and on its
+  chunks, with an `UPDATE … WHERE published_at IS NULL` in a SAVEPOINT. It never
+  overwrites a recorded date, is idempotent and never raises.
+  - It runs whenever a filing is found searchable: on a reuse, which backfills filings
+    first stored undated without a migration, and after an acquisition.
+  - `acquire_sec_filing` also stamps the version **before** `index_version`, so a
+    backend that copies the date at index time (the memory backend) carries it too.
+  - The acquirer receives `filing_date` only when one is known, so an acquirer written
+    before this change still works.
+- Scope:
+  - Only the corpus version and its chunks are dated. The V2 `ExtractedDocument.doc_date`
+    is left alone, because `issuer_financials` orders by it.
+  - SEC documents persisted outside the bridge, by the legacy council's
+    `company_evidence` primary-document path (including its ADR-068 8-K EX-99.1
+    selection), are still undated until the bridge meets them.
+  - Period logic runs only at version creation, so a later stamp cannot change a
+    period.
+- Tests (`tests/test_v3_filing_corpus_bridge.py`, plus one PostgreSQL case in the
+  recency file):
+  - an acquired 6-K/A with filing date 2026-09-11 is dated and anchors the window over a
+    quote page dated today;
+  - the window includes it, end to end;
+  - an undated held filing is backfilled, and a recorded date is never overwritten;
+  - the date is stamped before indexing;
+  - the filings tool dates a held filing.
+
+**Tests** (`tests/test_qa_campaign_recency_evidence.py`, 41 run on SQLite plus 2 on
+PostgreSQL):
+- a quote page dated today plus a 6-K dated 52 days earlier: the window is anchored on the
+  6-K and includes it, through both the tool and the investigator pass;
+- a 6-K plus a data release 46 days later: the 75-day window includes the 6-K and the
+  pivot, and a 45-day window would not;
+- with no dated disclosure, no window is anchored, even beside a dated quote page;
+- a `company_web_page` does not anchor the window, and a `company_press_release` does;
+- the disclosure vocabulary is pinned to the taxonomy and to `classify.CLASS_TABLE`;
+- the loop: a quote page, or a T1-tier `company_web_page`, leaves `not_acquired`;
+  `newest_held_document_date` skips the quote page.
+- PostgreSQL (`V3_TEST_POSTGRES_URL`, a UTF8 scratch database migrated to 044 and dropped
+  afterwards): the same quote page plus 6-K case through `PostgresSearchBackend`, the tool
+  and the loop. A parity test checks that `_filter_clauses` and `is_disclosure` admit the
+  same chunks for every web class.
+
 ---
 
 ## ADR-077: A 20-F Filer's Interim Results Are Read From Its Results 6-K
