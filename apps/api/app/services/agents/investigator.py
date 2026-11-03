@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
 import secrets
 import uuid
@@ -68,6 +69,8 @@ from app.services.agent_tools.contracts import (
 from app.services.calculations.definitions import DEFINITIONS as _CALCULATION_DEFINITIONS
 from app.services.corpus.query_terms import keyword_query
 from app.services.director.contracts import (
+    ISSUER_FILING,
+    THIRD_PARTY_FILING,
     EvidenceRef,
     evaluate_contract,
     evidence_ref_for,
@@ -76,6 +79,8 @@ from app.services.director.loop import FindingDraft, GapDraft, TaskOutcome
 from app.services.director.planner import PlannedQuestion
 from app.services.director.roles import role_for
 from app.services.ledger import store as ledger
+
+logger = logging.getLogger(__name__)
 
 #: How many tool calls one question may make. The role's own budget and the run's
 #: `max_tool_calls` bound it further; this stops one question consuming a whole task.
@@ -189,6 +194,14 @@ class _Evidence:
     company_id: str | None = None
     #: Admitted through a subject row (W3 review F2) — not the company's own document.
     via_subject: bool = False
+    #: The document's own URL (a corpus hit's ``canonical_url``, a lead's
+    #: ``fetched_url``), for the ADR-079 EDGAR registrant check. Never shown to a model.
+    url: str | None = None
+    #: ADR-079 — whose filing a web EDGAR page is (``edgar_registrant.EDGAR_*``), judged
+    #: against the run's subject; None when the rule does not apply.
+    edgar_registrant: str | None = None
+    #: The registrant CIK the URL names (digits, no leading zeros), when it names one.
+    edgar_cik: str | None = None
 
 
 def _corpus_arguments(
@@ -649,6 +662,8 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
     if not citation:
         return None
     trust = _trust_fields(tool, item)
+    # Read BEFORE rendering: the platform's own URL field, not a rendered copy.
+    url = _clean(item.get("canonical_url") or item.get("fetched_url") or item.get("url"))
     if untrusted:
         item = _render_untrusted(item)
     if tool in _CORPUS_TOOLS and trust.get("web"):
@@ -703,6 +718,7 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
         scope_key=_clean(item.get("scope_key")) or _clean(item.get("scope")),
         ref=evidence_ref_for(tool, citation, item),
         published_at=_published_at_of(item),
+        url=url,
         **trust,
     )
 
@@ -1343,6 +1359,109 @@ async def _load_sec_directory() -> "list[Any]":
     return await directories.load(directories.SEC)
 
 
+@dataclass(frozen=True)
+class EdgarSubject:
+    """The run's subject as EDGAR knows it (ADR-079). Plain data, resolved once per
+    investigator. The default — nothing known — makes every web EDGAR page
+    ``unidentified``: never the issuer's filing, never dropped."""
+
+    #: The subject's CIKs: ADR-075's basis and its ticker in the SEC directory. Empty
+    #: with no basis — a name match is never proof of identity (review N1).
+    ciks: frozenset[str] = frozenset()
+    #: CIKs positively another registrant's. ``None``: the subject's CIK is known, so
+    #: every other CIK is. A set (empty when the directory was unreadable): only these.
+    other_ciks: "frozenset[str] | None" = frozenset()
+    #: CIK → registrant name, from the SEC ticker directory (platform data only), for
+    #: naming another registrant in a gap.
+    names: "dict[str, str]" = field(default_factory=dict)
+    #: The subject's names (its own, and the SEC's for its CIK) and tickers, for "the
+    #: cited filing names the subject" (a counterparty's filing about it, review N2).
+    match_names: tuple[str, ...] = ()
+    tickers: tuple[str, ...] = ()
+
+
+def apply_edgar_registrant(
+    evidence: "Sequence[_Evidence]", subject: EdgarSubject
+) -> "list[_Evidence]":
+    """ADR-079 — judge every WEB item on an EDGAR filing page against the subject.
+
+    A host is not a registrant: ``sec.gov/Archives/edgar/data/<CIK>/…`` is the subject's
+    issuer filing only when ``<CIK>`` is the subject's. Anyone else's (or an unmatchable
+    one) is a ``third_party_filing`` — primary, but not the issuer's word. Another
+    registrant's filing that is ABOUT the subject (an ownership form, or one whose text
+    names the subject) is a ``counterparty`` filing: third party, never dropped. Platform
+    evidence (the SEC bridge, the filings tools: ``web`` False) is never re-judged: it
+    was fetched for the subject's own CIK, ADR-075's sibling line included. Idempotent.
+    """
+    from dataclasses import replace
+
+    from app.services.web_research.edgar_registrant import (
+        EDGAR_COUNTERPARTY,
+        EDGAR_OTHER,
+        EDGAR_OWN,
+        edgar_cik,
+        filing_names_subject,
+        is_ownership_filing_url,
+        registrant_verdict,
+    )
+
+    out: list[_Evidence] = []
+    for item in evidence:
+        if not item.web or not item.url:
+            out.append(item)
+            continue
+        verdict = registrant_verdict(item.url, subject.ciks, other_ciks=subject.other_ciks)
+        if verdict is None:
+            out.append(item)
+            continue
+        if verdict == EDGAR_OTHER and filing_names_subject(
+            item.text, subject.match_names, subject.tickers,
+            ownership_form=is_ownership_filing_url(item.url),
+        ):
+            # A holder's 13G, an insider's Form 4, an acquirer's 8-K: another
+            # registrant's filing ABOUT the subject — third party, kept. Only when the
+            # filing names the subject by its full name or an exchange-framed ticker.
+            verdict = EDGAR_COUNTERPARTY
+        kind = ISSUER_FILING if verdict == EDGAR_OWN else THIRD_PARTY_FILING
+        ref = item.ref
+        if ref is not None and ref.source_kind != kind:
+            ref = replace(ref, source_kind=kind)
+        out.append(
+            replace(item, ref=ref, edgar_registrant=verdict, edgar_cik=edgar_cik(item.url))
+        )
+    return out
+
+
+def statement_about_other_registrant(cited_items: "Sequence[_Evidence]") -> tuple[str, ...]:
+    """The other registrants' CIKs when EVERY cited item is web text from another
+    registrant's EDGAR filing (ADR-079); else ``()``. One item from anywhere else — the
+    subject's own filing, the bridge, a news outlet — gives the statement its own footing,
+    as in ADR-066/074."""
+    from app.services.web_research.edgar_registrant import EDGAR_OTHER
+
+    if not cited_items or not all(
+        item.web and item.edgar_registrant == EDGAR_OTHER for item in cited_items
+    ):
+        return ()
+    return tuple(sorted({item.edgar_cik or "unknown" for item in cited_items}))
+
+
+#: Source classes whose publisher writes about companies other than itself (classify.py
+#: vocabulary): exchange announcements, filing systems, regulators, government and
+#: statistical agencies, major financial press, aggregators / market-data sites.
+_PUBLISHER_CLASSES: frozenset[str | None] = frozenset(
+    {
+        "exchange_announcement",
+        "regulatory_filing",
+        "regulator_publication",
+        "government_publication",
+        "statistical_agency",
+        "major_financial_press",
+        "aggregator",
+    }
+)
+
+
 def foreign_publisher(
     cited: "Sequence[str]", evidence: "Sequence[_Evidence]", others: dict[str, str]
 ) -> str | None:
@@ -1354,6 +1473,11 @@ def foreign_publisher(
         return None
     names: set[str] = set()
     for item in items:
+        if item.source_class in _PUBLISHER_CLASSES:
+            # An exchange, a newspaper, a regulator or a data site publishes about OTHER
+            # companies: registering "Euronext N.V." must not make every Euronext
+            # announcement Euronext's own fact (ADR-079 review D3).
+            return None
         name = others.get(_domain_token(item.origin_key)) if item.web else None
         if name is None:
             return None
@@ -1781,6 +1905,9 @@ class InvestigatorDiagnostics:
     #: A web statement whose sentence subject is ANOTHER named company and which rests
     #: only on that company's own site, or says "(not the company)" (ADR-074).
     statements_about_foreign_subject: int = 0
+    #: A statement resting only on web copies of ANOTHER registrant's EDGAR filings
+    #: (``sec.gov/Archives/edgar/data/<other CIK>/…``), dropped (ADR-079).
+    statements_about_other_registrant: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -1809,6 +1936,9 @@ class InvestigatorDiagnostics:
             other.statements_about_related_registrant
         )
         self.statements_about_foreign_subject += other.statements_about_foreign_subject
+        self.statements_about_other_registrant += (
+            other.statements_about_other_registrant
+        )
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -1830,6 +1960,9 @@ class InvestigatorDiagnostics:
                 self.statements_about_related_registrant
             ),
             "statements_about_foreign_subject": self.statements_about_foreign_subject,
+            "statements_about_other_registrant": (
+                self.statements_about_other_registrant
+            ),
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -1910,6 +2043,8 @@ class LLMInvestigator:
     #: registrant CIK → does it report separately? Remembered, failures included, so one
     #: write-up never asks the regulator about the same registrant twice (review round 2).
     _separate: "dict[str, bool]" = field(default_factory=dict, repr=False)
+    #: Lazily-resolved ADR-079 subject (its CIKs) for the EDGAR registrant check.
+    _edgar_subject: "EdgarSubject | None" = field(default=None, repr=False)
     #: Open-web W7 — ``async (question_key, candidates, round_index, max_fetches, terms)
     #: -> CandidateFetchResult`` (``WebFollowup.fetch_candidates``). When set, the
     #: candidates a ``search_web`` call returns are fetched and ingested DETERMINISTICALLY
@@ -1949,6 +2084,9 @@ class LLMInvestigator:
             )
             budget -= used
             outcome.tool_calls += used
+            # ADR-079 — before the contract sees it: a web EDGAR page is the issuer's
+            # filing only when its CIK is the subject's.
+            evidence = await self._registrant_checked(evidence)
             # V3.18.2 — handed to the loop, which judges the question's evidence
             # contract. The investigator reports what it retrieved; it does not grade it.
             outcome.question_evidence[question.key] = [
@@ -2680,8 +2818,16 @@ class LLMInvestigator:
 
                 from app.models.company import Company
 
+                # The investigator's session is a ToolSession; the database handle is
+                # its ``db``. Calling ``execute`` on the ToolSession itself raised an
+                # AttributeError that the guard below swallowed, so the ADR-066
+                # publisher firewall silently ran with no other companies at all.
+                db = getattr(self.session, "db", None)
+                if db is None:
+                    self._other_names = {}
+                    return self._other_names
                 rows = (
-                    await self.session.execute(
+                    await db.execute(
                         sa.select(Company.name).where(Company.id != self.company_id)
                     )
                 ).scalars().all()
@@ -2706,6 +2852,126 @@ class LLMInvestigator:
             except Exception:  # noqa: BLE001 - a guard that cannot read must not block research
                 self._related = ()
         return self._related
+
+    async def _resolve_edgar_subject(self) -> EdgarSubject:
+        """The subject's CIKs, once per investigator. Never raises.
+
+        * ADR-075's ``sec_listing_for`` gives a basis (its own line, or a verified
+          sibling such as CLLS for ALCLS): its CIK plus every CIK the SEC ticker
+          directory lists for that line's ticker are the subject's, and any other CIK
+          is another registrant's. The same resolver drives the SEC bridge, so a bridge
+          document's CIK is in this set by construction.
+        * No basis is NOT proof of "not an SEC registrant": the resolver also returns
+          None when the directory or a domicile record is unreadable, or the venue is
+          spelled in a way it does not know. So the directory is read here: a CIK it
+          names as a registrant whose name does NOT agree with the subject's is
+          another's. A name-agreeing CIK is NOT the subject's (review N1: "The Sage
+          Group" agrees with Sage Therapeutics under ``_names_agree``'s prefix rule) —
+          it is merely not "another's", so it stays unidentified, as does a CIK the
+          directory does not hold or an unreadable directory. With no basis nothing is
+          ever ``own``.
+        """
+        if self._edgar_subject is not None:
+            return self._edgar_subject
+        from types import SimpleNamespace
+
+        from app.services.discovery.directories import _names_agree  # noqa: PLC2701
+        from app.services.discovery.identity import normalised_name
+        from app.services.entities import sec_listing
+        from app.services.web_research.edgar_registrant import normalise_cik
+
+        subject = EdgarSubject()
+        try:
+            db = getattr(self.session, "db", None)
+            snapshot = SimpleNamespace(
+                ticker=self.ticker, exchange=self.exchange, name=self.company_name,
+                country=None, legal_entity_id=getattr(self.session, "legal_entity_id", None),
+            )
+            if db is not None:
+                import sqlalchemy as sa
+
+                from app.models.company import Company
+
+                row = (
+                    await db.execute(
+                        sa.select(
+                            Company.ticker, Company.exchange, Company.name, Company.country,
+                            Company.legal_entity_id,
+                        ).where(Company.id == self.company_id)
+                    )
+                ).one_or_none()
+                if row is not None:
+                    snapshot = SimpleNamespace(
+                        ticker=row.ticker, exchange=row.exchange, name=row.name,
+                        country=row.country, legal_entity_id=row.legal_entity_id,
+                    )
+            basis = await sec_listing.sec_listing_for(db, snapshot)
+            try:
+                rows = list(await _load_sec_directory())
+            except Exception:  # noqa: BLE001 - an unreadable directory names nobody
+                rows = []
+            names: dict[str, str] = {}
+            by_ticker: dict[str, set[str]] = {}
+            for row in rows:
+                cik = normalise_cik(getattr(row, "cik", None))
+                if cik is None:
+                    continue
+                names.setdefault(cik, str(getattr(row, "name", "") or ""))
+                ticker = (getattr(row, "ticker", "") or "").strip().upper()
+                if ticker:
+                    by_ticker.setdefault(ticker, set()).add(cik)
+            subject_name = str(getattr(snapshot, "name", "") or self.company_name or "")
+            tickers = tuple(
+                t for t in dict.fromkeys(
+                    str(v or "").strip().upper()
+                    for v in (self.ticker, getattr(snapshot, "ticker", None),
+                              basis.ticker if basis is not None else None)
+                ) if t
+            )
+            if basis is not None:
+                ciks = {c for c in (normalise_cik(basis.cik),) if c}
+                ciks |= by_ticker.get((basis.ticker or "").strip().upper(), set())
+                match_names = tuple(
+                    dict.fromkeys(
+                        [subject_name, *(names[c] for c in sorted(ciks) if names.get(c))]
+                    )
+                )
+                subject = EdgarSubject(
+                    ciks=frozenset(ciks), other_ciks=None, names=names,
+                    match_names=tuple(n for n in match_names if n), tickers=tickers,
+                )
+            else:
+                wanted = normalised_name(subject_name)
+                agreeing = {
+                    cik for cik, name in names.items()
+                    if wanted and _names_agree(wanted, normalised_name(name))
+                }
+                subject = EdgarSubject(
+                    ciks=frozenset(),
+                    # No name to compare against: nobody can be called someone else.
+                    other_ciks=frozenset(names) - agreeing if wanted else frozenset(),
+                    names=names,
+                    match_names=(subject_name,) if subject_name else (),
+                    tickers=tickers,
+                )
+        except Exception as exc:  # noqa: BLE001 - a guard that cannot read must not crash
+            # Cannot tell, so nothing is the subject's filing and nothing is dropped.
+            logger.warning(
+                "EDGAR registrant check: subject CIK resolution failed (%s)",
+                type(exc).__name__,
+            )
+            subject = EdgarSubject()
+        self._edgar_subject = subject
+        return subject
+
+    async def _registrant_checked(self, evidence: "list[_Evidence]") -> "list[_Evidence]":
+        """ADR-079 over one question's evidence. Resolves the subject only when a web
+        EDGAR filing page is actually present, so ordinary runs pay nothing."""
+        from app.services.web_research.edgar_registrant import is_edgar_filing_url
+
+        if not any(item.web and is_edgar_filing_url(item.url) for item in evidence):
+            return evidence
+        return apply_edgar_registrant(evidence, await self._resolve_edgar_subject())
 
     async def _reports_separately(self, related: RelatedRegistrant) -> bool:
         """True when the registrant does NOT file a combined annual report with the
@@ -2736,6 +3002,7 @@ class LLMInvestigator:
         established: "tuple[tuple[str, str, str | None], ...]" = (),
     ) -> tuple[list[FindingDraft], list[GapDraft], bool]:
         """Ask the model to write findings, then **check every citation.**"""
+        evidence = await self._registrant_checked(list(evidence))
         allowed = {item.citation_id for item in evidence}
         if self.client is None:
             # No model. The tools still ran, and what they found is recorded as a gap
@@ -2823,6 +3090,7 @@ class LLMInvestigator:
         gaps: list[GapDraft] = []
         related_dropped: dict[str, RelatedRegistrant] = {}
         foreign_dropped: dict[str, str] = {}
+        registrants_dropped: set[str] = set()
         for raw in (payload.get("findings") or [])[:MAX_FINDINGS_PER_QUESTION]:
             if not isinstance(raw, dict):
                 continue
@@ -2890,6 +3158,16 @@ class LLMInvestigator:
                     self.diagnostics.statements_about_another_company += 1
                     continue
                 cited_items = [e for e in evidence if e.citation_id in set(real)]
+                other_registrants = statement_about_other_registrant(cited_items)
+                if other_registrants:
+                    # ADR-079: a web copy of ANOTHER registrant's EDGAR filing is that
+                    # registrant's fact. Live on Cellectis a Cboe EDGA exhibit, labelled
+                    # "issuer filing" from the sec.gov host, became "The company operates
+                    # a single reportable segment: an electronic market…". The writer
+                    # said "The company", so no subject-name guard could fire.
+                    self.diagnostics.statements_about_other_registrant += 1
+                    registrants_dropped.update(other_registrants)
+                    continue
                 related = (
                     statement_about_related_registrant(
                         statement, await self._related_registrants(), self.ticker
@@ -3018,6 +3296,29 @@ class LLMInvestigator:
                         "Another company's results, policies and risks are not the "
                         "issuer's; filing them under the issuer attributes another "
                         "company's facts."
+                    ),
+                    sources_tried=tuple(sorted({e.kind for e in evidence})),
+                )
+            )
+
+        if registrants_dropped:
+            subject = self._edgar_subject or EdgarSubject()
+            named = []
+            for cik in sorted(registrants_dropped)[:5]:
+                name = subject.names.get(cik)
+                named.append(f"{name} (CIK {cik})" if name else f"CIK {cik}")
+            gaps.append(
+                GapDraft(
+                    gap_type=ledger.GAP_ENTITY_AMBIGUOUS,
+                    description=(
+                        f"Statements resting only on SEC filings of another registrant — "
+                        f"{'; '.join(named)} — found by web search on sec.gov were not "
+                        "filed under the issuer."
+                    )[:600],
+                    question_key=question.key,
+                    why_it_matters=(
+                        "EDGAR holds every registrant's filings under one host; another "
+                        "registrant's segment, customers or officers are not the issuer's."
                     ),
                     sources_tried=tuple(sorted({e.kind for e in evidence})),
                 )

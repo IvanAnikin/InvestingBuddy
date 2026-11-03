@@ -286,9 +286,10 @@ def evidence_ref_for(tool: str, citation_id: str, item: dict[str, Any]) -> Evide
         # not satisfy an issuer requirement; the issuer's filings reach the ledger
         # through the filings tools and the company's own corpus, which know whose they
         # are. Nor is it an independent statistical authority. NOTHING sets
-        # `issuer_match` today, so every web filing — the subject's own 10-K fetched
-        # from the web included — lands here: it fails safe, and matching a web filing
-        # to the issuer (by EDGAR CIK) is future work, not a claim of this code.
+        # `issuer_match` today, so every web filing lands here and fails safe. The
+        # investigator then judges a web EDGAR page by its CIK against the subject's
+        # (ADR-079, `investigator.apply_edgar_registrant`) — for corpus hits too, which
+        # this function still labels by tier alone.
         kind = THIRD_PARTY_FILING
     if tool == "search_company_corpus":
         ref = str(url or item.get("title") or citation_id)
