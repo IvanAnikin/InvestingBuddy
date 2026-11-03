@@ -296,9 +296,14 @@ class TestRelabel:
         assert item.edgar_registrant == EDGAR_OTHER
 
     def test_a_url_without_cik_is_never_an_issuer_filing(self) -> None:
-        (item,) = apply_edgar_registrant([_hit("ev:c:x", NO_CIK_URL)], CLLS_SUBJECT)
+        named = "Cellectis S.A. filed its annual report."
+        (item,) = apply_edgar_registrant([_hit("ev:c:x", NO_CIK_URL, text=named)], CLLS_SUBJECT)
         assert item.ref is not None and item.ref.source_kind == "third_party_filing"
         assert item.edgar_registrant == EDGAR_UNIDENTIFIED
+        # One that never names the subject is not the subject's at all (CLLS4 review).
+        (bare,) = apply_edgar_registrant([_hit("ev:c:y", NO_CIK_URL)], CLLS_SUBJECT)
+        assert bare.ref is not None and bare.ref.source_kind == "third_party_filing"
+        assert bare.edgar_registrant == EDGAR_OTHER
 
     def test_bridge_documents_are_never_rejudged(self) -> None:
         # The SEC bridge's chunks are not web (no source_class): fetched for the
@@ -601,8 +606,9 @@ class TestInvestigatorGuard:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_subject(monkeypatch, SIBLING)
+        named = "Cellectis S.A. filed its annual report."
         inv, findings, _gaps = await _run(
-            [(OWN_STATEMENT, ["ev:c:x"])], [_hit("ev:c:x", NO_CIK_URL)]
+            [(OWN_STATEMENT, ["ev:c:x"])], [_hit("ev:c:x", NO_CIK_URL, text=named)]
         )
         assert [f.source_kinds for f in findings] == [("third_party_filing",)]
         assert inv.diagnostics.statements_about_other_registrant == 0
@@ -768,3 +774,53 @@ def test_every_nasdaq_tier_frames_a_ticker(text: str) -> None:
     from app.services.web_research.edgar_registrant import _EXCHANGE_CONTEXT
 
     assert re.search(_EXCHANGE_CONTEXT + "CLLS", text)
+
+
+#: The live CLLS4 page: a Cboe EDGA Exchange X-17A-5 PDF, filed on paper, so its EDGAR
+#: address carries no registrant.
+VPRR_URL = "https://www.sec.gov/Archives/edgar/vprr/2600/26000283.pdf"
+
+
+class TestAnEdgarPageWithNoRegistrantInItsAddress:
+    """ADR-079 review (CLLS4): a CIK-less EDGAR page supports a statement about the
+    subject only when its own text names the subject."""
+
+    async def test_the_live_vprr_exhibit_statement_is_dropped_with_a_gap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_subject(
+            monkeypatch, SIBLING,
+            [SimpleNamespace(ticker="CLLS", cik="1627281", name="Cellectis S.A.")],
+        )
+        inv, findings, gaps = await _run(
+            [(CBOE_STATEMENT, ["ev:c:vprr"]), (OWN_STATEMENT, ["ev:c:own"])],
+            [_hit("ev:c:vprr", VPRR_URL), _hit("ev:c:own", OWN_20F_URL)],
+        )
+        assert [f.statement for f in findings] == [OWN_STATEMENT]
+        assert inv.diagnostics.statements_about_other_registrant == 1
+        (entity,) = [g for g in gaps if g.gap_type == "entity_ambiguous"]
+        assert "no registrant in its address" in entity.description
+
+    async def test_a_cik_less_page_that_names_the_subject_is_kept_as_third_party(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_subject(
+            monkeypatch, SIBLING,
+            [SimpleNamespace(ticker="CLLS", cik="1627281", name="Cellectis S.A.")],
+        )
+        text = "Cellectis S.A. reported research and development expenses for the year."
+        inv, findings, _gaps = await _run(
+            [(OWN_STATEMENT, ["ev:c:vprr"])], [_hit("ev:c:vprr", VPRR_URL, text=text)],
+        )
+        assert [f.source_kinds for f in findings] == [("third_party_filing",)]
+        assert inv.diagnostics.statements_about_other_registrant == 0
+
+    def test_a_cik_bearing_page_the_directory_cannot_place_stays_unidentified(self) -> None:
+        subject = EdgarSubject(ciks=frozenset(), other_ciks=frozenset(),
+                               match_names=("Cellectis S.A.",), tickers=("CLLS",))
+        (item,) = inv_mod.apply_edgar_registrant([_hit("ev:c:own", OWN_20F_URL)], subject)
+        assert item.edgar_registrant == "unidentified"
+
+    def test_nothing_known_about_the_subject_never_drops(self) -> None:
+        (item,) = inv_mod.apply_edgar_registrant([_hit("ev:c:vprr", VPRR_URL)], EdgarSubject())
+        assert item.edgar_registrant == "unidentified"

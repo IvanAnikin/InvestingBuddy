@@ -1402,6 +1402,7 @@ def apply_edgar_registrant(
         EDGAR_COUNTERPARTY,
         EDGAR_OTHER,
         EDGAR_OWN,
+        EDGAR_UNIDENTIFIED,
         edgar_cik,
         filing_names_subject,
         is_ownership_filing_url,
@@ -1425,6 +1426,22 @@ def apply_edgar_registrant(
             # registrant's filing ABOUT the subject — third party, kept. Only when the
             # filing names the subject by its full name or an exchange-framed ticker.
             verdict = EDGAR_COUNTERPARTY
+        elif (
+            verdict == EDGAR_UNIDENTIFIED
+            and edgar_cik(item.url) is None
+            and subject.match_names
+            and not filing_names_subject(
+                item.text, subject.match_names, subject.tickers, ownership_form=False
+            )
+        ):
+            # An EDGAR document whose address carries no registrant (a paper or
+            # ``/Archives/edgar/vprr/`` filing) and whose text never names the subject is
+            # not the subject's: it supports nothing said about the subject. Live on
+            # Cellectis (CLLS4) a Cboe EDGA Exchange X-17A-5 PDF at
+            # ``/Archives/edgar/vprr/2600/26000283.pdf`` was kept as "third party filing"
+            # and still produced "The company operates a single reportable segment…". A
+            # CIK-bearing URL the directory could not place stays ``unidentified`` (D1).
+            verdict = EDGAR_OTHER
         kind = ISSUER_FILING if verdict == EDGAR_OWN else THIRD_PARTY_FILING
         ref = item.ref
         if ref is not None and ref.source_kind != kind:
@@ -3339,7 +3356,10 @@ class LLMInvestigator:
             named = []
             for cik in sorted(registrants_dropped)[:5]:
                 name = subject.names.get(cik)
-                named.append(f"{name} (CIK {cik})" if name else f"CIK {cik}")
+                if cik == "unknown":
+                    named.append("an EDGAR document with no registrant in its address")
+                else:
+                    named.append(f"{name} (CIK {cik})" if name else f"CIK {cik}")
             gaps.append(
                 GapDraft(
                     gap_type=ledger.GAP_ENTITY_AMBIGUOUS,
