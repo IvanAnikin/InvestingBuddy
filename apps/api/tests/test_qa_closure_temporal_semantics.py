@@ -28,6 +28,8 @@ from app.db.base import Base
 from app.models.company import Company
 from app.services.sources import date_semantics as ds
 from app.services.sources.document_period import (
+    BASIS_FISCAL_PERIOD_END,
+    BASIS_PERIOD_END_PHRASE,
     BASIS_PERIOD_LABEL,
     BASIS_SEC_FISCAL_PERIOD_OF_REPORT,
     BASIS_SEC_PERIOD_OF_REPORT,
@@ -75,8 +77,10 @@ def _classify(sentence: str, mention: str, role: str = ds.ROLE_BODY) -> str:
         ("Revenue compared with H1 2025.", "H1 2025", ds.HISTORICAL_REFERENCE_DATE),
         ("Results for H1 2026 were in line.", "H1 2026", ds.REPORTING_PERIOD),
         ("Q3 2026 results and FY2027 guidance", "Q3 2026", ds.REPORTING_PERIOD),
+        # A measure names the period it was measured in (review of PR #323).
+        ("Revenue grew strongly in Q2 2026 across regions.", "Q2 2026", ds.REPORTING_PERIOD),
         # Fail closed: a bare body mention is not a reporting period.
-        ("Revenue grew strongly in Q2 2026 across regions.", "Q2 2026", ds.UNCLASSIFIED),
+        ("Our teams met investors in Q2 2026 in Paris.", "Q2 2026", ds.UNCLASSIFIED),
     ],
 )
 def test_a_mention_is_classified_by_its_own_sentence(
@@ -751,7 +755,7 @@ def test_an_undated_period_still_votes() -> None:
 async def _held(  # noqa: ANN202
     session, company, *, period_key: str | None, published: date | None,  # noqa: ANN001
     basis: str | None = BASIS_PERIOD_LABEL, doc_period: str | None = "same",
-    is_current: bool = True, url: str | None = None,
+    is_current: bool = True, url: str | None = None, version_id: uuid.UUID | None = None,
 ):
     """One document → version → two chunks, as the corpus holds them."""
     from app.models.research_chunk import ResearchDocumentChunk
@@ -770,7 +774,8 @@ async def _held(  # noqa: ANN202
     session.add(doc)
     await session.flush()
     version = ResearchDocumentVersion(
-        id=uuid.uuid4(), research_document_id=doc.id, content_hash=uuid.uuid4().hex * 2,
+        id=version_id or uuid.uuid4(), research_document_id=doc.id,
+        content_hash=uuid.uuid4().hex * 2,
         canonical_url=url or f"https://issuer.test/{uuid.uuid4().hex[:8]}.pdf",
         transport="company_ir", source_tier="T1_primary_company_source",
         access_class="public_issuer", extraction_status="extracted", retrieved_at=now,
@@ -824,7 +829,8 @@ async def test_the_sweep_clears_every_stored_forecast_and_nothing_else(session) 
 
     result = await sweep_forecast_periods(session, company_id=company.id)
     assert result.error is None
-    assert result.versions_examined == 5  # current, dated, with a period, this company
+    # Current, dated, with a period, this company — and never a fiscal basis.
+    assert result.versions_examined == 4
     assert (result.versions_cleared, result.chunks_cleared,
             result.documents_cleared) == (3, 6, 2)
 
@@ -917,3 +923,311 @@ def test_without_the_corpus_the_outcome_has_no_sweep_key() -> None:
     from app.services.pipeline import v3_pipeline as v3
 
     assert "period_sweep" not in v3.V3ResearchOutcome().to_dict()
+
+
+# --------------------------------------------------------------------------- #
+# 7. Review of PR #323 — recall: every reviewer input, at its real publication  #
+#    date                                                                       #
+# --------------------------------------------------------------------------- #
+
+
+def _key_and_basis(found: DocumentPeriod) -> tuple[str | None, str]:
+    return found.period.key, found.basis
+
+
+# HIGH 1 — the issuer STATES the fiscal year: a fiscal basis, so a period that began
+# before its calendar reading is not a forecast.
+_STATED_FISCAL_TITLES = [
+    ("NVIDIA Announces Financial Results for First Quarter Fiscal 2027",
+     date(2026, 5, 28), "2027-Q1"),
+    ("NVIDIA Announces Financial Results for Second Quarter Fiscal 2027",
+     date(2026, 8, 26), "2027-Q2"),
+    ("Cisco Reports First Quarter Fiscal Year 2027 Earnings", date(2026, 11, 12), "2027-Q1"),
+    ("Salesforce Announces Strong Second Quarter Fiscal 2027 Results",
+     date(2026, 9, 3), "2027-Q2"),
+    ("Medtronic reports first quarter fiscal 2027 financial results",
+     date(2026, 8, 19), "2027-Q1"),
+    ("Accenture Reports First-Quarter Fiscal 2027 Results", date(2026, 12, 18), "2027-Q1"),
+    ("Accenture Reports Fourth-Quarter and Full-Year Fiscal 2026 Results",
+     date(2026, 9, 25), "2026-Q4"),
+    ("FedEx Corp. Reports Second Quarter Fiscal 2027 Results", date(2026, 12, 17), "2027-Q2"),
+    ("Micron Technology Reports Results for the First Quarter of Fiscal 2027",
+     date(2026, 12, 17), "2027-Q1"),
+    ("Procter & Gamble first quarter fiscal year 2027 results", date(2026, 10, 20), "2027-Q1"),
+    ("Walt Disney Company Reports Fourth Quarter and Full Year Earnings for Fiscal 2026",
+     date(2026, 11, 12), "2026-Q4"),
+    ("first quarter fiscal 2027 ended August 30, 2026", date(2026, 9, 25), "2027-Q1"),
+    ("first quarter of fiscal 2027 ended November 27, 2026", date(2026, 12, 17), "2027-Q1"),
+]
+
+
+@pytest.mark.parametrize(("title", "published", "key"), _STATED_FISCAL_TITLES)
+def test_a_stated_fiscal_year_is_read_as_fiscal(title: str, published: date, key: str) -> None:
+    found = detect_document_period(title=title, as_of=published)
+    assert _key_and_basis(found) == (key, BASIS_FISCAL_PERIOD_END)
+
+
+@pytest.mark.parametrize(
+    ("text", "published", "key"),
+    [
+        ("Exhibit 99.1\nCisco Reports First Quarter Fiscal Year 2027 Earnings\n"
+         "Q1 Revenue: $14.6 billion", date(2026, 11, 12), "2027-Q1"),
+        ("Exhibit 99.1\nNVIDIA Announces Financial Results for First Quarter Fiscal 2027\n"
+         "Record revenue of $44.1 billion", date(2026, 5, 28), "2027-Q1"),
+        ("Exhibit 99.1 PRESS RELEASE Acme Announces Second Quarter Fiscal 2027 Results. "
+         "Revenue of $2.1 billion; expects third quarter fiscal 2027 revenue of $2.2 billion",
+         date(2026, 12, 17), "2027-Q2"),
+    ],
+)
+def test_a_stated_fiscal_year_in_an_exhibit_body_is_read_as_fiscal(
+    text: str, published: date, key: str
+) -> None:
+    found = detect_document_period(text=text, as_of=published)
+    assert _key_and_basis(found) == (key, BASIS_FISCAL_PERIOD_END)
+
+
+def test_an_end_date_after_the_stated_fiscal_year_must_agree_with_it() -> None:
+    # November 2027 ends the first quarter of fiscal 2028, not of fiscal 2027.
+    found = detect_document_period(
+        title="first quarter of fiscal 2027 ended November 27, 2027")
+    assert not found.is_known
+
+
+def test_a_calendar_quarter_forecast_is_still_refused_beside_the_fiscal_reading() -> None:
+    found = detect_document_period(
+        text="Guidance for the first quarter ending March 31, 2027 is unchanged.",
+        as_of=date(2026, 11, 5))
+    assert not found.is_known
+
+
+# HIGH 2 — a press release's own lead lines still date the document.
+_LEAD_LINES = [
+    ("Paris, October 28, 2026 - Acme SA (Euronext: ACM) today announced its third quarter "
+     "2026 revenue.", date(2026, 10, 28), "2026-Q3"),
+    ("Acme today announced third quarter 2026 sales of EUR 1.2 billion.",
+     date(2026, 10, 28), "2026-Q3"),
+    ("Acme reported third-quarter 2026 net sales of $3.1 billion.",
+     date(2026, 11, 5), "2026-Q3"),
+    ("Acme posted record Q3 2026 revenue of $3.1 billion.", date(2026, 11, 5), "2026-Q3"),
+    ("Third Quarter 2026 Highlights\nRevenue of $3.1 billion", date(2026, 11, 5), "2026-Q3"),
+    ("Earnings release Q3 2026\nRevenue of $3.1 billion", date(2026, 11, 5), "2026-Q3"),
+    ("Acme Q3 2026 Earnings\nRevenue of $3.1 billion", date(2026, 11, 5), "2026-Q3"),
+    ("First-half 2026 sales up 8% to EUR 2.4 billion", date(2026, 7, 30), "2026-H1"),
+    ("Sales in the first half of 2026 rose 8%.", date(2026, 7, 30), "2026-H1"),
+    ("Q3 2026 highlights: revenue grew 12%.", date(2026, 10, 28), "2026-Q3"),
+    ("Q3 2026: revenue grew 12%.", date(2026, 10, 28), "2026-Q3"),
+    ("In Q3 2026, revenue grew 12%.", date(2026, 10, 28), "2026-Q3"),
+    ("During Q3 2026 revenue grew 12%.", date(2026, 10, 28), "2026-Q3"),
+    ("Third quarter 2026 revenue was $5.1 billion.", date(2026, 10, 28), "2026-Q3"),
+    ("Revenue in the third quarter of 2026 was $5.1 billion.", date(2026, 10, 28), "2026-Q3"),
+    ("Highlights of the six months ended 30 June 2026", date(2026, 8, 20), "2026-H1"),
+    ("HIGHLIGHTS Q3 2026 Production of 50kt. Guidance for 2027 reaffirmed.",
+     date(2026, 10, 28), "2026-Q3"),
+]
+
+
+@pytest.mark.parametrize(("text", "published", "key"), _LEAD_LINES)
+def test_a_press_release_lead_line_dates_the_document(
+    text: str, published: date, key: str
+) -> None:
+    assert detect_document_period(text=text, as_of=published).period.key == key
+
+
+_CUED_SENTENCES = [
+    (text, published, key) for text, published, key in _LEAD_LINES
+    if "\n" not in text and not text.startswith(("Q3 2026", "HIGHLIGHTS"))
+]
+
+
+@pytest.mark.parametrize(("text", "published", "key"), _CUED_SENTENCES)
+def test_a_cued_sentence_deep_in_the_body_still_dates_the_document(
+    text: str, published: date, key: str
+) -> None:
+    """Not only as the headline line: the cue itself frames the period."""
+    body = "Acme SA is a company. " + text
+    assert detect_document_period(text=body, as_of=published).period.key == key
+
+
+def test_a_long_first_body_sentence_is_body_text_not_a_headline() -> None:
+    lead = "Acme is a company that " + "builds things and " * 15
+    assert not detect_document_period(text=lead + "met investors in Q3 2026.").is_known
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The notes maturing 2031 have a maturity date in the first half of 2031.",
+        "Guidance for Q4 2026 revenue is unchanged.",
+        "We expect Q4 2026 revenue of $3.3 billion.",
+        "Cash runway into H2 2028.",
+    ],
+)
+def test_a_forward_cue_still_refuses_a_headline_line(text: str) -> None:
+    assert not detect_document_period(text=text).is_known
+
+
+# MEDIUM 3 — a title's later clause, or an outlook word that does not govern the
+# mention, never takes away the period its first clause names.
+_HEADLINE_TITLES = [
+    ("Interim results for the six months ended 30 June 2026 and outlook",
+     date(2026, 8, 20), "2026-H1"),
+    ("Q3 2026: Revenue up 12%, full-year guidance raised", date(2026, 10, 28), "2026-Q3"),
+    ("Acme Q3 2026 revenue ahead of expectations", date(2026, 10, 28), "2026-Q3"),
+    ("Strong H1 2026; outlook upgraded", date(2026, 7, 30), "2026-H1"),
+    ("H1 2026: margin expansion, targets confirmed", date(2026, 7, 30), "2026-H1"),
+    ("FY27 Q1 sales – outlook", date(2026, 7, 17), "2027-Q1"),
+    ("Q1 FY27 update – guidance maintained", date(2026, 7, 17), "2027-Q1"),
+    ("Third quarter 2026 update; guidance increased", date(2026, 10, 28), "2026-Q3"),
+    ("Construction update Q3 2026", date(2026, 10, 28), "2026-Q3"),
+    ("Q3 2026 sales and outlook", date(2026, 10, 28), "2026-Q3"),
+    ("Q3 2026 sales: outlook confirmed", date(2026, 10, 28), "2026-Q3"),
+    ("Q3 2026 update ahead of permitting decision", date(2026, 10, 28), "2026-Q3"),
+    ("Company announces Q3 2026 production; expects record Q4", date(2026, 10, 28), "2026-Q3"),
+    ("Q3 2026 production update: FID expected by year end", date(2026, 10, 28), "2026-Q3"),
+    ("Q3 2026 Production and Sales Update; 2026 Guidance Reaffirmed",
+     date(2026, 10, 28), "2026-Q3"),
+    ("Q3 2026 trading update - on track to meet expectations", date(2026, 10, 20), "2026-Q3"),
+    ("Acme Provides 2027 Outlook and Reports Q3 2026 Results", date(2026, 10, 28), "2026-Q3"),
+]
+
+
+@pytest.mark.parametrize(("title", "published", "key"), _HEADLINE_TITLES)
+def test_a_title_names_its_period_before_its_outlook(
+    title: str, published: date, key: str
+) -> None:
+    assert detect_document_period(title=title, as_of=published).period.key == key
+
+
+@pytest.mark.parametrize(("title", "published", "key"), _HEADLINE_TITLES)
+def test_a_heading_names_its_period_before_its_outlook(
+    title: str, published: date, key: str
+) -> None:
+    assert detect_document_period(headings=[title], as_of=published).period.key == key
+
+
+def test_a_url_slug_names_its_period_before_its_guidance() -> None:
+    found = detect_document_period(
+        url="https://ir.example.com/news/q3-2026-update-and-q4-guidance",
+        as_of=date(2026, 10, 20))
+    assert found.period.key == "2026-Q3"
+
+
+@pytest.mark.parametrize(
+    ("title", "published"),
+    [
+        ("Q1 2028 first production update", date(2026, 10, 28)),
+        ("FY28 Q1 guidance", date(2026, 10, 28)),
+        ("Q4 2026 revenue guidance", date(2026, 10, 28)),
+        ("Outlook for Q4 2026", date(2026, 10, 28)),
+        ("Notes maturing in Q1 2031", date(2026, 10, 28)),
+        ("Topline readout expected H2 2027", date(2026, 10, 28)),
+    ],
+)
+def test_a_title_governed_by_its_forward_cue_is_still_refused(
+    title: str, published: date
+) -> None:
+    """Without the publication date too: the cue alone refuses it."""
+    assert not detect_document_period(title=title).is_known
+    assert not detect_document_period(title=title, as_of=published).is_known
+
+
+def test_a_heading_that_is_only_an_outlook_does_not_date_the_document() -> None:
+    found = detect_document_period(headings=["Outlook for Q4 2026", "Q3 2026 highlights"],
+                                   as_of=date(2026, 10, 28))
+    assert found.period.key == "2026-Q3"
+
+
+# LOW 7 — the fiscal/calendar label compares with the year the quarter ENDS in.
+def test_a_spilled_10q_quarter_is_labelled_by_its_adjusted_end_year() -> None:
+    found = sec_period_of_report(form="10-Q", report_date="2027-01-02",
+                                 filing_date="2027-02-05", fiscal_year_end_month=9)
+    assert _key_and_basis(found) == ("2027-Q1", BASIS_SEC_FISCAL_PERIOD_OF_REPORT)
+    calendar = sec_period_of_report(form="10-Q", report_date="2026-04-03",
+                                    filing_date="2026-05-05", fiscal_year_end_month=12)
+    assert _key_and_basis(calendar) == ("2026-Q1", BASIS_SEC_PERIOD_OF_REPORT)
+
+
+def test_a_spilled_prose_quarter_is_labelled_by_its_adjusted_end_year() -> None:
+    fiscal = detect_document_period(title="Results for the first quarter ended January 2, 2027",
+                                    as_of=date(2027, 1, 29))
+    assert _key_and_basis(fiscal) == ("2027-Q1", BASIS_FISCAL_PERIOD_END)
+    calendar = detect_document_period(title="Results for the first quarter ended April 3, 2026",
+                                      as_of=date(2026, 5, 5))
+    assert _key_and_basis(calendar) == ("2026-Q1", BASIS_PERIOD_END_PHRASE)
+
+
+# MEDIUM 4 — facts whose default period was a forecast are derived again.
+def test_the_extraction_pipeline_version_advanced_for_adr_080() -> None:
+    from app.services.sources.extraction_pipeline_version import (
+        CURRENT_EXTRACTION_PIPELINE_VERSION,
+    )
+
+    assert CURRENT_EXTRACTION_PIPELINE_VERSION == 21
+
+
+# HIGH 1 / LOW 5 — the sweep never clears a fiscal key, and is never starved by the cap.
+async def test_the_sweep_never_clears_a_fiscal_key(session) -> None:  # noqa: ANN001
+    from app.services.corpus.period_sweep import sweep_forecast_periods
+
+    company = await _company(session)
+    nvidia_day = date(2026, 5, 28)
+    stated = await _held(session, company, period_key="2027-Q1",
+                         basis=BASIS_FISCAL_PERIOD_END, published=nvidia_day)
+    # Before ADR-080 "First Quarter Fiscal 2027" was stored under the period-end basis.
+    legacy = await _held(session, company, period_key="2027-Q1",
+                         basis=BASIS_PERIOD_END_PHRASE, published=nvidia_day)
+    sec_fiscal = await _held(session, company, period_key="2027-Q1",
+                             basis=BASIS_SEC_FISCAL_PERIOD_OF_REPORT,
+                             published=date(2026, 10, 28))
+    far = await _held(session, company, period_key="2028-Q1",
+                      basis=BASIS_PERIOD_END_PHRASE, published=nvidia_day)
+
+    result = await sweep_forecast_periods(session, company_id=company.id)
+    assert result.error is None
+    assert result.versions_examined == 2, "a fiscal basis is not even read"
+    assert result.versions_cleared == 1
+    for doc, version in (stated, legacy, sec_fiscal):
+        doc, version, chunks = await _rows(session, doc.id, version.id)
+        assert version.period_key == "2027-Q1" and doc.period_key == "2027-Q1"
+        assert all(c.period_key == "2027-Q1" for c in chunks)
+    _doc, version, _chunks = await _rows(session, far[0].id, far[1].id)
+    assert version.period_key is None, "a period-end key over a year ahead is a forecast"
+
+
+async def test_the_sweep_reaches_rows_past_the_cap(session) -> None:  # noqa: ANN001
+    from app.services.corpus.period_sweep import sweep_forecast_periods
+
+    company = await _company(session)
+    low = [uuid.UUID(int=n) for n in (1, 2)]
+    for version_id in low:  # settled rows that sort FIRST
+        await _held(session, company, period_key="2026-H1", published=date(2026, 9, 11),
+                    version_id=version_id)
+    for n in (3, 4, 5):  # older than their publication year: never even candidates
+        await _held(session, company, period_key="2025-H1", published=date(2026, 3, 1),
+                    version_id=uuid.UUID(int=n))
+    stale = await _held(session, company, period_key="2028-H2", published=PUBLISHED,
+                        version_id=uuid.UUID(int=99))
+
+    first = await sweep_forecast_periods(session, company_id=company.id, limit=2,
+                                         start_after=uuid.UUID(int=0))
+    assert (first.versions_examined, first.versions_cleared, first.capped) == (2, 0, True)
+    # Another run starts at another id and wraps around: the stale row is reached.
+    second = await sweep_forecast_periods(session, company_id=company.id, limit=2,
+                                          start_after=low[1])
+    assert second.versions_cleared == 1 and second.capped is True
+    _doc, version, _chunks = await _rows(session, stale[0].id, stale[1].id)
+    assert version.period_key is None
+    third = await sweep_forecast_periods(session, company_id=company.id, limit=2)
+    assert (third.versions_examined, third.capped) == (2, False)
+    assert third.versions_cleared == 0
+
+
+def test_the_sweep_prefilter_compiles_for_postgresql() -> None:
+    from sqlalchemy import String, cast, extract, func
+    from sqlalchemy.dialects import postgresql
+
+    from app.models.research_document import ResearchDocumentVersion as V
+
+    clause = func.substr(V.period_key, 1, 4) >= cast(extract("year", V.published_at), String)
+    sql = str(clause.compile(dialect=postgresql.dialect()))
+    assert "substr(" in sql and "EXTRACT(year FROM" in sql and "AS VARCHAR" in sql

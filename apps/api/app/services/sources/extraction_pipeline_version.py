@@ -354,8 +354,15 @@ from __future__ import annotations
 # two-column page with a 3–10pt gutter is read column by column when both sides carry
 # many wide text lines (a segment sentence absorbed "the Group" from the next column). Every
 # version-19 row may carry the old readings.
+# Version 21 (QA campaign 2026-11, ADR-080): a document's period is now only one that
+# its words frame as the period it reports, and that had begun when it was published.
+# A version-20 document could take a forecast as its period ("cash runway into H2 2028"
+# stamped a 2026 strategic-update 6-K "2028-H2"), and its facts' DEFAULT period is that
+# document period. So a version-20 row's undated facts may carry a forecast period and
+# must be derived again, not replayed. Raw-text extraction is unchanged, so
+# ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 20
+CURRENT_EXTRACTION_PIPELINE_VERSION = 21
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER

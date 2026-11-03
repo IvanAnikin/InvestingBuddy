@@ -110,7 +110,11 @@ filing again, it clears a stored forecast period from that version and its chunk
 (`reconcile_filing_period`). Every V3 research run also starts with a bounded sweep of
 the company's current versions (`corpus/period_sweep.py`). The sweep clears any dated
 period that had not begun at publication, from the version, its chunks and a document
-carrying the same period. Its counts are recorded as `period_sweep` on the run outcome.
+carrying the same period. It never clears a fiscal-basis period ("First Quarter Fiscal
+2027" is published months before calendar 2027). Its counts are recorded as
+`period_sweep` on the run outcome. A title or heading keeps the period its first clause
+names even when a later clause gives an outlook ("Q3 2026: Revenue up 12%, full-year
+guidance raised").
 
 **Retention is a policy field, not a code branch.** Whether raw bytes may be
 stored is `rights_policy` on the version (see

@@ -106,7 +106,12 @@ def select_current_period_disclosure(
         if _is_notice_about_a_filing(title):
             continue
         # ADR-080: a period that had not begun when the event was published is a
-        # forecast, never the period the document reports.
+        # forecast, never the period the document reports. The date is the one the
+        # venue PRINTED: every venue parser keeps the venue's own wall-clock date and
+        # time and only tags it UTC (``venue_disclosures._parse_nasdaq_time``,
+        # ``_parse_emarket_date``), so ``.date()`` is the date as published, not a
+        # UTC conversion of it. A venue that ever converts to real UTC must hand its
+        # local date here instead (ADR-080, known limits).
         period = detect_document_period(
             title=title, url=url,
             as_of=event.published_at.date() if event.published_at else None,

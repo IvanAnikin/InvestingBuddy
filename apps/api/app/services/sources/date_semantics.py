@@ -80,6 +80,11 @@ ROLE_TITLE = "title"
 ROLE_HEADING = "heading"
 #: Running body text.
 ROLE_BODY = "body"
+#: Review of PR #323 — a document body's FIRST line when it is short: the headline of a
+#: press release ("Third Quarter 2026 Highlights", "Acme Q3 2026 Earnings"). An un-cued
+#: mention there names the document's period, as in a heading; but a non-reporting cue
+#: anywhere in its window still refuses it, as in body text — it is still body text.
+ROLE_HEADLINE = "headline"
 
 #: How far either side of a mention a cue may sit, in normalised characters. A cue
 #: further away belongs to another clause; the window is a sentence fragment, not a page.
@@ -153,10 +158,47 @@ _CUES: tuple[_Cue, ...] = (
     # Reporting framing — weak.
     _Cue(REPORTING_PERIOD, r"for the|for its|ended|ending|interim|half ?year(?:ly)?",
          (_PREFIX,), strong=False),
+    # Review of PR #323 — a press release's own lead line: "today announced its third
+    # quarter 2026 revenue", "reported third-quarter 2026 net sales", "posted record Q3
+    # 2026 revenue", "Q3 2026 highlights", "Acme Q3 2026 Earnings", "Sales in the first
+    # half of 2026 rose 8%". WEAK on purpose: "guidance for Q4 2026 revenue" names a
+    # measure too, and a weak cue never outvotes a forward one.
+    _Cue(REPORTING_PERIOD,
+         r"earnings|net sales|sales|revenues?|turnover|highlights|update"
+         r"|key figures", _BOTH, strong=False),
+    _Cue(REPORTING_PERIOD, r"announc(?:e|es|ed|ing)|reported|posted",
+         (_PREFIX,), strong=False),
 )
 
 _COMPILED: tuple[tuple[_Cue, re.Pattern[str]], ...] = tuple(
     (cue, re.compile(rf"\b(?:{cue.pattern})\b")) for cue in _CUES
+)
+
+
+#: Review of PR #323 — in a TITLE or HEADING a non-reporting cue decides a mention only
+#: when it GOVERNS it: nothing but these words sits between them. "Outlook for Q4 2026",
+#: "FY27 Q1 guidance", "Q1 2028 first production update" and "notes maturing in Q1 2031"
+#: are governed; "Acme Q3 2026 revenue ahead of expectations", "Q3 2026 update ahead of
+#: permitting decision" and "Interim results for the six months ended 30 June 2026 and
+#: outlook" are not — a headline names its own period first and its outlook after.
+#: Body text keeps the fail-closed rule: any non-reporting cue in the window refuses.
+_PREFIX_CONNECTORS: frozenset[str] = frozenset(
+    {
+        "a", "an", "the", "its", "our", "their", "for", "of", "in", "into", "by", "to",
+        "at", "on", "during", "from", "until", "till", "through", "around", "about",
+        "approximately", "as", "early", "mid", "late", "end", "start", "beginning",
+        "calendar", "fiscal", "financial", "full", "year", "be", "is", "are",
+    }
+)
+_SUFFIX_CONNECTORS: frozenset[str] = frozenset(
+    {
+        "a", "an", "the", "its", "of", "fiscal", "financial", "full", "year",
+        # A measure the forward cue is about: "Q4 2026 revenue guidance".
+        "revenue", "revenues", "sales", "net", "earnings", "eps", "ebitda", "income",
+        "profit", "profits", "margin", "margins", "growth", "production", "output",
+        "volume", "volumes", "shipments", "deliveries", "cash", "flow", "capex",
+        "dividend", "data",
+    }
 )
 
 
@@ -165,6 +207,12 @@ class _Hit:
     role: str
     distance: int
     strong: bool
+    #: Nothing but connector words between the cue and the mention.
+    governs: bool = True
+
+
+def _only_connectors(gap: str, connectors: frozenset[str]) -> bool:
+    return all(word in connectors for word in gap.split())
 
 
 def _hits(before: str, after: str) -> list[_Hit]:
@@ -172,10 +220,16 @@ def _hits(before: str, after: str) -> list[_Hit]:
     for cue, regex in _COMPILED:
         if _PREFIX in cue.sides:
             for match in regex.finditer(before):
-                hits.append(_Hit(cue.role, len(before) - match.end(), cue.strong))
+                hits.append(_Hit(
+                    cue.role, len(before) - match.end(), cue.strong,
+                    _only_connectors(before[match.end():], _PREFIX_CONNECTORS),
+                ))
         if _SUFFIX in cue.sides:
             for match in regex.finditer(after):
-                hits.append(_Hit(cue.role, match.start(), cue.strong))
+                hits.append(_Hit(
+                    cue.role, match.start(), cue.strong,
+                    _only_connectors(after[:match.start()], _SUFFIX_CONNECTORS),
+                ))
     return hits
 
 
@@ -190,8 +244,12 @@ def classify_date_mention(
        STRONG reporting cue sits strictly nearer — a tie is resolved forward, because
        failing closed means losing a period, never inventing one;
     2. otherwise any reporting cue makes it ``REPORTING_PERIOD``;
-    3. otherwise a title or heading names the document itself (``REPORTING_PERIOD``),
-       and a body mention is ``UNCLASSIFIED``.
+    3. otherwise a title, heading or headline line names the document itself
+       (``REPORTING_PERIOD``), and a body mention is ``UNCLASSIFIED``.
+
+    In a title or heading only a non-reporting cue that GOVERNS the mention counts in
+    step 1 (``_PREFIX_CONNECTORS`` / ``_SUFFIX_CONNECTORS``); the caller also bounds a
+    title's or heading's window at its clause punctuation.
     """
     try:
         start = max(0, int(start))
@@ -201,7 +259,9 @@ def classify_date_mention(
         hits = _hits(before, after)
     except (TypeError, ValueError):  # pragma: no cover - defensive
         return UNCLASSIFIED
-    other = [h for h in hits if h.role != REPORTING_PERIOD]
+    governed_only = role in (ROLE_TITLE, ROLE_HEADING)
+    other = [h for h in hits
+             if h.role != REPORTING_PERIOD and (h.governs or not governed_only)]
     strong = [h for h in hits if h.role == REPORTING_PERIOD and h.strong]
     weak = [h for h in hits if h.role == REPORTING_PERIOD and not h.strong]
     nearest_other = min(other, key=lambda h: h.distance) if other else None
@@ -212,7 +272,8 @@ def classify_date_mention(
         return nearest_other.role
     if nearest_strong is not None or weak:
         return REPORTING_PERIOD
-    return REPORTING_PERIOD if role in (ROLE_TITLE, ROLE_HEADING) else UNCLASSIFIED
+    return (REPORTING_PERIOD if role in (ROLE_TITLE, ROLE_HEADING, ROLE_HEADLINE)
+            else UNCLASSIFIED)
 
 
 def is_reporting_period(text: str, start: int, end: int, *, role: str = ROLE_BODY) -> bool:
@@ -234,6 +295,7 @@ __all__ = [
     "REPORTING_PERIOD",
     "ROLE_BODY",
     "ROLE_HEADING",
+    "ROLE_HEADLINE",
     "ROLE_TITLE",
     "SUFFIX_WINDOW",
     "UNCLASSIFIED",

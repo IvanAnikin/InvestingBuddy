@@ -50,6 +50,7 @@ from typing import Any
 from app.services.sources.date_semantics import (
     ROLE_BODY,
     ROLE_HEADING,
+    ROLE_HEADLINE,
     ROLE_TITLE,
     is_reporting_period,
 )
@@ -237,48 +238,86 @@ def _normalise(text: str) -> str:
 #: A sentence ends only where the next one starts with a capital, a quote or a bracket,
 #: so "Sept. 30, 2026" and "U.S. $5" are never split.
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?;])\s+(?=[A-Z\"'(\[“‘])|\n+")
+#: Review of PR #323 — where a CLAUSE ends in a title or a heading: "Q3 2026: Revenue up
+#: 12%, full-year guidance raised", "Strong H1 2026; outlook upgraded", "Q1 FY27 update –
+#: guidance maintained", "Earnings release | Q3 2026". A later clause's outlook is not the
+#: headline's period. A colon or comma counts only before a space ("10:30", "1,234" are
+#: not clauses), a hyphen only between spaces ("first-half" is one word).
+_CLAUSE_END_RE = re.compile(r"\s*(?:[;|–—]|[:,](?=\s)|\s-(?=\s))\s*")
+#: The first body segment is the document's headline line ("Third Quarter 2026
+#: Highlights", "Acme Q3 2026 Earnings") when it is no longer than this
+#: (``date_semantics.ROLE_HEADLINE``). A longer first segment is running text (a cover
+#: page, a lead paragraph).
+_HEADLINE_MAX_CHARS = 200
 
 
 @dataclass(frozen=True)
 class _Source:
-    """One normalised source, with where its segments start and how it is framed."""
+    """One normalised source, with where its segments start and how each is framed."""
 
     text: str
-    #: Offsets in ``text`` where a segment (a sentence, a heading) starts.
+    #: Offsets in ``text`` where a segment (a sentence, a clause, a heading) starts.
     bounds: tuple[int, ...]
-    role: str
+    #: The framing role of each segment, aligned with ``bounds``.
+    roles: tuple[str, ...]
+
+    def role_at(self, offset: int) -> str:
+        index = 0
+        for i, bound in enumerate(self.bounds):
+            if bound <= offset:
+                index = i
+        return self.roles[index] if self.roles else ROLE_BODY
 
 
-def _source(parts: "list[str] | tuple[str, ...]", role: str) -> _Source:
-    """Normalise each part on its own and join them with one space.
+def _source(parts: "list[tuple[str, str]]") -> _Source:
+    """Normalise each ``(part, role)`` on its own and join them with one space.
 
     The joined text is what ``_normalise`` makes of the parts joined with whitespace —
-    the rules read exactly the text they always read — and the segment starts are kept
-    for the classifier.
+    the rules read exactly the text they always read — and the segment starts and roles
+    are kept for the classifier.
     """
     pieces: list[str] = []
     bounds: list[int] = []
+    roles: list[str] = []
     offset = 0
-    for part in parts:
+    for part, role in parts:
         piece = _normalise(part)
         if not piece:
             continue
         if pieces:
             offset += 1
         bounds.append(offset)
+        roles.append(role)
         pieces.append(piece)
         offset += len(piece)
-    return _Source(" ".join(pieces), tuple(bounds), role)
+    return _Source(" ".join(pieces), tuple(bounds), tuple(roles))
+
+
+def _clauses(texts: "list[str] | tuple[str, ...]", role: str) -> list[tuple[str, str]]:
+    return [(clause, role) for text in texts for clause in _CLAUSE_END_RE.split(text or "")]
+
+
+def _body_parts(text: str) -> list[tuple[str, str]]:
+    sentences = _SENTENCE_END_RE.split(text[:_MAX_SCAN_CHARS])
+    parts: list[tuple[str, str]] = []
+    for index, sentence in enumerate(sentences):
+        if index == 0 and len(sentence.strip()) <= _HEADLINE_MAX_CHARS:
+            parts.extend(_clauses([sentence], ROLE_HEADLINE))
+        else:
+            parts.append((sentence, ROLE_BODY))
+    return parts
 
 
 def _frames_a_reporting_period(source: _Source, start: int, end: int) -> bool:
     """Is ``source.text[start:end]`` framed as the period the document reports?
 
-    The classification window is the segment(s) the mention sits in."""
+    The classification window is the segment(s) the mention sits in, read with the
+    framing role of the segment it starts in."""
     low = max((b for b in source.bounds if b <= start), default=0)
     high = min((b for b in source.bounds if b >= end), default=len(source.text))
     segment = source.text[low:high]
-    return is_reporting_period(segment, start - low, end - low, role=source.role)
+    return is_reporting_period(segment, start - low, end - low,
+                               role=source.role_at(start))
 
 
 #: A candidate: the period, and where in the normalised text it was read.
@@ -353,6 +392,16 @@ _MONTH_NUMBER = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
 
 
+def _spill_adjusted(month: int, year: int, day: int | None) -> tuple[int, int]:
+    """``(month, year)`` a period ending on that day ends in: a 52/53-week period that
+    spilled a few days into the next month ends in the month before."""
+    if day is not None and day <= _WEEK_YEAR_SPILL_DAYS:
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    return month, year
+
+
 def _fiscal_year_of_quarter(ordinal: int, end_month: str, end_year: int,
                             end_day: int | None = None) -> int | None:
     """The fiscal year a quarter belongs to, named by the year that fiscal year ENDS.
@@ -373,16 +422,18 @@ def _fiscal_year_of_quarter(ordinal: int, end_month: str, end_year: int,
     month = _MONTH_NUMBER.get(end_month[:3])
     if month is None:
         return None
-    if end_day is not None and end_day <= _WEEK_YEAR_SPILL_DAYS:
-        # A 52/53-week quarter that spilled a few days into the next month.
-        month -= 1
-        if month == 0:
-            month, end_year = 12, end_year - 1
+    month, end_year = _spill_adjusted(month, end_year, end_day)
     fiscal_end_month = month + 3 * (4 - ordinal)
     fiscal_year = end_year + (fiscal_end_month - 1) // 12
     if (fiscal_end_month - 1) % 12 + 1 in (1, 2):
         return None
     return fiscal_year
+
+
+def _quarter_end_year(month: str, year: int, day: int | None) -> int:
+    """The calendar year a quarter printed as ending on that day ends in."""
+    number = _MONTH_NUMBER.get(month[:3])
+    return year if number is None else _spill_adjusted(number, year, day)[1]
 
 
 def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
@@ -397,6 +448,25 @@ def _match_period_end_phrase(text: str) -> DocumentPeriod | None:
     return _first(_period_end_candidates(text))
 
 
+#: Review of PR #323 — the issuer STATES the fiscal year between the period and the
+#: year: "First Quarter Fiscal Year 2027" (Cisco), "first quarter of fiscal 2027"
+#: (Micron), "First-Quarter Fiscal 2027" (Accenture), "Fourth-Quarter and Full-Year
+#: Fiscal 2026", "Fourth Quarter and Full Year Earnings for Fiscal 2026". The year is
+#: then a fiscal year — the key keeps it, and the began-by rule reads it as fiscal
+#: (NVIDIA's "First Quarter Fiscal 2027" is published in May 2026).
+_STATED_FISCAL_RE = re.compile(
+    r" (?:and full year )?(?:(?:financial )?(?:results|earnings) )?(?:(?:of|for|in) )?"
+    r"(?:fiscal(?: year)?|fy) "
+)
+#: The END date printed AFTER the year: "first quarter of fiscal 2027 ended November 27,
+#: 2026". Read only beside a stated fiscal year, to check the two agree.
+_TRAILING_END_RE = re.compile(
+    r" (?:ended|ending) (?:(?P<day_before>\d{1,2}) )?"
+    r"(?P<month>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+    r"(?: (?P<day_after>\d{1,2}))? (?P<year>(?:19|20)\d{2})\b"
+)
+
+
 def _period_end_candidates(text: str) -> Iterator[_Candidate]:
     """Every period-end phrase, in table order and then text order. A phrase whose
     first reading names no period this model can state is abandoned, exactly as before
@@ -405,14 +475,15 @@ def _period_end_candidates(text: str) -> Iterator[_Candidate]:
     for phrase, period_type, ordinal in _ORDINAL_WORDS:
         index = text.find(phrase)
         while index >= 0:
-            found = _period_end_at(text, index, period_type, ordinal)
+            found = _period_end_at(text, index, period_type, ordinal, len(phrase))
             if found is None:
                 break
             yield found
             index = text.find(phrase, index + 1)
 
 
-def _period_end_at(text: str, index: int, period_type: str, ordinal: int) -> _Candidate | None:
+def _period_end_at(text: str, index: int, period_type: str, ordinal: int,
+                   phrase_length: int = 0) -> _Candidate | None:
     window = text[index : index + _PERIOD_END_WINDOW]
     year_match = _YEAR_RE.search(window)
     if year_match is None:
@@ -421,6 +492,10 @@ def _period_end_at(text: str, index: int, period_type: str, ordinal: int) -> _Ca
     if year is None:
         return None
     end = index + year_match.end()
+    if phrase_length and _STATED_FISCAL_RE.fullmatch(
+        window[phrase_length:year_match.start()]
+    ):
+        return _stated_fiscal_period(text, window, index, end, period_type, ordinal, year)
     if period_type == PERIOD_TYPE_HALF:
         # Review round 2, H2 — "half year ended 31 December 2025" is the first half
         # of a JUNE fiscal year, not calendar H1 2025. A half that ends in another
@@ -432,19 +507,21 @@ def _period_end_at(text: str, index: int, period_type: str, ordinal: int) -> _Ca
         quarter_end = _QUARTER_END_MONTH_RE.search(window[: year_match.start()])
         if quarter_end is not None:
             day_text = quarter_end.group("day_before") or quarter_end.group("day_after")
-            fiscal_year = _fiscal_year_of_quarter(
-                ordinal, quarter_end.group("month"), year,
-                int(day_text) if day_text else None,
-            )
+            day = int(day_text) if day_text else None
+            month = quarter_end.group("month")
+            fiscal_year = _fiscal_year_of_quarter(ordinal, month, year, day)
             if fiscal_year is None:
                 return None
             period = _period_of("q", ordinal, fiscal_year)
             if period is None:
                 return None
-            # Only a SHIFTED year is fiscal. A calendar quarter keeps the strict
-            # began-by rule, so "guidance for the first quarter ending March 31,
-            # 2027" published in 2026 is still a forecast (review round 4).
-            basis = (BASIS_FISCAL_PERIOD_END if fiscal_year != year
+            # Only a SHIFTED year is fiscal — compared with the year the quarter ENDS
+            # in, after a 52/53-week spill ("ended January 3, 2027" ends in December
+            # 2026). A calendar quarter keeps the strict began-by rule, so "guidance
+            # for the first quarter ending March 31, 2027" published in 2026 is still
+            # a forecast (review round 4).
+            basis = (BASIS_FISCAL_PERIOD_END
+                     if fiscal_year != _quarter_end_year(month, year, day)
                      else BASIS_PERIOD_END_PHRASE)
             return DocumentPeriod(period, basis, window.strip()[:120]), index, end
     kind = "q" if period_type == PERIOD_TYPE_QUARTER else "h"
@@ -452,6 +529,29 @@ def _period_end_at(text: str, index: int, period_type: str, ordinal: int) -> _Ca
     if period is None:
         return None
     return DocumentPeriod(period, BASIS_PERIOD_END_PHRASE, window.strip()[:120]), index, end
+
+
+def _stated_fiscal_period(text: str, window: str, index: int, end: int,
+                          period_type: str, ordinal: int, year: int) -> _Candidate | None:
+    """A period whose fiscal year the issuer states ("first quarter fiscal 2027").
+
+    The stated year is the key. An end date printed after it ("… fiscal 2027 ended
+    November 27, 2026") must agree with it whenever that date places the quarter in one
+    fiscal year; when the two disagree neither is chosen."""
+    if period_type == PERIOD_TYPE_QUARTER:
+        trailing = _TRAILING_END_RE.match(text, end)
+        if trailing is not None:
+            day_text = trailing.group("day_before") or trailing.group("day_after")
+            implied = _fiscal_year_of_quarter(
+                ordinal, trailing.group("month"), int(trailing.group("year")),
+                int(day_text) if day_text else None,
+            )
+            if implied is not None and implied != year:
+                return None
+    period = _period_of("q" if period_type == PERIOD_TYPE_QUARTER else "h", ordinal, year)
+    if period is None:
+        return None
+    return DocumentPeriod(period, BASIS_FISCAL_PERIOD_END, window.strip()[:120]), index, end
 
 
 def _began_by(found: DocumentPeriod, as_of: date | None) -> bool:
@@ -493,10 +593,10 @@ def detect_document_period(
         as_of = as_of.date()
     try:
         sources = [
-            _source([title or ""], ROLE_TITLE),
-            _source([url or ""], ROLE_TITLE),
-            _source(list((headings or [])[:_MAX_HEADINGS]), ROLE_HEADING),
-            _source(_SENTENCE_END_RE.split((text or "")[:_MAX_SCAN_CHARS]), ROLE_BODY),
+            _source(_clauses([title or ""], ROLE_TITLE)),
+            _source([(url or "", ROLE_TITLE)]),
+            _source(_clauses(list((headings or [])[:_MAX_HEADINGS]), ROLE_HEADING)),
+            _source(_body_parts(text or "")),
         ]
         for rule in (_fiscal_label_candidates, _period_label_candidates,
                      _period_end_candidates):
@@ -636,7 +736,11 @@ def _quarter_of_report(
     period = _period_of("q", ordinal, fiscal_year)
     if period is None:
         return UNKNOWN_DOCUMENT_PERIOD
-    basis = (BASIS_SEC_FISCAL_PERIOD_OF_REPORT if fiscal_year != report.year
+    # Compared with the year the quarter ENDS in after a 52/53-week spill: a quarter
+    # reported as ending 2 January 2027 ends in December 2026.
+    end_year = _period_end_month(report)
+    basis = (BASIS_SEC_FISCAL_PERIOD_OF_REPORT
+             if end_year is None or fiscal_year != end_year[0]
              else BASIS_SEC_PERIOD_OF_REPORT)
     return DocumentPeriod(period, basis, evidence)
 
