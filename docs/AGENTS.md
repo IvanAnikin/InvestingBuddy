@@ -1609,3 +1609,32 @@ a completed full analysis.
 Logging is structured and safe (Phase 27.1D): ids, statuses, counts, durations,
 capped backoff — never prompts, completions, report bodies, pack text, or
 credentials.
+
+---
+
+## Canonical research state and report-status invariants (ADR-082)
+
+The V3 pipeline computes the run's research state **once**, at report assembly, and every
+reader takes its counts and status lines from it.
+
+- `app/services/ledger/canonical_state.py` — `tally_ledger(session, run)` (the only
+  database read: non-withdrawn findings, verified, primary-source, open gaps by status,
+  unresolved disagreement ids) and the pure `build_canonical_state(v3, llm_council=,
+  tally=, as_of=)`. Persisted as `v3_research.canonical_state` (`version: 1`): finding
+  counts, gaps, disagreements, the issuer document inventory and the newest document, the
+  latest completed reporting period, current-period status, evidence status, chair status
+  (`model` / `deterministic` + reason) and council status (agents requested / completed /
+  failed / skipped, substituted V3 seats, tasks, chair model availability, deterministic
+  fallback, red team withheld / findings reviewed, `status_text`).
+- `CouncilInput.ledger_counts` is filled on every `assemble` path, refusals included. The
+  deterministic chair states the ledger's counts and the true fallback reason:
+  `council_did_not_convene`, `no_chair_model_available` or `chair_model_failed`.
+- `app/services/ledger/report_invariants.py` — `enforce(v3, state, llm_council=)` and
+  `enforce_content(v2_content, state)` check sentences about the research itself (counts,
+  latest document or period, recent developments, cash flow, evidence adequacy, issuer
+  documents, chair disagreements, council status). Counts and reasons are repaired;
+  free-text claims are withheld per sentence with a recorded reason
+  (`v3_research.state_invariants`). The V2 council is labelled legacy through
+  `v3_research.legacy_council`.
+- `scripts/qa_replay_ledger_state.py <reports-dir>` replays the checker over stored
+  report payloads, with the state derived from the payload. It makes no network call.

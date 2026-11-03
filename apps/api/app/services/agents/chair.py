@@ -147,26 +147,66 @@ def _gate_material_events(
     return verdict
 
 
+#: Why the deterministic verdict stands (ADR-082). Three different states; a reader must
+#: be told the right one. The Cellectis runs said "No model was available" while a
+#: chair model was routed and the council had refused on a blocking question.
+FALLBACK_NO_MODEL = "no_chair_model_available"
+FALLBACK_NOT_CONVENED = "council_did_not_convene"
+FALLBACK_CHAIR_FAILED = "chair_model_failed"
+
+#: Plain words for each refusal reason (``council_v2.inputs.REFUSAL_REASONS``).
+REFUSAL_WORDS: dict[str, str] = {
+    "blocking_question_open": "a blocking research question is still open",
+    "gap_blocks_council": "a recorded gap blocks the council",
+    "no_findings": "the run produced no evidence-linked findings",
+}
+
+
 def _ledger_state(council_input: CouncilInput) -> str:
-    verified = len(council_input.verified_findings)
-    unresolved = len(council_input.unresolved_disagreements)
-    open_gaps = len([g for g in council_input.gaps if g.status == "open"])
+    """The LEDGER's counts (ADR-082) — never the size of the pack the Council was shown,
+    which is empty on a refusal."""
     return (
-        f"Deterministic synthesis: {len(council_input.findings)} finding(s), "
-        f"{verified} verified, {open_gaps} open gap(s), {unresolved} unresolved "
-        "disagreement(s)."
+        f"Deterministic synthesis: {council_input.finding_count} finding(s), "
+        f"{council_input.verified_count} verified, {council_input.open_gap_count} open "
+        f"gap(s), {council_input.unresolved_count} unresolved disagreement(s)."
+    )
+
+
+def _fallback_tail(council_input: CouncilInput, reason: str) -> str:
+    """Why this is the ledger's state and not a synthesis — the TRUE reason."""
+    if reason == FALLBACK_NOT_CONVENED:
+        why = REFUSAL_WORDS.get(
+            str(council_input.refusal_reason), "the council did not convene"
+        )
+        return (
+            f"The council did not convene because {why}, so no synthesis was "
+            "attempted; the findings stand in the research record as recorded."
+        )
+    if reason == FALLBACK_CHAIR_FAILED:
+        return (
+            "The chair model did not return a usable reply, so this is the ledger's "
+            "own state rather than an interpretation of it."
+        )
+    return (
+        "No model was available, so this is the ledger's own state rather than an "
+        "interpretation of it."
     )
 
 
 def deterministic_verdict(
-    council_input: CouncilInput, subject: Mapping[str, Any] | None = None
+    council_input: CouncilInput,
+    subject: Mapping[str, Any] | None = None,
+    *,
+    reason: str = FALLBACK_NO_MODEL,
 ) -> ChairVerdict:
-    """The Chair when no model is available. Computed, never guessed.
+    """The Chair when no model reasoned over the ledger. Computed, never guessed.
 
     The label follows from the ledger's own state: nothing verified is
     ``insufficient_data``; unresolved conflict or open gaps is ``requires_more_evidence``;
     otherwise ``internal_research_candidate``. All five remain reachable, and none of
-    them is a recommendation.
+    them is a recommendation. A refused Council keeps its refusal semantics (no findings
+    in the pack, so ``insufficient_data``); only its TEXT now states the ledger's true
+    counts and the true reason.
     """
     verified = len(council_input.verified_findings)
     unresolved = len(council_input.unresolved_disagreements)
@@ -182,10 +222,7 @@ def deterministic_verdict(
     verdict = ChairVerdict(
         label=label,
         fundamental_setup=setup,
-        synthesis=(
-            f"{_ledger_state(council_input)} No model was available, so this is the "
-            "ledger's own state rather than an interpretation of it."
-        ),
+        synthesis=f"{_ledger_state(council_input)} {_fallback_tail(council_input, reason)}",
         key_points=[
             {
                 "text": f.statement,
@@ -199,6 +236,7 @@ def deterministic_verdict(
             str(d.disagreement_id) for d in council_input.unresolved_disagreements
         ],
         deterministic_fallback=True,
+        fallback_reason=reason,
     )
     return _gate_material_events(verdict, council_input, subject)
 
@@ -219,16 +257,19 @@ class LLMChair:
             str(d.disagreement_id) for d in council_input.unresolved_disagreements
         ]
         if self.client is None or not council_input.convened:
-            verdict = deterministic_verdict(council_input, self.subject)
-            verdict.unresolved_disagreement_ids = unresolved_ids
             # Which of the two it was. Checked in this order because a council that did
             # not convene has nothing to synthesise even where a model is available, and
             # that is the more informative statement about the RUN.
-            verdict.fallback_reason = (
-                "council_did_not_convene"
-                if not council_input.convened
-                else "no_chair_model_available"
+            verdict = deterministic_verdict(
+                council_input,
+                self.subject,
+                reason=(
+                    FALLBACK_NOT_CONVENED
+                    if not council_input.convened
+                    else FALLBACK_NO_MODEL
+                ),
             )
+            verdict.unresolved_disagreement_ids = unresolved_ids
             return verdict
 
         system = (
@@ -259,7 +300,9 @@ class LLMChair:
         try:
             payload = await self._complete_json(system, user)
         except Exception:  # noqa: BLE001 - a chair failure falls back, never fails a run
-            verdict = deterministic_verdict(council_input, self.subject)
+            verdict = deterministic_verdict(
+                council_input, self.subject, reason=FALLBACK_CHAIR_FAILED
+            )
             verdict.unresolved_disagreement_ids = unresolved_ids
             return verdict
 
@@ -364,7 +407,11 @@ class LLMChair:
 
 
 __all__ = [
+    "FALLBACK_CHAIR_FAILED",
     "FALLBACK_MATERIAL_EVENT",
+    "FALLBACK_NOT_CONVENED",
+    "FALLBACK_NO_MODEL",
+    "REFUSAL_WORDS",
     "MAX_FINDINGS_IN_PROMPT",
     "ChairVerdict",
     "LLMChair",

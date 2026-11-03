@@ -30,6 +30,7 @@ export default function ReportHeader({
   reportId,
   isFinal,
   supersededBy = null,
+  councilStatus = null,
 }: {
   identity: IdentityView;
   periods: ReportingPeriods | null;
@@ -50,12 +51,18 @@ export default function ReportHeader({
    * of a dead end.
    */
   supersededBy?: string | null;
+  /**
+   * ADR-082 — the council status from the run's canonical research state. When
+   * present it replaces the legacy council's own count: "8 agents completed" was shown
+   * over runs whose chair fell back and whose red team reviewed nothing.
+   */
+  councilStatus?: string | null;
 }) {
   const facts: [string, string][] = [
     ["Latest annual", periodText(periods?.latestAnnual, annualState)],
     ["Current period", periodText(periods?.latestCurrent, currentState)],
     ["Evidence", evidenceWordLabel ?? "Not assessed"],
-    ["Council", councilStatusText(council)],
+    ["Council", councilStatus ?? councilStatusText(council)],
     ["Last researched", formatDate(updatedAt)],
   ];
 

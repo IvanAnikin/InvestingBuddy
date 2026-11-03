@@ -6600,6 +6600,79 @@ spacing.
 - The helper does not cover non-SEC hosts (GLEIF, Stooq, ASX, FCA NSM). A script reading
   those must still use the product clients, not an improvised UA.
 
+## ADR-082: The Ledger Is the Single Source of Research State
+
+**Date:** 2026-11-03 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** cross-sector QA campaign 2026-11, §15 and §17 P-2 / P-4. All 16 claim-audited
+reports contradicted themselves. Defects closed by this decision: CLLS2-3, CLLS-4, PYPL2-3,
+PYPL3-1, ANTO-5, ADBE-5, LIN-5, LIN-6, and the section-11 council status line.
+
+### What was wrong
+Every reader of a run computed its own counts and its own idea of "the latest disclosure":
+
+- `council_v2.inputs.assemble` returns a refused `CouncilInput` with no findings, so the
+  deterministic chair said "0 finding(s) … No model was available" against ledgers of
+  37 / 37 / 38 / 32 findings, and the tech block read the same `council.finding_count`
+  (CLLS2-3). The reason was `blocking_question_open`, with a chair model routed.
+- The legacy V2 council judged its own price/profile evidence pack and said "No primary
+  filings … are included in the evidence pack" while 14-16 findings cited issuer filings
+  (CLLS-4).
+- Investigator statements, gaps and chair key points named an older document as the
+  newest, or denied holding any issuer filing, beside a held and cited 10-Q
+  (PYPL2-3, PYPL3-1, ANTO-5, ADBE-5, LIN-5).
+- `outcome.council` was captured before the Red Team, so it said "0 unresolved" beside a
+  chair listing ledger disagreement ids (LIN-6). Chair sentences could narrate a conflict
+  no recorded disagreement backs.
+- The header said "8 agents completed" while the council was refused, the chair fell back
+  and the red team reviewed nothing.
+
+### Decision
+1. **One canonical state, computed once.** `app/services/ledger/canonical_state.py`
+   builds it from the ledger tally (one aggregate read at the end of the run:
+   non-withdrawn findings, verified, primary source, open gaps by status, unresolved
+   disagreement ids) and the run's document inventory (core filings, official
+   disclosures, the statements' own documents, publication dates of cited issuer
+   documents). It holds the newest issuer document, the latest completed reporting
+   period, current-period status, evidence status, chair status and council status. It
+   is persisted as `v3_research.canonical_state` (`version: 1`).
+2. **Refusals carry the ledger's counts.** `CouncilInput.ledger_counts` is filled on every
+   path. Refusal semantics are unchanged (no findings in the pack, `insufficient_data`).
+   `to_dict()["finding_count"]` is now the ledger count; what the Council saw is
+   `council_finding_count`. The deterministic chair states the true count and the true
+   reason (`council_did_not_convene` / `no_chair_model_available` / the new
+   `chair_model_failed`). The council block on the report is the one the chair
+   deliberated over (after the Red Team).
+3. **Report-status invariants** (`app/services/ledger/report_invariants.py`), run at
+   report assembly (`attach_to_report`) over the chair, findings, gaps, the professional
+   report, the legacy council block and the V2 report content. Counts and reasons are
+   repaired from the canonical state. Free-text claims are withheld sentence by sentence,
+   and a text left with nothing becomes `[Withheld at report assembly: <reason>.]`. Every
+   action is recorded in `v3_research.state_invariants`. Unknown chair disagreement ids
+   are dropped (`dropped_disagreement_ids`).
+4. **Legacy is labelled.** `v3_research.legacy_council` carries the label and the true
+   council status. The page's header and council line read the canonical status. The V2
+   block itself is rewritten only when one of its sentences was withheld.
+
+### The phrase table is conservative
+A false positive deletes a true sentence, so each pattern anchors on the inventory claim
+itself, refuses qualified claims ("for Q4", "with period figures", "forthcoming"), compares
+publication dates with publication dates and period ends with periods (90-day margin), and
+only counts COMPLETED periods (a period ending after its source was published is ignored,
+which keeps forward tags like CLLS4-2's "2028-H2" out). Every rule has a near-miss test.
+
+### Replay (stored payloads of the 17 campaign reports; detection, not live proof)
+`scripts/qa_replay_ledger_state.py` derives the state from each payload
+(`derived_from: "payload"`; ledger ids are unknown, so unknown-id dropping does not run).
+106 violations before repair: ADBE 3, ANTO 3, ANTO2 3, CFR 1, CLLS 0, CLLS2 8, CLLS3 15,
+CLLS4 23, CLLS5 25, HON 0, HON2 3, JPM 0, LIN 10, LIN2 6, PYPL 0, PYPL2 4, PYPL3 2.
+
+### Not done here
+The gap status taxonomy and gap-vs-finding reconciliation (OPEN / PARTIALLY_CLOSED / …)
+is a later batch. A gap that denies a fact a finding states is withheld only when it
+makes one of the inventory claims above. The first Cellectis run (CLLS) records no
+issuer-kind findings in its payload, so its legacy "no primary filings" sentences are not
+provably false from the payload and are kept.
+
 ## ADR-084: Read What Was Acquired — Metric-Bearing Contracts and a Re-Read of Held Primary Documents
 
 **Date:** 2026-11-03 · **Status:** Accepted (implementation)

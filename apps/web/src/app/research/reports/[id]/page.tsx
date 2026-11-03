@@ -241,9 +241,14 @@ export default async function ResearchReportPage({
       ? link.currentReportId
       : null;
 
-  const councilLine = view.council.used
-    ? `${view.council.completed} council agent${view.council.completed === 1 ? "" : "s"}`
-    : "council did not run";
+  // ADR-082: the canonical research state's council status, when the run has one.
+  const canonicalCouncilStatus =
+    v3?.canonicalState?.councilStatusText ?? v3?.legacyCouncil?.statusText ?? null;
+  const councilLine = canonicalCouncilStatus
+    ? canonicalCouncilStatus
+    : view.council.used
+      ? `${view.council.completed} council agent${view.council.completed === 1 ? "" : "s"}`
+      : "council did not run";
 
   const statusStrip = (
     <ResearchStatusBadge
@@ -284,6 +289,7 @@ export default async function ResearchReportPage({
         reportId={report.id}
         isFinal={isFinal}
         supersededBy={supersededBy}
+        councilStatus={canonicalCouncilStatus}
       />
 
       {statusStrip}
@@ -451,6 +457,7 @@ export default async function ResearchReportPage({
                 council={view.council}
                 agents={investor.agents}
                 reportId={report.id}
+                legacyLabel={v3?.legacyCouncil?.label ?? null}
               />
 
               {view.council.used && (

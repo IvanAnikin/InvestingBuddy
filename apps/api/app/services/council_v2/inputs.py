@@ -225,6 +225,32 @@ class DisagreementRef:
         }
 
 
+@dataclass(frozen=True)
+class LedgerCounts:
+    """What the LEDGER records for the run, whatever the Council was shown (ADR-082).
+
+    A refused Council carries no findings (the refusal withholds the synthesis) and a
+    convened one may be truncated. Neither is the ledger's count, and every reader that
+    states "N findings" must state the ledger's: the Cellectis chair said "0 finding(s)"
+    on four runs whose ledgers recorded 32-38 (QA 2026-11, CLLS2-3).
+    """
+
+    findings: int = 0
+    verified: int = 0
+    primary_source: int = 0
+    gaps_open: int = 0
+    unresolved_disagreements: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "findings": self.findings,
+            "verified": self.verified,
+            "primary_source": self.primary_source,
+            "gaps_open": self.gaps_open,
+            "unresolved_disagreements": self.unresolved_disagreements,
+        }
+
+
 @dataclass
 class CouncilInput:
     """Everything the Council may reason over, and nothing else.
@@ -244,6 +270,10 @@ class CouncilInput:
     open_question_keys: tuple[str, ...] = ()
     playbook_versions: dict[str, int] = field(default_factory=dict)
     truncated: dict[str, int] = field(default_factory=dict)
+    #: ADR-082 — the ledger's own counts, on EVERY path including a refusal. ``None``
+    #: only for an input built by hand (tests, replays); readers then fall back to what
+    #: the Council was shown.
+    ledger_counts: LedgerCounts | None = None
 
     def __post_init__(self) -> None:
         if not self.convened and self.refusal_reason not in REFUSAL_REASONS:
@@ -282,18 +312,52 @@ class CouncilInput:
         """
         return frozenset(str(f.finding_id) for f in self.findings)
 
+    @property
+    def finding_count(self) -> int:
+        """The LEDGER's finding count (ADR-082), not the size of the Council's pack."""
+        if self.ledger_counts is not None:
+            return self.ledger_counts.findings
+        return len(self.findings) + int(self.truncated.get("findings", 0))
+
+    @property
+    def verified_count(self) -> int:
+        if self.ledger_counts is not None:
+            return self.ledger_counts.verified
+        return len(self.verified_findings)
+
+    @property
+    def primary_source_count(self) -> int:
+        if self.ledger_counts is not None:
+            return self.ledger_counts.primary_source
+        return len(self.primary_source_findings)
+
+    @property
+    def open_gap_count(self) -> int:
+        if self.ledger_counts is not None:
+            return self.ledger_counts.gaps_open
+        return len([g for g in self.gaps if g.status == "open"])
+
+    @property
+    def unresolved_count(self) -> int:
+        if self.ledger_counts is not None:
+            return self.ledger_counts.unresolved_disagreements
+        return len(self.unresolved_disagreements)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "research_run_id": str(self.research_run_id),
             "convened": self.convened,
             "refusal_reason": self.refusal_reason,
             "refusal_detail": self.refusal_detail,
-            "finding_count": len(self.findings),
-            "verified_finding_count": len(self.verified_findings),
-            "primary_source_finding_count": len(self.primary_source_findings),
+            # ADR-082: the counts are the LEDGER's. What the Council itself was shown is
+            # stated separately, so a refused Council no longer reads "0 findings".
+            "finding_count": self.finding_count,
+            "verified_finding_count": self.verified_count,
+            "primary_source_finding_count": self.primary_source_count,
+            "council_finding_count": len(self.findings),
             "gap_count": len(self.gaps),
             "disagreement_count": len(self.disagreements),
-            "unresolved_disagreement_count": len(self.unresolved_disagreements),
+            "unresolved_disagreement_count": self.unresolved_count,
             "open_question_keys": list(self.open_question_keys),
             "playbook_versions": dict(self.playbook_versions),
             "truncated": dict(self.truncated),
@@ -308,6 +372,9 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
     gaps = await _gaps(session, run)
     disagreements = await _disagreements(session, run)
     open_keys = await _open_question_keys(session, run)
+    # ADR-082 — on every path, refusals included: a refusal withholds the synthesis,
+    # never the count of what the ledger records.
+    counts = await ledger_counts(session, run)
 
     if summary.questions_blocking_open:
         return CouncilInput(
@@ -322,6 +389,7 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
             gaps=gaps,
             open_question_keys=open_keys,
             playbook_versions=dict(run.playbook_versions_json or {}),
+            ledger_counts=counts,
         )
     if summary.gaps_blocking_council:
         return CouncilInput(
@@ -334,6 +402,7 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
             gaps=gaps,
             open_question_keys=open_keys,
             playbook_versions=dict(run.playbook_versions_json or {}),
+            ledger_counts=counts,
         )
     if not findings:
         # A Council with nothing evidence-linked to reason over would produce prose.
@@ -348,6 +417,7 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
             gaps=gaps,
             open_question_keys=open_keys,
             playbook_versions=dict(run.playbook_versions_json or {}),
+            ledger_counts=counts,
         )
 
     # Each query fetches ONE row past its cap, which is enough to detect truncation
@@ -378,6 +448,46 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
         open_question_keys=open_keys,
         playbook_versions=dict(run.playbook_versions_json or {}),
         truncated=truncated,
+        ledger_counts=counts,
+    )
+
+
+async def ledger_counts(session: Any, run: Any) -> LedgerCounts:
+    """The ledger's own counts for the run (ADR-082). Counts, never a pack.
+
+    Withdrawn findings are excluded and open gaps are the population the Council is
+    shown (not closed, not reconciled closed or superseded), so these agree with every
+    list a reader sees. Primary source = cites the issuer's own documents.
+    """
+    rows = (
+        await session.execute(
+            select(ResearchFinding.verification_status, ResearchFinding.source_kinds_json)
+            .where(
+                ResearchFinding.research_run_id == run.id,
+                ResearchFinding.verification_status != "withdrawn",
+            )
+        )
+    ).all()
+    gaps_open = await _count(
+        session,
+        ResearchGap,
+        *_shown_gap_conditions(run),
+        ResearchGap.status == ledger.GAP_OPEN,
+    )
+    unresolved = await _count(
+        session,
+        ResearchDisagreement,
+        ResearchDisagreement.research_run_id == run.id,
+        ResearchDisagreement.resolution == ledger.UNRESOLVED,
+    )
+    return LedgerCounts(
+        findings=len(rows),
+        verified=sum(1 for status, _ in rows if status == "verified"),
+        primary_source=sum(
+            1 for _, kinds in rows if set(kinds or ()) & ISSUER_SOURCE_KINDS
+        ),
+        gaps_open=gaps_open,
+        unresolved_disagreements=unresolved,
     )
 
 
@@ -537,7 +647,9 @@ __all__ = [
     "CouncilInput",
     "DisagreementRef",
     "FindingRef",
+    "LedgerCounts",
     "GapRef",
     "assemble",
+    "ledger_counts",
     "unresolvable_citations",
 ]

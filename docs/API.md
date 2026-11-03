@@ -3406,6 +3406,24 @@ states) or `web_budget` (a limit). `challenges` also carries `ungrounded_challen
 `research-decisions` evidence-delta shape is unchanged (the optional `verified_leads` dimension lives
 only in the stored snapshot/delta JSON, and only with the flag on).
 
+## ADR-082 — canonical research state (no new endpoint)
+
+No new route. A report with a V3 run gains additive keys under
+`source_summary_json.v3_research`:
+
+- `canonical_state` (`version: 1`): the run's one research state (finding / gap /
+  disagreement counts, document inventory, current-period, evidence, chair and council
+  status with `council.status_text`).
+- `state_invariants`: the report-status sentences repaired or withheld at assembly
+  (`violations_total`, `by_rule`, `by_action`, `violations[]`).
+- `legacy_council` (only beside a V2 council): `{legacy, label, status_text}`.
+
+Changed meaning: `v3_research.council.finding_count`, `verified_finding_count`,
+`primary_source_finding_count` and `unresolved_disagreement_count` are now the LEDGER's
+counts, refusals included. The size of the Council's own pack is
+`council_finding_count`. `challenges.findings_reviewed` is new. `chair.fallback_reason`
+can now also be `chair_model_failed`.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

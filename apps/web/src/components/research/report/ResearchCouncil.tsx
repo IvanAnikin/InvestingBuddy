@@ -122,10 +122,13 @@ export default function ResearchCouncil({
   council,
   agents,
   reportId,
+  legacyLabel = null,
 }: {
   council: CouncilView;
   agents: CouncilAgentDetail[];
   reportId: string;
+  /** ADR-082 — set when a V3 run's canonical state stands beside this V2 council. */
+  legacyLabel?: string | null;
 }) {
   if (!council.used) {
     return (
@@ -167,6 +170,15 @@ export default function ResearchCouncil({
             : ""}
         </p>
       </div>
+
+      {legacyLabel && (
+        <p
+          className="mt-3 rounded-lg border border-[color:var(--ib-line-strong)] px-3.5 py-2.5 text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
+          data-testid="legacy-council-label"
+        >
+          {legacyLabel}
+        </p>
+      )}
 
       {council.labelIsFallback && (
         <p className="mt-3 rounded-lg border border-amber-400/25 px-3.5 py-2.5 text-xs leading-relaxed text-amber-200">
