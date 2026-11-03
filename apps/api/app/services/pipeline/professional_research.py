@@ -1282,7 +1282,8 @@ def domain_cost(
                 bucket["tool_calls"] += int(step.get("tool_calls") or 0)
             elif rung == "corpus_by_intent":
                 bucket["corpus_queries"] += len(step.get("queries") or [])
-            elif rung == "recency_corpus":  # ADR-076 — the newest-documents pass
+            elif rung in ("recency_corpus", "primary_document_reread"):
+                # ADR-076 newest-documents pass; ADR-084 held-primary-document re-read.
                 bucket["corpus_queries"] += int(step.get("tool_calls") or 0)
             elif rung == "external_search" and step.get("query"):
                 bucket["external_searches"] += 1

@@ -243,6 +243,7 @@ async def search_corpus(
     theme_keys: "Sequence[str] | None" = None,
     subject_scopes: "Sequence[str] | None" = None,
     exclude_injection_suspect: bool = False,
+    disclosures_only: bool = False,
 ) -> list[CorpusSearchResult]:
     """Search the corpus and return citable results.
 
@@ -281,6 +282,9 @@ async def search_corpus(
             theme_keys=_tuple(theme_keys),
             subject_scopes=_tuple(subject_scopes),
             exclude_injection_suspect=bool(exclude_injection_suspect),
+            # ADR-084 — the re-read of the subject's HELD PRIMARY documents only: the
+            # same predicate the recency anchor uses (``types.is_disclosure``).
+            disclosures_only=bool(disclosures_only),
         ),
         mode=mode,
         top_k=top_k,

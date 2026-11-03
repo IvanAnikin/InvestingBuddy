@@ -52,6 +52,9 @@ NOT_DISCLOSED_BY_ISSUER = "not_disclosed_by_issuer"
 NOT_REPORTED_FOR_PERIOD = "not_reported_in_structured_data_for_period"
 #: The item does not apply to this kind of business (a bank has no gross margin).
 NOT_APPLICABLE = "not_applicable"
+#: ADR-084 — the platform HOLDS a relevant primary document and did not read the answer
+#: out of it. Says nothing about the company, and never "not acquired".
+ACQUIRED_NOT_READ = "acquired_not_read"
 
 KNOWLEDGE_STATES: frozenset[str] = frozenset(
     {
@@ -59,6 +62,7 @@ KNOWLEDGE_STATES: frozenset[str] = frozenset(
         NOT_DISCLOSED_BY_ISSUER,
         NOT_REPORTED_FOR_PERIOD,
         NOT_APPLICABLE,
+        ACQUIRED_NOT_READ,
     }
 )
 
@@ -197,6 +201,11 @@ def label_gap(gap: str, state: str = NOT_ACQUIRED_BY_PLATFORM) -> str:
         )
     if state == NOT_APPLICABLE:
         return f"{text} — not applicable to this kind of business"
+    if state == ACQUIRED_NOT_READ:
+        return (
+            f"{text} — HELD BY INVESTINGBUDDY BUT NOT READ INTO AN ANSWER: a platform "
+            "reading gap; it says nothing about whether the company discloses it"
+        )
     return text
 
 
@@ -263,6 +272,7 @@ def correct_issuer_assertions(text: str | None) -> tuple[str, int]:
 
 
 __all__ = [
+    "ACQUIRED_NOT_READ",
     "GAP_KINDS",
     "KIND_BUSINESS_RISK",
     "KIND_PLATFORM_EVIDENCE_GAP",

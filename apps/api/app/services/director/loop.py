@@ -160,6 +160,9 @@ class GapDraft:
     #: spending a whole round to fail again.
     closable: bool = True
     blocks_council: bool = False
+    #: ADR-084 — whose gap it is (``knowledge_state``). ``None`` keeps the ledger's
+    #: default; ``acquired_not_read`` when a relevant primary document is held.
+    knowledge_state: str | None = None
 
 
 @dataclass
@@ -565,6 +568,7 @@ async def run_investigation(
                     sources_tried=gap.sources_tried,
                     closable=gap.closable,
                     blocks_council=gap.blocks_council,
+                    knowledge_state=gap.knowledge_state,
                 )
                 record.gaps_opened += 1
 
@@ -824,6 +828,7 @@ async def _judge_contracts(
 
     Never raises: a record that fails must not cost the run its findings.
     """
+    from app.services.agents.document_reread import required_metrics
     from app.services.director.contracts import evaluate_contract
 
     worked = set(outcome.question_evidence) | set(outcome.acquisition_steps)
@@ -833,8 +838,11 @@ async def _judge_contracts(
             if ref is not None:
                 pool.setdefault(ref.citation_id, ref)
         question = questions_by_key.get(key)
+        # ADR-084 — a playbook question naming metrics is satisfied only when its
+        # evidence carries them (the refs' ``metrics``), never by item counts alone.
         evaluation = evaluate_contract(
-            getattr(question, "evidence_contract", None), pool.values()
+            getattr(question, "evidence_contract", None), pool.values(),
+            required_metrics=required_metrics(question) if question is not None else (),
         )
         detail = evaluation.to_dict()
         detail["citation_ids"] = sorted(pool)[:60]
@@ -908,12 +916,24 @@ async def _record_unresolved(
             reason = ledger.UNRESOLVED_BUDGET_EXHAUSTED
         elif row.question_key not in evidence_so_far and row.contract_status is None:
             reason = ledger.UNRESOLVED_NOT_REACHED
-        elif row.question_key in RECENCY_QUESTION_KEYS and await _holds_a_document():
+        elif row.question_key in RECENCY_QUESTION_KEYS:
             # ADR-076 — the question retrieved nothing it could use, while the corpus
             # holds a CURRENT dated document of the subject (dated within
             # CURRENT_HOLDING_MAX_AGE_DAYS). That disclosure was HELD and not read into
             # the answer; "not acquired" would send a reader to fetch what the platform
-            # already stores. A stale newest holding stays "not acquired" (review 1).
+            # already stores. A stale newest holding stays "not acquired" (review 1) —
+            # whatever the ADR-084 re-read searched (ADR-084 review M1).
+            reason = (
+                ledger.UNRESOLVED_ACQUIRED_NOT_READ
+                if await _holds_a_document()
+                else ledger.UNRESOLVED_NOT_ACQUIRED
+            )
+        elif reread_found_held_documents(row.acquisition_log_json):
+            # ADR-084 — beyond the recency questions: the question's own re-read SEARCHED
+            # the subject's held primary documents (the run's document inventory, not the
+            # question's evidence window) and nothing it could use came back. The
+            # documents were held and not read into an answer; "not acquired" would send
+            # a reader to fetch what the platform already stores.
             reason = ledger.UNRESOLVED_ACQUIRED_NOT_READ
         else:
             reason = ledger.UNRESOLVED_NOT_ACQUIRED
@@ -921,6 +941,32 @@ async def _record_unresolved(
             row.contract_status = "unmet"
         row.unresolved_reason = reason
     await session.flush()
+
+
+def reread_searched(step: Any) -> bool:
+    """ADR-084 review M1 — whether one ``primary_document_reread`` step actually SEARCHED
+    held documents: at least one is held and at least one query ran without an error or
+    a refusal. A re-read that stopped first (nothing indexed, no query, the role cannot
+    read the corpus) or whose every query failed read nothing — so it cannot say the
+    documents were "held but not read"."""
+    if not isinstance(step, dict):
+        return False
+    try:
+        held = int(step.get("held_primary_documents") or 0)
+        ran = int(step.get("queries_run") or 0)
+    except (TypeError, ValueError):
+        return False
+    return held > 0 and ran > 0
+
+
+def reread_found_held_documents(log: Any) -> bool:
+    """ADR-084 — did the question's primary-document re-read SEARCH a held document?"""
+    return any(
+        isinstance(step, dict)
+        and step.get("rung") == "primary_document_reread"
+        and reread_searched(step)
+        for step in log or ()
+    )
 
 
 #: ADR-076 review 1 — a newest held document older than this is not "the latest
@@ -1415,6 +1461,8 @@ def _improvable(
         if key not in evidence_so_far and key not in searches_so_far:
             # Never worked (unassigned, or dropped for capacity): not a follow-up.
             continue
+        # The COUNT contract, deliberately (ADR-084): a question short only of a metric
+        # is answered from the held documents, never by another web round.
         if evaluate_contract(contract, evidence_so_far.get(key, {}).values()).satisfied:
             continue
         if can_improve is not None and not can_improve(key):

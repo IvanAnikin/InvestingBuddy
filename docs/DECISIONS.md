@@ -6599,3 +6599,289 @@ spacing.
   placeholder; SEC fair-access asks for a reachable one.
 - The helper does not cover non-SEC hosts (GLEIF, Stooq, ASX, FCA NSM). A script reading
   those must still use the product clients, not an improvised UA.
+
+## ADR-084: Read What Was Acquired — Metric-Bearing Contracts and a Re-Read of Held Primary Documents
+
+**Date:** 2026-11-03 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11 (priorities P-5 / P-9 / C). Of 175 audited
+gaps, 114 were `DOCUMENT_ACQUIRED_EXTRACTION_FAILED`: 65% of the "missing" facts were in
+documents the platform already held. The cases are JPM-4, JPM-11, PYPL-1/2/3,
+PYPL3-2/3, CLLS-2, CLLS2-4, CLLS3-2, LIN-2 and LIN2-1
+(`docs/autonomous-cross-sector-research-qa-2026-11.md` §8 and §15).
+
+### Context
+Verified on `90a3c51`:
+1. `evaluate_contract` counted items and sources only. Playbook metrics
+   (`research_questions.required_metrics_json`) had no consumer. So two paragraphs that
+   never state CET1 satisfied the banks playbook's `capital_adequacy` (JPM-11).
+2. In `_acquire`, the corpus rung runs only `if not current.satisfied`. A contract
+   satisfied by count therefore never searched the held filing again (JPM-4).
+3. A fact-tool question that came back empty had no corpus fallback. The fact tools read
+   us-gaap only, so this hits a 20-F / IFRS filer (CLLS2-4: blocking `cash_runway` with
+   `tools: []`).
+4. Ranking put forward-looking-statement boilerplate above statement tables (CLLS3-2),
+   and annual-report narrative above the Appendix 5B (LIN2-1).
+5. Absence gaps were judged from the question's own evidence. Outside the three ADR-076
+   recency questions, a held 10-Q was reported as "not acquired by the platform"
+   (PYPL-2/3).
+
+### Decision
+1. **Metric-bearing contracts** (`director.contracts`, `agents.document_reread`).
+   - **What an item carries.** `EvidenceRef` gains `metrics`, the lexicon topics that the
+     item's OWN text carries. A metric is carried when it is named and a figure sits
+     beside it: within 200 characters after the name, 80 before it, or inside the match
+     ("had A$45.1m in cash").
+     - A bare year is not a figure, and neither is a number that is part of the name
+       ("Tier 1").
+     - Narrative topics (legal, trial status, guidance) are carried by being named.
+     - For a corpus hit only its `text` is read, not the JSON around it (page numbers,
+       scores).
+   - **The verdict.** `evaluate_contract(..., required_metrics=...)` stays `partial`
+     until every required metric is carried, and names each missing one ("needs the
+     metric cet1 in evidence"). Without required metrics the verdict and its `to_dict()`
+     are byte-identical.
+   - **Which questions.** `document_reread.required_metrics(question)` applies only to a
+     question a PLAYBOOK declares. Its metrics are the `required_calculations` the
+     lexicon recognises, plus the playbook `required_metrics` that the question's own
+     text names. Examples:
+     - banks `capital_adequacy` → CET1;
+     - banks `asset_quality` → NPLs and provision for credit losses ("cost of risk");
+     - banks `net_interest_margin` → net interest income;
+     - biotech `cash_runway` → cash and operating cash flow ("cash burn").
+
+     Base-model and carried-forward questions keep their count contracts.
+   - **Who uses it.** The investigator's ladder verdict and `loop._judge_contracts` (the
+     recorded `contract_status`) both pass the metrics.
+   - **Spend.** A metric never buys a web search. The ladder's web rung and the loop's
+     `_improvable` still use the count contract. A question short ONLY of a metric logs
+     `external_search` stopped `only_metrics_missing_read_from_held_documents`. The
+     re-read can only satisfy more questions, so this change cannot add an external
+     search.
+   - **Vocabulary.** `research_fields.fields_for_metrics` covers seven fields and none of
+     the bank KPIs, so the lexicon extends it. Each topic records the `research_fields`
+     field it corresponds to, and a test pins that every field's `metric_aliases` is
+     covered.
+2. **The re-read rung** (`LLMInvestigator._primary_reread`, rung 2b).
+   - **When.** After corpus-by-intent and BEFORE the web rung, so also before any
+     absence gap is written. It runs for every question still unsatisfied in its first
+     round. A metric-bearing question stays unsatisfied until its metrics are carried, so
+     every such question is covered.
+   - **Queries.** They come from a reviewed metric → section/table lexicon,
+     `document_reread.TOPICS`, with 35 topics:
+     - debt and cash: total debt, net debt, OCF, capex, FCF, cash, runway;
+     - operations: revenue, margins, segment, geography, customer concentration,
+       backlog/RPO, share count, operating KPIs, production capacity;
+     - resources and pipeline: ownership interest, resources/reserves, R&D, trial status;
+     - narrative: legal proceedings, contingencies and regulatory actions; guidance;
+     - bank KPIs: NII, NIM / net yield, provision for credit losses / cost of risk, NCOs,
+       allowance, NPLs, CET1, LCR, SLR, deposits, TBVPS, ROE.
+
+     Missing metrics are queried first, then the topics the question's text and intents
+     name. With no matching topic, the question's own corpus query is used. A question
+     runs at most `MAX_REREAD_QUERIES` = 2, inside the existing per-question budget.
+   - **Restricted to held primary documents.** Every query sets the new corpus-tool flag
+     `primary_documents_only`. It maps to the existing `CorpusFilters.disclosures_only`
+     (ADR-076 review: the `is_disclosure` predicate) through
+     `retrieval.search_corpus(disclosures_only=)`. That admits issuer and regulatory
+     filings, results releases and 6-K exhibits, venue disclosures, and the issuer's own
+     releases on its verified domain. It is a reviewed predicate, never a caller filter.
+   - **Ranking.** `rank_hits` puts hits that carry a wanted metric first, then table
+     chunks (`table_location`, or dense figures), then a matching section heading, then
+     the backend's own order. Forward-looking-statement / safe-harbour boilerplate goes
+     last. It is detected only with two distinct cues, so a sentence that merely points
+     to the safe harbour is not boilerplate.
+   - **Into the evidence.** At most `MAX_REREAD_ITEMS` = 4 new hits per query join the
+     evidence. They sit behind the ADR-076 recency lead and ahead of everything else.
+   - **The log.** The `primary_document_reread` step records the queries, topics, held
+     documents, hits, the table / boilerplate / candidate / metric counts, and a status
+     per held document. `domain_cost` counts its calls as corpus queries. It is not an
+     intent.
+   - **Fact-tool fallback.** Suppose a question requires a fact tool and the platform
+     rung returned no fact-tool item. The step then says
+     `fallback_for: fact_tools_returned_nothing`. The question is unsatisfied, so it
+     re-reads instead of ending at `tools=[]`.
+   - **Inventory.** `pipeline.document_coverage.held_primary_documents` lists the
+     subject's current primary versions ONCE per run, before any question is asked.
+     Each comes with its chunks, indexed chunks, table chunks, pages and distinct
+     sections, and the list is handed to the investigator (`primary_documents`).
+     - `None` (the lookup failed, or there is no corpus backend): the rung does not run,
+       so any caller that passes no inventory behaves exactly as before.
+     - `()`: nothing is held. The step logs `no_primary_document_held` and spends
+       nothing.
+3. **Extraction status** per (held document × question). A closed vocabulary in
+   `document_reread`:
+
+   | Status | Meaning |
+   |---|---|
+   | `DOCUMENT_ACQUIRED_NOT_PARSED` | No indexed chunk. |
+   | `DOCUMENT_PARSE_FAILED` | The version is `extraction_failed`. |
+   | `DOCUMENT_PARSED_FACT_FOUND` | A passage carrying what the question asks for reached the evidence. |
+   | `DOCUMENT_SECTION_SKIPPED` | Hits matched, but none reached the evidence. |
+   | `DOCUMENT_TABLE_UNREAD` | A metric is wanted and the document holds tables, but none was read. |
+   | `DOCUMENT_PARSED_NO_MATCH` | Searched; nothing matched. |
+
+   The statuses are stored in the step, which is persisted in
+   `research_questions.acquisition_log_json`, and in the payload audit below.
+4. **Gaps tell the truth.**
+   - **The gap text.** Suppose a question ends with no evidence after its re-read
+     covered held primary documents. The investigator's gap keeps its first sentence,
+     "No citable evidence was retrieved for 'x'.", which the planner relies on. It then
+     names up to three held documents and says they were "held but not read into an
+     answer: this is a gap in what was read, not evidence that the information does not
+     exist".
+   - **The knowledge state.** The gap carries the new `acquired_not_read`
+     (`knowledge_state.ACQUIRED_NOT_READ`). Its prompt label reads "HELD BY
+     INVESTINGBUDDY BUT NOT READ INTO AN ANSWER". `GapDraft.knowledge_state` carries it
+     to `record_gap`.
+   - **The unresolved reason.** `loop._record_unresolved` extends ADR-076's
+     `acquired_not_read` from the three recency questions to EVERY question whose log
+     shows a re-read over held primary documents (`reread_found_held_documents`). The
+     test is the run's inventory, not the question's own evidence. The ADR-076 recency
+     rule is unchanged.
+   - **No migration.** `knowledge_state` is `String(50)` with no CHECK constraint. The
+     web's `KNOWLEDGE_STATE_WORDS` gains "Held by the platform but not read for this
+     question".
+5. **Coverage audit.** `document_coverage.build_coverage` writes
+   `v3_research.primary_document_coverage`:
+   - documents acquired, each with its chunks, indexed chunks, tables, pages and
+     sections;
+   - pages, sections and chunks parsed;
+   - tables held and tables inspected;
+   - re-read queries;
+   - candidate fact sections;
+   - `facts_extracted`, which counts metric-bearing passages read and is labelled so;
+   - extraction failures, including core-filing and core-disclosure slots that were held
+     but never made searchable;
+   - status counts and the per-(question × document) rows;
+   - `unresolved_despite_documents`, naming the question and the documents.
+
+   The audit is present only when the inventory is known. It is **payload only**: the
+   admin report page (`apps/web/src/app/admin/reports/[id]`) has no technical V3
+   section to extend.
+
+### Tests
+`tests/test_qa_closure_document_completeness.py` (37):
+- **Contracts:**
+  - count alone does not satisfy a metric contract; an item carrying the metric does;
+  - which metrics bank, biotech and dev-stage questions require, and that base
+    questions require none.
+- **The re-read:**
+  - a CET1 question satisfied by count re-reads the held 10-Q and is satisfied by its
+    table;
+  - boilerplate ranks below the table;
+  - the re-read runs before web search, and a re-read that answers spends no search;
+  - a missing metric alone buys no search;
+  - through the real tool and memory backend, a web page is never returned;
+  - an empty fact-tool question falls back.
+- **Statuses, gaps and the audit:**
+  - the extraction statuses are recorded;
+  - a gap is `acquired_not_read` and names the document, through the loop into the
+    ledger, while a question with no re-read stays `not_acquired`;
+  - the coverage audit fields, and the inventory over SQLite.
+
+### Not changed / known limits
+- **No structured facts.** Statement-table extraction into FACTS (10-K / 10-Q / IFRS /
+  5B) is a later batch. Passages reach the investigator, and the model still writes the
+  finding.
+- **Rung-1 web search is not reordered.** A question whose own required tools include
+  `search_web` (the external role's `recent_external_developments`) still searches in
+  rung 1, before the re-read. Only the ladder's web rung comes after it.
+- **"Answered" is unchanged.** A question's resolution status is still whatever the
+  writer reports. A metric-bearing blocking question can be `answered` while its
+  contract is `partial`. The contract and the report now name the missing metric.
+- **More internal calls.** Questions that used to be satisfied by count now also run
+  corpus-by-intent and the re-read. These calls stay inside the corpus and inside the
+  existing task and session budgets.
+- **Lexical only.** A held document whose wording matches no lexicon term or question
+  term is still not read. The figure test can be fooled by an unrelated number within
+  200 characters.
+- **One re-read per question**, in its first round. A follow-up round does not repeat
+  it.
+- **No live run yet.** Acceptance needs JPM, PYPL, CLLS and LIN reruns after deploy.
+
+### ADR-084 review (2026-11-03): the whole chunk, the raw record, and an honest "held"
+The independent review of PR #321 returned NO-GO. Two findings were blocking, and part
+of the first was already present on `main`.
+
+- **H1: the model saw about a third of each chunk.** This was pre-existing on `main`.
+  - **The defect:**
+    - `investigator._render_untrusted` rebuilt every dict in work-stack pop order, which
+      reversed its keys;
+    - `_evidence_of` then cut the JSON at 1,500 characters;
+    - a corpus hit's `text` therefore started around character 870, so only about 630
+      characters of a 2,000-character chunk reached the prompt;
+    - ADR-084's metric detection ran on that cut, escaped copy, where a newline is
+      `\n` and defeats the figure test.
+  - **The fix:**
+    - rendering inserts keys in source order;
+    - a platform corpus item is serialised `evidence_id`, `text`, then its citation
+      fields, dropping empty fields and the retrieval internals (`lexical_score`,
+      `semantic_score`, `matched_terms`);
+    - corpus items are cut at `_CORPUS_ITEM_PROMPT_CHARS` = 3,000, which is above the
+      chunker's 2,000-character hard maximum plus its roughly 770-character envelope;
+      other items stay at 1,500;
+    - a ref's `metrics` are computed once, at harvest, from the RAW record
+      (`_raw_metrics`): a chunk's or lead's own text, and for the subject's fact tools
+      the record's fields.
+  - **Prompt budget:**
+    - `MAX_EVIDENCE_CHARS` (16,000) is unchanged and still bounds the block;
+    - a typical 1,200-character chunk now costs about 1,970 characters (about 8 per
+      block) and a 2,000-character chunk about 2,770 (about 5 per block), where 10 cut
+      items used to fit;
+    - fewer chunks are shown, but each one is whole; items that do not fit are still
+      counted and announced to the model, as before.
+- **M1: "held" was claimed too easily.**
+  - The ADR-076 rule now runs first for the recency questions: a stale newest holding
+    stays `not_acquired`, whatever the re-read did. The investigator does not mark a
+    recency question's gap `acquired_not_read` either.
+  - A question counts as held-but-unread only when a re-read query actually searched
+    (`queries_run` > 0 together with held documents; `loop.reread_searched`). A re-read
+    that found nothing indexed, ran no query, or had every query raise or be refused
+    claims nothing.
+  - The gap wording no longer says "relevant" in the gap text or in the audit note.
+- **M2:** with the run's `max_tool_calls` known, a re-read runs one query instead of two
+  once fewer than 25% of the run's tool calls remain, so a QUICK run's later questions
+  are not starved.
+- **M3:** re-read queries pass through `keyword_query`, as in rung 2 and the recency
+  pass. The backends OR-join every token, so stopwords used to match nearly every chunk.
+- **M4:** the inventory applies the disclosure rule in SQL:
+  - chunks are counted with the search backend's own `_filter_clauses(disclosures_only)`
+    predicate, so only the company's indexable disclosure chunks count, and
+    `indexed_chunks` counts only those that are indexed;
+  - versions are listed by the same rule over their own tier, class and access, so a
+    held filing with nothing retrievable is still listed;
+  - the outer version is aliased so that the predicate's correlated subqueries keep
+    their own FROM.
+- **L1: required metrics are now recognisable in evidence.**
+  - Every multi-word metric key a topic answers to is also recognised written as words
+    ("net margin", "rnd expense", "non performing loan ratio", "leverage ratio",
+    "operating kpis", "share count", plus "dilution", "capacity" and "debt").
+  - "cash" and "deposits" are not matched as bare words in prose.
+  - XBRL concept names are split into words, and four lexicon patterns were widened:
+    "long term debt", "provided by used in operating activities", "payments to acquire
+    property", and "interest income expense net".
+  - Typed fact records carry a metric through `record_metrics`: a metric key, a concept
+    or a label, beside a figure.
+  - A segment fact with a figure carries `segment`. A peer's record carries nothing for
+    the subject.
+
+**Tests:** `tests/test_qa_closure_document_completeness.py` now has 67 tests (30 new).
+- **H1:**
+  - the reviewer's case: a full `_hit_payload`-shaped hit whose CET1 row sits past
+    character 900 of a newline-separated table, which now satisfies the contract;
+  - the rendered prompt contains a 1,900-character chunk whole;
+  - the key order is preserved.
+- **L1:**
+  - every figure-metric alias is carried by a typed record;
+  - the reviewer's aliases are recognised in text;
+  - eight XBRL concepts are read as words;
+  - segment facts carry `segment`, and peer records carry nothing.
+- **M2:** one query when the run budget is low, two when it is healthy.
+- **M3:** no stopword appears in a re-read query.
+- **M1:**
+  - four "searched nothing" step shapes are rejected;
+  - when every query fails, the gap is left unclaimed;
+  - a recency question keeps ADR-076.
+- **M4:** the inventory excludes another company's chunk, an unindexable chunk and a web
+  page; it counts an unindexed chunk as held but not indexed, and lists a held filing
+  with no retrievable chunk.

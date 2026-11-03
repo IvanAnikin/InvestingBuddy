@@ -249,6 +249,13 @@ def validate_search_company_corpus(arguments: dict[str, Any]) -> dict[str, Any]:
         "mode": mode,
         "top_k": max(1, min(top_k, MAX_TOP_K)),
         "recent_window_days": _recent_window_days(arguments.get("recent_window_days")),
+        # ADR-084 — restrict to the subject's HELD PRIMARY documents (issuer and
+        # regulatory filings, results releases, venue disclosures, the issuer's own
+        # releases on its verified domain): ``types.is_disclosure``, a reviewed
+        # predicate, never a caller-supplied filter.
+        "primary_documents_only": _flag(
+            arguments.get("primary_documents_only"), "primary_documents_only", False
+        ),
         **_web_filters(arguments, exclude_suspect_default=False),
     }
 
@@ -416,6 +423,7 @@ async def _search_company_corpus(
         allow_cross_entity=arguments["allow_cross_entity"],
         source_classes=arguments.get("source_classes") or None,
         exclude_injection_suspect=bool(arguments.get("exclude_suspect")),
+        disclosures_only=bool(arguments.get("primary_documents_only")),
     )
     # One filing must not crowd out the others: each document's best two chunks first, the
     # rest demoted (not dropped, so a one-filing company still gets a full page).
