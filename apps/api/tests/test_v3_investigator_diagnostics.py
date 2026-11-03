@@ -483,6 +483,10 @@ class TestDiagnosticsCarryNoSensitiveContent:
             "statements_about_foreign_subject",
             # QA 2026-11-02 (ADR-079) — another registrant's EDGAR filing. A count.
             "statements_about_other_registrant",
+            # QA closure (ADR-083) — implicit-subject passages of another entity, and
+            # statements scoped to a subsidiary / JV / mine heading. Counts.
+            "statements_about_implicit_other_entity",
+            "statements_scoped_to_entity",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 
