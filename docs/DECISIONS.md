@@ -7406,3 +7406,46 @@ by its first word alone ("Iluka said…") are no longer entities: such sentences
 UNKNOWN and kept — CLLS5-4 is caught only when the equipment maker is registered or
 named with its legal form. In the subject's own document, another company's operational
 sentence without an own-results verb is kept even when it is not the subject's.
+
+### Re-review of PR #320 at 4c18851 — what changed
+- **R1 — reported results drop only a positively outside entity.** In the subject's own
+  document a named entity's own reported results (or table row) drop only when a cue
+  places it outside the perimeter: PEER, CUSTOMER, SUPPLIER or COUNTERPARTY. A cue-less
+  OTHER_ISSUER may be the subject's own operating company ("Quantinuum Ltd reported
+  revenue of $120 million", "Oyu Tolgoi LLC reported copper production", "Praxair India
+  Private Limited generated sales", a revenue-by-operation table of "Minera … S.A."
+  rows): kept (`contained`, unknown). "Our largest customer, Vexmoor Inc., reported
+  revenue…" (CUSTOMER) and the peer-table row (PEER) still drop; "Vexmoor Inc. reported
+  revenue…" with no cue drops only on a page the subject does not own.
+- **R2 — the registered-name index costs milliseconds.** No regex is compiled per name:
+  the index maps a name's first folded word to its folded name words, matched as
+  strings, with ONE precompiled legal-form tail. The cache is keyed on the name list
+  only (the subject's own-word exclusion is applied at match time), so a new subject
+  never rebuilds it. Measured: 9 ms for 1,000 names, 32 ms for 3,000 (was 6.8 s and
+  7–25 s); a dense 1.5k passage reads in ~25–30 ms at 3,000 names, the same as at none;
+  a 200k-character page in 0.12 s. `test_registered_name_index_timing` guards it.
+- **Restored coverage.** (a) In the subject's own document a FORMER_SUBSIDIARY that is a
+  sentence's grammatical subject carries the topic again ("Calyxt, Inc., our former
+  majority-owned subsidiary, was deconsolidated…. There can be no assurance that seed
+  production techniques…" drops), except into a sentence about the separation itself
+  (deconsolidation, divestment, disposal, proceeds, "gain/loss on": the filer's
+  accounting). (b) Group wording is split: "Group, consolidated, Firm, Corporation, net
+  debt, dividend, EPS, total company, Note N" always un-scope a heading; "total,
+  company, we, our, us" un-scope it only when the sentence does not itself name the
+  heading's mine or segment ("CENTINELA — Total copper production at Centinela…", "We
+  invested $1.3 billion… on the Centinela Second Concentrator" stay Centinela's).
+  (c) A sentence naming no one, with no Group or first-person wording, in a passage
+  whose ONLY named entity is a subsidiary or joint venture named before it ("J.P.
+  Morgan SE is a wholly-owned subsidiary. Capital adequacy is assessed…") is scoped to
+  that entity. (d) A registered company's own site may name it by its first word
+  ("Iluka half-year results" on iluka.com): the host, confirmed by
+  `issuer_domain_matches`, is the evidence the full name otherwise is.
+- **N1 — a namesake in another legal form is the subject** ("BASF AG" for "BASF SE",
+  "Unilever N.V." for "Unilever PLC") unless a cue makes it a subsidiary, joint venture
+  or former subsidiary ("Linde AG, the German operating company" — "operating company"
+  is now a subsidiary cue).
+
+**Still not caught (never caught at any revision):** a "Risks Related to <Name>"
+heading whose name never recurs in the excerpt, and a sentence that mixes the other
+entity's risk with the subject's ("…which could reduce the value of our remaining
+stake"). Both stay kept.

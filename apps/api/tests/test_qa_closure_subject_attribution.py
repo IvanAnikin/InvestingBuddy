@@ -148,14 +148,10 @@ REGRESSION_CASES: list[tuple[str, str, SubjectIdentity, Passage, str, str | None
         ps.VERDICT_OTHER, "Tessaro GmbH", ps.SUPPLIER,
     ),
     (
-        "customer-own-revenue-no-frame",
+        "other-company-own-revenue-on-a-third-party-page",
         "Revenue was $4.2 billion in 2024.",
         HARROWFIELD,
-        Passage(
-            "ev:1",
-            "Vexmoor Inc. reported revenue of $4.2 billion in 2024.",
-            owner=OWNER_SUBJECT,
-        ),
+        Passage("ev:1", "Vexmoor Inc. reported revenue of $4.2 billion in 2024."),
         ps.VERDICT_OTHER, "Vexmoor Inc", ps.OTHER_ISSUER,
     ),
     (
@@ -612,15 +608,52 @@ class TestRegisteredCompanies:
         assert later.verdict == ps.VERDICT_OTHER
 
     def test_the_registered_name_index_is_built_once(self) -> None:
-        # Review M2: 3,000 registered names are compiled once, not per passage.
+        # Review M2 / R2: 3,000 registered names are indexed once per name list — not
+        # per passage, and not per subject.
         known = tuple(f"Company{i:04d}x Holdings" for i in range(3000))
-        subject = SubjectIdentity("Lindian Resources Limited", "LIN", known_entities=known)
         ps._known_index.cache_clear()
-        for _ in range(3):
+        for name in ("Lindian Resources Limited", "Calderon Copper plc", "Corvalis S.A."):
+            subject = SubjectIdentity(name, "X", known_entities=known)
             _one("Revenue was $12.4 million.", subject,
                  Passage("ev:1", "Revenue was $12.4 million in FY2026.", owner=OWNER_SUBJECT))
         info = ps._known_index.cache_info()
         assert (info.misses, info.hits) == (1, 2)
+
+    def test_registered_name_index_timing(self) -> None:
+        # Review R2: built in well under 200 ms for 3,000 names (measured ~30 ms), and a
+        # dense 1.5k passage reads in well under 50 ms (measured ~25 ms). Bounds are
+        # loose so a slow CI host does not flake; a per-name regex compile (the defect:
+        # 7–25 s) fails them by two orders of magnitude.
+        import time
+
+        known = tuple(f"Company{i:04d}x Holdings Ltd" for i in range(3000))
+        ps._known_index.cache_clear()
+        started = time.perf_counter()
+        ps._known_index(known)
+        assert time.perf_counter() - started < 1.0
+        text = ('Acme Widgets Inc. ("Acme") and Beta Holdings Ltd supply our plants. ' * 25)[
+            :1450
+        ] + " We had revenue of $5.2 billion."
+        subject = SubjectIdentity("Calderon Copper plc", "CALD", known_entities=known)
+        passage = Passage("ev:1", text, owner=OWNER_SUBJECT)
+        ps.attribute_passage("revenue 5.2 billion", passage, subject)
+        started = time.perf_counter()
+        for _ in range(5):
+            ps.attribute_passage("revenue 5.2 billion", passage, subject)
+        assert (time.perf_counter() - started) / 5 < 0.25
+
+    def test_a_companys_own_site_names_it_by_its_first_word(self) -> None:
+        # Restored LIN2-3 coverage: on the registered company's own site the host is the
+        # evidence, so "Iluka half-year results" names it there (and only there).
+        result = _one(
+            "H1 unit cash cost was $1,236/t versus $1,138/t.",
+            self.LINDIAN_WITH_ILUKA,
+            Passage("ev:1", "Iluka half-year results. Unit cash cost per tonne of Z/R/SR "
+                    "produced was $1,236/t (H1 2025: $1,138/t).",
+                    company_site_host="iluka.com"),
+        )
+        assert result.verdict == ps.VERDICT_OTHER
+        assert result.others == (("Iluka Resources Limited", ps.OTHER_ISSUER),)
 
     def test_a_different_name_sharing_the_first_word_is_not_the_company(self) -> None:
         result = _one(
@@ -2169,6 +2202,390 @@ def test_review_false_drop_measure() -> None:
                  ).verdict == ps.VERDICT_OTHER
     ]
     assert dropped == []
+
+
+# ---------------------------------------------------------------------------
+# PR #320 re-review (4c18851): R1 false drops, restored coverage, N1
+# ---------------------------------------------------------------------------
+
+#: (id, expected, subject, statement, text, heading, owner, company_site_host).
+#: ``not-other`` = must not be dropped (subject, scoped or unknown);
+#: ``other-or-unknown`` = either is acceptable. Two repros the reviewer listed as
+#: "must still be caught" were never caught at any revision (a "Risks Related to
+#: <Name>" heading whose name never recurs in the text, or whose only sentence also
+#: says "our remaining stake") and are documented in ADR-083 instead.
+REREVIEW_CASES: list[
+    tuple[str, str, SubjectIdentity, str, str, str | None, str, str | None]
+] = [
+    (
+        'clls2-2-pron', 'other',
+        SubjectIdentity('Cellectis S.A.', 'CLLS'),
+        (
+            'There is no assurance that seed production techniques will '
+            'meet large-scale production goals.'
+        ),
+        (
+            'Calyxt, Inc., our former majority-owned subsidiary, was '
+            'deconsolidated on May 31, 2023. There can be no assurance '
+            'that its seed production techniques will meet large-scale '
+            'production goals.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'clls2-2-nextpara', 'other',
+        SubjectIdentity('Cellectis S.A.', 'CLLS'),
+        (
+            'There is no assurance that seed production techniques will '
+            'meet large-scale production goals.'
+        ),
+        (
+            'Calyxt, Inc., our former majority-owned subsidiary, was '
+            'deconsolidated on May 31, 2023.\nThere can be no assurance '
+            'that seed production techniques will meet large-scale '
+            'production goals.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'lin2-3-site', 'other',
+        SubjectIdentity('Lindian Resources Limited', 'LIN',
+                        known_entities=('Iluka Resources Limited',)),
+        'H1 unit cash cost was $1,236/t versus $1,138/t.',
+        (
+            'Iluka Resources Limited half-year results. Unit cash cost '
+            'per tonne of Z/R/SR produced was $1,236/t (H1 2025: '
+            '$1,138/t).'
+        ),
+        None, OWNER_UNKNOWN, 'iluka.com',
+    ),
+    (
+        'lin2-3-site-bare', 'other',
+        SubjectIdentity('Lindian Resources Limited', 'LIN',
+                        known_entities=('Iluka Resources Limited',)),
+        'H1 unit cash cost was $1,236/t versus $1,138/t.',
+        (
+            'Iluka half-year results. Unit cash cost per tonne of Z/R/SR '
+            'produced was $1,236/t (H1 2025: $1,138/t).'
+        ),
+        None, OWNER_UNKNOWN, 'iluka.com',
+    ),
+    (
+        'jpm5', 'scoped',
+        SubjectIdentity('JPMorgan Chase & Co.', 'JPM'),
+        (
+            "The company's ICAAP assesses capital adequacy over a "
+            'one-year horizon.'
+        ),
+        (
+            'J.P. Morgan SE (“JPMSE” or “the Bank”) is a wholly-owned '
+            "subsidiary of JPMorgan Chase & Co. The Bank's ICAAP "
+            'assesses capital adequacy over a one-year horizon under '
+            'baseline and adverse scenarios.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'jpm5-firmmention', 'scoped',
+        SubjectIdentity('JPMorgan Chase & Co.', 'JPM'),
+        (
+            "The company's ICAAP assesses capital adequacy over a "
+            'one-year horizon.'
+        ),
+        (
+            "J.P. Morgan SE (“JPMSE” or “the Bank”) is the Firm's "
+            "principal EU bank. The Bank's ICAAP assesses capital "
+            'adequacy over a one-year horizon under baseline and adverse '
+            'scenarios.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'anto2-1-inline', 'scoped',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Capital expenditure was $2,478.1 million in 2025.',
+        (
+            'CENTINELA — Capital expenditure was $2,478.1 million in '
+            '2025, including $1,327.1 million on the Centinela Second '
+            'Concentrator project.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'anto2-1-section', 'scoped',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Capital expenditure was $2,478.1 million in 2025.',
+        (
+            'Capital expenditure was $2,478.1 million in 2025, including '
+            '$1,327.1 million on the Centinela Second Concentrator '
+            'project.'
+        ),
+        'Operating review > CENTINELA', OWNER_SUBJECT, None,
+    ),
+    (
+        'anto2-1-total', 'scoped',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Capital expenditure was $2,478.1 million in 2025.',
+        (
+            'CENTINELA — Total capital expenditure was $2,478.1 million '
+            'in 2025, including $1,327.1 million on the Centinela Second '
+            'Concentrator project.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'h3', 'other',
+        SubjectIdentity('Honeywell International Inc.', 'HON',
+                        separate_registrants=(
+                            ('honeywell aerospace', 'Honeywell Aerospace Inc.'),
+                        )),
+        'The company will open a new plant in Tempe with 400 jobs.',
+        (
+            'Honeywell Aerospace will open a new plant in Tempe, '
+            'Arizona, creating 400 jobs.'
+        ),
+        None, OWNER_UNKNOWN, None,
+    ),
+    (
+        'h3-own', 'other',
+        SubjectIdentity('Honeywell International Inc.', 'HON',
+                        separate_registrants=(
+                            ('honeywell aerospace', 'Honeywell Aerospace Inc.'),
+                        )),
+        'The company will open a new plant in Tempe with 400 jobs.',
+        (
+            'Honeywell Aerospace Inc. will open a new plant in Tempe, '
+            'Arizona, creating 400 jobs.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'sub-reported', 'not-other',
+        SubjectIdentity('Honeywell International Inc.', 'HON'),
+        'Quantinuum revenue was $120 million in 2024.',
+        (
+            'Quantinuum Ltd reported revenue of $120 million in 2024, up '
+            '40%.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'ot-reported', 'not-other',
+        SubjectIdentity('Rio Tinto plc', 'RIO'),
+        (
+            'Oyu Tolgoi copper production was 47 thousand tonnes in the '
+            'quarter.'
+        ),
+        (
+            'Oyu Tolgoi LLC reported copper production of 47 thousand '
+            'tonnes in the quarter.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'partner-data', 'not-other',
+        SubjectIdentity('Cellectis S.A.', 'CLLS'),
+        'UCART19 showed an 82% response rate in the Phase 1 trial.',
+        (
+            'Servier SAS reported an 82% response rate for UCART19 in '
+            'the Phase 1 CALM trial.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'partner-data2', 'subject',
+        SubjectIdentity('Cellectis S.A.', 'CLLS'),
+        'UCART19 showed an 82% response rate in the Phase 1 trial.',
+        (
+            'Allogene Therapeutics, Inc. reported an 82% response rate '
+            'for ALLO-501, which is based on Cellectis technology '
+            'licensed under our agreement.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'sub-table', 'not-other',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Los Pelambres revenue was $3,120.4 million in 2024.',
+        (
+            'Revenue by operation (US$m): Minera Los Pelambres S.A. '
+            '3,120.4 | Minera Centinela S.A. 2,010.7 | Minera Antucoya '
+            'S.A. 610.2'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'sub-table-nl', 'not-other',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Centinela revenue was $2,010.7 million in 2024.',
+        (
+            'Revenue by operation (US$m)\nMinera Los Pelambres S.A. '
+            '3,120.4\nMinera Centinela S.A. 2,010.7\nMinera Antucoya S.A. '
+            '610.2'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'jv-table', 'not-other',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Zaldivar EBITDA attributable was $95 million.',
+        (
+            'EBITDA (US$m, attributable): Compañía Minera Zaldívar SpA '
+            '95.0 | Minera Centinela S.A. 1,450.0'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'sub-generated', 'not-other',
+        SubjectIdentity('Linde plc', 'LIN'),
+        'Linde India generated sales of INR 28 billion.',
+        (
+            'Linde India Limited, a listed subsidiary, generated sales '
+            'of INR 28 billion in 2024.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'sub-generated-nocue', 'not-other',
+        SubjectIdentity('Linde plc', 'LIN'),
+        'Sales in India were INR 28 billion in 2024.',
+        (
+            'Praxair India Private Limited generated sales of INR 28 '
+            'billion in 2024.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'customer-booked', 'subject',
+        SubjectIdentity('Linde plc', 'LIN'),
+        'Backlog includes a $1.8 billion contract.',
+        (
+            "Dow Inc. booked a $1.8 billion order for Linde's clean "
+            'hydrogen plant in Alberta.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'acq-target-results', 'other-or-unknown',
+        SubjectIdentity('Honeywell International Inc.', 'HON'),
+        'The acquired business generated $600 million of sales.',
+        (
+            'CAES Systems Holdings LLC generated sales of approximately '
+            '$600 million in the twelve months before the acquisition.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'mine-total', 'scoped',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Copper production was 143,000 tonnes in 2024.',
+        (
+            'CENTINELA\nTotal copper production at Centinela was 143,000 '
+            'tonnes in 2024, an increase on the Centinela Concentrator '
+            'throughput.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'mine-we', 'scoped',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Capital expenditure was $1.3 billion in 2024.',
+        (
+            'CENTINELA\nWe invested $1.3 billion in 2024 on the Centinela '
+            'Second Concentrator.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'mine-company', 'scoped',
+        SubjectIdentity('Antofagasta plc', 'ANTO.L'),
+        'Cash costs were $1.85/lb in 2024.',
+        (
+            'CENTINELA\nCash costs at Centinela were $1.85/lb in 2024, as '
+            'the company processed lower grades at the Centinela '
+            'Concentrator.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'jpm5-nobank', 'scoped',
+        SubjectIdentity('JPMorgan Chase & Co.', 'JPM'),
+        'Capital adequacy is assessed over a one-year horizon.',
+        (
+            'J.P. Morgan SE is a wholly-owned subsidiary. Capital '
+            'adequacy is assessed over a one-year horizon under baseline '
+            'and adverse scenarios.'
+        ),
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'form-basf', 'subject',
+        SubjectIdentity('BASF SE', 'BAS'),
+        "The company's sales were EUR 65 billion.",
+        'BASF AG reported sales of EUR 65 billion.',
+        None, OWNER_SUBJECT, None,
+    ),
+    (
+        'form-unilever', 'subject',
+        SubjectIdentity('Unilever PLC', 'ULVR'),
+        "The company's turnover was EUR 60 billion.",
+        'Unilever N.V. reported turnover of EUR 60 billion.',
+        None, OWNER_SUBJECT, None,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "expected,subject,statement,text,heading,owner,host",
+    [case[1:] for case in REREVIEW_CASES],
+    ids=[case[0] for case in REREVIEW_CASES],
+)
+def test_rereview_repro(
+    expected: str,
+    subject: SubjectIdentity,
+    statement: str,
+    text: str,
+    heading: str | None,
+    owner: str,
+    host: str | None,
+) -> None:
+    result = _one(
+        statement, subject,
+        Passage("c1", text, heading=heading, owner=owner, company_site_host=host),
+    )
+    if expected == "not-other":
+        assert result.verdict != ps.VERDICT_OTHER, result.passages
+    elif expected == "other-or-unknown":
+        assert result.verdict in (ps.VERDICT_OTHER, ps.VERDICT_UNKNOWN), result.passages
+    else:
+        assert result.verdict == expected, result.passages
+
+
+def test_a_cueless_companys_reported_results_in_the_subjects_document_are_kept() -> None:
+    # Review R1: "Quantinuum Ltd reported revenue…" in the subject's own report may be
+    # an operating company of the subject's. Only a positive non-perimeter cue (peer,
+    # customer, supplier, counterparty) makes reported results someone else's there.
+    kept = _one(
+        "Revenue was $4.2 billion in 2024.",
+        HARROWFIELD,
+        Passage("ev:1", "Vexmoor Inc. reported revenue of $4.2 billion in 2024.",
+                owner=OWNER_SUBJECT),
+    )
+    assert kept.verdict == ps.VERDICT_UNKNOWN
+    (attribution,) = kept.passages
+    assert attribution.contained and attribution.relationship == ps.OTHER_ISSUER
+
+
+def test_a_separation_sentence_after_a_former_subsidiary_is_the_filers() -> None:
+    # Restored (a) keeps this: the former subsidiary carries the topic in the filer's
+    # document, but the separation event itself is the filer's accounting.
+    result = _one(
+        "The company recognised a gain of $12 million on deconsolidation.",
+        CELLECTIS,
+        Passage("ev:1", "Plantyx, Inc. was deconsolidated on May 31, 2023. A gain of $12 "
+                "million was recognised on deconsolidation.", owner=OWNER_SUBJECT),
+    )
+    assert result.verdict == ps.VERDICT_SUBJECT
 
 
 # ---------------------------------------------------------------------------

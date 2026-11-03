@@ -384,6 +384,8 @@ _IMPLICIT_RE = re.compile(
     r"[Bb]usiness|[Ee]ntity|[Ff]irm|[Cc]orporation)"
     r"|(?P<bare>Group|Firm(?:wide)?))\b"
 )
+#: An internal hint: the subject's own name in a legal form its name does not carry.
+_FORM_NAMESAKE = "FORM_NAMESAKE"
 _FIRST = "first_person"
 _PRONOUN = "pronoun"
 _DEFINED = "defined"
@@ -432,7 +434,7 @@ _CUES: tuple[tuple[str, re.Pattern[str]], ...] = (
         SUBSIDIARY,
         re.compile(
             r"(?<!former )(?<!its )(?<!and )(?<!their )\bsubsidiar(?:y|ies)\b|"
-            r"\b(?:wholly|majority)[- ]owned\b",
+            r"\b(?:wholly|majority)[- ]owned\b|\boperating[ \t]+(?:company|subsidiary)\b",
             re.IGNORECASE,
         ),
     ),
@@ -641,6 +643,24 @@ _GROUP_WORDING_RE = re.compile(
     re.IGNORECASE,
 )
 _FIRST_PERSON_RE = re.compile(r"\b(?:[Ww]e|[Oo]ur|us)\b")
+#: Wording that is the Group's whatever else the sentence names: never scoped.
+_GROUP_STRONG_RE = re.compile(
+    r"\b(?:group|consolidated|firm|firmwide|corporation|net[ \t]+debt|dividends?|"
+    r"earnings[ \t]+per[ \t]+share|total[ \t]+company|company-?wide)\b"
+    r"|\bNote[ \t]+\d",
+    re.IGNORECASE,
+)
+#: The separation event itself: the filer's accounting, even in a former subsidiary's
+#: paragraph.
+_SEPARATION_RE = re.compile(
+    r"\bdeconsolidat\w*|\bdivest\w*|\bspun[- ]off\b|\bspin[- ]?off\b|\bdisposal\b|"
+    r"\bproceeds\b|\b(?:gain|loss)[ \t]+on\b",
+    re.IGNORECASE,
+)
+#: Relationships that put an entity positively OUTSIDE the perimeter: only their own
+#: reported results, in the subject's document, are dropped (review R1). A cue-less
+#: OTHER_ISSUER may be an operating company of the subject's.
+_NON_PERIMETER: frozenset[str] = frozenset({PEER, CUSTOMER, SUPPLIER, COUNTERPARTY})
 #: The other entity's OWN reported results, in the subject's own document: the only
 #: other-entity sentence there that is dropped ("Our largest customer, Vexmoor, reported
 #: revenue of $4.2bn"). Operational verbs ("produced") are not enough: in the
@@ -764,7 +784,7 @@ def _classify_org(name: str, subject: SubjectIdentity, aliases: frozenset[str]) 
             and _FORM_CLASSES[form] not in own_forms
             and set(tokens) == set(own_tokens)
         ):
-            return SUBSIDIARY
+            return _FORM_NAMESAKE
         return SUBJECT
     if tokens[0] in aliases or any(len(a) >= 5 and squash.startswith(a) for a in aliases):
         return SUBSIDIARY
@@ -809,36 +829,71 @@ def _registered_by_name(known: tuple[str, ...]) -> dict[str, str]:
     return {re.sub(r"[^a-z0-9]", "", _folded(_strip_form(k))): k for k in known}
 
 
-@functools.lru_cache(maxsize=32)
-def _known_index(
-    known: tuple[str, ...], own: frozenset[str]
-) -> dict[str, tuple[tuple[re.Pattern[str], str], ...]]:
-    """The platform's registered companies, compiled once per name list: first folded
-    word → (pattern, registered name). A company is named by its FULL registered name
-    (legal form optional) or, for a one-word name, by name + legal form — never by its
-    first word alone ("Southern region" for a registered "Southern Ore Corp", "Target ratio")."""
-    from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+@dataclass(frozen=True)
+class _Registered:
+    """One registered company, as the passage reader looks for it."""
 
-    index: dict[str, list[tuple[re.Pattern[str], str]]] = {}
+    name: str
+    #: Its name words, legal form dropped, folded: matched word by word.
+    words: tuple[str, ...]
+    #: Its first distinctive token: skipped when it is the subject's own word.
+    distinctive: str
+
+
+#: The legal-form tail after a registered name, compiled once.
+_FORM_TAIL_RE = re.compile(
+    rf",?[ \t]+(?:{_LEGAL_SUFFIX}|{_SHORT_SUFFIX})\.?(?![\w&-])"
+)
+_NEXT_WORD_RE = re.compile(r"[ \t]+([^\s,;:()]+)")
+
+
+@functools.lru_cache(maxsize=8)
+def _known_index(known: tuple[str, ...]) -> dict[str, tuple[_Registered, ...]]:
+    """The platform's registered companies, indexed once per name list (never per
+    subject): first folded name word → entries. No regex is compiled per name.
+
+    A company is named by its FULL registered name (legal form optional) or, for a
+    one-word name, by name + legal form — never by its first word alone ("Southern
+    region" for a registered "Southern Ore Corp", "Target ratio")."""
+    from app.services.discovery.identity import _GENERIC_TOKENS  # noqa: PLC2701
+
+    index: dict[str, list[_Registered]] = {}
     for registered in known:
-        words = [w for w in registered.replace(",", " ").split() if w]
-        while words and re.sub(r"\.", "", words[-1]).lower() in _FORM_CLASSES:
+        words = registered.replace(",", " ").split()
+        while words and words[-1].replace(".", "").lower() in _FORM_CLASSES:
             words.pop()
         if words and words[0].lower() == "the":
             words.pop(0)
         if not words:
             continue
-        distinctive = [
-            t for t in name_tokens(" ".join(words)) if t not in _GENERIC_TOKENS and len(t) >= 4
-        ]
-        if not distinctive or distinctive[0] in own:
+        folded = tuple(_folded(w) for w in words)
+        distinctive = next(
+            (
+                t
+                for t in (re.sub(r"[^a-z0-9]", "", f) for f in folded)
+                if len(t) >= 4 and t not in _GENERIC_TOKENS
+            ),
+            None,
+        )
+        if distinctive is None:
             continue
-        body = r"[ \t]+".join(re.escape(w) for w in words)
-        suffix = rf"(?:,?[ \t]+(?:{_LEGAL_SUFFIX}|{_SHORT_SUFFIX})\.?)"
-        tail = suffix + ("?" if len(words) >= 2 else "")
-        pattern = re.compile(body + tail + r"(?![\w&-])", re.IGNORECASE)
-        index.setdefault(_folded(words[0]), []).append((pattern, registered))
+        index.setdefault(folded[0], []).append(_Registered(registered, folded, distinctive))
     return {key: tuple(value) for key, value in index.items()}
+
+
+def _match_registered(text: str, start: int, entry: _Registered) -> int | None:
+    """End of ``entry``'s name at ``start`` (its full name words, then its legal form,
+    which a one-word name requires); None when it is not there."""
+    end = start + len(text[start:].split(None, 1)[0].rstrip(".,;:'’"))
+    for expected in entry.words[1:]:
+        found = _NEXT_WORD_RE.match(text, end)
+        if found is None or _folded(found.group(1).rstrip(".,;:'’")) != expected:
+            return None
+        end = found.start(1) + len(found.group(1).rstrip(".,;:'’"))
+    tail = _FORM_TAIL_RE.match(text, end)
+    if tail is not None:
+        return tail.end()
+    return end if len(entry.words) >= 2 else None
 
 
 class _Reader:
@@ -981,17 +1036,19 @@ class _Reader:
         if self.subject.known_entities:
             from app.services.discovery.identity import name_tokens  # noqa: PLC2701
 
-            index = _known_index(
-                self.subject.known_entities, frozenset(name_tokens(self.subject.name or ""))
-            )
+            index = _known_index(self.subject.known_entities)
+            own_tokens = set(name_tokens(self.subject.name or ""))
             for capital in re.finditer(r"(?<![\w&])[A-Z][\w'’-]*", text):
-                for pattern, registered in index.get(_folded(capital.group(0)), ()):
-                    found_known = pattern.match(text, capital.start())
-                    if found_known is None:
+                key = _folded(capital.group(0).rstrip("'’"))
+                for entry in index.get(key, ()):
+                    if entry.distinctive in own_tokens:
                         continue
-                    entity = self._entity_named(registered, OTHER_ISSUER)
-                    self._add(_Mention(found_known.start(), found_known.end(), entity=entity))
-                    self._short_alias(entity, registered)
+                    known_end = _match_registered(text, capital.start(), entry)
+                    if known_end is None:
+                        continue
+                    entity = self._entity_named(entry.name, OTHER_ISSUER)
+                    self._add(_Mention(capital.start(), known_end, entity=entity))
+                    self._short_alias(entity, entry.name)
                     break
         # 5. A heading's entity ("Risks Related to Calyxt").
         self._heading_entity()
@@ -1189,6 +1246,14 @@ class _Reader:
                 entity.relationship = (
                     FORMER_SUBSIDIARY if cue == FORMER_SUBSIDIARY else OTHER_ISSUER
                 )
+            elif entity.hint == _FORM_NAMESAKE:
+                # The subject's own name in another legal form: the subject itself
+                # ("BASF AG" for "BASF SE") unless a cue makes it a subsidiary, a joint
+                # venture or a former subsidiary ("Linde AG, the German operating
+                # company").
+                entity.relationship = (
+                    cue if cue in (SUBSIDIARY, FORMER_SUBSIDIARY, JOINT_VENTURE) else SUBJECT
+                )
             elif entity.hint == SUBSIDIARY:
                 # A namesake is the subject's perimeter unless a cue says it left it.
                 entity.relationship = (
@@ -1216,6 +1281,30 @@ class _Reader:
                 self.owner = OWNER_OTHER
                 self.owner_entity = entity
                 return
+        # A registered company's own site that calls it by its first word only ("Iluka
+        # half-year results" on iluka.com): the host is the evidence the full name is
+        # not, so the first word names it HERE (never on any other page).
+        if not self.subject.known_entities:
+            return
+        label = _folded(re.sub(r"^www\d?\.", "", host.lower()).split(".")[0])
+        for entry in _known_index(self.subject.known_entities).get(label, ()):
+            if not issuer_domain_matches(host, entry.name):
+                continue
+            first = entry.words[0]
+            hits = [
+                m for m in re.finditer(r"(?<![\w&])[A-Z][\w'’-]*", self.text)
+                if _folded(m.group(0)) == first and self._free(m.start(), m.end())
+            ]
+            if not hits:
+                continue
+            entity = self._entity_named(entry.name, OTHER_ISSUER)
+            entity.relationship = OTHER_ISSUER
+            for hit in hits:
+                self._add(_Mention(hit.start(), hit.end(), entity=entity))
+            self.mentions.sort(key=lambda m: m.start)
+            self.owner = OWNER_OTHER
+            self.owner_entity = entity
+            return
 
     # -- segments ------------------------------------------------------------- #
 
@@ -1441,13 +1530,16 @@ def attribute_passage(
 
     # In the subject's own document a sentence that names no one is the subject's: an
     # entity named earlier never becomes the topic it inherits (the R&D line after an
-    # investor's investment is the filer's), unless a heading governs the section or
-    # the entity reports separately (ADR-066).
+    # investor's investment is the filer's), unless a heading governs the section, the
+    # entity reports separately (ADR-066) or it is a former subsidiary whose own section
+    # this is ("Plantyx, our former subsidiary, was deconsolidated…\nThere can be no
+    # assurance that seed production techniques…").
     own_document = reader.owner == OWNER_SUBJECT
     topic: _Entity | None = reader.heading_entity or reader.owner_entity
     last_subject: _Entity | None = None
     resolved_entity: _Entity | None = None
     explicit = False
+    refless = False
     previous_start = -1
     topic_before: _Entity | None = topic
     anchored = False
@@ -1467,11 +1559,24 @@ def attribute_passage(
         elif grammatical is not None:
             last_subject = grammatical
             if grammatical.relationship not in _RELATIONAL and (
-                not own_document or grammatical.separate
+                not own_document
+                or grammatical.separate
+                or grammatical.relationship == FORMER_SUBSIDIARY
             ):
                 topic = grammatical
         if index == best:
             resolved_entity = seg_entity if seg_entity is not None else topic
+            refless = not seg_mentions
+            if (
+                own_document
+                and seg_entity is None
+                and resolved_entity is not None
+                and resolved_entity.relationship == FORMER_SUBSIDIARY
+                and _SEPARATION_RE.search(reader.text[start:end])
+            ):
+                # The separation itself ("A gain of $12 million was recognised on
+                # deconsolidation") is the filer's accounting, not the leaver's.
+                resolved_entity = reader.owner_entity
             explicit = named
             anchored = (
                 own_document
@@ -1484,11 +1589,39 @@ def attribute_passage(
     sentence = reader.text[seg_start:seg_end]
     inline = [scope for pos, scope, _entity in headings if pos <= seg_start]
     scope = inline[-1] if inline else section_scope
-    if scope and (_GROUP_WORDING_RE.search(sentence) or _FIRST_PERSON_RE.search(sentence)):
+    weak_group = bool(_GROUP_WORDING_RE.search(sentence) or _FIRST_PERSON_RE.search(sentence))
+    if scope and (
+        _GROUP_STRONG_RE.search(sentence)
+        or (weak_group and not _names_scope(scope, sentence))
+    ):
         # A heading never narrows a sentence that speaks for the Group ("Group copper
-        # production", "Total company sales", "Our total sales") or cites a note.
+        # production", "Total company sales", "Linde's consolidated sales", "Net debt")
+        # or cites a note; "total / company / we / our" un-scope it only when the
+        # sentence does not itself name the heading's mine or segment ("Total copper
+        # production at Centinela" stays Centinela's).
         scope = None
     names = tuple(e.name for e in reader.entities if e.hint != SUBJECT)
+    if (
+        own_document
+        and resolved_entity is reader.subj
+        and refless
+        and not scope
+        and not weak_group
+    ):
+        # A sentence naming no one, after a passage whose ONLY named entity is a
+        # subsidiary or joint venture ("J.P. Morgan SE is a wholly-owned subsidiary.
+        # Capital adequacy is assessed…"): that entity's, at its scope.
+        named_others = [e for e in reader.entities if e.hint != SUBJECT]
+        if (
+            len(named_others) == 1
+            and named_others[0].relationship in SCOPED_RELATIONSHIPS
+            and any(m.entity is named_others[0] and m.start < seg_start for m in reader.mentions)
+        ):
+            only = named_others[0]
+            return PassageAttribution(
+                passage.citation_id, reader.owner, reader.subj.name, names, best,
+                only.name, only.relationship, only.name,
+            )
     if resolved_entity is None:
         return PassageAttribution(
             passage.citation_id, reader.owner, None, names, best, None, UNKNOWN
@@ -1516,9 +1649,13 @@ def attribute_passage(
             # company it discusses is context for the subject's fact. Only a former
             # subsidiary, a separately reporting namesake, or a named entity's own
             # reported results (a table row of its figures) are someone else's.
-            own_results = explicit and (
-                bool(_OWN_RESULTS_RE.search(sentence))
-                or _table_row(reader, seg_start, seg_end, resolved_entity)
+            own_results = (
+                explicit
+                and relationship in _NON_PERIMETER
+                and (
+                    bool(_OWN_RESULTS_RE.search(sentence))
+                    or _table_row(reader, seg_start, seg_end, resolved_entity)
+                )
             )
             if relationship in _FRAMEABLE | {PEER, REGULATOR} and transaction:
                 framed = True
@@ -1543,6 +1680,16 @@ def attribute_passage(
         resolved_entity.name if relationship in SCOPED_RELATIONSHIPS else None,
         framed=framed,
         contained=contained,
+    )
+
+
+def _names_scope(scope: str, sentence: str) -> bool:
+    """The sentence names the heading's own mine / segment ("…at Centinela…")."""
+    return any(
+        len(word) >= 4
+        and _folded(word) not in _GENERIC_HEADING_WORDS
+        and re.search(rf"(?<![\w&]){re.escape(word)}(?![\w&])", sentence)
+        for word in scope.split()
     )
 
 
