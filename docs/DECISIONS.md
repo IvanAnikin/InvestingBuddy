@@ -6501,3 +6501,27 @@ Replay against the 121 companies registered in production and every web publishe
 label. The only collision is `iluka.com` (Iluka Resources) in the two Lindian reports, where
 it drops 4 + 3 findings resting solely on Iluka's own site: Iluka unit costs, production and
 outlook filed as Lindian's (campaign defect LIN-3). That is the behaviour ADR-066 specified.
+
+### ADR-079 review (2026-11-03): an EDGAR page with no registrant in its address
+
+The live Cellectis rerun on `a8f8f8a` (report 55f96fc3) still led with "The company operates
+a single reportable segment: an electronic market…". The page was a Cboe EDGA Exchange
+X-17A-5 PDF at `sec.gov/Archives/edgar/vprr/2600/26000283.pdf`. It is a paper filing, so its
+address carries no CIK. ADR-079 kept every CIK-less EDGAR page as `unidentified`, so the page
+was relabelled `third_party_filing` but nothing was dropped.
+
+**Rule.** A CIK-less EDGAR page whose own text never names the subject is `other`, by the
+strict `filing_names_subject` test (full name in order, or an exchange-framed ticker). A
+statement resting only on such pages is dropped, with an `entity_ambiguous` gap ("an EDGAR
+document with no registrant in its address").
+
+**Exceptions.** None of these is dropped:
+- a CIK-less page that names the subject (kept as `third_party_filing`);
+- a CIK-bearing page that the directory cannot place (still `unidentified`, review D1);
+- any page when nothing is known about the subject (no names).
+
+**Replay over all 15 campaign jobs' fetched sec.gov URLs.** The only CIK-less EDGAR URL is
+this vprr PDF, which appears in CLLS, CLLS2 and CLLS4. Every other URL carries a CIK. The
+"Calyxt" risk factors seen in CLLS2 came from Cellectis's own 2017 20-F (CIK 1627281), so
+that is a staleness defect, not an entity one. `aclx-20251231.htm` (CIK 1786205) is
+another registrant and is already handled.
