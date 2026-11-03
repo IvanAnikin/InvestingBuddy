@@ -78,6 +78,7 @@ from app.services.director.contracts import (
 from app.services.director.loop import FindingDraft, GapDraft, TaskOutcome
 from app.services.director.planner import PlannedQuestion
 from app.services.director.roles import role_for
+from app.services.knowledge_state import ACQUIRED_NOT_READ
 from app.services.ledger import store as ledger
 
 logger = logging.getLogger(__name__)
@@ -2070,6 +2071,13 @@ class LLMInvestigator:
     #: candidates a ``search_web`` call returns are fetched and ingested DETERMINISTICALLY
     #: by the platform; ``None`` keeps the earlier behaviour (candidates are only listed).
     candidate_fetcher: Any = None
+    #: ADR-084 — the subject's HELD PRIMARY documents
+    #: (``pipeline.document_coverage.held_primary_documents``), looked up once per run.
+    #: ``None`` = unknown: the primary-document re-read does not run and gaps keep their
+    #: earlier wording. ``()`` = nothing held.
+    primary_documents: "Sequence[dict[str, Any]] | None" = None
+    #: citation id → the metrics its text carries (``document_reread.metrics_carried``).
+    _metrics_cache: "dict[str, frozenset[str]]" = field(default_factory=dict, repr=False)
 
     async def investigate(
         self,
@@ -2109,8 +2117,10 @@ class LLMInvestigator:
             evidence = await self._registrant_checked(evidence)
             # V3.18.2 — handed to the loop, which judges the question's evidence
             # contract. The investigator reports what it retrieved; it does not grade it.
+            # ADR-084: each ref carries the metrics its own text states, so the loop's
+            # contract verdict can tell "CET1 is in evidence" from "two items exist".
             outcome.question_evidence[question.key] = [
-                item.ref for item in evidence if item.ref is not None
+                ref for ref in (self._metric_ref(item) for item in evidence) if ref is not None
             ]
             outcome.acquisition_steps.setdefault(question.key, []).extend(steps)
             prior_context = contexts.get(question.key) or QuestionContext()
@@ -2122,10 +2132,14 @@ class LLMInvestigator:
                 # gap already says so — recording it again per round only multiplies it.
                 continue
             if not evidence:
+                held = _held_documents_named(steps)
                 outcome.gaps.append(
                     GapDraft(
                         gap_type=ledger.GAP_EVIDENCE_UNAVAILABLE,
-                        description=(f"No citable evidence was retrieved for {question.key!r}."),
+                        description=(
+                            f"No citable evidence was retrieved for {question.key!r}."
+                            + (_held_not_read_wording(held) if held[0] else "")
+                        ),
                         question_key=question.key,
                         why_it_matters=(
                             "The question was planned and the tools returned nothing to "
@@ -2133,6 +2147,9 @@ class LLMInvestigator:
                         ),
                         sources_tried=tuple(sorted({e.kind for e in evidence}))
                         or tuple(sorted(role.tools)),
+                        # ADR-084 — a relevant primary document is HELD: the gap is in
+                        # what was read, never "not acquired by the platform".
+                        knowledge_state=ACQUIRED_NOT_READ if held[0] else None,
                     )
                 )
                 continue
@@ -2222,12 +2239,20 @@ class LLMInvestigator:
             bool(context.prior_evidence) or context.rounds_attempted > 0
         )
 
+        # ADR-084 — a playbook question that names metrics is satisfied only when its
+        # evidence CARRIES them; item counts alone never satisfy it.
+        from app.services.agents.document_reread import required_metrics
+
+        metrics = required_metrics(question)
+        lead: list[_Evidence] = []  # the recency pass's hits: they keep the lead
+
         def verdict():  # noqa: ANN202
             refs = list(context.prior_evidence) + [
-                item.ref for item in evidence if item.ref is not None
+                ref for ref in (self._metric_ref(item) for item in evidence) if ref is not None
             ]
-            return evaluate_contract(contract, refs)
+            return evaluate_contract(contract, refs, required_metrics=metrics)
 
+        fact_tools_empty = False
         # Rung 1 — the question's own platform tools.
         if not follow_up:
             gathered, spent, intents_used = await self._gather(
@@ -2235,6 +2260,9 @@ class LLMInvestigator:
             )
             evidence.extend(gathered)
             used += spent
+            fact_tools_empty = bool(set(question.required_tools) & _FACT_TOOLS) and not any(
+                item.kind in _FACT_TOOLS for item in gathered
+            )
             steps.append(
                 {
                     "rung": "platform_tools",
@@ -2259,10 +2287,11 @@ class LLMInvestigator:
                 if step is not None:
                     steps.append(step)
                 if recent:
-                    lead = {item.citation_id for item in recent}
+                    lead = list(recent)
+                    lead_ids = {item.citation_id for item in recent}
                     evidence[:] = [
                         *recent,
-                        *(item for item in evidence if item.citation_id not in lead),
+                        *(item for item in evidence if item.citation_id not in lead_ids),
                     ]
         current = verdict()
 
@@ -2365,8 +2394,55 @@ class LLMInvestigator:
             )
             current = verdict()
 
-        # Rung 3 — the open web, verified by our own fetch.
-        if not current.satisfied:
+        # Rung 2b — ADR-084: re-read the subject's HELD PRIMARY documents, by the
+        # question's own metrics and topics, BEFORE any web search and before an absence
+        # gap is written. Also the fallback of a fact-tool question whose tools returned
+        # nothing (a 20-F / IFRS filer the us-gaap tools cannot read). Once per question:
+        # a repeat round would run the same queries and read the same passages. With the
+        # held-document inventory unknown (``None``) the rung does not exist at all.
+        if (
+            not current.satisfied
+            and not follow_up
+            and used < budget
+            and self.primary_documents is not None
+        ):
+            reread, spent, step = await self._primary_reread(
+                role_id, role, question, budget - used, round_index, current, metrics,
+                known={item.citation_id for item in evidence},
+            )
+            used += spent
+            if fact_tools_empty:
+                step["fallback_for"] = "fact_tools_returned_nothing"
+            steps.append(step)
+            if reread:
+                # Behind the recency pass's lead, ahead of everything else: the prompt
+                # budget must reach the statement table the re-read went looking for.
+                lead_ids = {item.citation_id for item in lead}
+                reread_ids = {item.citation_id for item in reread}
+                evidence[:] = [
+                    *(item for item in evidence if item.citation_id in lead_ids),
+                    *reread,
+                    *(item for item in evidence
+                      if item.citation_id not in lead_ids and item.citation_id not in reread_ids),
+                ]
+                current = verdict()
+
+        # Rung 3 — the open web, verified by our own fetch. ADR-084: only for what the
+        # count contract still lacks. A question short ONLY of a metric is an issuer
+        # figure the held documents must supply, so metric contracts never buy a search
+        # the count contract would not have bought.
+        if not current.satisfied and getattr(current, "metrics_missing", None) and (
+            evaluate_contract(contract, [
+                ref for ref in (self._metric_ref(item) for item in evidence) if ref is not None
+            ] + list(context.prior_evidence)).satisfied
+        ):
+            steps.append({
+                "rung": "external_search",
+                "round": round_index,
+                "why": list(current.missing),
+                "stopped": "only_metrics_missing_read_from_held_documents",
+            })
+        elif not current.satisfied:
             step, gathered, spent = await self._external_rung(
                 role_id, role, question, budget - used, context, round_index, current
             )
@@ -2496,6 +2572,158 @@ class LLMInvestigator:
         step["items"] = len(recent)
         step["disclosure_items"] = sum(1 for e in recent if e.citation_id in disclosure_ids)
         return recent, 1, step
+
+    def _metric_ref(self, item: _Evidence) -> EvidenceRef | None:
+        """ADR-084 — the item's contract ref, carrying the metrics its OWN text states."""
+        ref = item.ref
+        if ref is None:
+            return None
+        from dataclasses import replace
+
+        from app.services.agents.document_reread import metrics_carried
+
+        carried = self._metrics_cache.get(item.citation_id)
+        if carried is None:
+            carried = metrics_carried(_metric_source_text(item))
+            self._metrics_cache[item.citation_id] = carried
+        return replace(ref, metrics=carried) if carried != ref.metrics else ref
+
+    async def _primary_reread(
+        self,
+        role_id: str,
+        role: Any,
+        question: PlannedQuestion,
+        budget: int,
+        round_index: int,
+        current: Any,
+        metrics: "Sequence[str]",
+        *,
+        known: "set[str]",
+    ) -> "tuple[list[_Evidence], int, dict[str, Any]]":
+        """ADR-084 — targeted lexical searches of the subject's HELD PRIMARY documents.
+
+        The queries come from the reviewed metric → section/table lexicon
+        (``document_reread.TOPICS``): the question's missing metrics first, then the
+        topics its prose names, else its own terms. Every search is restricted to
+        primary documents (``primary_documents_only``), its hits are ranked statement
+        tables and matching sections first and safe-harbour boilerplate last, and at most
+        ``MAX_REREAD_ITEMS`` new hits per query join the evidence. Every query, the held
+        documents and an extraction status per (document × question) are recorded as the
+        ``primary_document_reread`` step. Never raises.
+        """
+        from app.services.agents import document_reread as dr
+
+        step: dict[str, Any] = {
+            "rung": "primary_document_reread",
+            "round": round_index,
+            "role": role_id,
+            "why": list(current.missing),
+            "tool_calls": 0,
+        }
+        inventory = self.primary_documents
+        if not role.can_use(TOOL_SEARCH_COMPANY_CORPUS) or (
+            self.available_tools is not None
+            and TOOL_SEARCH_COMPANY_CORPUS not in self.available_tools
+        ):
+            step["stopped"] = "role_cannot_read_corpus"
+            return [], 0, step
+        if inventory is None:
+            step["stopped"] = "primary_inventory_unknown"
+            return [], 0, step
+        docs = [d for d in inventory if isinstance(d, dict)]
+        step["held_primary_documents"] = len(docs)
+        step["documents"] = [dr.document_name(d) for d in docs[:6]]
+        topics = dr.question_topics(question)
+        missing = [m for m in getattr(current, "metrics_missing", ()) or () if m in metrics]
+        wanted = missing or list(metrics)
+        if not docs:
+            step["stopped"] = "no_primary_document_held"
+            return [], 0, step
+        if not any(int(d.get("indexed_chunks") or 0) for d in docs):
+            step["stopped"] = "no_held_primary_document_is_indexed"
+            step["extraction_status"] = dr.document_statuses(
+                docs, hits=[], read_ids=(), topics=topics, wanted_metrics=wanted
+            )
+            return [], 0, step
+        values = self._intent_values(question)
+        fallback = str((_corpus_arguments(question, self.company_id, values) or {}).get("query")
+                       or "")
+        plan = dr.reread_plan(
+            question, missing_metrics=missing, fallback_query=fallback,
+            limit=min(dr.MAX_REREAD_QUERIES, max(0, budget)),
+        )
+        step["queries"] = [q.query for q in plan]
+        step["topics"] = [q.topic for q in plan]
+        if not plan:
+            step["stopped"] = "no_query"
+            return [], 0, step
+        used = 0
+        hits: list[dict[str, Any]] = []
+        read: list[_Evidence] = []
+        seen = set(known)
+        for planned in plan:
+            if used >= budget:
+                step["stopped"] = "run_tool_budget_exhausted"
+                break
+            try:
+                result = await self.session.call(
+                    TOOL_SEARCH_COMPANY_CORPUS,
+                    {
+                        "query": planned.query,
+                        "company_ids": [str(self.company_id)],
+                        "mode": "lexical",
+                        "top_k": CORPUS_TOP_K,
+                        "primary_documents_only": True,
+                    },
+                    task_ref=f"{role_id}:{question.key}",
+                )
+            except Exception:  # noqa: BLE001 - a failed query costs itself, not the question
+                used += 1
+                step["errors"] = int(step.get("errors") or 0) + 1
+                continue
+            used += 1
+            if not result.ok or not isinstance(result.payload, dict):
+                step.setdefault("refused", []).append(
+                    str(getattr(result, "refusal_reason", None) or "error")
+                )
+                continue
+            items = [i for i in (result.payload.get("items") or []) if isinstance(i, dict)]
+            ranked = [dict(i) for i in dr.rank_hits(items, topics, wanted)]
+            hits.extend(ranked)
+            fresh = [
+                e for e in _harvest(
+                    TOOL_SEARCH_COMPANY_CORPUS,
+                    {**result.payload, "items": ranked},
+                    result.contains_untrusted_content,
+                )
+                if e.citation_id not in seen
+            ][: dr.MAX_REREAD_ITEMS]
+            seen.update(e.citation_id for e in fresh)
+            read.extend(fresh)
+        read_ids = {e.citation_id for e in read}
+        taken = [h for h in hits if str(h.get("evidence_id")) in read_ids]
+        step.update(
+            {
+                "tool_calls": used,
+                "hits": len(hits),
+                "new_items": len(read),
+                "table_hits": sum(1 for h in taken if dr.looks_like_table(h)),
+                "boilerplate_hits": sum(1 for h in hits if dr.is_boilerplate(h.get("text"))),
+                "candidate_sections": sum(
+                    1 for h in taken
+                    if dr.section_matches(h, topics)
+                    or dr.metrics_carried(str(h.get("text") or ""), topics)
+                ),
+                "metric_passages": sum(
+                    1 for h in taken
+                    if wanted and dr.metrics_carried(str(h.get("text") or ""), wanted)
+                ),
+                "extraction_status": dr.document_statuses(
+                    docs, hits=hits, read_ids=read_ids, topics=topics, wanted_metrics=wanted
+                ),
+            }
+        )
+        return read, used, step
 
     async def _external_rung(
         self,
@@ -3549,6 +3777,54 @@ class LLMInvestigator:
         # provider's own account of every call it served survives in the run record.
         self.diagnostics.note_finish_reason(reply.finish_reason)
         return reply
+
+
+# ── ADR-084 — read what was acquired ─────────────────────────────────────────── #
+
+#: The platform's structured-fact tools. They read us-gaap / validated facts only, so a
+#: 20-F / IFRS filer's question can come back empty from every one of them.
+_FACT_TOOLS: frozenset[str] = frozenset(
+    {
+        TOOL_GET_FINANCIAL_FACTS,
+        TOOL_GET_FINANCIAL_SERIES,
+        TOOL_GET_SEGMENT_FACTS,
+        TOOL_GET_CALCULATED_METRICS,
+        TOOL_GET_SEC_STATEMENTS,
+    }
+)
+
+#: The metric text of a corpus hit is its OWN text, not the JSON envelope around it (a
+#: page number or a score beside a metric name is not the metric's figure).
+_CORPUS_TEXT_RE = re.compile(r'"text":\s*"((?:[^"\\]|\\.)*)')
+
+
+def _metric_source_text(item: "_Evidence") -> str:
+    if item.kind in _CORPUS_TOOLS:
+        match = _CORPUS_TEXT_RE.search(item.text or "")
+        if match:
+            return match.group(1)
+    return item.text or ""
+
+
+def _held_documents_named(steps: "Sequence[dict[str, Any]]") -> tuple[int, list[str]]:
+    """How many held primary documents a question's re-read covered, and their names —
+    ``(0, [])`` when no re-read ran or nothing is held."""
+    for step in reversed(list(steps)):
+        count = int(step.get("held_primary_documents") or 0)
+        if step.get("rung") == "primary_document_reread" and count:
+            return count, [str(name) for name in (step.get("documents") or []) if name]
+    return 0, []
+
+
+def _held_not_read_wording(held: "tuple[int, Sequence[str]]") -> str:
+    count, names = held
+    shown = "; ".join(names[:3]) + ("; …" if count > 3 else "")
+    return (
+        f" The platform holds {count} relevant primary document(s) ({shown}); a "
+        "targeted re-read found no passage answering it. The documents were held but not "
+        "read into an answer: this is a gap in what was read, not evidence that the "
+        "information does not exist."
+    )[:600]
 
 
 __all__ = [

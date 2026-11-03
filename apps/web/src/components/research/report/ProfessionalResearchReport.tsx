@@ -87,6 +87,8 @@ const KNOWLEDGE_STATE_WORDS: Record<string, string> = {
   not_acquired_by_platform: "Not acquired by the platform",
   not_disclosed_by_issuer: "Not disclosed by the issuer, per cited evidence",
   not_applicable: "Not applicable",
+  // ADR-084 — a relevant primary document is held; the answer was not read out of it.
+  acquired_not_read: "Held by the platform but not read for this question",
 };
 
 const EDITOR_REJECTION_WORDS: Record<string, string> = {

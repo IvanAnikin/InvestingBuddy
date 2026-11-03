@@ -163,6 +163,10 @@ class V3ResearchOutcome:
     #: questions whose required calculations were narrowed. EMPTY — and absent from
     #: ``to_dict()`` — for every company the generic metrics describe.
     not_meaningful_metrics: dict[str, Any] = field(default_factory=dict)
+    #: ADR-084 — the primary-document coverage audit (admin / technical surface): what
+    #: the platform held, parsed and read per question. EMPTY — and absent from
+    #: ``to_dict()`` — when the held-document inventory is unknown.
+    primary_document_coverage: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -178,6 +182,8 @@ class V3ResearchOutcome:
             payload["web_context"] = dict(self.web_context)
         if self.not_meaningful_metrics:
             payload["not_meaningful_metrics"] = dict(self.not_meaningful_metrics)
+        if self.primary_document_coverage:
+            payload["primary_document_coverage"] = dict(self.primary_document_coverage)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -816,6 +822,17 @@ async def _run(
         # "followup" profile per round, the per-mode round cap, the operator and daily caps).
         web_followup = WebFollowup.create(session, company, web_ctx, cfg=cfg)
 
+    # ADR-084 — the subject's HELD primary documents, looked up ONCE before any question
+    # is asked: what the investigator's re-read reads and what its gaps name. ``None``
+    # (lookup failed / no corpus) leaves the re-read off rather than guessing.
+    from app.services.pipeline import document_coverage
+
+    primary_inventory = (
+        await document_coverage.held_primary_documents(session, company.id)
+        if search_backend is not None
+        else None
+    )
+
     class _RoleRoutedInvestigator:
         """One session per role, because a tool policy is per role.
 
@@ -931,6 +948,9 @@ async def _run(
                 ),
                 candidate_fetcher=(
                     web_followup.fetch_candidates if web_followup is not None else None
+                ),
+                primary_documents=(
+                    tuple(primary_inventory) if primary_inventory is not None else None
                 ),
             )
             result = await worker.investigate(
@@ -1091,6 +1111,13 @@ async def _run(
         outcome.findings = await _ledger_findings(session, run, limit=60)
     outcome.gaps = [g.to_dict() for g in council.gaps[:40]]
     outcome.question_graph = await _question_graph(session, run)
+    if primary_inventory is not None:
+        # ADR-084 — the admin / technical coverage audit. Absent when the inventory is
+        # unknown, so a run without a corpus serialises exactly as before.
+        outcome.primary_document_coverage = await document_coverage.coverage_for_run(
+            session, run, inventory=primary_inventory,
+            core_filings=outcome.core_filings, core_disclosures=outcome.core_disclosures,
+        )
 
     # 10. Research memory: the delta against the previous run.
     #

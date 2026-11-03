@@ -99,15 +99,22 @@ class EvidenceRef:
     source_tier: str | None = None
     #: What makes two items the same SOURCE: a document URL, a host, a dataset key.
     source_ref: str | None = None
+    #: ADR-084 — the metrics this item's own text CARRIES (a named metric with a figure
+    #: beside it), as ``agents.document_reread`` topic keys. Set by the investigator from
+    #: the item's text, never by a model. Empty means "carries none it could recognise".
+    metrics: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "citation_id": self.citation_id,
             "tool": self.tool,
             "source_kind": self.source_kind,
             "source_tier": self.source_tier,
             "source_ref": self.source_ref,
         }
+        if self.metrics:
+            out["metrics"] = sorted(self.metrics)
+        return out
 
 
 @dataclass(frozen=True)
@@ -171,13 +178,17 @@ class ContractEvaluation:
     best_tier: str | None = None
     #: Each unmet dimension, named for a reader.
     missing: list[str] = field(default_factory=list)
+    #: ADR-084 — the metrics the question requires, and those no evidence item carries.
+    #: Both empty for a question with no required metrics.
+    metrics_required: list[str] = field(default_factory=list)
+    metrics_missing: list[str] = field(default_factory=list)
 
     @property
     def satisfied(self) -> bool:
         return self.status == STATUS_SATISFIED
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "status": self.status,
             "items": self.items,
             "distinct_sources": self.distinct_sources,
@@ -185,13 +196,34 @@ class ContractEvaluation:
             "best_tier": self.best_tier,
             "missing": list(self.missing),
         }
+        if self.metrics_required:
+            # Only when the question requires metrics, so every other record is unchanged.
+            out["metrics_required"] = list(self.metrics_required)
+            out["metrics_missing"] = list(self.metrics_missing)
+        return out
+
+
+def metric_words(metric: str) -> str:
+    """A metric key as a reader reads it: ``net_interest_income`` → "net interest income"."""
+    return str(metric).replace("_", " ").strip()
 
 
 def evaluate_contract(
-    contract: EvidenceContract | None, evidence: Iterable[EvidenceRef]
+    contract: EvidenceContract | None,
+    evidence: Iterable[EvidenceRef],
+    *,
+    required_metrics: Iterable[str] = (),
 ) -> ContractEvaluation:
-    """Judge the evidence against the contract. Pure; the same input, the same verdict."""
+    """Judge the evidence against the contract. Pure; the same input, the same verdict.
+
+    ADR-084 — ``required_metrics`` (``agents.document_reread`` topic keys): a question
+    whose playbook asks for metrics is satisfied only when its evidence CARRIES each of
+    them (``EvidenceRef.metrics``). Item and source counts alone never satisfy it: a
+    bank's capital question answered by two paragraphs that never state CET1 is not
+    answered. With no required metrics the verdict is exactly what it always was.
+    """
     contract = contract or DEFAULT_CONTRACT
+    wanted = list(dict.fromkeys(str(m) for m in required_metrics if m))
     unique: dict[str, EvidenceRef] = {}
     for ref in evidence:
         unique.setdefault(ref.citation_id, ref)
@@ -200,6 +232,8 @@ def evaluate_contract(
         return ContractEvaluation(
             status=STATUS_UNMET,
             missing=["no citable evidence was retrieved"],
+            metrics_required=wanted,
+            metrics_missing=list(wanted),
         )
 
     sources = {ref.source_ref or ref.citation_id for ref in refs}
@@ -221,6 +255,12 @@ def evaluate_contract(
         best_tier is None or tier_rank(best_tier) > tier_rank(contract.min_tier)
     ):
         missing.append(f"needs at least one {contract.min_tier} source")
+    carried: set[str] = set()
+    for ref in refs:
+        carried |= set(getattr(ref, "metrics", ()) or ())
+    metrics_missing = [m for m in wanted if m not in carried]
+    for metric in metrics_missing:
+        missing.append(f"needs the metric {metric_words(metric)} in evidence")
 
     return ContractEvaluation(
         status=STATUS_PARTIAL if missing else STATUS_SATISFIED,
@@ -229,6 +269,8 @@ def evaluate_contract(
         kinds_present=sorted(kinds),
         best_tier=best_tier,
         missing=missing,
+        metrics_required=wanted,
+        metrics_missing=metrics_missing,
     )
 
 
@@ -341,4 +383,5 @@ __all__ = [
     "KindRequirement",
     "evaluate_contract",
     "evidence_ref_for",
+    "metric_words",
 ]
