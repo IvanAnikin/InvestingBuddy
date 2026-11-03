@@ -62,21 +62,22 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
+from app.core.outbound_identity import (
+    USER_AGENT_HEADER,
+    USER_AGENT_PRODUCT_TOKEN,
+    crawler_user_agent,
+)
 from app.services.sources.redaction import canonicalize_source_url
 from app.services.sources.verified_issuer_sources import (
     host_of,
     registrable_host_allowed,
 )
 
-_USER_AGENT = (
-    "InvestingBuddy-Research-Bot/1.0 (+internal research; contact: "
-    "research@investingbuddy.example)"
-)
-
-#: The product token the User-Agent above starts with. robots.txt is evaluated against
-#: exactly this, so a site that names us gets the behaviour it asked for (W0: the
-#: traversal used to evaluate a DIFFERENT token than the one it sent).
-USER_AGENT_PRODUCT_TOKEN = "InvestingBuddy-Research-Bot"
+# The User-Agent is built by ``app.core.outbound_identity.crawler_user_agent``
+# (ADR-081). ``USER_AGENT_PRODUCT_TOKEN`` (imported above and re-exported) is the
+# product token it starts with. robots.txt is evaluated against exactly this, so a
+# site that names us gets the behaviour it asked for (W0: the traversal used to
+# evaluate a DIFFERENT token than the one it sent).
 
 # Hostnames that must never be fetched even if (mis)configured into an allowlist.
 _INTERNAL_HOST_SUFFIXES = (
@@ -1281,7 +1282,7 @@ async def safe_fetch_page(
     transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
     client_kwargs = guarded_client_kwargs(
         timeout=timeout,
-        headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"},
+        headers={USER_AGENT_HEADER: crawler_user_agent(cfg), "Accept": "text/html,*/*"},
         transport=transport,
     )
     try:

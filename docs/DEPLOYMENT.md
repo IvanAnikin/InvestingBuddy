@@ -1142,6 +1142,7 @@ after merge/deploy approval, then:
   | `PRIMARY_DOCUMENT_SEC_BODY_ENABLED` | `true` | Official SEC filing-body retrieval (10-K / 20-F / 10-Q / 6-K / 8-K). Inert unless the master flag is on. |
   | `PRIMARY_DOCUMENT_SEC_MAX_BODIES` | `2` | Cap on SEC filing bodies fetched per issuer per request. |
   | `SEC_REQUEST_MIN_INTERVAL_MS` | `120` | Client-side SEC throttle. More conservative than SEC's published ~10 req/s ceiling. |
+  | `OUTBOUND_CONTACT` | `research@investingbuddy.example` | ADR-081: the contact every outbound User-Agent declares (SEC, GLEIF, Stooq, news, open-web fetcher). Must be a SERVICE mailbox; a consumer-mail or local-identity address is refused and the default sent instead. Placeholder until a monitored mailbox is chosen (open-web spec U8). |
 
   **Rollback:** set `PRIMARY_DOCUMENT_INGESTION_ENABLED=false` to return to the
   exact prior behaviour with no code change (the `014` table can remain — it stays

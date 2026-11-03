@@ -30,12 +30,12 @@ from typing import Any
 
 import httpx
 
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 from app.integrations.financial_data_provider import SourceTier
 from app.schemas.catalyst import CatalystEvent, make_catalyst_event_id
 from app.services.catalyst_classifier import apply_classification
 
 _EDGAR_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
 
 # Filing forms treated as candidate catalyst events.
 _TARGET_FORMS: frozenset[str] = frozenset(
@@ -238,7 +238,7 @@ class SecRecentFilingsProvider:
     async def _fetch_submissions(self, padded_cik: str) -> dict[str, Any]:
         url = _EDGAR_SUBMISSIONS_URL.format(cik=padded_cik)
         async with httpx.AsyncClient(
-            headers={"User-Agent": _USER_AGENT}, timeout=15.0
+            headers={USER_AGENT_HEADER: research_user_agent()}, timeout=15.0
         ) as client:
             response = await client.get(url)
             response.raise_for_status()

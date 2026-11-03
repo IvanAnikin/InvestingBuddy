@@ -26,6 +26,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 from app.services.agent_tools.contracts import (
     TOOL_GET_PEER_FINANCIALS,
     TOOL_GET_PEER_SET,
@@ -42,7 +43,6 @@ if TYPE_CHECKING:  # pragma: no cover
 MAX_PEERS = 6
 PEER_UNITS: tuple[str, ...] = ("url_fetch_calls",)
 _SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
 
 #: The metrics compared. Chosen because each is defined for any industrial or resource
 #: company from its statements; a sector metric (unit cost, grade) is not in a filer's
@@ -337,7 +337,9 @@ async def _facts_for(
     if cached is not None and now - cached[0] < FACTS_CACHE_TTL:
         return cached[1], None
     try:
-        async with httpx.AsyncClient(headers={"User-Agent": _USER_AGENT}, timeout=25.0) as client:
+        async with httpx.AsyncClient(
+            headers={USER_AGENT_HEADER: research_user_agent()}, timeout=25.0
+        ) as client:
             url = _SEC_FACTS_URL.format(cik=str(cik).zfill(10))
             async with client.stream("GET", url) as response:
                 if response.status_code != 200:

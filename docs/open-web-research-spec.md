@@ -1778,7 +1778,7 @@ pattern. It is run against the live database **only with explicit approval (U9)*
 | U5 | Browser fallback infrastructure (Azure Container Apps Job, a new resource). **Deferred.** Asked only if the §9.4 trigger fires. | W10 |
 | U6 | OCR (Document Intelligence spend) for scanned web PDFs, for which classes | W3 option |
 | U7 | Re-surface **Decision #23**: whether V3 output should get the one-call `safety_terms.scan_value` backstop now that open-web text feeds model prose. You decided "not required" on 2026-09-08; this asks only whether that still stands. | none (informational) |
-| U8 | A real contact address for the crawler User-Agent. It is `research@investingbuddy.example` today. | W2 live |
+| U8 | A real contact address for the crawler User-Agent. It is `research@investingbuddy.example` today; since ADR-081 it is the `OUTBOUND_CONTACT` app setting, shared by every outbound client, so choosing one is a setting change. | W2 live |
 | U9 | Apply migrations 042 and 043 to the live database, each at its deploy time | W1 and W3 deploys |
 | U10 | Move Discovery onto the durable worker (a behaviour change: runs survive restarts, one job at a time) | W6 |
 | U11 | Accept automatic depth (no user knob), with DEEP admin-only | W5/W6 |

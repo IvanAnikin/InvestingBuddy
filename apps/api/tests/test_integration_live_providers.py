@@ -216,12 +216,13 @@ async def test_sec_edgar_live_apple_tickers_include_aapl() -> None:
     """Live SEC EDGAR: Apple submissions include AAPL ticker."""
     import httpx
 
+    from app.core.outbound_identity import research_headers
     from app.integrations.providers.sec_edgar_provider import _pad_cik, _parse_edgar_submissions
     cik = "320193"
     padded = _pad_cik(cik)
     url = f"https://data.sec.gov/submissions/CIK{padded}.json"
     async with httpx.AsyncClient(
-        headers={"User-Agent": "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"},
+        headers=research_headers(),
         timeout=20.0,
     ) as client:
         resp = await client.get(url)

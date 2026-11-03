@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 from app.integrations.financial_data_provider import (
     CompanyProfileData,
     DataQuality,
@@ -52,8 +53,8 @@ _SUBMISSIONS_URL = f"{_EDGAR_BASE_URL}/submissions/CIK{{cik}}.json"
 _COMPANY_FACTS_URL = f"{_EDGAR_BASE_URL}/api/xbrl/companyfacts/CIK{{cik}}.json"
 
 # SEC requires a User-Agent identifying the application and a contact email.
-# See: https://www.sec.gov/os/accessing-edgar-data
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
+# See: https://www.sec.gov/os/accessing-edgar-data. The UA is built by
+# ``app.core.outbound_identity.research_user_agent`` (ADR-081), never here.
 
 
 def _pad_cik(cik: str) -> str:
@@ -231,7 +232,7 @@ class SecEdgarProvider(FinancialDataProvider):
         source_url = _SUBMISSIONS_URL.format(cik=padded)
 
         async with httpx.AsyncClient(
-            headers={"User-Agent": _USER_AGENT},
+            headers={USER_AGENT_HEADER: research_user_agent()},
             timeout=20.0,
         ) as client:
             response = await client.get(source_url)

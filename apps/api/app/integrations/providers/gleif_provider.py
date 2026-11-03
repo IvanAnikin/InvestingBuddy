@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 from app.integrations.financial_data_provider import (
     CompanyProfileData,
     DataQuality,
@@ -56,8 +57,6 @@ from app.integrations.financial_data_provider import (
 
 _GLEIF_BASE_URL = "https://api.gleif.org/api/v1"
 _LEI_PATTERN = re.compile(r"^[A-Z0-9]{18}\d{2}$")
-
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
 
 
 def _is_lei(value: str) -> bool:
@@ -202,7 +201,10 @@ class GleifProvider(FinancialDataProvider):
         lei = lei.upper()
         source_url = f"{_GLEIF_BASE_URL}/lei-records/{lei}"
         async with httpx.AsyncClient(
-            headers={"User-Agent": _USER_AGENT, "Accept": "application/vnd.api+json"},
+            headers={
+                USER_AGENT_HEADER: research_user_agent(),
+                "Accept": "application/vnd.api+json",
+            },
             timeout=15.0,
         ) as client:
             response = await client.get(source_url)
@@ -240,7 +242,10 @@ class GleifProvider(FinancialDataProvider):
             "page[size]": str(page_size),
         }
         async with httpx.AsyncClient(
-            headers={"User-Agent": _USER_AGENT, "Accept": "application/vnd.api+json"},
+            headers={
+                USER_AGENT_HEADER: research_user_agent(),
+                "Accept": "application/vnd.api+json",
+            },
             timeout=15.0,
         ) as client:
             response = await client.get(source_url, params=params)

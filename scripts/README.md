@@ -45,6 +45,34 @@ file has been re-run on its own.
 
 ---
 
+## `apps/api/scripts/sec_get.py`
+
+The **only** sanctioned way for an operator, script or agent to read sec.gov
+ad hoc (ADR-081, docs/SECURITY.md "Outbound identity"). Do not write a `curl`
+or a hand-built `httpx` call with a typed-in User-Agent, and never put a
+person's email address in one.
+
+```bash
+cd apps/api
+.venv/bin/python scripts/sec_get.py https://data.sec.gov/submissions/CIK0000320193.json out.json
+.venv/bin/python scripts/sec_get.py "https://efts.sec.gov/LATEST/search-index?q=..." > hits.json
+```
+
+- Hosts: `https://www.sec.gov`, `https://data.sec.gov`, `https://efts.sec.gov`
+  only (no other scheme, port, credentials or host).
+- User-Agent: the central `research_user_agent()`; its contact is the validated
+  `OUTBOUND_CONTACT` service mailbox. It **cannot** be overridden: any option
+  (`--user-agent`, `-A`, `-H`, …) or any `*USER_AGENT*` environment variable
+  makes the helper refuse (exit 2).
+- Spacing: `SEC_REQUEST_MIN_INTERVAL_MS`, kept across invocations through a
+  timestamp file in the system temp directory.
+- No redirects, no environment proxy, 50 MB body cap; exit 3 on an HTTP or
+  transport failure. Nothing it prints contains the User-Agent.
+
+A brief for a subagent that touches sec.gov must name this helper.
+
+---
+
 ## `v3-corpus-acceptance.py`
 
 Pushes **one real financial document** through the V3 corpus, locally and

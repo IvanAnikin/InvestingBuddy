@@ -23,12 +23,12 @@ from typing import Any
 import httpx
 import pytest
 
+from app.core.outbound_identity import research_user_agent
 from app.services.sources import sec_filing_documents as mod
 from app.services.sources.document_fetcher import DocumentFetchResult
 from app.services.sources.sec_filing_documents import (
     SEC_ALLOWED_DOMAINS,
     SEC_ARCHIVES_BASE,
-    SEC_USER_AGENT,
     SecFilingDocument,
     SecRateLimiter,
     build_document_url,
@@ -398,7 +398,7 @@ def test_fetch_filing_index_sends_declared_user_agent_and_no_redirects(monkeypat
     assert entries == [{"name": "aapl.htm", "type": "", "size": "10"}]
     assert created, "the fake client was never constructed"
     headers = created[0].kw["headers"]
-    assert headers["User-Agent"] == SEC_USER_AGENT
+    assert headers["User-Agent"] == research_user_agent()  # ADR-081: the central UA
     assert "investingbuddy" in headers["User-Agent"].lower()  # declares identity
     assert created[0].kw["follow_redirects"] is False
     assert created[0].kw["cookies"] is None  # never sends credentials

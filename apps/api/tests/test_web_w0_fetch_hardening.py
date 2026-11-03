@@ -886,11 +886,11 @@ class TestTraversalDomain:
         assert registrable_domain_of(url) == expected
 
     def test_robots_agent_is_the_token_actually_sent(self) -> None:
-        from app.services.sources.safe_web_fetcher import _USER_AGENT
+        from app.core.outbound_identity import crawler_user_agent
         from app.services.traversal.issuer_site import ROBOTS_AGENT
 
         assert ROBOTS_AGENT == "InvestingBuddy-Research-Bot"
-        assert _USER_AGENT.startswith(ROBOTS_AGENT + "/")
+        assert crawler_user_agent().startswith(ROBOTS_AGENT + "/")
 
     def test_a_robots_rule_naming_the_real_token_is_obeyed(self) -> None:
         from urllib.robotparser import RobotFileParser

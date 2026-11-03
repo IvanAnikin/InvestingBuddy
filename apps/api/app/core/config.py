@@ -978,6 +978,12 @@ class Settings(BaseSettings):
     # automated clients to declare a User-Agent and stay under ~10 requests/sec;
     # this is deliberately more conservative than the published ceiling.
     sec_request_min_interval_ms: int = 120
+    # ADR-081: the contact every outbound request declares in its User-Agent (SEC
+    # fair-access asks for one). A SERVICE mailbox, never a person's: the value is
+    # validated in ``app.core.outbound_identity`` and a consumer-mail address or
+    # anything matching the local OS/git identity is refused (fail closed) in
+    # favour of the default. Never logged at normal levels.
+    outbound_contact: str = "research@investingbuddy.example"
 
     # ── V3.0: durable job execution ─────────────────────────────────────────
     # Master switch for the V3 durable job path (durable record + leased worker

@@ -35,8 +35,9 @@ from typing import Any
 
 import httpx
 
+from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
+
 _EDGAR_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
-_USER_AGENT = "InvestingBuddy-Research-Platform/1.0 (contact: research@investingbuddy.com)"
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +190,7 @@ class SecEdgar8KProvider(NewsCatalystProvider):
 
         try:
             async with httpx.AsyncClient(
-                headers={"User-Agent": _USER_AGENT},
+                headers={USER_AGENT_HEADER: research_user_agent()},
                 timeout=15.0,
             ) as client:
                 response = await client.get(url)

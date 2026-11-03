@@ -342,6 +342,39 @@ surface. It is hardened as follows:
 
 ---
 
+## Outbound identity (ADR-081)
+
+**The rule.** Every outbound request — product code, operator script or agent — declares
+the platform's SERVICE identity, never a person's. In the 2026-11 QA campaign an agent
+script twice sent sec.gov requests with a developer's personal email as its User-Agent;
+this section exists so that cannot recur.
+
+- **One builder.** `apps/api/app/core/outbound_identity.py` is the only place a
+  User-Agent is built: `research_user_agent()` (SEC EDGAR, GLEIF, Stooq, news feeds,
+  peers) and `crawler_user_agent()` (the open-web / issuer-document fetcher, whose
+  `InvestingBuddy-Research-Bot` token robots.txt matches). No other module may spell a
+  `User-Agent` header, a `*_USER_AGENT` constant or a contact address; a static scan in
+  `tests/test_qa_closure_outbound_identity.py` fails the build if one does.
+- **One contact.** `OUTBOUND_CONTACT` (default `research@investingbuddy.example`, a
+  placeholder until a monitored service mailbox is chosen — open-web spec decision U8).
+- **Fail closed.** A contact that is malformed, on a consumer-mail domain (gmail,
+  outlook, hotmail, yahoo, icloud, proton, gmx, aol, mail.ru, yandex, …) or equal to /
+  derived from the local identity (login name, `USER` / `LOGNAME` / `USERNAME` / `EMAIL`
+  / `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_EMAIL`, hostname) is replaced by the default. The
+  warning names only a reason code; the contact value is never logged at a normal level.
+- **The operator helper.** An ad-hoc SEC read uses
+  `apps/api/scripts/sec_get.py URL [OUT]` and nothing else — no `curl`, no hand-built
+  `httpx` call with a typed-in UA. It accepts only `https://www.sec.gov`,
+  `https://data.sec.gov` and `https://efts.sec.gov`, sends the central UA, keeps
+  `SEC_REQUEST_MIN_INTERVAL_MS` spacing across invocations, follows no redirect, and
+  refuses to run when given any option (`--user-agent`, `-A`, `-H`, …) or when any
+  `*USER_AGENT*` environment variable is set. See [`scripts/README.md`](../scripts/README.md#appsapiscriptssec_getpy).
+- **Briefs.** Every agent or subagent brief that touches sec.gov must name
+  `apps/api/scripts/sec_get.py` as the only permitted way to reach it, and must never
+  contain a real personal address (use obvious sentinels in tests).
+
+---
+
 ## Data Isolation
 
 - `portfolio_positions` — never included in public API responses

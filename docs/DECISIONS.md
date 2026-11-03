@@ -6525,3 +6525,77 @@ this vprr PDF, which appears in CLLS, CLLS2 and CLLS4. Every other URL carries a
 "Calyxt" risk factors seen in CLLS2 came from Cellectis's own 2017 20-F (CIK 1627281), so
 that is a staleness defect, not an entity one. `aclx-20251231.htm` (CIK 1786205) is
 another registrant and is already handled.
+
+---
+
+## ADR-081: Every Outbound Request Declares One Service Identity, Never a Person's
+
+**Date:** 2026-11-03 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11 disclosure. Twice, an operator-side (agent)
+script sent requests to sec.gov with a developer's PERSONAL email address as its
+User-Agent. The product code never did, but nothing stopped a script from improvising.
+
+### What was wrong
+- The UA string was copied into ~10 modules (`sec_edgar_provider`,
+  `sec_recent_filings_provider`, `sec_edgar_fundamentals`, `gleif_provider`,
+  `stooq_provider`, `news_catalyst_provider`, `free_news_provider`, `agent_tools/peers`,
+  `sources/safe_web_fetcher`, `sources/sec_filing_documents`) with two contact domains:
+  `research@investingbuddy.com` (the data clients) and `research@investingbuddy.example`
+  (the open-web fetcher). `free_news_provider` sent no contact at all.
+- Nothing validated the contact, nothing tested that a request header could not carry a
+  local identity, and there was no sanctioned helper for an ad-hoc SEC read.
+
+### Decision
+1. **One builder.** `app/core/outbound_identity.py` is the only place a UA is built:
+   `research_user_agent(cfg)` for the API / data clients and `crawler_user_agent(cfg)` for
+   the open-web and issuer-document fetcher. Call sites use `USER_AGENT_HEADER` and one of
+   these functions; none spells a UA header or string.
+2. **One contact, one setting.** `outbound_contact` (env `OUTBOUND_CONTACT`), default
+   `research@investingbuddy.example`. `.example` was already the documented crawler
+   contact and is a reserved, obviously-placeholder domain; the `.com` address was never
+   shown to be owned by the project. Choosing a real, monitored SERVICE mailbox is still
+   open-web spec decision U8 — when the owner picks one it is an app setting, not a code
+   change. Behaviour change: the SEC/GLEIF/Stooq/news clients now declare the `.example`
+   contact instead of the `.com` one, and the GDELT client gains a contact.
+3. **Fail closed.** The configured contact is refused, and the default used instead, when
+   it is malformed (anything but a plain mailbox: no spaces, parentheses or CR/LF), on a
+   consumer-mail domain (gmail, googlemail, outlook, hotmail, live, msn, yahoo.\*, ymail,
+   icloud, me, mac, proton.me, protonmail, pm.me, gmx.\*, aol, mail.ru, yandex.\*), equal
+   to a local identity (login name via `getpass.getuser()`, `USER` / `LOGNAME` /
+   `USERNAME` / `EMAIL` / `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_EMAIL`, the hostname), or
+   derived from one (the identity's local part or machine name, four characters or more,
+   appears in it). The refusal logs `outbound_contact_refused reason=<code>` once per
+   reason per process, WITHOUT the value. The contact is never logged at a normal level.
+   App code never shells out to `git config`; the regression test does.
+4. **Two product tokens, kept on purpose.** `InvestingBuddy-Research-Bot` is what robots.txt
+   groups name and what `web_research/robots.py` and `traversal/issuer_site.py` match, so
+   the fetcher keeps it. `InvestingBuddy-Research-Platform` is what the SEC and the other
+   data APIs have seen since Phase 19; changing it would only make the platform look like
+   a new client to a fair-access operator. Only the contact is shared. Robots matching is
+   unchanged (`USER_AGENT_PRODUCT_TOKEN` moved to the central module and is re-exported
+   from `safe_web_fetcher`).
+5. **A sanctioned operator helper.** `apps/api/scripts/sec_get.py URL [OUT]`: https only,
+   hosts `www.sec.gov` / `data.sec.gov` / `efts.sec.gov` only, the central research UA, the
+   `SEC_REQUEST_MIN_INTERVAL_MS` spacing (kept across invocations through a temp-dir
+   timestamp file), no redirects, a 50 MB cap, no environment proxy. It refuses to run
+   when given any option (`--user-agent`, `-A`, `-H`, …) or when any `*USER_AGENT*`
+   environment variable is set. Every agent / subagent brief that touches sec.gov must
+   name it (docs/SECURITY.md, "Outbound identity").
+
+### Tests
+`apps/api/tests/test_qa_closure_outbound_identity.py`: an AST scan of `app/**/*.py` and
+`apps/api/scripts/*.py` (a UA header key, a `*USER_AGENT` string constant, a hand-built UA
+string, a consumer-mail literal, or a contact literal outside the central module and
+`config.py`), with a self-test that the scanner catches each shape; the default UA; the
+fallback for every refusal class under sentinel env / `getpass` / hostname values; the real
+git identity (read only in the test, only a boolean operand) never reaching a UA; the
+fallback warning carrying no value; the transport-captured UA of the EDGAR provider,
+recent filings, fundamentals, 8-K news, the filing index, the 6-K index page and head, and
+the filing body; and the helper's host allowlist, override refusal, no-redirect and
+spacing.
+
+### Not done
+- No real service mailbox is chosen (U8). Until it is, the declared contact is a
+  placeholder; SEC fair-access asks for a reachable one.
+- The helper does not cover non-SEC hosts (GLEIF, Stooq, ASX, FCA NSM). A script reading
+  those must still use the product clients, not an improvised UA.

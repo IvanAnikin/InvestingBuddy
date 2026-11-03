@@ -46,6 +46,7 @@ from urllib.parse import urljoin
 
 from app.core.config import Settings
 from app.core.config import settings as default_settings
+from app.core.outbound_identity import USER_AGENT_HEADER, crawler_user_agent
 from app.services.sources.gaps import GapSeverity, GapType, SourceGap
 from app.services.sources.ingestion_status import (
     FAILURE_BLOCKED_REDIRECT,
@@ -62,7 +63,6 @@ from app.services.sources.ingestion_status import (
 )
 from app.services.sources.redaction import strip_url_secrets
 from app.services.sources.safe_web_fetcher import (
-    _USER_AGENT,
     BODY_DEADLINE_EXCEEDED,
     Resolver,
     async_check_fetch_url,
@@ -257,7 +257,7 @@ async def safe_fetch_document(
     client_kwargs = guarded_client_kwargs(
         timeout=timeout,
         headers={
-            "User-Agent": _USER_AGENT,
+            USER_AGENT_HEADER: crawler_user_agent(cfg),
             "Accept": "application/pdf,text/html,text/plain,*/*",
         },
         transport=transport,
@@ -444,7 +444,7 @@ async def safe_post_json(
     client_kwargs = guarded_client_kwargs(
         timeout=timeout,
         headers={
-            "User-Agent": _USER_AGENT,
+            USER_AGENT_HEADER: crawler_user_agent(cfg),
             "Accept": "application/json",
             "Content-Type": "application/json",
         },

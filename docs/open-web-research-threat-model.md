@@ -230,7 +230,7 @@ Tests: `SSRF-01…SSRF-25`.
 - `trust_env=False`.
 - No cookies jar.
 - No `Authorization` header, ever.
-- A fixed identifying User-Agent with a real contact address. The current `research@investingbuddy.example` is a placeholder; this is decision U8 in the spec.
+- A fixed identifying User-Agent with a real contact address. The current `research@investingbuddy.example` is a placeholder; this is decision U8 in the spec. Since ADR-081 the UA is built only in `app/core/outbound_identity.py` from the `OUTBOUND_CONTACT` setting, which refuses a consumer-mail or local-identity address.
 
 **8. Budgets**
 
