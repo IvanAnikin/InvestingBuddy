@@ -82,6 +82,7 @@ from app.services.director.roles import role_for
 from app.services.entities.passage_subject import (
     VERDICT_OTHER,
     VERDICT_SCOPED,
+    VERDICT_SUBJECT,
     VERDICT_UNKNOWN,
     Passage,
     StatementAttribution,
@@ -1556,21 +1557,25 @@ def apply_edgar_registrant(
         if verdict is None and filing_copy_off_edgar(item):
             # ADR-088 (ADBE-2): a page whose own text is an SEC filing, held on another
             # host (a filing mirror, an aggregator), is a FILING — never "secondary web" —
-            # but the host says nothing about whose. The registrant CIK its EDGAR header
-            # prints is judged like an EDGAR address; without one it is unidentified:
-            # a third-party filing, never the issuer's own. A chunk past the cover carries
-            # no header, so an unidentified copy is KEPT (never dropped for not naming the
-            # subject, unlike a CIK-less EDGAR address): it may be the issuer's own note.
+            # but the host says nothing about whose. A CIK PRINTED on the page is text
+            # anyone can write (review P0: a forged cover on totally-not-sec.example
+            # printing the subject's CIK became the issuer's own T1 filing), so it can
+            # place the copy with ANOTHER registrant, never with the subject: the subject's
+            # CIK printed off EDGAR is "unidentified" — a third-party filing, never the
+            # issuer's own. Only EDGAR's address or a verified issuer domain makes a filing
+            # the issuer's. An unidentified copy is KEPT (a chunk past the cover carries no
+            # header, and it may be the issuer's note), but it speaks as a third party.
             text_cik = edgar_header_cik(item.text)
             verdict = cik_verdict(text_cik, subject.ciks, other_ciks=subject.other_ciks)
+            if verdict == EDGAR_OWN:
+                verdict = EDGAR_UNIDENTIFIED
             if verdict == EDGAR_OTHER and filing_names_subject(
                 item.text, subject.match_names, subject.tickers, ownership_form=False
             ):
                 verdict = EDGAR_COUNTERPARTY
-            kind = ISSUER_FILING if verdict == EDGAR_OWN else THIRD_PARTY_FILING
             ref = item.ref
-            if ref is not None and ref.source_kind != kind:
-                ref = replace(ref, source_kind=kind)
+            if ref is not None and ref.source_kind != THIRD_PARTY_FILING:
+                ref = replace(ref, source_kind=THIRD_PARTY_FILING)
             out.append(replace(item, ref=ref, edgar_registrant=verdict, edgar_cik=text_cik))
             continue
         if verdict is None:
@@ -1999,6 +2004,7 @@ def _support_for(
     cited: "Sequence[str]", evidence: "Sequence[_Evidence]", company_id: Any = None
 ) -> "tuple[Any, ...]":
     """What stands behind each cited id, for the §13.3 check at persistence."""
+    from app.services.web_research.edgar_registrant import is_edgar_filing_url
     from app.services.web_research.trust import SupportItem, platform_origin
 
     by_id = {item.citation_id: item for item in evidence}
@@ -2014,7 +2020,12 @@ def _support_for(
                 company_id=item.company_id or company_id,
                 url=None,
             )
-        elif item.web and item.edgar_registrant == "own" and company_id is not None:
+        elif (
+            item.web
+            and item.edgar_registrant == "own"
+            and company_id is not None
+            and is_edgar_filing_url(item.url)
+        ):
             # ADR-088 (ADBE-2): a web copy of an EDGAR filing whose registrant CIK IS the
             # subject's (ADR-079 ``own``) is the issuer's own filing, as surely as the
             # platform's SEC reads — so its filed figures are not "from the press".
@@ -3808,6 +3819,10 @@ class LLMInvestigator:
                 )
                 self.diagnostics.statements_about_evidence += 1
                 continue
+            # ADR-088 review P1: whether the statement is ABOUT THE SUBJECT, so the
+            # subject's fiscal calendar applies whatever host the source is on. F14 (Adobe,
+            # FY2026 revenue) cited a third-party web page, not the issuer's own document.
+            about_subject = False
             if question.domain not in _PEER_DOMAINS:
                 foreign = foreign_publisher(real, evidence, await self._other_companies())
                 if foreign is not None:
@@ -3870,6 +3885,12 @@ class LLMInvestigator:
                     # venture's or a mine's fact: kept, at that scope, so no Group-level
                     # consumer reads it as the Group's.
                     entity_scope = attribution.scope_key
+                about_subject = attribution.verdict == VERDICT_SUBJECT or (
+                    attribution.verdict == VERDICT_UNKNOWN
+                    and _names_subject(
+                        statement, subject_aliases(self.company_name), self.ticker
+                    )
+                )
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
                 direction = None
@@ -3912,14 +3933,17 @@ class LLMInvestigator:
             # period that had not ended when the source was published has no actual.
             # Reclassified to the forward kind its words carry, else withheld (kept in
             # the ledger with the reason, never shown). F14, Adobe, November 2026:
-            # "FY2026 total revenue 26.58 Bil", a year ending late November.
+            # "FY2026 total revenue 26.58 Bil", a year ending late November, cited from a
+            # third-party page. The subject's calendar applies to a statement resting on
+            # the issuer's own documents OR one about the subject (ADR-083 passage
+            # verdict, or the statement names it); another entity's periods stay lenient.
             issuer_origin = f"issuer:{self.company_id}"
             kind = await self._statement_kind(
                 raw, statement, published_at,
-                issuer_own=bool(real) and all(
+                issuer_own=about_subject or (bool(real) and all(
                     item.origin_key == issuer_origin and not item.via_subject
                     for item in _support_for(real, evidence, self.company_id)
-                ),
+                )),
             )
             if kind.basis == "reclassified_period_not_ended":
                 self.diagnostics.statements_reclassified_period_not_ended += 1

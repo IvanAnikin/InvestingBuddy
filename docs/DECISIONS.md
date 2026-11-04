@@ -8381,14 +8381,26 @@ rounds. So nothing here drops or withholds on prose.
    companyfacts, ADR-072's loader, cached, 5 s bound) fiscal years, quarters and halves
    are projected with ±7 days for 52/53-week years; January–March year ends project no
    quarter and take the earlier reading of a year. The anchor is read only when it can
-   change the verdict and applied only when every cited item is the issuer's own
-   (`issuer:<company_id>` origin): another company's "FY24" is not on the subject's
-   calendar. Without it a fiscal period is judged at its earliest possible end.
+   change the verdict, never without the listing's exchange (a bare ticker can resolve to
+   another registrant), and applied when every cited item is the issuer's own
+   (`issuer:<company_id>` origin) OR the statement is ABOUT the subject (the ADR-083
+   passage verdict is `subject`, or it is `unknown` and the statement names the subject)
+   whatever host the source is on — F14 itself cited a third-party page. Another
+   entity's "FY24" stays on the lenient reading. Without the anchor a fiscal period is
+   judged at its earliest possible end. Declared periods also parse in the forms
+   "FY2026E", "2026 fiscal year" and "financial year 2026".
 4. **The fallback only labels forward.** With no declared kind (or `actual` with no
    period) a statement is labelled guidance / target / forecast / estimate only when a
    period it names is forward-framed and still unended at the RUN date; a statement that
    also names an ended period is mixed and stays as declared; a year inside a date
-   ("June 30, 2026", "April 2026") is not a period. It never withholds.
+   ("June 30, 2026", "April 2026") is not a period, and an ended period written in words
+   ("the year ended June 30, 2026", "so far", "year to date") makes a statement mixed.
+   It never withholds.
+4a. **The converse check.** A declared forward kind for a period that had CERTAINLY ended
+   at publication (its latest possible end: the calendar end, the anchored projection
+   + 7 days, else a quarter past its calendar reading) in words with no forward cue at all
+   is recorded `unknown` (`declared_forward_period_ended:<period>@<end>`) — not provably
+   forward, and never promoted to actual. "FY2024 guidance was $5bn" keeps `guidance`.
 5. **Downstream, an actual slot takes no forward statement.** A non-actual finding never
    takes a financial-statement trust reading (guidance reads as guidance, a forecast or
    estimate as an estimate by its origin), never enters a contradiction, never answers a
@@ -8397,62 +8409,93 @@ rounds. So nothing here drops or withholds on prose.
    it is), is marked for the editor, and reaches the Red Team and Chair with its kind.
 6. **Business stage (LIN-1).** "Revenue … interest income only" proves no operating
    revenue (P1). `StageAssessment.commercial_stage` (`pre_revenue` · `development` ·
-   `pre_production` · `clinical`) comes from the item-20 developer proof or the issuer's
-   own attributed wording, cancelled by an un-negated "commenced commercial production".
+   `pre_production` · `clinical`) is set only when P1 holds (the extracted annual
+   statements show no or immaterial revenue, or revenue is interest income only) AND the
+   issuer describes ITSELF so: "we are a clinical-stage … company", "<the Company | name>
+   is a pre-revenue developer", "has not yet generated revenue", "is in the development
+   stage", "has not yet commenced production" (never "… at its new plant"), or the item-20
+   developer proof. A project, a pipeline or a cost line ("our development-stage projects",
+   "pre-production stripping costs", "our clinical-stage programs") is not the company.
+   "commercial-stage" anywhere in the issuer's text, or an un-negated "commenced
+   commercial production", vetoes. A false stage writes a false COMPANY CONTEXT line into
+   every prompt, so the rule fails toward None.
    For such a subject `commercial_claims` withholds, from synthesis prose only (chair
    synthesis and key points, editor sentences and leads, the deterministic pick), a
    present-tense claim that the SUBJECT mines, produces, sells, is producing, is in
    commercial production, or generates / earns / derives revenue from something, unless
    an issuer finding (`issuer_filing` / `issuer_ir`, not non-actual, no forward cue, no
-   negation, not interest-only) reports production or sales with a figure. Revenue from
-   interest, collaborations, licences, royalties, milestones or grants is not such a
-   claim. Seven present-tense verb shapes, subject-anchored in the clause, no customer,
-   peer or partner in between.
+   negation, not interest-only, no forward cue between the clause start and the figure)
+   reports production or sales with a figure — "sold 650kt in 2025 and expects 2026
+   production of 700kt" backs. Revenue from interest, collaborations, licences,
+   royalties, milestones or grants is not such a claim, nor is selling or producing
+   shares, stakes, interests, assets, securities, reports, properties, subsidiaries or
+   businesses. Seven present-tense verb shapes, subject-anchored in the clause, no
+   customer, peer or partner in between.
 7. **Customer funds (PYPL-4).** The business-model signal `customer_funds_balance_sheet`
-   (two customer-funds captions — funds payable and amounts due to customers, funds
-   receivable and customer accounts, customer balances, funds held for customers,
-   safeguarded funds — or one under a money-transmitter / e-money / payment-institution
-   licence, in the issuer's OFFICIAL documents; never an issuer name) carries a
+   (balance-sheet ROWS — a caption followed by a figure, in a non-negated sentence of the
+   issuer's OFFICIAL documents: at least one customer-funds LIABILITY row — funds payable
+   and amounts due to customers, customer funds payable / obligations, safeguarded customer
+   funds — and one other distinct row such as funds receivable and customer accounts or
+   funds held for customers; a licence, a receivable such as "customer account balances",
+   or an escrow mention never counts; never an issuer name) carries a
    not-meaningful declaration (`net_debt`, `net_debt_to_ebitda`, `current_ratio`) unioned
    into `applicability.resolve` whatever the methodology, a bank included. The statement
    and calculation tools then do not offer them; the investigator, Red Team and Chair get
    a `COMPANY CONTEXT` line naming them (and any pre-commercial stage); a synthesis
    sentence stating net debt for a company with net debt declared not meaningful is
-   withheld (`not_meaningful_metric_stated`).
+   withheld (`not_meaningful_metric_stated`); a cash-flow line ("net cash provided by
+   operating activities", "net cash from operations") is not net debt.
 8. **Source kind by document (ADBE-2).** A web page whose own first 6,000 characters
    carry the Commission's name, a form type and a filing anchor (commission file number,
    registrant-name line or accession number) is classified a filing at ingest
    (`issuer_filing` on a verified issuer domain, else `regulatory_filing`, rule
-   `page_signal`). An off-EDGAR copy is judged by the single EDGAR header CIK it prints
-   (ADR-079 verdicts); without one it is kept as an unidentified third-party filing. A web
-   EDGAR copy whose registrant is the subject's carries the verified issuer origin. A
-   filing figure whose registrant is not verified is labelled `filing copy; registrant
-   not verified as the issuer` (non-closing), never "reported in the press". A side
-   supported by any filing document is never the press side of a contradiction, so the
-   "a filing figure differs" badge needs a press-only side against the filing path, same
-   field, same period, same scope and the same part (ADR-071).
+   `page_signal`). The page's words name the document KIND, never its standing: the tier
+   and access class stay the host's (a cover printed on an unknown host is not T1). An
+   off-EDGAR copy is judged by the single EDGAR header CIK it prints only to place it with
+   ANOTHER registrant (`other` / `counterparty`); the subject's CIK printed off EDGAR is
+   text anyone can write, so the copy is `unidentified` — a third-party filing, never the
+   issuer's own (independent review P0: a forged cover on an unknown host became the
+   issuer's T1 filing). Only EDGAR's own address (`edgar_registrant = own` on an EDGAR
+   filing URL) or a verified issuer domain carries the issuer origin. A filing figure
+   whose registrant is not verified is labelled `filing copy; registrant not verified as
+   the issuer` (non-closing), never "reported in the press". A side supported by a filing
+   a filing SYSTEM served (sec.gov, the ASX announcement platform, SEDAR+ and the listed
+   registries) or by a verified issuer origin is never the press side of a contradiction;
+   any other filing-looking page is, so it never strips the real filing's canonical
+   status. The "a filing figure differs" badge needs a press-only side against the filing
+   path, same field, same period, same scope and the same part (ADR-071).
 
 ### Replay (17 stored reports, offline, fixture fiscal calendars)
 
 Stored findings predate the declared kind, so the replay exercises the fallback, the
 stage and net-debt gates and the badge rule, plus a stress mode declaring every finding
-`actual` for its stored period.
+`actual` for its stored period. Re-run after the independent review with the REAL stage
+classification (`assess_commercial_stage` with P1 from the stored run's proof or the
+interest-only statement; never forced) and the subject's calendar on statements that
+name the subject.
 
-- Kind changes to non-actual (fallback): 3 findings — ADBE F22 (guidance: "From FY2026
-  Adobe changes reporting and guidance…"), CLLS4 F17 (guidance: "will exit
-  lasme-cel…"; also reclassified in stress mode), HON2 F18 (guidance: "plans a $500m …
-  plant, opening late 2028"). None withheld; each is an expectation or plan, not a
-  result. The first design's false labels (JPM F31 balance dates, LIN
-  F9 on a page dated 2018, ANTO2 F4 and CLLS3 F16/F28 mixed statements, South32's FY24
-  on Antofagasta's calendar) are gone and pinned as tests.
+- Kind changes to non-actual (fallback): 8 findings, every one a forward statement —
+  ADBE F22 ("From FY2026 Adobe changes reporting and guidance…"), ANTO F7 ("raised 2026
+  gross cash cost guidance"), ANTO F20 ("2026 capex guidance unchanged…; copper output
+  expected to rise… through H2 2026"), ANTO2 F20 ("introduced 2027 group copper
+  guidance"), CLLS4 F17 ("will exit lasme-cel…"), HON F14 and HON2 F16 ("reaffirmed its
+  … 2026 outlook"), HON2 F18 ("plans a $500m … plant, opening late 2028"); all
+  `guidance`. The four new ones are the subject's calendar applied to statements naming
+  the subject (a December year end: 2026 not ended on 1–2 November). The first design's
+  false labels (JPM F31 balance dates, LIN F9 on a page dated 2018, ANTO2 F4 and CLLS3
+  F16/F28 mixed statements, South32's FY24 on Antofagasta's calendar) stay gone and are
+  pinned as tests.
 - Withheld findings: 0. Stress mode only: CLLS4 F13/F14 and CLLS5 F13/F15, all four on a
   bogus pre-ADR-080 "2027-H2"/"2028-H2" document tag a model would have had to copy as
   the statement's period.
+- Stage per report: `pre_revenue` for LIN and LIN2 (P1 from "interest income only"),
+  None for the other 15 (ADBE, ANTO, ANTO2, CFR, CLLS–CLLS5, HON, HON2, JPM, PYPL–PYPL3).
 - Withheld synthesis sentences: 2, both the defects — LIN "The company mines and sells
-  monazite concentrate…" (stage `pre_revenue` from "interest income only"), PYPL3 key
-  point "… a manageable net debt position". With every non-LIN report forced to
-  `clinical`, nothing else would be withheld ("Cellectis generates collaboration revenue
-  from partnerships…" is kept).
+  monazite concentrate…" and PYPL3 key point "… a manageable net debt position" (the
+  latter assumes the signal from PYPL's 10-K chunks; see limits).
+- Customer-funds signal from the stored finding texts: False for all 17. The earlier
+  True on PYPL2 came from "customer balances" wording without a liability row; finding
+  statements do not carry balance-sheet rows, production reads the 10-K chunks.
 - Badge changes: 2, both removals — ADBE F1 (segment revenue list) and F2 (geographic
   revenue list) compared with Group revenue. No badge added.
 
@@ -8467,5 +8510,12 @@ stage and net-debt gates and the badge rule, plus a stress mode declaring every 
 - The filing-copy page signal needs all three cover signals; a mid-document chunk of a
   copy, or a page carrying only an accession number, keeps its host classification.
 - `customer_funds_balance_sheet` reads the official chunks the stage detector reads
-  (bounded by `MAX_CHUNKS`); a payment company whose captions are not among them gets no
-  signal (SIC 7389 alone is too broad to use).
+  (bounded by `MAX_CHUNKS`); a payment company whose balance-sheet rows are not among
+  them, or whose captions differ from the listed ones, gets no signal (SIC 7389 alone is
+  too broad to use). It fails toward False.
+- `commercial_stage` needs P1 from extracted annual statements or an interest-only
+  statement; a clinical-stage company whose statements were not extracted gets no stage
+  and so no commercial-claims gate.
+- "About the subject" off the issuer's own documents is the ADR-083 passage verdict or
+  the subject's name in the statement; a statement about the subject that names neither
+  stays on the lenient reading.

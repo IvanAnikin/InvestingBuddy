@@ -183,6 +183,15 @@ def _path_of(url: str | None) -> str:
         return ""
 
 
+def is_filing_system_publisher(domain: str | None) -> bool:
+    """ADR-088 (review P0): the registrable domain is a filing SYSTEM's (EDGAR, the ASX
+    announcement platform, SEDAR+ and the listed national registries). Only a filing a
+    filing system served — or a verified issuer domain — can stand as a filing in a
+    contradiction; a page elsewhere that merely LOOKS like a filing never does."""
+    host = (domain or "").strip().lower().strip(".")
+    return bool(host) and _matches(host, (*_FILING_HOSTS, "sec.gov", "asx.com.au"))
+
+
 def publisher_tier(url: str | None) -> str:
     """The tier of the publisher behind ``url``. Unknown is ``T5``, never promoted."""
     host = host_of(url)
@@ -205,4 +214,4 @@ def publisher_tier(url: str | None) -> str:
     return T5_API_AGGREGATOR
 
 
-__all__ = ["host_of", "publisher_tier"]
+__all__ = ["host_of", "is_filing_system_publisher", "publisher_tier"]

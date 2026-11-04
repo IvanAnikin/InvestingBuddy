@@ -26,6 +26,7 @@ Every pattern is linear: bounded repetitions only, no nested unbounded quantifie
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Iterable, Mapping
 from functools import lru_cache
 from typing import Any
@@ -63,6 +64,18 @@ _NON_OPERATING_REVENUE_RE = re.compile(
 )
 _CLAUSE_CUT_RE = re.compile(r"[;:]|\.\s")
 _WINDOW = 80
+#: What a company sells or produces that is NOT a commercial operation (review P2): "sells
+#: shares", "sells its stake in the joint venture", "is selling non-core assets",
+#: "produces annual sustainability reports". Up to three words may precede the object.
+#: Anchored at the verb's end; a bounded repetition over disjoint classes.
+_NON_PRODUCT_OBJECT_RE = re.compile(
+    r"\s{1,3}(?:[\w'’-]+\s{1,3}){0,3}?(?:shares?|stakes?|interests?|assets?|securities|notes"
+    r"|bonds?|debentures?|warrants?|stock|equity|options?|portfolios?|holdings?"
+    r"|reports?|propert(?:y|ies)|subsidiar(?:y|ies)|business(?:es)?|divisions?"
+    r"|operations?|units?\s+of\s+(?:its|the)\s+(?:business|group))\b",
+    _I,
+)
+_OBJECT_VERBS = ("mines", "produces", "sells", "selling", "producing", "mining")
 
 #: An issuer statement of actual production or sales: the verb, then a figure.
 _BACKING_RE = re.compile(
@@ -133,6 +146,12 @@ def claims_commercial_operation(
         between = window[last.end():]
         if _BETWEEN_PARTY_RE.search(between) or _NEGATION_RE.search(between):
             continue
+        if match.group(0).lower().endswith(_OBJECT_VERBS) and _NON_PRODUCT_OBJECT_RE.match(
+            body, match.end()
+        ):
+            # "sells shares", "sells its stake in…", "produces annual reports": a capital
+            # or reporting act, not a commercial operation.
+            continue
         tail = body[match.end(): match.end() + 60]
         if match.group(0).lower().endswith(("from", "through", "by")) and (
             _NON_OPERATING_REVENUE_RE.search(match.group(0) + " " + tail)
@@ -152,14 +171,25 @@ def backs_commercial_operation(finding: Mapping[str, Any] | Any) -> bool:
     if str(_get(finding, "statement_kind") or "") in _NON_ACTUAL:
         return False
     statement = str(_get(finding, "statement") or "")[:MAX_SCAN_CHARS]
-    if _INTEREST_ONLY_RE.search(statement) or _FORWARD_RE.search(statement):
+    if _INTEREST_ONLY_RE.search(statement):
         return False
+    cuts = [m.end() for m in _CLAUSE_CUT_RE.finditer(statement)]
     for match in _BACKING_RE.finditer(statement):
-        clause = statement[max(0, match.start() - 40): match.end() + 60]
-        if _NEGATION_RE.search(clause):
+        digit = _DIGIT_RE.search(statement, match.end(), match.end() + 80)
+        if digit is None:
             continue
-        if _DIGIT_RE.search(statement[match.end(): match.end() + 80]):
-            return True
+        # Review P2: the forward words that matter are those between the start of the
+        # sentence part and the figure ("Production will reach 700kt"), not a later
+        # clause ("sold 650kt in 2025 and expects 2026 production of 700kt" backs).
+        before = bisect_right(cuts, match.start())
+        span = statement[(cuts[before - 1] if before else 0): digit.end()]
+        if _FORWARD_RE.search(span):
+            continue
+        if _NEGATION_RE.search(
+            statement[max(0, match.start() - 40): max(match.end() + 60, digit.end())]
+        ):
+            continue
+        return True
     return False
 
 

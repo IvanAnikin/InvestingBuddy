@@ -86,6 +86,10 @@ BASIS_NOT_DECLARED = "not_declared"
 BASIS_FORWARD_CUE = "forward_cue"
 BASIS_RECLASSIFIED = "reclassified_period_not_ended"
 BASIS_WITHHELD = "withheld_period_not_ended"
+#: Review P2: a forward kind declared for a period that had certainly ENDED when the
+#: source was published, in words that carry no forward cue — not provably forward, and
+#: not promoted to actual either.
+BASIS_DECLARED_FORWARD_ENDED = "declared_forward_period_ended"
 
 #: The reader-facing word for each non-actual kind.
 KIND_LABELS: dict[str, str] = {
@@ -170,8 +174,10 @@ def _year(raw: str) -> int | None:
 _DECLARED_RES: tuple[re.Pattern[str], ...] = (
     # "cy2026", "calendar 2026", "calendar year 2026"
     re.compile(r"^(?P<cal>cy ?|calendar (?:year )?)(?P<y>\d{4})$"),
-    # "2026", "fiscal 2026", "fiscal year 2026", "full year 2026"
-    re.compile(r"^(?:fiscal (?:year )?|full year )?(?P<y>\d{4})$"),
+    # "2026", "fiscal 2026", "fiscal year 2026", "financial year 2026", "full year 2026"
+    re.compile(r"^(?:(?:fiscal|financial) (?:year )?|full year )?(?P<y>\d{4})$"),
+    # "2026 fiscal year", "2026 financial year"
+    re.compile(r"^(?P<y>\d{4}) (?:fiscal|financial) year$"),
     # "fy2026", "fy 2026", "fy26"
     re.compile(r"^fy ?(?P<y>\d{4}|\d{2})$"),
     # "q4 2026", "q4 fy2026", "q4 fy26", "2026 q4", "fy2026 q4", "fy26 q4"
@@ -190,6 +196,7 @@ _DECLARED_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?P<hw>first|second) half (?:of )?(?:fiscal (?:year )?|fy ?)?(?P<y>\d{4})$"),
 )
 _SEP_RE = re.compile(r"[^a-z0-9]+")
+_ESTIMATE_SUFFIX_RE = re.compile(r"(?<=\d)e$")
 
 
 def parse_declared_period(raw: object) -> Period | None:
@@ -197,6 +204,8 @@ def parse_declared_period(raw: object) -> Period | None:
     ``"H1 2026"``, ``"CY2026"``), or ``None`` when it is absent or not one period. A
     range, a part period ("9M 2026", "YTD") or a date is not a period here."""
     text = _SEP_RE.sub(" ", str(raw or "").lower()[:40]).strip()
+    # "FY2026E", "2026e": an analyst's estimate suffix names the same period.
+    text = _ESTIMATE_SUFFIX_RE.sub("", text)
     if not text:
         return None
     calendar = text.startswith(("cy", "calendar"))
@@ -310,6 +319,30 @@ def not_ended_by(
     return end if reference <= end - margin else None
 
 
+#: How long after its calendar reading a fiscal period with no anchor may still run: a
+#: start-year naming convention ("fiscal 2024" ending February 2025) puts its end a
+#: quarter later at most (``wants_anchor`` uses the same bound).
+LATEST_FISCAL_END_SLACK = timedelta(days=120)
+
+
+def definitely_ended_by(
+    period: Period, reference: date, anchor: FiscalYearAnchor | None = None
+) -> date | None:
+    """The period's LATEST possible end when it had certainly ended before ``reference``;
+    else None. The mirror of :func:`not_ended_by`: a calendar period at its calendar end,
+    an anchored fiscal one at the projection plus the tolerance, any other fiscal one a
+    quarter past its calendar reading."""
+    if period.calendar:
+        latest = period.calendar_end()
+    else:
+        projected = anchor.end_of(period) if anchor is not None else None
+        latest = (
+            projected + FISCAL_END_TOLERANCE if projected is not None
+            else period.calendar_end() + LATEST_FISCAL_END_SLACK
+        )
+    return latest if latest < reference else None
+
+
 def wants_anchor(period: Period, reference: date) -> bool:
     """Would the issuer's calendar change the verdict? Only for a fiscal period the
     lenient reading calls ended while its calendar reading has not ended yet."""
@@ -343,6 +376,21 @@ _ESTIMATE_RE = re.compile(
     r"|(?:street|analyst|consensus) estimates?|estimates? (?:by|from) analysts?)\b"
 )
 _TARGET_WORD_RE = re.compile(r"\btarget(?:s|ed|ing)?\b")
+#: Review P2: "the year ended June 30, 2026", "so far", "year to date" — a statement that
+#: names an ENDED period in words (not as a period label) states a result, so the
+#: fallback never relabels it forward. Normalised text: single spaces, no hyphens.
+_ENDED_PERIOD_WORDS_RE = re.compile(
+    r"\b(?:(?:fiscal |financial )?year|quarter|period|half(?: year)?"
+    r"|(?:three|six|nine|twelve) months|weeks?) (?:then )?ended\b"
+    r"|\bso far\b|\byear to date\b|\bytd\b"
+)
+#: Any forward cue at all. A declared forward kind whose words carry none of these, for
+#: a period that had ended, is not provably forward (review P2).
+_ANY_FORWARD_CUE_RE = re.compile(
+    r"\b(?:guid\w*|outlook|forecast\w*|target\w*|expect\w*|estimat\w*|consensus"
+    r"|project(?:s|ed|ion|ions)|plan(?:s|ned)?|aim(?:s|ed)?|goals?|anticipat\w*"
+    r"|budget\w*|will|would|should|could|may|might|intend\w*|predict\w*)\b"
+)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+(?=[A-Z\"'(\[])|\n+")
 
 
@@ -411,6 +459,10 @@ def forward_kind(
     from app.services.sources.document_period import _normalise
 
     text = str(statement or "")[:2000]
+    if mixed_is_none and _ENDED_PERIOD_WORDS_RE.search(_normalise(text)):
+        # "Revenue for the year ended June 30, 2026 was $70bn; FY2027 outlook is $78bn":
+        # a result beside an expectation is mixed, and the fallback never relabels it.
+        return None
     found: str | None = None
     estimate = False
     for sentence in _SENTENCE_SPLIT_RE.split(text):
@@ -499,6 +551,18 @@ def decide(
             return KindDecision(forward, BASIS_FORWARD_CUE)
         if kind is None:
             kind, basis = KIND_UNKNOWN, BASIS_NOT_DECLARED
+    if kind in NON_ACTUAL_KINDS and period is not None:
+        # Review P2: the converse check. A forward kind for a period that had certainly
+        # ended at publication, in words with no forward cue, is not provably forward:
+        # recorded ``unknown`` — never promoted to actual.
+        ended = definitely_ended_by(period, reference, anchor)
+        if ended is not None and not _ANY_FORWARD_CUE_RE.search(
+            _normalise_text(statement)
+        ):
+            return KindDecision(
+                KIND_UNKNOWN, BASIS_DECLARED_FORWARD_ENDED, period=period, period_end=ended
+            )
+        return KindDecision(kind, basis)
     if kind not in (KIND_ACTUAL, KIND_UNKNOWN) or period is None:
         return KindDecision(kind, basis)
     end = not_ended_by(period, reference, anchor)
@@ -508,6 +572,12 @@ def decide(
     if forward is not None:
         return KindDecision(forward, BASIS_RECLASSIFIED, period=period, period_end=end)
     return KindDecision(KIND_UNKNOWN, BASIS_WITHHELD, withheld=True, period=period, period_end=end)
+
+
+def _normalise_text(statement: str | None) -> str:
+    from app.services.sources.document_period import _normalise
+
+    return _normalise(str(statement or "")[:2000])
 
 
 def judged_period(declared_period: object) -> Period | None:
@@ -533,9 +603,12 @@ async def load_fiscal_year_anchor(
     """The issuer's latest ANNUAL period from its SEC statements, or ``None``. Never
     raises. The same cached reader and normaliser as ``get_sec_statements``; a subject
     SEC does not cover has no anchor, and then fiscal periods are judged leniently."""
-    if not ticker:
+    if not ticker or not str(exchange or "").strip():
+        # Review P3: without the listing's exchange a bare ticker can resolve to a
+        # different SEC registrant ("MC" is Moelis, not LVMH), and that registrant's
+        # calendar would then judge the subject's periods. No exchange, no anchor.
         return None
-    key = f"{ticker.upper()}|{(exchange or '').upper()}"
+    key = f"{ticker.upper()}|{str(exchange).upper()}"
     now = datetime.now(timezone.utc)
     cached = _ANCHOR_CACHE.get(key)
     if cached is not None and now - cached[0] < (
@@ -578,6 +651,7 @@ def reset_cache() -> None:
 
 
 __all__ = [
+    "BASIS_DECLARED_FORWARD_ENDED",
     "BASIS_FORWARD_CUE",
     "BASIS_MODEL",
     "BASIS_NOT_DECLARED",
@@ -598,6 +672,7 @@ __all__ = [
     "STATEMENT_KINDS",
     "anchor_from_normalised",
     "decide",
+    "definitely_ended_by",
     "forward_kind",
     "is_non_actual",
     "judged_period",

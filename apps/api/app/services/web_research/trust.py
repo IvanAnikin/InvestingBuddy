@@ -1557,8 +1557,19 @@ class ClaimSide:
         """ADR-088 (ADBE-2): a WEB side that no filing document supports. A filing copy
         the web leg fetched (a 10-K on the issuer's site, an EDGAR mirror) is a filing,
         whatever channel served it, and is never the "press" side of a contradiction."""
+        from app.services.sources.publisher_tiers import is_filing_system_publisher
+
+        # Review P0: only a filing a filing system served, or one on a VERIFIED issuer
+        # domain, stands as a filing. A page elsewhere that merely prints a filing cover
+        # (and a CIK) is press: it never strips the real filing's canonical status.
         return self.web and not any(
-            item.source_class in FILING_CLASSES and not item.via_subject
+            item.source_class in FILING_CLASSES
+            and not item.via_subject
+            and (
+                not item.web
+                or str(item.origin_key or "").startswith(ISSUER_ORIGIN_PREFIX)
+                or is_filing_system_publisher(publisher_of(item.origin_key))
+            )
             for item in self.support
         )
 

@@ -162,8 +162,14 @@ def signal_declarations() -> "tuple[Any, ...]":
 
 #: A synthesis sentence that characterises net debt / leverage from borrowings ("a
 #: manageable net debt position"). Linear: literal alternatives, one bounded gap.
+#: Never a cash-flow line (review P2): "net cash provided by operating activities", "net
+#: cash from operations", "net cash flows" — a payment company's cash generation, not its
+#: leverage.
 _NET_DEBT_SENTENCE_RE = re.compile(
-    r"\bnet[\s-](?:debt|cash)\b|\bnet\s+(?:leverage|borrowings)\b", re.IGNORECASE
+    r"\bnet[\s-]debt\b|\bnet\s+(?:leverage|borrowings)\b"
+    r"|\bnet[\s-]cash\b(?!\s+(?:provided|used|generated|from|flows?|inflows?|outflows?"
+    r"|received|paid|in\s+(?:operating|investing|financing))\b)",
+    re.IGNORECASE,
 )
 NET_DEBT_REASON = "not_meaningful_metric_stated"
 

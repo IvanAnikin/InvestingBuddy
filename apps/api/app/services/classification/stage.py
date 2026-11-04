@@ -46,10 +46,11 @@ from typing import Any
 
 SIGNAL_DEVELOPMENT_STAGE = "development_stage_resource"
 SIGNAL_RESOURCE_EXTRACTION = "resource_extraction"
-#: ADR-088 (PYPL-4) — the issuer's own documents describe a payment institution's
-#: balance sheet: customer balances / funds payable to customers, held under a money-
-#: transmitter or e-money licence. Those balances are obligations to customers, not
-#: borrowings, so leverage read from them is not meaningful (``playbooks.applicability``).
+#: ADR-088 (PYPL-4) — the issuer's own balance sheet is a payment institution's: a
+#: customer-funds LIABILITY row (funds payable and amounts due to customers, safeguarded
+#: customer funds) and another customer-funds row. Those balances are obligations to
+#: customers, not borrowings, so leverage read from them is not meaningful
+#: (``playbooks.applicability``).
 SIGNAL_CUSTOMER_FUNDS = "customer_funds_balance_sheet"
 
 #: ADR-088 (LIN-1) — the business stage a reader must not see described as a commercial
@@ -345,25 +346,70 @@ _INTEREST_ONLY_RES: tuple[re.Pattern[str], ...] = (
 )
 _REVENUE_WORD_RE = re.compile(r"\brevenues?\b", re.IGNORECASE)
 
-#: The issuer describing ITSELF as not yet commercial. Each entry: (stage, pattern).
-_PRE_COMMERCIAL_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
-    (stage, re.compile(pattern, re.IGNORECASE))
-    for stage, pattern in (
-        (STAGE_CLINICAL, r"\bclinical[- ]stage\b"),
-        (STAGE_PRE_REVENUE, r"\bpre-?revenue\b"),
-        (STAGE_PRE_REVENUE,
-         r"\b(?:has|have)\s+not\s+(?:yet\s+)?generated\s+(?:any\s+)?"
-         r"(?:operating\s+|product\s+)?revenues?\b"),
-        (STAGE_PRE_PRODUCTION, r"\bpre-?production\b"),
-        (STAGE_PRE_PRODUCTION,
-         r"\b(?:has|have)\s+not\s+(?:yet\s+)?(?:commenced|begun|started|achieved)\s+"
-         r"(?:commercial\s+)?(?:production|mining|operations)\b"),
-        (STAGE_PRE_PRODUCTION, r"\bprior\s+to\s+(?:first|commercial)\s+production\b"),
-        (STAGE_DEVELOPMENT, r"\b(?:development|exploration)[- ]stage\b"),
-        (STAGE_DEVELOPMENT,
-         r"\bexploration\s+and\s+development\s+(?:company|stage|of\s+mineral)"),
-    )
+#: The issuer describing ITSELF as not yet commercial (review P1: the stage word must
+#: describe the COMPANY — never a project, a pipeline, a plant or a cost line). Each
+#: template's ``{subj}`` is the company subject ("the Company", "the Group" or the
+#: issuer's own name stem). Every quantifier is bounded or runs over disjoint classes, so
+#: each pattern scans linearly.
+_STAGE_ADJ = {
+    STAGE_CLINICAL: r"clinical[- ]stage",
+    STAGE_PRE_REVENUE: r"pre-?revenue",
+    STAGE_PRE_PRODUCTION: r"pre-?production",
+    STAGE_DEVELOPMENT: r"(?:development|exploration)[- ]stage",
+}
+_COMPANY_NOUN = (
+    r"(?:company|developer|explorer|issuer|business|entity|group|corporation"
+    r"|biotech(?:nology)?|biopharma(?:ceutical)?|pharmaceutical|miner|producer)"
 )
+_SELF_TEMPLATES: tuple[tuple[str, str], ...] = (
+    *(
+        # "We are a clinical-stage biopharmaceutical company", "Acme is an
+        # exploration-stage company", "The Group is a pre-revenue developer".
+        (stage, r"\b(?:we\s+are|{subj}\s+is)\s+(?:currently\s+|still\s+|now\s+)?an?\s+"
+                r"(?:[\w-]+\s+){0,2}?" + adj + r"\s+(?:[\w-]+\s+){0,2}?" + _COMPANY_NOUN
+                + r"\b")
+        for stage, adj in _STAGE_ADJ.items()
+    ),
+    # "The Company is in the development stage".
+    (STAGE_DEVELOPMENT,
+     r"\b(?:we\s+are|{subj}\s+(?:is|remains))\s+(?:currently\s+|still\s+)?in\s+the\s+"
+     r"(?:development|exploration)\s+stage\b"),
+    (STAGE_PRE_PRODUCTION,
+     r"\b(?:we\s+are|{subj}\s+(?:is|remains))\s+(?:currently\s+|still\s+)?in\s+the\s+"
+     r"pre-?production\s+(?:stage|phase)\b"),
+    # "We have not yet generated any revenue", "The Company has not generated operating
+    # revenues".
+    (STAGE_PRE_REVENUE,
+     r"\b(?:we|{subj})\s+(?:has|have)\s+not\s+(?:yet\s+)?generated\s+(?:any\s+)?"
+     r"(?:operating\s+|product\s+)?revenues?\b"),
+    # "The Company has not yet commenced production" — never "… production AT its new
+    # plant": a facility's start is not the company's stage.
+    (STAGE_PRE_PRODUCTION,
+     r"\b(?:we|{subj})\s+(?:has|have)\s+not\s+(?:yet\s+)?(?:commenced|begun|started"
+     r"|achieved)\s+(?:commercial\s+)?(?:production|mining|operations)\b"
+     r"(?!\s+(?:at|of|in|on|from|for)\b)"),
+    # "Lindian is an exploration and development company".
+    (STAGE_DEVELOPMENT,
+     r"\b(?:we\s+are|{subj}\s+is)\s+an?\s+(?:[\w-]+\s+){0,2}?exploration\s+and\s+"
+     r"development\s+company\b"),
+)
+_GENERIC_SUBJECT = r"the\s+(?:company|group)"
+#: "commercial-stage" anywhere in the issuer's own text vetoes a pre-commercial stage
+#: ("a commercial-stage company with a clinical-stage pipeline"). Not "pre-commercial".
+_COMMERCIAL_STAGE_VETO_RE = re.compile(r"(?<![\w-])commercial[- ]stage\b", re.IGNORECASE)
+
+
+def _self_patterns(stem: str | None) -> tuple[tuple[str, re.Pattern[str]], ...]:
+    subj = _GENERIC_SUBJECT if not stem else (
+        r"(?:" + _GENERIC_SUBJECT + "|"
+        + r"\s+".join(re.escape(w) for w in stem.split()) + r")"
+    )
+    return tuple(
+        (stage, re.compile(template.replace("{subj}", subj), re.IGNORECASE))
+        for stage, template in _SELF_TEMPLATES
+    )
+
+
 #: The issuer saying it HAS become commercial — any such sentence cancels the wording.
 _COMMERCIAL_STARTED_RE = re.compile(
     r"\b(?:commenced|began|started|achieved|declared)\s+commercial\s+production\b"
@@ -373,26 +419,34 @@ _COMMERCIAL_STARTED_RE = re.compile(
 )
 _STAGE_PRIORITY = (STAGE_CLINICAL, STAGE_PRE_REVENUE, STAGE_PRE_PRODUCTION, STAGE_DEVELOPMENT)
 
-#: Customer-funds balance-sheet captions and the licences that hold them.
-_CUSTOMER_FUNDS_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
-    (name, re.compile(pattern, re.IGNORECASE))
-    for name, pattern in (
-        ("funds_payable", r"\bfunds\s+payable\s+and\s+amounts\s+due\s+to\s+customers\b"),
-        ("customer_accounts",
+#: Customer-funds balance-sheet captions (review P2). A LIABILITY caption is the funds
+#: the company owes its customers; an ASSET caption the funds it holds for them. A
+#: receivable ("customer account balances" for collectability), a licence or an escrow
+#: mention is not a payment institution's balance sheet. Each entry: (name, side, pattern).
+CAPTION_LIABILITY = "liability"
+CAPTION_ASSET = "asset"
+_CUSTOMER_FUNDS_RES: tuple[tuple[str, str, re.Pattern[str]], ...] = tuple(
+    (name, side, re.compile(pattern, re.IGNORECASE))
+    for name, side, pattern in (
+        ("funds_payable", CAPTION_LIABILITY,
+         r"\bfunds\s+payable\s+and\s+amounts\s+due\s+to\s+customers\b"),
+        ("customer_funds_liability", CAPTION_LIABILITY,
+         r"\b(?:customer|client|user)\s+funds?\s+(?:payable|liabilit(?:y|ies)|obligations?)\b"),
+        ("safeguarding_liability", CAPTION_LIABILITY,
+         r"\bsafeguard(?:ed|ing)\s+(?:of\s+)?(?:customer|client|user)\s+funds\b"
+         r"|\bsafeguarding\s+liabilit(?:y|ies)\b"),
+        ("customer_accounts", CAPTION_ASSET,
          r"\bfunds\s+receivable\s+and\s+customer\s+accounts\b"),
-        ("customer_balances", r"\bcustomer\s+(?:account\s+)?balances\b"),
-        ("funds_held_for_customers",
+        ("funds_held_for_customers", CAPTION_ASSET,
          r"\bfunds\s+held\s+(?:for|on\s+behalf\s+of)\s+(?:customers|clients|users)\b"),
-        ("safeguarding",
-         r"\bsafeguard(?:ed|ing)?\s+(?:of\s+)?(?:customer|client|user)\s+funds\b"),
     )
 )
-_PAYMENT_LICENCE_RE = re.compile(
-    r"\bmoney\s+transmi(?:tter|ssion)\s+licen[cs]es?\b"
-    r"|\be-?money\s+(?:institution|licen[cs]e|issuer)\b"
-    r"|\b(?:authori[sz]ed|licensed)\s+payment\s+institution\b",
-    re.IGNORECASE,
+#: A caption counts only as a balance-sheet ROW: a figure follows it closely
+#: ("Funds payable and amounts due to customers 41,532 40,107").
+_ROW_FIGURE_RE = re.compile(
+    r"(?:\s{1,3}(?:was|were|of|totall?ed)(?=\s))?[\s:$€£(]{1,6}\d"
 )
+_ROW_REACH = 40
 
 
 def _sentences(texts: list[str]) -> list[str]:
@@ -415,27 +469,39 @@ def revenue_is_interest_only(texts: list[str], issuer_name: str | None = None) -
 
 def assess_commercial_stage(
     texts: list[str], *, issuer_name: str | None = None, development_stage: bool = False,
-    interest_only: bool = False,
+    interest_only: bool = False, revenue_absent: bool = False,
 ) -> tuple[str | None, list[str]]:
     """The pre-commercial stage the issuer's OWN documents show, or None. Pure.
 
-    A mining developer proved by the item-20 rule is ``development``. Otherwise the
-    issuer must describe itself so (``clinical-stage``, ``pre-revenue``, ``has not yet
-    commenced production``…) in a sentence attributed to it, outside any third-party
-    context, and no attributed sentence may say commercial production or sales began.
-    Revenue that is interest income only is ``pre_revenue``."""
+    A false stage puts a false COMPANY CONTEXT line into every prompt, so this fails
+    toward None (review P1). A stage is set only when BOTH hold:
+
+    - P1: operating revenue is absent or immaterial (``revenue_absent``: the extracted
+      annual statements show it, or the issuer says its revenue is interest income only);
+    - the issuer describes ITSELF so — "we are a clinical-stage … company", "the Company
+      has not yet generated revenue", "has not yet commenced production" (never "… at its
+      new plant"), "is in the development stage". A project, a pipeline or a cost line
+      ("pre-production stripping") is not the company.
+
+    Vetoes: "commercial-stage" anywhere in the issuer's text, or a sentence saying
+    commercial production or sales began. A mining developer proved by the item-20 rule
+    (which already requires P1) is ``development``."""
     if development_stage:
         return STAGE_DEVELOPMENT, ["a pre-revenue mining developer (item 20 proofs)"]
-    stem = _issuer_stem(issuer_name)
-    stem_re = re.compile(rf"\b{re.escape(stem)}\b", re.IGNORECASE) if stem else None
+    if not (revenue_absent or interest_only):
+        return None, []
+    sentences = _sentences(texts)
+    if any(_COMMERCIAL_STAGE_VETO_RE.search(sentence) for sentence in sentences):
+        return None, []
+    patterns = _self_patterns(_issuer_stem(issuer_name))
     found: dict[str, int] = {}
-    for sentence in _sentences(texts):
-        if _THIRD_PARTY_RE.search(sentence) or not _attributed(sentence, stem_re):
+    for sentence in sentences:
+        if _THIRD_PARTY_RE.search(sentence):
             continue
         if _COMMERCIAL_STARTED_RE.search(sentence) and not _NEGATION_RE.search(sentence):
             # "has not yet commenced commercial production" is the opposite.
             return None, []
-        for stage, pattern in _PRE_COMMERCIAL_RES:
+        for stage, pattern in patterns:
             if pattern.search(sentence):
                 found[stage] = found.get(stage, 0) + 1
     if interest_only:
@@ -444,35 +510,39 @@ def assess_commercial_stage(
         if found.get(stage):
             return stage, [
                 f"the issuer's own documents describe it as {stage.replace('_', '-')} "
-                f"({found[stage]} statement(s))"
+                f"({found[stage]} statement(s)) and show no material operating revenue"
                 + ("; its revenue is interest income only" if interest_only else "")
             ]
     return None, []
 
 
-def customer_funds_terms(texts: list[str]) -> tuple[list[str], bool]:
-    """Customer-funds balance-sheet captions the issuer's documents name (distinct), and
-    whether they name a payment licence. Negated sentences state nothing. Pure."""
-    found: list[str] = []
-    licence = False
+def customer_funds_terms(texts: list[str]) -> list[tuple[str, str]]:
+    """The distinct customer-funds balance-sheet ROWS the issuer's documents carry, as
+    ``(caption, side)``: a caption followed by a figure, in a non-negated sentence. Pure."""
+    found: list[tuple[str, str]] = []
     for sentence in _sentences(texts):
         if _NEGATION_RE.search(sentence):
             continue
-        for name, pattern in _CUSTOMER_FUNDS_RES:
-            if name not in found and pattern.search(sentence):
-                found.append(name)
-        licence = licence or bool(_PAYMENT_LICENCE_RE.search(sentence))
-    return found, licence
+        for name, side, pattern in _CUSTOMER_FUNDS_RES:
+            if any(name == seen for seen, _side in found):
+                continue
+            for match in pattern.finditer(sentence):
+                tail = sentence[match.end(): match.end() + _ROW_REACH]
+                if _ROW_FIGURE_RE.match(tail):
+                    found.append((name, side))
+                    break
+    return found
 
 
 def holds_customer_funds(texts: list[str]) -> tuple[bool, str | None]:
-    """A payment institution's balance sheet: a customer-funds caption AND a payment
-    licence, or two distinct customer-funds captions. Pure."""
-    terms, licence = customer_funds_terms(texts)
-    if (terms and licence) or len(terms) >= 2:
+    """A payment institution's balance sheet: a customer-funds LIABILITY row and at least
+    one other distinct customer-funds row. A licence, a receivable or an escrow mention is
+    never enough; anything less is False (review P2: fail toward False). Pure."""
+    rows = customer_funds_terms(texts)
+    if any(side == CAPTION_LIABILITY for _name, side in rows) and len(rows) >= 2:
         return True, (
-            "the issuer's documents carry customer-funds balance-sheet items ("
-            + ", ".join(terms) + ")" + (" under a payment licence" if licence else "")
+            "the issuer's balance sheet carries customer-funds rows ("
+            + ", ".join(name for name, _side in rows) + ")"
         )
     return False, None
 
@@ -533,6 +603,7 @@ def assess(
     out.commercial_stage, out.commercial_stage_basis = assess_commercial_stage(
         texts, issuer_name=issuer_name,
         development_stage=SIGNAL_DEVELOPMENT_STAGE in signals, interest_only=interest_only,
+        revenue_absent=p1,
     )
     out.signals = tuple(signals)
     if not signals:

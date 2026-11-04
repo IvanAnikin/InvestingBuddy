@@ -348,11 +348,10 @@ def with_filing_copy_signal(
     source_class = (
         SC_ISSUER_FILING if classification.rule == "issuer_domain" else SC_REGULATORY_FILING
     )
-    tier, access_class = CLASS_TABLE[source_class]
-    return replace(
-        classification, source_class=source_class, tier=tier, access_class=access_class,
-        rule="page_signal",
-    )
+    # Review P0: the page's own text names the document kind, never its standing. The
+    # tier and access class stay the HOST's: a filing cover printed on an unknown host is
+    # not a T1 primary filing.
+    return replace(classification, source_class=source_class, rule="page_signal")
 
 
 # ── Document kind (spec §11.2) ──────────────────────────────────────────── #
