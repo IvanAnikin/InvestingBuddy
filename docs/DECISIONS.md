@@ -7970,6 +7970,18 @@ reruns (CLLS2-6), and listed Honeywell as one of its own peers (HON2, `peer:HON:
    record) with `excluded_count`, and a gap says so. Each peer item carries its
    `similarity` record, and its `basis` names the similarity reasons. When candidates
    existed and none passed, the gap says the peer comparison is unavailable.
+   **Externally discovered peers** (`V3_DYNAMIC_PEER_DISCOVERY_ENABLED`, V3.19.7, ON in
+   production) pass the SAME gate after listing verification, on the record the
+   platform holds for the listing: its company row (by the identity's `company_id`, else
+   by the same ticker/venue dedup key) with the same corpus commodity reading; otherwise
+   a record with no SIC, description or commodity. The provider's `why` is a claim, never
+   a description, and is not scored. The exchange directory's market cap is not used for
+   the size band (directories report it in other units than `companies.market_cap`).
+   A peer that fails on evidence (size, line of business, SIC, same issuer) is
+   "not comparable: …"; one that fails only for want of data is
+   "comparability unverified: …". Both go into the same `excluded` list, marked
+   `"source": "external_discovery"`. A held candidate the gate already excluded cannot
+   return through the search.
 3. **Report.** The pipeline keeps `get_peer_set` payloads beside the peer-financials
    payloads; `professional_research.peer_selection` writes
    `competitive_position.peer_selection` (`status` selected | unavailable, the reader's
@@ -8000,6 +8012,7 @@ stored report had a peer set.
   no theme. Negation inside a description ("we do not provide diagnostics") is not read.
 - Revenue is not held on `companies`, so the size band uses market capitalisation only,
   and only in one currency.
-- Externally discovered peers (`V3_DYNAMIC_PEER_DISCOVERY_ENABLED`, V3.19.7) are not
-  gated: they are verified by listing and carry the provider's stated basis, but no
-  held SIC or description exists for them.
+- An externally discovered peer the platform does not hold has no SIC, description or
+  corpus, so it is always excluded as "comparability unverified". With dynamic discovery
+  on in production, this means the search effectively adds only companies the platform
+  already holds (outside the subject's bucket) or none.

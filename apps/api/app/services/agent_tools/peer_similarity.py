@@ -141,6 +141,18 @@ BUSINESS_THEMES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+#: The exclusion when no business signal matched beyond the industry label.
+EXCLUSION_NO_MATCH = (
+    "not comparable: no SIC-code, business-description or commodity match beyond the "
+    "industry label"
+)
+#: The exclusion of an externally discovered peer whose record is too thin to pass:
+#: nothing held shows it differs, and nothing held shows it is alike.
+EXCLUSION_UNVERIFIED = (
+    "comparability unverified: the discovery record holds no SIC code, business "
+    "description or commodity reading that matches the subject"
+)
+
 #: Descriptions are read up to this many characters: themes are in a company's first
 #: paragraphs, and a bound keeps the work linear and small.
 MAX_DESCRIPTION_CHARS = 20_000
@@ -203,6 +215,9 @@ class PeerAssessment:
     reasons: tuple[str, ...] = field(default_factory=tuple)
     #: Why it is not a peer, beginning "not comparable"; ``None`` when it is one.
     exclusion: str | None = None
+    #: True when it failed only for want of data (no business signal either way), as
+    #: opposed to evidence that it differs (size, line of business, SIC, same issuer).
+    insufficient_data: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -211,6 +226,7 @@ class PeerAssessment:
             "pass_score": PASS_SCORE,
             "reasons": list(self.reasons),
             "exclusion": self.exclusion,
+            "insufficient_data": self.insufficient_data,
         }
 
 
@@ -302,15 +318,18 @@ def assess_peer(
     if business and score >= PASS_SCORE:
         return PeerAssessment(True, score, tuple(reasons), None)
     return PeerAssessment(
-        False, score, tuple(reasons),
-        "not comparable: no SIC-code, business-description or commodity match beyond "
-        "the industry label",
+        False, score, tuple(reasons), EXCLUSION_NO_MATCH,
+        # Nothing held says the two businesses differ — the record is simply too thin to
+        # say they are alike. A SIC code that differs outright is evidence, not absence.
+        insufficient_data=not (subject_sic and candidate_sic and subject_sic != candidate_sic),
     )
 
 
 __all__ = [
     "BROAD_SIC_CODES",
     "BUSINESS_THEMES",
+    "EXCLUSION_NO_MATCH",
+    "EXCLUSION_UNVERIFIED",
     "MAX_SIZE_RATIO",
     "PASS_SCORE",
     "PeerAssessment",

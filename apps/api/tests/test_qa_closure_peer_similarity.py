@@ -184,6 +184,111 @@ class TestTheDefect:
         assert "get_peer_set" in calls and "get_peer_financials" not in calls
 
 
+class TestDynamicPeersPassTheSameGate:
+    """Production runs with V3_DYNAMIC_PEER_DISCOVERY_ENABLED on: an externally discovered
+    peer must not be a way around the comparability gate (ADBE-4 through the search)."""
+
+    @pytest.fixture(autouse=True)
+    def _search(self, monkeypatch):  # noqa: ANN001, ANN202
+        import json
+
+        from app.services.discovery import identity as identity_mod
+        from app.services.providers.contracts import ConsumptionUnits
+
+        self.proposed: list[dict[str, str]] = []
+
+        async def _ask(provider, query, cfg):  # noqa: ANN001, ANN202
+            return {"text": json.dumps({"companies": self.proposed}), "provider": "ds",
+                    "task_id": "t", "truncated": False, "opened_urls": [], "warnings": [],
+                    "consumption": ConsumptionUnits(web_search_calls=1, model_calls=1)}
+
+        async def _verify(lead, *, cfg=None, fetcher=None, max_fetches=2, primary=None):  # noqa: ANN001, ANN202
+            return identity_mod.IdentityOutcome(
+                lead=lead, status="verified", ticker=lead.ticker,
+                exchange=identity_mod.normalise_venue(lead.exchange_raw), name=lead.name,
+                listing_source={"url": lead.listing_source_url, "tier": "issuer"},
+            )
+
+        monkeypatch.setattr("app.services.agents.routing.research_provider_for",
+                            lambda cfg: SimpleNamespace(transport=object()))
+        monkeypatch.setattr("app.services.discovery.leads._ask", _ask)
+        monkeypatch.setattr(identity_mod, "verify_identity", _verify)
+        peers._PEER_MEMO.clear()
+        yield
+        peers._PEER_MEMO.clear()
+
+    def _propose(self, *rows: tuple[str, str, str]) -> None:
+        self.proposed[:] = [
+            {"legal_name": name, "ticker": ticker, "exchange": "Nasdaq",
+             "listing_source_url": f"https://{ticker.lower()}.example/ir",
+             "why": "a direct competitor in software"}
+            for ticker, name, _ in rows
+        ]
+
+    async def _run(self, session, subject):  # noqa: ANN001, ANN202
+        cfg = SimpleNamespace(v3_dynamic_peer_discovery_enabled=True,
+                              v3_external_search_timeout_seconds=180)
+        return await peers._get_peer_set(
+            SimpleNamespace(session=session, cfg=cfg),
+            peers.validate_get_peer_set({"company_id": str(subject.id)}),
+        )
+
+    async def _subject(self, session):  # noqa: ANN001, ANN202
+        return await _company(session, "CRSW", sic_code="7372", description=CREATIVE,
+                              market_cap=150e9, currency="USD")
+
+    async def test_a_comparable_dynamic_peer_passes(self, session) -> None:  # noqa: ANN001
+        subject = await self._subject(session)
+        # Held, but outside the subject's bucket, so only the search can find it.
+        await _company(session, "DSGN", industry=None, sic_code="7372", description=DESIGN,
+                       market_cap=60e9, currency="USD")
+        self._propose(("DSGN", "Design Software Inc", ""))
+        payload = await self._run(session, subject)
+        external = [i for i in payload["items"] if i["commodity_basis"] == "external_discovery"]
+        assert [i["ticker"] for i in external] == ["DSGN"]
+        assert external[0]["similarity"]["comparable"] is True
+        assert "similarity check:" in external[0]["basis"]
+
+    async def test_a_dynamic_megacap_with_an_unrelated_business_is_excluded(self, session) -> None:  # noqa: ANN001
+        subject = await self._subject(session)
+        await _company(session, "MEGA", industry=None, sic_code="7370", description=SEARCH_ADS,
+                       market_cap=2_400e9, currency="USD")
+        self._propose(("MEGA", "Mega Search Holdings", ""))
+        payload = await self._run(session, subject)
+        assert payload["items"] == []
+        row = next(r for r in payload["excluded"] if r["ticker"] == "MEGA")
+        assert row["source"] == "external_discovery"
+        assert row["reason"] == "not comparable: different line of business"
+        assert any("externally discovered peer(s) were excluded" in g for g in payload["gaps"])
+        selection = pr.peer_selection([payload])
+        assert selection is not None and selection["status"] == "unavailable"
+        assert [r["ticker"] for r in selection["excluded"]] == ["MEGA"]
+
+    async def test_a_dynamic_peer_with_no_data_is_excluded_as_unverified(self, session) -> None:  # noqa: ANN001
+        from app.services.agent_tools.peer_similarity import EXCLUSION_UNVERIFIED
+
+        subject = await self._subject(session)
+        self._propose(("NODA", "No Data Corp", ""))
+        payload = await self._run(session, subject)
+        assert payload["items"] == []
+        row = next(r for r in payload["excluded"] if r["ticker"] == "NODA")
+        assert row["reason"] == EXCLUSION_UNVERIFIED
+        assert row["reason"].startswith("comparability unverified")
+        assert row["similarity"]["insufficient_data"] is True
+        assert payload["contains_untrusted_content"] is True, "the name came from a provider"
+
+    async def test_a_held_candidate_the_gate_excluded_cannot_return_via_search(
+        self, session  # noqa: ANN001
+    ) -> None:
+        subject = await self._subject(session)
+        await _company(session, "CLAI", sic_code="7372", description=CLINICAL_AI,
+                       market_cap=10e9, currency="USD")
+        self._propose(("CLAI", "Clinical AI Inc", ""))
+        payload = await self._run(session, subject)
+        assert payload["items"] == []
+        assert [r["ticker"] for r in payload["excluded"]] == ["CLAI"], "recorded once"
+
+
 class TestOtherDefectShapes:
     def test_a_second_listing_of_the_subject_is_not_its_own_peer(self) -> None:
         """HON2 — 'peer:HON:US' sat in the subject's own peer set."""
