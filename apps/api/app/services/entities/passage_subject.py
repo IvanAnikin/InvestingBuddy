@@ -51,7 +51,9 @@ naming no one there is the subject's, whoever was named before it (PR #320 revie
 
 from __future__ import annotations
 
+import bisect
 import functools
+import itertools
 import json
 import re
 from collections.abc import Sequence
@@ -320,8 +322,8 @@ _LEGAL_SUFFIX = (
 #: "Ridgeway, CO"): they only count without a comma ("Brindle AG", "Ostara Electronics Co").
 _SHORT_SUFFIX = r"SE|AG|SA|NV|BV|Co|CO"
 _SUFFIX_RE = re.compile(
-    rf"(?:(?:,[ \t]*|[ \t]+)(?:{_LEGAL_SUFFIX})|[ \t]+(?:{_SHORT_SUFFIX}))"
-    r"(?:[ \t]+(?:Ltd|LTD|Limited|LIMITED))?\.?(?![\w-])"
+    rf"(?:(?:,[ \t]{{0,3}}|[ \t]{{1,3}})(?:{_LEGAL_SUFFIX})|[ \t]{{1,3}}(?:{_SHORT_SUFFIX}))"
+    r"(?:[ \t]{1,3}(?:Ltd|LTD|Limited|LIMITED))?\.?(?![\w-])"
 )
 #: A legal form a subsidiary typically carries and a parent of another form does not
 #: ("Calderon AG" under "Calderon plc"): a namesake in that form is the perimeter, not the
@@ -338,6 +340,12 @@ _FORM_CLASSES: dict[str, str] = {
 #: Hard cap on the prose one passage reader scans (evidence is cut at 1,500 chars;
 #: anything past this is never the matched sentence of a bounded excerpt).
 _MAX_PASSAGE_CHARS = 6000
+#: A "word" longer than this is not a name, a heading word or an alias ("A-A-A-…").
+_MAX_TOKEN_CHARS = 60
+#: At most this many legal-form names are read from one passage: a 6,000-character
+#: excerpt naming more is a list, not prose, and nothing in it is dropped for want of
+#: the rest (fail-safe: fewer entities means more UNKNOWN, never a drop).
+_MAX_SUFFIX_NAMES = 200
 #: A name token: capitalised word, digit-led word ("3M"), dotted initials, or "&".
 _NAME_TOKEN_RE = re.compile(r"(?:[A-Z0-9À-Þ][\w&'’.\-]*|&)")
 _NAME_CONNECTORS: frozenset[str] = frozenset(
@@ -401,7 +409,8 @@ _ROLE_NOUN = (
 )
 #: "our former subsidiary", "the Company's largest customer", "Acme's offtaker".
 _POSSESSIVE_ROLE_RE = re.compile(
-    r"(?:['’]s)?[ \t]+(?:[\w-]{1,20}[ \t]+){0,2}?" + _ROLE_NOUN + r"\b", re.IGNORECASE
+    r"(?:['’]s)?[ \t]{1,3}(?:[\w-]{1,20}[ \t]{1,3}){0,2}?" + _ROLE_NOUN + r"\b",
+    re.IGNORECASE,
 )
 #: "a subsidiary of <X>", "lender to the Company": X is the anchor, not the subject.
 _ROLE_OF_RE = re.compile(
@@ -552,9 +561,9 @@ _RELATED_TO_RE = re.compile(
     r"(?P<name>[A-Z][\w&.'’-]{2,40}(?:[ \t]+[A-Z][\w&.'’-]{2,40}){0,2})"
 )
 #: An acronym with its spelled-out name, either way round; the initials must agree.
-_ACRONYM_LONG = r"(?P<l>[A-Z][\w-]+(?:[ \t]+[A-Z][\w-]+){1,5})"
-_ACRONYM_FIRST_RE = re.compile(r"\b(?P<a>[A-Z]{2,6})[ \t]*\(" + _ACRONYM_LONG + r"\)")
-_ACRONYM_LAST_RE = re.compile(r"\b" + _ACRONYM_LONG + r"[ \t]*\((?P<a>[A-Z]{2,6})\)")
+_ACRONYM_LONG = r"(?P<l>[A-Z][\w-]{1,40}(?:[ \t]{1,3}[A-Z][\w-]{1,40}){1,5})"
+_ACRONYM_FIRST_RE = re.compile(r"\b(?P<a>[A-Z]{2,6})[ \t]{0,3}\(" + _ACRONYM_LONG + r"\)")
+_ACRONYM_LAST_RE = re.compile(r"\b" + _ACRONYM_LONG + r"[ \t]{0,3}\((?P<a>[A-Z]{2,6})\)")
 _CAPS_WORD_RE = re.compile(r"[A-ZÀ-Þ][A-ZÀ-Þ&'’.\-]*")
 _INLINE_HEADING_RE = re.compile(
     r"^[ \t]*(?P<head>[A-ZÀ-Þ][A-ZÀ-Þ&'’ .\-]{2,60}?)[ \t]*(?:—|–| - |:)[ \t]*"
@@ -569,7 +578,7 @@ _ABBREVIATIONS: frozenset[str] = frozenset(
     }
 )
 _SENTENCE_END_RE = re.compile(r"[.!?][\"”’)]?[ \t]+(?=[\"“‘'(A-Z0-9À-Þ])")
-_CLAUSE_SPLIT_RE = re.compile(r";[ \t]+|[ \t]+\|[ \t]+|\t+|[ \t]*•[ \t]*")
+_CLAUSE_SPLIT_RE = re.compile(r";[ \t]+|[ \t]{1,10}\|[ \t]+|\t+|[ \t]{0,10}•[ \t]*")
 
 _FIGURE_RE = re.compile(r"(?<![A-Za-z\d.,])\d[\d,]*(?:\.\d+)?")
 _WORD_RE = re.compile(r"[A-Za-zÀ-ÿ][\w'’-]*")
@@ -694,9 +703,9 @@ _INITIALS_NAME_RE = re.compile(
 #: "Calderon Bank Canada, a former subsidiary": a namesake with no legal suffix, placed
 #: outside the perimeter by an appositive.
 _NAMESAKE_FORMER_RE = re.compile(
-    r"(?<![\w&])(?P<name>[A-Z][\w&.'’-]*(?:[ \t]+[A-Z][\w&.'’-]*){1,4}),[ \t]+"
-    r"(?:a|an|our|its|the[ \t]+\w+['’]s)[ \t]+former(?:ly)?[ \t]+(?:[\w-]+[ \t]+){0,2}?"
-    r"subsidiar(?:y|ies)\b"
+    r"(?<![\w&])(?P<name>[A-Z][\w&.'’-]{0,40}(?:[ \t]{1,3}[A-Z][\w&.'’-]{0,40}){1,4}),"
+    r"[ \t]{1,3}(?:a|an|our|its|the[ \t]{1,3}\w{1,40}['’]s)[ \t]{1,3}former(?:ly)?[ \t]{1,3}"
+    r"(?:[\w-]{1,40}[ \t]{1,3}){0,2}?subsidiar(?:y|ies)\b"
 )
 
 #: The least a sentence must share with the statement to be "the" sentence.
@@ -842,9 +851,9 @@ class _Registered:
 
 #: The legal-form tail after a registered name, compiled once.
 _FORM_TAIL_RE = re.compile(
-    rf",?[ \t]+(?:{_LEGAL_SUFFIX}|{_SHORT_SUFFIX})\.?(?![\w&-])"
+    rf",?[ \t]{{1,3}}(?:{_LEGAL_SUFFIX}|{_SHORT_SUFFIX})\.?(?![\w&-])"
 )
-_NEXT_WORD_RE = re.compile(r"[ \t]+([^\s,;:()]+)")
+_NEXT_WORD_RE = re.compile(r"[ \t]{1,3}([^\s,;:()]{1,60})")
 
 
 @functools.lru_cache(maxsize=8)
@@ -909,6 +918,8 @@ class _Reader:
         self.subj = _Entity(name=subject.name or "the issuer", hint=SUBJECT, relationship=SUBJECT)
         self.entities: list[_Entity] = []
         self.mentions: list[_Mention] = []
+        self._starts: list[int] = []
+        self._ends: list[int] = []
         self.heading_entity: _Entity | None = None
         self.owner = passage.owner
         self.owner_entity: _Entity | None = None
@@ -916,10 +927,18 @@ class _Reader:
     # -- spans ---------------------------------------------------------------- #
 
     def _free(self, start: int, end: int) -> bool:
-        return all(end <= m.start or start >= m.end for m in self.mentions)
+        """No mention overlaps [start, end). Mentions never overlap, so their spans
+        sorted by start are sorted by end too: two neighbours decide (O(log n))."""
+        i = bisect.bisect_right(self._starts, start)
+        if i > 0 and self._ends[i - 1] > start:
+            return False
+        return not (i < len(self._starts) and self._starts[i] < end)
 
     def _add(self, mention: _Mention) -> None:
         if mention.end > mention.start and self._free(mention.start, mention.end):
+            i = bisect.bisect_right(self._starts, mention.start)
+            self._starts.insert(i, mention.start)
+            self._ends.insert(i, mention.end)
             self.mentions.append(mention)
 
     def _entity_named(self, name: str, hint: str) -> _Entity:
@@ -980,7 +999,7 @@ class _Reader:
                     entity.aliases.add(match.group(0))
                     self._add(_Mention(match.start(), match.end(), entity=entity))
         # 2. Organisation names with a legal suffix.
-        for match in _SUFFIX_RE.finditer(text):
+        for match in itertools.islice(_SUFFIX_RE.finditer(text), _MAX_SUFFIX_NAMES):
             found = self._org_name_before(match.start(), text)
             if found is None:
                 continue
@@ -1140,7 +1159,7 @@ class _Reader:
             if folded in _ALIAS_SKIP:
                 continue
             if (
-                len(folded) >= 4
+                4 <= len(folded) <= _MAX_TOKEN_CHARS
                 and folded not in _GENERIC_TOKENS
                 and folded not in _NAME_STOP
                 and folded not in self.aliases
@@ -1364,6 +1383,7 @@ def _caps_heading_line(line: str) -> bool:
     words = line.split()
     return (
         1 <= len(words) <= 6
+        and all(len(w) <= _MAX_TOKEN_CHARS for w in words)
         and all(_CAPS_WORD_RE.fullmatch(w) for w in words)
         and sum(c.isalpha() for c in line) >= 4
     )
@@ -1530,16 +1550,17 @@ def attribute_passage(
 
     # In the subject's own document a sentence that names no one is the subject's: an
     # entity named earlier never becomes the topic it inherits (the R&D line after an
-    # investor's investment is the filer's), unless a heading governs the section, the
-    # entity reports separately (ADR-066) or it is a former subsidiary whose own section
-    # this is ("Plantyx, our former subsidiary, was deconsolidated…\nThere can be no
-    # assurance that seed production techniques…").
+    # investor's investment, or after "Plantyx, our former subsidiary, was
+    # deconsolidated", is the filer's), unless a heading governs the section or the
+    # entity reports separately (ADR-066). A former subsidiary still reaches a later
+    # sentence through a pronoun ("its seed production techniques"), its defined alias
+    # or a "Risks Related to <Name>" heading — never through a sentence with no
+    # reference (re-review 2: missing data is acceptable, wrong data is not).
     own_document = reader.owner == OWNER_SUBJECT
     topic: _Entity | None = reader.heading_entity or reader.owner_entity
     last_subject: _Entity | None = None
     resolved_entity: _Entity | None = None
     explicit = False
-    refless = False
     previous_start = -1
     topic_before: _Entity | None = topic
     anchored = False
@@ -1559,14 +1580,11 @@ def attribute_passage(
         elif grammatical is not None:
             last_subject = grammatical
             if grammatical.relationship not in _RELATIONAL and (
-                not own_document
-                or grammatical.separate
-                or grammatical.relationship == FORMER_SUBSIDIARY
+                not own_document or grammatical.separate
             ):
                 topic = grammatical
         if index == best:
             resolved_entity = seg_entity if seg_entity is not None else topic
-            refless = not seg_mentions
             if (
                 own_document
                 and seg_entity is None
@@ -1592,36 +1610,17 @@ def attribute_passage(
     weak_group = bool(_GROUP_WORDING_RE.search(sentence) or _FIRST_PERSON_RE.search(sentence))
     if scope and (
         _GROUP_STRONG_RE.search(sentence)
-        or (weak_group and not _names_scope(scope, sentence))
+        or (weak_group and not _scope_is_head(scope, sentence))
     ):
         # A heading never narrows a sentence that speaks for the Group ("Group copper
-        # production", "Total company sales", "Linde's consolidated sales", "Net debt")
-        # or cites a note; "total / company / we / our" un-scope it only when the
-        # sentence does not itself name the heading's mine or segment ("Total copper
-        # production at Centinela" stays Centinela's).
+        # production", "Total company sales", "Calderon's consolidated sales", "Net
+        # debt") or cites a note; "total / company / we / our" un-scope it unless the
+        # heading's mine or segment is the sentence's locative or possessive head
+        # ("Total copper production at Centinela", "Centinela's output", "Centinela
+        # produced") — not a part of a total ("of which Centinela contributed",
+        # "including Los Pelambres", "with the Americas contributing").
         scope = None
     names = tuple(e.name for e in reader.entities if e.hint != SUBJECT)
-    if (
-        own_document
-        and resolved_entity is reader.subj
-        and refless
-        and not scope
-        and not weak_group
-    ):
-        # A sentence naming no one, after a passage whose ONLY named entity is a
-        # subsidiary or joint venture ("J.P. Morgan SE is a wholly-owned subsidiary.
-        # Capital adequacy is assessed…"): that entity's, at its scope.
-        named_others = [e for e in reader.entities if e.hint != SUBJECT]
-        if (
-            len(named_others) == 1
-            and named_others[0].relationship in SCOPED_RELATIONSHIPS
-            and any(m.entity is named_others[0] and m.start < seg_start for m in reader.mentions)
-        ):
-            only = named_others[0]
-            return PassageAttribution(
-                passage.citation_id, reader.owner, reader.subj.name, names, best,
-                only.name, only.relationship, only.name,
-            )
     if resolved_entity is None:
         return PassageAttribution(
             passage.citation_id, reader.owner, None, names, best, None, UNKNOWN
@@ -1683,14 +1682,34 @@ def attribute_passage(
     )
 
 
-def _names_scope(scope: str, sentence: str) -> bool:
-    """The sentence names the heading's own mine / segment ("…at Centinela…")."""
-    return any(
-        len(word) >= 4
-        and _folded(word) not in _GENERIC_HEADING_WORDS
-        and re.search(rf"(?<![\w&]){re.escape(word)}(?![\w&])", sentence)
-        for word in scope.split()
-    )
+#: The words before a heading noun that make it a part of a total, not the head.
+_PART_OF_TOTAL_RE = re.compile(
+    r"\b(?:of[ \t]+which|including|includes|included|with|excluding|excludes|"
+    r"other[ \t]+than|except(?:[ \t]+for)?|besides|plus)[ \t]+(?:the[ \t]+)?$",
+    re.IGNORECASE,
+)
+#: The words before a heading noun that make it the locative head ("at Centinela", "on
+#: the Centinela Second Concentrator").
+_LOCATIVE_RE = re.compile(r"\b(?:at|on|in|from|for)[ \t]+(?:the[ \t]+)?$", re.IGNORECASE)
+
+
+def _scope_is_head(scope: str, sentence: str) -> bool:
+    """The heading's mine / segment is the sentence's locative or possessive head:
+    "…at Centinela…", "…on the Centinela Second Concentrator…", "Centinela's…", or the
+    sentence's grammatical subject ("Centinela produced…")."""
+    phrase = r"[ \t]+".join(re.escape(w) for w in scope.split())
+    for hit in re.finditer(rf"(?<![\w&]){phrase}(?![\w&])", sentence, re.IGNORECASE):
+        before = sentence[max(0, hit.start() - 30): hit.start()]
+        if _PART_OF_TOTAL_RE.search(before):
+            continue
+        after = sentence[hit.end(): hit.end() + 3]
+        if (
+            _LOCATIVE_RE.search(before)
+            or after.startswith(("'s", "’s"))
+            or re.fullmatch(r"[ \t]*(?:[Tt]he[ \t]+)?", sentence[: hit.start()])
+        ):
+            return True
+    return False
 
 
 def _names_subject(reader: _Reader) -> bool:

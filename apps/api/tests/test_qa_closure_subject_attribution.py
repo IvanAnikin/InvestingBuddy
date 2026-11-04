@@ -2233,7 +2233,7 @@ REREVIEW_CASES: list[
         None, OWNER_SUBJECT, None,
     ),
     (
-        'clls2-2-nextpara', 'other',
+        'clls2-2-nextpara', 'subject',  # accepted missed drop (no pronoun)
         SubjectIdentity('Cellectis S.A.', 'CLLS'),
         (
             'There is no assurance that seed production techniques will '
@@ -2508,7 +2508,7 @@ REREVIEW_CASES: list[
         None, OWNER_SUBJECT, None,
     ),
     (
-        'jpm5-nobank', 'scoped',
+        'jpm5-nobank', 'subject',  # accepted missed scope (no alias)
         SubjectIdentity('JPMorgan Chase & Co.', 'JPM'),
         'Capital adequacy is assessed over a one-year horizon.',
         (
@@ -2893,3 +2893,185 @@ class TestAttributionPassage:
         )
         assert passage.owner == OWNER_UNKNOWN
         assert passage.company_site_host == "iluka.com"
+
+
+# ---------------------------------------------------------------------------
+# PR #320 re-review 2 (3381aac): missing data is acceptable, wrong data is not
+# ---------------------------------------------------------------------------
+
+_CELLECTIS = SubjectIdentity("Cellectis S.A.", "CLLS")
+_HARROW = SubjectIdentity("Harrowfield Systems Inc.", "HRWF")
+_ANTO = SubjectIdentity("Antofagasta plc", "ANTO.L")
+
+#: (id, subject, statement, subject's own passage): each must stay the subject's,
+#: unscoped. (a) a former subsidiary never carries into a sentence with no reference;
+#: (c) a sentence naming no one is never scoped to the passage's lone subsidiary.
+REREVIEW2_SUBJECT_CASES: list[tuple[str, SubjectIdentity, str, str]] = [
+    ("a1-rd-after-former", _CELLECTIS,
+     "Research and development expenses were $90 million in 2024.",
+     "Calyxt, Inc., our former majority-owned subsidiary, was deconsolidated on May 31, "
+     "2023.\nResearch and development expenses were $90 million in 2024, compared to $98 "
+     "million in 2023."),
+    ("a2-cash-after-former", _CELLECTIS,
+     "Cash and cash equivalents were $264 million at December 31, 2024.",
+     "Results for 2023 include Calyxt, Inc., our former subsidiary, until May 31, 2023. "
+     "Cash and cash equivalents were $264 million at December 31, 2024."),
+    ("a3-revenues-after-former", _CELLECTIS,
+     "Revenues decreased to $20 million in 2024.",
+     "Calyxt, Inc. was our majority-owned subsidiary until its merger with Cibus in 2023 "
+     "and is presented as a former subsidiary. Revenues decreased to $20 million in 2024, "
+     "mainly due to lower collaboration revenue from Servier."),
+    ("a4-net-loss-after-former-and-heading", _CELLECTIS,
+     "The net loss attributable to shareholders was $37 million in 2024.",
+     "Calyxt, Inc., our former subsidiary, merged with Cibus Global, LLC.\n\nRESULTS OF "
+     "OPERATIONS\nNet loss attributable to shareholders was $37 million in 2024."),
+    ("a5-headcount-after-former", _CELLECTIS,
+     "Headcount fell to 220 employees in 2024.",
+     "The comparative period includes Calyxt, Inc., a former subsidiary. Headcount fell "
+     "to 220 employees at year end 2024."),
+    ("c1-revenue-after-subsidiary", _HARROW,
+     "Revenue grew 8% year on year to $4.1 billion.",
+     "Acme Holdings Ltd is a wholly-owned subsidiary.\nRevenue grew 8% year on year to "
+     "$4.1 billion."),
+    ("c2-revenue-after-acquired-subsidiary", _HARROW,
+     "Revenue increased 8% to $4.1 billion driven by pricing.",
+     "On March 1, 2024, we completed the acquisition of Acme Holdings Ltd, which is now a "
+     "wholly-owned subsidiary. Revenue increased 8% to $4.1 billion, driven by pricing."),
+    ("c3-interest-after-guarantor", _HARROW,
+     "Interest expense was $420 million in 2024.",
+     "The senior notes are guaranteed by Acme Finance LLC, a wholly-owned subsidiary. "
+     "Interest expense was $420 million in 2024."),
+    ("c4-ebitda-after-joint-venture", _ANTO,
+     "EBITDA increased 25% to $3.3 billion.",
+     "The Group's 50% joint venture, Compañía Minera Zaldívar SpA, is equity accounted. "
+     "EBITDA increased 25% to $3.3 billion in 2024."),
+    ("c5-net-revenue-after-broker-dealer", SubjectIdentity("JPMorgan Chase & Co.", "JPM"),
+     "Net revenue was $180.6 billion in 2024.",
+     "J.P. Morgan Securities LLC is a registered broker-dealer subsidiary. Net revenue was "
+     "$180.6 billion in 2024."),
+    ("c6-cash-flow-after-co-obligor", SubjectIdentity("Linde plc", "LIN"),
+     "Operating cash flow was $9.4 billion in 2024.",
+     "Linde Inc. (formerly Praxair) is a wholly-owned subsidiary and co-obligor of certain "
+     "notes. Operating cash flow was $9.4 billion in 2024."),
+    ("c7-tax-rate-after-subsidiary", SubjectIdentity("Honeywell International Inc.", "HON"),
+     "Effective tax rate was 20.6% in 2024.",
+     "Quantinuum Ltd is a majority-owned subsidiary. The effective tax rate was 20.6% in "
+     "2024."),
+    ("b1-of-which-heading-noun", _ANTO,
+     "Copper production was 664,000 tonnes in 2024.",
+     "CENTINELA\nTotal copper production was 664,000 tonnes in 2024, of which Centinela "
+     "contributed 143,000 tonnes."),
+    ("b2-including-heading-noun", _ANTO,
+     "Copper production was 664,000 tonnes in 2024.",
+     "LOS PELAMBRES\nOur copper production, including Los Pelambres, was 664,000 tonnes "
+     "in 2024."),
+    ("b3-with-heading-noun-contributing", SubjectIdentity("Linde plc", "LIN"),
+     "Sales were $33.0 billion in 2024.",
+     "AMERICAS\nTotal sales were $33.0 billion in 2024, with the Americas contributing "
+     "46%."),
+]
+
+
+@pytest.mark.parametrize(
+    "subject,statement,text",
+    [case[1:] for case in REREVIEW2_SUBJECT_CASES],
+    ids=[case[0] for case in REREVIEW2_SUBJECT_CASES],
+)
+def test_rereview2_the_subjects_own_fact_stays_unscoped(
+    subject: SubjectIdentity, statement: str, text: str
+) -> None:
+    result = _one(statement, subject, Passage("c1", text, owner=OWNER_SUBJECT))
+    assert result.verdict == ps.VERDICT_SUBJECT, result.passages
+    assert result.scope_key is None
+
+
+@pytest.mark.parametrize(
+    "statement,text",
+    [
+        ("Copper production was 143,000 tonnes in 2024.",
+         "CENTINELA\nTotal copper production at Centinela was 143,000 tonnes in 2024, an "
+         "increase on the Centinela Concentrator throughput."),
+        ("Capital expenditure was $1.3 billion in 2024.",
+         "CENTINELA\nWe invested $1.3 billion in 2024 on the Centinela Second "
+         "Concentrator."),
+    ],
+    ids=["total-at-heading-noun", "we-on-the-heading-noun"],
+)
+def test_rereview2_a_locative_heading_noun_keeps_the_scope(statement: str, text: str) -> None:
+    result = _one(statement, _ANTO, Passage("c1", text, owner=OWNER_SUBJECT))
+    assert result.verdict == ps.VERDICT_SCOPED
+    assert result.scope_key == "segment:centinela"
+
+
+def test_rereview2_a_former_subsidiary_still_carries_through_a_pronoun() -> None:
+    result = _one(
+        "There is no assurance that seed production techniques will meet large-scale "
+        "production goals.",
+        _CELLECTIS,
+        Passage("c1", "Calyxt, Inc., our former majority-owned subsidiary, was "
+                "deconsolidated on May 31, 2023. There can be no assurance that its seed "
+                "production techniques will meet large-scale production goals.",
+                owner=OWNER_SUBJECT),
+    )
+    assert result.verdict == ps.VERDICT_OTHER
+    assert result.others == (("Calyxt, Inc", ps.FORMER_SUBSIDIARY),)
+
+
+class TestInvestigatorRereview2:
+    async def test_rd_after_a_former_subsidiary_is_kept(self) -> None:
+        evidence = [
+            _corpus("ev:c:20f", "Calyxt, Inc., our former majority-owned subsidiary, was "
+                    "deconsolidated on May 31, 2023.\nResearch and development expenses "
+                    "were $90 million in 2024, compared to $98 million in 2023.",
+                    scope_key=None)
+        ]
+        inv, findings, gaps = await _run(
+            [("Research and development expenses were $90 million in 2024.", ["ev:c:20f"])],
+            evidence, name="Cellectis S.A.", ticker="CLLS", domain="financial_quality",
+        )
+        assert len(findings) == 1
+        assert inv.diagnostics.statements_about_implicit_other_entity == 0
+        assert not [g for g in gaps if g.gap_type == "entity_ambiguous"]
+
+    async def test_group_revenue_is_not_scoped_to_an_acquired_subsidiary(self) -> None:
+        evidence = [
+            _corpus("ev:c:mda", "On March 1, 2024, we completed the acquisition of Acme "
+                    "Holdings Ltd, which is now a wholly-owned subsidiary. Revenue increased "
+                    "8% to $4.1 billion, driven by pricing.", scope_key=None)
+        ]
+        inv, findings, _gaps = await _run(
+            [("Revenue increased 8% to $4.1 billion in 2024.", ["ev:c:mda"])],
+            evidence, name="Harrowfield Systems Inc.", ticker="HRWF",
+            domain="financial_quality",
+        )
+        assert [f.scope_key for f in findings] == [None]
+        assert inv.diagnostics.statements_scoped_to_entity == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A-" * 3000,
+        "a." * 3000,
+        " " * 6000,
+        "Revenue" + " " * 6000 + "was $5 million.",
+        "Revenue" + "\t" * 6000 + "was $5 million.",
+        "We " * 2000,
+        "Co " * 2000,
+        "Calderon" + "&" * 6000 + ", a former subsidiary",
+    ],
+    ids=["A-dash", "a-dot", "spaces", "space-run", "tab-run", "we", "co", "amp-run"],
+)
+def test_no_pattern_backtracks_on_a_degenerate_passage(text: str) -> None:
+    # Security review (PR #320, MEDIUM): unbounded quantifiers in the acronym and
+    # namesake patterns took 0.33 s at 3k and 1.3 s at 6k characters of "A-", on the
+    # event loop. Every quantifier that can meet a long run is now bounded; the bound
+    # here is loose for CI and the defect failed it by an order of magnitude.
+    import time
+
+    subject = SubjectIdentity("Calderon Holdings plc", "CALD")
+    passage = Passage(citation_id="c", text=text, owner=OWNER_SUBJECT)
+    attribute_statement("Revenue was $5 million.", [passage], subject)  # compile caches
+    started = time.perf_counter()
+    attribute_statement("Revenue was $5 million.", [passage], subject)
+    assert time.perf_counter() - started < 0.5

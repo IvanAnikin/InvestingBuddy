@@ -7424,22 +7424,35 @@ sentence without an own-results verb is kept even when it is not the subject's.
   never rebuilds it. Measured: 9 ms for 1,000 names, 32 ms for 3,000 (was 6.8 s and
   7–25 s); a dense 1.5k passage reads in ~25–30 ms at 3,000 names, the same as at none;
   a 200k-character page in 0.12 s. `test_registered_name_index_timing` guards it.
-- **Restored coverage.** (a) In the subject's own document a FORMER_SUBSIDIARY that is a
-  sentence's grammatical subject carries the topic again ("Calyxt, Inc., our former
-  majority-owned subsidiary, was deconsolidated…. There can be no assurance that seed
-  production techniques…" drops), except into a sentence about the separation itself
-  (deconsolidation, divestment, disposal, proceeds, "gain/loss on": the filer's
-  accounting). (b) Group wording is split: "Group, consolidated, Firm, Corporation, net
-  debt, dividend, EPS, total company, Note N" always un-scope a heading; "total,
-  company, we, our, us" un-scope it only when the sentence does not itself name the
-  heading's mine or segment ("CENTINELA — Total copper production at Centinela…", "We
-  invested $1.3 billion… on the Centinela Second Concentrator" stay Centinela's).
-  (c) A sentence naming no one, with no Group or first-person wording, in a passage
-  whose ONLY named entity is a subsidiary or joint venture named before it ("J.P.
-  Morgan SE is a wholly-owned subsidiary. Capital adequacy is assessed…") is scoped to
-  that entity. (d) A registered company's own site may name it by its first word
-  ("Iluka half-year results" on iluka.com): the host, confirmed by
-  `issuer_domain_matches`, is the evidence the full name otherwise is.
+- **Restored coverage, narrowed by the second re-review** (missing data is acceptable,
+  wrong data is not):
+  - (a) In the subject's own document a FORMER_SUBSIDIARY reaches a later sentence only
+    through a pronoun ("There can be no assurance that **its** seed production
+    techniques…"), its defined alias, or a governing heading entity ("Risks Related to
+    Calyxt"). It never carries into a sentence with no reference: "…our former
+    subsidiary, was deconsolidated.\nResearch and development expenses were $90
+    million", "Cash and cash equivalents were $264 million", "Net loss attributable to
+    shareholders…", "Headcount fell to 220" are the filer's and are kept. The
+    separation sentence itself ("A gain of $12 million was recognised on
+    deconsolidation") stays the filer's even under such a heading.
+  - (b) Group wording is split. "Group, consolidated, Firm, Corporation, net debt,
+    dividend, EPS, total company, Note N" always un-scope a heading. "Total, company,
+    we, our, us" un-scope it unless the heading's mine or segment is the sentence's
+    locative or possessive head: "at / on / in / from / for (the) Centinela…",
+    "Centinela's…", or the sentence's own subject ("Centinela produced…"). Named as a
+    part of a total it does not count: "of which Centinela contributed", "including Los
+    Pelambres", "with the Americas contributing", "excluding", "other than". So "Total
+    copper production at Centinela" and "We invested $1.3 billion… on the Centinela
+    Second Concentrator" stay Centinela's, and "Total copper production was 664,000
+    tonnes, of which Centinela contributed…" is the Group's.
+  - (c) The lone-subsidiary rule (a sentence with no reference, scoped to the passage's
+    only named subsidiary or JV) is **removed**. It scoped Group revenue, interest
+    expense, EBITDA, net revenue, cash flow and tax rate to an acquired company, a
+    guarantor, an equity-accounted JV or a broker-dealer.
+  - (d) A registered company's own site may name it by its first word ("Iluka half-year
+    results" on iluka.com): the host, confirmed by `issuer_domain_matches`, is the
+    evidence the full name otherwise provides. Unchanged after the second re-review;
+    ADR-066 already drops that subset.
 - **N1 — a namesake in another legal form is the subject** ("BASF AG" for "BASF SE",
   "Unilever N.V." for "Unilever PLC") unless a cue makes it a subsidiary, joint venture
   or former subsidiary ("Linde AG, the German operating company" — "operating company"
@@ -7449,3 +7462,23 @@ sentence without an own-results verb is kept even when it is not the subject's.
 heading whose name never recurs in the excerpt, and a sentence that mixes the other
 entity's risk with the subject's ("…which could reduce the value of our remaining
 stake"). Both stay kept.
+
+**Bounded patterns (security review MEDIUM).** Every quantifier in
+`passage_subject.py` that can meet a long run of spaces, tabs or name characters is
+bounded (`[ \t]{1,3}`, `[\w-]{1,40}`, `[\w&.'’-]{0,40}`, `{1,60}`). A "word" longer
+than 60 characters is never a heading word or an alias, at most 200 legal-form names
+are read per passage, and mention overlap is checked by bisection rather than a scan.
+The acronym and namesake patterns took 1.3 s at 6,000 characters of "A-"; the whole
+attribution of a degenerate 6,000-character passage ("A-", "a.", runs of spaces or
+tabs, "We ", "Co ") now takes at most about 0.25 s, and no single pattern more than
+about 50 ms. `test_no_pattern_backtracks_on_a_degenerate_passage` guards it.
+
+**Accepted misses after the second re-review** (kept, never wrong):
+- a former subsidiary's text that continues with no pronoun, alias or heading ("Calyxt,
+  Inc., our former majority-owned subsidiary, was deconsolidated….\nThere can be no
+  assurance that seed production techniques will meet…") is kept as the subject's
+  (CLLS2-2 next-paragraph shape);
+- a subsidiary's fact named only once, with no defined alias ("J.P. Morgan SE is a
+  wholly-owned subsidiary. Capital adequacy is assessed over a one-year horizon…"),
+  is kept unscoped (JPM-5 without "the Bank"). With the alias ("JPMSE", "the Bank") it
+  is scoped as before.
