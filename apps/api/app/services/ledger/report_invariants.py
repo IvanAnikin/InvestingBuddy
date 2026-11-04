@@ -836,8 +836,26 @@ def _rule_evidence_adequate(sentence: str, state: Mapping[str, Any]) -> _Hit | N
     )
 
 
+#: A disagreement id prefix in a disagreement context. It must contain a letter a–f:
+#: "disagreement 20261031" is a date, not an id (review P2-8).
 _DISAGREEMENT_ID_RE = re.compile(
-    r"\bdisagreement[ \t]{1,3}(?:id[ \t]{1,3})?(?P<id>[0-9a-f]{8})\b", re.I)
+    r"\bdisagreement[ \t]{1,3}(?:id[ \t]{1,3})?(?P<id>(?=[0-9]{0,7}[a-f])[0-9a-f]{8})\b",
+    re.I)
+
+
+def _ledger_disagreement_ids(state: Mapping[str, Any]) -> list[str] | None:
+    """ADR-086 (review P2-8) — every disagreement id the ledger holds, RESOLVED ones
+    included, or ``None`` when that is not known. Only the unresolved ids known, and
+    fewer of them than recorded disagreements: a named id may be a resolved one, so
+    nothing can be said."""
+    every = _g(state, "disagreements", "ids")
+    if every is not None:
+        return [str(i) for i in every]
+    unresolved = _g(state, "disagreements", "unresolved_ids")
+    total = _g(state, "disagreements", "total")
+    if unresolved is not None and total is not None and int(total) == len(list(unresolved)):
+        return [str(i) for i in unresolved]
+    return None
 
 
 def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
@@ -848,15 +866,14 @@ def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit
     whenever they are known, even when other disagreements are recorded."""
     if sentence.startswith("Deterministic synthesis:"):
         return None
-    known = _g(state, "disagreements", "unresolved_ids")
+    known = _ledger_disagreement_ids(state)
     if known is not None:
         named = [m.group("id").lower() for m in _DISAGREEMENT_ID_RE.finditer(sentence)]
         prefixes = {str(k).lower()[:8] for k in known}
         missing = [n for n in named if n not in prefixes]
         if missing:
             return _Hit(RULE_UNKNOWN_DISAGREEMENT_ID,
-                        "it cites a disagreement id the ledger does not record as "
-                        "unresolved")
+                        "it cites a disagreement id the research ledger does not hold")
     unresolved = _g(state, "disagreements", "unresolved")
     total = _g(state, "disagreements", "total")
     if unresolved != 0 or (total not in (0, None)):

@@ -41,6 +41,7 @@ sources that disagree among themselves leave the claim as written.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -58,11 +59,14 @@ CLAIM_RULES: tuple[str, ...] = (
 #: A claim longer than this is not checked (kept as written).
 MAX_CLAIM_CHARS = 1200
 #: Source text read per source, figures read per source and per claim, and sources
-#: read per claim: a claim is a sentence and cites a handful of items.
-MAX_SOURCE_CHARS = 4000
-MAX_SOURCE_FIGURES = 200
-MAX_CLAIM_FIGURES = 40
-MAX_SOURCES = 16
+#: read per claim: a claim is a sentence and cites a handful of items. A figure past a
+#: cap is not checked (kept), so an adversarial claim or source costs a bounded amount
+#: (review P3: < 0.5 s).
+MAX_SOURCE_CHARS = 2000
+MAX_SOURCE_FIGURES = 40
+MAX_SOURCE_SENTENCES = 30
+MAX_CLAIM_FIGURES = 12
+MAX_SOURCES = 8
 DERIVED_LABEL = "(platform-derived)"
 
 _CURRENCY = (
@@ -93,19 +97,70 @@ _CLAUSE_SPLIT_RE = re.compile(
 #: nor the source's period is compared for it.
 _FORWARD_RE = re.compile(
     r"\b(?:guid(?:ance|ed|es)|outlook|forecasts?|forecasted|projected|projections?|"
-    r"target(?:ed|ing)?|budget(?:ed)?|expects?|expected|anticipat\w{0,6}|will|"
-    r"consensus|plans?[ \t]{1,3}to|planned)\b",
+    r"target(?:ed|ing)?|budget(?:ed)?|expects?|expected|expectations?|anticipat\w{0,6}|"
+    r"will|consensus|plans?[ \t]{1,3}to|planned|seen|sees|on[ \t]{1,3}track|"
+    r"set[ \t]{1,3}to|aims?|goals?|estimates?|estimated|midpoint|range|should|could|"
+    r"would|might|pro[- ]forma)\b",
     re.IGNORECASE,
 )
 #: A source's sentences and clauses (tables put one row per line).
 _SOURCE_SPLIT_RE = re.compile(r"(?<=[.!?])[ \t]{1,3}(?=[A-Z\[(])|\n|;")
+#: Words naming a comparison period without naming it: "a year earlier", "the
+#: prior-year quarter", "last year", "year-ago".
+_COMPARISON_PERIOD_WORDS = (
+    r"(?:prior|previous|preceding|last|same)[- \t]{1,3}(?:year|quarter|period|half)"
+    r"|year[- \t]ago|year[- \t]earlier|a[ \t]{1,3}(?:year|quarter)[ \t]{1,3}"
+    r"(?:earlier|ago|before)|last[ \t]{1,3}year"
+)
 #: A clause about ANOTHER period than the sentence's: it never inherits the sentence's.
 _COMPARATIVE_RE = re.compile(
-    r"\b(?:(?:prior|previous|preceding|last|same)[ \t]{1,3}(?:year|quarter|period|half)"
-    r"|year[- ](?:ago|earlier)|a[ \t]{1,3}year[ \t]{1,3}(?:earlier|ago|before)|from"
-    r"|restated|comparative)\b",
+    r"\b(?:" + _COMPARISON_PERIOD_WORDS + r"|from|restated|comparative)\b",
     re.IGNORECASE,
 )
+#: A comparison cue IMMEDIATELY before a figure ("from $7.9bn", "versus $7.9bn",
+#: "compared with $7.9bn", "up from the prior-year $7.9bn"): the figure is the
+#: comparison's, not the clause's own period's (review P1-1). "versus stronger BNPL
+#: (+26%)" is a contrast of two products in one period, not a comparison period: the cue
+#: must be followed by nothing but the figure, an article or comparison-period words.
+_COMPARISON_CUE_RE = re.compile(
+    r"\b(?:from|versus|vs\.?|compared[ \t]{1,3}(?:with|to)|against|than)"
+    r"(?:[ \t]{1,3}(?:the|a|an|its))?"
+    r"(?:[ \t]{1,3}(?:" + _COMPARISON_PERIOD_WORDS + r")(?:['’]s)?)?"
+    r"[ \t(:]{0,4}$",
+    re.IGNORECASE,
+)
+#: Comparison-period words right AFTER a figure ("$7.9bn a year earlier", "$7.9bn in the
+#: prior-year quarter").
+_COMPARISON_AFTER_RE = re.compile(r"\b(?:" + _COMPARISON_PERIOD_WORDS + r")\b", re.IGNORECASE)
+#: A cumulative figure: nine months, year to date, trailing twelve months. Inside a
+#: quarterly text its period is not the quarter's (review P3).
+_CUMULATIVE_RE = re.compile(
+    r"\b(?:nine[- \t]months?|9[- \t]?months?|9m|year[- \t]to[- \t]date|ytd|"
+    r"trailing[- \t](?:twelve|12)[- \t]months?|ttm|ltm|last[ \t]{1,3}twelve[ \t]{1,3}months)\b",
+    re.IGNORECASE,
+)
+#: A percentage that is a TERM, not a period's result: an ownership stake, a royalty, a
+#: coupon, a tax or interest rate (review P2-6). Read just after the figure …
+_TERM_AFTER_RE = re.compile(
+    r"^[ \t]{0,3}(?:-[ \t]{0,2})?(?:owned|ownership|stake|interest|equity[ \t]{1,3}interest|"
+    r"holding|shareholding|royalty|royalties|nsr|coupon|tax[ \t]{1,3}rate|interest[ \t]{1,3}"
+    r"rate|rate|margin[ \t]{1,3}requirement)\b",
+    re.IGNORECASE,
+)
+#: … or just before it ("a royalty of 2.5%", "a stake of 50%", "tax rate was 21%").
+_TERM_BEFORE_RE = re.compile(
+    r"\b(?:royalty|royalties|coupon|tax[ \t]{1,3}rate|interest[ \t]{1,3}rate|"
+    r"margin[ \t]{1,3}requirement|stake|ownership|owns|owned|holds|holding|"
+    r"interest[ \t]{1,3}(?:of|in))\b[^.;\d]{0,20}$",
+    re.IGNORECASE,
+)
+#: Upper-case tokens that are never a segment's acronym.
+_NOT_SEGMENT_ACRONYMS: frozenset[str] = frozenset({
+    "FY", "CY", "YOY", "QOQ", "YTD", "TTM", "LTM", "USD", "EUR", "GBP", "AUD", "CAD", "CHF",
+    "JPY", "CNY", "EPS", "ROE", "ROA", "ROIC", "ROTCE", "CET", "EBIT", "EBITDA", "NII",
+    "GAAP", "IFRS", "TPV", "BNPL", "CEO", "CFO", "AGM", "NAV", "AUM", "US", "UK", "EU",
+})
+_ACRONYM_RE = re.compile(r"\b[A-Z][A-Z&]{1,4}\b")
 _GROUP_WORDS_RE = re.compile(
     r"\b(?:group|firm|firm-?wide|consolidated|company-wide|total[ \t]{1,3}company)\b",
     re.IGNORECASE,
@@ -191,10 +246,15 @@ def _masked(text: str) -> str:
     return _blank(text, spans)
 
 
-def figures(text: str) -> list[_Figure]:
-    """Every figure in ``text`` (ids, dates and period labels masked first)."""
+def figures(text: str, limit: int | None = None) -> list[_Figure]:
+    """Every figure in ``text`` (ids, dates and period labels masked first), at most
+    ``limit``."""
     out: list[_Figure] = []
+    if limit is not None and limit <= 0:
+        return out
     for m in _FIGURE_RE.finditer(_masked(text)):
+        if limit is not None and len(out) >= limit:
+            break
         number = m.group("num").replace(",", "")
         try:
             value = abs(float(number))
@@ -218,22 +278,31 @@ def figures(text: str) -> list[_Figure]:
     return out
 
 
-def _tolerance(fig: _Figure) -> float:
-    return 0.5 * (10 ** -fig.decimals)
+_FigureKey = tuple[str, float, int, float | None]
 
 
 def same_figure(a: _Figure, b: _Figure) -> bool:
     """One value written twice, within the rounding either is written to."""
     if a.kind != b.kind:
         return False
-    if a.kind != "amt":
-        return abs(a.value - b.value) <= max(_tolerance(a), _tolerance(b)) + 1e-9
-    scales_a = (a.scale,) if a.scale else (1.0, 1e3, 1e6, 1e9)
-    scales_b = (b.scale,) if b.scale else (1.0, 1e3, 1e6, 1e9)
+    return _same_key((a.kind, a.value, a.decimals, a.scale),
+                     (b.kind, b.value, b.decimals, b.scale))
+
+
+@functools.lru_cache(maxsize=16384)
+def _same_key(a: _FigureKey, b: _FigureKey) -> bool:
+    """``same_figure`` on value keys, memoised: a report repeats the same figures in
+    many sentences, each compared with the same cited sources."""
+    kind, value_a, decimals_a, scale_a = a
+    _kind, value_b, decimals_b, scale_b = b
+    tol_a, tol_b = 0.5 * (10 ** -decimals_a), 0.5 * (10 ** -decimals_b)
+    if kind != "amt":
+        return abs(value_a - value_b) <= max(tol_a, tol_b) + 1e-9
+    scales_a = (scale_a,) if scale_a else (1.0, 1e3, 1e6, 1e9)
+    scales_b = (scale_b,) if scale_b else (1.0, 1e3, 1e6, 1e9)
     for sa in scales_a:
         for sb in scales_b:
-            va, vb = a.value * sa, b.value * sb
-            if abs(va - vb) <= max(_tolerance(a) * sa, _tolerance(b) * sb) + 1e-9:
+            if abs(value_a * sa - value_b * sb) <= max(tol_a * sa, tol_b * sb) + 1e-9:
                 return True
     return False
 
@@ -268,18 +337,94 @@ class _Stated:
     period: cp.Period | None
 
 
-def _source_index(source: ClaimSource) -> list[_Stated]:
+#: Why a figure has no period of its own: it is a forecast, a comparison's, cumulative,
+#: or a term (a stake, a royalty, a rate). ``None``: it has one (or inherits one).
+_UNBOUND_FORWARD = "forward"
+_UNBOUND_COMPARISON = "comparison"
+_UNBOUND_CUMULATIVE = "cumulative"
+_UNBOUND_TERM = "term"
+
+
+def _unbound(clause: str, fig: _Figure, prev_end: int, next_start: int, *,
+             forward: bool, cumulative: bool) -> str | None:
+    """Whether ``fig`` (inside ``clause``) states no period of the clause's own.
+
+    * a forecast, guidance, target, outlook clause (``forward``: ``_FORWARD_RE``);
+    * a comparison figure: a cue immediately before it ("from $7.9bn", "versus
+      $7.9bn") or comparison-period words just after it ("$7.9bn a year earlier");
+    * a cumulative figure (``cumulative``: nine months, year to date) unless its
+      period says so;
+    * a percentage that is a term (a stake, a royalty, a coupon, a rate).
+    """
+    if forward:
+        return _UNBOUND_FORWARD
+    end = fig.start + len(fig.text)
+    before = clause[max(prev_end, fig.start - 60):fig.start]
+    after = clause[end:min(next_start, end + 40)]
+    if _COMPARISON_CUE_RE.search(before) or _COMPARISON_AFTER_RE.search(after):
+        return _UNBOUND_COMPARISON
+    if cumulative:
+        return _UNBOUND_CUMULATIVE
+    if fig.kind == "pct" and (
+        _TERM_AFTER_RE.search(clause[end:end + 30])
+        or _TERM_BEFORE_RE.search(clause[max(0, fig.start - 35):fig.start])
+    ):
+        return _UNBOUND_TERM
+    return None
+
+
+def _bind(clause: str, figs: Sequence[_Figure], local: Sequence[cp.Period],
+          clause_start: int) -> list[tuple[_Figure, str | None, list[cp.Period]]]:
+    """Each figure of one clause, why it is unbound (or ``None``), and the periods it
+    is stated for in the clause: a comparison figure only the periods named after its
+    cue (none: unknown); a cumulative figure only a nine-month / year span; any other
+    figure every period the clause names (``local``)."""
+    out: list[tuple[_Figure, str | None, list[cp.Period]]] = []
+    forward = bool(figs) and _FORWARD_RE.search(clause) is not None
+    cumulative = bool(figs) and _CUMULATIVE_RE.search(clause) is not None
+    for i, fig in enumerate(figs):
+        prev_end = figs[i - 1].start + len(figs[i - 1].text) if i else 0
+        next_start = figs[i + 1].start if i + 1 < len(figs) else len(clause)
+        why = _unbound(clause, fig, prev_end, next_start, forward=forward,
+                       cumulative=cumulative)
+        if why == _UNBOUND_COMPARISON:
+            # Its own period is one named after it, before the next figure ("versus
+            # $7.9bn in Q3 2025"); none named: unknown.
+            at, hi = clause_start + fig.start, clause_start + next_start
+            out.append((fig, why, _distinct(p for p in local if at <= p.start < hi)))
+        elif why == _UNBOUND_CUMULATIVE:
+            out.append((fig, why, [p for p in local if p.span in (cp.SPAN_NINE, cp.SPAN_YEAR)
+                                   and p.label is None]))
+        elif why is not None:
+            out.append((fig, why, []))
+        else:
+            out.append((fig, None, list(local)))
+    return out
+
+
+@functools.lru_cache(maxsize=1024)
+def _source_index(source: ClaimSource) -> tuple[_Stated, ...]:
     """Every figure the source states, each with its period: read where the source
-    states it (its clause, then its sentence), else the stored key. Bounded by
-    ``MAX_SOURCE_FIGURES``."""
+    states it (its clause, then its sentence), else the stored key — but only when the
+    source text is UNAMBIGUOUS about its period (review P1-2): a text naming more than
+    one period or date, or a table header with two years, never lends its stored key to
+    a figure. Bare dates count as periods here ("September 30, 2026 $ 6,120").
+    Bounded by ``MAX_SOURCE_CHARS`` / ``MAX_SOURCE_FIGURES``; cached per source."""
     text = source.text[:MAX_SOURCE_CHARS]
     stored = cp.period_of_key(source.period) if source.period else None
+    if stored is not None and (
+        cp.has_two_year_header(text)
+        # Unclassified: a forward mention also makes the text name two periods, which
+        # only ever withholds the stored key (keeps the claim).
+        or len(_distinct(cp.mentions(text, classify=False, bare_dates=True))) > 1
+    ):
+        stored = None
     out: list[_Stated] = []
-    for s_start, s_end in _clauses(text, _SOURCE_SPLIT_RE):
+    for s_start, s_end in _clauses(text, _SOURCE_SPLIT_RE)[:MAX_SOURCE_SENTENCES]:
         sentence = text[s_start:s_end]
         if not _HAS_DIGIT_RE.search(sentence):
             continue
-        periods = [p for p in cp.mentions(sentence) if not p.is_forward]
+        periods = [p for p in cp.mentions(sentence, bare_dates=True) if not p.is_forward]
         sentence_distinct = _distinct(periods)
         if len(sentence_distinct) == 1:
             sentence_period: cp.Period | None = sentence_distinct[0]
@@ -288,16 +433,23 @@ def _source_index(source: ClaimSource) -> list[_Stated]:
         else:
             sentence_period = stored
         for c_start, c_end in _clauses(sentence, _CLAUSE_SPLIT_RE):
+            clause = sentence[c_start:c_end]
             local = _distinct(p for p in periods if c_start <= p.start < c_end)
-            period = (local[0] if len(local) == 1
-                      else None if local else sentence_period)
-            if _FORWARD_RE.search(sentence[c_start:c_end]):
-                period = None  # a forecast's figure is not the document period's
-            for fig in figures(sentence[c_start:c_end]):
+            figs = figures(clause, MAX_SOURCE_FIGURES - len(out))
+            for fig, why, bound in _bind(clause, figs, local, c_start):
+                if why is not None:
+                    found = _distinct(bound)
+                    period = found[0] if len(found) == 1 else None
+                elif local:
+                    period = local[0] if len(local) == 1 else None
+                elif _COMPARATIVE_RE.search(clause):
+                    period = None  # another period than the sentence's, unnamed
+                else:
+                    period = sentence_period
                 out.append(_Stated(fig, period))
-                if len(out) >= MAX_SOURCE_FIGURES:
-                    return out
-    return out
+            if len(out) >= MAX_SOURCE_FIGURES:
+                return tuple(out)
+    return tuple(out)
 
 
 def _holders(fig: _Figure, indexed: Sequence[tuple[ClaimSource, list[_Stated]]]
@@ -334,15 +486,23 @@ def _segment_name(scope: str | None) -> str | None:
     return " ".join(words)
 
 
-def _names_scope(claim_low: str, name: str) -> bool:
-    return any(len(w) >= 4 and w in claim_low for w in name.split()) or name in claim_low
+def _names_scope(claim: str, name: str) -> bool:
+    """The claim names the segment: one of its words, or (review P3) a short upper-case
+    acronym — "AWM" for "asset & wealth management". An acronym that is not obviously
+    something else is taken as the segment's: the check cannot tell, so it keeps."""
+    claim_low = claim.lower()
+    if any(len(w) >= 4 and w in claim_low for w in name.split()) or name in claim_low:
+        return True
+    return any(token not in _NOT_SEGMENT_ACRONYMS
+               for token in _ACRONYM_RE.findall(claim[:MAX_CLAIM_CHARS]))
 
 
 # ── The check ────────────────────────────────────────────────────────────── #
 
 
 def _period_words(periods: Sequence[cp.Period]) -> str:
-    return " / ".join(p.key for p in periods[:3])
+    """Reader labels ("Q3 2026", "six months to 30 Jun 2026"), never stored keys."""
+    return " / ".join(dict.fromkeys(p.human() for p in periods[:3]))
 
 
 def _derived_ratio(clause: str, figs: Sequence[_Figure],
@@ -375,16 +535,22 @@ def check_claim(text: str | None, sources: Sequence[ClaimSource]) -> ClaimVerdic
 
 
 def _check(claim: str, sources: Sequence[ClaimSource]) -> ClaimVerdict | None:
+    if not figures(claim, 1):
+        return None  # nothing to check: no source is read
     indexed = [(source, _source_index(source)) for source in list(sources)[:MAX_SOURCES]]
     mentions = cp.mentions(claim)
     stated = [p for p in mentions if not p.is_forward]
     sentence_periods = _distinct(p for p in stated if not p.is_historical)
-    claim_low = claim.lower()
+    #: Every period the claim names (comparison periods included): a source stating the
+    #: figure for ANY of them is not a positive mismatch (review P1-1).
+    claim_periods = _distinct(stated)
+    budget = MAX_CLAIM_FIGURES
     for c_start, c_end in _clauses(claim, _CLAUSE_SPLIT_RE):
         clause = claim[c_start:c_end]
-        figs = figures(clause)[:MAX_CLAIM_FIGURES]
+        figs = figures(clause, budget)
         if not figs:
             continue
+        budget -= len(figs)
         derived = _derived_ratio(clause, figs, indexed)
         if derived is not None:
             key, match = derived
@@ -401,34 +567,41 @@ def _check(claim: str, sources: Sequence[ClaimSource]) -> ClaimVerdict | None:
                     f"its {key.upper()} is the platform's own calculation, labelled as such",
                     replacement=f"{claim[:at]} {DERIVED_LABEL}{claim[at:]}",
                 )
-        periods = _distinct(p for p in stated if c_start <= p.start < c_end)
-        if _FORWARD_RE.search(clause):
-            periods = []  # a forecast is checked for nothing but its scope
-        elif not periods:
-            if _COMPARATIVE_RE.search(clause) or len(sentence_periods) != 1:
-                periods = []
-            else:
-                periods = sentence_periods
-        for fig in figs:
+        local = _distinct(p for p in stated if c_start <= p.start < c_end)
+        if local:
+            inherited = local
+        elif _COMPARATIVE_RE.search(clause) or len(sentence_periods) != 1:
+            inherited = []
+        else:
+            inherited = sentence_periods
+        for fig, why, bound in _bind(clause, figs, local, c_start):
             holders = _holders(fig, indexed)
             if not holders:
                 continue
-            if periods and all(p is not None for _s, p in holders) and not any(
-                cp.any_compatible(periods, [p]) for _s, p in holders if p is not None
+            # A forecast or a term is checked for nothing but its scope; a comparison
+            # or cumulative figure only against the period it names itself.
+            periods = bound if why is not None else inherited
+            if (
+                periods and why not in (_UNBOUND_FORWARD, _UNBOUND_TERM)
+                and all(p is not None for _s, p in holders)
+                and not any(cp.any_compatible(periods, [p])
+                            for _s, p in holders if p is not None)
+                and not any(cp.any_compatible(claim_periods, [p])
+                            for _s, p in holders if p is not None)
             ):
                 first_source, first_period = holders[0]
                 assert first_period is not None
                 return ClaimVerdict(
                     RULE_CLAIM_PERIOD,
                     f"it states {fig.text} for {_period_words(periods)}, but the cited "
-                    f"source states it for {first_period.key}",
+                    f"source states it for {first_period.human()}",
                     source_ids=tuple(s.source_id for s, _p in holders),
                 )
             names = {_segment_name(s.scope) for s, _p in holders}
             if len(names) == 1 and None not in names:
                 name = next(iter(names))
                 assert name is not None
-                if not _names_scope(claim_low, name):
+                if not _names_scope(claim, name):
                     return ClaimVerdict(
                         RULE_CLAIM_SCOPE,
                         f"it states {fig.text} without its scope: the cited source states "

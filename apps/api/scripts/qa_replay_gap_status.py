@@ -76,7 +76,17 @@ def _gap_facts(cls: Any, **values: Any) -> Any:
     return cls(**{k: v for k, v in values.items() if k in known})
 
 
-def replay_gaps(v3: dict[str, Any], as_of: date | None) -> dict[str, Any]:
+def _subject_name(report: dict[str, Any]) -> str | None:
+    """The subject's name from the report title ("LLM Council Analysis Draft — ANTO —
+    Antofagasta plc")."""
+    parts = [p.strip() for p in str(report.get("title") or "").split("\u2014")]
+    return parts[-1] if len(parts) >= 3 and parts[-1] else None
+
+
+def replay_gaps(v3: dict[str, Any], as_of: date | None,
+                subject_name: str | None = None) -> dict[str, Any]:
+    import inspect
+
     from app.services.pipeline import gap_reconciliation as gr
 
     stored = {str(g.get("gap_id")): g for g in
@@ -98,7 +108,11 @@ def replay_gaps(v3: dict[str, Any], as_of: date | None) -> dict[str, Any]:
             description=str(g.get("description") or ""), question_key=question_key,
             knowledge_state=g.get("knowledge_state"),
         ))
-    verdicts = gr.reconcile(gaps, findings, question_fields=question_fields, as_of=as_of)
+    extra: dict[str, Any] = {}
+    if "subject_name" in inspect.signature(gr.reconcile).parameters:
+        extra["subject_name"] = subject_name  # code that knows the subject (ADR-086)
+    verdicts = gr.reconcile(gaps, findings, question_fields=question_fields, as_of=as_of,
+                            **extra)
     out = {}
     for v in verdicts:
         status = getattr(v, "gap_status", None) or _LEGACY_STATUS.get(v.status, v.status)
@@ -142,7 +156,7 @@ def replay_enforcer(report: dict[str, Any]) -> list[dict[str, Any]]:
 def replay_report(report: dict[str, Any]) -> dict[str, Any]:
     v3 = (report.get("source_summary_json") or {}).get("v3_research") or {}
     return {
-        "gaps": replay_gaps(v3, _as_of(report)),
+        "gaps": replay_gaps(v3, _as_of(report), _subject_name(report)),
         "stored": {str(g.get("gap_id")): g.get("reconciliation_status")
                    for g in v3.get("gaps") or []},
         "violations": replay_enforcer(report),

@@ -129,6 +129,9 @@ REASON_FORWARD_LOOKING = "forward_looking_not_historical"
 REASON_SUPERSEDED_BY_LATER = "superseded_by_later_period"
 #: ADR-086 — the gap's relevant held document was never read (ADR-084).
 REASON_HELD_NOT_READ = "held_document_not_read"
+#: ADR-086 (review P1-3) — the finding is not positively about the subject: it names a
+#: related or compared entity, or another company before its figure.
+REASON_SUBJECT_UNCERTAIN = "subject_not_established"
 
 # ── ADR-086: the gap status vocabulary (spec §10) ─────────────────────────── #
 #
@@ -155,7 +158,8 @@ GAP_STATUSES: tuple[str, ...] = (
 #: Reasons that make a finding's answer NOT COMPARABLE with the gap (rather than a
 #: partial answer): nothing places it in time, or it is a forecast.
 NONCOMPARABLE_REASONS: frozenset[str] = frozenset(
-    {REASON_PERIOD_UNKNOWN, REASON_VALUE_DATE_UNKNOWN, REASON_FORWARD_LOOKING}
+    {REASON_PERIOD_UNKNOWN, REASON_VALUE_DATE_UNKNOWN, REASON_FORWARD_LOOKING,
+     REASON_SUBJECT_UNCERTAIN}
 )
 
 #: ADR-086 — a finding that names ANOTHER entity as its subject ("Peer Co (a
@@ -166,11 +170,43 @@ _OTHER_ENTITY_RE = re.compile(
     r"|\bnot[ \t]{1,3}the[ \t]{1,3}(?:company|issuer|subject)\b",
     re.IGNORECASE,
 )
-#: ADR-086 — a clause stating a value as a forecast, target or guidance.
+#: ADR-086 — a clause stating a value as a forecast, target, guidance, an estimate or a
+#: hypothetical (review P2-4: "should / could / may / might / would", "is seen at",
+#: "analysts see", "goal", "midpoint", "range", "pro forma", "consensus"). "May" the
+#: month ("May 2026", "31 May") is not a modal.
 _FORWARD_CLAUSE_RE = re.compile(
     r"\b(?:guid(?:ance|ed|es)|outlook|forecasts?|forecasted|projected|projections?|"
-    r"target(?:ed|ing)?|budget(?:ed)?|expects?|expected|anticipat\w{0,6}|"
-    r"estimates?|plans?[ \t]{1,3}to|planned|will|consensus)\b",
+    r"target(?:ed|ing)?|budget(?:ed)?|expects?|expected|expectations?|anticipat\w{0,6}|"
+    r"estimates?|estimated|plans?[ \t]{1,3}to|planned|will|consensus|should|could|"
+    r"might|would|seen|sees|goals?|midpoint|range|pro[- ]forma|aims?|intends?|"
+    r"on[ \t]{1,3}track|set[ \t]{1,3}to|analysts?[ \t]{1,3}(?:see|expect|forecast))\b"
+    r"|(?<!\d[ \t])\bmay\b(?![ \t]{0,3}(?:\d|,))",
+    re.IGNORECASE,
+)
+#: ADR-086 (review P1-3) — the statement says it is about a related or compared entity:
+#: a peer, a customer, a supplier, a counterparty. Never closes or supersedes; the
+#: subject is not established, so the answer is NONCOMPARABLE.
+_RELATED_ENTITY_RE = re.compile(
+    r"\b(?:peers?|competitors?|rivals?|customer|client|supplier|offtakers?|"
+    r"off-takers?|counterpart(?:y|ies)|lenders?|unlike|in[ \t]{1,3}contrast[ \t]{1,3}to)\b",
+    re.IGNORECASE,
+)
+#: An organisation name with a legal suffix ("Rival Corp", "Acme Mining Ltd").
+_LEGAL_NAME_RE = re.compile(
+    r"\b(?P<name>[A-Z][\w&'’.-]{0,40}(?:[ \t]{1,3}[A-Z][\w&'’.-]{0,40}){0,3})[ \t,]{1,3}"
+    r"(?:Corp(?:oration)?|Inc|Incorporated|Ltd|Limited|plc|PLC|LLC|GmbH|Pty|SpA|ASA|AG|"
+    r"SE|SA|NV|Co)\b"
+)
+#: ADR-086 (review P2-4) — wording placing a fact below the Group: a business, a region,
+#: a unit, a division, a segment, a customer group, a country.
+_SUB_SCOPE_RE = re.compile(
+    r"\b(?:business(?:es)?|regions?|regional|units?|divisions?|segments?|subsidiar(?:y|ies)|"
+    r"operations[ \t]{1,3}in|"
+    r"from[ \t]{1,3}(?!contracts?[ \t])(?:[\w-]{1,30}[ \t]{1,3}){1,3}customers|"
+    r"in[ \t]{1,3}(?:the[ \t]{1,3})?(?:asia|europe|emea|apac|americas|africa|china|japan|"
+    r"india|australia|canada|brazil|mexico|germany|france|latin[ \t]{1,3}america|"
+    r"north[ \t]{1,3}america|middle[ \t]{1,3}east|united[ \t]{1,3}kingdom|"
+    r"united[ \t]{1,3}states|usa|uk))\b",
     re.IGNORECASE,
 )
 
@@ -808,6 +844,15 @@ def _scope_reasons(finding: FindingFacts, scope: str | None) -> list[str] | None
         # ADR-086: an unscoped finding whose own words are about a segment never
         # closes a Group (or unscoped) gap; it can still partly address it.
         return [REASON_SCOPE_DIFFERS]
+    if (
+        not finding.scope_key
+        and not (scope and scope.startswith("segment"))
+        and _SUB_SCOPE_RE.search((finding.statement or "")[:600])
+    ):
+        # ADR-086 (review P2-4): only a fact positively scoped to the Group, or one
+        # with no sub-scope wording at all ("the Asia business", "the services
+        # division", "from enterprise customers", "in Europe"), closes a Group gap.
+        return [REASON_SCOPE_DIFFERS]
     if scope and scope.startswith("segment"):
         if not finding_segment:
             return None  # a group figure never answers a segment question
@@ -870,15 +915,50 @@ def _forward_reasons(finding: FindingFacts, requirement: str, gap_text: str) -> 
     period-bound metrics, and only when the gap itself does not ask for guidance."""
     if requirement not in HISTORICAL_FIELDS or _FORWARD_CLAUSE_RE.search(gap_text or ""):
         return []
-    clause = rf.field_clause(finding.statement, requirement) if finding.statement else None
-    if clause is None:
+    if not finding.statement:
         return []
+    clause = rf.field_clause(finding.statement, requirement) or finding.statement[:600]
     if _FORWARD_CLAUSE_RE.search(clause):
         return [REASON_FORWARD_LOOKING]
     from app.services.ledger.claim_period import mentions
 
     if any(p.is_forward for p in mentions(clause)):
         return [REASON_FORWARD_LOOKING]
+    return []
+
+
+def subject_alias_set(subject_name: str | None) -> frozenset[str]:
+    """The subject's distinctive name words (ADR-083 ``subject_aliases``), folded."""
+    if not isinstance(subject_name, str) or not subject_name.strip():
+        return frozenset()
+    from app.services.entities.passage_subject import subject_aliases
+
+    return subject_aliases(subject_name)
+
+
+def _subject_reasons(finding: FindingFacts, aliases: frozenset[str]) -> list[str]:
+    """ADR-086 (review P1-3) — a finding closes or supersedes a gap only when it is
+    POSITIVELY about the subject. Findings carry no persisted subject verdict (ADR-083
+    drops another entity's statement at creation), so the text decides:
+
+    * a related / compared-entity marker (peer, customer, supplier, counterparty,
+      "unlike") anywhere → not established;
+    * an organisation name with a legal suffix BEFORE the figure that is not the
+      subject's (``aliases``; no aliases known → any such name) → not established.
+
+    Not established is NONCOMPARABLE: never CLOSED, never SUPERSEDED."""
+    text = (finding.statement or "")[:600]
+    if not text:
+        return []
+    if _RELATED_ENTITY_RE.search(text):
+        return [REASON_SUBJECT_UNCERTAIN]
+    money = rf.MONEY_RE.search(text)
+    head = text[:money.start()] if money else text
+    for m in _LEGAL_NAME_RE.finditer(head):
+        words = subject_alias_set(m.group("name"))
+        if aliases and words and words & aliases:
+            continue  # the subject's own legal name
+        return [REASON_SUBJECT_UNCERTAIN]
     return []
 
 
@@ -955,6 +1035,7 @@ def _assess(
     gap_period: str | None,
     scope: str | None,
     as_of: date | None = None,
+    subject_aliases: frozenset[str] = frozenset(),
 ) -> list[str] | None:
     """``[]`` when the finding fully answers, reasons when partly, ``None`` when not."""
     if finding.is_non_actual and _asks_for_reported_value(requirement):
@@ -976,6 +1057,7 @@ def _assess(
         reasons.extend(part)
     reasons.extend(_family_subtype_reasons(finding, requirement))
     reasons.extend(_forward_reasons(finding, requirement, gap_text))
+    reasons.extend(_subject_reasons(finding, subject_aliases))
     reasons.extend(_balance_reasons(finding, requirement, today))
     reasons.extend(_period_reasons(finding, gap_period))
     reasons.extend(_recency_reasons(finding, gap_text, requirement, today))
@@ -1024,9 +1106,11 @@ def reconcile(
     documents: Sequence[DocumentFacts] = (),
     question_fields: Mapping[str, Sequence[str]] | None = None,
     as_of: date | None = None,
+    subject_name: str | None = None,
 ) -> list[GapVerdict]:
     """One verdict per gap. Pure: the caller persists. ``as_of`` is the run date that
-    "current" and "has this target passed" are judged against."""
+    "current" and "has this target passed" are judged against. ``subject_name`` lets a
+    finding that names the subject's own legal name close its gap (ADR-086)."""
     live = [f for f in findings if not f.withdrawn]
     # Current guidance before prior guidance, primary sources before third parties.
     live.sort(key=lambda f: (f.superseded_by is not None, not f.is_primary))
@@ -1035,7 +1119,9 @@ def reconcile(
         ready_docs.setdefault(doc.kind, doc)
     by_question = dict(question_fields or {})
     today = as_of or date.today()
-    return [_reconcile_one(gap, live, facts, ready_docs, by_question, today) for gap in gaps]
+    aliases = subject_alias_set(subject_name)
+    return [_reconcile_one(gap, live, facts, ready_docs, by_question, today, aliases)
+            for gap in gaps]
 
 
 def _reconcile_one(
@@ -1045,8 +1131,10 @@ def _reconcile_one(
     ready_docs: Mapping[str, DocumentFacts],
     question_fields: Mapping[str, Sequence[str]],
     as_of: date | None = None,
+    aliases: frozenset[str] = frozenset(),
 ) -> GapVerdict:
-    verdict = _reconcile_core(gap, findings, facts, ready_docs, question_fields, as_of)
+    verdict = _reconcile_core(gap, findings, facts, ready_docs, question_fields, as_of,
+                              aliases)
     verdict.gap_status = gap_status_of(verdict, gap)
     if verdict.gap_status == GAP_STATUS_EXTRACTION_FAILED:
         verdict.reasons.append(REASON_HELD_NOT_READ)
@@ -1088,6 +1176,7 @@ def _reconcile_core(
     ready_docs: Mapping[str, DocumentFacts],
     question_fields: Mapping[str, Sequence[str]],
     as_of: date | None = None,
+    aliases: frozenset[str] = frozenset(),
 ) -> GapVerdict:
     if gap.status == ledger.GAP_CLOSED:
         return GapVerdict(
@@ -1139,7 +1228,8 @@ def _reconcile_core(
     for requirement in wanted:
         for finding in findings:
             reasons = _assess(finding, requirement, gap_text=text, gap_project=gap_project,
-                              gap_period=gap_period, scope=scope, as_of=as_of)
+                              gap_period=gap_period, scope=scope, as_of=as_of,
+                              subject_aliases=aliases)
             if reasons is None:
                 continue
             if not reasons:
@@ -1427,6 +1517,7 @@ async def reconcile_run(
     core_filings: Mapping[str, Any] | None = None,
     core_disclosures: Mapping[str, Any] | None = None,
     as_of: date | None = None,
+    subject_name: str | None = None,
 ) -> dict[str, Any]:
     """Supersede, reconcile, persist. Returns the record the report carries."""
     as_of = as_of or date.today()
@@ -1524,6 +1615,7 @@ async def reconcile_run(
         documents=ready_documents(core_filings, core_disclosures),
         question_fields=question_field_map(question_rows),
         as_of=as_of,
+        subject_name=subject_name,
     )
     gaps_by_id = {str(row.id): row for row in gap_rows}
     for verdict in verdicts:

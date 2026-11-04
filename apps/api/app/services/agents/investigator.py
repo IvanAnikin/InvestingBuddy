@@ -873,7 +873,20 @@ def _text_stated_period(
     from app.services.sources.document_period import statement_reporting_periods
 
     periods = statement_reporting_periods(statement, as_of=published)
-    return periods[0] if len(periods) == 1 else None
+    if len(periods) != 1:
+        return None
+    # Review P3: two DISTINCT periods of the same granularity ("Q3 2026 results vs Q3
+    # 2025", "Q3 2025 …; Q3 2026 …") are a comparison the statement makes; which one a
+    # figure belongs to is not a single reporting period.
+    from app.services.ledger.claim_period import mentions, period_of_key
+
+    chosen = period_of_key(periods[0])
+    if chosen is not None:
+        same_span = {p.key for p in mentions(statement, classify=False)
+                     if p.span == chosen.span}
+        if len(same_span) > 1:
+            return None
+    return periods[0]
 
 
 def _inherited_published_at(

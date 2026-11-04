@@ -76,6 +76,27 @@ _AT_DATE_RE = re.compile(
     r"\b(?:as[ \t]{1,3}at|as[ \t]{1,3}of|at|on|end[ \t]{1,3}of)[ \t]{1,3}" + _DATE,
     re.IGNORECASE,
 )
+#: A bare date ("September 30, 2026 $ 6,120"): read only on the SOURCE side, where a
+#: table row or a balance line dates its own figure without "at" / "as of".
+_BARE_DATE_RE = re.compile(r"\b" + _DATE, re.IGNORECASE)
+#: Words that make a date the PUBLICATION date of the text, never a period: "dated 28
+#: October 2026", "Published 15 October 2026", "On October 28, 2026, the company
+#: reported …" (review P3).
+_PUBLICATION_BEFORE_RE = re.compile(
+    r"\b(?:dated|published|released|issued|filed|announced|posted|updated)"
+    r"(?:[ \t]{1,3}on)?[ \t]{0,3}:?[ \t]{0,3}$",
+    re.IGNORECASE,
+)
+_ON_BEFORE_RE = re.compile(r"\bon[ \t]{1,3}$", re.IGNORECASE)
+_PUBLICATION_AFTER_RE = re.compile(
+    r"^[ \t,]{0,3}(?:[\w&.'’-]{1,40}[ \t]{1,3}){0,4}"
+    r"(?:reported|reports|announced|announces|said|says|released|releases|published|"
+    r"disclosed|discloses|filed|files|stated|states|issued|issues)\b",
+    re.IGNORECASE,
+)
+#: A table header with two years side by side ("2026 2025", "2026  2025"): the columns
+#: are two periods, so the stored key names at most one of them (review P1-2).
+_TWO_YEAR_HEADER_RE = re.compile(r"\b(?:19|20)\d{2}[ \t]{1,8}(?:19|20)\d{2}\b")
 #: "FY26 Q1", "FY2026 H1" — the issuer's fiscal label, quarter or half after the year.
 _FY_FIRST_RE = re.compile(
     r"\bfy[ \t]?'?(?P<y>(?:19|20)\d{2}|\d{2})[ \t-]{0,2}(?P<k>[qh])(?P<o>[1-4])\b",
@@ -142,6 +163,23 @@ class Period:
     @property
     def is_historical(self) -> bool:
         return self.role == HISTORICAL_REFERENCE_DATE
+
+    def human(self) -> str:
+        """A reader's label ("Q3 2026", "FY2025", "six months to 30 Jun 2026", "30 Sep
+        2026"): a notice never shows a stored key such as "HYE2026-06-30" (review P3)."""
+        if self.label is not None:
+            kind, year, ordinal, fiscal = self.label
+            if kind == "y":
+                return f"FY{year}" if fiscal else str(year)
+            return f"{kind.upper()}{ordinal} {'FY' if fiscal else ''}{year}"
+        if self.end_lo is not None and self.end_lo == self.end_hi:
+            day = f"{self.end_lo.day} {self.end_lo.strftime('%b')} {self.end_lo.year}"
+            length = {SPAN_QUARTER: "three months", SPAN_HALF: "six months",
+                      SPAN_NINE: "nine months", SPAN_YEAR: "the year"}.get(self.span or 0)
+            if self.span == SPAN_INSTANT or length is None:
+                return day
+            return f"{length} to {day}"
+        return "another period"
 
     def rf_key(self) -> str | None:
         """The key in ``research_fields.statement_period`` vocabulary, or ``None``."""
@@ -252,9 +290,30 @@ def period_of_key(key: object) -> Period | None:
 # ── Reading mentions ──────────────────────────────────────────────────────── #
 
 
-def _read(text: str) -> list[Period]:
+def _is_publication(text: str, start: int, date_start: int, end: int) -> bool:
+    """The date at ``date_start:end`` (its match beginning at ``start``) is when the
+    text was published or the news announced, not a period: "dated 28 Oct 2026",
+    "Published 15 October 2026:", "On October 28, 2026, the company reported …"."""
+    before = text[max(0, start - 40):start]
+    if _PUBLICATION_BEFORE_RE.search(before):
+        return True
+    lead = text[start:date_start]
+    on_form = lead.strip().lower() == "on" or (not lead.strip() and _ON_BEFORE_RE.search(before))
+    return bool(on_form and _PUBLICATION_AFTER_RE.match(text[end:end + 80]))
+
+
+def _date_start(match: re.Match[str]) -> int:
+    for group in ("d1", "m2", "y3"):
+        if match.group(group):
+            return match.start(group)
+    return match.start()
+
+
+def _read(text: str, *, bare_dates: bool = False) -> list[Period]:
     """Every period mention, strongest rule first; a later rule never re-reads a span
-    an earlier one took."""
+    an earlier one took. ``bare_dates`` also reads a date with no "at" / "as of" as a
+    balance date (the source side of a claim check). A publication date is never a
+    period."""
     found: list[Period] = []
     taken: list[tuple[int, int]] = []
 
@@ -286,9 +345,27 @@ def _read(text: str) -> list[Period]:
                        start=m.start(), end=m.end()))
     for m in _AT_DATE_RE.finditer(text):
         day = _date_of(m)
-        if day is not None:
+        if day is None:
+            continue
+        if _is_publication(text, m.start(), _date_start(m), m.end()):
+            taken.append((m.start(), m.end()))  # read, and not a period
+            continue
+        add(Period(key=day.isoformat(), span=SPAN_INSTANT, end_lo=day, end_hi=day,
+                   start=m.start(), end=m.end()))
+    for m in _BARE_DATE_RE.finditer(text):
+        if not free(m.start(), m.end()):
+            continue
+        day = _date_of(m)
+        if day is None or _is_publication(text, m.start(), m.start(), m.end()):
+            taken.append((m.start(), m.end()))
+            continue
+        if bare_dates:
             add(Period(key=day.isoformat(), span=SPAN_INSTANT, end_lo=day, end_hi=day,
                        start=m.start(), end=m.end()))
+        else:
+            # Claim side: a bare date is not read as a period, and its year is not a
+            # calendar-year mention either.
+            taken.append((m.start(), m.end()))
     for m in _FY_FIRST_RE.finditer(text):
         year = _year4(m.group("y"))
         kind, ordinal = m.group("k").lower(), int(m.group("o"))
@@ -346,12 +423,15 @@ def _role(text: str, period: Period) -> str:
     return read_date_mention(window, start, start + len(mention), role=ROLE_BODY).role
 
 
-def mentions(text: str | None, *, classify: bool = True) -> list[Period]:
+def mentions(
+    text: str | None, *, classify: bool = True, bare_dates: bool = False
+) -> list[Period]:
     """Every period ``text`` mentions, in order, each with its ``date_semantics`` role
-    when ``classify``. Never raises."""
+    when ``classify``. ``bare_dates``: also read an un-cued date as a balance date (the
+    SOURCE side of a claim check only). Never raises."""
     source = str(text or "")[:MAX_TEXT_CHARS]
     try:
-        found = _read(source)
+        found = _read(source, bare_dates=bare_dates)
     except (TypeError, ValueError):  # pragma: no cover - defensive
         return []
     if not classify:
@@ -409,6 +489,12 @@ def any_compatible(periods: Iterable[Period], others: Sequence[Period]) -> bool:
     return any(compatible(p, q) for p in periods for q in others)
 
 
+def has_two_year_header(text: str | None) -> bool:
+    """A table header with two years side by side ("2026 2025"): its figures belong to
+    two columns, so no single stored period dates them (review P1-2)."""
+    return _TWO_YEAR_HEADER_RE.search(str(text or "")[:MAX_TEXT_CHARS]) is not None
+
+
 __all__ = [
     "END_SLACK_DAYS",
     "SPAN_HALF",
@@ -418,6 +504,7 @@ __all__ = [
     "Period",
     "any_compatible",
     "compatible",
+    "has_two_year_header",
     "mentions",
     "period_of_key",
     "single_period",

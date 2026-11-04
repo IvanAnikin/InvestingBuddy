@@ -8,6 +8,7 @@ one, and a replay over stored report payloads (skipped unless
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import pytest
 from app.services import research_fields as rf
 from app.services.agents import investigator as inv
 from app.services.council_v2.inputs import FindingRef, GapRef
+from app.services.ledger import canonical_state as cs
 from app.services.ledger import claim_checks as cc
 from app.services.ledger import claim_period as cp
 from app.services.ledger import report_invariants as ri
@@ -399,7 +401,7 @@ class TestEnforcer:
     def test_lin6_a_disagreement_id_not_in_the_ledger_is_withheld(self) -> None:
         state = {"disagreements": {"unresolved_ids": ["abcdef12-0000-0000-0000-000000000000"],
                                    "unresolved": 1, "total": 1}}
-        hit = ri.check_sentence("The council left disagreement 99999999 unresolved.",
+        hit = ri.check_sentence("The council left disagreement 9999aaaa unresolved.",
                                 state, site=ri.SITE_CHAIR)
         assert hit is not None and hit.rule == ri.RULE_UNKNOWN_DISAGREEMENT_ID
         assert ri.check_sentence("The council left disagreement abcdef12 unresolved.",
@@ -466,25 +468,311 @@ class TestLegacyCouncil:
         assert [k.claim for k in out.key_points] == [claim]
 
 
+# ── 3d. PR #325 review (NO-GO) — one regression per repro ──────────────────── #
+#
+# The governing rule: a check that cannot tell which period a figure belongs to KEEPS
+# the sentence; a claim is withheld only on a positive mismatch.
+
+_YOY_SOURCE = S("a", "Q3 2026 revenue was $8.4bn versus $7.9bn in Q3 2025.", period="2026-Q3")
+
+
+class TestReviewClaimChecks:
+    @pytest.mark.parametrize("claim", [
+        "Revenue rose to $8.4bn in Q3 2026 from $7.9bn a year earlier.",
+        "Q3 2026 revenue was $8.4bn versus $7.9bn in the prior-year quarter.",
+        "Q3 2026 revenue was $8.4bn compared with $7.9bn.",
+        "Q3 2026 revenue of $8.4bn was up from $7.9bn.",
+        "Revenue was $8.4bn in Q3 2026 and $7.9bn in Q3 2025.",
+    ])
+    def test_p1_1_a_comparison_figure_is_not_the_clauses_period(self, claim: str) -> None:
+        assert cc.check_claim(claim, [_YOY_SOURCE]) is None
+
+    def test_p1_1_a_contrast_of_products_is_still_period_checked(self) -> None:
+        """"versus stronger BNPL (+26%)" is a contrast, not a comparison period."""
+        verdict = cc.check_claim(
+            "Q3 2026 revenue grew 2%, but checkout growth was slow versus stronger BNPL "
+            "(+26%).",
+            [S("a", "Q3 2026 revenue grew 2%.", period="2026-Q3"),
+             S("b", "BNPL volume grew 26% in Q2 2026.", period="2026-Q2")])
+        assert verdict is not None and verdict.rule == cc.RULE_CLAIM_PERIOD
+
+    def test_p1_1_a_comparison_figure_named_for_a_wrong_period_is_withheld(self) -> None:
+        verdict = cc.check_claim(
+            "Q3 2026 revenue was $8.4bn versus $7.9bn in Q3 2024.",
+            [S("a", "Q3 2025 revenue was $7.9bn.", period="2025-Q3")])
+        assert verdict is not None and verdict.rule == cc.RULE_CLAIM_PERIOD
+
+    def test_p1_2_a_two_column_table_never_lends_its_stored_key(self) -> None:
+        table = S("E1", "Three Months Ended September 30,\n2026 2025\nNet revenues $ 8,416 "
+                        "$ 7,846", period="2026-Q3")
+        assert cc.check_claim("Net revenues were $7.8 billion in Q3 2025.", [table]) is None
+        assert cc.check_claim("Net revenues rose to $8.4 billion in Q3 2026.", [table]) is None
+
+    def test_p1_2_bare_dates_date_their_own_balance(self) -> None:
+        balance = S("E2", "Cash and cash equivalents: September 30, 2026 $ 6,120; "
+                          "December 31, 2025 $ 8,048", period="2026-09-30")
+        assert cc.check_claim("Cash and cash equivalents were $8.0 billion at December 31, "
+                              "2025.", [balance]) is None
+        verdict = cc.check_claim("Cash was $8.0 billion at September 30, 2026.", [balance])
+        assert verdict is not None and verdict.rule == cc.RULE_CLAIM_PERIOD
+
+    @pytest.mark.parametrize("claim,source", [
+        ("The FY2025 mine is 100% owned.", S("a", "The mine is 100% owned.", period="2026-Q2")),
+        ("In Q3 2026 the company kept its 50% stake in the JV.",
+         S("a", "It acquired a 50% stake in the JV in Q1 2025.", period="2025-Q1")),
+        ("Q3 2026 royalties were paid at the 2.5% rate.",
+         S("a", "The 2.5% royalty was set in FY2020.", period="FY2020")),
+        ("In FY2025 the company held a 100% interest.",
+         S("a", "As at 30 June 2026 the company holds a 100% interest.", period="2026-06-30")),
+    ])
+    def test_p2_6_a_term_percentage_is_not_period_checked(self, claim: str,
+                                                          source: cc.ClaimSource) -> None:
+        assert cc.check_claim(claim, [source]) is None
+
+    @pytest.mark.parametrize("claim", [
+        "FY2026 revenue is now seen at $33 billion.",
+        "The company expects FY2026 revenue of $33 billion.",
+        "The FY2026 revenue outlook is $33 billion.",
+        "FY2026 revenue is projected at $33 billion.",
+    ])
+    def test_p2_7_an_outlook_claim_is_never_period_withheld(self, claim: str) -> None:
+        source = S("a", "Q3 2026: revenue $8.4bn. Full-year revenue now seen at $33 billion.",
+                   period="2026-Q3")
+        assert cc.check_claim(claim, [source]) is None
+
+    def test_p3_cumulative_figures_are_not_the_quarters(self) -> None:
+        assert cc.check_claim(
+            "Revenue for the nine months ended 30 September 2026 was $24.6bn.",
+            [S("a", "Q3 2026 revenue $8.4bn; year-to-date revenue $24.6bn.",
+               period="2026-Q3")]) is None
+        assert cc.check_claim(
+            "Q3 2026 year-to-date revenue was $24.6bn.",
+            [S("a", "Revenue for the nine months ended 30 September 2026 was $24.6bn.",
+               period="2026-Q3")]) is None
+
+    def test_p3_a_segment_acronym_names_the_segment(self) -> None:
+        assert cc.check_claim(
+            "AWM revenue was $5.0 billion in Q3 2026.",
+            [S("a", "Revenue was $5.0 billion in Q3 2026.", period="2026-Q3",
+               scope="segment:asset & wealth management")]) is None
+
+    def test_p3_notices_never_show_a_stored_key(self) -> None:
+        verdict = cc.check_claim(
+            "Investment banking revenue for Q2 2026 was $7.0 billion.",
+            [S("E7", "Investment banking revenue for the six months ended June 30, 2026 "
+                     "was $7.0 billion.")])
+        assert verdict is not None
+        assert "six months to 30 Jun 2026" in verdict.reason
+        assert not re.search(r"\b(?:HYE|QE|FYE|M\dE)\d{4}", verdict.reason)
+
+    def test_p1_1_legacy_council_keeps_correct_prior_period_claims(self) -> None:
+        item = EvidenceItem(
+            id="E1", source_tier="T1", source_type="company_filing", period="2026-09-30",
+            excerpt="Cash and cash equivalents: September 30, 2026 $ 6,120; December 31, "
+                    "2025 $ 8,048")
+        out, issues = TestLegacyCouncil()._check(
+            "Cash fell to $6.1 billion at September 30, 2026 from $8.0 billion at "
+            "year-end 2025.", item)
+        assert len(out.key_points) == 1
+        assert not [i for i in issues if "claim_" in i]
+
+
+class TestReviewGapStatus:
+    CASH_GAP = "No cash balance at 30 June 2026 in evidence."
+
+    @pytest.mark.parametrize("statement", [
+        "Customer Tesla had cash and cash equivalents of US$45m.",
+        "Unlike Acme, Rival Corp held cash and cash equivalents of US$45m.",
+        "Peer comparison: Rival Corp cash and cash equivalents US$45m.",
+    ])
+    def test_p1_3_another_entitys_later_balance_never_supersedes(self, statement: str) -> None:
+        verdict = _one(_gap(self.CASH_GAP), [_finding(
+            "f1", statement, period_key="2026-09-30", published_at=date(2026, 10, 25))])
+        assert verdict.gap_status == gr.GAP_STATUS_NONCOMPARABLE
+        assert gr.REASON_SUBJECT_UNCERTAIN in verdict.reasons
+
+    @pytest.mark.parametrize("statement", [
+        "Rival Corp reported FY2025 revenue of US$300m.",
+        "Peer Albemarle's revenue was US$5.4bn in FY2025.",
+        "Offtaker Tesla's revenue was US$97bn in FY2025.",
+    ])
+    def test_p2_4_a_peer_fact_never_closes(self, statement: str) -> None:
+        verdict = _one(_gap("FY2025 revenue was not acquired"),
+                       [_finding("f1", statement, period_key="FY2025")])
+        assert verdict.gap_status not in (gr.GAP_STATUS_CLOSED, gr.GAP_STATUS_SUPERSEDED)
+
+    def test_p1_3_the_subjects_own_legal_name_still_closes(self) -> None:
+        finding = _finding("f1", "Lindian Resources Limited reported FY2025 revenue of "
+                                 "US$300m.", period_key="FY2025")
+        gap = _gap("FY2025 revenue was not acquired")
+        assert _one(gap, [finding], subject_name="Lindian Resources Limited").gap_status == (
+            gr.GAP_STATUS_CLOSED)
+        assert _one(gap, [finding]).gap_status == gr.GAP_STATUS_NONCOMPARABLE
+
+    @pytest.mark.parametrize("statement", [
+        "Revenue should reach US$500m in FY2025.",
+        "Revenue could reach US$500m in FY2025.",
+        "Revenue may reach US$500m in FY2025.",
+        "Revenue might reach US$500m in FY2025.",
+        "Revenue would be US$500m in FY2025 on a pro forma basis.",
+        "Revenue is seen at US$500m in FY2025.",
+        "Analysts see FY2025 revenue of US$500m.",
+        "Analysts expect FY2025 revenue of US$500m.",
+        "FY2025 revenue of US$500m is the company's goal.",
+        "Revenue of US$500m is the midpoint of the FY2025 range.",
+        "Consensus FY2025 revenue is US$500m.",
+        "Revenue is estimated at US$500m for FY2025.",
+    ])
+    def test_p2_4_a_forecast_word_never_closes_a_historical_gap(self, statement: str) -> None:
+        verdict = _one(_gap("FY2025 revenue was not acquired"),
+                       [_finding("f1", statement, period_key="FY2025")])
+        assert verdict.gap_status == gr.GAP_STATUS_NONCOMPARABLE
+        assert gr.REASON_FORWARD_LOOKING in verdict.reasons
+
+    def test_p2_4_may_the_month_is_not_a_modal(self) -> None:
+        verdict = _one(_gap("FY2025 revenue was not acquired"),
+                       [_finding("f1", "Revenue for the year ended 31 May 2025 was US$500m.",
+                                 period_key="FY2025")])
+        assert gr.REASON_FORWARD_LOOKING not in verdict.reasons
+
+    def test_p2_4_pro_forma_net_debt_never_supersedes(self) -> None:
+        verdict = _one(_gap("No net debt figure at 30 June 2026 in evidence."), [_finding(
+            "f1", "Pro forma net debt of US$45m.", period_key="2026-09-30",
+            published_at=date(2026, 10, 25))])
+        assert verdict.gap_status not in (gr.GAP_STATUS_SUPERSEDED, gr.GAP_STATUS_CLOSED)
+
+    @pytest.mark.parametrize("statement", [
+        "Revenue from the Asia business was US$5bn",
+        "The services division had revenue of US$5bn",
+        "Revenue from enterprise customers was US$5bn",
+        "Revenue in Europe was US$5bn",
+    ])
+    def test_p2_4_a_sub_scope_fact_never_closes_a_group_gap(self, statement: str) -> None:
+        verdict = _one(_gap("FY2025 revenue was not acquired"),
+                       [_finding("f1", statement, period_key="FY2025")])
+        assert verdict.gap_status == gr.GAP_STATUS_PARTIALLY_CLOSED
+        assert gr.REASON_SCOPE_DIFFERS in verdict.reasons
+
+    def test_ifrs15_revenue_from_contracts_with_customers_still_closes(self) -> None:
+        verdict = _one(_gap("FY2025 revenue was not acquired"), [_finding(
+            "f1", "Revenue from contracts with customers was US$5bn", period_key="FY2025")])
+        assert verdict.gap_status == gr.GAP_STATUS_CLOSED
+
+    def test_p2_4_a_group_scoped_fact_closes_whatever_its_wording(self) -> None:
+        verdict = _one(_gap("FY2025 revenue was not acquired"), [_finding(
+            "f1", "Revenue across the business was US$5bn", period_key="FY2025",
+            scope_key="group")])
+        assert verdict.gap_status == gr.GAP_STATUS_CLOSED
+
+
+class TestReviewDocumentsAndDisagreements:
+    def _v3(self) -> dict[str, object]:
+        return {
+            "core_filings": {"annual": {"state": "ready", "filing_date": "2026-03-20",
+                                        "form": "20-F", "accession": "0001193125-26-116428"}},
+            "core_disclosures": {"documents": [
+                {"state": "ready", "filing_date": "2026-09-24", "headline": "Annual Report",
+                 "document_ref": "03143834"},
+                {"state": "ready", "filing_date": "2026-10-25", "headline": "Appendix 5B",
+                 "document_ref": "03157006"},
+            ]},
+            "financial_statements_state": {
+                "annual": {"document": {"filing_date": "2026-03-20", "headline": "20-F"}},
+                "current_period": {"document": {
+                    "filing_date": "2026-09-24", "headline": "Annual Report",
+                    "source_url": "https://x.example/announcement.do?display=pdf&idsId=03143834"}},
+            },
+        }
+
+    def test_p2_5_one_document_listed_by_several_origins_counts_once(self) -> None:
+        state = build_canonical_state(self._v3(), as_of="2026-11-02")
+        assert state["documents"]["issuer_documents_held"] == 3
+        group = ri.primary_document_group(state)
+        assert group is not None and "holds 3 issuer primary document(s)" in group["detail"]
+
+    def test_p2_8_a_resolved_disagreement_is_in_the_ledger(self) -> None:
+        state = {"disagreements": {"total": 3, "unresolved": 1,
+                                   "unresolved_ids": ["aaaaaaaa-1111-2222-3333-444444444444"],
+                                   "ids": ["aaaaaaaa-1111-2222-3333-444444444444",
+                                           "bbbbbbbb-1111-2222-3333-444444444444",
+                                           "cccccccc-1111-2222-3333-444444444444"]}}
+        for sentence in ["Disagreement bbbbbbbb on cash runway was resolved by the 10-Q.",
+                         "Disagreement aaaaaaaa on cash runway remains open.",
+                         "Disagreement cccccccc (now resolved) concerned the FY2025 margin.",
+                         "The disagreement 20261031 snapshot shows two views."]:
+            assert ri.check_sentence(sentence, state, site=ri.SITE_CHAIR) is None, sentence
+        hit = ri.check_sentence("Disagreement dddddddd remains open.", state,
+                                site=ri.SITE_CHAIR)
+        assert hit is not None and hit.rule == ri.RULE_UNKNOWN_DISAGREEMENT_ID
+
+    def test_p2_8_only_unresolved_ids_known_cannot_judge_a_named_id(self) -> None:
+        state = {"disagreements": {"total": 3, "unresolved": 1,
+                                   "unresolved_ids": ["aaaaaaaa-1111-2222-3333-444444444444"]}}
+        assert ri.check_sentence("Disagreement bbbbbbbb on cash runway was resolved.",
+                                 state, site=ri.SITE_CHAIR) is None
+
+
+class TestReviewPeriods:
+    @pytest.mark.parametrize("text", [
+        "On October 28, 2026, the company reported revenue growth of 9%.",
+        "In a press release dated 28 October 2026, the company said volume grew 20%.",
+        "Published 15 October 2026: revenue grew 9%.",
+    ])
+    def test_p3_a_publication_date_is_not_a_period(self, text: str) -> None:
+        assert gr.text_period(text) is None
+
+    def test_p3_a_balance_on_a_date_is_still_a_period(self) -> None:
+        assert gr.text_period("On 30 June 2026 the company held cash of $45m.") == "2026-06-30"
+
+    @pytest.mark.parametrize("text", [
+        "Q3 2026 results vs Q3 2025: revenue rose 2%.",
+        "Q3 2025 revenue was $7.9bn; Q3 2026 revenue was $8.4bn.",
+        "Q3 2026 revenue rose 2% compared with Q3 2025.",
+    ])
+    def test_p3_two_periods_of_one_granularity_set_no_text_period(self, text: str) -> None:
+        web = inv._Evidence(citation_id="w1", kind="web", text="t", web=True,
+                            published_at=date(2026, 10, 30))
+        assert inv._text_stated_period(text, ["w1"], [web]) is None
+
+    def test_p3_one_quarter_and_a_year_still_set_the_quarter(self) -> None:
+        web = inv._Evidence(citation_id="w1", kind="web", text="t", web=True,
+                            published_at=date(2026, 9, 1))
+        assert inv._text_stated_period("BNPL volume grew 26% in Q2 2026.", ["w1"], [web]) == (
+            "2026-Q2")
+
+
 # ── 4. Linear regexes ───────────────────────────────────────────────────────── #
 
-_DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000]
+_DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000,
+               "1" * 10000, "$1" * 5000, "1%" * 5000, "Q1 " * 3000, "2026-" * 2000,
+               "Rival Corp " * 900]
 
 
-@pytest.mark.parametrize("text", _DEGENERATE, ids=["spaces", "newlines", "A-", "a,", "a."])
+@pytest.mark.parametrize("text", _DEGENERATE, ids=["spaces", "newlines", "A-", "a,", "a.",
+                                                   "digits", "$1", "pct", "Q1", "dates",
+                                                   "names"])
 def test_every_new_pattern_is_linear(text: str) -> None:
     patterns: list[re.Pattern[str]] = [
-        cc._FIGURE_RE, cc._UUID_RE, cc._ID_RE, cc._CLAUSE_SPLIT_RE, cc._SOURCE_SPLIT_RE,
-        cc._COMPARATIVE_RE, cc._GROUP_WORDS_RE, cc._RATIO_RE, cc._REPORTED_RE,
-        cc._DERIVED_WORDS_RE, cc._FORWARD_RE, cc._CLEAN_SCOPE_NAME_RE,
-        gr._OTHER_ENTITY_RE, gr._FORWARD_CLAUSE_RE, ri._DISAGREEMENT_ID_RE, rf.MONEY_RE,
+        gr._OTHER_ENTITY_RE, gr._FORWARD_CLAUSE_RE, gr._RELATED_ENTITY_RE,
+        gr._LEGAL_NAME_RE, gr._SUB_SCOPE_RE, ri._DISAGREEMENT_ID_RE, rf.MONEY_RE,
+        cs._REF_TAIL_RE,
     ]
-    patterns += [v for k, v in vars(cp).items()
-                 if k.endswith("_RE") and isinstance(v, re.Pattern)]
-    for pattern in patterns:
-        started = time.perf_counter()
-        list(pattern.finditer(text))
-        assert time.perf_counter() - started < 0.2, pattern.pattern[:60]
+    patterns += [v for module in (cc, cp) for v in vars(module).values()
+                 if isinstance(v, re.Pattern)]
+    # A collector pause over thousands of match objects is not a pattern's cost.
+    timings: list[tuple[float, str]] = []
+    gc.collect()
+    gc.disable()
+    try:
+        for pattern in patterns:
+            started = time.perf_counter()
+            for _match in pattern.finditer(text):
+                pass
+            timings.append((time.perf_counter() - started, pattern.pattern[:60]))
+    finally:
+        gc.enable()
+    slow = [name for elapsed, name in timings if elapsed >= 0.2]
+    assert not slow, slow
     for fn in (lambda: cp.mentions(text), lambda: cc.figures(text),
                lambda: cc.check_claim(text[:1200], [S("x", text)]),
                lambda: gr.text_period(text),
@@ -497,7 +785,18 @@ def test_every_new_pattern_is_linear(text: str) -> None:
 def test_a_degenerate_claim_is_bounded() -> None:
     started = time.perf_counter()
     cc.check_claim("$1 " * 400, [S("x", "$1 " * 1300)])
-    assert time.perf_counter() - started < 1.0
+    assert time.perf_counter() - started < 0.5
+
+
+def test_the_adversarial_claim_and_sources_are_bounded() -> None:
+    """Review P3: many figures per claim, many heavy sources: < 0.5 s."""
+    cc._source_index.cache_clear()
+    claim = ("In Q3 2026 revenue $1.1; " * 60)[:1200]
+    sources = [S(str(k), "In Q2 2026 revenue $1.3. " * 160, period="2026-Q2")
+               for k in range(16)]
+    started = time.perf_counter()
+    cc.check_claim(claim, sources)
+    assert time.perf_counter() - started < 0.5
 
 
 # ── 5. Replay over stored reports ──────────────────────────────────────────── #
