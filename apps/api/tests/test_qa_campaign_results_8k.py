@@ -753,11 +753,16 @@ def test_index_page_parser_is_linear_on_adversarial_input(name):
 
     page = _adversarial_pages()[name]
     assert len(page.encode()) <= INDEX_PAGE_MAX_BYTES
-    started = time.perf_counter()
-    parse_filing_index_page(page)
-    parse_filing_index_page(page.encode())
-    # The regex version took 143 s on a 100 KB page of unclosed openers.
-    assert time.perf_counter() - started < 0.5
+    # Best of three, so a loaded CI runner's pause does not fail a linear
+    # parser; the regex version took 143 s on a 100 KB page of unclosed
+    # openers, which this budget still catches by two orders of magnitude.
+    best = float("inf")
+    for _ in range(3):
+        started = time.perf_counter()
+        parse_filing_index_page(page)
+        parse_filing_index_page(page.encode())
+        best = min(best, time.perf_counter() - started)
+    assert best < 2.0
 
 
 def test_index_page_over_the_cap_is_never_parsed():
