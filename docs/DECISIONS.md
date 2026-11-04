@@ -7148,3 +7148,375 @@ The cause, confirmed in code:
   venue's own wall-clock time and only tags it UTC, so that is the date as published. A venue
   that ever converts to real UTC would shift a midnight publication by a day and must hand
   its local date instead.
+
+## ADR-083: A Statement Is the Issuer's Only When a Cited Passage's Sentence Is
+
+**Date:** 2026-11-03 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, closure priority P-6 (judgment D, "implicit
+subjects open"). ADR-066, ADR-074 and ADR-079 fire only when the STATEMENT names another
+company or the PUBLISHER is another company. Live, the writer left the subject implicit
+("The company…", "It generated…", "Capital expenditure was…") over passages whose subject
+was another entity:
+
+| Defect | What happened |
+|---|---|
+| CLLS2-2 (back on CLLS5 F30, F10) | A former subsidiary's risk factors (cost cuts and a merger harming employee relations, its Nasdaq listing, "seed production techniques") inside Cellectis's own 20-F, filed as Cellectis's counter-thesis. |
+| LIN-4 / LIN2-3 | Iluka's H1 unit cash costs ($1,236/t vs $1,138/t), from iluka.com, answered Lindian's unit-cost question. |
+| LIN-3 / LIN2-2 | The inverse: Lindian's own annual-report risk text attributed to Iluka, its offtaker and lender, named nearby. |
+| JPM-5 | J.P. Morgan SE's (a regulated subsidiary) ICAAP "baseline and adverse scenarios" read as the Group's capital adequacy; `scope_key` None. |
+| ANTO2-1 | "Capital expenditure was $2,478.1 million" under a CENTINELA heading outside the excerpt, stated as Antofagasta Group capex. |
+| H3 residue (F15) | "The Tempe plant…" about Honeywell Aerospace (separate registrant), the subject implicit. |
+| CLLS5-4 | IBA's equipment price filed as Cellectis industry economics. |
+
+### Decision
+1. **`app/services/entities/passage_subject.py`** (pure, deterministic, no I/O) reads each
+   cited passage and returns, per passage:
+   - the **document owner**, from the evidence's metadata only (`document_owner`): the
+     subject for its own platform corpus (not admitted through a mention row), its
+     verified issuer origin, its own domain (`identity.issuer_domain_matches`, by
+     equality) or an ADR-079 `own` EDGAR page; another registrant for an ADR-079
+     `other` page; another company when the page is served from that company's own
+     site AND the passage names it; otherwise unknown;
+   - the **entities the passage names**: the subject (distinctive name words, ticker,
+     its own legal name, its initials such as "TSMC", "J.P. Morgan"); organisation names
+     ending in a legal suffix (Ltd, Limited, plc, Inc, Corp, SE, AG, SA, NV, LLC, GmbH,
+     Pty, SpA, N.A., Co — the two-letter forms never after a comma, "N.A." only after
+     "Bank"); the platform's registered companies, by their FULL registered name (see
+     the review below); ADR-066 separately reporting namesakes that
+     `_reports_separately` confirms; an acronym beside its spelled-out name only when
+     that name is a registered company; aliases the passage defines
+     ("J.P. Morgan SE (“JPMSE” or “the Bank”)"); a governing heading entity ("Risks
+     Related to <Name>", when the name recurs in the passage);
+   - the **matched sentence**: the sentence or clause (split at sentence ends,
+     semicolons, table pipes) sharing most figures (3 each; a year or a single digit
+     1) and content words (1 each) with the statement, minimum 2. The statement's own
+     entity words are not counted, so the writer's attribution never steers the match;
+   - its **resolved subject**: any unmasked reference to the subject in the sentence
+     makes it the subject's (rule b below); otherwise its grammatical subject (the
+     first reference in its first ten words not following a preposition: "Revenue
+     from Vexmoor" is not Vexmoor's sentence). "It / Its" resolve to the nearest name
+     earlier in the sentence, else the previous sentence's subject; "the company /
+     the group / This entity" to the nearest name, else the passage topic; "the
+     Company / the Group" (capitalised defined terms) to the entity the passage defined
+     them for, else the subject when the subject owns the document; "We / Our" to the
+     owner. A pronoun or name that only anchors a role phrase ("our former
+     subsidiary", "a subsidiary of JPMorgan Chase & Co.", "a lender to the Company")
+     is not a reference. The topic starts at the heading entity or the owner and moves
+     to each sentence's subject, except to a counterparty, customer, supplier, peer or
+     regulator: in the subject's annual report the sentence after "Iluka is our
+     offtaker" is still about the subject;
+   - its **relationship** to the subject, from the closed vocabulary SUBJECT,
+     SUBSIDIARY, FORMER_SUBSIDIARY, JOINT_VENTURE, COUNTERPARTY, CUSTOMER, SUPPLIER,
+     PEER, REGULATOR, OTHER_ISSUER, UNKNOWN, by the nearest cue within 90 characters
+     of any mention ("former subsidiary", "spun off", "deconsolidated", "divested",
+     "joint venture", "JV", "% interest in", "subsidiary", "wholly-owned", "customer",
+     "supplier", "offtake", "lender", "loan", "agreement with", "partner", "regulator",
+     "peer", "competitor", "rival"). A namesake of the subject with its own legal name
+     ("J.P. Morgan SE" beside "JPMorgan Chase & Co.") is a SUBSIDIARY unless a cue
+     says former subsidiary or joint venture; a separately reporting namesake is
+     OTHER_ISSUER (or FORMER_SUBSIDIARY);
+   - a **scope**: a capitals heading (in the chunk's `section` or as a line / prefix
+     inside the text) naming a mine, project or segment ("CENTINELA"), when its name
+     recurs in the passage as a proper noun. Structural headings ("RISK FACTORS"),
+     legal names, the subject's own name and acronyms of five letters or fewer are not
+     scopes; neither is a topic word ("CYBERSECURITY" over "our cybersecurity
+     program").
+2. **Admission rule** (`LLMInvestigator._write_up`, beside ADR-066/074/079, outside
+   peer domains). A statement stays a subject finding when at least one cited passage
+   supports it by (a) document ownership with the matched sentence resolving to the
+   subject or to nothing, (b) the sentence itself referring to the subject, or (c) a
+   typed platform record (facts, statements, filings: fetched for the subject's
+   identifiers). Otherwise:
+   - **every cited passage resolves to a named other entity** (FORMER_SUBSIDIARY,
+     COUNTERPARTY, CUSTOMER, SUPPLIER, PEER, REGULATOR, OTHER_ISSUER) → dropped, counted
+     in `statements_about_implicit_other_entity`, and one `entity_ambiguous` gap per
+     question names the entities and relationships ("Plantyx, Inc (former
+     subsidiary)"). The name is the only page-derived text in the gap: capped at 60
+     characters and reduced to letters, digits and `&.,'()-`;
+   - **a passage is a subsidiary's, a joint venture's or sits under a mine/segment
+     heading** → kept, with `scope_key = segment:<casefolded name>` (`fact_scope`'s own
+     key for a named non-Group scope) only when the evidence gave none, counted in
+     `statements_scoped_to_entity`. An evidence-typed scope, `group` included, is never
+     overwritten. Two passages naming different scopes keep the statement, unscoped;
+   - **any passage is unresolved** → kept exactly as before.
+   - **A relationship with the subject is the subject's fact** (review). A sentence
+     resolving to a customer, supplier, counterparty or other issuer is admitted as the
+     subject's (`framed`; the relationship stays recorded) when the subject anchors it
+     (the subject owns the document, the topic before the sentence is the subject, or
+     the sentence holds a masked subject reference: "our largest customer", "a customer
+     of the Company", "the Company's lender") AND either
+     - its predicate is the relationship: concentration ("accounted for 40% of
+       revenue", "N% of consolidated net sales/purchases"), a copular role ("is our sole
+       supplier"), contract terms (offtake; loan / credit facility; supply, purchase,
+       royalty or licence agreement; interest rate; repayable; drawn; secured by), a
+       commitment ("agreed to purchase / lend"), an interest "held by", a funding share
+       ("funds 50% of the cash calls"); or
+     - it carries the role frame and does not report the entity's OWN facts ("reported",
+       "generated", "produced", "its revenue / costs / output / risks").
+
+     "Our largest customer, Vexmoor Inc., reported revenue of $4.2 billion" is still
+     Vexmoor's and dropped; so is "Vexmoor Inc. reported revenue…" with no frame. A
+     former subsidiary, a peer, a regulator and a separately reporting namesake are
+     never admitted this way.
+3. **The model is not asked.** The statement's naming of the subject never overrides a
+   passage whose sentence resolves to another entity ("Corvalis may be unable to
+   maintain its Nasdaq listing" over the former subsidiary's text is dropped). The
+   optional structured `subject_entity` / `relationship` output was not added: the
+   deterministic check is the authority and a model field would only be advisory.
+4. **Fail-safe.** UNKNOWN keeps the statement: no matched sentence, an unnamed page, a
+   subject with no distinctive name word, a non-prose record, any exception in the
+   guard (logged by exception type only).
+
+### Regression cases (`tests/test_qa_closure_subject_attribution.py`)
+| Case | Verdict |
+|---|---|
+| Sentence 1 names Kestrel32 Ltd, sentence 2 "It generated revenue of US$8,296 million" | other: Kestrel32 Ltd, OTHER_ISSUER |
+| Peer table rows, even on the subject's own slide | other: Brindle Mining Corp, PEER |
+| Article titled with the subject, paragraph switches to a rival | other: Kestrel32 Ltd, PEER |
+| Subject's filing on its largest customer's revenue | other: Vexmoor Inc, CUSTOMER |
+| Subject's filing on its supplier's own output fall ("reported a 12% fall in its production output") | other: Tessaro GmbH, SUPPLIER |
+| Subject's filing: "Vexmoor Inc. reported revenue of $4.2 billion" (no frame) | other: Vexmoor Inc, OTHER_ISSUER |
+| Customer concentration ("Vexmoor Inc., our largest customer, accounted for 40% of revenue"; "a customer of the Company, represented 31% of consolidated net sales") | subject (framed, CUSTOMER) |
+| Supplier dependency ("is our sole supplier … under a supply agreement"); supplier price rise with the "our principal supplier" frame | subject (framed, SUPPLIER) |
+| Offtake terms in the subject's AR; lender facility terms (rate, repayable); JV partner's funding share | subject (framed, COUNTERPARTY) |
+| JV entity's production | scoped: `segment:compañía minera zaldívar spa` |
+| Former subsidiary's risk factors in the subject's own 20-F (named, and pronoun-only) | other: Plantyx, Inc, FORMER_SUBSIDIARY |
+| "<Name> SE" ICAAP and capital ratio (defined term "the Bank", alias "JPMSE") | scoped: `segment:j.p. morgan se` |
+| Mine heading outside the excerpt, and inline | scoped: `segment:centinela` |
+| Subject's own AR, offtaker named nearby (LIN-3 inverse), and "The consolidated entity will adopt…" | subject (kept) |
+| Plain "The Company…" passage | subject (kept) |
+| Offtaker's unit costs on its own site (LIN2-3) | other: Iluka Resources Limited |
+| Equipment maker's price (CLLS5-4), IBA a registered company | other: Ion Beam Applications SA |
+| Separately reporting namesake's plant (H3) | other: Honeywell Aerospace Inc |
+
+**False drops measured** on 12 subject passages that name other companies ("We sell to
+Vexmoor Inc.", "a loan facility to the Company", "ahead of peers such as Kestrel32 Ltd",
+"are our main competitors. Revenue rose…", "we acquired Brightline Ltd… Revenue rose…",
+"Revenue from Vexmoor Inc., our largest customer, was 40%", the subject's offtake
+announcement, a capitals topic heading, a spelled-out measure acronym, a defined
+"the Company"): 0 dropped, 0 scoped. Plus 7 relationship-framed passages (above): 0
+dropped. The ADR-066/074/079 suites pass unchanged.
+
+### Not changed / known limits
+- **An unplaced SEC namesake.** A namesake the SEC record cannot place (`_reports_separately` False, including "unreadable") is not passed as a
+  separate registrant; with a legal suffix it is read as a SUBSIDIARY (scoped), without
+  one it is not an entity.
+- **Lexical, English-first.** Entities are found by legal suffix, the platform's tables,
+  a defined alias or an agreeing acronym. A bare proper noun without a suffix ("Iluka
+  said…", "at Centinela") is not an entity unless the platform holds it or the passage
+  names it with a suffix elsewhere; such sentences stay UNKNOWN and are kept. A
+  passage with no name at all (an offtaker's page that never names itself) is kept.
+- **Relationship frames are lexical.** A relationship stated with a predicate the
+  table does not hold, and with no role frame ("Vexmoor Inc. took 40% of output" in
+  the subject's filing), is still read as the other entity's; a framed sentence with
+  an own-fact verb the table misses is still admitted.
+- **A former subsidiary described as a current one** (the FY2022 20-F said "our
+  majority-owned subsidiary") is SUBSIDIARY: kept at the subsidiary's scope, not
+  dropped. Whether it has since left the perimeter needs the entity master's
+  relationship history, which this guard does not read.
+- **Mixed passages** keep the statement: one subject or one unresolved passage is
+  enough, as in ADR-066/074/079.
+- **The statement's wording is not corrected.** A kept LIN-3 statement still says
+  "Iluka…"; the guard only refuses to drop it.
+- **Peer domains** (`competitive_position`) are not judged, as for the other firewalls.
+- **Not replayed against the stored campaign reports**: they do not store the cited
+  passage text, so the live cases above are reproduced as fixtures.
+
+### Independent review of PR #320 (NO-GO on false drops) — what changed
+The review ran 118 repros (b1–b10) and found 58 verdicts wrong, most of them false drops
+of the subject's own facts. The rules above are amended:
+
+- **B1 — no topic carry-over in the subject's own document.** There, a sentence that
+  names no one is the owner's, never the previously named entity's ("AstraZeneca
+  Holdings B.V. completed its investment… R&D expenses were $90 million" is Cellectis's
+  R&D). Only a governing heading entity, or a separately reporting namesake, sets the
+  topic. Pages the subject does not own keep the carry-over (the Kestrel32 "It
+  generated…" case is still dropped).
+- **B2 — an acronym is not a company.** "Definitive Feasibility Study (DFS)", "Building
+  Automation (BA)", "Acute Myeloid Leukemia (AML)", "Prudential Regulation Authority
+  (PRA)", "Current Expected Credit Losses (CECL)" name no one. An acronym is an entity
+  only when its spelled-out name is a registered company, or as a defined alias after
+  a legal-form name ("Ion Beam Applications SA (IBA)").
+- **B3 — in the subject's own document, only three things drop:** a FORMER_SUBSIDIARY's
+  sentence, a separately reporting namesake's (ADR-066), and a named entity's OWN
+  reported results ("reported / posted / generated / earned / booked", "its revenue /
+  costs / output…", or a table row that is only the name and its figures). A
+  counterparty, customer, supplier, peer, regulator or other company named as the
+  grammatical subject is otherwise context for the subject's fact: kept (`contained`,
+  verdict unknown, relationship recorded) — "Servier SAS paid a $10m milestone",
+  "AstraZeneca holds 44%", "LG Energy Solution will take 150,000 dmt", "Citigroup
+  acted as lead manager", "Iluka … is our offtaker. It will purchase 100%…", a
+  competitor's product as counter-thesis risk, "Oyu Tolgoi LLC produced…". A
+  transaction verb (invest, pay, lend, purchase, fund, hold, own) admits it as the
+  subject's (`framed`). Current subsidiaries never drop: they scope at most. A
+  namesake in a subsidiary legal form the subject's name does not carry ("Linde AG"
+  under "Linde plc") is a SUBSIDIARY (scoped), not the subject. Pages the subject does
+  not own keep the earlier logic, plus **M4**: on a page that names the subject, another
+  company's transaction with an unnamed counterparty ("Cellectis shares jumped 20%.
+  AstraZeneca plc will invest $140 million") is the subject's; without the subject's
+  name it is unknown (kept), never dropped.
+- **B4 — legal-form false entities.** "Crescent Valley, NV", "Victor, CO", "Backlog
+  N.A.": two-letter forms (SE, AG, SA, NV, BV, Co) never follow a comma, "near" ends a
+  name, and "N.A." is a form only after "Bank".
+- **B5 — registered companies by their full name.** "Pilbara shipments", "Target capital
+  ratio", "Northern region", "Visa processing" are not Pilbara Minerals, Target, Northern
+  Star or Visa. A registered company is named by its full registered name (legal form
+  optional), or, for a one-word name, by name + legal form; once named, its first word
+  is its alias for the rest of that passage.
+- **H1 — heading scope.** A capitals heading scopes a sentence only when the sentence has
+  no Group wording (Group, total, consolidated, Firm, Corporation, Company, we/our/us,
+  net debt, dividend, earnings per share) and is not a note reference ("Note 23
+  Borrowings"). Line-item headings (BORROWINGS, GOODWILL, CONTINGENCIES, OWN FUNDS,
+  PROVISIONS…) are never scopes. The investigator fills a scope only where the
+  evidence has none; an evidence-typed `group` is never overridden.
+- **H2 — the filer's own labels.** "the Firm", "the Corporation", "Firmwide" and bare
+  "Group" ("Group CET1 ratio") are defined self-references: the subject in its own
+  document.
+- **H3 — two scopes keep the statement unscoped** (verdict unknown, `conflict`): no
+  discard and no gap.
+- **M1** — an entity named twice is one entity (stored and raw names fold the same way).
+  **M2** — the registered-name index is compiled once per name list (`lru_cache`; the
+  investigator builds its list once), and the reader scans at most 6,000 characters of
+  one passage (evidence is cut at 1,500): 3,000 registered names cost the same as none.
+- **M3 — a subject with no distinctive name word of four or more letters gets no
+  guard.** "BHP Group Limited" ("bhp" is three letters, "group" generic), "Global Mining
+  plc": every passage is UNKNOWN and every statement kept, exactly as before ADR-083.
+
+**Before / after on the reviewer's repros** (121 distinct cases; the 118 that must be
+kept, scoped or dropped are `REVIEW_CASES` in `tests/test_qa_closure_subject_attribution.py`):
+before, 61 verdicts differed from the reviewer's — 37 false drops (a subject, scoped or
+unknown fact returned `other`), 17 wrong scopes (a Group sentence scoped to a heading,
+a subsidiary or a topic word), 2 missed drops and 5 others. After: 0 false drops, 0
+wrong scopes; 9 differ, all keeps: BHP (M3), Oyu Tolgoi (unknown, not scoped), three
+counterparty / competitor sentences kept as unknown rather than subject, a JV
+operator's budget kept as subject rather than unknown, and three the reviewer expected
+DROPPED which are kept — "The CET1 ratio of HSBC Bank Canada, a former subsidiary"
+(the name follows "of"), "Calyxt, Inc. completed its merger with Cibus" (another
+company's event, no cue) and "Pfizer Inc. received FDA approval for its competing
+product" (no own-results verb; dropped before). The last two name the other company in
+the statement, where ADR-074 drops them.
+The keep corpus adds 14 cases (reference-free sentences after an investor, a litigant,
+an acquiree and a subsidiary; a study, segment and regulator acronym; the Firm, the
+Corporation, bare Group; a state code and "N.A."; a regulator and an investor acting
+on the subject): 0 dropped, 0 scoped.
+
+**Limits added by the review.** An unregistered acronym company ("IBA (Ion Beam
+Applications)" when IBA is not in the platform's table) and a registered company named
+by its first word alone ("Iluka said…") are no longer entities: such sentences are
+UNKNOWN and kept — CLLS5-4 is caught only when the equipment maker is registered or
+named with its legal form. In the subject's own document, another company's operational
+sentence without an own-results verb is kept even when it is not the subject's.
+
+### Re-review of PR #320 at 4c18851 — what changed
+- **R1 — reported results drop only a positively outside entity.** In the subject's own
+  document a named entity's own reported results (or table row) drop only when a cue
+  places it outside the perimeter: PEER, CUSTOMER, SUPPLIER or COUNTERPARTY. A cue-less
+  OTHER_ISSUER may be the subject's own operating company ("Quantinuum Ltd reported
+  revenue of $120 million", "Oyu Tolgoi LLC reported copper production", "Praxair India
+  Private Limited generated sales", a revenue-by-operation table of "Minera … S.A."
+  rows): kept (`contained`, unknown). "Our largest customer, Vexmoor Inc., reported
+  revenue…" (CUSTOMER) and the peer-table row (PEER) still drop; "Vexmoor Inc. reported
+  revenue…" with no cue drops only on a page the subject does not own.
+- **R2 — the registered-name index costs milliseconds.** No regex is compiled per name:
+  the index maps a name's first folded word to its folded name words, matched as
+  strings, with ONE precompiled legal-form tail. The cache is keyed on the name list
+  only (the subject's own-word exclusion is applied at match time), so a new subject
+  never rebuilds it. Measured: 9 ms for 1,000 names, 32 ms for 3,000 (was 6.8 s and
+  7–25 s); a dense 1.5k passage reads in ~25–30 ms at 3,000 names, the same as at none;
+  a 200k-character page in 0.12 s. `test_registered_name_index_timing` guards it.
+- **Restored coverage, narrowed by the second re-review** (missing data is acceptable,
+  wrong data is not):
+  - (a) In the subject's own document a FORMER_SUBSIDIARY reaches a later sentence only
+    through a pronoun ("There can be no assurance that **its** seed production
+    techniques…"), its defined alias, or a governing heading entity ("Risks Related to
+    Calyxt"). It never carries into a sentence with no reference: "…our former
+    subsidiary, was deconsolidated.\nResearch and development expenses were $90
+    million", "Cash and cash equivalents were $264 million", "Net loss attributable to
+    shareholders…", "Headcount fell to 220" are the filer's and are kept. The
+    separation sentence itself ("A gain of $12 million was recognised on
+    deconsolidation") stays the filer's even under such a heading.
+  - (b) Group wording is split. "Group, consolidated, Firm, Corporation, net debt,
+    dividend, EPS, total company, Note N" always un-scope a heading. "Total, company,
+    we, our, us" un-scope it unless the heading's mine or segment is the sentence's
+    locative or possessive head: "at / on / in / from / for (the) Centinela…",
+    "Centinela's…", or the sentence's own subject ("Centinela produced…"). Named as a
+    part of a total it does not count: "of which Centinela contributed", "including Los
+    Pelambres", "with the Americas contributing", "excluding", "other than", "came
+    from", "contributed by". So "Total copper production at Centinela" stays
+    Centinela's, and "Total copper production was 664,000 tonnes, of which Centinela
+    contributed…" is the Group's. (Narrowed again at final verification, below.)
+  - (c) The lone-subsidiary rule (a sentence with no reference, scoped to the passage's
+    only named subsidiary or JV) is **removed**. It scoped Group revenue, interest
+    expense, EBITDA, net revenue, cash flow and tax rate to an acquired company, a
+    guarantor, an equity-accounted JV or a broker-dealer.
+  - (d) A registered company's own site may name it by its first word ("Iluka half-year
+    results" on iluka.com): the host, confirmed by `issuer_domain_matches`, is the
+    evidence the full name otherwise provides. Unchanged after the second re-review;
+    ADR-066 already drops that subset.
+- **N1 — a namesake in another legal form is the subject** ("BASF AG" for "BASF SE",
+  "Unilever N.V." for "Unilever PLC") unless a cue makes it a subsidiary, joint venture
+  or former subsidiary ("Linde AG, the German operating company" — "operating company"
+  is now a subsidiary cue).
+
+**Still not caught (never caught at any revision):** a "Risks Related to <Name>"
+heading whose name never recurs in the excerpt, and a sentence that mixes the other
+entity's risk with the subject's ("…which could reduce the value of our remaining
+stake"). Both stay kept.
+
+**Final verification of PR #320 at 232d807: a Group total under a mine heading.** Rule
+(b) still scoped four Group totals to a mine or segment, which is wrong data:
+"CENTINELA\nOur total capital expenditure was $2,478.1 million in 2025, with $1,327.1
+million spent on the Centinela Second Concentrator", "AMERICAS\nOur total sales were
+$33.0 billion in 2024, up 1%, while sales in the Americas grew 5%", "CENTINELA\nWe
+produced 664,000 tonnes in 2024, of which 143,000 tonnes came from Centinela" and "LOS
+PELAMBRES\nOur copper production rose 10% to 664,000 tonnes, driven by higher grades at
+Los Pelambres". With weak Group wording the mine or segment now counts as the head only
+when it appears **before the sentence's first figure** (a four-digit year aside), is
+not named as a part of a total, and is not followed by total wording before that figure
+("Centinela's ramp-up lifted our total copper production to 664,000 tonnes" is the
+Group's). After the figure it is a detail of a Group number. "Total copper production
+at Centinela was 143,000 tonnes" and "At Centinela, we produced 143,000 tonnes" stay
+Centinela's. A heading on the sentence's own line ("CENTINELA — Total capital
+expenditure was…") remains its own signal: only strong Group wording overrides it, and
+it does not reach the next line. Fail-safe: in doubt, unscoped. Accepted cost: "We
+invested $1.3 billion in 2024 on the Centinela Second Concentrator" under a CENTINELA
+heading is now kept unscoped (the mine follows the figure), and so is "At Centinela,
+our copper production was 143,000 tonnes" ("our" between the mine and the figure).
+
+**PDF spacing.** Each run of two or more spaces or tabs is collapsed once, at reader
+entry, to one space (or one tab if the run contains a tab: a table cell boundary).
+Every offset the reader computes is into the collapsed text, and the 6,000-character cap
+applies after the collapse. "Calyxt,    Inc., our former majority-owned subsidiary"
+is recognised again: the `{1,3}` bounds had cost that recall.
+
+**Bounded patterns (security review MEDIUM).** Every quantifier in
+`passage_subject.py` that can meet a long run of spaces, tabs or name characters is
+bounded (`[ \t]{1,3}`, `[\w-]{1,40}`, `[\w&.'’-]{0,40}`, `{1,60}`). A "word" longer
+than 60 characters is never a heading word or an alias, at most 200 legal-form names
+are read per passage, and mention overlap is checked by bisection rather than a scan.
+The acronym and namesake patterns took 1.3 s at 6,000 characters of "A-". Sentence
+splitting rescanned the whole growing span after each abbreviation, which was quadratic
+on a run of initials ("A.B.C.D. " × 700: 690 ms). It now reads only the last 80
+characters. Measured timings (the earlier "at most about 0.25 s" claim was wrong): at
+the reviewer's final verification, `attribute_statement` took 0.72–0.95 s on 6,000
+characters of dense legal-suffix or comma lists ("Acme Inc. Beta Ltd. Gamma plc …",
+"Acme Inc, Acme Inc, …") and 0.25–0.31 s at the production cut of 1,500, and
+`_INLINE_HEADING_RE` took 79 ms on a 6,000-space line. On the development machine,
+before and after this change: initials at 6k 0.70–0.84 s → 0.08–0.10 s; a
+6,000-space passage 32–47 ms → under 1 ms (the reader never sees the run, so
+`_INLINE_HEADING_RE`'s 23–26 ms on a raw space line is no longer reachable); suffix and
+comma lists unchanged by the collapse, 0.23–0.29 s at 6k and 0.07–0.12 s at 1.5k
+(about three times that on the reviewer's machine). Those lists remain the slowest
+input. They are linear in the number of names, not backtracking.
+`test_no_pattern_backtracks_on_a_degenerate_passage` guards it, now including the
+initials run.
+
+**Accepted misses after the second re-review** (kept, never wrong):
+- a former subsidiary's text that continues with no pronoun, alias or heading ("Calyxt,
+  Inc., our former majority-owned subsidiary, was deconsolidated….\nThere can be no
+  assurance that seed production techniques will meet…") is kept as the subject's
+  (CLLS2-2 next-paragraph shape);
+- a subsidiary's fact named only once, with no defined alias ("J.P. Morgan SE is a
+  wholly-owned subsidiary. Capital adequacy is assessed over a one-year horizon…"),
+  is kept unscoped (JPM-5 without "the Bank"). With the alias ("JPMSE", "the Bank") it
+  is scoped as before.

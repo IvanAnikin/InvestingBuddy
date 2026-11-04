@@ -79,6 +79,13 @@ from app.services.director.contracts import (
 from app.services.director.loop import FindingDraft, GapDraft, TaskOutcome
 from app.services.director.planner import PlannedQuestion
 from app.services.director.roles import role_for
+from app.services.entities.passage_subject import (
+    VERDICT_OTHER,
+    VERDICT_SCOPED,
+    VERDICT_UNKNOWN,
+    Passage,
+    StatementAttribution,
+)
 from app.services.knowledge_state import ACQUIRED_NOT_READ
 from app.services.ledger import store as ledger
 
@@ -1623,6 +1630,46 @@ def foreign_publisher(
     return sorted(names)[0]
 
 
+def _attribution_passage(item: _Evidence, company_id: Any, company_name: str | None) -> Passage:
+    """ADR-083 — one cited item as the passage-attribution module reads it.
+
+    Prose only from the corpus and verified-lead tools (their ``text`` / excerpt and
+    heading fields). A typed platform record (facts, statements, filings, IR events) is
+    the subject's by construction — the tool was called for the subject's identifiers
+    — and any other tool's record (peer financials, industry series) is unknown."""
+    from app.services.entities.passage_subject import (
+        OWNER_SUBJECT,
+        OWNER_UNKNOWN,
+        document_owner,
+        passage_text,
+    )
+    from app.services.web_research.trust import is_verified_issuer, publisher_of
+
+    if item.kind not in _CORPUS_TOOLS and item.kind != TOOL_FETCH_PUBLIC_SOURCE:
+        owner = OWNER_SUBJECT if item.kind in _TYPED_TOOL_CLASS else OWNER_UNKNOWN
+        return Passage(citation_id=item.citation_id, owner=owner, analysable=False)
+    text, heading = passage_text(item.text)
+    host = (publisher_of(item.origin_key) or "") if item.web else ""
+    host = host if re.fullmatch(r"[a-z0-9.-]{3,120}", host) else ""
+    owner = document_owner(
+        web=item.web,
+        own_company=bool(item.company_id) and str(item.company_id) == str(company_id),
+        via_subject=item.via_subject,
+        verified_issuer_origin=is_verified_issuer(item.origin_key, company_id),
+        publisher_host=host or None,
+        edgar_registrant=item.edgar_registrant,
+        subject_name=company_name,
+    )
+    own_site = item.web and item.source_class in _OWN_SITE_CLASSES and owner == OWNER_UNKNOWN
+    return Passage(
+        citation_id=item.citation_id,
+        text=text,
+        heading=heading,
+        owner=owner,
+        company_site_host=host if own_site and host else None,
+    )
+
+
 def _publisher_label(origin_key: str | None) -> str:
     """The publisher a web item came from, for the prompt: the issuer's own material is
     "issuer-own" (its internal id is no use to a reader), anything else its origin."""
@@ -2046,6 +2093,13 @@ class InvestigatorDiagnostics:
     #: A statement resting only on web copies of ANOTHER registrant's EDGAR filings
     #: (``sec.gov/Archives/edgar/data/<other CIK>/…``), dropped (ADR-079).
     statements_about_other_registrant: int = 0
+    #: ADR-083. A statement whose every cited passage, read at the sentence it rests on,
+    #: is another named entity's (an offtaker, a former subsidiary, a peer row), though
+    #: the writer left the subject implicit. Dropped.
+    statements_about_implicit_other_entity: int = 0
+    #: ADR-083. A statement kept, but scoped to the subsidiary, joint venture or
+    #: mine/segment heading its passage belongs to, so it never reads as the Group's.
+    statements_scoped_to_entity: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -2077,6 +2131,10 @@ class InvestigatorDiagnostics:
         self.statements_about_other_registrant += (
             other.statements_about_other_registrant
         )
+        self.statements_about_implicit_other_entity += (
+            other.statements_about_implicit_other_entity
+        )
+        self.statements_scoped_to_entity += other.statements_scoped_to_entity
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -2101,6 +2159,10 @@ class InvestigatorDiagnostics:
             "statements_about_other_registrant": (
                 self.statements_about_other_registrant
             ),
+            "statements_about_implicit_other_entity": (
+                self.statements_about_implicit_other_entity
+            ),
+            "statements_scoped_to_entity": self.statements_scoped_to_entity,
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -2181,6 +2243,8 @@ class LLMInvestigator:
     #: registrant CIK → does it report separately? Remembered, failures included, so one
     #: write-up never asks the regulator about the same registrant twice (review round 2).
     _separate: "dict[str, bool]" = field(default_factory=dict, repr=False)
+    #: ADR-083 — the registered names the passage reader looks for, built once.
+    _attribution_known: "tuple[str, ...] | None" = field(default=None, repr=False)
     #: Lazily-resolved ADR-079 subject (its CIKs) for the EDGAR registrant check.
     _edgar_subject: "EdgarSubject | None" = field(default=None, repr=False)
     #: Open-web W7 — ``async (question_key, candidates, round_index, max_fetches, terms)
@@ -3400,6 +3464,44 @@ class LLMInvestigator:
         self._separate[related.cik] = verdict
         return verdict
 
+    async def _passage_attribution(
+        self, statement: str, cited_items: "Sequence[_Evidence]"
+    ) -> StatementAttribution:
+        """ADR-083 — whose the cited passages' matched sentences are. Never raises: a
+        guard that cannot read returns ``unknown``, which keeps the statement."""
+        from app.services.entities.passage_subject import SubjectIdentity, attribute_statement
+
+        try:
+            passages = [
+                _attribution_passage(item, self.company_id, self.company_name)
+                for item in cited_items
+            ]
+            prose = " ".join(p.text for p in passages)
+            separate: list[tuple[str, str]] = []
+            for related in await self._related_registrants() if prose else ():
+                words = [re.escape(w) for w in related.phrase.split()]
+                pattern = r"\b" + r"\s+".join(words) + r"\b"
+                if re.search(pattern, prose, re.IGNORECASE) and await self._reports_separately(
+                    related
+                ):
+                    separate.append((related.phrase, related.name))
+            if prose and self._attribution_known is None:
+                # Built once per investigator: the passage reader compiles its name
+                # index once per distinct tuple (ADR-083 review M2).
+                others = await self._other_companies()
+                self._attribution_known = tuple(sorted(set(others.values())))
+            subject = SubjectIdentity(
+                name=self.company_name,
+                ticker=self.ticker,
+                known_entities=self._attribution_known or (),
+                separate_registrants=tuple(separate),
+            )
+            return attribute_statement(statement, passages, subject)
+        except Exception as exc:  # noqa: BLE001 - a guard that cannot read must not block research
+            # The exception type only: never the statement or the page text.
+            logger.warning("investigator.passage_attribution_failed: %s", type(exc).__name__)
+            return StatementAttribution(VERDICT_UNKNOWN)
+
     async def _write_up(
         self,
         role_id: str,
@@ -3498,12 +3600,14 @@ class LLMInvestigator:
         related_dropped: dict[str, RelatedRegistrant] = {}
         foreign_dropped: dict[str, str] = {}
         registrants_dropped: set[str] = set()
+        implicit_dropped: dict[str, tuple[str, str]] = {}
         for raw in (payload.get("findings") or [])[:MAX_FINDINGS_PER_QUESTION]:
             if not isinstance(raw, dict):
                 continue
             statement = str(raw.get("statement") or "").strip()
             if not statement:
                 continue
+            entity_scope: str | None = None
             cited = [str(v).strip() for v in (raw.get("evidence_ids") or []) if v]
             fabricated = [c for c in cited if c not in allowed]
             real = [c for c in cited if c in allowed]
@@ -3601,6 +3705,22 @@ class LLMInvestigator:
                     self.diagnostics.statements_about_foreign_subject += 1
                     foreign_dropped.setdefault(foreign_subject.lower(), foreign_subject)
                     continue
+                attribution = await self._passage_attribution(statement, cited_items)
+                if attribution.verdict == VERDICT_OTHER:
+                    # ADR-083: every cited passage's matched sentence is, positively,
+                    # another named entity's — an offtaker's unit costs, a former
+                    # subsidiary's risk factors in the issuer's own 20-F — though the
+                    # writer left the subject implicit, so no guard above could see it.
+                    self.diagnostics.statements_about_implicit_other_entity += 1
+                    for other_name, role in attribution.others:
+                        implicit_dropped.setdefault(other_name.casefold(), (other_name, role))
+                    continue
+                if attribution.verdict == VERDICT_SCOPED:
+                    # Passages naming two different scopes come back ``unknown`` and are
+                    # kept unscoped (ADR-083 review H3). A subsidiary's, a joint
+                    # venture's or a mine's fact: kept, at that scope, so no Group-level
+                    # consumer reads it as the Group's.
+                    entity_scope = attribution.scope_key
             direction = str(raw.get("direction") or "").strip().lower() or None
             if direction not in {"supportive", "adverse", "neutral", None}:
                 direction = None
@@ -3633,6 +3753,11 @@ class LLMInvestigator:
                     )
                 )
                 continue
+            if entity_scope and scope_key is None:
+                # ADR-083: the passage's own entity or heading narrows an UNTYPED scope.
+                # An evidence-typed scope (``group`` included) is never overridden.
+                scope_key = entity_scope
+                self.diagnostics.statements_scoped_to_entity += 1
             findings.append(
                 FindingDraft(
                     statement=statement[:2000],
@@ -3703,6 +3828,33 @@ class LLMInvestigator:
                         "Another company's results, policies and risks are not the "
                         "issuer's; filing them under the issuer attributes another "
                         "company's facts."
+                    ),
+                    sources_tried=tuple(sorted({e.kind for e in evidence})),
+                )
+            )
+
+        if implicit_dropped:
+            from app.services.entities.passage_subject import RELATIONSHIP_LABELS
+
+            # Only the entity's name (capped, cleaned) and a platform label: no other
+            # page text reaches the gap.
+            names = "; ".join(
+                f"{entity_name} ({RELATIONSHIP_LABELS.get(role, 'another company')})"
+                for entity_name, role in sorted(implicit_dropped.values())[:5]
+            )
+            gaps.append(
+                GapDraft(
+                    gap_type=ledger.GAP_ENTITY_AMBIGUOUS,
+                    description=(
+                        f"Statements resting only on passages about {names} — another "
+                        "entity, though the statement left its subject implicit — were "
+                        "not filed under the issuer."
+                    )[:600],
+                    question_key=question.key,
+                    why_it_matters=(
+                        "A sentence that says \"the company\" about another entity's "
+                        "passage attributes that entity's figures, risks or plans to "
+                        "the issuer."
                     ),
                     sources_tried=tuple(sorted({e.kind for e in evidence})),
                 )
