@@ -101,6 +101,10 @@ class FindingRef:
     #: for a finding written before the kind was declared.
     statement_kind: str | None = None
 
+    #: ADR-086 — ``"text_stated"`` when ``period_key`` was read from the statement's
+    #: own words (a web finding) rather than inherited from its evidence.
+    period_basis: str | None = None
+
     @classmethod
     def from_row(cls, row: Any) -> "FindingRef":
         """ONE mapping from a ledger row, used by every reader of findings."""
@@ -128,6 +132,12 @@ class FindingRef:
                 getattr(row, "superseded_by_finding_id", None)
             ),
             statement_kind=getattr(row, "statement_kind", None),
+
+            period_basis=(
+                "text_stated"
+                if getattr(row, "period_type", None) == "text_stated"
+                else None
+            ),
         )
 
     @property
@@ -162,6 +172,9 @@ class FindingRef:
             # Emitted only when declared, so a finding written before ADR-088 serialises
             # exactly as it did.
             **({"statement_kind": self.statement_kind} if self.statement_kind else {}),
+
+            # Only when set, so the pinned key set of an evidence-dated finding holds.
+            **({"period_basis": self.period_basis} if self.period_basis else {}),
         }
 
 
@@ -181,6 +194,8 @@ class GapRef:
     reconciliation_status: str | None = None
     addressed_by_finding_ids: tuple[str, ...] = ()
     reconciliation_reasons: tuple[str, ...] = ()
+    #: ADR-086 — the report's gap status (``gap_reconciliation.GAP_STATUSES``).
+    gap_status: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -193,6 +208,8 @@ class GapRef:
             "reconciliation_status": self.reconciliation_status,
             "addressed_by_finding_ids": list(self.addressed_by_finding_ids),
             "reconciliation_reasons": list(self.reconciliation_reasons),
+            # Only when reconciliation ran, so the pinned key set of an older gap holds.
+            **({"gap_status": self.gap_status} if self.gap_status else {}),
         }
 
 
@@ -589,6 +606,7 @@ async def _gaps(session: Any, run: Any) -> tuple[GapRef, ...]:
                 str(r) for r in ((getattr(row, "reconciliation_json", None) or {})
                                  .get("reasons") or ())
             ),
+            gap_status=(getattr(row, "reconciliation_json", None) or {}).get("gap_status"),
         )
         for row in rows
     )

@@ -388,8 +388,10 @@ _DATE_CUE_RE = re.compile(
     r"(?:quarter|half)\b",
     re.IGNORECASE,
 )
+#: ADR-086 — "$A45,087k" (an Australian filer's own notation) is A$ as much as "A$45.1m".
 _CURRENCY = (
-    r"us\$|a\$|c\$|nz\$|hk\$|s\$|\$|£|€|\busd|\baud|\bcad|\bgbp|\beur|\bzar|\bnok|\bsek|"
+    r"us\$|a\$|c\$|nz\$|hk\$|s\$|\$a(?=\s?\d)|\$|£|€|\busd|\baud|\bcad|\bgbp|\beur|\bzar|"
+    r"\bnok|\bsek|"
     r"\bdkk|\bchf|\bjpy|\bcny"
 )
 MONEY_RE = re.compile(
@@ -720,7 +722,7 @@ _SCALE = {
     "b": 1e9, "bn": 1e9, "billion": 1e9,
 }
 _CURRENCY_ALIASES = {"$": "usd", "us$": "usd", "usd": "usd", "us dollars": "usd",
-                     "a$": "aud", "aud": "aud", "australian dollars": "aud",
+                     "a$": "aud", "$a": "aud", "aud": "aud", "australian dollars": "aud",
                      "c$": "cad", "cad": "cad", "canadian dollars": "cad",
                      "£": "gbp", "gbp": "gbp", "pounds sterling": "gbp",
                      "€": "eur", "eur": "eur", "euros": "eur",

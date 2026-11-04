@@ -1741,3 +1741,23 @@ reader takes its counts and status lines from it.
   registrant not verified as the issuer`, never "reported in the press" and never the
   issuer's own. Only a filing a filing system served (or a verified issuer domain) is
   never the press side of a contradiction.
+
+## Gap status, text-stated web periods and claim checks (ADR-086)
+
+- `gap_reconciliation` gives every gap one report status: `OPEN`, `PARTIALLY_CLOSED`,
+  `CLOSED`, `SUPERSEDED`, `NONCOMPARABLE` or `EXTRACTION_FAILED` (`gap_status`, persisted
+  in `research_gaps.reconciliation_json`). Another entity's fact, a forecast of a
+  historical metric, a segment fact for a Group gap, or a Group fact for a segment gap
+  never closes a gap. A later balance supersedes an older-dated balance gap. An
+  unanswered gap whose document is held but unread (`acquired_not_read`) is
+  `EXTRACTION_FAILED`.
+- The investigator gives a web finding without an evidence period the one reporting
+  period its own text states (ADR-080 framing against the source's publication date),
+  marked `period_type = "text_stated"`.
+- `app/services/ledger/claim_checks.py` holds chair and council claims to the period and
+  scope of the figures they cite, and labels a platform-derived ratio
+  ("(platform-derived)") or withholds it when it is called reported. The ADR-082
+  enforcer applies it to chair key points. `citation_checker.check_and_sanitize`
+  applies it to legacy V2 key points and implications at generation.
+- `scripts/qa_replay_gap_status.py <reports-dir> [--json out] [--compare before.json]`
+  replays gap status and the enforcer over stored payloads. It makes no network call.

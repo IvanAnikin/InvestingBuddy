@@ -197,7 +197,8 @@ class TestGapReconciliation:
         (verdict,) = gr.reconcile([older], [_finding("f2", "Revenue of US$50m",
                                                       period_key="FY2025")])
         assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
-        assert gr.REASON_OTHER_PERIOD in verdict.reasons
+        # ADR-086 names the direction: FY2025 certainly ends after FY2023.
+        assert gr.REASON_LATER_PERIOD in verdict.reasons
         quarter = _gap("2025-Q3 revenue was not acquired")
         (verdict,) = gr.reconcile([quarter], [_finding("f3", "Revenue of US$50m",
                                                         period_key="2025-H1")])

@@ -121,6 +121,58 @@ REASON_TARGET_PASSED = "target_date_passed"
 REASON_PERIOD_UNSPECIFIED = "period_unspecified"
 REASON_VALUE_STALE = "value_stale"
 REASON_VALUE_DATE_UNKNOWN = "value_date_unknown"
+#: ADR-086 — a finding for a LATER period than the one the gap names.
+REASON_LATER_PERIOD = "later_period"
+#: ADR-086 — a forecast, target or guidance figure, offered for a historical gap.
+REASON_FORWARD_LOOKING = "forward_looking_not_historical"
+#: ADR-086 — a balance gap named an older date; a later balance supersedes it.
+REASON_SUPERSEDED_BY_LATER = "superseded_by_later_period"
+#: ADR-086 — the gap's relevant held document was never read (ADR-084).
+REASON_HELD_NOT_READ = "held_document_not_read"
+
+# ── ADR-086: the gap status vocabulary (spec §10) ─────────────────────────── #
+#
+# The ledger column ``reconciliation_status`` keeps its four values (migration 043's
+# CHECK); the status below is the report's vocabulary, persisted per gap in
+# ``reconciliation_json.gap_status`` and in the report payload.
+GAP_STATUS_OPEN = "OPEN"
+GAP_STATUS_PARTIALLY_CLOSED = "PARTIALLY_CLOSED"
+GAP_STATUS_CLOSED = "CLOSED"
+GAP_STATUS_SUPERSEDED = "SUPERSEDED"
+#: A finding speaks to the gap's metric, but its period cannot be compared with the
+#: gap's (an undated balance, a forecast offered for a historical gap).
+GAP_STATUS_NONCOMPARABLE = "NONCOMPARABLE"
+#: The relevant document is held and was not read into an answer (ADR-084).
+GAP_STATUS_EXTRACTION_FAILED = "EXTRACTION_FAILED"
+GAP_STATUSES: tuple[str, ...] = (
+    GAP_STATUS_OPEN,
+    GAP_STATUS_PARTIALLY_CLOSED,
+    GAP_STATUS_CLOSED,
+    GAP_STATUS_SUPERSEDED,
+    GAP_STATUS_NONCOMPARABLE,
+    GAP_STATUS_EXTRACTION_FAILED,
+)
+#: Reasons that make a finding's answer NOT COMPARABLE with the gap (rather than a
+#: partial answer): nothing places it in time, or it is a forecast.
+NONCOMPARABLE_REASONS: frozenset[str] = frozenset(
+    {REASON_PERIOD_UNKNOWN, REASON_VALUE_DATE_UNKNOWN, REASON_FORWARD_LOOKING}
+)
+
+#: ADR-086 — a finding that names ANOTHER entity as its subject ("Peer Co (a
+#: peer, not the company) reported …") never answers the subject's gap.
+_OTHER_ENTITY_RE = re.compile(
+    r"\((?:a|an|the)[ \t]{1,3}(?:peer|competitor|rival|customer|supplier|offtaker|"
+    r"off-taker|counterparty|lender|partner|former[ \t]{1,3}subsidiary)\b[^)]{0,80}\)"
+    r"|\bnot[ \t]{1,3}the[ \t]{1,3}(?:company|issuer|subject)\b",
+    re.IGNORECASE,
+)
+#: ADR-086 — a clause stating a value as a forecast, target or guidance.
+_FORWARD_CLAUSE_RE = re.compile(
+    r"\b(?:guid(?:ance|ed|es)|outlook|forecasts?|forecasted|projected|projections?|"
+    r"target(?:ed|ing)?|budget(?:ed)?|expects?|expected|anticipat\w{0,6}|"
+    r"estimates?|plans?[ \t]{1,3}to|planned|will|consensus)\b",
+    re.IGNORECASE,
+)
 
 #: Point-in-time balances: a cash or debt figure answers "what is the balance" only when
 #: it is recent, whether or not the gap says "current".
@@ -134,6 +186,14 @@ ROUNDED_SAME_TOLERANCE = 0.05
 PERIOD_BOUND_FIELDS: frozenset[str] = frozenset(
     {"metric:revenue", "metric:operating_cash_flow", "metric:cash", "metric:net_debt",
      "metric:capex", "metric:capex_period", "metric:capex_sustaining"}
+)
+
+#: ADR-086 — metrics that are only ever HISTORY (a figure for a period that ended, a
+#: balance at a date): a forecast of one never closes a gap about it. Capex is not here:
+#: a project's capital estimate is the answer a capex gap often wants.
+HISTORICAL_FIELDS: frozenset[str] = frozenset(
+    {"metric:revenue", "metric:operating_cash_flow", "metric:cash", "metric:net_debt",
+     "metric:capex_period"}
 )
 
 MAX_CLOSING_FINDINGS = 200
@@ -192,7 +252,7 @@ class FindingFacts:
             published_at=getattr(row, "source_published_at", None),
             withdrawn=getattr(row, "verification_status", None) == "withdrawn",
             superseded_by=str(superseded) if superseded else None,
-            stated_period=rf.statement_period(statement),
+            stated_period=text_period(statement),
             trust_label=trust_label,
             statement_kind=getattr(row, "statement_kind", None),
         )
@@ -215,6 +275,11 @@ class FindingFacts:
     @property
     def is_primary(self) -> bool:
         return not self.is_context_only and bool(set(self.source_kinds) & PRIMARY_SOURCE_KINDS)
+
+    @property
+    def is_other_entity(self) -> bool:
+        """ADR-086 — the statement says its subject is another entity."""
+        return _OTHER_ENTITY_RE.search(self.statement or "") is not None
 
     @property
     def effective_period(self) -> str | None:
@@ -245,6 +310,16 @@ class GapFacts:
     question_key: str | None = None
     status: str = ledger.GAP_OPEN
     closed_by_finding_id: str | None = None
+    #: ADR-086 — whose gap it is (``knowledge_state``) and its question's unresolved
+    #: reason: ``acquired_not_read`` (ADR-084) makes an unanswered gap EXTRACTION_FAILED.
+    knowledge_state: str | None = None
+    unresolved_reason: str | None = None
+
+    @property
+    def held_not_read(self) -> bool:
+        return ledger.UNRESOLVED_ACQUIRED_NOT_READ in (
+            self.knowledge_state, self.unresolved_reason
+        )
 
 
 @dataclass(frozen=True)
@@ -265,6 +340,19 @@ class DocumentFacts:
     kind: str
     ref: str | None = None
     published: str | None = None
+
+
+def text_period(statement: str | None) -> str | None:
+    """The period a statement's own words name: ``rf.statement_period`` first, then
+    (ADR-086) the one non-forward period ``claim_period`` reads — "Quarter ended 30 Sep
+    2026", "as of September 30, 2026" — in the same vocabulary, else ``None``."""
+    found = rf.statement_period(statement)
+    if found:
+        return found
+    from app.services.ledger.claim_period import single_period
+
+    period = single_period(statement)
+    return period.rf_key() if period is not None else None
 
 
 def finding_fields(
@@ -292,11 +380,16 @@ class GapVerdict:
     reasons: list[str] = field(default_factory=list)
     fact: dict[str, Any] | None = None
     documents: list[dict[str, Any]] = field(default_factory=list)
+    #: ADR-086 — the report's status vocabulary (``GAP_STATUSES``).
+    gap_status: str = GAP_STATUS_OPEN
+    superseded_by_finding_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "gap_id": self.gap_id,
             "status": self.status,
+            "gap_status": self.gap_status,
+            "superseded_by_finding_id": self.superseded_by_finding_id,
             "fields": list(self.fields),
             "field_labels": [rf.label_of(f) for f in self.fields],
             "field_source": self.field_source,
@@ -707,6 +800,14 @@ def _family_subtype_reasons(finding: FindingFacts, requirement: str) -> list[str
 
 def _scope_reasons(finding: FindingFacts, scope: str | None) -> list[str] | None:
     finding_segment = bool(finding.scope_key) and not _is_group_scope(finding.scope_key)
+    if (
+        not finding.scope_key
+        and not (scope and scope.startswith("segment"))
+        and (gap_scope(finding.statement) or "").startswith("segment")
+    ):
+        # ADR-086: an unscoped finding whose own words are about a segment never
+        # closes a Group (or unscoped) gap; it can still partly address it.
+        return [REASON_SCOPE_DIFFERS]
     if scope and scope.startswith("segment"):
         if not finding_segment:
             return None  # a group figure never answers a segment question
@@ -738,10 +839,47 @@ def _period_reasons(finding: FindingFacts, gap_period: str | None) -> list[str]:
         return [REASON_PERIOD_UNKNOWN]
     if have == gap_period:
         return []
+    order = _period_order(have, gap_period)
+    if order is not None:
+        return [REASON_OLDER_PERIOD] if order < 0 else [REASON_LATER_PERIOD]
     wanted_rank, have_rank = rf.period_rank(gap_period), rf.period_rank(have)
     if wanted_rank and have_rank and have_rank < wanted_rank:
         return [REASON_OLDER_PERIOD]
     return [REASON_OTHER_PERIOD]
+
+
+def _period_order(have: str | None, wanted: str | None) -> int | None:
+    """ADR-086 — ``-1`` when ``have`` certainly ENDS before ``wanted``, ``1`` when it
+    certainly ends after it, ``None`` when that cannot be told (fiscal labels, an
+    undated half)."""
+    from app.services.ledger.claim_period import END_SLACK_DAYS, period_of_key
+
+    a, b = period_of_key(have), period_of_key(wanted)
+    if a is None or b is None or None in (a.end_lo, a.end_hi, b.end_lo, b.end_hi):
+        return None
+    assert a.end_lo and a.end_hi and b.end_lo and b.end_hi
+    if (b.end_lo - a.end_hi).days > END_SLACK_DAYS:
+        return -1
+    if (a.end_lo - b.end_hi).days > END_SLACK_DAYS:
+        return 1
+    return None
+
+
+def _forward_reasons(finding: FindingFacts, requirement: str, gap_text: str) -> list[str]:
+    """ADR-086 — a forecast, target or guidance never closes a HISTORICAL gap. Only for
+    period-bound metrics, and only when the gap itself does not ask for guidance."""
+    if requirement not in HISTORICAL_FIELDS or _FORWARD_CLAUSE_RE.search(gap_text or ""):
+        return []
+    clause = rf.field_clause(finding.statement, requirement) if finding.statement else None
+    if clause is None:
+        return []
+    if _FORWARD_CLAUSE_RE.search(clause):
+        return [REASON_FORWARD_LOOKING]
+    from app.services.ledger.claim_period import mentions
+
+    if any(p.is_forward for p in mentions(clause)):
+        return [REASON_FORWARD_LOOKING]
+    return []
 
 
 def _recency_reasons(
@@ -824,6 +962,8 @@ def _assess(
         # value a history field asks for (a guidance-type field is answered by guidance).
         return None
     today = as_of or date.today()
+    if finding.is_other_entity:
+        return None  # ADR-086: a peer's or counterparty's fact is not the subject's
     reasons: list[str] = []
     for part in (
         _field_match(finding, requirement),
@@ -835,6 +975,7 @@ def _assess(
             return None
         reasons.extend(part)
     reasons.extend(_family_subtype_reasons(finding, requirement))
+    reasons.extend(_forward_reasons(finding, requirement, gap_text))
     reasons.extend(_balance_reasons(finding, requirement, today))
     reasons.extend(_period_reasons(finding, gap_period))
     reasons.extend(_recency_reasons(finding, gap_text, requirement, today))
@@ -905,6 +1046,49 @@ def _reconcile_one(
     question_fields: Mapping[str, Sequence[str]],
     as_of: date | None = None,
 ) -> GapVerdict:
+    verdict = _reconcile_core(gap, findings, facts, ready_docs, question_fields, as_of)
+    verdict.gap_status = gap_status_of(verdict, gap)
+    if verdict.gap_status == GAP_STATUS_EXTRACTION_FAILED:
+        verdict.reasons.append(REASON_HELD_NOT_READ)
+    return verdict
+
+
+def gap_status_of(verdict: GapVerdict, gap: GapFacts | None = None) -> str:
+    """ADR-086 — the report's status for one verdict (``GAP_STATUSES``).
+
+    * ``closed`` → CLOSED; ``superseded`` → SUPERSEDED;
+    * ``partially_closed`` → NONCOMPARABLE when every finding that speaks to it is one
+      whose period cannot be compared with the gap's (``NONCOMPARABLE_REASONS``), else
+      PARTIALLY_CLOSED;
+    * ``still_open`` → EXTRACTION_FAILED when the gap's relevant document is held and
+      was not read (ADR-084 ``acquired_not_read``), else OPEN.
+    """
+    if verdict.status == ledger.RECONCILED_CLOSED:
+        return GAP_STATUS_CLOSED
+    if verdict.status == ledger.RECONCILED_SUPERSEDED:
+        return GAP_STATUS_SUPERSEDED
+    if verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED:
+        if REASON_NONCOMPARABLE_ONLY in verdict.reasons:
+            return GAP_STATUS_NONCOMPARABLE
+        return GAP_STATUS_PARTIALLY_CLOSED
+    if gap is not None and gap.held_not_read:
+        return GAP_STATUS_EXTRACTION_FAILED
+    return GAP_STATUS_OPEN
+
+
+#: ADR-086 — recorded on a partial verdict whose every addressing finding is
+#: non-comparable (``NONCOMPARABLE_REASONS``).
+REASON_NONCOMPARABLE_ONLY = "noncomparable_only"
+
+
+def _reconcile_core(
+    gap: GapFacts,
+    findings: Sequence[FindingFacts],
+    facts: Sequence[FactFacts],
+    ready_docs: Mapping[str, DocumentFacts],
+    question_fields: Mapping[str, Sequence[str]],
+    as_of: date | None = None,
+) -> GapVerdict:
     if gap.status == ledger.GAP_CLOSED:
         return GapVerdict(
             gap.gap_id, ledger.RECONCILED_CLOSED,
@@ -919,10 +1103,13 @@ def _reconcile_one(
         fields, source = tuple(question_fields[gap.question_key]), "question"
 
     # SUPERSEDED by a document: only a failed FETCH, only once the document is held, and
-    # only when the gap's own words name no field that may still be unanswered.
+    # only when the gap's own words name no field that may still be unanswered. Never a
+    # gap whose held document was not READ (ADR-086 / ADR-084): holding it is not reading
+    # it, and that gap stays EXTRACTION_FAILED.
     kinds = rf.document_kinds_mentioned(text)
     if (
         kinds and not text_fields
+        and not gap.held_not_read
         and gap.gap_type in DOCUMENT_GAP_TYPES
         and rf.is_acquisition_failure(text)
         and all(kind in ready_docs for kind in kinds)
@@ -945,6 +1132,10 @@ def _reconcile_one(
     scope = gap_scope(text)
     full: dict[str, str] = {}
     partial: dict[str, tuple[str, list[str]]] = {}
+    #: ADR-086 — requirements some finding answers in a COMPARABLE way (not only an
+    #: undated or forward-looking figure), and balances a LATER balance supersedes.
+    comparable: set[str] = set()
+    later: dict[str, str] = {}
     for requirement in wanted:
         for finding in findings:
             reasons = _assess(finding, requirement, gap_text=text, gap_project=gap_project,
@@ -955,6 +1146,13 @@ def _reconcile_one(
                 full[requirement] = finding.finding_id
                 break
             partial.setdefault(requirement, (finding.finding_id, reasons))
+            if not set(reasons) & NONCOMPARABLE_REASONS:
+                comparable.add(requirement)
+            if (
+                requirement in POINT_IN_TIME_FIELDS and reasons == [REASON_LATER_PERIOD]
+                and requirement not in later
+            ):
+                later[requirement] = finding.finding_id
     covering_facts = {
         req: fact for req in wanted for fact in facts
         if _fact_covers(fact, req, gap_project=gap_project, gap_period=gap_period, scope=scope)
@@ -964,10 +1162,24 @@ def _reconcile_one(
         + [partial[r][0] for r in wanted if r in partial and r not in full]
     ))
     all_full = len(full) == len(wanted)
-    if all_full and source == "gap_text" and gap.gap_type in CLOSABLE_GAP_TYPES:
+    closable_text = source == "gap_text" and gap.gap_type in CLOSABLE_GAP_TYPES
+    if all_full and closable_text:
         return GapVerdict(
             gap.gap_id, ledger.RECONCILED_CLOSED, fields=fields, field_source=source,
             closed_by_finding_id=full[wanted[0]], finding_ids=ordered_ids,
+        )
+    if (
+        closable_text and later
+        and all(req in full or req in later for req in wanted)
+    ):
+        # ADR-086: a gap naming an older balance date, answered by a LATER balance of
+        # the same metric, scope and entity from a primary source. The older figure is
+        # still not held, and the gap says so as SUPERSEDED, naming the newer finding.
+        newer = next(later[r] for r in wanted if r in later)
+        return GapVerdict(
+            gap.gap_id, ledger.RECONCILED_SUPERSEDED, fields=fields, field_source=source,
+            finding_ids=list(dict.fromkeys([*ordered_ids, newer])),
+            reasons=[REASON_SUPERSEDED_BY_LATER], superseded_by_finding_id=newer,
         )
     if full or partial or covering_facts:
         reasons = sorted({r for req in wanted if req in partial and req not in full
@@ -979,6 +1191,8 @@ def _reconcile_one(
         fact = next(iter(covering_facts.values()), None)
         if fact is not None:
             reasons.append(REASON_FACT_VALIDATED)
+        if not full and fact is None and partial and not comparable:
+            reasons.append(REASON_NONCOMPARABLE_ONLY)
         return GapVerdict(
             gap.gap_id, ledger.RECONCILED_PARTIALLY_CLOSED, fields=fields,
             field_source=source, finding_ids=ordered_ids, reasons=reasons,
@@ -1290,6 +1504,9 @@ async def reconcile_run(
                 facts = await _validated_facts(session, company_id)
         except Exception:  # noqa: BLE001 - no facts is the fail-closed answer
             facts = []
+    unresolved_by_question = {
+        str(q.question_key): getattr(q, "unresolved_reason", None) for q in question_rows
+    }
     verdicts = reconcile(
         [
             GapFacts(
@@ -1297,6 +1514,8 @@ async def reconcile_run(
                 question_key=row.question_key, status=row.status,
                 closed_by_finding_id=(str(row.closed_by_finding_id)
                                       if row.closed_by_finding_id else None),
+                knowledge_state=getattr(row, "knowledge_state", None),
+                unresolved_reason=unresolved_by_question.get(str(row.question_key)),
             )
             for row in gap_rows
         ],
@@ -1312,20 +1531,25 @@ async def reconcile_run(
         closer = by_id.get(verdict.closed_by_finding_id or "")
         if verdict.status == ledger.RECONCILED_CLOSED and closer is None:
             verdict.status = ledger.RECONCILED_STILL_OPEN  # never closed without a row
+            verdict.gap_status = GAP_STATUS_OPEN
         await ledger.reconcile_gap(
             session, row, status=verdict.status, detail=verdict.to_dict(),
             finding=closer if verdict.status == ledger.RECONCILED_CLOSED else None,
         )
     counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
     for verdict in verdicts:  # AFTER any downgrade above, so the counts are the truth
         counts[verdict.status] = counts.get(verdict.status, 0) + 1
+        status_counts[verdict.gap_status] = status_counts.get(verdict.gap_status, 0) + 1
 
     closers = [f for f in findings if f.fields and not f.withdrawn]
     return {
-        "version": 3,
+        "version": 4,
         "as_of": as_of.isoformat(),
         "gaps": [v.to_dict() for v in verdicts][:120],
         "counts": dict(sorted(counts.items())),
+        # ADR-086 — the same verdicts in the report's status vocabulary.
+        "gap_status_counts": dict(sorted(status_counts.items())),
         "supersessions": [s.to_dict() for s in supersessions][:60],
         "temporal_disagreements": [d.to_dict() for d in temporal][:60],
         "temporal_disagreements_recorded": recorded_disagreements,
@@ -1357,6 +1581,8 @@ def closers_from_payload(items: Iterable[Mapping[str, Any]]) -> list[FindingFact
             published_at=rf.parse_date(item.get("source_published_at")),
             superseded_by=item.get("superseded_by_finding_id"),
             statement_kind=item.get("statement_kind"),
+
+            stated_period=text_period(str(item.get("statement") or "")),
         ))
     return out
 
@@ -1371,6 +1597,7 @@ __all__ = [
     "FactFacts",
     "FindingFacts",
     "GapFacts",
+    "GAP_STATUSES",
     "GapVerdict",
     "Supersession",
     "TemporalDisagreement",
@@ -1378,6 +1605,7 @@ __all__ = [
     "compare_values",
     "finding_fields",
     "gap_scope",
+    "gap_status_of",
     "label_v2_items",
     "normalise_item_text",
     "question_field_map",
@@ -1386,4 +1614,5 @@ __all__ = [
     "reconcile_run",
     "requirements",
     "supersede",
+    "text_period",
 ]

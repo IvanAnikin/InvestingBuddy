@@ -761,6 +761,59 @@ def detect_document_period(
     return UNKNOWN_DOCUMENT_PERIOD
 
 
+#: ADR-086 — a finding statement is read as one short line: at most this long it is
+#: framed like a headline (an un-cued period names what the line reports); a longer
+#: statement is running text, where an un-cued period is not read at all.
+_STATEMENT_HEADLINE_MAX_CHARS = _HEADLINE_MAX_CHARS
+#: Candidates read per statement (a statement is short; this bounds a degenerate one).
+_MAX_STATEMENT_CANDIDATES = 24
+
+
+def statement_reporting_periods(text: str | None, *, as_of: date | None) -> list[str]:
+    """ADR-086 — the DISTINCT reporting periods one finding statement states, each a
+    ``ReportingPeriod.key`` ("2026-Q2", "2026-H1"), read with the ADR-080 rules.
+
+    Every label, fiscal label and period-end phrase in the statement is a candidate. A
+    candidate counts only when ``date_semantics.read_date_mention`` frames it as a
+    REPORTING period (not a forecast, a target, a deadline or a comparison) and, read
+    against ``as_of`` (the statement's source publication date), the period had begun
+    and — weakly framed or un-cued — had ENDED and recently (``_unfit_for_its_date``).
+    Without ``as_of`` nothing is returned: an undated statement cannot be told apart
+    from a forecast. Never raises."""
+    if as_of is None or not text:
+        return []
+    if isinstance(as_of, datetime):
+        as_of = as_of.date()
+    raw = str(text)[:_MAX_SCAN_CHARS]
+    role = ROLE_HEADLINE if len(raw.strip()) <= _STATEMENT_HEADLINE_MAX_CHARS else ROLE_BODY
+    try:
+        source = _source([(raw, role)])
+        if not source.text:
+            return []
+        spans: list[tuple[int, int]] = []
+        keys: list[str] = []
+        for rule in (_fiscal_label_candidates, _period_label_candidates,
+                     _period_end_candidates):
+            for seen, (found, start, end) in enumerate(rule(source.text)):
+                if seen >= _MAX_STATEMENT_CANDIDATES:
+                    break
+                if any(start < e and s < end for s, e in spans):
+                    continue  # one mention, read by two rules
+                spans.append((start, end))
+                framed = _framing_of(source, start, end)
+                if framed is None or not _began_by(found, as_of):
+                    continue
+                if _unfit_for_its_date(found, framed[0], framed[1],
+                                       source.role_at(start), as_of):
+                    continue
+                key = found.period.key
+                if key and key not in keys:
+                    keys.append(key)
+    except (AttributeError, TypeError, ValueError):  # pragma: no cover - defensive
+        return []
+    return keys
+
+
 # ── ADR-080 — the regulator's structured period of report ─────────────────── #
 
 _ANNUAL_SEC_FORMS: frozenset[str] = frozenset({"10-K", "20-F", "40-F"})
@@ -961,4 +1014,5 @@ __all__ = [
     "document_period_of",
     "fiscal_year_end_month_of",
     "sec_period_of_report",
+    "statement_reporting_periods",
 ]

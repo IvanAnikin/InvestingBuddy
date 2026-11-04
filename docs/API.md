@@ -3509,6 +3509,29 @@ No new route. Additive keys, each absent when it does not apply:
 - A W4 statement label `filing copy; registrant not verified as the issuer` can prefix a
   finding (a non-closing label, like the press labels).
 
+## ADR-086 — gap status and claim checks (no new endpoint)
+
+Additive keys under `source_summary_json.v3_research`:
+
+- `gaps[*].gap_status` (when reconciled): one of `OPEN`, `PARTIALLY_CLOSED`, `CLOSED`,
+  `SUPERSEDED`, `NONCOMPARABLE`, `EXTRACTION_FAILED`. The legacy
+  `reconciliation_status` is unchanged.
+- `gap_reconciliation.version` is `4`. It adds `gap_status_counts`, and each verdict
+  gains `gap_status` and `superseded_by_finding_id`. New reasons: `later_period`,
+  `forward_looking_not_historical`, `superseded_by_later_period`,
+  `noncomparable_only` and `held_document_not_read`.
+- `findings[*].period_basis: "text_stated"` appears only on a web finding whose
+  `period_key` was read from its own text.
+- `professional_research` platform gap entries gain `gap_status`.
+- New `state_invariants` rules:
+  - `claim_period_differs_from_cited_source`
+  - `claim_scope_differs_from_cited_source`
+  - `derived_ratio_presented_as_reported`
+  - `primary_document_group_denied_while_held`
+
+  `chair_disagreement_id_not_in_ledger` now also fires when other disagreements are
+  recorded.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

@@ -1510,6 +1510,7 @@ async def _professional_report(
             reconciliation_reasons=tuple(
                 str(r) for r in ((row.reconciliation_json or {}).get("reasons") or ())
             ),
+            gap_status=(row.reconciliation_json or {}).get("gap_status"),
         )
         for row in gap_rows
         if row.status in (ledger.GAP_OPEN, ledger.GAP_ACCEPTED)

@@ -1196,6 +1196,15 @@ inherits the same rule.
 
 ---
 
+## ADR-086 — gap status and text-stated finding periods (no migration)
+
+There are no schema changes. The new values live in existing columns:
+
+| Table | Column | Meaning |
+|---|---|---|
+| `research_gaps` | `reconciliation_json.gap_status` | The report's gap status: `OPEN` / `PARTIALLY_CLOSED` / `CLOSED` / `SUPERSEDED` / `NONCOMPARABLE` / `EXTRACTION_FAILED`. `reconciliation_status` keeps its four CHECK-constrained values (`NONCOMPARABLE` is stored as `partially_closed`, `EXTRACTION_FAILED` as `still_open`). `reconciliation_json.superseded_by_finding_id` names the later balance that superseded an older-dated balance gap. |
+| `research_findings` | `period_type` | `text_stated` when `period_key` was read from a web finding's own statement (ADR-080 framing) rather than inherited from its evidence. It is NULL otherwise. |
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.
