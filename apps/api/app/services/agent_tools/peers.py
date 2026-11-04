@@ -13,6 +13,12 @@ The comparison is then made on figures produced by the SAME own-period rule and 
 defined metrics as the subject's, so "comparable" is a property of the pipeline rather
 than an assumption.
 
+A same-industry candidate is not yet a peer (ADR-089): the canonical industry is a coarse
+bucket, so each candidate must also be comparable on data the platform holds — SIC code,
+business description, commodity, size band (``peer_similarity``). One that is not is
+excluded as "not comparable" and recorded with its reasons; with none left there is no
+peer comparison, rather than a table of companies in other businesses.
+
 Peers the platform does not hold — the world's largest producers of a commodity, many of
 them listed outside the United States — are the job of the question's external research
 rung, whose every claim InvestingBuddy fetches and verifies itself. This tool does not
@@ -41,6 +47,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from app.services.agent_tools.session import ToolContext
 
 MAX_PEERS = 6
+#: ADR-089 — how many excluded candidates a peer set records with their reasons.
+MAX_EXCLUDED_RECORDED = 25
 PEER_UNITS: tuple[str, ...] = ("url_fetch_calls",)
 _SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
@@ -103,7 +111,10 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
         if (normalize_industry(getattr(c, "industry", None)) or getattr(c, "industry", None))
         == industry
     ]
+    from app.services.agent_tools.peer_similarity import assess_peer
+
     items: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
     for company in candidates:
         texts = (
             await session.execute(
@@ -116,6 +127,29 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
             " ".join([str(company.name or "")] * 5)
         ])
         commodities = [m.commodity.slug for m in mentions]
+        # UNKNOWN, not false, when the platform holds none of the peer's documents and
+        # its name names no commodity: "Freeport-McMoRan" says nothing about copper, and
+        # reporting FCX as not a copper producer would be a statement about FCX the
+        # research never checked.
+        shares_commodity = (
+            (bool(arguments["commodity"]) and arguments["commodity"] in commodities)
+            if (texts or commodities)
+            else None
+        )
+        # ADR-089 — the bucket is where candidates come FROM, never why one is a peer.
+        verdict = assess_peer(
+            subject, company,
+            shares_commodity=shares_commodity, commodity=arguments["commodity"],
+        )
+        if not verdict.comparable:
+            excluded.append({
+                "ticker": company.ticker,
+                "exchange": company.exchange,
+                "name": company.name,
+                "reason": verdict.exclusion,
+                "similarity": verdict.to_dict(),
+            })
+            continue
         items.append(
             {
                 "id": f"peer:{company.ticker}:{company.exchange}",
@@ -125,24 +159,34 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
                 "industry": industry,
                 "commodities": commodities,
                 "commodity_basis": "corpus" if texts else "name_only",
-                # UNKNOWN, not false, when the platform holds none of the peer's
-                # documents and its name names no commodity: "Freeport-McMoRan" says
-                # nothing about copper, and reporting FCX as not a copper producer
-                # would be a statement about FCX the research never checked.
-                "shares_commodity": (
-                    (bool(arguments["commodity"]) and arguments["commodity"] in commodities)
-                    if (texts or commodities)
-                    else None
+                "shares_commodity": shares_commodity,
+                "basis": (
+                    "same canonical industry in the platform's company universe; "
+                    "similarity check: " + "; ".join(verdict.reasons)
                 ),
-                "basis": "same canonical industry in the platform's company universe",
+                "similarity": verdict.to_dict(),
                 "source_tier": "T3_curated_reference_list",
             }
         )
     items.sort(key=lambda i: (i["shares_commodity"] is not True,
                               i["shares_commodity"] is False,
-                              i["commodity_basis"] != "corpus", str(i["ticker"])))
+                              i["commodity_basis"] != "corpus",
+                              -int(i["similarity"]["score"]), str(i["ticker"])))
     items = items[: arguments["limit"]]
     gaps = []
+    if candidates and not items:
+        gaps.append(
+            f"No held company in {industry!r} is comparable to the subject: "
+            f"{len(excluded)} candidate(s) were excluded as not comparable (no SIC-code, "
+            "business-description or commodity match beyond the industry label, a "
+            "different line of business, or an extreme size gap). The peer comparison is "
+            "unavailable."
+        )
+    elif excluded:
+        gaps.append(
+            f"{len(excluded)} held candidate(s) in {industry!r} were excluded as not "
+            "comparable."
+        )
     # V3.19.7 — peers the platform does NOT hold, found and VERIFIED like any discovery
     # lead. The V3.18 limitation: MP Materials' "peers" were copper and steel producers
     # because those were the companies on file.
@@ -160,7 +204,14 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
     return {
         "items": items,
         "gaps": gaps,
-        "summary": f"{len(items)} candidate peer(s) with industry {industry!r}",
+        # ADR-089 — the technical record: who was a candidate, and why it is not a peer.
+        # Never evidence (only ``items`` are harvested), so nothing here can be cited.
+        "excluded": excluded[:MAX_EXCLUDED_RECORDED],
+        "excluded_count": len(excluded),
+        "summary": (
+            f"{len(items)} comparable peer(s) with industry {industry!r}; "
+            f"{len(excluded)} excluded as not comparable"
+        ),
         # External peers' names and reasons come from a provider, and are marked so.
         "contains_untrusted_content": bool(external.get("items")),
         # The paid search is reported like search_web's, so cost attribution sees it.
@@ -530,8 +581,9 @@ def _not_meaningful_block(context: "ToolContext") -> dict[str, Any]:
 GET_PEER_SET_SPEC = ToolSpec(
     name=TOOL_GET_PEER_SET,
     description=(
-        "Candidate peers from the platform's own company universe with the same canonical "
-        "industry, ranked by whether their own documents show the same commodity."
+        "Peers from the platform's own company universe with the same canonical industry "
+        "that are also COMPARABLE (ADR-089: SIC code, business description, commodity, "
+        "size band), ranked by whether their own documents show the same commodity."
     ),
     handler=_get_peer_set,
     validate_arguments=validate_get_peer_set,

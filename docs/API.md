@@ -3394,6 +3394,20 @@ gains additive fields (absent otherwise, so old reports are unchanged):
 
 `apps/web` does not render these blocks yet (W8b); they are readable in the report JSON only.
 
+### ADR-089 — peer selection record (additive)
+
+When a run called `get_peer_set`, the `competitive_position` section of
+`source_summary_json.v3_research.professional_research` gains `peer_selection`
+(absent otherwise, so older reports are unchanged):
+
+- `status` — `selected` (at least one comparable peer was returned) or `unavailable`;
+- `note` — the reader's sentence when `unavailable` (rendered under the empty peer table),
+  else `null`;
+- `selected` — the peer tickers returned;
+- `excluded` — up to 12 `{ticker, exchange, reason, score, reasons}` records of held
+  same-industry candidates excluded as "not comparable" (no company names);
+- `excluded_count`.
+
 ## Open-web W7 — bounded follow-up research loop (no new endpoint)
 
 No new route. With `V3_WEB_FOLLOWUP_ENABLED` on (and the W5 stage), additive keys appear

@@ -7924,3 +7924,82 @@ in the same PR.
   kind, subtotal members on every axis, a region and a segment of the same words, and
   the re-read marker written only on a definitive outcome (transient codes, a fetch
   error and a raised error are retried by a later run).
+
+## ADR-089: A Same-Industry Company Is a Peer Only When It Is Comparable
+
+**Date:** 2026-11-04 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, defect ADBE-4 (P1; QA doc §6 row 11, §15).
+Adobe's peer set was Tempus AI (precision-medicine diagnostics) and Alphabet (search and
+advertising): `get_peer_set` returned every held company with the same coarse canonical
+industry ("Software & IT Services") and checked nothing else. The same rule made Moderna
+(an mRNA vaccine maker about 70x Cellectis's revenue) Cellectis's only peer on four
+reruns (CLLS2-6), and listed Honeywell as one of its own peers (HON2, `peer:HON:US`).
+
+### Decision
+1. **`app/services/agent_tools/peer_similarity.py`** (pure, deterministic, no I/O) scores
+   each held same-industry candidate against the subject on data the platform already
+   holds — no new data source, no fetch, no model:
+   - **SIC code** (`companies.sic_code`): four digits equal scores 3, unless the code is
+     one of the reviewed catch-all codes (`BROAD_SIC_CODES`: 1000, 2834, 2836, 6770,
+     7370–7374, 7389), which scores 1; the same first three digits only scores 1;
+   - **business description** (`companies.description`): the reviewed themes of
+     `BUSINESS_THEMES` (design and creative software, document and e-signature software,
+     search and online advertising, clinical diagnostics and genomics, gene and cell
+     therapy, vaccines and mRNA medicines, payments, banking, cybersecurity, enterprise
+     applications, semiconductors, aerospace and defense, industrial and building
+     automation, luxury goods, oil and gas). Each shared theme scores 2 (at most two).
+     Generic words ("software", "cloud", "platform", "AI") are deliberately absent:
+     they match everyone and separate no one;
+   - **commodity**: a candidate the peer set already found to share the subject's
+     commodity (its own corpus, or its name) scores 2;
+   - **size band** (`companies.market_cap`, same `currency` only): more than 20x larger
+     or smaller is excluded;
+   - **same issuer** (same ticker, or same `legal_entity_id`) is excluded.
+   A candidate is a peer when its score reaches `PASS_SCORE` = 2 **from a business
+   signal** (a specific SIC match, a shared theme or a shared commodity). A weak SIC
+   match alone (1) never passes, so a conglomerate in the same SIC industry group is not
+   a peer of a single-line company unless a description matches. Two descriptions that
+   are both themed and share no theme describe different businesses: the candidate is
+   excluded even when a SIC code matches (SIC 7372 covers a photo editor and a cancer-test
+   laboratory alike). Matching is linear: one character-class tokeniser and
+   space-delimited phrase lookups, descriptions read to 20,000 characters.
+2. **`get_peer_set`** applies the gate in the held-company selection path only. Excluded
+   candidates are never `items` (so they are never harvested as evidence and never
+   chained into `get_peer_financials`); they are returned under `excluded`
+   (ticker, exchange, name, `reason` beginning "not comparable", the full similarity
+   record) with `excluded_count`, and a gap says so. Each peer item carries its
+   `similarity` record, and its `basis` names the similarity reasons. When candidates
+   existed and none passed, the gap says the peer comparison is unavailable.
+3. **Report.** The pipeline keeps `get_peer_set` payloads beside the peer-financials
+   payloads; `professional_research.peer_selection` writes
+   `competitive_position.peer_selection` (`status` selected | unavailable, the reader's
+   `note`, `selected`, up to 12 `excluded` records by ticker and reasons — no names, so
+   no company name can trip the safety screen — and `excluded_count`). Absent when no
+   peer set ran, so other reports are byte-identical. The web shows the note under an
+   empty peer table.
+
+### Replay (stored reports)
+Stored reports hold the subject's SIC but no candidate's record, so candidates were
+replayed with illustrative EDGAR SIC codes and no description or market cap (the most
+common held state; the conservative case). ADBE: GOOGL (7370 vs 7372, industry group
+only) and TEM (8071; also excluded if it filed under 7372, which is a broad code) are
+excluded, so the peer table [ADBE, GOOGL, TEM] becomes no table and the note, and F17
+("Platform peer set names Tempus AI and GOOGL as closest comparables") can no longer
+cite them. CLLS2–CLLS5: MRNA (2836, broad, no description match) and GRML (1000) are
+excluded; the [MRNA] table becomes the note. HON2: the subject's own `peer:HON:US` is
+excluded as the same issuer; LMT (3760) and LHX (3663) are excluded on SIC against
+3724 (consistent with defect H4, A&D peers for post-spin Honeywell). CFR: Swatch (no
+SIC, no description held) is excluded; the CFR peer table was already empty. No other
+stored report had a peer set.
+
+### Known limits
+- Comparability is only as good as the held record. Most non-US companies hold no SIC,
+  and many companies hold no description, so a genuine peer with neither (Swatch for
+  Richemont) is excluded. That is missing, not wrong, and is the accepted trade.
+- The theme lexicon is small and English-only; a description in another language names
+  no theme. Negation inside a description ("we do not provide diagnostics") is not read.
+- Revenue is not held on `companies`, so the size band uses market capitalisation only,
+  and only in one currency.
+- Externally discovered peers (`V3_DYNAMIC_PEER_DISCOVERY_ENABLED`, V3.19.7) are not
+  gated: they are verified by listing and carry the provider's stated basis, but no
+  held SIC or description exists for them.
