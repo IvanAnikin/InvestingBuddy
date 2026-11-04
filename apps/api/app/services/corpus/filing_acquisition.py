@@ -57,11 +57,17 @@ async def acquire_sec_filing(
     cfg: "Settings",
     document_name: str | None = None,
     filing_date: date | None = None,
+    report_period: Any = None,
 ) -> AcquireOutcome:
     """Fetch, extract, persist and index one SEC filing. Never raises.
 
     ``filing_date`` (ADR-076 review: anchor) dates the new version and its chunks
-    BEFORE they are indexed, so the search backend indexes the date too.
+    BEFORE they are indexed, so the search backend indexes the date too. ADR-080: it is
+    also the date the document-period reader refuses a not-yet-begun period against.
+
+    ``report_period`` (ADR-080) is the ``DocumentPeriod`` EDGAR's period of report gives
+    the filing. It rides on the artifact as ``structured_period`` and becomes the corpus
+    version's period ahead of anything read from the filing's words.
 
     ``document_name`` (ADR-077) names the document of the filing to read — a results
     6-K's press release or iXBRL statements rather than its cover page. It travels as
@@ -95,6 +101,9 @@ async def acquire_sec_filing(
     ]
     if document_name:
         filings[0]["primary_document"] = document_name
+    if filing_date is not None:
+        # The resolver's own key for the EDGAR filing date (``SecFilingDocument``).
+        filings[0]["filed_date"] = filing_date.isoformat()
 
     try:
         artifacts = await live_sec_primary_document_extractor(
@@ -140,6 +149,11 @@ async def acquire_sec_filing(
             detail=f"no extracted document; failure codes: {', '.join(codes)}",
         )
 
+    if getattr(report_period, "is_known", False):
+        # ADR-080 priority (1): structured filing metadata outranks the filing's words.
+        for artifact in extracted:
+            artifact.structured_period = report_period
+
     result = await persist_primary_document_artifacts(
         session,
         artifacts=extracted,
@@ -163,7 +177,7 @@ async def acquire_sec_filing(
     # request. A filing left un-indexed by some other path is that path's bug to fix.
     indexed = await _index_acquired_version(
         session, company_id=company_id, accession=accession, cfg=cfg,
-        document_name=document_name, filing_date=filing_date,
+        document_name=document_name, filing_date=filing_date, report_period=report_period,
     )
 
     return AcquireOutcome(
@@ -186,6 +200,7 @@ async def _index_acquired_version(
     cfg: "Settings",
     document_name: str | None = None,
     filing_date: date | None = None,
+    report_period: Any = None,
 ) -> int:
     """Index the current version of the filing just acquired. Never raises.
 
@@ -199,6 +214,7 @@ async def _index_acquired_version(
     """
     from app.services.corpus.filing_evidence import (
         current_version_for_filing,
+        reconcile_filing_period,
         stamp_filing_date,
     )
     from app.services.corpus.indexing import index_version
@@ -213,6 +229,11 @@ async def _index_acquired_version(
         return 0
     # Dated before indexing (NULL-only, idempotent): the index then carries the date.
     await stamp_filing_date(session, version_id=version.id, filing_date=filing_date)
+    # ADR-080: and its period checked against that date — a version reused by content
+    # hash keeps whatever period it was first stored with.
+    await reconcile_filing_period(
+        session, version_id=version.id, filing_date=filing_date, report_period=report_period
+    )
 
     try:
         from app.services.corpus.search.factory import get_search_backend

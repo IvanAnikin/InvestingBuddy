@@ -393,6 +393,7 @@ async def _ensure_filing_bodies(
         return summary
 
     from app.services.corpus.filing_evidence import ensure_filing_corpus_evidence
+    from app.services.sources.document_period import sec_period_of_report
 
     # BOUNDED, and the bounded resource is ACQUISITION ATTEMPTS.
     #
@@ -422,6 +423,14 @@ async def _ensure_filing_bodies(
                 # EDGAR submissions ``filingDate`` — dates the corpus chunks (ADR-076
                 # review: anchor).
                 filing_date=item.get("filing_date"),
+                # ADR-080: EDGAR's period of report, read with the form. Only an annual
+                # form can be read from this list alone; a 10-Q needs the fiscal year
+                # end and a 6-K its own headline, so both stay unknown here.
+                report_period=sec_period_of_report(
+                    form=item.get("form_type"),
+                    report_date=item.get("report_date"),
+                    filing_date=item.get("filing_date"),
+                ),
             )
             # One slot per ATTEMPT, success or failure. A failure that refunded its
             # slot would let the same failing filings be retried without limit.

@@ -105,7 +105,17 @@ def select_current_period_disclosure(
         title = event.display_title()
         if _is_notice_about_a_filing(title):
             continue
-        period = detect_document_period(title=title, url=url)
+        # ADR-080: a period that had not begun when the event was published is a
+        # forecast, never the period the document reports. The date is the one the
+        # venue PRINTED: every venue parser keeps the venue's own wall-clock date and
+        # time and only tags it UTC (``venue_disclosures._parse_nasdaq_time``,
+        # ``_parse_emarket_date``), so ``.date()`` is the date as published, not a
+        # UTC conversion of it. A venue that ever converts to real UTC must hand its
+        # local date here instead (ADR-080, known limits).
+        period = detect_document_period(
+            title=title, url=url,
+            as_of=event.published_at.date() if event.published_at else None,
+        )
         if not period.is_interim:
             # An annual filing reached this way is not what the current-period
             # slot needs, and the issuer's own annual report is the better
@@ -140,6 +150,7 @@ def has_current_period_document(artifacts: "list[Any] | None") -> bool:
             title=getattr(artifact, "title", None),
             url=getattr(artifact, "source_url", None),
             extraction=getattr(artifact, "extraction", None),
+            as_of=getattr(artifact, "published_at", None),
         )
         if period.is_interim:
             return True

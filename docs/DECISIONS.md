@@ -6885,3 +6885,266 @@ of the first was already present on `main`.
 - **M4:** the inventory excludes another company's chunk, an unindexable chunk and a web
   page; it counts an unindexed chunk as held but not indexed, and lists a held filing
   with no retrievable chunk.
+
+## ADR-080: A Forward Date Is Never a Reporting Period
+
+**Date:** 2026-11-03 · **Status:** Accepted (implementation)
+**Trigger:** cross-sector QA campaign 2026-11, defects CLLS5-1 and CLLS4-2 (priority P-1).
+Live Cellectis report `36d046bc`.
+
+### Context
+A 6-K published 2026-10-28 (accession 0001171843-26-006873, the strategic-pivot press
+release) was stored in the corpus as an "interim report for 2027-H2". Another 6-K was
+stored as 2028-H2. Neither reports either period. The investigator then discarded the only
+H1 2026 net-loss statement, because it cited the H1 2026 6-K/A together with the pivot 6-K,
+and its period-agreement guard read that as two disagreeing periods.
+
+The cause, confirmed in code:
+- `document_period.detect_document_period` scanned the title, URL, headings and the first
+  4,000 characters of body text, and returned the first period label it found. "Cash
+  runway into H2 2028" gave 2028-H2. It had no idea whether a mention was the period the
+  document reports or a target date, and it did not know the document's date.
+- `corpus.documents.upsert_document_version` applied the rule "a period that had not begun
+  when the document was published is a forecast" (`disclosure_period_policy.period_began_by`)
+  only to title-only announcements. SEC filings and IR/web PDFs skipped it.
+- The SEC filing bridge knew the EDGAR filing date and the period of report
+  (`reportDate`) but never used the period of report as the document's period.
+- A finding takes its period from its evidence, so the forecast reached the guard.
+
+### Decision
+1. **Date semantics** (`sources/date_semantics.py`, a pure module). Every date or period
+   mention gets one role from a closed vocabulary: `DOCUMENT_DATE`, `REPORTING_PERIOD`,
+   `FACT_PERIOD`, `EVENT_DATE`, `GUIDANCE_TARGET_DATE`, `FORECAST_HORIZON`, `DEADLINE_DATE`,
+   `HISTORICAL_REFERENCE_DATE`, or `UNCLASSIFIED` (fail closed).
+   - The role comes from a reviewed cue table read in a bounded window around the mention:
+     60 characters before, 40 after, never across a sentence or heading boundary.
+   - Forward cues: runway into/through/until, fund operations into, expect, anticipate,
+     target, guidance, outlook, forecast, plan to, by, no later than, deadline, due,
+     expire/expiry, mature/maturity, readout, topline, first production/ore/sales,
+     commissioning, launch, completion, permit, approval. A forward verb AFTER the
+     mention is one too: will, would, should, to be, (is) expected to, is projected to,
+     is set to ("Q4 2026 revenue will reflect the new pricing").
+   - Historical cues: compared with, versus, prior year. Document-date cues: dated,
+     published on.
+   - Reporting cues have three strengths. STRONG: results, report, financial statements,
+     trading update. ANCHORED: ended, ending (a stated period end). WEAK: for the, interim,
+     and a press release's own lead words — earnings, sales, revenue, turnover,
+     highlights, update, announced, reported, posted. Only a strong cue outvotes a
+     forward cue: "guidance for Q4 2026 revenue" names a measure too.
+   - **A weakly framed period must be OVER** (re-review of PR #323). When a mention's
+     only framing is a weak cue, or the headline line's no-cue default, the period must
+     have ended by the publication date: "Company expects record Q4 2026 sales",
+     "Pre-announcement of Q4 2026 sales" and "Announced Q4 2026 restructuring plan"
+     (published 2026-10-28) date nothing. A fiscal key is judged by its earliest
+     possible end (twelve months before its calendar reading). In body text and the
+     headline line the period must also be RECENT — ended at most 200 days before
+     publication (read at a fiscal key's latest possible end), because a results release
+     follows its period closely: "Revenue for Q3 2025 was $2m" in a 2026 strategic
+     update is a comparative.
+   - **Body text needs the period OVER, whatever the framing** (final re-review of PR
+     #323 — CLLS4-2 itself). "Cellectis will report its fourth quarter and full year 2026
+     financial results in March 2027" in the 2026-10-28 pivot release has a strong cue
+     ("results") and Q4 had begun, but the release does not report Q4. A period dates body
+     text only once it has ended (strictly after its last day; a fiscal key by its
+     earliest possible end).
+   - **A notice of a report to come** in a title, heading or headline — to report /
+     announce / publish / release / present / host, will report / publish / include / be
+     published, expects / plans / intends to report, invitation, notice of, results date,
+     financial calendar, conference call, webcast, date changed, to include, expected
+     in / on — never decides a role on its own ("Acme to announce Q3 2026 results on 5
+     November" reports a quarter that is over). But a period that had not ENDED beside a
+     notice cue, a forward cue, or a clause that is only a forward label is refused:
+     "Acme to report Q4 2026 results", "Invitation to Q4 2026 results presentation",
+     "Financial calendar: Q4 2026 report on 5 February" (published in October). A running
+     period with none of these keeps the began-by rule: "Q4 2026 trading update"
+     (December) and "Pre-close trading update H2 2026" still date.
+   - The nearest non-reporting cue wins unless a strong reporting cue is strictly nearer
+     (a tie goes to the forward reading).
+   - With no cue, a title or heading names the document itself, so the mention is its
+     `REPORTING_PERIOD`. A body mention with no cue is `UNCLASSIFIED`. An unclassified
+     mention is not a reporting period.
+   - **Titles and headings** (review of PR #323): the window ends at clause punctuation
+     (`; : – — , |`, a spaced hyphen), and a non-reporting cue counts only when it GOVERNS
+     the mention — only connector words ("for the", "in", "of fiscal", or a measure such as
+     "revenue") sit between them. "Outlook for Q4 2026", "FY28 Q1 guidance" and "Q1 2028
+     first production update" are still refused; "Q3 2026: Revenue up 12%, full-year
+     guidance raised", "Acme Q3 2026 revenue ahead of expectations" and "Interim results for
+     the six months ended 30 June 2026 and outlook" keep their period.
+     A clause that is ONLY a forward label ("Outlook", "Guidance", "Production
+     guidance", "Trading outlook", "Outlook update") still governs an un-cued period in
+     the clause next to it: "Outlook: Q4 2026", "Q4 2026: guidance" and "Trading
+     outlook | H2 2026" are refused. A clause that says something about the outlook
+     ("outlook upgraded", "guidance raised") does not.
+   - **The headline line**: the first body segment, when at most 200 characters, is read
+     like a heading for the no-cue default ("Third Quarter 2026 Highlights", "Acme Q3 2026
+     Earnings"), but any non-reporting cue in its window still refuses it, as in body text.
+2. **The document-period detector** (`detect_document_period(..., as_of=)`) skips a
+   candidate whose mention is not a `REPORTING_PERIOD`. When `as_of` (the publication or
+   filing date) is known, it also skips a period that had not begun by then (`period_began_by`,
+   fiscal-aware). In both cases the scan continues to the next candidate and the next
+   source. `document_period_of` and `document_period_for` pass the publication date on
+   every policy. The SEC body extractor passes the EDGAR filing date, so the facts' default
+   period gets the same guard. The date only ever refuses a period; it never supplies one.
+   Label matches are read with overlap, and never across a sentence boundary: in "…half of
+   2031. Q3 2026 results" the refused "2031 Q3" does not hide "Q3 2026".
+   - **A stated fiscal year** (review of PR #323): "First Quarter Fiscal 2027" (NVIDIA,
+     published May 2026), "First Quarter Fiscal Year 2027" (Cisco), "first quarter of fiscal
+     2027" (Micron), "Fourth-Quarter and Full-Year Fiscal 2026" (Accenture) are keyed by the
+     stated year with basis `fiscal_period_end_phrase`, so the began-by rule reads them
+     leniently. An end date printed after the year ("… fiscal 2027 ended November 27,
+     2026") must agree with it whenever it places the quarter in one fiscal year;
+     otherwise neither is chosen.
+   - The fiscal-or-calendar label of a quarter read from its end date compares with the
+     year the quarter ENDS in after a 52/53-week spill ("ended January 2, 2027" ends in
+     December 2026, so 2027-Q1 is fiscal) — in the prose reader and in
+     `sec_period_of_report` alike.
+   - `CURRENT_EXTRACTION_PIPELINE_VERSION` advances to 21: a version-20 document's facts may
+     have taken a forecast as their default period and are derived again, not replayed.
+3. **The corpus writer** (`upsert_document_version`) applies the began-by rule on every
+   period policy, using `published_at`, before the annual-title fallback. The
+   annual-vs-quarter contradiction rule is unchanged.
+4. **Priority order for a document's period.** The first of these that is known wins:
+   1. Structured filing metadata: the EDGAR period of report, from
+      `document_period.sec_period_of_report`, read consistently with the form:
+      - 10-K / 20-F / 40-F → the fiscal year it ends in. A January or February year end is
+        named both ways, so it gives none.
+      - 10-Q → the fiscal quarter. This needs the fiscal year end, read from the annual
+        filing's own period of report, and uses `_fiscal_year_of_quarter` (June year end:
+        the quarter ended September 2026 is 2027-Q1, basis `sec_fiscal_period_of_report`).
+      - 6-K → a half or quarter only for a selected interim-results 6-K whose headline
+        names the period that ends on the period of report. Otherwise none.
+
+      Every form requires a filing date strictly after the period of report: the feed
+      reader fills a missing `reportDate` with the filing date.
+   2. A statement-table heading or reporting-period heading.
+   3. Issuer filing metadata (the title).
+   4. An explicit contextual period attached to a fact (unchanged: the fact layer's own
+      rules).
+   5. Body-text inference, only when the mention is unambiguous and classified
+      `REPORTING_PERIOD`.
+
+   In code, (1) is `PrimaryDocumentArtifact.structured_period`. The bridge passes it from
+   the filing event: `ensure_core_filings` / `_ensure_results_6k` / the filings tool →
+   `ensure_filing_corpus_evidence(report_period=)` → `acquire_sec_filing(report_period=)`.
+   It is an optional keyword argument, so older acquirers keep working.
+   `ingest_extracted_document` prefers it to anything read from words. (2)–(5) are the
+   detector's source order (title/URL, headings, body). A document whose period came from
+   (1) is keyed by its address, not by `<kind>:<period>`. A 20-F and the issuer's own annual
+   report of the same year stay two documents, and neither supersedes the other.
+5. **Repair on re-encounter** (`filing_evidence.reconcile_filing_period`). It runs on the
+   bridge's ready path (state A), after `stamp_filing_date`, and after every acquisition.
+   It has the same scope as `stamp_filing_date`: one version and its chunks.
+   - A stored period that had not begun by the version's published date (or by the filing
+     date, if the version is undated) is cleared. It is cleared on the version, on the
+     chunks that carry it, and on the document if the document carries the same period.
+   - A known period of report fills the period left empty. A period that had begun is
+     never overwritten.
+   - The document key is an identity and is not rewritten.
+
+   Without this, the live rerun would reuse the CLLS rows stored as 2027-H2 and 2028-H2.
+
+   **Start-of-run sweep** (`corpus/period_sweep.sweep_forecast_periods`). The bridge repair
+   reaches only filings the run meets again. Every V3 research run (`v3_pipeline._run`,
+   corpus on) therefore first sweeps the subject company's corpus, before
+   `ensure_core_filings` and whether or not anything is acquired.
+   - Scope: every CURRENT version of the company's documents with a period and a
+     `published_at`, from any transport (SEC, IR PDF, NSM/ASX, web).
+   - Rule: a period that had not begun by `published_at` is cleared, read the way the
+     corpus write path reads it (`period_began_by`, strict for a calendar basis). It is
+     cleared on the version, on that version's chunks carrying the same key, and on the
+     document when it carries the same key. Nothing is filled.
+   - A fiscal basis (`fiscal_period_label`, `fiscal_period_end_phrase`,
+     `sec_fiscal_period_of_report`) is never cleared, and is not even read. A
+     `period_end_phrase` row is read leniently, as fiscal: before this review a stated
+     fiscal year ("First Quarter Fiscal 2027", published May 2026) was stored under that
+     basis. A period-end key more than a year ahead is still cleared.
+   - Bounds: the SELECT pre-filters in SQL to rows whose period year is not before their
+     publication year (every stale row passes), pages through them by id 500 at a time,
+     and reads at most 5,000. The pages start at a random id and wrap around, so rows past
+     the cap are not starved by the same settled rows on every run. Three UPDATEs per
+     stale key per page. It runs in a savepoint, is flush-only and never raises.
+   - The counts are recorded as `period_sweep` on the run's outcome and report payload
+     (versions examined and cleared, chunks cleared, documents cleared, `capped`, `error`).
+     A failure adds a `degraded` line.
+
+   The live CLLS 6-K stored as 2027-H2 and published 2026-10-28 is cleared by this sweep
+   even though the guard's lenient reading (item 6) would let it vote.
+6. **Investigator guard** (`_inherited`, defensive). A cited period that had not begun by
+   its evidence's published date is a forecast and does not vote. The guard does not know
+   whether a key is fiscal, so it uses the lenient fiscal reading: a key counts as a forecast
+   only if it had not begun even 12 months before its calendar start. Undated evidence still
+   votes as before. Two real periods still conflict.
+7. **No target/horizon field on findings.** It is not needed for the hard requirement: a
+   target or guidance date can no longer become the reporting period or a fact period.
+
+### Consequences
+- The pivot 6-K now has no period: its body has no reporting framing, and H2 2028 had not
+  begun on 2026-10-28. The H1 2026 statement keeps its period.
+- A body mention with no reporting framing no longer dates a document. A document that
+  states its period only as a bare label in running text ("our teams met investors in Q2
+  2026") has no period from body text. Its title, headings, headline line or structured
+  metadata must state it. This is fail-closed by design. A measure or a lead verb is
+  weak framing: "revenue grew in Q2 2026" and "today announced its third quarter 2026
+  revenue" still date the document — but only once that period has ended, and in body
+  text only while it is recent.
+- Existing tests that showed the old defect were updated: "the default body read DOES take
+  the forecast" and "Q1 2028 first production update keeps Q1 2028 once begun". "First
+  production" is an event date, so a title framed that way is refused at any date.
+
+### Known limits
+- **Cue tables are lexical and English-only.** A forward framing outside the table, or in
+  another language, is `UNCLASSIFIED` in body text (refused) but is read as the period in a
+  title or heading, where the began-by rule is the only backstop.
+- **The 10-Q quarter needs the annual filing in the same EDGAR list.** On the filings-tool
+  path, which has no fiscal year end and no headline, only annual forms get a period of
+  report.
+- **Repair and sweep need a publication date.** An undated version keeps its stored period
+  until the bridge dates it (`stamp_filing_date`), which only happens for SEC filings. The
+  sweep reaches only the researched company's own current versions. Search indexes outside
+  PostgreSQL that copied the old period are refreshed only when the version is re-indexed.
+- **The guard's lenient reading** still lets a forecast up to 12 months ahead vote (a
+  "2027-H2" key on a document published 2026-10-28). For dated corpus rows the start-of-run
+  sweep clears such keys first. Items 2–5 fix it at the source.
+- **A document key built from a forecast period is not rewritten.** A document stored before
+  ADR-080 as `interim_report:2028-H2` keeps that key after its period is cleared: the key is
+  an identity (other versions, subjects and citations hang off it), and rewriting it to its
+  address key could collide with a document already stored under that address. Only the
+  period columns are cleared; a later version of the same document is still matched by it.
+- **Superseded versions are not swept or repaired.** Only the current version of a document
+  is read by research; an older version keeps whatever period it was stored with.
+- **The sweep reads legacy `period_end_phrase` rows leniently**, so a calendar forecast
+  stored that way before ADR-080 and less than a year ahead ("guidance for the first quarter
+  ending March 31, 2027", published November 2026) is not cleared by it; the write path
+  refuses it for new documents.
+- **Body text uses weak cues only for ended, recent periods.** A body sentence or headline
+  line framed only by a weak cue (a measure, a lead verb, "for the") dates the document
+  only when the period had ended by publication and ended at most 200 days before it. A
+  body sentence with any forward cue in its window ("Acme reported Q3 2026 revenue ahead of
+  expectations") dates nothing at all; only titles and headings read the governing rule. A
+  release published more than 200 days after its period, or a running-period update framed
+  only by a measure ("Q4 2026 sales to date"), is therefore not dated from body text.
+- **The fiscal "ended" reading is lenient.** A weakly framed or body-text fiscal key is
+  treated as ended twelve months before its calendar reading, because its fiscal year end
+  is not known here: "Q2 FY27 revenue grew" published in October 2026 by a June year-end
+  issuer (whose Q2 ends in December 2026) is read as ended. The began-by rule already
+  holds, so such a period had at least begun; recency is read at the latest possible end.
+- **A strong cue in a title still frames a running period with no notice beside it.** "Q4
+  2026 results" alone, published in November, is read as 2026-Q4 under the began-by rule;
+  only body text, notice/forward cues and weak framing require the period to be over. A
+  pre-close update framed only by a measure ("Q4 2026 sales update", December) is refused.
+- **The sweep shares the run's transaction.** It is flush-only inside a savepoint on the
+  research run's session, so the row locks its UPDATEs take are held until the run
+  commits. Only the subject company's own stale rows are touched, and only once per run;
+  committing it separately would mean committing the run's shared session mid-run, which
+  no other pipeline step does.
+- **Detector input is bounded** (security review of PR #323). The clause splitter lets at
+  most eight spaces precede its delimiter (an unbounded leading `\s*` backtracked
+  quadratically: a title of 10,000 spaces took 16 s on the event loop). Titles and headings
+  are cut to 500 characters, the headline line is stripped before it is split, and at most
+  48 candidates are read per rule and source. A URL is cut to 500 characters too. Timing tests hold every entry point under
+  0.5 s on whitespace, dash, comma and label floods.
+- **The venue publication date is the date the venue printed.** `select_current_period_disclosure`
+  uses `published_at.date()`. Every venue parser (Nasdaq Nordic, eMarket Storage) keeps the
+  venue's own wall-clock time and only tags it UTC, so that is the date as published. A venue
+  that ever converts to real UTC would shift a midnight publication by a day and must hand
+  its local date instead.

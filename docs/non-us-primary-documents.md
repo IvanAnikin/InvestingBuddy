@@ -111,7 +111,10 @@ authority are required, or both connectors must be switched off.**
   corpus version AND the extracted facts' default period, on the live, cached and
   backfill paths alike (`disclosure_period_policy.document_period_for(published_at=…)`).
   A FISCAL label may start up to a year before its calendar reading: "Q1 FY2027" of a
-  June year-end, published October 2026, keeps its period.
+  June year-end, published October 2026, keeps its period. ADR-080 extends both rules
+  to every document, not only announcements: the began-by rule holds on every period
+  policy, and a mention framed as a forward date ("first production in Q1 2028",
+  "runway into H2 2028", "FY27 Q1 guidance") is never a reporting period, at any date.
 - **A stale holding out of budget stays ready.** When an NSM correction is not fetched
   because the acquisition budget is spent, the held reading is still searchable and is
   reported as such, with a note.

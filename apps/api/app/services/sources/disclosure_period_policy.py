@@ -71,9 +71,11 @@ def _is_fiscal(basis: str | None) -> bool:
     from app.services.sources.document_period import (
         BASIS_FISCAL_LABEL,
         BASIS_FISCAL_PERIOD_END,
+        BASIS_SEC_FISCAL_PERIOD_OF_REPORT,
     )
 
-    return basis in (BASIS_FISCAL_LABEL, BASIS_FISCAL_PERIOD_END)
+    return basis in (BASIS_FISCAL_LABEL, BASIS_FISCAL_PERIOD_END,
+                     BASIS_SEC_FISCAL_PERIOD_OF_REPORT)
 
 
 def document_period_for(
@@ -82,15 +84,19 @@ def document_period_for(
 ) -> Any:
     """``document_period_of`` honouring the policy: title only → no URL, no body, and
     no period that had not begun at publication (the facts' default period follows
-    the same rule as the corpus version)."""
+    the same rule as the corpus version).
+
+    ADR-080: the began-by rule now holds on EVERY policy — the publication date is
+    handed to the detector, which skips a forecast candidate and reads on."""
     from app.services.sources.document_period import (
         UNKNOWN_DOCUMENT_PERIOD,
         document_period_of,
     )
 
     if not title_only:
-        return document_period_of(title=title, url=url, extraction=extraction)
-    found = document_period_of(title=title, url=None, extraction=None)
+        return document_period_of(title=title, url=url, extraction=extraction,
+                                  as_of=published_at)
+    found = document_period_of(title=title, url=None, extraction=None, as_of=published_at)
     period = found.period
     if found.is_known and not _began_by(period.period_type, period.year, period.ordinal,
                                         published_at, fiscal=_is_fiscal(found.basis)):

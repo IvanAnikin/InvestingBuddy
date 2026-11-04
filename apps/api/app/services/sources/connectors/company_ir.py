@@ -363,6 +363,11 @@ class PrimaryDocumentArtifact(BaseModel):
     # ("first production expected in Q1 2028"), and the body detector stamped such a
     # document — and every chunk and finding built on it — with that forecast.
     period_policy: str | None = None
+    # ADR-080 — the period the regulator's structured metadata says this filing reports
+    # (a ``document_period.DocumentPeriod`` from EDGAR's period of report), set only by
+    # the SEC filing acquirer when it knows one. It outranks every period read from the
+    # document's words for the CORPUS version; facts keep their own period rules.
+    structured_period: Any = None
 
 
 # A DEEP document extractor fetches ONE allowlisted annual-report document, runs

@@ -689,6 +689,15 @@ async def live_primary_document_extractor(
 # what the stricter table validator extracts from the filing itself.
 
 
+def _iso_day(raw: str | None) -> date | None:
+    """An EDGAR ``YYYY-MM-DD`` date, or ``None`` — never a guess."""
+    text = str(raw or "").strip()[:10]
+    try:
+        return date.fromisoformat(text) if len(text) == 10 else None
+    except ValueError:
+        return None
+
+
 def _sec_gap(message: str) -> SourceGap:
     """A bounded, non-blocking ``sec_edgar`` ``SourceGap`` (never fabricated)."""
     return SourceGap(
@@ -921,6 +930,10 @@ async def live_sec_primary_document_extractor(
                     # publication — a distinction the governance permission table
                     # cares about and a URL cannot be trusted to reveal.
                     access_class=ACCESS_PUBLIC_OFFICIAL,
+                    # ADR-080: the EDGAR filing date, so the facts' default period never
+                    # takes a period that had not begun when the filing was made. Used
+                    # only to REFUSE a period; never stored as the document's date here.
+                    published_at=_iso_day(doc.filing_date),
                 )
             except Exception:  # noqa: BLE001 - extraction never breaks a run
                 artifact = PrimaryDocumentArtifact(

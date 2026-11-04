@@ -694,6 +694,7 @@ class FilingAcquirer(Protocol):
         cfg: "Settings",
         document_name: str | None = None,
         filing_date: date | None = None,
+        report_period: Any = None,
     ) -> "AcquireOutcome": ...
 
 
@@ -750,6 +751,83 @@ async def stamp_filing_date(
     except Exception:  # noqa: BLE001 - an undated filing is still a usable filing
         logger.warning("Could not record the filing date on version %s", version_id)
         return 0
+
+
+async def reconcile_filing_period(
+    session: Any,
+    *,
+    version_id: uuid.UUID | None,
+    filing_date: Any = None,
+    report_period: Any = None,
+) -> bool:
+    """ADR-080 — repair a filing's stored period on re-encounter. Never raises.
+
+    The QA campaign's Cellectis corpus already holds 6-Ks stored as "interim report for
+    2027-H2 / 2028-H2": their periods were read from a cash-runway sentence, and a rerun
+    reuses those rows without re-reading them. So, on the same scope as
+    ``stamp_filing_date`` (this version and its chunks only):
+
+    * a stored period that had not BEGUN by the version's published date (or, when it is
+      undated, the filing date) is a forecast and is cleared — on the version, on its
+      chunks that carry it, and on the document when the document carries that same
+      period;
+    * when the regulator's period of report is known (``report_period``, a
+      ``DocumentPeriod``) it fills the period left empty — never one that is known and
+      had begun.
+
+    The document's KEY is an identity and is not rewritten. Returns True when anything
+    changed.
+    """
+    from app.services.corpus.documents import period_fields
+    from app.services.sources.disclosure_period_policy import period_began_by
+
+    if version_id is None:
+        return False
+    try:
+        version = await session.get(ResearchDocumentVersion, version_id)
+        if version is None:
+            return False
+        published = version.published_at or filing_date_of(filing_date)
+        old = (version.period_key, version.period_type, version.period_basis)
+        new = old
+        if old[0] and not period_began_by(old[0], published, basis=old[2]):
+            new = (None, None, None)
+        known = getattr(report_period, "is_known", False)
+        if new[0] is None and known:
+            filled = period_fields(report_period)
+            if filled[0] and period_began_by(filled[0], published, basis=filled[2]):
+                new = filled
+        if new == old:
+            return False
+        async with session.begin_nested():
+            version.period_key, version.period_type, version.period_basis = new
+            chunk_scope = (
+                ResearchDocumentChunk.period_key == old[0]
+                if old[0] is not None
+                else ResearchDocumentChunk.period_key.is_(None)
+            )
+            await session.execute(
+                update(ResearchDocumentChunk)
+                .where(
+                    ResearchDocumentChunk.research_document_version_id == version_id,
+                    chunk_scope,
+                )
+                .values(period_key=new[0], period_type=new[1])
+                .execution_options(synchronize_session="fetch")
+            )
+            document = await session.get(ResearchDocument, version.research_document_id)
+            if document is not None and (
+                document.period_key == old[0] or document.period_key is None
+            ):
+                document.period_key, document.period_type = new[0], new[1]
+            await session.flush()
+        logger.info(
+            "Filing period reconciled on version %s: %s -> %s", version_id, old[0], new[0]
+        )
+        return True
+    except Exception:  # noqa: BLE001 - a stale period must not end a run
+        logger.warning("Could not reconcile the filing period on version %s", version_id)
+        return False
 
 
 @dataclass
@@ -811,8 +889,15 @@ async def ensure_filing_corpus_evidence(
     ready_only: bool = False,
     document_name: str | None = None,
     filing_date: Any = None,
+    report_period: Any = None,
 ) -> FilingEvidenceResult:
     """Guarantee that a filing is searchable, or say honestly why it is not.
+
+    ``report_period`` (ADR-080) is the period EDGAR's period of report says the filing
+    covers (``document_period.sec_period_of_report``), when the caller could read one.
+    It is handed to the acquirer, which stores it as the version's period ahead of
+    anything read from the filing's words, and on every re-encounter a stored period
+    that had not begun by the filing's date is cleared (``reconcile_filing_period``).
 
     ``filing_date`` (ADR-076 review: anchor) is the SEC filing date the caller already
     holds (EDGAR ``filingDate``, a 6-K index row). A searchable filing's version and
@@ -863,6 +948,10 @@ async def ensure_filing_corpus_evidence(
     if state.is_ready:
         await stamp_filing_date(
             session, version_id=state.version_id, filing_date=filing_date
+        )
+        await reconcile_filing_period(
+            session, version_id=state.version_id, filing_date=filing_date,
+            report_period=report_period,
         )
         return FilingEvidenceResult(
             state=STATE_READY,
@@ -916,6 +1005,8 @@ async def ensure_filing_corpus_evidence(
         optional["document_name"] = document_name
     if filing_date_of(filing_date) is not None:
         optional["filing_date"] = filing_date_of(filing_date)
+    if getattr(report_period, "is_known", False):
+        optional["report_period"] = report_period
     try:
         outcome = await acquire(
             session,
@@ -950,6 +1041,10 @@ async def ensure_filing_corpus_evidence(
     if after.is_ready:
         await stamp_filing_date(
             session, version_id=after.version_id, filing_date=filing_date
+        )
+        await reconcile_filing_period(
+            session, version_id=after.version_id, filing_date=filing_date,
+            report_period=report_period,
         )
         return FilingEvidenceResult(
             state=STATE_READY,
@@ -992,6 +1087,7 @@ __all__ = [
     "ensure_filing_corpus_evidence",
     "filing_date_of",
     "filing_evidence_state",
+    "reconcile_filing_period",
     "stamp_filing_date",
     "is_corpus_search_ready",
 ]
@@ -1098,6 +1194,7 @@ async def ensure_core_filings(
             form=str(getattr(event, "form_type", "")),
             cfg=cfg,
             filing_date=getattr(event, "filing_date", None),
+            report_period=_report_period_of(event, events),
         )
         out[slot] = {
             "form": str(getattr(event, "form_type", "")),
@@ -1105,6 +1202,31 @@ async def ensure_core_filings(
             **result.to_dict(),
         }
     return out
+
+
+def _report_period_of(event: Any, events: list[Any], *, results_title: str | None = None) -> Any:
+    """ADR-080 — the period EDGAR's period of report says ``event`` covers, read with
+    its form; ``UNKNOWN`` when it cannot be read. A 10-Q's quarter needs the fiscal year
+    end, taken from the newest annual filing's own period of report in the same list."""
+    from app.services.sources.document_period import (
+        fiscal_year_end_month_of,
+        sec_period_of_report,
+    )
+
+    annual = next(
+        (e for e in events if str(getattr(e, "form_type", "") or "").upper() in ANNUAL_FORMS),
+        None,
+    )
+    return sec_period_of_report(
+        form=str(getattr(event, "form_type", "") or ""),
+        report_date=getattr(event, "report_date", None),
+        filing_date=getattr(event, "filing_date", None),
+        fiscal_year_end_month=(
+            fiscal_year_end_month_of(getattr(annual, "report_date", None))
+            if annual is not None else None
+        ),
+        results_title=results_title,
+    )
 
 
 def _reads_6k_interims(out: dict[str, Any], events: list[Any]) -> bool:
@@ -1175,6 +1297,9 @@ async def _ensure_results_6k(
         cfg=cfg,
         document_name=selection.document_name,
         filing_date=getattr(event, "filing_date", None),
+        # ADR-080: a results 6-K's period of report is its period only when the
+        # document's own headline names the period that ends on that date.
+        report_period=_report_period_of(event, events, results_title=selection.title),
     )
     return {
         "form": str(getattr(event, "form_type", "")),
