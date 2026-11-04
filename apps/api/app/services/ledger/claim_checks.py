@@ -246,14 +246,23 @@ def _masked(text: str) -> str:
     return _blank(text, spans)
 
 
+#: ``figures`` reads at most this much text and returns at most this many figures,
+#: whatever its caller passes (a claim is <= ``MAX_CLAIM_CHARS``, a source is read to
+#: ``MAX_SOURCE_CHARS``).
+MAX_FIGURE_TEXT_CHARS = 4000
+MAX_FIGURES = 200
+
+
 def figures(text: str, limit: int | None = None) -> list[_Figure]:
     """Every figure in ``text`` (ids, dates and period labels masked first), at most
-    ``limit``."""
+    ``limit`` (and never more than ``MAX_FIGURES`` from the first
+    ``MAX_FIGURE_TEXT_CHARS`` characters)."""
     out: list[_Figure] = []
-    if limit is not None and limit <= 0:
+    limit = MAX_FIGURES if limit is None else min(limit, MAX_FIGURES)
+    if limit <= 0:
         return out
-    for m in _FIGURE_RE.finditer(_masked(text)):
-        if limit is not None and len(out) >= limit:
+    for m in _FIGURE_RE.finditer(_masked(text[:MAX_FIGURE_TEXT_CHARS])):
+        if len(out) >= limit:
             break
         number = m.group("num").replace(",", "")
         try:

@@ -777,9 +777,16 @@ def test_every_new_pattern_is_linear(text: str) -> None:
                lambda: cc.check_claim(text[:1200], [S("x", text)]),
                lambda: gr.text_period(text),
                lambda: statement_reporting_periods(text, as_of=AS_OF)):
-        started = time.perf_counter()
-        fn()
-        assert time.perf_counter() - started < 0.2
+        cc._source_index.cache_clear()
+        gc.collect()
+        gc.disable()
+        try:
+            started = time.perf_counter()
+            fn()
+            elapsed = time.perf_counter() - started
+        finally:
+            gc.enable()
+        assert elapsed < 0.2
 
 
 def test_a_degenerate_claim_is_bounded() -> None:
