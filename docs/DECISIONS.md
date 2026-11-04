@@ -8628,16 +8628,82 @@ has been ingested and parsed".
    (`primary_document_group_denied_while_held`).
 6. **Council status (ADR-082) re-verified.** No new gap was found in council status.
 
-### Replay (17 stored reports, payload-derived; before = `origin/main` dab13f3)
+### Review fixes (PR review NO-GO, 2026-11-04)
+The governing rule: **a check that cannot tell which period a figure belongs to keeps
+the sentence.** A claim is withheld only on a positive mismatch, when both sides
+unambiguously bind the same figure to different periods.
+
+7. **Comparison figures** (P1-1). A figure right after a comparison cue ("from $7.9bn",
+   "versus $7.9bn", "compared with $7.9bn", "up from") is bound only to a period it
+   names after itself. So is a figure followed by comparison-period words ("a year
+   earlier", "the prior-year quarter", "year-ago", "last year"). Otherwise its period is
+   unknown. A source stating the figure for ANY period the claim mentions is never a
+   mismatch. "versus stronger BNPL (+26%)" is a contrast of two products in one period,
+   not a comparison period: the cue must sit directly before the figure.
+8. **The source side** (P1-2). A source text that names more than one period or date,
+   or carries a two-year column header ("2026 2025"), never lends its stored key to a
+   figure. Bare dates on the source side date their own figures ("September 30, 2026
+   $ 6,120; December 31, 2025 $ 8,048").
+9. **Positively about the subject** (P1-3, P2-4). A finding closes or supersedes a gap
+   only when it is positively about the subject. Findings carry no persisted subject
+   verdict (ADR-083 drops another entity's statement at creation), so the text decides:
+   - a peer / competitor / customer / client / supplier / offtaker / counterparty /
+     "unlike" marker, or a legal-suffix organisation name before the figure that is not
+     the subject's (``reconcile(subject_name=…)``, ADR-083 ``subject_aliases``), gives
+     `subject_not_established`;
+   - that reason is NONCOMPARABLE: never CLOSED, never SUPERSEDED.
+10. **Forecast and sub-scope wording** (P2-4).
+    - should / could / may (not the month) / might / would / seen / "analysts see" /
+      goal / midpoint / range / pro forma / consensus / estimate / aims / on track /
+      intends are forward. They never close or supersede a historical gap; "Pro forma
+      net debt" never supersedes.
+    - Only a group-scoped fact, or one with no sub-scope wording (business, region,
+      unit, division, segment, subsidiary, "from <X> customers", "in <region/country>"),
+      closes a Group gap. IFRS 15 "revenue from contracts with customers" is not
+      sub-scope wording.
+11. **Documents counted once** (P2-5). ``canonical_state.unique_documents`` merges
+    entries whose references match (reduced to their last token, so "03143834" and
+    "…idsId=03143834" are one document) or that share a form and a date.
+12. **Period-independent figures** (P2-6, P2-7, P3).
+    - Not period-checked: stake / ownership / royalty / coupon / tax-rate / interest-rate
+      percentages, and outlook claims ("now seen at", "expects", "outlook", "target",
+      "projected", "forecast").
+    - A nine-month / year-to-date / trailing figure takes only a nine-month or year span
+      it names, else unknown.
+    - A short upper-case acronym ("AWM") counts as naming the segment.
+13. **Disagreement ids** (P2-8). The state carries every ledger disagreement id
+    (``disagreements.ids``, resolved ones included). A named id is checked against all
+    of them. When only the unresolved ids are known and there are fewer of them than
+    recorded disagreements, nothing is judged. A token with no a–f letter ("20261031")
+    is never an id.
+14. **Text periods** (P3).
+    - A publication date ("dated …", "Published …", "On <date>, the company reported …")
+      is not a period.
+    - The text-stated setter leaves `period_key` None when the text names two distinct
+      periods of one granularity ("Q3 2026 results vs Q3 2025").
+    - Notices use reader labels ("six months to 30 Jun 2026"), never stored keys
+      ("HYE2026-06-30").
+15. **Bounded cost** (P3). The source index is lazy and cached per source; figures per
+    claim (12), per source (40), sentences (30) and characters (2,000) per source are
+    capped; figure comparison is memoised. The adversarial claim with 16 heavy sources
+    runs in about 0.2 s; the enforcer stress case (300 findings, a 20k synthesis) in
+    about 0.3–0.7 s.
+
+### Replay (17 stored reports, payload-derived; before = `origin/main` 29bc487)
 - Gap status: before OPEN 498 / PARTIALLY_CLOSED 182; after OPEN 497 /
-  PARTIALLY_CLOSED 181 / NONCOMPARABLE 2. There were 0 new CLOSED or SUPERSEDED.
-  - LIN2: the post-placement cash gap went OPEN → PARTIALLY_CLOSED via the
-    30-Sep-2026 cash finding.
-  - CLLS5: two gaps went PARTIALLY_CLOSED → NONCOMPARABLE, addressed only by an
-    undated 2023 web statement.
+  PARTIALLY_CLOSED 169 / NONCOMPARABLE 14. There are **0 new CLOSED or SUPERSEDED**.
+  - LIN2 gap `2234b6ac` (post-placement cash): OPEN → PARTIALLY_CLOSED via finding
+    `ecbd18cd`, the 30-Sep-2026 cash balance (partial: the gap also asks for the capex
+    schedule and the facility drawdown).
+  - CLLS5 gaps `f57c51dc`, `9b8f0b4a`: PARTIALLY_CLOSED → NONCOMPARABLE. Their only
+    answer is an undated 2023 web statement (`75122f42`).
+  - CLLS3: 12 gaps went PARTIALLY_CLOSED → NONCOMPARABLE (`subject_not_established`).
+    Their only answer was finding `16a65ab8`, "Peer-set member Moderna FY2025 Group:
+    revenue …", a peer's figures partly answering the subject's gaps on `main`.
 - Chair: 1 sentence withheld. It is PYPL2 `chair.key_points[3]`: "+26%" stated for
   Q3 2026 while the cited finding states it for Q2 2026.
-- Content: 6 V2 primary-document lines repaired (CLLS2–5, LIN, LIN2).
+- Content: 6 V2 primary-document lines repaired, with de-duplicated counts: CLLS2 1;
+  CLLS3, CLLS4, CLLS5 2; LIN, LIN2 5.
 - Two false withholds found in the first replay are fixed and are now regression tests:
   - ANTO: FY guidance cited from a Q2 report;
   - ANTO2: "section 172" read as a figure.
@@ -8645,9 +8711,17 @@ has been ingested and parsed".
 ### Known limits
 - Stored payloads carry neither legacy evidence items nor V3 red-team challenge text.
   JPM-6 and PYPL-5 as legacy or red-team text are covered by synthetic tests only.
+- **V3 red-team challenge text is not checked.** The V3 payload records only challenge
+  counts (``v3_research.challenges``), never challenge sentences, so no user-facing
+  red-team sentence exists for the enforcer to check. Legacy council red-team claims are
+  checked at generation (``citation_checker``).
 - `rf.statement_period` (pre-existing) still returns a forward label ("runway into
   H2 2028"). Such a finding is kept out of historical gaps by the forward reason, not by
   its period.
 - Scope is compared only on clean segment names. Parsed fragments such as
-  "segment:2. segment reporting" are ignored.
+  "segment:2. segment reporting" are ignored. Any unexplained upper-case acronym in a
+  claim keeps a segment figure (it may be the segment's).
+- The subject test is lexical: a peer named without a legal suffix or a relationship
+  word ("Albemarle's revenue …") is not caught by it. ADR-083 drops such statements at
+  creation.
 - Stored payloads predate ADR-084, so `EXTRACTION_FAILED` does not occur in the replay.

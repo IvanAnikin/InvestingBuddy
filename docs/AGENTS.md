@@ -1750,7 +1750,12 @@ reader takes its counts and status lines from it.
   historical metric, a segment fact for a Group gap, or a Group fact for a segment gap
   never closes a gap. A later balance supersedes an older-dated balance gap. An
   unanswered gap whose document is held but unread (`acquired_not_read`) is
-  `EXTRACTION_FAILED`.
+  `EXTRACTION_FAILED`. A finding closes or supersedes only when it is positively about
+  the subject (`reconcile(subject_name=…)`): a peer / customer / supplier /
+  counterparty marker, or another company's legal name before the figure, makes it
+  `NONCOMPARABLE`. Forecast and hypothetical wording (should, could, seen, consensus,
+  pro forma, …) never closes a historical gap. Sub-scope wording (a business, region,
+  division, "in Europe") never closes a Group gap unless the fact is group-scoped.
 - The investigator gives a web finding without an evidence period the one reporting
   period its own text states (ADR-080 framing against the source's publication date),
   marked `period_type = "text_stated"`.
@@ -1758,6 +1763,9 @@ reader takes its counts and status lines from it.
   scope of the figures they cite, and labels a platform-derived ratio
   ("(platform-derived)") or withholds it when it is called reported. The ADR-082
   enforcer applies it to chair key points. `citation_checker.check_and_sanitize`
-  applies it to legacy V2 key points and implications at generation.
+  applies it to legacy V2 key points and implications at generation. It withholds only
+  on a positive mismatch. A comparison figure, a forecast, a cumulative (nine-month /
+  YTD) figure, a stake or rate percentage, or a source that names several periods
+  leaves the period unknown, and the claim is kept.
 - `scripts/qa_replay_gap_status.py <reports-dir> [--json out] [--compare before.json]`
   replays gap status and the enforcer over stored payloads. It makes no network call.

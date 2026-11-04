@@ -452,7 +452,7 @@ def _source_index(source: ClaimSource) -> tuple[_Stated, ...]:
     return tuple(out)
 
 
-def _holders(fig: _Figure, indexed: Sequence[tuple[ClaimSource, list[_Stated]]]
+def _holders(fig: _Figure, indexed: Sequence[tuple[ClaimSource, Sequence[_Stated]]]
              ) -> list[tuple[ClaimSource, cp.Period | None]]:
     """The sources stating ``fig``. A source stating it twice for two periods is
     unknown (``None``) unless one reading is shared."""
@@ -506,7 +506,7 @@ def _period_words(periods: Sequence[cp.Period]) -> str:
 
 
 def _derived_ratio(clause: str, figs: Sequence[_Figure],
-                   indexed: Sequence[tuple[ClaimSource, list[_Stated]]]
+                   indexed: Sequence[tuple[ClaimSource, Sequence[_Stated]]]
                    ) -> tuple[str, re.Match[str]] | None:
     match = _RATIO_RE.search(clause)
     if match is None or not any(f.kind == "pct" for f in figs):

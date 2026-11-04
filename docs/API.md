@@ -3530,7 +3530,16 @@ Additive keys under `source_summary_json.v3_research`:
   - `primary_document_group_denied_while_held`
 
   `chair_disagreement_id_not_in_ledger` now also fires when other disagreements are
-  recorded.
+  recorded. It checks a named id against every ledger disagreement, resolved ones
+  included.
+- The canonical state (`state_invariants.state`) gains `disagreements.ids`, every
+  ledger disagreement id. `documents.issuer_documents_held` counts each document once,
+  however many origins list it.
+- Gap reason `subject_not_established`: the finding names a related or compared entity,
+  or another company before its figure. It makes the gap `NONCOMPARABLE`, never
+  `CLOSED` or `SUPERSEDED`.
+- Claim-check notices name periods in reader form ("six months to 30 Jun 2026"), never
+  as stored keys.
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
