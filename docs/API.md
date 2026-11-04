@@ -3508,9 +3508,6 @@ No new route. Additive keys, each absent when it does not apply:
   `commercial_operation_not_evidenced` and `not_meaningful_metric_stated`.
 - A W4 statement label `filing copy; registrant not verified as the issuer` can prefix a
   finding (a non-closing label, like the press labels).
-- A finding declared as guidance / a forecast / a target / an estimate for a period that
-  had certainly ended, in words with no forward cue, is stored `unknown` (basis
-  `declared_forward_period_ended:<period>@<end>`) and so carries no `statement_kind` key.
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 

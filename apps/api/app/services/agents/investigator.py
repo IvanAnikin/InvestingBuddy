@@ -35,6 +35,7 @@ error does the same. The run is never lost to a provider.
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import logging
 import re
@@ -1286,6 +1287,58 @@ def _name_words(name: str) -> list[str]:
         if word:
             out.append(word)
     return out
+
+
+#: A publisher relaying the subject's figure: "Trefis reports Adobe FY2026 …". One hop
+#: only; the relayed name must then open the rest. Bounded and anchored.
+_RELAY_RE = re.compile(
+    r"^[A-Z][\w&.'’-]{0,40}(?:[ \t]+[A-Z][\w&.'’-]{0,40}){0,3}[ \t]+"
+    r"(?:reports?|reported|says|said|notes?|noted|states?|stated|writes|wrote|shows?"
+    r"|estimates?|estimated)[ \t]+(?:that[ \t]+)?"
+)
+
+
+def statement_opens_with_subject(
+    statement: str, subject_name: str | None, subject_ticker: str | None
+) -> bool:
+    """ADR-088 re-review P1-b: is the subject the statement's OPENING grammatical subject?
+
+    The first named entity — at the start, after an ADR-066 lead-in clause, or after a
+    publisher's "X reports" — must be the subject: its ticker (exact case, whole token) or
+    a name whose distinctive tokens are all the subject's ("Adobe", "Adobe's"; never
+    "Apple Hospitality REIT" for Apple). A later mention ("ahead of Adobe's growth"), "the
+    company's …" and a common word elsewhere in the sentence ("sales target") never
+    count."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, name_tokens  # noqa: PLC2701
+
+    text = (statement or "").strip()[:600]
+    own = {t for t in name_tokens(subject_name or "") if t not in _GENERIC_TOKENS}
+    ticker = (subject_ticker or "").strip()
+    heads = [text]
+    lead = _LEAD_IN_CASED_RE.match(text)
+    if lead:
+        heads.append(text[lead.end():])
+    relay = _RELAY_RE.match(text)
+    if relay:
+        heads.append(text[relay.end():])
+    for head in heads:
+        head = _ARTICLE_CASED_RE.sub("", head.lstrip())
+        if ticker and re.match(
+            rf"{re.escape(ticker)}(?:['’]s)?(?![A-Za-z0-9-])", head
+        ):
+            return True
+        for words in _opening_names(head)[:1]:
+            # The name ends before a label ("Adobe FY2026 …", "Apple Hospitality REIT").
+            name = [words[0]] + list(
+                itertools.takewhile(
+                    lambda w: not w.isupper() and not any(c.isdigit() for c in w), words[1:]
+                )
+            )
+            # Every token, generic ones included: "Salesforce Ventures" is not Salesforce.
+            tokens = set(name_tokens(" ".join(name)))
+            if own and tokens and tokens <= set(name_tokens(subject_name or "")):
+                return True
+    return False
 
 
 def subject_aliases(subject_name: str | None) -> frozenset[str]:
@@ -3887,8 +3940,8 @@ class LLMInvestigator:
                     entity_scope = attribution.scope_key
                 about_subject = attribution.verdict == VERDICT_SUBJECT or (
                     attribution.verdict == VERDICT_UNKNOWN
-                    and _names_subject(
-                        statement, subject_aliases(self.company_name), self.ticker
+                    and statement_opens_with_subject(
+                        statement, self.company_name, self.ticker
                     )
                 )
             direction = str(raw.get("direction") or "").strip().lower() or None
@@ -3936,7 +3989,8 @@ class LLMInvestigator:
             # "FY2026 total revenue 26.58 Bil", a year ending late November, cited from a
             # third-party page. The subject's calendar applies to a statement resting on
             # the issuer's own documents OR one about the subject (ADR-083 passage
-            # verdict, or the statement names it); another entity's periods stay lenient.
+            # verdict, or the subject OPENS the statement); another entity's periods —
+            # a peer named first, "the company's supplier X" — stay lenient.
             issuer_origin = f"issuer:{self.company_id}"
             kind = await self._statement_kind(
                 raw, statement, published_at,

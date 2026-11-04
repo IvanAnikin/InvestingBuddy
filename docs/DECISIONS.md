@@ -8383,10 +8383,14 @@ rounds. So nothing here drops or withholds on prose.
    quarter and take the earlier reading of a year. The anchor is read only when it can
    change the verdict, never without the listing's exchange (a bare ticker can resolve to
    another registrant), and applied when every cited item is the issuer's own
-   (`issuer:<company_id>` origin) OR the statement is ABOUT the subject (the ADR-083
-   passage verdict is `subject`, or it is `unknown` and the statement names the subject)
-   whatever host the source is on — F14 itself cited a third-party page. Another
-   entity's "FY24" stays on the lenient reading. Without the anchor a fiscal period is
+   (`issuer:<company_id>` origin) OR the statement is ABOUT the subject, whatever host
+   the source is on — F14 itself cited a third-party page. "About" is the ADR-083
+   passage verdict `subject`, or (verdict `unknown`) the subject is the statement's
+   OPENING named entity: its ticker, or a name all of whose tokens are the subject's,
+   at the start, after a lead-in clause or after a publisher's "X reports". A later
+   mention ("ahead of Adobe's growth"), "the company's supplier X", "Salesforce
+   Ventures" or "Apple Hospitality REIT" never counts. Another entity's "FY24" stays on
+   the lenient reading. Without the anchor a fiscal period is
    judged at its earliest possible end. Declared periods also parse in the forms
    "FY2026E", "2026 fiscal year" and "financial year 2026".
 4. **The fallback only labels forward.** With no declared kind (or `actual` with no
@@ -8394,13 +8398,14 @@ rounds. So nothing here drops or withholds on prose.
    period it names is forward-framed and still unended at the RUN date; a statement that
    also names an ended period is mixed and stays as declared; a year inside a date
    ("June 30, 2026", "April 2026") is not a period, and an ended period written in words
-   ("the year ended June 30, 2026", "so far", "year to date") makes a statement mixed.
-   It never withholds.
-4a. **The converse check.** A declared forward kind for a period that had CERTAINLY ended
-   at publication (its latest possible end: the calendar end, the anchored projection
-   + 7 days, else a quarter past its calendar reading) in words with no forward cue at all
-   is recorded `unknown` (`declared_forward_period_ended:<period>@<end>`) — not provably
-   forward, and never promoted to actual. "FY2024 guidance was $5bn" keeps `guidance`.
+   ("the year ended June 30, 2026", "so far", "year to date") makes a statement mixed;
+   a capitalised "Target" (a company's name) is never a target cue. It never withholds.
+4a. **A declared non-actual kind is kept whatever its period.** Pre-results guidance or a
+   consensus figure for a period that has since ended ("had called for FY2025 revenue
+   of $10.2bn", "Street FY2025 EPS ahead of the print") is still not a result; it never
+   moves into the actual-eligible group (gap closing, contradictions, the synthesis
+   pick). A converse rule that relabelled such statements `unknown` was tried in the
+   first review round and reverted in the second: `unknown` is actual-eligible.
 5. **Downstream, an actual slot takes no forward statement.** A non-actual finding never
    takes a financial-statement trust reading (guidance reads as guidance, a forecast or
    estimate as an estimate by its origin), never enters a contradiction, never answers a
@@ -8474,14 +8479,16 @@ classification (`assess_commercial_stage` with P1 from the stored run's proof or
 interest-only statement; never forced) and the subject's calendar on statements that
 name the subject.
 
-- Kind changes to non-actual (fallback): 8 findings, every one a forward statement —
+- Kind changes to non-actual (fallback): 7 findings, every one a forward statement —
   ADBE F22 ("From FY2026 Adobe changes reporting and guidance…"), ANTO F7 ("raised 2026
   gross cash cost guidance"), ANTO F20 ("2026 capex guidance unchanged…; copper output
   expected to rise… through H2 2026"), ANTO2 F20 ("introduced 2027 group copper
-  guidance"), CLLS4 F17 ("will exit lasme-cel…"), HON F14 and HON2 F16 ("reaffirmed its
-  … 2026 outlook"), HON2 F18 ("plans a $500m … plant, opening late 2028"); all
-  `guidance`. The four new ones are the subject's calendar applied to statements naming
-  the subject (a December year end: 2026 not ended on 1–2 November). The first design's
+  guidance"), CLLS4 F17 ("will exit lasme-cel…"), HON F14 ("reaffirmed its … 2026
+  outlook"), HON2 F18 ("plans a $500m … plant, opening late 2028"); all `guidance`. The
+  four ANTO/HON ones are the subject's calendar applied to statements the subject opens
+  (a December year end: 2026 not ended on 1–2 November). HON2 F16 ("Honeywell
+  Technologies published a 2026 guidance update…") stays unlabelled: "Honeywell
+  Technologies" is not the subject's name, so the lenient reading applies. The first design's
   false labels (JPM F31 balance dates, LIN F9 on a page dated 2018, ANTO2 F4 and CLLS3
   F16/F28 mixed statements, South32's FY24 on Antofagasta's calendar) stay gone and are
   pinned as tests.
@@ -8517,5 +8524,9 @@ name the subject.
   statement; a clinical-stage company whose statements were not extracted gets no stage
   and so no commercial-claims gate.
 - "About the subject" off the issuer's own documents is the ADR-083 passage verdict or
-  the subject's name in the statement; a statement about the subject that names neither
-  stays on the lenient reading.
+  the subject as the opening named entity; a statement about the subject that opens
+  otherwise ("Revenue at Adobe…", a successor's or segment's name) stays on the lenient
+  reading.
+- Commercial-claim backing reads the issuer's own findings only; a `third_party_filing`
+  carrying the issuer's production figure does not back a claim (fails toward
+  withholding).

@@ -162,33 +162,35 @@ class TestTheInvariant:
         decision = _decide("Revenue 26.58 Bil.", kind="actual", period="CY2026")
         assert decision.withheld
 
-    @pytest.mark.parametrize("kind", ["guidance", "estimate", "forecast", "target"])
-    def test_review_p2_a_declared_forward_kind_for_an_ended_period_is_unknown(
-        self, kind: str
+    @pytest.mark.parametrize("statement,kind", [
+        ("Management had set an FY2025 revenue range of $10.0-10.4bn in February 2025.",
+         "guidance"),
+        ("The original FY2025 revenue goal of $10bn was missed; revenue came in at $9.6bn.",
+         "target"),
+        ("FY2025 company outlook: revenue $10.0-10.4bn.", "guidance"),
+        ("Street FY2025 EPS ahead of the print stood at $4.10.", "estimate"),
+        ("Prior to results, analysts' FY2025 revenue number was $9.9bn.", "estimate"),
+        ("The company had called for FY2025 revenue of $10.2bn.", "guidance"),
+        ("Revenue was $1.0bn, up 5%.", "forecast"),
+    ])
+    def test_rereview_p1a_a_declared_forward_kind_is_kept_for_an_ended_period(
+        self, statement: str, kind: str
     ) -> None:
-        # The period had certainly ended at publication and the words carry no forward
-        # cue: not provably forward — and never promoted to actual.
-        decision = _decide("Revenue was $1.0bn, up 5%.", kind=kind, period="FY2024",
-                           published=date(2025, 6, 1), anchor=sk.FiscalYearAnchor(
-                               2025, date(2025, 12, 31)))
-        assert (decision.kind, decision.withheld) == ("unknown", False)
-        assert decision.basis == sk.BASIS_DECLARED_FORWARD_ENDED
-        assert decision.basis_detail.startswith("declared_forward_period_ended:2024@")
+        # Pre-results guidance or a consensus figure stays non-actual after the period
+        # ends: it must never enter the actual-eligible group (gaps, contradictions, the
+        # synthesis pick). Missing is acceptable; wrong is not.
+        decision = _decide(statement, kind=kind, period="FY2025", published=date(2026, 3, 1),
+                           as_of=date(2026, 11, 4),
+                           anchor=sk.FiscalYearAnchor(2025, date(2025, 12, 31)))
+        assert (decision.kind, decision.withheld) == (kind, False)
+        assert sk.is_non_actual(decision.kind)
 
-    def test_review_p2_historical_guidance_in_words_keeps_its_kind(self) -> None:
-        decision = _decide("FY2024 guidance was revenue of $5.0bn.", kind="guidance",
-                           period="FY2024", published=date(2025, 6, 1))
+    def test_rereview_p1b_a_company_named_target_is_not_a_target_cue(self) -> None:
+        decision = _decide("Target Corp expects FY2027 revenue of $110bn.",
+                           as_of=date(2026, 11, 4))
         assert decision.kind == "guidance"
-
-    def test_review_p2_a_period_that_may_still_run_keeps_the_declared_kind(self) -> None:
-        # Without a calendar, "FY2025" may end as late as a quarter past its calendar
-        # reading: a February 2026 document cannot prove it ended.
-        decision = _decide("Revenue $1.0bn.", kind="estimate", period="FY2025",
-                           published=date(2026, 2, 15))
-        assert decision.kind == "estimate"
-        assert sk.definitely_ended_by(sk.Period("annual", 2025), date(2026, 2, 15)) is None
-        assert sk.definitely_ended_by(
-            sk.Period("annual", 2025), date(2026, 6, 1)) == date(2026, 4, 30)
+        assert _decide("The company targets FY2028 operating margin of 45%.",
+                       anchor=ADOBE).kind == "target"
 
     @pytest.mark.parametrize("statement", [
         "Revenue for the year ended June 30, 2026 was $70bn; FY2027 outlook is $78bn.",
@@ -449,6 +451,50 @@ class TestTheInvestigatorDeclaresAndHolds:
         assert finding.withheld and finding.statement_kind == "unknown"
         assert finding.statement_kind_basis.startswith("withheld_period_not_ended:2026")
         assert answered is False
+
+    @pytest.mark.parametrize("statement", [
+        "Autodesk FY2026 revenue was $6.13bn, ahead of Adobe's growth rate.",
+        "Autodesk reported FY2026 revenue of $6.13bn.",
+        "The company's supplier Broadcom reported FY2026 revenue of $60bn.",
+    ])
+    async def test_rereview_p1b_a_peer_statement_stays_on_the_lenient_reading(
+        self, monkeypatch, statement: str  # noqa: ANN001
+    ) -> None:
+        from app.services.agents import investigator as inv_mod
+
+        web = inv_mod._Evidence(
+            citation_id="ev:w:1", kind="search_company_corpus",
+            text='{"evidence_id": "ev:w:1", "text": "x"}', web=True,
+            source_class="unknown_web", origin_key="trefis.com", url="https://trefis.com/a",
+            published_at=date(2026, 10, 30))
+        _inv, _c, findings, _a = await _write_up({"findings": [{
+            "statement": statement, "evidence_ids": ["ev:w:1"],
+            "statement_kind": "actual", "period": "FY2026",
+        }]}, monkeypatch, evidence=[web], company_name="Adobe Inc.")
+        assert [(f.statement_kind, f.withheld) for f in findings] == [("actual", False)]
+
+    @pytest.mark.parametrize("statement,name,ticker,opens", [
+        ("Trefis reports Adobe FY2026 total revenue 26.58 Bil.", "Adobe Inc.", "ADBE", True),
+        ("Adobe's FY2026 revenue was $23.7bn.", "Adobe Inc.", "ADBE", True),
+        ("ADBE FY2026 revenue was $23.7bn.", "Adobe Inc.", "ADBE", True),
+        ("Autodesk FY2026 revenue was $6.13bn, ahead of Adobe's growth rate.", "Adobe Inc.",
+         "ADBE", False),
+        ("The company's supplier Broadcom reported FY2026 revenue of $60bn.",
+         "Alphabet Inc.", "GOOGL", False),
+        ("Salesforce Ventures portfolio company Snowflake reported FY2026 revenue of $4.4bn.",
+         "Salesforce, Inc.", "CRM", False),
+        ("Walmart beat its FY2026 sales target with revenue of $700bn.",
+         "Target Corporation", "TGT", False),
+        ("Apple Hospitality REIT reported FY2026 revenue of $1.4bn.", "Apple Inc.", "AAPL",
+         False),
+        ("Target reported FY2026 sales of $107bn.", "Target Corporation", "TGT", True),
+    ])
+    def test_rereview_p1b_only_the_opening_subject_counts(
+        self, statement: str, name: str, ticker: str, opens: bool
+    ) -> None:
+        from app.services.agents.investigator import statement_opens_with_subject
+
+        assert statement_opens_with_subject(statement, name, ticker) is opens
 
     async def test_another_entitys_period_stays_lenient(self, monkeypatch) -> None:  # noqa: ANN001
         # A statement about someone else on a third-party page is never put on the
@@ -1230,6 +1276,7 @@ ADVERSARIAL = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000]
 
 
 def _patterns() -> list[Any]:
+    from app.services.agents import investigator as inv_mod
     from app.services.web_research import edgar_registrant as er
 
     subject_re = cc._subject_re({"name": "Lindian Resources Limited", "ticker": "LIN"})
@@ -1243,7 +1290,7 @@ def _patterns() -> list[Any]:
         *(p for _s, p in st._self_patterns("Lindian Resources")), st._COMMERCIAL_STARTED_RE,
         st._COMMERCIAL_STAGE_VETO_RE, *(p for _n, _side, p in st._CUSTOMER_FUNDS_RES),
         st._ROW_FIGURE_RE, cc._NON_PRODUCT_OBJECT_RE, sk._ENDED_PERIOD_WORDS_RE,
-        sk._ANY_FORWARD_CUE_RE, sk._ESTIMATE_SUFFIX_RE,
+        sk._ESTIMATE_SUFFIX_RE, inv_mod._RELAY_RE,
         er._SEC_COVER_RE, er._FORM_TYPE_RE, er._FILING_ANCHOR_RE, er._HEADER_CIK_RE,
         ap._NET_DEBT_SENTENCE_RE,
     ]
@@ -1270,6 +1317,9 @@ class TestLinearPatterns:
         st.holds_customer_funds([text])
         sk.decide(declared_kind="guidance", declared_period="FY2024", statement=text,
                   published_at=None, as_of=AS_OF)
+        from app.services.agents.investigator import statement_opens_with_subject
+
+        statement_opens_with_subject(text, "Lindian Resources Limited", "LIN")
         st.customer_funds_terms([text])
         ap.net_debt_sentence_blocked(text, {"net_debt_not_meaningful": True})
         assert time.perf_counter() - started < 1.0

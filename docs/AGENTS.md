@@ -1701,10 +1701,10 @@ reader takes its counts and status lines from it.
   the ledger, `withdrawn`, with the reason). Fiscal periods are judged on the issuer's
   calendar (SEC companyfacts anchor, ±7 days for 52/53-week years; never read without
   the listing's exchange) when the statement rests on the issuer's own documents or is
-  ABOUT the subject (ADR-083 passage verdict `subject`, or the statement names it),
-  whatever the source host; otherwise at their earliest possible end. A declared forward
-  kind for a period that had certainly ended, in words with no forward cue, is recorded
-  `unknown` (`declared_forward_period_ended`). When no kind is declared, a fallback only
+  ABOUT the subject (ADR-083 passage verdict `subject`, or the subject is the opening
+  named entity — never a later mention or "the company's supplier X"), whatever the
+  source host; otherwise at their earliest possible end. A declared non-actual kind is
+  always kept. When no kind is declared, a fallback only
   ever labels forward (an unended, forward-framed period at the run date, never on a
   statement that also names an ended period, "the year ended …", "so far" or "year to
   date" included). Diagnostics: `statements_reclassified_period_not_ended`,

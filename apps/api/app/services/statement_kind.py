@@ -86,10 +86,6 @@ BASIS_NOT_DECLARED = "not_declared"
 BASIS_FORWARD_CUE = "forward_cue"
 BASIS_RECLASSIFIED = "reclassified_period_not_ended"
 BASIS_WITHHELD = "withheld_period_not_ended"
-#: Review P2: a forward kind declared for a period that had certainly ENDED when the
-#: source was published, in words that carry no forward cue — not provably forward, and
-#: not promoted to actual either.
-BASIS_DECLARED_FORWARD_ENDED = "declared_forward_period_ended"
 
 #: The reader-facing word for each non-actual kind.
 KIND_LABELS: dict[str, str] = {
@@ -319,30 +315,6 @@ def not_ended_by(
     return end if reference <= end - margin else None
 
 
-#: How long after its calendar reading a fiscal period with no anchor may still run: a
-#: start-year naming convention ("fiscal 2024" ending February 2025) puts its end a
-#: quarter later at most (``wants_anchor`` uses the same bound).
-LATEST_FISCAL_END_SLACK = timedelta(days=120)
-
-
-def definitely_ended_by(
-    period: Period, reference: date, anchor: FiscalYearAnchor | None = None
-) -> date | None:
-    """The period's LATEST possible end when it had certainly ended before ``reference``;
-    else None. The mirror of :func:`not_ended_by`: a calendar period at its calendar end,
-    an anchored fiscal one at the projection plus the tolerance, any other fiscal one a
-    quarter past its calendar reading."""
-    if period.calendar:
-        latest = period.calendar_end()
-    else:
-        projected = anchor.end_of(period) if anchor is not None else None
-        latest = (
-            projected + FISCAL_END_TOLERANCE if projected is not None
-            else period.calendar_end() + LATEST_FISCAL_END_SLACK
-        )
-    return latest if latest < reference else None
-
-
 def wants_anchor(period: Period, reference: date) -> bool:
     """Would the issuer's calendar change the verdict? Only for a fiscal period the
     lenient reading calls ended while its calendar reading has not ended yet."""
@@ -383,13 +355,6 @@ _ENDED_PERIOD_WORDS_RE = re.compile(
     r"\b(?:(?:fiscal |financial )?year|quarter|period|half(?: year)?"
     r"|(?:three|six|nine|twelve) months|weeks?) (?:then )?ended\b"
     r"|\bso far\b|\byear to date\b|\bytd\b"
-)
-#: Any forward cue at all. A declared forward kind whose words carry none of these, for
-#: a period that had ended, is not provably forward (review P2).
-_ANY_FORWARD_CUE_RE = re.compile(
-    r"\b(?:guid\w*|outlook|forecast\w*|target\w*|expect\w*|estimat\w*|consensus"
-    r"|project(?:s|ed|ion|ions)|plan(?:s|ned)?|aim(?:s|ed)?|goals?|anticipat\w*"
-    r"|budget\w*|will|would|should|could|may|might|intend\w*|predict\w*)\b"
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+(?=[A-Z\"'(\[])|\n+")
 
@@ -488,7 +453,12 @@ def forward_kind(
                 window = norm[max(0, match.start() - ds.PREFIX_WINDOW): match.end()
                               + ds.SUFFIX_WINDOW]
                 found = found or (
-                    KIND_TARGET if _TARGET_WORD_RE.search(window) else KIND_GUIDANCE
+                    KIND_TARGET
+                    if _TARGET_WORD_RE.search(window)
+                    # Case-sensitive on the ORIGINAL sentence too: a capitalised
+                    # "Target" may be a company's name (re-review P1-b).
+                    and _TARGET_WORD_RE.search(sentence)
+                    else KIND_GUIDANCE
                 )
             elif role == ds.FORECAST_HORIZON:
                 found = found or KIND_FORECAST
@@ -551,18 +521,10 @@ def decide(
             return KindDecision(forward, BASIS_FORWARD_CUE)
         if kind is None:
             kind, basis = KIND_UNKNOWN, BASIS_NOT_DECLARED
-    if kind in NON_ACTUAL_KINDS and period is not None:
-        # Review P2: the converse check. A forward kind for a period that had certainly
-        # ended at publication, in words with no forward cue, is not provably forward:
-        # recorded ``unknown`` — never promoted to actual.
-        ended = definitely_ended_by(period, reference, anchor)
-        if ended is not None and not _ANY_FORWARD_CUE_RE.search(
-            _normalise_text(statement)
-        ):
-            return KindDecision(
-                KIND_UNKNOWN, BASIS_DECLARED_FORWARD_ENDED, period=period, period_end=ended
-            )
-        return KindDecision(kind, basis)
+    # A DECLARED non-actual kind is kept, whatever its period (re-review P1-a): guidance
+    # or an estimate for a period that has since ended ("had called for FY2025 revenue of
+    # $10.2bn", "Street FY2025 EPS ahead of the print") is still not a result, and must
+    # never move into the actual-eligible group.
     if kind not in (KIND_ACTUAL, KIND_UNKNOWN) or period is None:
         return KindDecision(kind, basis)
     end = not_ended_by(period, reference, anchor)
@@ -572,12 +534,6 @@ def decide(
     if forward is not None:
         return KindDecision(forward, BASIS_RECLASSIFIED, period=period, period_end=end)
     return KindDecision(KIND_UNKNOWN, BASIS_WITHHELD, withheld=True, period=period, period_end=end)
-
-
-def _normalise_text(statement: str | None) -> str:
-    from app.services.sources.document_period import _normalise
-
-    return _normalise(str(statement or "")[:2000])
 
 
 def judged_period(declared_period: object) -> Period | None:
@@ -651,7 +607,6 @@ def reset_cache() -> None:
 
 
 __all__ = [
-    "BASIS_DECLARED_FORWARD_ENDED",
     "BASIS_FORWARD_CUE",
     "BASIS_MODEL",
     "BASIS_NOT_DECLARED",
@@ -672,7 +627,6 @@ __all__ = [
     "STATEMENT_KINDS",
     "anchor_from_normalised",
     "decide",
-    "definitely_ended_by",
     "forward_kind",
     "is_non_actual",
     "judged_period",
