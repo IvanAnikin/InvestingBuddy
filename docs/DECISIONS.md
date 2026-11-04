@@ -6600,6 +6600,138 @@ spacing.
 - The helper does not cover non-SEC hosts (GLEIF, Stooq, ASX, FCA NSM). A script reading
   those must still use the product clients, not an improvised UA.
 
+## ADR-082: The Ledger Is the Single Source of Research State
+
+**Date:** 2026-11-03 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** cross-sector QA campaign 2026-11, §15 and §17 P-2 / P-4. All 16 claim-audited
+reports contradicted themselves. Defects closed by this decision: CLLS2-3, CLLS-4, PYPL2-3,
+PYPL3-1, ANTO-5, ADBE-5, LIN-5, LIN-6, and the section-11 council status line.
+
+### What was wrong
+Every reader of a run computed its own counts and its own idea of "the latest disclosure":
+
+- `council_v2.inputs.assemble` returns a refused `CouncilInput` with no findings, so the
+  deterministic chair said "0 finding(s) … No model was available" against ledgers of
+  37 / 37 / 38 / 32 findings, and the tech block read the same `council.finding_count`
+  (CLLS2-3). The reason was `blocking_question_open`, with a chair model routed.
+- The legacy V2 council judged its own price/profile evidence pack and said "No primary
+  filings … are included in the evidence pack" while 14-16 findings cited issuer filings
+  (CLLS-4).
+- Investigator statements, gaps and chair key points named an older document as the
+  newest, or denied holding any issuer filing, beside a held and cited 10-Q
+  (PYPL2-3, PYPL3-1, ANTO-5, ADBE-5, LIN-5).
+- `outcome.council` was captured before the Red Team, so it said "0 unresolved" beside a
+  chair listing ledger disagreement ids (LIN-6). Chair sentences could narrate a conflict
+  no recorded disagreement backs.
+- The header said "8 agents completed" while the council was refused, the chair fell back
+  and the red team reviewed nothing.
+
+### Decision
+1. **One canonical state, computed once.** `app/services/ledger/canonical_state.py`
+   builds it from the ledger tally (one aggregate read at the end of the run:
+   non-withdrawn findings, verified, primary source, open gaps by status, unresolved
+   disagreement ids) and the run's document inventory (core filings, official
+   disclosures, the statements' own documents, publication dates of cited issuer
+   documents). It holds the newest issuer document, the latest completed reporting
+   period, current-period status, evidence status, chair status and council status. It
+   is persisted as `v3_research.canonical_state` (`version: 1`).
+2. **Refusals carry the ledger's counts.** `CouncilInput.ledger_counts` is filled on every
+   path. Refusal semantics are unchanged (no findings in the pack, `insufficient_data`).
+   `to_dict()["finding_count"]` is now the ledger count; what the Council saw is
+   `council_finding_count`. The deterministic chair states the true count and the true
+   reason (`council_did_not_convene` / `no_chair_model_available` / the new
+   `chair_model_failed`). The council block on the report is the one the chair
+   deliberated over (after the Red Team).
+3. **Report-status invariants** (`app/services/ledger/report_invariants.py`), run at
+   report assembly (`attach_to_report`) over the chair, findings, gaps, the professional
+   report, the legacy council block and the V2 report content. Counts and reasons are
+   repaired from the canonical state. Free-text claims are withheld sentence by sentence,
+   and a text left with nothing becomes `[Withheld at report assembly: <reason>.]`. Every
+   action is recorded in `v3_research.state_invariants`. Unknown chair disagreement ids
+   are dropped (`dropped_disagreement_ids`).
+4. **Legacy is labelled.** `v3_research.legacy_council` carries the label and the true
+   council status. The page's header and council line read the canonical status. The V2
+   block itself is rewritten only when one of its sentences was withheld.
+
+### The phrase table is conservative — and linear
+A false positive deletes a true sentence, so a sentence is withheld only when it makes an
+UNQUALIFIED claim about the whole evidence inventory (review of PR #322):
+
+- **Inventory denials** ("no primary filings, financial statements, or company
+  disclosures are present", "absence of … company disclosures limits …") are recognised
+  by a token scan with a closed vocabulary and MANDATORY list separators. The first
+  regex had a repeated optional word and backtracked exponentially ("No issuer " +
+  "filings " x14 took 92 s, synchronously on the event loop). Every item must be a
+  document noun with closed modifiers ("official GUIDANCE document", "FORTHCOMING
+  disclosures", "VERIFIED company disclosures" do not parse), and what follows the claim
+  must be its end, a connective, or a purpose clause ("to provide context") — never a
+  scope ("on the acquisition", "for the December quarter", "because the company is
+  ASX-listed", "for the subsidiary", "confirming the guidance", "in German").
+  Nor may a scope come FIRST: a clause that opens with a qualifier ("For the offtake
+  partner, no …", "Before the IPO no …", "Unlike the peer, for which no …", "On the
+  litigation, there are no …") or negates the claim is kept, for every rule. An opener
+  about the research itself or about now ("In this report,", "In the evidence pack,",
+  "As of today,", "At present,"), a discourse opener ("In summary,", "On balance,", "As a
+  result,", "Overall,") and a causal "since / as / because no …" are NOT scopes; "not"
+  counts only when it negates the claim itself ("not the case that no …"); after "…, and"
+  only the new clause counts. In
+  "<subject> has no …" the subject must be the research or the company under research
+  ("the evidence pack", "the company"), not another entity ("Iluka", "the JV partner").
+- **Older document named as newest** compares only the FIRST date tied to a document
+  ("dated", "filed on", "published", "released", a form type + date, an accession the
+  inventory dates) inside the anchor's own clause — the clause ends at ";", ", which",
+  ", unlike", ", and the", "earlier", "prior", "previous", "supersedes" … — with the
+  newest document
+  the platform HOLDS. "The latest filing is the Q3 10-Q, which supersedes the 10-K filed
+  2026-02-04" names an older document on purpose, and a clause that names the newest
+  held form type or label ("10-Q", "September Quarterly Report", "Quarterly Report")
+  before any date is kept. A covered-period date ("covers
+  1 July to 30 September", "share count on 2026-09-30", "restates FY2024") is never
+  compared, and a cited finding's publication date never stands in for a held document
+  (a spun-off subsidiary's IR page outranked the subject's own 10-Q). Generic nouns only:
+  "the latest PRESS RELEASE dated …" may be true while a later 10-Q is held.
+- **Disagreement narration** fires only on phrasing that refers to the research's own
+  disagreements ("unresolved disagreement", "the red team disputed", a disagreement id).
+  "Conflicting data on FY2026 operating profit" and "analysts disagree" are about the
+  world, not the ledger. Challenge wording is not a disagreement: the ledger records Red
+  Team challenges separately (CFR: 5 challenges, 0 disagreements).
+- **Latest period** comes from statements, core filings and the issuer's own (or
+  verified) findings, completed periods only (a period ending after its source was
+  published is ignored, which keeps forward tags like CLLS4-2's "2028-H2" out).
+- Sentences over 600 characters are not checked. Every pattern and rule is timed on 41
+  degenerate inputs built at scale 1 and 8: the time may grow by less than 24x (linear
+  is about 8x, quadratic 64x) on the fastest of five interleaved runs, judged once the
+  large input
+  takes over 200 ms, and nothing may take 1 s — a quadratic pattern on the 8x inputs
+  (8k-40k characters) takes seconds. No absolute per-call budget, so CI load does not
+  flake it (worst observed: 13 ms). Withholding removes only the withheld sentence:
+  separators, newlines and the other bullets of a list stay. The withheld sentence and
+  its reason are both recorded through the same neutralisation V2 applies to external
+  headlines.
+
+The header keeps a short council fact ("8 of 8 agents completed · degraded"); the reasons
+are a full-width wrapping line below the facts.
+
+### Replay (stored payloads of the 17 campaign reports; detection, not live proof)
+`scripts/qa_replay_ledger_state.py` derives the state from each payload
+(`derived_from: "payload"`; ledger ids are unknown, so unknown-id dropping does not run).
+Violations (repairs + withholds), first version → after review: ADBE 3→3, ANTO 3→1,
+ANTO2 3→3, CFR 1→0, CLLS 0→0, CLLS2 8→8, CLLS3 15→20, CLLS4 23→23, CLLS5 25→25, HON 0→0,
+HON2 3→1, JPM 0→0, LIN 10→10, LIN2 6→6, PYPL 0→0, PYPL2 4→4, PYPL3 2→1 (106 → 105).
+Withheld sentences 73 → 72. No longer withheld: CFR's true "conflicting data" sentence,
+ANTO's and HON2's period-titled "most recent disclosure" findings, and PYPL3's scoped "no
+issuer press releases … confirming the latest disclosure dates". Newly withheld: two
+unqualified CLLS3 legacy denials ("There is no primary financial data, regulatory
+filings, or company disclosures included …", "absence of … primary disclosures …") that
+the old table missed, while the run held 4 issuer documents cited by 14 findings.
+
+### Not done here
+The gap status taxonomy and gap-vs-finding reconciliation (OPEN / PARTIALLY_CLOSED / …)
+is a later batch. A gap that denies a fact a finding states is withheld only when it
+makes one of the inventory claims above. The first Cellectis run (CLLS) records no
+issuer-kind findings in its payload, so its legacy "no primary filings" sentences are not
+provably false from the payload and are kept.
+
 ## ADR-084: Read What Was Acquired — Metric-Bearing Contracts and a Re-Read of Held Primary Documents
 
 **Date:** 2026-11-03 · **Status:** Accepted (implementation)

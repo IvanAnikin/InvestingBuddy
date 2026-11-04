@@ -1,0 +1,1246 @@
+"""Report-status invariants — ADR-082.
+
+WHAT THIS CHECKS
+================
+Sentences a report states about THE RESEARCH ITSELF — how many findings it has, which
+document is the newest, whether the current period is held, whether the council ran —
+against the run's canonical state (:mod:`app.services.ledger.canonical_state`). It does
+not judge claims about the company; that is the investigator's and the chair's job.
+
+At minimum these are made impossible (QA campaign 2026-11, P-2 / P-4):
+
+* a finding count that differs from the ledger's;
+* "latest quarter / period unavailable / not acquired" while the current period is held;
+* "no recent developments" while a current issuer disclosure is cited;
+* "no cash flow" while cash-flow findings exist;
+* "evidence adequate" while the current-period extraction failed;
+* an older document named as the latest / newest disclosure;
+* "no issuer filing / release is in evidence" while one is held and cited;
+* a chair disagreement id the ledger does not record (dropped), and a chair sentence
+  narrating a RESEARCH disagreement ("unresolved disagreement", "the red team
+  disputed …", a disagreement id) when none is recorded (withheld) — a sentence about
+  the world disagreeing ("conflicting data on FY2026 operating profit") is kept;
+* "N agents completed" while the council was degraded.
+
+REPAIR, OR WITHHOLD WITH A REASON — NEVER SILENTLY KEEP
+=======================================================
+A count or a fallback reason is repaired from the canonical state. A free-text claim
+cannot be repaired (the platform does not know what the writer meant to say), so the
+offending SENTENCE is withheld; a text left with no sentence is replaced by a notice
+naming the reason. Every action is recorded in ``state_invariants``.
+
+THE PHRASE TABLE IS CONSERVATIVE
+================================
+A false positive deletes a true sentence, which is worse than a miss. Each pattern is
+anchored on the inventory claim itself ("no issuer filing ... is in evidence"), refuses
+qualified claims ("no issuer release FOR Q4 ..."), and is tested in both directions
+(``tests/test_qa_closure_ledger_state.py``). No issuer is named here.
+"""
+
+from __future__ import annotations
+
+import copy
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+from typing import Any
+
+from app.services.ledger.canonical_state import (
+    FALLBACK_CHAIR_FAILED,
+    FALLBACK_NO_MODEL,
+    FALLBACK_NOT_CONVENED,
+    REFUSAL_WORDS,
+    as_date,
+)
+
+INVARIANTS_VERSION = 1
+
+RULE_FINDING_COUNT = "finding_count_differs_from_ledger"
+RULE_COUNCIL_COUNTS = "council_block_counts_differ_from_ledger"
+RULE_FALLBACK_REASON = "fallback_reason_misstated"
+RULE_DEGRADED_REASON = "degraded_reason_misstated"
+RULE_LATEST_PERIOD = "latest_period_denied_while_held"
+RULE_NO_RECENT = "no_recent_developments_while_current_disclosure_cited"
+RULE_NO_CASH_FLOW = "no_cash_flow_while_cash_flow_findings"
+RULE_EVIDENCE_ADEQUATE = "evidence_adequate_while_current_period_extraction_failed"
+RULE_STALE_LATEST = "older_document_named_as_newest"
+RULE_NO_ISSUER_DOC = "issuer_document_denied_while_held_and_cited"
+RULE_UNKNOWN_DISAGREEMENT_ID = "chair_disagreement_id_not_in_ledger"
+RULE_UNBACKED_DISAGREEMENT = "disagreement_narrated_with_none_recorded"
+RULE_COUNCIL_STATUS = "council_status_overstated"
+
+RULES: tuple[str, ...] = (
+    RULE_FINDING_COUNT,
+    RULE_COUNCIL_COUNTS,
+    RULE_FALLBACK_REASON,
+    RULE_DEGRADED_REASON,
+    RULE_LATEST_PERIOD,
+    RULE_NO_RECENT,
+    RULE_NO_CASH_FLOW,
+    RULE_EVIDENCE_ADEQUATE,
+    RULE_STALE_LATEST,
+    RULE_NO_ISSUER_DOC,
+    RULE_UNKNOWN_DISAGREEMENT_ID,
+    RULE_UNBACKED_DISAGREEMENT,
+    RULE_COUNCIL_STATUS,
+)
+
+#: Where a text sits. The chair is checked for everything; other texts are checked for
+#: inventory claims only (they do not state counts or narrate the council).
+SITE_CHAIR = "chair"
+SITE_RECORD = "record"
+SITE_LEGACY = "legacy"
+
+#: Days by which a held document must be newer than the one named as newest before a
+#: sentence is called stale (a margin in the direction of keeping a sentence: same-week
+#: documents are not a contradiction).
+DOCUMENT_MARGIN_DAYS = 3
+
+#: Sentences longer than this are not checked (kept as written). A sentence about the
+#: research inventory is short; the cap bounds what any one sentence can cost.
+MAX_SENTENCE_CHARS = 600
+
+#: A sentence boundary inside one line. Lines are split first (``_Enforcer.text``), so a
+#: bullet list is never treated as one sentence.
+_SENTENCE_RE = re.compile(r"(?<=[.!?])[ \t]+(?=[A-Z\"'(\[])")
+_BULLET_RE = re.compile(r"^[ \t]*(?:[-*•+]|\d{1,3}[.)])[ \t]+")
+
+
+# ---------------------------------------------------------------------------
+# The reviewed phrase table
+#
+# LINEAR BY CONSTRUCTION (QA review B1): the inventory claims ("no issuer filings,
+# financial statements, or company disclosures are present") are recognised by a token
+# scan with a closed vocabulary and MANDATORY list separators, not by a regex with a
+# repeated optional word — that shape backtracked exponentially on "No issuer press
+# releases press releases …". Every remaining regex has disjoint adjacent quantifiers
+# or a fixed bound; ``tests/test_qa_closure_ledger_state.py`` times each one on
+# degenerate input.
+#
+# UNQUALIFIED CLAIMS ONLY (QA review N2): a sentence is withheld only when it makes a
+# claim about the WHOLE evidence inventory. "No issuer press release is available ON
+# the acquisition", "no quarterly report is present FOR the December quarter", "lack
+# of primary filings FOR the subsidiary" are claims about a subset and are kept.
+# ---------------------------------------------------------------------------
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?(?:-[a-z0-9]+)*|[^\sa-z0-9]")
+#: Words that may describe an issuer DOCUMENT (and make it the issuer's).
+_ISSUER_MODS: frozenset[str] = frozenset({
+    "issuer", "issuer's", "issuers", "issuer-own", "own", "company", "company's",
+    "company-owned", "company-own", "primary", "regulatory",
+})
+#: Other words allowed inside a listed item. A closed set: "official GUIDANCE
+#: document", "FORTHCOMING company disclosures" are not inventory items, and "no
+#: VERIFIED / AUDITED company disclosures" is a claim about a subset (the ledger may
+#: hold the issuer's documents and still have verified none of them).
+_OTHER_MODS: frozenset[str] = frozenset({
+    "any", "official", "fundamental", "financial", "operational", "operating",
+    "corporate", "press",
+})
+_MODS = _ISSUER_MODS | _OTHER_MODS
+_DOC_HEADS: frozenset[str] = frozenset({
+    "filing", "filings", "disclosure", "disclosures", "document", "documents",
+    "announcement", "announcements", "release", "releases",
+})
+#: Nouns that may share a list with documents but are not documents themselves.
+_DATA_HEADS: frozenset[str] = frozenset({"statements", "data", "information"})
+_HEADS = _DOC_HEADS | _DATA_HEADS
+_LIST_JOINERS: frozenset[str] = frozenset({"or", "and", "nor"})
+_MAX_LIST_ITEMS = 8
+_MAX_ITEM_MODS = 4
+_COPULAS: frozenset[str] = frozenset({"is", "are", "was", "were"})
+_INVENTORY_PREDICATES: frozenset[str] = frozenset({
+    "present", "included", "available", "found", "held", "acquired",
+})
+_HAS_VERBS: frozenset[str] = frozenset({"includes", "contains", "has", "shows", "holds"})
+_INVENTORY_NOUNS: frozenset[str] = frozenset({"evidence", "record", "pack"})
+
+#: What may follow a complete inventory claim for it still to be UNQUALIFIED.
+_TAIL_STOPS: frozenset[str] = frozenset({".", ";", ":", ")", "!", "?", "—", "–", "-"})
+_TAIL_CONNECTIVES: frozenset[str] = frozenset({
+    "so", "and", "which", "thus", "therefore", "limiting", "leaving", "preventing",
+    "restricting", "constraining", "hampering", "hindering", "meaning", "making",
+})
+#: "… are present TO PROVIDE context" is a purpose, not a scope; "… is available TO
+#: CONFIRM the Q3 date" is a scope. Only purpose verbs are accepted.
+_TO_VERBS: frozenset[str] = frozenset({
+    "provide", "identify", "assess", "evaluate", "inform", "offer", "give",
+})
+#: After "absence of X": the verb of the sentence, or an adverb before it.
+_ABSENCE_VERBS: frozenset[str] = frozenset({
+    "limits", "limit", "limited", "severely", "significantly", "substantially",
+    "greatly", "seriously", "restricts", "prevents", "constrains", "hampers", "hinders",
+    "precludes", "undermines", "makes", "leaves", "means", "is", "remains", "reduces",
+    "weakens", "impairs",
+})
+#: A word after a comma that turns the claim into a scoped one.
+_QUALIFIERS: frozenset[str] = frozenset({
+    "for", "on", "about", "regarding", "concerning", "covering", "in", "from", "of",
+    "since", "after", "before", "with", "confirming", "because", "as", "given",
+    "beyond", "other", "except", "outside", "until", "prior", "besides", "apart",
+    "dated", "relating", "related", "addressing", "mentioning", "discussing",
+    "describing", "showing", "containing", "specifically", "specific", "that", "due",
+    "owing", "under", "at", "by", "via", "through", "within", "per",
+})
+
+
+def _tokens(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text.lower().replace("’", "'"))
+
+
+def _at(tokens: list[str], k: int) -> str | None:
+    return tokens[k] if 0 <= k < len(tokens) else None
+
+
+def _item(tokens: list[str], i: int) -> tuple[int, bool] | None:
+    """One listed item from ``tokens[i]``: up to four modifiers and a head noun.
+    Returns (index after it, whether it is an issuer DOCUMENT)."""
+    j, issuer = i, False
+    while j < len(tokens) and j - i < _MAX_ITEM_MODS and tokens[j] in _MODS:
+        issuer = issuer or tokens[j] in _ISSUER_MODS
+        j += 1
+    head = _at(tokens, j)
+    if head not in _HEADS:
+        return None
+    return j + 1, issuer and head in _DOC_HEADS
+
+
+def _item_list(tokens: list[str], i: int) -> tuple[int, bool] | None:
+    """A list of items separated by a comma and/or a conjunction (MANDATORY between
+    items, so the scan is linear). Returns (index after the list, whether any item is an
+    issuer document)."""
+    end: int | None = None
+    issuer = False
+    pos = i
+    for _ in range(_MAX_LIST_ITEMS):
+        parsed = _item(tokens, pos)
+        if parsed is None:
+            break
+        end, is_doc = parsed
+        issuer = issuer or is_doc
+        k = end
+        if _at(tokens, k) == ",":
+            k += 1
+        if _at(tokens, k) in _LIST_JOINERS:
+            k += 1
+        if k == end:
+            break
+        pos = k
+    return (end, issuer) if end is not None else None
+
+
+def _in_evidence(tokens: list[str], k: int) -> int | None:
+    """``in (the) evidence (pack)`` / ``in the pack`` from ``k``: the index after it."""
+    if _at(tokens, k) != "in":
+        return None
+    k += 1
+    if _at(tokens, k) == "the":
+        k += 1
+    if _at(tokens, k) == "evidence":
+        k += 1
+        return k + 1 if _at(tokens, k) == "pack" else k
+    return k + 1 if _at(tokens, k) == "pack" else None
+
+
+def _tail_unqualified(tokens: list[str], k: int, verbs: frozenset[str] = frozenset()) -> bool:
+    """True when what follows a complete claim leaves it a claim about the whole
+    inventory: the end, a stop, a connective, a purpose clause — not a scope."""
+    tok = _at(tokens, k)
+    if tok is None or tok in _TAIL_STOPS or tok in _TAIL_CONNECTIVES or tok in verbs:
+        return True
+    if tok == ",":
+        nxt = _at(tokens, k + 1)
+        return nxt is None or nxt not in _QUALIFIERS
+    if tok == "to":
+        return _at(tokens, k + 1) in _TO_VERBS
+    return False
+
+
+#: Tokens that end a clause for the prefix check (a comma does not: "For X, no …").
+_HARD_STOPS: frozenset[str] = frozenset({".", ";", ":", "!", "?", "—", "–", "-", "(", ")"})
+#: A clause that OPENS with one of these scopes what follows it (QA re-review X3):
+#: "For the December quarter, no …", "Before the IPO no …", "Unlike the peer, for which
+#: no …", "On the litigation, there are no …".
+_PREFIX_QUALIFIERS: frozenset[str] = frozenset({
+    "for", "on", "in", "before", "until", "till", "since", "unlike", "regarding",
+    "during", "after", "about", "concerning", "apart", "except", "besides", "beyond",
+    "outside", "within", "from", "prior", "excluding", "without", "as", "at", "by",
+    "under", "per", "when", "if", "where", "whereas", "unless", "although", "though",
+    "absent", "among", "between", "across", "over", "through", "throughout", "pending",
+})
+#: Words skipped before judging how a clause opens.
+_LEADING_SKIP: frozenset[str] = frozenset({
+    "and", "but", "so", "yet", "however", "also", "thus", "therefore", "moreover",
+    "furthermore", "additionally", "notably", "overall", "currently", "still",
+})
+_PREFIX_WINDOW = 40
+#: "<subject> has no …": the claim is about the subject's documents only when the
+#: subject is the research itself or the company under research.
+_SUBJECT_VERBS: frozenset[str] = frozenset({
+    "has", "have", "had", "holds", "hold", "contains", "contain", "includes", "include",
+    "shows", "show", "with",
+})
+_OWN_SUBJECTS: frozenset[str] = frozenset({
+    "evidence", "record", "pack", "report", "research", "ledger", "platform", "dataset",
+    "company", "issuer", "it",
+})
+_SUBJECT_DETERMINERS: frozenset[str] = frozenset({"the", "this", "our", ",", "and", "but"})
+
+
+#: Openers that structure the argument without scoping the claim (QA final review R2).
+_DISCOURSE_OPENERS: tuple[tuple[str, ...], ...] = (
+    ("in", "summary"), ("in", "particular"), ("in", "short"), ("in", "conclusion"),
+    ("in", "addition"), ("in", "general"), ("in", "total"), ("as", "a", "result"),
+    ("as", "such"), ("on", "balance"), ("if", "anything"), ("overall",),
+)
+#: A segment about the research itself or about NOW is not a scope: "In this report,
+#: no …", "In the evidence pack, no …", "As of today, no …", "At present, no …".
+_RESEARCH_OR_NOW: frozenset[str] = frozenset({
+    "evidence", "pack", "record", "report", "research", "analysis", "dataset",
+    "ledger", "platform", "today", "present", "now", "date", "currently", "moment",
+})
+#: "Since / as / because no issuer filings are present, …" is causal: it asserts the
+#: claim. "Since the merger, no …" is a scope.
+_CAUSAL: frozenset[str] = frozenset({"since", "as", "because"})
+_CLAUSE_CONJUNCTIONS: frozenset[str] = frozenset({"and", "but"})
+
+
+def _strip_openers(segment: list[str]) -> list[str]:
+    """The segment without leading skip words and discourse openers."""
+    k = 0
+    while k < len(segment):
+        if segment[k] in _LEADING_SKIP:
+            k += 1
+            continue
+        opener = next(
+            (o for o in _DISCOURSE_OPENERS if tuple(segment[k: k + len(o)]) == o), None
+        )
+        if opener is None:
+            break
+        k += len(opener)
+    return segment[k:]
+
+
+def _segment_scopes(segment: list[str]) -> bool:
+    """A segment that scopes what follows it: it opens with a qualifier and is not
+    about the research itself or about now."""
+    words = _strip_openers(segment)
+    if not words or words[0] not in _PREFIX_QUALIFIERS:
+        return False
+    return not any(t in _RESEARCH_OR_NOW for t in words)
+
+
+def _prefix_qualified(tokens: list[str], i: int) -> bool:
+    """True when the clause before ``tokens[i]`` scopes the claim: the claim's own comma
+    segment, or the one before it, opens with a qualifier ("For the December quarter,
+    no …", "Before the IPO no …"), or the claim itself is negated ("it is not the case
+    that no …"). A conjunction ("…, and no …") starts a new clause: only what follows
+    it counts. Looks back at most ``_PREFIX_WINDOW`` tokens."""
+    lo = max(0, i - _PREFIX_WINDOW)
+    start = lo
+    for k in range(i - 1, lo - 1, -1):
+        if tokens[k] in _HARD_STOPS:
+            start = k + 1
+            break
+    clause = tokens[start:i]
+    if clause[-1:] == ["that"] and "not" in clause[-6:]:
+        return True
+    segments: list[list[str]] = [[]]
+    for tok in clause:
+        if tok == ",":
+            segments.append([])
+        else:
+            segments[-1].append(tok)
+    last = segments[-1]
+    cut = max((k for k, t in enumerate(last) if t in _CLAUSE_CONJUNCTIONS), default=None)
+    if cut is not None:
+        return _segment_scopes(last[cut + 1:])
+    if len(_strip_openers(last)) == 1 and _strip_openers(last)[0] in _CAUSAL:
+        last = []
+    candidates = [last, segments[-2]] if len(segments) > 1 else [last]
+    return any(_segment_scopes(segment) for segment in candidates)
+
+
+def _prefix_qualified_text(text: str, start: int) -> bool:
+    """The prefix check for a regex-matched claim starting at ``start``."""
+    tokens = _tokens(text[max(0, start - 300): start])
+    return _prefix_qualified(tokens, len(tokens))
+
+
+def _own_subject(tokens: list[str], k: int) -> bool:
+    """``tokens[k]`` is the subject of "<subject> has no …": the research or the
+    company under research ("the company", "the evidence pack"), not another entity
+    ("Iluka", "the JV partner", "the peer company")."""
+    if _at(tokens, k) not in _OWN_SUBJECTS:
+        return False
+    before = _at(tokens, k - 1)
+    if _at(tokens, k) == "pack" and before == "evidence":
+        before = _at(tokens, k - 2)
+    return before is None or before in _SUBJECT_DETERMINERS
+
+
+def _denies_issuer_documents(text: str) -> bool:
+    """An UNQUALIFIED claim that no issuer document is in the evidence:
+
+    * "no <list> [is/are/has been] present|included|… [in the evidence]" ;
+    * "the evidence/record includes|contains|has no <list>" ;
+    * "absence / lack of <list>" followed by the sentence's verb.
+
+    ``<list>`` must name at least one issuer DOCUMENT (an issuer word + a document noun).
+    """
+    tokens = _tokens(text)
+    for i, tok in enumerate(tokens):
+        if tok == "no":
+            parsed = _item_list(tokens, i + 1)
+            if parsed is None or not parsed[1] or _prefix_qualified(tokens, i):
+                continue
+            k = parsed[0]
+            prev = _at(tokens, i - 1)
+            if prev in _HAS_VERBS and _at(tokens, i - 2) in _INVENTORY_NOUNS:
+                if _tail_unqualified(tokens, k):
+                    return True
+                continue
+            if prev in _SUBJECT_VERBS and not _own_subject(tokens, i - 2):
+                # "Iluka has no regulatory filings", "the JV partner has no company
+                # filings": a claim about ANOTHER entity's documents.
+                continue
+            if _at(tokens, k) in _COPULAS:
+                k += 1
+            elif _at(tokens, k) in ("has", "have") and _at(tokens, k + 1) == "been":
+                k += 2
+            after_in = _in_evidence(tokens, k)
+            if after_in is not None:
+                k = after_in
+            elif _at(tokens, k) in _INVENTORY_PREDICATES:
+                k += 1
+                k = _in_evidence(tokens, k) or k
+            else:
+                continue
+            if _tail_unqualified(tokens, k):
+                return True
+        elif tok in ("absence", "lack") and _at(tokens, i + 1) == "of":
+            parsed = _item_list(tokens, i + 2)
+            if parsed is None or not parsed[1] or _prefix_qualified(tokens, i):
+                continue
+            k = _in_evidence(tokens, parsed[0]) or parsed[0]
+            if _tail_unqualified(tokens, k, _ABSENCE_VERBS):
+                return True
+    return False
+
+
+def _unqualified_after(text: str, end: int, verbs: frozenset[str] = frozenset()) -> bool:
+    """The tail check for a regex-matched claim ending at ``end``."""
+    return _tail_unqualified(_tokens(text[end: end + 80]), 0, verbs)
+
+
+_LATEST_DOC_RE = re.compile(
+    r"(?<![\w-])(?:newest|latest|most\s+recent)\s+(?:dated\s+)?"
+    r"(?:(?:issuer|issuer's|primary|results|official|company|company's|regulatory|own)\s+)"
+    # Generic nouns only: "the latest PRESS RELEASE dated …" may truly be the latest
+    # press release while a later 10-Q is held — a different kind is no contradiction.
+    r"{0,2}(?:disclosure|filing|document|evidence)s?\b"
+    # A QUALIFIED claim ("latest filing WITH period figures", "newest disclosure FOR
+    # Q2", "latest disclosure IN the 10-K") is about a subset, and a newer document
+    # outside it does not contradict it. "in (the) evidence / pack" is not a subset.
+    r"(?!\s+(?:with|for|of|on|about|covering|containing|that|which|reporting|from)\b)"
+    r"(?!\s+in\s+(?!(?:the\s+)?(?:evidence|pack|record)\b))",
+    re.I,
+)
+_ORDINAL_BEFORE_RE = re.compile(r"(?:second|next|third|previous|prior|earlier)[\s-]*$", re.I)
+#: A date is the DOCUMENT's only when the words before it say so ("dated", "filed on",
+#: "published", "released") or it follows a form type ("the 10-Q (2026-10-27)") — never
+#: a covered-period date ("covers 1 July 2026 to 30 September 2026", "share count on
+#: 2026-09-30"). QA review B3.
+_DOC_DATE_BEFORE_RE = re.compile(
+    r"(?:\b(?:dated|filed|published|released|issued|lodged)(?:\s+on)?"
+    r"|\b(?:10-K|10-Q|20-F|40-F|6-K(?:/A)?|8-K)\s*[(,]?)[ \t,]*$",
+    re.I,
+)
+
+_LATEST_UNAVAILABLE_RES = (
+    re.compile(
+        r"\b(?:latest|current|most\s+recent|newest)\s+"
+        r"(?:quarter(?:ly)?|interim|half[- ]year(?:ly)?|reporting\s+period|period)(?:'s)?"
+        r"(?:\s+(?P<noun>report|results|figures|filing|statements?|accounts))?"
+        r"(?::[ \t]*|\s+(?:is|are|was|were|has\s+been|have\s+been)\s+)"
+        r"(?:not\s+(?:in\s+this\s+report|available|acquired|yet\s+acquired"
+        r"|in\s+(?:the\s+)?evidence(?:\s+pack)?)|unavailable|missing|absent)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\bno\s+(?:current[- ]period|interim|quarterly|half[- ]year(?:ly)?)\s+"
+        r"(?P<noun>report|filing|results|statements?|figures|accounts)\s+"
+        r"(?:is|are|was|were|has\s+been|have\s+been)\s+"
+        r"(?:(?:acquired|available|present|found|held)(?:\s+in\s+(?:the\s+)?evidence(?:\s+pack)?)?"
+        r"|in\s+(?:the\s+)?evidence(?:\s+pack)?)\b",
+        re.I,
+    ),
+)
+_FIGURE_NOUNS = frozenset({"results", "figures", "statement", "statements", "accounts"})
+
+_NO_RECENT_RE = re.compile(
+    r"\bno\s+(?:recent|current|new)\s+(?:developments|news|disclosures|announcements"
+    r"|events)(?:\s+(?:were|was|have\s+been|has\s+been|are|is)\s+(?:found|identified"
+    r"|reported|disclosed|sourced|recorded|available))?\b",
+    re.I,
+)
+
+_NO_CASH_FLOW_RES = (
+    re.compile(
+        r"\bno\s+(?:operating\s+|free\s+)?cash[- ]flow(?:\s+(?:data|figures?|statements?"
+        r"|information|disclosure))?\s+(?:(?:is|are|was|were)\s+)?(?:available|disclosed"
+        r"|present|reported|provided|in\s+(?:the\s+)?evidence(?:\s+pack)?)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:absence|lack)\s+of\s+(?:any\s+)?(?:operating\s+|free\s+)?cash[- ]flow\s+"
+        r"(?:data|figures|information|statements?)\b",
+        re.I,
+    ),
+)
+
+#: An UNQUALIFIED adequacy claim only: "the evidence is sufficient to assess X but
+#: lacks Y" is a scoped judgement, not a statement that the evidence is adequate.
+_EVIDENCE_ADEQUATE_RE = re.compile(
+    r"\bevidence(?:\s+base|\s+pack)?\s+(?:is|was|appears|remains)\s+"
+    r"(?:adequate|sufficient|complete)"
+    r"(?:\s+for\s+(?:a|the)\s+(?:full|complete)\s+(?:analysis|assessment))?"
+    r"(?=[ \t]*(?:[.;]|$))",
+    re.I,
+)
+
+#: A disagreement the LEDGER would record (QA review B2): "unresolved disagreement",
+#: "the red team disputed …", a disagreement id. A sentence about the WORLD disagreeing
+#: — "conflicting data on FY2026 operating profit", "analysts disagree", "guidance
+#: contradicts the consensus" — is a claim about the company, not about the research.
+#: Challenge wording is NOT a disagreement: the ledger records Red Team challenges
+#: separately (CFR: 5 challenges, 0 disagreements — "the red team challenged five
+#: findings" is true there). QA re-review X1.
+_LEDGER_DISAGREEMENT_RE = re.compile(
+    r"\b(?:unresolved\s+(?:disagreements?|disputes?)"
+    r"|red[- ]team\s+(?:disputed|disputes|contested|contests)"
+    r"|disagreement\s+(?:id\s+)?[0-9a-f]{8}\b)",
+    re.I,
+)
+_NEGATED_DISAGREEMENT_RE = re.compile(
+    r"\b(?:no|without|nor|0|zero|none)\s+(?:\w+\s+){0,2}(?:disagreements?|disputes?"
+    r"|challenges?)\b",
+    re.I,
+)
+
+_DET_STATE_RE = re.compile(
+    r"^Deterministic synthesis:\s*(\d+)\s+finding\(s\),\s*(\d+)\s+verified,\s*(\d+)\s+"
+    r"open\s+gap\(s\),\s*(\d+)\s+unresolved\s+disagreement\(s\)\.$"
+)
+_NO_MODEL_RE = re.compile(r"\bNo model was available\b")
+_DEGRADED_NO_FINDINGS = "(no findings to synthesise)"
+_DEGRADED_NO_MODEL = "no chair model was available"
+_DEGRADED_CHAIR_FAILED = "the chair model did not return a usable reply"
+
+_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"),
+        start=1,
+    )
+}
+_MONTH = r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
+_DATE_ISO_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+_DATE_DMY_RE = re.compile(rf"\b(\d{{1,2}})\s+{_MONTH}\s+(\d{{4}})\b", re.I)
+_DATE_MDY_RE = re.compile(rf"\b{_MONTH}\s+(\d{{1,2}}),?\s+(\d{{4}})\b", re.I)
+_ACCESSION_RE = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
+_FORM_RE = re.compile(r"\b(10-K|10-Q|20-F|40-F|6-K(?:/A)?|8-K)\b", re.I)
+#: Where the clause that names THE newest document ends.
+_ANCHOR_CLAUSE_END_RE = re.compile(
+    # "(?<!\s)" lets the "and" branch start only at the FIRST character of a whitespace
+    # run; without it every position inside a long run restarts "\s+" (quadratic).
+    r";|,\s*(?:which|unlike|while|whereas)\b|(?<!\s),?\s+and\s+(?:the|its|an?)\b"
+    r"|\b(?:earlier|prior|previous|older|unlike"
+    r"|superseded|supersedes|supersede|replaced|replaces)\b",
+    re.I,
+)
+
+
+def _document_dates(text: str) -> list[tuple[int, date]]:
+    """The dates a text ties to a DOCUMENT (see ``_DOC_DATE_BEFORE_RE``), with their
+    positions, in the order they appear."""
+    out: list[tuple[int, date]] = []
+
+    def put(m: re.Match[str], value: date) -> None:
+        if _DOC_DATE_BEFORE_RE.search(text[max(0, m.start() - 32): m.start()]):
+            out.append((m.start(), value))
+
+    for m in _DATE_ISO_RE.finditer(text):
+        try:
+            put(m, date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+        except ValueError:
+            continue
+    for m in _DATE_DMY_RE.finditer(text):
+        try:
+            put(m, date(int(m.group(3)), _MONTHS[m.group(2)[:3].lower()], int(m.group(1))))
+        except (ValueError, KeyError):
+            continue
+    for m in _DATE_MDY_RE.finditer(text):
+        try:
+            put(m, date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))))
+        except (ValueError, KeyError):
+            continue
+    return sorted(out, key=lambda item: item[0])
+
+
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Violation:
+    """One broken invariant and what was done about it."""
+
+    rule: str
+    path: str
+    text: str
+    action: str
+    reason: str
+    replacement: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rule": self.rule,
+            "path": self.path,
+            "text": _safe(self.text[:400]),
+            "action": self.action,
+            "reason": _safe(self.reason),
+            "replacement": self.replacement[:400] if self.replacement else None,
+        }
+
+
+@dataclass
+class InvariantResult:
+    v3: dict[str, Any]
+    llm_council: dict[str, Any] | None
+    violations: list[Violation] = field(default_factory=list)
+
+    def counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for v in self.violations:
+            out[v.rule] = out.get(v.rule, 0) + 1
+        return out
+
+    def to_dict(self) -> dict[str, Any]:
+        actions: dict[str, int] = {}
+        for v in self.violations:
+            actions[v.action] = actions.get(v.action, 0) + 1
+        return {
+            "version": INVARIANTS_VERSION,
+            "violations_total": len(self.violations),
+            "by_rule": self.counts(),
+            "by_action": actions,
+            "violations": [v.to_dict() for v in self.violations[:200]],
+        }
+
+
+# ---------------------------------------------------------------------------
+# Free-text rules
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Hit:
+    rule: str
+    reason: str
+    replacement: str | None = None
+
+
+def _g(state: Mapping[str, Any], *keys: str) -> Any:
+    node: Any = state
+    for key in keys:
+        node = node.get(key) if isinstance(node, Mapping) else None
+    return node
+
+
+def _newest(state: Mapping[str, Any]) -> tuple[date | None, str]:
+    doc = _g(state, "documents", "newest_issuer_document") or {}
+    published = as_date(doc.get("date"))
+    what = doc.get("form") or str(doc.get("kind") or "document").replace("_", " ")
+    return published, f"{what} dated {published.isoformat()}" if published else ""
+
+
+def _rule_no_issuer_doc(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    held = int(_g(state, "documents", "issuer_documents_held") or 0)
+    cited = int(_g(state, "findings", "primary_source") or 0)
+    if not (held and cited) or not _denies_issuer_documents(sentence):
+        return None
+    _, newest = _newest(state)
+    return _Hit(
+        RULE_NO_ISSUER_DOC,
+        f"it says no issuer filing or release is in evidence, while {held} issuer "
+        f"document(s) are recorded (newest: {newest or 'undated'}) and {cited} finding(s) "
+        "cite the issuer's own documents",
+    )
+
+
+def _names_newest_form(text: str, state: Mapping[str, Any]) -> bool:
+    """The text names the newest held document's form type ("10-Q") or its label
+    ("September Quarterly Report", or "Quarterly Report" without the period word)."""
+    label = str((_g(state, "documents", "newest_issuer_document") or {}).get("form") or "")
+    label = " ".join(label.split()).lower()
+    if not label:
+        return False
+    if any(f.lower() == label for f in _FORM_RE.findall(text)):
+        return True
+    lowered = " ".join(text.split()).lower()
+    words = label.split()
+    candidates = {label} | ({" ".join(words[1:])} if len(words) >= 3 else set())
+    return any(c and c in lowered for c in candidates)
+
+
+def _rule_stale_latest(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """An older DOCUMENT named as the newest. Only a date the sentence ties to the
+    document it names (after the "newest/latest" anchor), or an accession the inventory
+    dates, is compared — never a covered period (QA review B3)."""
+    match = None
+    for candidate in _LATEST_DOC_RE.finditer(sentence):
+        before = sentence[max(0, candidate.start() - 24): candidate.start()]
+        if not _ORDINAL_BEFORE_RE.search(before):
+            match = candidate
+            break
+    if match is None:
+        return None
+    newest_date, newest_text = _newest(state)
+    if newest_date is None:
+        return None
+    margin = timedelta(days=DOCUMENT_MARGIN_DAYS)
+    # Only the anchor's own clause names THE newest document: "the latest filing is the
+    # Q3 10-Q, which supersedes the 10-K filed 2026-02-04" dates an older document on
+    # purpose (QA re-review X2).
+    tail = sentence[match.end():]
+    cut = _ANCHOR_CLAUSE_END_RE.search(tail)
+    clause = sentence[match.start(): match.end() + (cut.start() if cut else len(tail))]
+    dated = _document_dates(clause)
+    first_date_at = dated[0][0] if dated else len(clause)
+    if _names_newest_form(clause[:first_date_at], state):
+        # It names the newest held document's form or label before any date: not stale.
+        return None
+    named_date: date | None = dated[0][1] if dated else None
+    if named_date is None:
+        accession = _ACCESSION_RE.search(clause)
+        inventory = _g(state, "documents", "inventory") or []
+        if accession is not None:
+            named_date = next(
+                (
+                    d
+                    for entry in inventory
+                    if isinstance(entry, Mapping) and entry.get("ref") == accession.group(0)
+                    and (d := as_date(entry.get("date"))) is not None
+                ),
+                None,
+            )
+    if named_date is not None and named_date < newest_date - margin:
+        return _Hit(
+            RULE_STALE_LATEST,
+            f"it names a document dated {named_date.isoformat()} as the newest, "
+            f"while the issuer's {newest_text} is recorded",
+        )
+    return None
+
+
+def _rule_latest_period(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    status = _g(state, "current_period", "status")
+    if status not in ("facts_validated", "document_held_not_extracted"):
+        return None
+    for pattern in _LATEST_UNAVAILABLE_RES:
+        m = pattern.search(sentence)
+        if not m or not _unqualified_after(sentence, m.end()) or _prefix_qualified_text(
+            sentence, m.start()
+        ):
+            continue
+        noun = (m.groupdict().get("noun") or "").lower()
+        if noun in _FIGURE_NOUNS and status != "facts_validated":
+            # "latest quarter figures are not available" is TRUE when the report is held
+            # but no figure was extracted from it.
+            continue
+        doc = _g(state, "current_period", "document") or {}
+        held = (
+            f"validated current-period facts ({_g(state, 'current_period', 'period')})"
+            if status == "facts_validated"
+            else f"the current-period report ({doc.get('form') or 'issuer report'}, "
+            f"{doc.get('date') or 'undated'}) is recorded"
+        )
+        return _Hit(RULE_LATEST_PERIOD, f"it says the latest period is not available, while {held}")
+    return None
+
+
+def _rule_no_recent(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    if not _g(state, "evidence", "recent_issuer_disclosure_cited"):
+        return None
+    m = _NO_RECENT_RE.search(sentence)
+    if (m is None or not _unqualified_after(sentence, m.end())
+            or _prefix_qualified_text(sentence, m.start())):
+        return None
+    _, newest = _newest(state)
+    return _Hit(
+        RULE_NO_RECENT,
+        f"it says there are no recent developments, while a current issuer disclosure "
+        f"({newest or 'recent'}) is cited",
+    )
+
+
+def _rule_no_cash_flow(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    match = None
+    for verbs, pattern in zip((frozenset(), _ABSENCE_VERBS), _NO_CASH_FLOW_RES, strict=True):
+        m = pattern.search(sentence)
+        if (m is not None and _unqualified_after(sentence, m.end(), verbs)
+                and not _prefix_qualified_text(sentence, m.start())):
+            match = m
+            break
+    if match is None:
+        return None
+    by_kind = _g(state, "evidence", "cash_flow_findings_by_kind") or {}
+    claim = match.group(0).lower()
+    # A claim about FREE cash flow is answered only by a free-cash-flow figure; an
+    # operating one only by an operating one; a bare "cash flow" by either.
+    kind = "free" if "free" in claim else "operating" if "operating" in claim else "any"
+    n = int(by_kind.get(kind, _g(state, "evidence", "cash_flow_findings") or 0) or 0)
+    if not n:
+        return None
+    label = "" if kind == "any" else f"{kind} "
+    return _Hit(RULE_NO_CASH_FLOW, f"it says no {label}cash flow is available, while {n} "
+                f"{label}cash-flow finding(s) or statement figure(s) are recorded")
+
+
+def _rule_evidence_adequate(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    failed = bool(_g(state, "current_period", "extraction_failed"))
+    empty = int(_g(state, "findings", "total") or 0) == 0
+    if not (failed or empty) or not _EVIDENCE_ADEQUATE_RE.search(sentence):
+        return None
+    return _Hit(
+        RULE_EVIDENCE_ADEQUATE,
+        "it calls the evidence adequate, while "
+        + ("the ledger records no findings" if empty else
+           "no figure was extracted from the current-period issuer report"),
+    )
+
+
+def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """A LEDGER disagreement narrated while the ledger records none. Only phrasing that
+    refers to the research's own disagreements counts (QA review B2)."""
+    if sentence.startswith("Deterministic synthesis:"):
+        return None
+    unresolved = _g(state, "disagreements", "unresolved")
+    total = _g(state, "disagreements", "total")
+    if unresolved != 0 or (total not in (0, None)):
+        return None
+    m = _LEDGER_DISAGREEMENT_RE.search(sentence)
+    if m is None or _NEGATED_DISAGREEMENT_RE.search(sentence):
+        return None
+    return _Hit(RULE_UNBACKED_DISAGREEMENT,
+                "it narrates a research disagreement, while the ledger records none")
+
+
+def _rule_det_counts(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    m = _DET_STATE_RE.match(sentence.strip())
+    if not m:
+        return None
+    total = int(_g(state, "findings", "total") or 0)
+    verified = int(_g(state, "findings", "verified") or 0)
+    gaps = int(_g(state, "gaps", "open") or 0)
+    unresolved = _g(state, "disagreements", "unresolved")
+    said_unresolved = int(m.group(4))
+    if int(m.group(1)) == total and (unresolved is None or said_unresolved == unresolved):
+        return None
+    replacement = (
+        f"Deterministic synthesis: {total} finding(s), {verified} verified, {gaps} open "
+        f"gap(s), {unresolved if unresolved is not None else said_unresolved} unresolved "
+        "disagreement(s)."
+    )
+    return _Hit(RULE_FINDING_COUNT,
+                f"it states {m.group(1)} finding(s) while the ledger records {total}",
+                replacement)
+
+
+def _fallback_sentence(state: Mapping[str, Any]) -> str | None:
+    reason = _g(state, "chair", "fallback_reason")
+    if reason == FALLBACK_NOT_CONVENED:
+        why = REFUSAL_WORDS.get(str(_g(state, "council", "refusal_reason")),
+                                "it was refused")
+        return (f"The council did not convene because {why}, so no synthesis was "
+                "attempted; the findings stand in the research record as recorded.")
+    if reason == FALLBACK_CHAIR_FAILED:
+        return ("The chair model did not return a usable reply, so this is the ledger's "
+                "own state rather than an interpretation of it.")
+    return None
+
+
+def _rule_fallback_reason(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    if not _NO_MODEL_RE.search(sentence):
+        return None
+    if _g(state, "chair", "model_available") is not True:
+        return None
+    if _g(state, "chair", "fallback_reason") in (FALLBACK_NO_MODEL, None):
+        return None
+    replacement = _fallback_sentence(state)
+    if replacement is None:
+        return None
+    return _Hit(RULE_FALLBACK_REASON,
+                "it says no model was available, while a chair model was routed and "
+                f"the fallback reason is {_g(state, 'chair', 'fallback_reason')}",
+                replacement)
+
+
+_RECORD_RULES = (
+    _rule_no_issuer_doc,
+    _rule_stale_latest,
+    _rule_latest_period,
+    _rule_no_recent,
+    _rule_no_cash_flow,
+    _rule_evidence_adequate,
+)
+_CHAIR_RULES = (
+    _rule_det_counts,
+    _rule_fallback_reason,
+    *_RECORD_RULES,
+    _rule_unbacked_disagreement,
+)
+
+
+def check_sentence(
+    sentence: str, state: Mapping[str, Any], *, site: str = SITE_RECORD
+) -> _Hit | None:
+    """The first invariant one sentence breaks, or ``None``. Pure. A sentence longer
+    than ``MAX_SENTENCE_CHARS`` is not checked."""
+    if len(sentence) > MAX_SENTENCE_CHARS:
+        return None
+    for rule in _CHAIR_RULES if site == SITE_CHAIR else _RECORD_RULES:
+        hit = rule(sentence, state)
+        if hit is not None:
+            return hit
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The enforcer
+# ---------------------------------------------------------------------------
+
+
+def _safe(text: str) -> str:
+    """Reasons quote document headlines (issuer text); they pass the same
+    neutralisation V2 applies to external headlines, since they are written into the
+    report after its safety scan ran."""
+    from app.schemas.catalyst import neutralize_forbidden_terms
+
+    return neutralize_forbidden_terms(text) or ""
+
+
+def withheld_notice(reason: str) -> str:
+    return f"[Withheld at report assembly: {_safe(reason)}.]"
+
+
+class _Enforcer:
+    def __init__(self, state: Mapping[str, Any]) -> None:
+        self.state = state
+        self.violations: list[Violation] = []
+
+    def _line(self, line: str, path: str, site: str, reasons: list[str]) -> tuple[str | None, bool]:
+        """One line: ``(the line as it stays, changed)``; the line is ``None`` when every
+        sentence in it was withheld. Separators between kept sentences, the bullet marker
+        and trailing whitespace are kept as written (QA review M1)."""
+        bullet = _BULLET_RE.match(line)
+        prefix = bullet.group(0) if bullet else line[: len(line) - len(line.lstrip())]
+        body = line[len(prefix):]
+        core = body.rstrip()
+        if not core:
+            return line, False
+        pieces: list[tuple[str, str]] = []
+        start = 0
+        for m in _SENTENCE_RE.finditer(core):
+            pieces.append((core[start: m.start()], m.group(0)))
+            start = m.end()
+        pieces.append((core[start:], ""))
+        kept: list[tuple[str, str]] = []
+        changed = False
+        for sentence, separator in pieces:
+            hit = check_sentence(sentence, self.state, site=site)
+            if hit is None:
+                kept.append((sentence, separator))
+                continue
+            changed = True
+            if hit.replacement is not None:
+                kept.append((hit.replacement, separator))
+                self.violations.append(Violation(hit.rule, path, sentence, "repaired",
+                                                 hit.reason, hit.replacement))
+            else:
+                reasons.append(hit.reason)
+                self.violations.append(Violation(hit.rule, path, sentence, "withheld",
+                                                 hit.reason))
+        if not changed:
+            return line, False
+        if not kept:
+            return None, True
+        text = "".join(s + sep for s, sep in kept[:-1]) + kept[-1][0]
+        return prefix + text + body[len(core):], True
+
+    def text(self, value: Any, path: str, site: str) -> Any:
+        """Check one text; return it repaired, with offending sentences withheld. Only
+        the withheld span is removed: a bullet whose every sentence is withheld is
+        dropped, its neighbours are not. A text left with nothing is replaced by a notice
+        naming the reason."""
+        if not isinstance(value, str) or not value.strip():
+            return value
+        lines: list[str] = []
+        reasons: list[str] = []
+        changed = False
+        for line in value.split("\n"):
+            kept_line, line_changed = self._line(line, path, site, reasons)
+            changed = changed or line_changed
+            if kept_line is not None:
+                lines.append(kept_line)
+        if not changed:
+            return value
+        if not any(line.strip() for line in lines):
+            return withheld_notice(reasons[0] if reasons else "it contradicted the record")
+        return "\n".join(lines)
+
+
+def _walk_report(enforcer: _Enforcer, report: Any) -> None:
+    if not isinstance(report, dict):
+        return
+    for i, section in enumerate(report.get("sections") or ()):
+        if not isinstance(section, dict):
+            continue
+        base = f"professional_research.sections[{i}]"
+        lead = section.get("lead")
+        if isinstance(lead, dict):
+            lead["text"] = enforcer.text(lead.get("text"), f"{base}.lead", SITE_RECORD)
+        for j, sentence in enumerate(section.get("sentences") or ()):
+            if isinstance(sentence, dict):
+                sentence["text"] = enforcer.text(
+                    sentence.get("text"), f"{base}.sentences[{j}]", SITE_RECORD)
+        for j, finding in enumerate(section.get("findings") or ()):
+            if isinstance(finding, dict):
+                finding["statement"] = enforcer.text(
+                    finding.get("statement"), f"{base}.findings[{j}]", SITE_RECORD)
+
+
+def _walk_legacy(enforcer: _Enforcer, council: Any) -> None:
+    if not isinstance(council, dict):
+        return
+    for i, agent in enumerate(council.get("agents") or ()):
+        if not isinstance(agent, dict):
+            continue
+        base = f"llm_council.agents[{i}]"
+        for key in ("summary", "synthesis"):
+            agent[key] = enforcer.text(agent.get(key), f"{base}.{key}", SITE_LEGACY)
+        for list_key, text_key in (
+            ("key_points", "claim"),
+            ("implications", "statement"),
+            ("risks_or_gaps", "item"),
+        ):
+            for j, item in enumerate(agent.get(list_key) or ()):
+                if isinstance(item, dict):
+                    item[text_key] = enforcer.text(
+                        item.get(text_key), f"{base}.{list_key}[{j}]", SITE_LEGACY)
+        claims = agent.get("unsupported_claims")
+        if isinstance(claims, list):
+            agent["unsupported_claims"] = [
+                enforcer.text(c, f"{base}.unsupported_claims[{j}]", SITE_LEGACY)
+                for j, c in enumerate(claims)
+            ]
+
+
+def _structured(enforcer: _Enforcer, v3: dict[str, Any], legacy: dict[str, Any] | None) -> None:
+    state = enforcer.state
+    council = v3.get("council")
+    if isinstance(council, dict) and council:
+        expected = {
+            "finding_count": _g(state, "findings", "total"),
+            "verified_finding_count": _g(state, "findings", "verified"),
+            "primary_source_finding_count": _g(state, "findings", "primary_source"),
+            "unresolved_disagreement_count": _g(state, "disagreements", "unresolved"),
+        }
+        for key, value in expected.items():
+            if value is None or council.get(key) == value:
+                continue
+            enforcer.violations.append(Violation(
+                RULE_COUNCIL_COUNTS, f"council.{key}", str(council.get(key)), "repaired",
+                f"the council block said {council.get(key)}; the ledger records {value}",
+                str(value),
+            ))
+            council.setdefault("council_" + key, council.get(key))
+            council[key] = value
+
+    chair = v3.get("chair")
+    known = _g(state, "disagreements", "unresolved_ids")
+    if isinstance(chair, dict) and known is not None:
+        ids = [str(i) for i in chair.get("unresolved_disagreement_ids") or ()]
+        unknown = [i for i in ids if i not in set(known)]
+        if unknown:
+            chair["unresolved_disagreement_ids"] = [i for i in ids if i in set(known)]
+            chair["dropped_disagreement_ids"] = unknown
+            for item in unknown:
+                enforcer.violations.append(Violation(
+                    RULE_UNKNOWN_DISAGREEMENT_ID, "chair.unresolved_disagreement_ids", item,
+                    "dropped", "the ledger records no unresolved disagreement with this id",
+                ))
+
+    degraded = v3.get("degraded")
+    refusal = _g(state, "council", "refusal_reason")
+    chair_failed = (
+        _g(state, "chair", "fallback_reason") == FALLBACK_CHAIR_FAILED
+        and _g(state, "chair", "model_available") is True
+    )
+    degraded_list: list[Any] = degraded if isinstance(degraded, list) else []
+    for i, entry in enumerate(degraded_list):
+        if not isinstance(entry, str):
+            continue
+        fixed, why_text = None, ""
+        if _DEGRADED_NO_FINDINGS in entry and refusal and refusal != "no_findings":
+            why = REFUSAL_WORDS.get(str(refusal), str(refusal))
+            fixed = entry.replace(_DEGRADED_NO_FINDINGS, f"({why})")
+            why_text = f"the council was refused because {why}, not for want of findings"
+        elif chair_failed and entry.endswith(_DEGRADED_NO_MODEL):
+            fixed = entry[: -len(_DEGRADED_NO_MODEL)] + _DEGRADED_CHAIR_FAILED
+            why_text = "a chair model was routed; its reply was not usable"
+        if fixed is not None:
+            degraded_list[i] = fixed
+            enforcer.violations.append(Violation(
+                RULE_DEGRADED_REASON, f"degraded[{i}]", entry, "repaired", why_text, fixed,
+            ))
+
+    if isinstance(legacy, dict) and legacy.get("agents") and _g(state, "council", "degraded"):
+        completed = legacy.get("agents_completed")
+        normal = (
+            not legacy.get("agents_failed")
+            and not legacy.get("agents_skipped")
+            and legacy.get("committee_label_basis") != "deterministic_fallback"
+        )
+        if normal:
+            # Repaired where the page reads it: ``canonical_state.council.status_text``
+            # replaces the legacy count in every status line (the V2 block itself is
+            # left as V2 wrote it).
+            text = _g(state, "council", "status_text")
+            enforcer.violations.append(Violation(
+                RULE_COUNCIL_STATUS, "llm_council.agents_completed",
+                f"{completed} agents completed", "repaired",
+                "the council was degraded: " + "; ".join(
+                    _g(state, "council", "degraded_reasons") or ()),
+                text,
+            ))
+
+
+def enforce(
+    v3: Mapping[str, Any],
+    state: Mapping[str, Any],
+    *,
+    llm_council: Mapping[str, Any] | None = None,
+) -> InvariantResult:
+    """Check every report-status sentence against the canonical state, repairing what
+    can be repaired and withholding the rest. Works on COPIES; never raises on a
+    partial payload."""
+    out = copy.deepcopy(dict(v3))
+    legacy = copy.deepcopy(dict(llm_council)) if isinstance(llm_council, Mapping) else None
+    enforcer = _Enforcer(state)
+
+    _structured(enforcer, out, legacy)
+
+    chair = out.get("chair")
+    if isinstance(chair, dict):
+        chair["synthesis"] = enforcer.text(chair.get("synthesis"), "chair.synthesis",
+                                           SITE_CHAIR)
+        for i, point in enumerate(chair.get("key_points") or ()):
+            if isinstance(point, dict):
+                point["text"] = enforcer.text(point.get("text"), f"chair.key_points[{i}]",
+                                              SITE_CHAIR)
+    for i, finding in enumerate(out.get("findings") or ()):
+        if isinstance(finding, dict):
+            finding["statement"] = enforcer.text(finding.get("statement"),
+                                                 f"findings[{i}]", SITE_RECORD)
+    for i, gap in enumerate(out.get("gaps") or ()):
+        if isinstance(gap, dict):
+            gap["description"] = enforcer.text(gap.get("description"), f"gaps[{i}]",
+                                               SITE_RECORD)
+    _walk_report(enforcer, out.get("professional_research"))
+    _walk_legacy(enforcer, legacy)
+    return InvariantResult(v3=out, llm_council=legacy, violations=enforcer.violations)
+
+
+#: Keys of the V2 report content whose values are identifiers or vocabulary, never
+#: sentences about the research.
+_CONTENT_SKIP_KEYS: frozenset[str] = frozenset({
+    "type", "provenance", "classification", "url", "source_url", "id", "source_id",
+    "citation_ids", "evidence_ids", "ticker", "exchange", "isin", "lei", "slug",
+})
+
+
+def enforce_content(
+    content: Mapping[str, Any] | None, state: Mapping[str, Any]
+) -> tuple[dict[str, Any] | None, list[Violation]]:
+    """The legacy V2 report content (the fenced JSON in ``content_markdown``): every
+    sentence in it is checked as a LEGACY text — inventory claims only. Works on a copy.
+    """
+    if not isinstance(content, Mapping):
+        return None, []
+    out = copy.deepcopy(dict(content))
+    enforcer = _Enforcer(state)
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _CONTENT_SKIP_KEYS:
+                    continue
+                if isinstance(value, str):
+                    node[key] = enforcer.text(value, f"{path}.{key}", SITE_LEGACY)
+                else:
+                    walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                if isinstance(value, str):
+                    node[i] = enforcer.text(value, f"{path}[{i}]", SITE_LEGACY)
+                else:
+                    walk(value, f"{path}[{i}]")
+
+    walk(out, "content")
+    return out, enforcer.violations
+
+
+def check(
+    v3: Mapping[str, Any],
+    state: Mapping[str, Any],
+    *,
+    llm_council: Mapping[str, Any] | None = None,
+) -> list[Violation]:
+    """The violations alone (the payload passed in is never modified)."""
+    return enforce(v3, state, llm_council=llm_council).violations
+
+
+LEGACY_LABEL = (
+    "Legacy council (V2). Written from the earlier evidence pack before the research "
+    "ledger ran; the research record above is the canonical account of what this run "
+    "found. Statements here that contradict it were withheld at report assembly."
+)
+
+
+def legacy_council_block(state: Mapping[str, Any]) -> dict[str, Any]:
+    """How the page labels the V2 council beside a V3 run (``v3_research.legacy_council``):
+    visibly legacy, with the TRUE council status in place of its own count."""
+    return {
+        "legacy": True,
+        "label": LEGACY_LABEL,
+        "status_text": _g(state, "council", "status_text"),
+    }
+
+
+__all__ = [
+    "INVARIANTS_VERSION",
+    "LEGACY_LABEL",
+    "RULES",
+    "InvariantResult",
+    "Violation",
+    "check",
+    "check_sentence",
+    "enforce",
+    "enforce_content",
+    "legacy_council_block",
+    "withheld_notice",
+]

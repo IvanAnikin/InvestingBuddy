@@ -30,6 +30,7 @@ export default function ReportHeader({
   reportId,
   isFinal,
   supersededBy = null,
+  councilStatus = null,
 }: {
   identity: IdentityView;
   periods: ReportingPeriods | null;
@@ -50,12 +51,30 @@ export default function ReportHeader({
    * of a dead end.
    */
   supersededBy?: string | null;
+  /**
+   * ADR-082 — the council status from the run's canonical research state. When
+   * present it replaces the legacy council's own count: "8 agents completed" was shown
+   * over runs whose chair fell back and whose red team reviewed nothing.
+   *
+   * The canonical text is "<head> · <reason> · <reason> …" when the council was
+   * degraded and can run to a paragraph. The header fact stays SHORT (the head and
+   * the word "degraded"); the reasons are a full-width line below the facts, where a
+   * long string wraps instead of overflowing a grid column.
+   */
+  councilStatus?: string | null;
 }) {
+  const councilParts = councilStatus ? councilStatus.split(" · ") : [];
+  const councilDegraded = councilParts.length > 1;
+  const councilFact = councilStatus
+    ? councilDegraded
+      ? `${councilParts[0]} · degraded`
+      : councilParts[0]
+    : councilStatusText(council);
   const facts: [string, string][] = [
     ["Latest annual", periodText(periods?.latestAnnual, annualState)],
     ["Current period", periodText(periods?.latestCurrent, currentState)],
     ["Evidence", evidenceWordLabel ?? "Not assessed"],
-    ["Council", councilStatusText(council)],
+    ["Council", councilFact],
     ["Last researched", formatDate(updatedAt)],
   ];
 
@@ -128,6 +147,16 @@ export default function ReportHeader({
           </div>
         ))}
       </dl>
+
+      {councilDegraded && (
+        <p
+          className="ib-breakable mt-4 text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+          data-testid="header-council-status"
+        >
+          <span className="text-[color:var(--ib-ink-3)]">Council status: </span>
+          {councilParts.slice(1).join(" · ")}
+        </p>
+      )}
 
       {/* The truthful banner stays. What changes is that it now ends
           somewhere: when a current report exists, the way to it is the

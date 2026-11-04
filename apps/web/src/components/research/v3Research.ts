@@ -126,6 +126,31 @@ export type V3Council = {
   unresolvedDisagreementCount: number | null;
 };
 
+/**
+ * ADR-082 — the run's ONE research state, computed from the ledger at report assembly
+ * (`v3_research.canonical_state`). Every count and status line reads it when present;
+ * `null` on every report written before it existed.
+ */
+export type V3CanonicalState = {
+  version: number;
+  findingTotal: number | null;
+  verifiedFindingCount: number | null;
+  primarySourceFindingCount: number | null;
+  openGapCount: number | null;
+  unresolvedDisagreementCount: number | null;
+  councilStatusText: string | null;
+  councilDegraded: boolean;
+  chairReasonText: string | null;
+  /** Report-status sentences repaired or withheld at assembly. */
+  invariantViolations: number;
+};
+
+/** How the page labels the legacy V2 council beside a V3 run. */
+export type V3LegacyCouncil = {
+  label: string | null;
+  statusText: string | null;
+};
+
 export type V3Challenges = {
   challenges: number;
   resolved: number;
@@ -465,6 +490,10 @@ export type V3Research = {
   financialStatements: V3FinancialStatements | null;
   /** Open-web W5/W7: the company web stage's run record. Null unless the stage ran. */
   webContext: WebContext | null;
+  /** ADR-082 — the canonical research state. Null on reports written before it. */
+  canonicalState: V3CanonicalState | null;
+  /** ADR-082 — the legacy V2 council's label and true status. Null when absent. */
+  legacyCouncil: V3LegacyCouncil | null;
 };
 
 /**
@@ -1143,7 +1172,41 @@ export function readV3Research(sourceSummary: unknown): V3Research | null {
     gapReconciliation: readGapReconciliation(raw.gap_reconciliation),
     financialStatements: readStatementsPayload(raw.financial_statements_state),
     webContext: readWebContext(raw.web_context),
+    canonicalState: readCanonicalState(raw.canonical_state, raw.state_invariants),
+    legacyCouncil: readLegacyCouncil(raw.legacy_council),
   };
+}
+
+export function readCanonicalState(
+  v: unknown,
+  invariants: unknown = null,
+): V3CanonicalState | null {
+  if (!isRecord(v)) return null;
+  const version = num(v.version);
+  if (version === null) return null;
+  const findings = isRecord(v.findings) ? v.findings : {};
+  const gaps = isRecord(v.gaps) ? v.gaps : {};
+  const disagreements = isRecord(v.disagreements) ? v.disagreements : {};
+  const council = isRecord(v.council) ? v.council : {};
+  const chair = isRecord(v.chair) ? v.chair : {};
+  const checks = isRecord(invariants) ? invariants : {};
+  return {
+    version,
+    findingTotal: num(findings.total),
+    verifiedFindingCount: num(findings.verified),
+    primarySourceFindingCount: num(findings.primary_source),
+    openGapCount: num(gaps.open),
+    unresolvedDisagreementCount: num(disagreements.unresolved),
+    councilStatusText: str(council.status_text),
+    councilDegraded: bool(council.degraded) ?? false,
+    chairReasonText: str(chair.reason_text),
+    invariantViolations: num(checks.violations_total) ?? 0,
+  };
+}
+
+function readLegacyCouncil(v: unknown): V3LegacyCouncil | null {
+  if (!isRecord(v) || !bool(v.legacy)) return null;
+  return { label: str(v.label), statusText: str(v.status_text) };
 }
 
 const STATEMENT_STATE_KINDS: readonly StatementStateKind[] = [
@@ -1254,14 +1317,29 @@ function readGapReconciliation(v: unknown): V3GapReconciliation | null {
  * findings that all cite evidence. What IS known is how many cite the issuer's own
  * documents; a verified count is shown only once something actually verifies.
  */
-export function findingsHint(council: V3Council | null): string | undefined {
-  if (!council) return undefined;
+export function findingsHint(
+  council: V3Council | null,
+  canonical: V3CanonicalState | null = null,
+): string | undefined {
+  if (!council && !canonical) return undefined;
+  // ADR-082: the canonical (ledger) counts win; a refused council's own block once
+  // said "0 from issuer documents" over 17 that did.
+  const primary =
+    canonical?.primarySourceFindingCount ?? council?.primarySourceFindingCount ?? null;
+  const verified = canonical?.verifiedFindingCount ?? council?.verifiedFindingCount ?? null;
   const parts: string[] = [];
-  if (council.primarySourceFindingCount !== null) {
-    parts.push(`${council.primarySourceFindingCount} from issuer documents`);
+  if (primary !== null) {
+    parts.push(`${primary} from issuer documents`);
   }
-  if (council.verifiedFindingCount !== null && council.verifiedFindingCount > 0) {
-    parts.push(`${council.verifiedFindingCount} verified`);
+  if (verified !== null && verified > 0) {
+    parts.push(`${verified} verified`);
   }
   return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+/** ADR-082 — the number of findings a status line states: the ledger's. */
+export function findingTotal(v3: V3Research): number {
+  return (
+    v3.canonicalState?.findingTotal ?? v3.council?.findingCount ?? v3.findings.length
+  );
 }

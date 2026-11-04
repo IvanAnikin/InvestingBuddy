@@ -52,7 +52,14 @@ from app.services.agent_tools.contracts import ToolBudget
 from app.services.agent_tools.policy import policy_for
 from app.services.agent_tools.registry import ToolRegistry
 from app.services.agent_tools.session import ToolSession
-from app.services.agents.chair import FALLBACK_MATERIAL_EVENT, ChairVerdict, LLMChair
+from app.services.agents.chair import (
+    FALLBACK_CHAIR_FAILED,
+    FALLBACK_MATERIAL_EVENT,
+    FALLBACK_NOT_CONVENED,
+    REFUSAL_WORDS,
+    ChairVerdict,
+    LLMChair,
+)
 from app.services.agents.investigator import InvestigatorDiagnostics, LLMInvestigator
 from app.services.agents.red_team import LLMRedTeam, LLMResponder
 from app.services.agents.routing import (
@@ -175,6 +182,10 @@ class V3ResearchOutcome:
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
     error: str | None = None
+    #: ADR-082 — the ledger's own counts at the end of the run (``canonical_state.
+    #: LedgerTally``). Not serialised as such: ``attach_to_report`` folds it into
+    #: ``canonical_state``. ``None`` when the run never reached the Chair.
+    ledger_tally: Any = None
 
     @property
     def ran(self) -> bool:
@@ -257,6 +268,30 @@ def _mark_pre_revenue(outcome: V3ResearchOutcome, stage: Any) -> None:
             "stage, not a missing figure."
         ),
     }
+
+
+def _chair_degraded_reason(verdict: Any, council: Any) -> str:
+    """Why the deterministic verdict stands — the TRUE reason (ADR-082)."""
+    reason = getattr(verdict, "fallback_reason", None)
+    if reason == FALLBACK_NOT_CONVENED:
+        why = REFUSAL_WORDS.get(
+            str(getattr(council, "refusal_reason", None)), "it was refused"
+        )
+        return (
+            "the chair returned the deterministic verdict because the council did not "
+            f"convene ({why})"
+        )
+    if reason == FALLBACK_MATERIAL_EVENT:
+        return (
+            "the chair's synthesis stated only material corporate events no vetted "
+            "source supports (ADR-078); the deterministic synthesis stands"
+        )
+    if reason == FALLBACK_CHAIR_FAILED:
+        return (
+            "the chair fell back to the deterministic verdict: the chair model did not "
+            "return a usable reply"
+        )
+    return "the chair fell back to the deterministic verdict: no chair model was available"
 
 
 def _investigator_degraded_reasons(diagnostics: dict[str, Any]) -> list[str]:
@@ -1068,6 +1103,10 @@ async def _run(
     )
     outcome.challenges = challenge_result.to_dict()
     outcome.challenges["discarded_unknown_targets"] = len(red.discarded_unknown_targets)
+    # ADR-082 — what the Red Team actually had in front of it. A refused council hands
+    # it nothing, and "8 agents completed" must not be said over a red team that
+    # reviewed no findings.
+    outcome.challenges["findings_reviewed"] = len(council.findings) if council.convened else 0
     if web_followup is not None:
         outcome.challenges["risk_evidence_items"] = len(risk_evidence)
         outcome.challenges["discarded_low_trust_basis"] = len(red.discarded_low_trust_basis)
@@ -1099,6 +1138,11 @@ async def _run(
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
     #    and the Chair must not see one that was retired.
     council = await council_inputs.assemble(session, run)
+    # ADR-082 — the council block a reader sees is the one the Chair deliberated over,
+    # not the pre-challenge one: the Red Team may have withdrawn findings and recorded
+    # disagreements, and a block saying "0 unresolved" beside a chair listing three
+    # (QA LIN-6) is a contradiction the report itself created.
+    outcome.council = council.to_dict()
     verdict: ChairVerdict = await LLMChair(
         client=model_routing.client_for(SLOT_CHAIR),
         subject={"name": getattr(company, "name", None),
@@ -1106,19 +1150,11 @@ async def _run(
     ).deliberate(council)
     outcome.chair = verdict.to_dict()
     if verdict.deterministic_fallback:
-        # Named, because the two states mean opposite things about the deployment. The
+        # Named, because the states mean opposite things about the deployment. The
         # live MRNA run reported this as a model being unavailable while a chair model
-        # was routed and reachable — the council simply had no findings to synthesise.
-        outcome.degraded.append(
-            "the chair returned the deterministic verdict because the council did not "
-            "convene (no findings to synthesise)"
-            if verdict.fallback_reason == "council_did_not_convene"
-            else "the chair's synthesis stated only material corporate events no vetted "
-            "source supports (ADR-078); the deterministic synthesis stands"
-            if verdict.fallback_reason == FALLBACK_MATERIAL_EVENT
-            else "the chair fell back to the deterministic verdict: no chair model was "
-            "available"
-        )
+        # was routed and reachable; the Cellectis runs said "no findings" while the
+        # council was refused on a blocking question over 37 findings (QA CLLS2-3).
+        outcome.degraded.append(_chair_degraded_reason(verdict, council))
 
     # 9. What a reader can cite.
     #
@@ -1139,6 +1175,20 @@ async def _run(
         outcome.primary_document_coverage = await document_coverage.coverage_for_run(
             session, run, inventory=primary_inventory,
             core_filings=outcome.core_filings, core_disclosures=outcome.core_disclosures,
+        )
+    # ADR-082 — the ledger's own counts, once, after every step that can change them
+    # (Red Team withdrawals, reconciliation). The canonical state is built from this at
+    # report assembly. A failure costs the tally only: the state is then derived from
+    # the payload and says so.
+    try:
+        from app.services.ledger.canonical_state import tally_ledger
+
+        async with session.begin_nested():
+            outcome.ledger_tally = await tally_ledger(session, run)
+    except Exception as exc:  # noqa: BLE001 - the tally must not end the run
+        outcome.degraded.append(
+            f"the ledger tally could not be read ({type(exc).__name__}); the research "
+            "state is derived from the report payload"
         )
 
     # 10. Research memory: the delta against the previous run.
@@ -2014,6 +2064,10 @@ def attach_to_report(report: Any, outcome: V3ResearchOutcome) -> Any:
             payload["gap_reconciliation"] = reconciliation
         except Exception:  # noqa: BLE001 - labels are additive
             pass
+    try:
+        payload = _enforce_research_state(report, summary, payload, outcome)
+    except Exception:  # noqa: BLE001 - the state is additive; it never costs the report
+        pass
     summary[SOURCE_SUMMARY_KEY] = payload
     report.source_summary_json = summary
     try:
@@ -2021,6 +2075,65 @@ def attach_to_report(report: Any, outcome: V3ResearchOutcome) -> Any:
     except Exception:  # noqa: BLE001 - the additive catalyst rows must never cost the report
         pass
     return report
+
+
+def _enforce_research_state(
+    report: Any, summary: dict[str, Any], payload: dict[str, Any], outcome: Any
+) -> dict[str, Any]:
+    """ADR-082 — compute the canonical research state ONCE and hold every report-status
+    sentence to it: the V3 block, the legacy V2 council block and the V2 report content.
+
+    Mutates ``summary`` (the labelled legacy council) and, only when one of its
+    sentences was withheld, the report's V2 content. Returns the V3 payload with
+    ``canonical_state`` and ``state_invariants`` attached.
+    """
+    from app.services.ledger import report_invariants as invariants
+    from app.services.ledger.canonical_state import build_canonical_state
+
+    legacy = summary.get("llm_council")
+    legacy = legacy if isinstance(legacy, dict) else None
+    state = build_canonical_state(
+        payload,
+        llm_council=legacy,
+        tally=getattr(outcome, "ledger_tally", None),
+        as_of=getattr(report, "created_at", None),
+    )
+    result = invariants.enforce(payload, state, llm_council=legacy)
+    violations = list(result.violations)
+    content = _v2_report_content(report)
+    if content:
+        repaired, content_violations = invariants.enforce_content(content, state)
+        if content_violations and repaired is not None:
+            _write_v2_report_content(report, repaired)
+            violations.extend(content_violations)
+    out = dict(result.v3)
+    out["canonical_state"] = state
+    out["state_invariants"] = invariants.InvariantResult(
+        v3=out, llm_council=None, violations=violations
+    ).to_dict()
+    if legacy is not None:
+        out["legacy_council"] = invariants.legacy_council_block(state)
+        # The V2 block is rewritten ONLY when one of its sentences was withheld; a
+        # clean V2 block stays byte-for-byte as V2 wrote it.
+        if any(v.path.startswith("llm_council.agents[") for v in result.violations):
+            summary["llm_council"] = result.llm_council
+    return out
+
+
+def _write_v2_report_content(report: Any, content: dict[str, Any]) -> None:
+    """Write the V2 content back into its fenced JSON block (the shape the page reads)."""
+    import json
+
+    markdown = str(getattr(report, "content_markdown", None) or "")
+    start = markdown.find("```json")
+    end = markdown.rfind("```")
+    if start == -1 or end <= start:
+        return
+    head = start + len("```json")
+    report.content_markdown = (
+        markdown[:head] + "\n" + json.dumps(content, indent=2, default=str) + "\n"
+        + markdown[end:]
+    )
 
 
 def _attach_web_catalysts(report: Any, web_context: Any) -> None:

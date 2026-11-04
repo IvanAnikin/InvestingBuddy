@@ -1,5 +1,6 @@
 import Surface from "@/components/product/Surface";
 import {
+  findingTotal,
   findingsHint,
   type ExternalLead,
   type V3Research,
@@ -221,10 +222,13 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
       <dl className="mt-6 grid grid-cols-2 gap-5 sm:grid-cols-4">
         <Stat
           label="Findings"
-          value={n(council?.findingCount ?? v3.findings.length)}
-          hint={findingsHint(council)}
+          value={n(findingTotal(v3))}
+          hint={findingsHint(council, v3.canonicalState)}
         />
-        <Stat label="Open gaps" value={n(consumption?.gapsOpen ?? v3.gaps.length)} />
+        <Stat
+          label="Open gaps"
+          value={n(v3.canonicalState?.openGapCount ?? consumption?.gapsOpen ?? v3.gaps.length)}
+        />
         <Stat label="Rounds" value={n(v3.rounds)} hint={`${n(v3.tasksRun)} tasks`} />
         <Stat
           label="Tool calls"
@@ -382,10 +386,16 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
           {chair.deterministicFallback && (
             <p className="mt-2 max-w-3xl text-xs leading-relaxed text-amber-200/90">
               {chair.fallbackReason === "council_did_not_convene"
-                ? "The council did not convene, so there was nothing for the chair to synthesise. This verdict is the ledger's own arithmetic — not a model's, and not a sign that one was missing."
+                ? `${
+                    v3.canonicalState?.chairReasonText
+                      ? `Not synthesised: ${v3.canonicalState.chairReasonText}.`
+                      : "The council did not convene, so no synthesis was attempted."
+                  } This verdict is the ledger's own arithmetic over the findings it records — not a model's, and not a sign that one was missing.`
                 : chair.fallbackReason === "no_chair_model_available"
                   ? "No chair model was available, so this verdict is the ledger's own arithmetic rather than an interpretation of it."
-                  : "This verdict is the ledger's own arithmetic rather than a model's."}
+                  : chair.fallbackReason === "chair_model_failed"
+                    ? "The chair model did not return a usable reply, so this verdict is the ledger's own arithmetic rather than an interpretation of it."
+                    : "This verdict is the ledger's own arithmetic rather than a model's."}
             </p>
           )}
           {chair.openQuestions.length > 0 && (
