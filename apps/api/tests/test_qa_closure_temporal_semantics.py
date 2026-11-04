@@ -1514,6 +1514,15 @@ def test_the_forward_label_check_is_fast(name: str) -> None:
     assert time.perf_counter() - started < _BUDGET_SECONDS
 
 
+def test_a_long_url_is_cut_before_it_is_read() -> None:
+    import time
+
+    url = "https://ir.example.com/" + "q3-2026-" * 5_000
+    started = time.perf_counter()
+    detect_document_period(url=url, as_of=PUBLISHED)
+    assert time.perf_counter() - started < _BUDGET_SECONDS
+
+
 def test_a_clause_split_still_reads_a_spaced_dash_and_a_colon() -> None:
     from app.services.sources.document_period import _CLAUSE_END_RE
 
@@ -1521,3 +1530,88 @@ def test_a_clause_split_still_reads_a_spaced_dash_and_a_colon() -> None:
     assert _CLAUSE_END_RE.split("Q3 2026 sales - outlook") == ["Q3 2026 sales", "outlook"]
     assert _CLAUSE_END_RE.split("Q3 2026: Revenue") == ["Q3 2026", "Revenue"]
     assert _CLAUSE_END_RE.split("first-half 10:30 1,234") == ["first-half 10:30 1,234"]
+
+
+# --------------------------------------------------------------------------- #
+# 10. Final re-review of PR #323 — CLLS4-2 itself: a STRONG cue never dates a   #
+#     strategic update to a period that is not over                             #
+# --------------------------------------------------------------------------- #
+
+#: The Cellectis pivot press release's shape, published 2026-10-28.
+CLLS_PIVOT_HEAD = (
+    "Cellectis Announces Strategic Update and Pipeline Prioritization\n"
+    "NEW YORK, Oct. 28, 2026 -- Cellectis today announced a strategic update. "
+    "The company now expects its cash runway to extend into H2 2028. "
+)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "Cellectis will report its fourth quarter and full year 2026 financial results in "
+        "March 2027.",
+        "The Company plans to report fourth quarter 2026 results in February.",
+        "Cellectis expects to report Q4 2026 results in early 2027.",
+        "H2 2026 results will include a restructuring charge.",
+        "The restructuring will be reflected in the Q4 2026 results.",
+        "",
+    ],
+)
+def test_the_clls_pivot_release_is_never_dated_by_a_report_still_to_come(tail: str) -> None:
+    assert not detect_document_period(text=CLLS_PIVOT_HEAD + tail, as_of=PUBLISHED).is_known
+
+
+def test_body_text_needs_the_period_over_whatever_the_framing() -> None:
+    text = "Acme SA is a company. Results for the third quarter of 2026 are below."
+    assert detect_document_period(text=text, as_of=PUBLISHED).period.key == "2026-Q3"
+    assert not detect_document_period(text=text, as_of=date(2026, 9, 15)).is_known
+    # The last day of the quarter is not after it.
+    assert not detect_document_period(text=text, as_of=date(2026, 9, 30)).is_known
+    # A fiscal period is judged by its lenient (earliest) end.
+    fiscal = "Acme SA is a company. Results for the first quarter fiscal 2027 follow."
+    assert detect_document_period(text=fiscal, as_of=date(2026, 8, 19)).period.key == "2027-Q1"
+
+
+_NOTICE_TITLES = [
+    "Acme to report Q4 2026 results",
+    "Q4 2026 results expected in January",
+    "Acme will report Q4 2026 results on 28 January",
+    "Q4 2026 results will be published on 28 January",
+    "Invitation to Q4 2026 results presentation",
+    "Notice of Q4 2026 results date",
+    "Financial calendar: Q4 2026 report on 5 February",
+    "H2 2026 report to include impairment",
+    "Q4 2026 interim report date changed",
+    "Acme to report Q4 2026 sales in January",
+    "Acme to host Q4 2026 earnings conference call",
+]
+
+
+@pytest.mark.parametrize("title", _NOTICE_TITLES)
+def test_a_notice_of_a_report_to_come_does_not_date_a_title(title: str) -> None:
+    assert not detect_document_period(title=title, as_of=PUBLISHED).is_known
+
+
+@pytest.mark.parametrize("title", _NOTICE_TITLES)
+def test_a_notice_of_a_report_to_come_does_not_date_a_heading(title: str) -> None:
+    assert not detect_document_period(headings=[title], as_of=PUBLISHED).is_known
+
+
+@pytest.mark.parametrize(
+    ("title", "published", "key"),
+    [
+        ("Q4 2026 trading update", date(2026, 12, 15), "2026-Q4"),
+        ("Pre-close trading update H2 2026", date(2026, 12, 10), "2026-H2"),
+        ("Acme to announce Q3 2026 results on 5 November", PUBLISHED, "2026-Q3"),
+        ("Q3 2026 results conference call", PUBLISHED, "2026-Q3"),
+    ],
+)
+def test_a_running_or_announced_period_without_a_notice_still_dates(
+    title: str, published: date, key: str
+) -> None:
+    assert detect_document_period(title=title, as_of=published).period.key == key
+
+
+def test_a_notice_cue_never_decides_a_role_on_its_own() -> None:
+    assert _classify("Acme to announce Q3 2026 results on 5 November", "Q3 2026",
+                     ds.ROLE_TITLE) == ds.REPORTING_PERIOD

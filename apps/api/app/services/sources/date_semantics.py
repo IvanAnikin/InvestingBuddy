@@ -125,6 +125,11 @@ class _Cue:
     #: For a reporting cue, how firmly it frames the mention (``FRAMING_*``). Only a
     #: STRONG cue can outvote a farther forward cue.
     framing: str = FRAMING_STRONG
+    #: A NOTICE cue announces a report still to come ("to report", "invitation to",
+    #: "results date"). It never decides a role — "Acme to announce Q3 2026 results on
+    #: 5 November" reports a quarter that is over — but it marks the window, and the
+    #: caller refuses a period that had not ENDED beside one.
+    notice: bool = False
 
     @property
     def strong(self) -> bool:
@@ -167,6 +172,16 @@ _CUES: tuple[_Cue, ...] = (
          r"|concentrate|shipment|patient|revenues?|sales)|commission(?:ing|ed)?"
          r"|start ?up|launch(?:es|ed|ing)?|completion|permit(?:s|ting)?|approval"
          r"|pdufa|construction", _BOTH),
+    # Final re-review of PR #323 (CLLS4-2) — a notice of a report still to come:
+    # "Acme to report Q4 2026 results", "Invitation to Q4 2026 results presentation",
+    # "Financial calendar: Q4 2026 report on 5 February", "H2 2026 report to include
+    # impairment", "Q4 2026 interim report date changed".
+    _Cue(EVENT_DATE,
+         r"to (?:report|announce|publish|release|present|host)"
+         r"|will (?:report|publish|announce|release|include|be published|be released)"
+         r"|(?:expects?|plans?|intends?) to report|invitation|notice of|results date"
+         r"|financial calendar|conference call|webcast|date changed|to include"
+         r"|expected (?:in|on)", _BOTH, notice=True),
     # A comparison with a past period.
     _Cue(HISTORICAL_REFERENCE_DATE,
          r"compared (?:with|to)|versus|vs|prior year|previous year|last year|same period"
@@ -266,6 +281,9 @@ class MentionReading:
     role: str
     #: ``FRAMING_*`` for a ``REPORTING_PERIOD``; ``None`` otherwise.
     framing: str | None = None
+    #: A forward or notice cue sits anywhere in the window, governing the mention or
+    #: not. The caller refuses a period that had not ENDED when this is set.
+    forward_nearby: bool = False
 
 
 @dataclass(frozen=True)
@@ -275,6 +293,7 @@ class _Hit:
     framing: str
     #: Nothing but connector words between the cue and the mention.
     governs: bool = True
+    notice: bool = False
 
     @property
     def strong(self) -> bool:
@@ -293,12 +312,14 @@ def _hits(before: str, after: str) -> list[_Hit]:
                 hits.append(_Hit(
                     cue.role, len(before) - match.end(), cue.framing,
                     _only_connectors(before[match.end():], _PREFIX_CONNECTORS),
+                    cue.notice,
                 ))
         if _SUFFIX in cue.sides:
             for match in regex.finditer(after):
                 hits.append(_Hit(
                     cue.role, match.start(), cue.framing,
                     _only_connectors(after[:match.start()], _SUFFIX_CONNECTORS),
+                    cue.notice,
                 ))
     return hits
 
@@ -338,8 +359,10 @@ def read_date_mention(
     except (TypeError, ValueError):  # pragma: no cover - defensive
         return MentionReading(UNCLASSIFIED)
     governed_only = role in (ROLE_TITLE, ROLE_HEADING)
+    forward_nearby = any(h.role in FORWARD_ROLES for h in hits)
     other = [h for h in hits
-             if h.role != REPORTING_PERIOD and (h.governs or not governed_only)]
+             if h.role != REPORTING_PERIOD and not h.notice
+             and (h.governs or not governed_only)]
     framings = {h.framing for h in hits if h.role == REPORTING_PERIOD}
     strong = [h for h in hits if h.role == REPORTING_PERIOD and h.strong]
     nearest_other = min(other, key=lambda h: h.distance) if other else None
@@ -350,9 +373,9 @@ def read_date_mention(
         return MentionReading(nearest_other.role)
     for framing in (FRAMING_STRONG, FRAMING_ANCHORED, FRAMING_WEAK):
         if framing in framings:
-            return MentionReading(REPORTING_PERIOD, framing)
+            return MentionReading(REPORTING_PERIOD, framing, forward_nearby)
     if role in (ROLE_TITLE, ROLE_HEADING, ROLE_HEADLINE):
-        return MentionReading(REPORTING_PERIOD, FRAMING_DEFAULT)
+        return MentionReading(REPORTING_PERIOD, FRAMING_DEFAULT, forward_nearby)
     return MentionReading(UNCLASSIFIED)
 
 

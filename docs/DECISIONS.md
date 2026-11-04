@@ -6940,8 +6940,24 @@ The cause, confirmed in code:
      headline line the period must also be RECENT — ended at most 200 days before
      publication (read at a fiscal key's latest possible end), because a results release
      follows its period closely: "Revenue for Q3 2025 was $2m" in a 2026 strategic
-     update is a comparative. Strong and anchored framing keep the began-by rule
-     alone.
+     update is a comparative.
+   - **Body text needs the period OVER, whatever the framing** (final re-review of PR
+     #323 — CLLS4-2 itself). "Cellectis will report its fourth quarter and full year 2026
+     financial results in March 2027" in the 2026-10-28 pivot release has a strong cue
+     ("results") and Q4 had begun, but the release does not report Q4. A period dates body
+     text only once it has ended (strictly after its last day; a fiscal key by its
+     earliest possible end).
+   - **A notice of a report to come** in a title, heading or headline — to report /
+     announce / publish / release / present / host, will report / publish / include / be
+     published, expects / plans / intends to report, invitation, notice of, results date,
+     financial calendar, conference call, webcast, date changed, to include, expected
+     in / on — never decides a role on its own ("Acme to announce Q3 2026 results on 5
+     November" reports a quarter that is over). But a period that had not ENDED beside a
+     notice cue, a forward cue, or a clause that is only a forward label is refused:
+     "Acme to report Q4 2026 results", "Invitation to Q4 2026 results presentation",
+     "Financial calendar: Q4 2026 report on 5 February" (published in October). A running
+     period with none of these keeps the began-by rule: "Q4 2026 trading update"
+     (December) and "Pre-close trading update H2 2026" still date.
    - The nearest non-reporting cue wins unless a strong reporting cue is strictly nearer
      (a tie goes to the forward reading).
    - With no cue, a title or heading names the document itself, so the mention is its
@@ -7107,9 +7123,15 @@ The cause, confirmed in code:
   expectations") dates nothing at all; only titles and headings read the governing rule. A
   release published more than 200 days after its period, or a running-period update framed
   only by a measure ("Q4 2026 sales to date"), is therefore not dated from body text.
-- **A strong cue still frames a period announced ahead of time.** "Acme to report Q4 2026
-  sales in January" (published in October) is read as 2026-Q4: "report" is a strong cue and
-  Q4 had begun. Only the began-by rule applies to strong framing.
+- **The fiscal "ended" reading is lenient.** A weakly framed or body-text fiscal key is
+  treated as ended twelve months before its calendar reading, because its fiscal year end
+  is not known here: "Q2 FY27 revenue grew" published in October 2026 by a June year-end
+  issuer (whose Q2 ends in December 2026) is read as ended. The began-by rule already
+  holds, so such a period had at least begun; recency is read at the latest possible end.
+- **A strong cue in a title still frames a running period with no notice beside it.** "Q4
+  2026 results" alone, published in November, is read as 2026-Q4 under the began-by rule;
+  only body text, notice/forward cues and weak framing require the period to be over. A
+  pre-close update framed only by a measure ("Q4 2026 sales update", December) is refused.
 - **The sweep shares the run's transaction.** It is flush-only inside a savepoint on the
   research run's session, so the row locks its UPDATEs take are held until the run
   commits. Only the subject company's own stale rows are touched, and only once per run;
@@ -7119,7 +7141,7 @@ The cause, confirmed in code:
   most eight spaces precede its delimiter (an unbounded leading `\s*` backtracked
   quadratically: a title of 10,000 spaces took 16 s on the event loop). Titles and headings
   are cut to 500 characters, the headline line is stripped before it is split, and at most
-  48 candidates are read per rule and source. Timing tests hold every entry point under
+  48 candidates are read per rule and source. A URL is cut to 500 characters too. Timing tests hold every entry point under
   0.5 s on whitespace, dash, comma and label floods.
 - **The venue publication date is the date the venue printed.** `select_current_period_disclosure`
   uses `published_at.date()`. Every venue parser (Nasdaq Nordic, eMarket Storage) keeps the

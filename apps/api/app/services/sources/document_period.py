@@ -345,9 +345,11 @@ def _segment_text(source: _Source, index: int) -> str:
     return source.text[source.bounds[index]:high].strip()
 
 
-def _framing_of(source: _Source, start: int, end: int) -> str | None:
+def _framing_of(source: _Source, start: int, end: int) -> tuple[str, bool] | None:
     """How ``source.text[start:end]`` is framed as the period the document reports
-    (``date_semantics.FRAMING_*``), or ``None`` when it is not a reporting period.
+    (``date_semantics.FRAMING_*``) and whether a forward or notice cue — or a clause
+    that is only a forward label — sits beside it; ``None`` when it is not a reporting
+    period.
 
     The classification window is the segment(s) the mention sits in, read with the
     framing role of the segment it starts in. Re-review of PR #323: an un-cued mention
@@ -361,13 +363,16 @@ def _framing_of(source: _Source, start: int, end: int) -> str | None:
     reading = read_date_mention(segment, start - low, end - low, role=role)
     if reading.role != REPORTING_PERIOD:
         return None
-    if reading.framing == FRAMING_DEFAULT:
+    forward_nearby = reading.forward_nearby
+    if role in (ROLE_TITLE, ROLE_HEADING, ROLE_HEADLINE):
         first = _segment_index(source, start)
         last = _segment_index(source, max(start, end - 1))
-        for neighbour in (first - 1, last + 1):
-            if is_forward_label(_segment_text(source, neighbour)):
+        if any(is_forward_label(_segment_text(source, neighbour))
+               for neighbour in (first - 1, last + 1)):
+            if reading.framing == FRAMING_DEFAULT:
                 return None
-    return reading.framing
+            forward_nearby = True
+    return reading.framing or FRAMING_DEFAULT, forward_nearby
 
 
 #: Re-review of PR #323 — a period framed only WEAKLY (a measure, a lead verb, "for
@@ -410,7 +415,9 @@ def _ended_by(found: DocumentPeriod, as_of: date) -> bool:
     if _is_fiscal_basis(found.basis):
         year = end.year - 1
         end = date(year, end.month, calendar.monthrange(year, end.month)[1])
-    return end <= as_of
+    # STRICTLY after the last day: a release dated the day its quarter ends reports a
+    # quarter that is not over.
+    return end < as_of
 
 
 def _ended_recently(found: DocumentPeriod, as_of: date) -> bool:
@@ -421,14 +428,30 @@ def _ended_recently(found: DocumentPeriod, as_of: date) -> bool:
     return end is None or (as_of - end).days <= _MAX_BODY_REPORTING_LAG_DAYS
 
 
-def _weakly_framed_and_unfit(found: DocumentPeriod, framing: str | None, role: str,
-                             as_of: date | None) -> bool:
+def _unfit_for_its_date(found: DocumentPeriod, framing: str, forward_nearby: bool,
+                        role: str, as_of: date | None) -> bool:
+    """Whether a reporting-framed candidate is still refused by its publication date.
+
+    * BODY text (final re-review of PR #323, CLLS4-2): the period must have ENDED,
+      whatever the framing — "Cellectis will report its fourth quarter … 2026 results in
+      March 2027" in a strategic update is not a fourth-quarter report.
+    * A title, heading or headline with a forward or NOTICE cue (or a forward-label
+      clause) beside the period: it must have ended — "Acme to report Q4 2026 results",
+      "Invitation to Q4 2026 results presentation".
+    * WEAK framing, or a headline's no-cue default: it must have ended; in body text and
+      the headline line also RECENTLY.
+    """
     if as_of is None:
         return False
+    ended = _ended_by(found, as_of)
+    if not ended and role == ROLE_BODY:
+        return True
+    if not ended and forward_nearby:
+        return True
     headline_default = framing == FRAMING_DEFAULT and role == ROLE_HEADLINE
     if framing != FRAMING_WEAK and not headline_default:
         return False
-    if not _ended_by(found, as_of):
+    if not ended:
         return True
     return role in (ROLE_BODY, ROLE_HEADLINE) and not _ended_recently(found, as_of)
 
@@ -707,7 +730,7 @@ def detect_document_period(
     try:
         sources = [
             _source(_clauses([title or ""], ROLE_TITLE)),
-            _source([(url or "", ROLE_TITLE)]),
+            _source([((url or "")[:_MAX_TITLE_CHARS], ROLE_TITLE)]),
             _source(_clauses(list((headings or [])[:_MAX_HEADINGS]), ROLE_HEADING)),
             _source(_body_parts(text or "")),
         ]
@@ -724,13 +747,13 @@ def detect_document_period(
                     ):
                         # A label is one token pair: "…of 2031. Q3 2026" is not "2031 Q3".
                         continue
-                    framing = _framing_of(source, start, end)
-                    if framing is None:
+                    framed = _framing_of(source, start, end)
+                    if framed is None:
                         continue
                     if as_of is not None and not _began_by(found, as_of):
                         continue
-                    if _weakly_framed_and_unfit(found, framing, source.role_at(start),
-                                                as_of):
+                    if _unfit_for_its_date(found, framed[0], framed[1],
+                                           source.role_at(start), as_of):
                         continue
                     return found
     except (AttributeError, TypeError, ValueError):  # pragma: no cover - defensive
