@@ -144,6 +144,12 @@ class FindingDraft:
     #: Open-web W4 — ``trust.SupportItem`` per cited id (class, origin, web?). The
     #: ledger applies the claim-type rules (spec §13.3) from it.
     support: tuple[Any, ...] = ()
+    #: ADR-088 — what kind of statement it is (``statement_kind.STATEMENT_KINDS``), how
+    #: that was set, and whether the period invariant WITHHELD it: a withheld finding is
+    #: recorded (``verification_status='withdrawn'``) with its reason, never shown.
+    statement_kind: str | None = None
+    statement_kind_basis: str | None = None
+    withheld: bool = False
 
 
 @dataclass
@@ -445,7 +451,10 @@ async def run_investigation(
             for draft in outcome.findings:
                 question_def = questions_by_key.get(draft.question_key or "")
                 domain = _domain_of(question_def, role_id)
-                owner = ownership.restated_by(
+                withheld = bool(getattr(draft, "withheld", False))
+                # ADR-088: a withheld statement is recorded for audit only — it neither
+                # defers to an owner nor becomes one.
+                owner = None if withheld else ownership.restated_by(
                     draft.statement, draft.evidence_ids, getattr(draft, "direction", None)
                 )
                 if owner is not None:
@@ -505,6 +514,13 @@ async def run_investigation(
                         ],
                         # Open-web W4 — the claim-type rules (spec §13.3) run here.
                         support=tuple(getattr(draft, "support", ()) or ()),
+                        # ADR-088 — the statement kind and, when the period invariant
+                        # withheld it, the withdrawn status every reader excludes.
+                        statement_kind=getattr(draft, "statement_kind", None),
+                        statement_kind_basis=getattr(draft, "statement_kind_basis", None),
+                        verification_status=(
+                            "withdrawn" if getattr(draft, "withheld", False) else "unverified"
+                        ),
                     )
                     trust_outcome = getattr(recorded, "_trust_outcome", None)
                     if trust_outcome is not None and draft.question_key:
@@ -526,6 +542,8 @@ async def run_investigation(
                             )
                         except Exception:  # noqa: BLE001 - an audit step must not end a run
                             pass
+                    if withheld:
+                        continue
                     ownership.add(
                         str(recorded.id),
                         domain=domain,

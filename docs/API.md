@@ -3479,6 +3479,36 @@ No new route. All of these keys are additive:
   `sentences[].text`, `chair.synthesis` and `chair.key_points[].text` may carry the same
   bracketed labels. Nothing is removed.
 
+## ADR-088 — finding semantics (no new endpoint)
+
+No new route. Additive keys, each absent when it does not apply:
+
+- `GET /company-research/schema-readiness` reports `migration_045` (the two
+  `research_findings` statement-kind columns). The V3 pipeline refuses to write a run
+  without them, with a named reason, as for 043.
+- `source_summary_json.v3_research.statement_kinds` (admin / technical): `counts` per
+  declared kind (live findings), `reclassified_period_not_ended`, and
+  `withheld_period_not_ended[]` — `{finding_id, reason}` for each statement withheld
+  because its declared period had not ended (`reason` =
+  `withheld_period_not_ended:<period>@<end>`; never statement text). Absent when no
+  finding of the run declared a kind.
+- `v3_research.findings[*].statement_kind` and
+  `professional_research.sections[*].findings[*].statement_kind` — only on guidance, a
+  forecast, a target or an estimate.
+- `v3_research.stage.commercial_stage` (`pre_revenue` · `development` ·
+  `pre_production` · `clinical`) and `commercial_stage_basis`, and
+  `professional_research.subject.commercial_stage` — only when positively shown.
+  `subject.net_debt_not_meaningful: true` only when net debt is declared not meaningful.
+- `v3_research.not_meaningful_metrics` can now come from the business-model signal
+  `customer_funds_balance_sheet` alone (no playbook): `net_debt`, `net_debt_to_ebitda`,
+  `current_ratio`.
+- `loop.investigator_diagnostics` gains `statements_reclassified_period_not_ended` and
+  `statements_withheld_period_not_ended` (counts).
+- `professional_research.editor.rejected_by_reason` can carry
+  `commercial_operation_not_evidenced` and `not_meaningful_metric_stated`.
+- A W4 statement label `filing copy; registrant not verified as the issuer` can prefix a
+  finding (a non-closing label, like the press labels).
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

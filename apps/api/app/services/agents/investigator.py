@@ -1049,6 +1049,8 @@ def _response_shape(*, retry: bool) -> str:
 _SCHEMA_LINE = (
     '{"findings": [{"statement": str, "mechanism": str, '
     '"direction": "supportive"|"adverse"|"neutral", "confidence": 0..1, '
+    '"statement_kind": "actual"|"guidance"|"forecast"|"target"|"estimate"|"unknown", '
+    '"period": str|null, '
     '"evidence_ids": [str], "references": [str]}], '
     '"gaps": [{"description": str, "why_it_matters": str}]}'
 )
@@ -1479,6 +1481,15 @@ def statement_about_foreign_subject(
     return None
 
 
+async def _load_fiscal_anchor(ticker: str | None, exchange: str | None) -> Any:
+    """The issuer's fiscal-year anchor from its SEC statements (cached; ``None`` when
+    unknown) for the ADR-088 period invariant. A seam: the test suite makes it inert, as
+    it does every other live SEC lookup; without it fiscal periods are judged leniently."""
+    from app.services import statement_kind
+
+    return await statement_kind.load_fiscal_year_anchor(ticker, exchange)
+
+
 async def _load_sec_directory() -> "list[Any]":
     """The SEC company-tickers directory (cached per process per day; [] when unreadable).
     A seam: the test suite makes it inert, as it does every other live SEC lookup."""
@@ -1528,7 +1539,9 @@ def apply_edgar_registrant(
         EDGAR_OTHER,
         EDGAR_OWN,
         EDGAR_UNIDENTIFIED,
+        cik_verdict,
         edgar_cik,
+        edgar_header_cik,
         filing_names_subject,
         is_ownership_filing_url,
         registrant_verdict,
@@ -1540,6 +1553,26 @@ def apply_edgar_registrant(
             out.append(item)
             continue
         verdict = registrant_verdict(item.url, subject.ciks, other_ciks=subject.other_ciks)
+        if verdict is None and filing_copy_off_edgar(item):
+            # ADR-088 (ADBE-2): a page whose own text is an SEC filing, held on another
+            # host (a filing mirror, an aggregator), is a FILING — never "secondary web" —
+            # but the host says nothing about whose. The registrant CIK its EDGAR header
+            # prints is judged like an EDGAR address; without one it is unidentified:
+            # a third-party filing, never the issuer's own. A chunk past the cover carries
+            # no header, so an unidentified copy is KEPT (never dropped for not naming the
+            # subject, unlike a CIK-less EDGAR address): it may be the issuer's own note.
+            text_cik = edgar_header_cik(item.text)
+            verdict = cik_verdict(text_cik, subject.ciks, other_ciks=subject.other_ciks)
+            if verdict == EDGAR_OTHER and filing_names_subject(
+                item.text, subject.match_names, subject.tickers, ownership_form=False
+            ):
+                verdict = EDGAR_COUNTERPARTY
+            kind = ISSUER_FILING if verdict == EDGAR_OWN else THIRD_PARTY_FILING
+            ref = item.ref
+            if ref is not None and ref.source_kind != kind:
+                ref = replace(ref, source_kind=kind)
+            out.append(replace(item, ref=ref, edgar_registrant=verdict, edgar_cik=text_cik))
+            continue
         if verdict is None:
             out.append(item)
             continue
@@ -1575,6 +1608,21 @@ def apply_edgar_registrant(
             replace(item, ref=ref, edgar_registrant=verdict, edgar_cik=edgar_cik(item.url))
         )
     return out
+
+
+def filing_copy_off_edgar(item: "_Evidence") -> bool:
+    """A web item classified a regulatory filing by its OWN TEXT (ADR-088 page signal)
+    rather than by a filing-system host: the host is not a T1 filing system."""
+    from app.services.sources.publisher_tiers import publisher_tier
+    from app.services.sources.taxonomy import T1_PRIMARY_FILING
+    from app.services.web_research.classify import SC_REGULATORY_FILING
+
+    return (
+        item.web
+        and item.source_class == SC_REGULATORY_FILING
+        and bool(item.url)
+        and publisher_tier(item.url) != T1_PRIMARY_FILING
+    )
 
 
 def statement_about_other_registrant(cited_items: "Sequence[_Evidence]") -> tuple[str, ...]:
@@ -1689,6 +1737,7 @@ def _build_prompt(
     retry: bool = False,
     established: "Sequence[tuple[str, str, str | None]]" = (),
     issuer_key: Any = None,
+    company_notes: "Sequence[str]" = (),
 ) -> tuple[str, str]:
     system = (
         "You are a research analyst on an evidence-first investment research platform.\n"
@@ -1725,6 +1774,15 @@ def _build_prompt(
         "that is another company's own site (not `issuer-own`) is a strong sign the text "
         "is about that company. If the other company's facts do not bear on the question "
         "about the company, leave them out.\n"
+        "9. Say what KIND of statement each finding is, in `statement_kind`: 'actual' — a "
+        "result reported for a period that has ENDED, or a reported measurement such as a "
+        "published resource estimate or a balance at a past date; 'guidance' — the "
+        "company's own outlook; 'target' — a goal the company set; 'forecast' — a "
+        "projection by anyone; 'estimate' — an analyst's, consensus or third party's "
+        "estimate of a figure not yet reported; 'unknown' when you cannot tell. In "
+        "`period` give the period the stated figures are FOR ('FY2025', 'Q3 FY2026', "
+        "'H1 2026'), or null. A period that has not ended cannot have an actual: a figure "
+        "for it is guidance, a forecast or an estimate — say whose.\n"
         "\n"
         + _response_shape(retry=retry)
     )
@@ -1736,6 +1794,16 @@ def _build_prompt(
         *(
             [f"WHY IT MATTERS: {question.why_it_matters}"]
             if getattr(question, "why_it_matters", "")
+            else []
+        ),
+        *(
+            [
+                "",
+                "COMPANY CONTEXT (set by the platform from the company's own documents, "
+                "not evidence to cite):",
+                *(f"  - {note}" for note in company_notes),
+            ]
+            if company_notes
             else []
         ),
         "",
@@ -1946,6 +2014,11 @@ def _support_for(
                 company_id=item.company_id or company_id,
                 url=None,
             )
+        elif item.web and item.edgar_registrant == "own" and company_id is not None:
+            # ADR-088 (ADBE-2): a web copy of an EDGAR filing whose registrant CIK IS the
+            # subject's (ADR-079 ``own``) is the issuer's own filing, as surely as the
+            # platform's SEC reads — so its filed figures are not "from the press".
+            origin = f"issuer:{company_id}"
         out.append(
             SupportItem(
                 evidence_id=citation,
@@ -2100,6 +2173,13 @@ class InvestigatorDiagnostics:
     #: ADR-083. A statement kept, but scoped to the subsidiary, joint venture or
     #: mine/segment heading its passage belongs to, so it never reads as the Group's.
     statements_scoped_to_entity: int = 0
+    #: ADR-088. A statement declared (or read as) an actual for a period that had not
+    #: ended when its source was published, RECLASSIFIED to the forward kind its own
+    #: words carry (guidance, a target, a forecast or an estimate).
+    statements_reclassified_period_not_ended: int = 0
+    #: ADR-088. The same, with no forward cue: WITHHELD — recorded in the ledger with its
+    #: reason (``verification_status='withdrawn'``), never shown as a result.
+    statements_withheld_period_not_ended: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -2135,6 +2215,12 @@ class InvestigatorDiagnostics:
             other.statements_about_implicit_other_entity
         )
         self.statements_scoped_to_entity += other.statements_scoped_to_entity
+        self.statements_reclassified_period_not_ended += (
+            other.statements_reclassified_period_not_ended
+        )
+        self.statements_withheld_period_not_ended += (
+            other.statements_withheld_period_not_ended
+        )
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -2163,6 +2249,12 @@ class InvestigatorDiagnostics:
                 self.statements_about_implicit_other_entity
             ),
             "statements_scoped_to_entity": self.statements_scoped_to_entity,
+            "statements_reclassified_period_not_ended": (
+                self.statements_reclassified_period_not_ended
+            ),
+            "statements_withheld_period_not_ended": (
+                self.statements_withheld_period_not_ended
+            ),
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -2262,6 +2354,14 @@ class LLMInvestigator:
     #: ``REREAD_LOW_BUDGET_FRACTION`` of it, so a QUICK run's later questions are not
     #: starved (ADR-084 review M2). ``None`` = unknown: the per-question ceiling only.
     max_tool_calls: int | None = None
+    #: ADR-088 — the run date a statement's period must have ended by. ``None`` = today.
+    as_of: date | None = None
+    #: ADR-088 — platform-set context lines (metrics with no reading for this company,
+    #: a pre-commercial stage). Empty (the default) leaves the prompt exactly as it was.
+    company_notes: tuple[str, ...] = ()
+    #: Lazily-read issuer fiscal calendar for the period invariant; ``False`` = not read
+    #: yet (``None`` is a real answer: unknown, so fiscal periods are judged leniently).
+    _fiscal_anchor: Any = field(default=False, repr=False)
 
     async def investigate(
         self,
@@ -3440,7 +3540,10 @@ class LLMInvestigator:
         EDGAR filing page is actually present, so ordinary runs pay nothing."""
         from app.services.web_research.edgar_registrant import is_edgar_filing_url
 
-        if not any(item.web and is_edgar_filing_url(item.url) for item in evidence):
+        if not any(
+            item.web and (is_edgar_filing_url(item.url) or filing_copy_off_edgar(item))
+            for item in evidence
+        ):
             return evidence
         return apply_edgar_registrant(evidence, await self._resolve_edgar_subject())
 
@@ -3502,6 +3605,51 @@ class LLMInvestigator:
             logger.warning("investigator.passage_attribution_failed: %s", type(exc).__name__)
             return StatementAttribution(VERDICT_UNKNOWN)
 
+    async def _anchor(self) -> Any:
+        """The issuer's fiscal calendar, read at most once per investigator. Never
+        raises; ``None`` leaves fiscal periods to the lenient reading."""
+        if self._fiscal_anchor is False:
+            try:
+                self._fiscal_anchor = await _load_fiscal_anchor(self.ticker, self.exchange)
+            except Exception:  # noqa: BLE001 - a calendar that cannot be read is unknown
+                self._fiscal_anchor = None
+        from app.services.statement_kind import FiscalYearAnchor
+
+        anchor = self._fiscal_anchor
+        return anchor if isinstance(anchor, FiscalYearAnchor) else None
+
+    async def _statement_kind(
+        self, raw: dict[str, Any], statement: str, published_at: date | None,
+        *, issuer_own: bool,
+    ) -> Any:
+        """ADR-088 — the kind the writer declared, held to the period invariant. The
+        issuer's calendar is read only when it could change the verdict, and applied only
+        to a statement resting on the issuer's OWN documents: another company's "FY24"
+        (a June year end) is not on the subject's calendar."""
+        from datetime import datetime, timezone
+
+        from app.services import statement_kind as sk
+
+        as_of = self.as_of or datetime.now(timezone.utc).date()
+        reference = sk.reference_date(published_at, as_of)
+        anchor = None
+        period = sk.judged_period(raw.get("period"))
+        if issuer_own and (
+            sk.wants_anchor(period, reference) if period is not None
+            # The forward-label fallback names its own periods; it reads them on the
+            # issuer's calendar too (cached: one read per investigator at most).
+            else sk.normalise_kind(raw.get("statement_kind")) in (None, sk.KIND_ACTUAL)
+        ):
+            anchor = await self._anchor()
+        return sk.decide(
+            declared_kind=raw.get("statement_kind"),
+            declared_period=raw.get("period"),
+            statement=statement,
+            published_at=published_at,
+            as_of=as_of,
+            anchor=anchor,
+        )
+
     async def _write_up(
         self,
         role_id: str,
@@ -3538,7 +3686,8 @@ class LLMInvestigator:
             )
 
         system, user = _build_prompt(
-            question, evidence, role_id, established=established, issuer_key=self.company_id
+            question, evidence, role_id, established=established, issuer_key=self.company_id,
+            company_notes=self.company_notes,
         )
         self.diagnostics.responses_total += 1
         try:
@@ -3758,6 +3907,24 @@ class LLMInvestigator:
                 # An evidence-typed scope (``group`` included) is never overridden.
                 scope_key = entity_scope
                 self.diagnostics.statements_scoped_to_entity += 1
+            published_at = _inherited_published_at(real, evidence)
+            # ADR-088 — the statement kind the writer declared, and the invariant: a
+            # period that had not ended when the source was published has no actual.
+            # Reclassified to the forward kind its words carry, else withheld (kept in
+            # the ledger with the reason, never shown). F14, Adobe, November 2026:
+            # "FY2026 total revenue 26.58 Bil", a year ending late November.
+            issuer_origin = f"issuer:{self.company_id}"
+            kind = await self._statement_kind(
+                raw, statement, published_at,
+                issuer_own=bool(real) and all(
+                    item.origin_key == issuer_origin and not item.via_subject
+                    for item in _support_for(real, evidence, self.company_id)
+                ),
+            )
+            if kind.basis == "reclassified_period_not_ended":
+                self.diagnostics.statements_reclassified_period_not_ended += 1
+            elif kind.withheld:
+                self.diagnostics.statements_withheld_period_not_ended += 1
             findings.append(
                 FindingDraft(
                     statement=statement[:2000],
@@ -3771,7 +3938,10 @@ class LLMInvestigator:
                     # reach.
                     period_key=period_key,
                     scope_key=scope_key,
-                    source_published_at=_inherited_published_at(real, evidence),
+                    source_published_at=published_at,
+                    statement_kind=kind.kind,
+                    statement_kind_basis=kind.basis_detail,
+                    withheld=kind.withheld,
                     # Open-web W4: class and origin of every cited item, so the ledger
                     # can apply the claim-type rules (spec §13.3) at persistence.
                     support=_support_for(real, evidence, self.company_id),
@@ -3906,9 +4076,11 @@ class LLMInvestigator:
                         why_it_matters=(str(raw.get("why_it_matters") or "").strip() or None),
                     )
                 )
-        if findings:
+        shown = [f for f in findings if not f.withheld]
+        if shown:
             self.diagnostics.responses_with_findings += 1  # (e)
-        return findings, gaps, bool(findings)
+        # A withheld statement (ADR-088) answers nothing: it is recorded, not shown.
+        return findings, gaps, bool(shown)
 
     def _unreadable_gap(
         self, question: PlannedQuestion, reply: _ModelReply, kind: str
@@ -3971,7 +4143,8 @@ class LLMInvestigator:
         """
         self.diagnostics.responses_retried_after_truncation += 1
         system, user = _build_prompt(
-            question, evidence, role_id, retry=True, issuer_key=self.company_id
+            question, evidence, role_id, retry=True, issuer_key=self.company_id,
+            company_notes=self.company_notes,
         )
         try:
             retry = await self._complete(system, user)

@@ -239,7 +239,11 @@ async def prepare_web_document(
     if company_id is not None and scope != "company":
         scope = "company"
 
-    from app.services.web_research.classify import classify_document_kind, classify_source
+    from app.services.web_research.classify import (
+        classify_document_kind,
+        classify_source,
+        with_filing_copy_signal,
+    )
     from app.services.web_research.extract import extract_web_document
 
     url = fetched.final_url or fetched.requested_url
@@ -262,6 +266,10 @@ async def prepare_web_document(
     meta = extraction.metadata
     classification = classify_source(
         url, issuer_domains=tuple(issuer_domains), licence_signals=meta.licence_signals
+    )
+    # ADR-088 (ADBE-2): a filing copy is a filing whatever host served it.
+    classification = with_filing_copy_signal(
+        classification, getattr(extraction, "main_text", None)
     )
     kind = classify_document_kind(
         url=url,

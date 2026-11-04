@@ -46,6 +46,21 @@ from typing import Any
 
 SIGNAL_DEVELOPMENT_STAGE = "development_stage_resource"
 SIGNAL_RESOURCE_EXTRACTION = "resource_extraction"
+#: ADR-088 (PYPL-4) — the issuer's own documents describe a payment institution's
+#: balance sheet: customer balances / funds payable to customers, held under a money-
+#: transmitter or e-money licence. Those balances are obligations to customers, not
+#: borrowings, so leverage read from them is not meaningful (``playbooks.applicability``).
+SIGNAL_CUSTOMER_FUNDS = "customer_funds_balance_sheet"
+
+#: ADR-088 (LIN-1) — the business stage a reader must not see described as a commercial
+#: operation. ``None`` when the evidence does not positively show one.
+STAGE_PRE_REVENUE = "pre_revenue"
+STAGE_DEVELOPMENT = "development"
+STAGE_PRE_PRODUCTION = "pre_production"
+STAGE_CLINICAL = "clinical"
+PRE_COMMERCIAL_STAGES: frozenset[str] = frozenset(
+    {STAGE_PRE_REVENUE, STAGE_DEVELOPMENT, STAGE_PRE_PRODUCTION, STAGE_CLINICAL}
+)
 
 #: Revenue below this share of stated operating costs is immaterial for P1.
 IMMATERIAL_REVENUE_SHARE = 0.10
@@ -148,13 +163,16 @@ class StageAssessment:
     evidence_refs: list[str] = field(default_factory=list)
     reason: str | None = None
     proofs: dict[str, bool] = field(default_factory=dict)
+    #: ADR-088 — ``PRE_COMMERCIAL_STAGES`` member, or None; and why.
+    commercial_stage: str | None = None
+    commercial_stage_basis: list[str] = field(default_factory=list)
 
     @property
     def is_development_stage(self) -> bool:
         return SIGNAL_DEVELOPMENT_STAGE in self.signals
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "stage": SIGNAL_DEVELOPMENT_STAGE if self.is_development_stage else None,
             "signals": list(self.signals),
             "proofs": dict(self.proofs),
@@ -162,6 +180,11 @@ class StageAssessment:
             "evidence_refs": list(self.evidence_refs)[:20],
             "reason": self.reason,
         }
+        if self.commercial_stage:
+            # Only when set, so every other company's payload is unchanged.
+            out["commercial_stage"] = self.commercial_stage
+            out["commercial_stage_basis"] = list(self.commercial_stage_basis)[:6]
+        return out
 
 
 # ── P1 ─────────────────────────────────────────────────────────────────────── #
@@ -307,6 +330,153 @@ def attributed_code_sentences(texts: list[str], issuer_name: str | None = None) 
     return count
 
 
+# ── ADR-088: business stage and payment-institution signals ──────────────── #
+
+#: "revenue … comprising interest income only", "revenue derived solely from interest
+#: income": interest earned on cash is not operating revenue. Two short, independent
+#: shapes, each scanned once per sentence; the sentence must also name revenue.
+_INTEREST_ONLY_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\binterest\s+(?:income|revenue|received)\s+only\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:only|solely|entirely|wholly|exclusively)\s+(?:of\s+|from\s+)?interest\s+"
+        r"(?:income|revenue|received)\b",
+        re.IGNORECASE,
+    ),
+)
+_REVENUE_WORD_RE = re.compile(r"\brevenues?\b", re.IGNORECASE)
+
+#: The issuer describing ITSELF as not yet commercial. Each entry: (stage, pattern).
+_PRE_COMMERCIAL_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (stage, re.compile(pattern, re.IGNORECASE))
+    for stage, pattern in (
+        (STAGE_CLINICAL, r"\bclinical[- ]stage\b"),
+        (STAGE_PRE_REVENUE, r"\bpre-?revenue\b"),
+        (STAGE_PRE_REVENUE,
+         r"\b(?:has|have)\s+not\s+(?:yet\s+)?generated\s+(?:any\s+)?"
+         r"(?:operating\s+|product\s+)?revenues?\b"),
+        (STAGE_PRE_PRODUCTION, r"\bpre-?production\b"),
+        (STAGE_PRE_PRODUCTION,
+         r"\b(?:has|have)\s+not\s+(?:yet\s+)?(?:commenced|begun|started|achieved)\s+"
+         r"(?:commercial\s+)?(?:production|mining|operations)\b"),
+        (STAGE_PRE_PRODUCTION, r"\bprior\s+to\s+(?:first|commercial)\s+production\b"),
+        (STAGE_DEVELOPMENT, r"\b(?:development|exploration)[- ]stage\b"),
+        (STAGE_DEVELOPMENT,
+         r"\bexploration\s+and\s+development\s+(?:company|stage|of\s+mineral)"),
+    )
+)
+#: The issuer saying it HAS become commercial — any such sentence cancels the wording.
+_COMMERCIAL_STARTED_RE = re.compile(
+    r"\b(?:commenced|began|started|achieved|declared)\s+commercial\s+production\b"
+    r"|\bcommercial\s+production\s+(?:commenced|began|started|was\s+declared)\b"
+    r"|\b(?:first|initial)\s+commercial\s+(?:sales|shipments?)\s+(?:were|was)\s+made\b",
+    re.IGNORECASE,
+)
+_STAGE_PRIORITY = (STAGE_CLINICAL, STAGE_PRE_REVENUE, STAGE_PRE_PRODUCTION, STAGE_DEVELOPMENT)
+
+#: Customer-funds balance-sheet captions and the licences that hold them.
+_CUSTOMER_FUNDS_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (name, re.compile(pattern, re.IGNORECASE))
+    for name, pattern in (
+        ("funds_payable", r"\bfunds\s+payable\s+and\s+amounts\s+due\s+to\s+customers\b"),
+        ("customer_accounts",
+         r"\bfunds\s+receivable\s+and\s+customer\s+accounts\b"),
+        ("customer_balances", r"\bcustomer\s+(?:account\s+)?balances\b"),
+        ("funds_held_for_customers",
+         r"\bfunds\s+held\s+(?:for|on\s+behalf\s+of)\s+(?:customers|clients|users)\b"),
+        ("safeguarding",
+         r"\bsafeguard(?:ed|ing)?\s+(?:of\s+)?(?:customer|client|user)\s+funds\b"),
+    )
+)
+_PAYMENT_LICENCE_RE = re.compile(
+    r"\bmoney\s+transmi(?:tter|ssion)\s+licen[cs]es?\b"
+    r"|\be-?money\s+(?:institution|licen[cs]e|issuer)\b"
+    r"|\b(?:authori[sz]ed|licensed)\s+payment\s+institution\b",
+    re.IGNORECASE,
+)
+
+
+def _sentences(texts: list[str]) -> list[str]:
+    return [s for text in texts for s in _SENTENCE_SPLIT_RE.split(text or "") if s]
+
+
+def _attributed(sentence: str, stem_re: "re.Pattern[str] | None") -> bool:
+    return bool(_ATTRIBUTION_RE.search(sentence) or (stem_re and stem_re.search(sentence)))
+
+
+def revenue_is_interest_only(texts: list[str], issuer_name: str | None = None) -> bool:
+    """Do the issuer's own documents say its revenue is interest income only? Pure."""
+    for sentence in _sentences(texts):
+        if not _REVENUE_WORD_RE.search(sentence) or _THIRD_PARTY_RE.search(sentence):
+            continue
+        if any(pattern.search(sentence) for pattern in _INTEREST_ONLY_RES):
+            return True
+    return False
+
+
+def assess_commercial_stage(
+    texts: list[str], *, issuer_name: str | None = None, development_stage: bool = False,
+    interest_only: bool = False,
+) -> tuple[str | None, list[str]]:
+    """The pre-commercial stage the issuer's OWN documents show, or None. Pure.
+
+    A mining developer proved by the item-20 rule is ``development``. Otherwise the
+    issuer must describe itself so (``clinical-stage``, ``pre-revenue``, ``has not yet
+    commenced production``…) in a sentence attributed to it, outside any third-party
+    context, and no attributed sentence may say commercial production or sales began.
+    Revenue that is interest income only is ``pre_revenue``."""
+    if development_stage:
+        return STAGE_DEVELOPMENT, ["a pre-revenue mining developer (item 20 proofs)"]
+    stem = _issuer_stem(issuer_name)
+    stem_re = re.compile(rf"\b{re.escape(stem)}\b", re.IGNORECASE) if stem else None
+    found: dict[str, int] = {}
+    for sentence in _sentences(texts):
+        if _THIRD_PARTY_RE.search(sentence) or not _attributed(sentence, stem_re):
+            continue
+        if _COMMERCIAL_STARTED_RE.search(sentence) and not _NEGATION_RE.search(sentence):
+            # "has not yet commenced commercial production" is the opposite.
+            return None, []
+        for stage, pattern in _PRE_COMMERCIAL_RES:
+            if pattern.search(sentence):
+                found[stage] = found.get(stage, 0) + 1
+    if interest_only:
+        found[STAGE_PRE_REVENUE] = found.get(STAGE_PRE_REVENUE, 0) + 1
+    for stage in _STAGE_PRIORITY:
+        if found.get(stage):
+            return stage, [
+                f"the issuer's own documents describe it as {stage.replace('_', '-')} "
+                f"({found[stage]} statement(s))"
+                + ("; its revenue is interest income only" if interest_only else "")
+            ]
+    return None, []
+
+
+def customer_funds_terms(texts: list[str]) -> tuple[list[str], bool]:
+    """Customer-funds balance-sheet captions the issuer's documents name (distinct), and
+    whether they name a payment licence. Negated sentences state nothing. Pure."""
+    found: list[str] = []
+    licence = False
+    for sentence in _sentences(texts):
+        if _NEGATION_RE.search(sentence):
+            continue
+        for name, pattern in _CUSTOMER_FUNDS_RES:
+            if name not in found and pattern.search(sentence):
+                found.append(name)
+        licence = licence or bool(_PAYMENT_LICENCE_RE.search(sentence))
+    return found, licence
+
+
+def holds_customer_funds(texts: list[str]) -> tuple[bool, str | None]:
+    """A payment institution's balance sheet: a customer-funds caption AND a payment
+    licence, or two distinct customer-funds captions. Pure."""
+    terms, licence = customer_funds_terms(texts)
+    if (terms and licence) or len(terms) >= 2:
+        return True, (
+            "the issuer's documents carry customer-funds balance-sheet items ("
+            + ", ".join(terms) + ")" + (" under a payment licence" if licence else "")
+        )
+    return False, None
+
+
 def assess(
     facts: list[dict[str, Any]],
     texts: list[str],
@@ -317,6 +487,13 @@ def assess(
 ) -> StageAssessment:
     """The pure decision. See the module docstring for the rule."""
     p1, p1_basis, refs = assess_revenue(facts)
+    # ADR-088 (LIN-1): interest earned on cash is not operating revenue. The issuer's own
+    # statement that its revenue is interest income only proves "no operating revenue"
+    # where the extracted figures alone could not.
+    interest_only = revenue_is_interest_only(texts, issuer_name)
+    if interest_only and not p1:
+        p1 = True
+        p1_basis = "the issuer's own documents state its revenue is interest income only"
     p2, p2_basis = assess_spend(facts, texts)
     terms = project_terms(texts)
     attributed = attributed_code_sentences(texts, issuer_name)
@@ -328,7 +505,8 @@ def assess(
     out = StageAssessment(
         proofs={"mining_evidence": mining, "no_or_immaterial_revenue": p1,
                 "exploration_or_development_spend": p2,
-                "project_disclosure_vocabulary": p3},
+                "project_disclosure_vocabulary": p3,
+                **({"revenue_is_interest_only": True} if interest_only else {})},
         evidence_refs=refs,
     )
     if own_mining_reporting:
@@ -348,6 +526,14 @@ def assess(
         signals.append(SIGNAL_DEVELOPMENT_STAGE)
     if own_mining_reporting and has_commodity:
         signals.append(SIGNAL_RESOURCE_EXTRACTION)
+    customer_funds, funds_basis = holds_customer_funds(texts)
+    if customer_funds:
+        signals.append(SIGNAL_CUSTOMER_FUNDS)
+        out.basis.append(f"customer funds: {funds_basis}")
+    out.commercial_stage, out.commercial_stage_basis = assess_commercial_stage(
+        texts, issuer_name=issuer_name,
+        development_stage=SIGNAL_DEVELOPMENT_STAGE in signals, interest_only=interest_only,
+    )
     out.signals = tuple(signals)
     if not signals:
         out.reason = (
@@ -393,8 +579,14 @@ __all__ = [
     "MIN_ATTRIBUTED_CODE_SENTENCES",
     "attributed_code_sentences",
     "MIN_PROJECT_TERMS",
+    "PRE_COMMERCIAL_STAGES",
+    "SIGNAL_CUSTOMER_FUNDS",
     "SIGNAL_DEVELOPMENT_STAGE",
     "SIGNAL_RESOURCE_EXTRACTION",
+    "assess_commercial_stage",
+    "customer_funds_terms",
+    "holds_customer_funds",
+    "revenue_is_interest_only",
     "StageAssessment",
     "assess",
     "assess_revenue",

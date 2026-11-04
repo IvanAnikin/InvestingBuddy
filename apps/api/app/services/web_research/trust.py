@@ -1287,12 +1287,16 @@ LABEL_COMPANY_SAYS_NOT_FILING = "company says; not from a filing"
 #: the filing's figure lives in the ``conflicting_sources`` gap, so no second money
 #: figure rides inside the statement for numeric readers to pick up (review H3).
 LABEL_PRESS_FILING_DIFFERS = "reported in the press; a filing figure differs"
+#: ADR-088 (ADBE-2) — a financial figure from a copy of a FILING (an EDGAR page or a
+#: page whose own text is a filing) whose registrant the platform could not verify as the
+#: issuer. It is not "the press", and it is not the issuer's filing either: context.
+LABEL_FILING_NOT_VERIFIED = "filing copy; registrant not verified as the issuer"
 
 #: Labels that mean "this finding is context, not the answer": reconciliation never lets
 #: a finding carrying one close a gap (review H3).
 NON_CLOSING_LABELS: frozenset[str] = frozenset(
     {LABEL_PRESS_NOT_FILING, LABEL_PRESS_FILING_DIFFERS, LABEL_SELF_DESCRIBED, LABEL_ANECDOTAL,
-     LABEL_COMPANY_SAYS_NOT_FILING}
+     LABEL_COMPANY_SAYS_NOT_FILING, LABEL_FILING_NOT_VERIFIED}
 )
 
 
@@ -1366,16 +1370,42 @@ def assess_claim(
     *,
     conflicting: bool = False,
     issuer_key: Any = None,
+    statement_kind: str | None = None,
 ) -> ClaimVerdict:
     """Spec §13.3 for one finding. Only applies when the support includes web evidence.
 
     ``issuer_key`` is the RUN's company: ``issuer:<id>`` is stored document-wide and is
     "mine" only when the id is this run's (review H2). Without one nothing is "mine".
+
+    ADR-088: a statement DECLARED guidance or a target is read as guidance, and one
+    declared a forecast or an estimate as somebody's estimate — never as a reported
+    financial-statement value, whatever its words look like.
     """
+    from app.services import statement_kind as sk
+
     items = list(support)
     if not any(item.web for item in items):
         return NOT_APPLICABLE
     claim_type = classify_claim(statement)
+    if sk.is_non_actual(statement_kind) and claim_type in (
+        CT_FINANCIAL_STATEMENT, CT_GUIDANCE, None
+    ):
+        claim_type = (
+            CT_GUIDANCE if statement_kind in (sk.KIND_GUIDANCE, sk.KIND_TARGET) else None
+        )
+        if claim_type is None:
+            origins = tuple(sorted({i.origin_key for i in items if i.origin_key}))
+            classes = tuple(sorted({i.source_class for i in items if i.source_class}))
+            state = corroboration_for_items(items, issuer_key=issuer_key)
+            estimator = next(
+                (o for o in origins if not is_verified_issuer(o, issuer_key)),
+                origins[0] if origins else None,
+            )
+            # No claim type: an estimate of the company's own figure is neither a
+            # reported value (no web_reported_value fact) nor a market-size estimate.
+            return ClaimVerdict(
+                None, state, False, label_estimate_by(estimator), origins, classes
+            )
     origins = tuple(sorted({i.origin_key for i in items if i.origin_key}))
     classes = tuple(sorted({i.source_class for i in items if i.source_class}))
     state = corroboration_for_items(items, issuer_key=issuer_key, conflicting=conflicting)
@@ -1402,6 +1432,10 @@ def assess_claim(
             return verdict(True, None)
         if issuer_present:
             return verdict(False, LABEL_COMPANY_SAYS_NOT_FILING)
+        if any(i.source_class in FILING_CLASSES for i in own):
+            # ADR-088 (ADBE-2): a copy of a filing whose registrant is not verified as
+            # the issuer's is still a FILING, not the press — but not the issuer's word.
+            return verdict(False, LABEL_FILING_NOT_VERIFIED)
         return verdict(False, LABEL_PRESS_NOT_FILING)
     if claim_type == CT_GUIDANCE:
         return verdict(True, None) if issuer_present else verdict(False, LABEL_MANAGEMENT_SAYS)
@@ -1474,6 +1508,7 @@ def assess_claim(
 _LABEL_PREFIX_RE = re.compile(
     r"^\[(?:company says(?:; not from a filing)?|management says|single source(?: estimate)?|"
     r"company describes itself as …|issuer technical claim|anecdotal|estimate by [^\]]{1,120}|"
+    r"filing copy; registrant not verified as the issuer|"
     r"reported in the press[^\]]{0,200})\] "
 )
 
@@ -1516,6 +1551,16 @@ class ClaimSide:
     @property
     def web(self) -> bool:
         return any(item.web for item in self.support)
+
+    @property
+    def press_only(self) -> bool:
+        """ADR-088 (ADBE-2): a WEB side that no filing document supports. A filing copy
+        the web leg fetched (a 10-K on the issuer's site, an EDGAR mirror) is a filing,
+        whatever channel served it, and is never the "press" side of a contradiction."""
+        return self.web and not any(
+            item.source_class in FILING_CLASSES and not item.via_subject
+            for item in self.support
+        )
 
     @property
     def origins(self) -> frozenset[str]:
@@ -1737,10 +1782,12 @@ def find_contradictions(new: ClaimSide, existing: Sequence[ClaimSide]) -> list[C
                 continue
             canonical = None
             if field_key in FINANCIAL_STATEMENT_FIELDS or rf.family_of(field_key) == "metric:capex":
-                # P4: the filing path is canonical; a web value never is.
-                if new.web and not other.web:
+                # P4: the filing path is canonical; a web value never is. ADR-088: a
+                # filing copy fetched by the web leg is a filing, not the press side —
+                # two filings that differ are a conflict with no canonical side.
+                if new.press_only and not other.web:
                     canonical = other.finding_id
-                elif other.web and not new.web:
+                elif other.press_only and not new.web:
                     canonical = new.finding_id
             out.append(Contradiction(field_key, (other, new), canonical))
             break

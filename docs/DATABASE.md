@@ -1144,6 +1144,27 @@ government/regulator/specialist hosts, `public_issuer` for a verified issuer dom
 **Deploy order.** The W3 ORM maps these columns, so every read of the four tables needs
 044 in place: apply 044 **before** deploying the W3 code (decision U9), exactly as 041.
 
+## Migration 045 — statement kind on research findings (ADR-088)
+
+`down_revision` is **`044`**. **Additive only**: two nullable columns, no default, no
+backfill; downgrade drops exactly what upgrade added. (Other closure branches may also
+number a migration 045; whichever merges second is renumbered at the merge.)
+
+| Table | Added | Why |
+|---|---|---|
+| `research_findings` | `statement_kind` VARCHAR(20), CHECK `ck_research_findings_statement_kind` (NULL or `actual` · `guidance` · `forecast` · `target` · `estimate` · `unknown`) | What the statement IS, declared by the investigator at extraction. NULL on every pre-045 row ("not recorded"). |
+| `research_findings` | `statement_kind_basis` VARCHAR(120) | How the kind was reached: `model`, `not_declared`, `forward_cue`, or for the period invariant `reclassified_period_not_ended:<period>@<end>` / `withheld_period_not_ended:<period>@<end>`. Never statement text. |
+
+A statement withheld by the invariant is stored with `verification_status = 'withdrawn'`
+(every reader already excludes withdrawn rows) and its reason in `statement_kind_basis`;
+the run's admin record lists it under `v3_research.statement_kinds`. A non-actual row
+never enters a contradiction with a reported value and never answers a gap asking for a
+reported money value.
+
+**Deploy order.** The ORM maps both columns: apply 045 **before** deploying the code.
+The V3 pipeline checks `schema_readiness.migration_045_readiness` and degrades with a
+named reason; `GET /company-research/schema-readiness` reports it under `migration_045`.
+
 ## `research_job_id` — the five lineage columns, and who writes them (V3.17.9)
 
 Five tables carry a `research_job_id` foreign key to `research_jobs.id`. Between them they

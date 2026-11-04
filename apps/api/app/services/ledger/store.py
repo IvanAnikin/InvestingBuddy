@@ -351,6 +351,8 @@ async def record_finding(
     source_published_at: date | None = None,
     support: Sequence[Any] = (),
     issuer_key: Any = None,
+    statement_kind: str | None = None,
+    statement_kind_basis: str | None = None,
 ) -> ResearchFinding:
     """Persist one finding. **The counts are derived here and nowhere else.**
 
@@ -361,7 +363,16 @@ async def record_finding(
     records a ``conflicting_sources`` gap and both findings are kept (spec §14.4). The
     outcome is attached to the returned row as ``_trust_outcome`` for the audit log.
     ``issuer_key`` (default: the run's company) is whose voice ``issuer:<id>`` origins are.
+
+    ADR-088: ``statement_kind`` (``statement_kind.STATEMENT_KINDS``) is what the statement
+    is — a result, guidance, a forecast, a target or an estimate. A non-actual statement
+    never takes a financial-statement trust reading and never enters a contradiction
+    with a reported value.
     """
+    from app.services import statement_kind as sk
+
+    if statement_kind is not None and statement_kind not in sk.STATEMENT_KINDS:
+        raise ValueError(f"{statement_kind!r} is not a statement kind.")
     evidence = [str(value).strip() for value in evidence_ids if str(value).strip()]
     calculations = [
         str(value).strip() for value in calculation_ids if str(value).strip()
@@ -378,7 +389,7 @@ async def record_finding(
     support_items = tuple(support or ())
     if issuer_key is None:
         issuer_key = getattr(run, "company_id", None)
-    outcome = _assess_trust(statement, support_items, issuer_key)
+    outcome = _assess_trust(statement, support_items, issuer_key, statement_kind)
     stored_statement = outcome.stored_statement if outcome is not None else statement
     finding = ResearchFinding(
         id=uuid.uuid4(),
@@ -406,10 +417,14 @@ async def record_finding(
         references_finding_ids_json=[str(v) for v in references_finding_ids] or None,
         source_kinds_json=sorted({str(k) for k in source_kinds}) or None,
         source_published_at=source_published_at,
+        statement_kind=statement_kind,
+        statement_kind_basis=_clip(statement_kind_basis, 120),
     )
     session.add(finding)
     await session.flush()
-    if support_items:
+    if support_items and not sk.is_non_actual(statement_kind):
+        # ADR-088: guidance, a forecast or an estimate is not a reported value, so it
+        # never contradicts one (and is never relabelled as "a filing figure differs").
         outcome = await _record_contradictions(
             session, run, finding, statement, support_items, outcome, issuer_key
         )
@@ -418,7 +433,10 @@ async def record_finding(
     return finding
 
 
-def _assess_trust(statement: str, support: Sequence[Any], issuer_key: Any = None) -> Any:
+def _assess_trust(
+    statement: str, support: Sequence[Any], issuer_key: Any = None,
+    statement_kind: str | None = None,
+) -> Any:
     """Spec §13.3 at persistence. None when no open-web evidence stands behind it."""
     if not any(getattr(item, "web", False) for item in support):
         return None
@@ -429,7 +447,9 @@ def _assess_trust(statement: str, support: Sequence[Any], issuer_key: Any = None
         web_fact_for,
     )
 
-    verdict = assess_claim(statement, support, issuer_key=issuer_key)
+    verdict = assess_claim(
+        statement, support, issuer_key=issuer_key, statement_kind=statement_kind
+    )
     return TrustOutcome(
         verdict=verdict,
         stored_statement=labelled_statement(statement, verdict.label, limit=_STATEMENT_MAX),
@@ -576,7 +596,15 @@ async def _plan_contradictions(
         scope_key=scope_key, support=tuple(support), published_at=published,
     )
     others: list[Any] = []
+    from app.services import statement_kind as sk
+
     for row in rows:
+        if sk.is_non_actual(getattr(row, "statement_kind", None)) or (
+            getattr(row, "verification_status", None) == "withdrawn"
+        ):
+            # ADR-088: guidance, a forecast or an estimate is never the other side of a
+            # contradiction with a reported value, and a withheld statement is no side.
+            continue
         row_statement = trust.unlabelled_statement(row.statement)
         row_fields, _project = finding_fields(row_statement, row.claim_key)
         if not set(row_fields) & set(fields):

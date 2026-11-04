@@ -75,6 +75,12 @@ def _finding_block(findings: "Sequence[FindingRef]", limit: int = 25) -> str:
                     "scope_key": finding.scope_key,
                     "evidence_ids": list(finding.evidence_ids)[:8],
                     "verification_status": finding.verification_status,
+                    # ADR-088 — what kind of statement it is (guidance is not a result).
+                    **(
+                        {"statement_kind": finding.statement_kind}
+                        if getattr(finding, "statement_kind", None)
+                        else {}
+                    ),
                 },
                 default=str,
             )
@@ -126,6 +132,9 @@ class LLMRedTeam:
     #: citing it): web-derived claims the claim-type gate could not see.
     ungrounded_challenges: int = 0
     issuer_key: Any = None
+    #: ADR-088 — platform-set context lines (metrics with no reading for this company,
+    #: a pre-commercial stage). Empty (the default) leaves the prompt exactly as it was.
+    context_notes: tuple[str, ...] = ()
 
     async def select(
         self, *, findings: "Sequence[FindingRef]", max_challenges: int
@@ -151,6 +160,13 @@ class LLMRedTeam:
             'str, "text": str}]}'
         )
         user = "FINDINGS UNDER REVIEW:\n" + _finding_block(findings)
+        if self.context_notes:
+            user = (
+                "COMPANY CONTEXT (set by the platform from the company's own documents, "
+                "not evidence to cite):"
+                + "".join(f"\n  - {note}" for note in self.context_notes)
+                + "\n\n" + user
+            )
         risk_by_id = {item.evidence_id: item for item in self.risk_evidence}
         if risk_by_id:
             system += (

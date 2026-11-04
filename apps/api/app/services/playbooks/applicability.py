@@ -34,6 +34,7 @@ resolved record. Nothing tests for a bank and nothing reads a ticker.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -122,6 +123,92 @@ class MetricApplicability:
 NONE = MetricApplicability()
 
 
+def _payment_institution_declaration() -> "Any":
+    """ADR-088 (PYPL-4) — a payment institution's balance sheet. Built lazily: the schema
+    validates calculation keys against the calculation engine at construction."""
+    from app.services.playbooks.schema import AppliesTo, NotMeaningfulMetrics
+
+    return NotMeaningfulMetrics(
+        applies_to=AppliesTo(business_model_signals=("customer_funds_balance_sheet",)),
+        calculations=("net_debt", "net_debt_to_ebitda"),
+        financial_categories=("current_ratio",),
+        reason=(
+            "The company holds customer balances (funds payable and amounts due to "
+            "customers) that are obligations to its customers, not borrowings, and its "
+            "cash and investments include the funds that back them: net debt from "
+            "borrowings alone, liabilities read as leverage and a current ratio inflated "
+            "on both sides by customer funds have no reading."
+        ),
+        reader_note=(
+            "Net debt is not shown: the company's balance sheet carries customer balances "
+            "and the funds that back them, which are obligations to customers, not "
+            "borrowings."
+        ),
+    )
+
+
+#: Declarations that hold for a business-model SIGNAL whatever methodology a company
+#: has (ADR-088): customer funds are not leverage in a payments company, a bank or a
+#: software company with a payments arm alike. Unioned with the methodology record.
+_SIGNAL_DECLARATIONS: "tuple[Any, ...] | None" = None
+
+
+def signal_declarations() -> "tuple[Any, ...]":
+    global _SIGNAL_DECLARATIONS
+    if _SIGNAL_DECLARATIONS is None:
+        _SIGNAL_DECLARATIONS = (_payment_institution_declaration(),)
+    return _SIGNAL_DECLARATIONS
+
+
+#: A synthesis sentence that characterises net debt / leverage from borrowings ("a
+#: manageable net debt position"). Linear: literal alternatives, one bounded gap.
+_NET_DEBT_SENTENCE_RE = re.compile(
+    r"\bnet[\s-](?:debt|cash)\b|\bnet\s+(?:leverage|borrowings)\b", re.IGNORECASE
+)
+NET_DEBT_REASON = "not_meaningful_metric_stated"
+
+
+def states_not_meaningful_net_debt(
+    text: str | None, not_meaningful_calculations: "Sequence[str] | frozenset[str]" = ()
+) -> bool:
+    """ADR-088 (PYPL-4) — does a SYNTHESIS sentence state net debt (or net cash) for a
+    company whose declaration says net debt has no reading? Only then: every other
+    company's sentences are untouched. Findings are never filtered by this."""
+    if "net_debt" not in set(not_meaningful_calculations or ()):
+        return False
+    return bool(_NET_DEBT_SENTENCE_RE.search(str(text or "")[:4000]))
+
+
+def net_debt_sentence_blocked(text: str | None, subject: Mapping[str, Any] | None) -> bool:
+    """The same, for a report / chair subject carrying ``net_debt_not_meaningful``."""
+    if not (subject or {}).get("net_debt_not_meaningful"):
+        return False
+    return states_not_meaningful_net_debt(text, ("net_debt",))
+
+
+def _with_signal_declarations(
+    base: MetricApplicability, signal_set: set[str]
+) -> MetricApplicability:
+    matched = [
+        d for d in signal_declarations()
+        if d.applies_to.matches(sector=None, industry=None, signals=signal_set)
+    ]
+    if not matched:
+        return base
+    return MetricApplicability(
+        calculations=base.calculations | {c for d in matched for c in d.calculations},
+        financial_categories=base.financial_categories
+        | {c for d in matched for c in d.financial_categories},
+        questions=base.questions,
+        analysed_by=base.analysed_by,
+        playbook_ids=base.playbook_ids,
+        reason=" ".join(dict.fromkeys([*filter(None, [base.reason]),
+                                       *(d.reason for d in matched)])),
+        reader_note=" ".join(dict.fromkeys([*filter(None, [base.reader_note]),
+                                            *(d.reader_note for d in matched)])),
+    )
+
+
 def resolve(
     selection: PlaybookSelection,
     *,
@@ -129,8 +216,23 @@ def resolve(
     industry: str | None = None,
     signals: "Sequence[str] | frozenset[str] | set[str]" = (),
 ) -> MetricApplicability:
-    """What the applicable playbooks jointly declare not meaningful for this company."""
+    """What the applicable playbooks jointly declare not meaningful for this company,
+    plus what a business-model signal declares whatever the methodology (ADR-088)."""
     signal_set = {str(s).strip().casefold() for s in signals if s and str(s).strip()}
+    return _with_signal_declarations(
+        _resolve_methodologies(selection, sector=sector, industry=industry,
+                               signal_set=signal_set),
+        signal_set,
+    )
+
+
+def _resolve_methodologies(
+    selection: PlaybookSelection,
+    *,
+    sector: str | None,
+    industry: str | None,
+    signal_set: set[str],
+) -> MetricApplicability:
     methodologies = [p for p in selection.playbooks if not p.overlay]
     if not methodologies:
         return NONE
@@ -227,4 +329,8 @@ __all__ = [
     "for_classification",
     "for_snapshot",
     "resolve",
+    "NET_DEBT_REASON",
+    "signal_declarations",
+    "net_debt_sentence_blocked",
+    "states_not_meaningful_net_debt",
 ]

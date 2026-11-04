@@ -85,6 +85,19 @@ def _no_live_sec_directory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_fiscal_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-088 — the investigator's fiscal-calendar read (SEC company facts) answers
+    "unknown" for every test, so fiscal periods are judged leniently exactly as without
+    it. Tests of the invariant patch it themselves."""
+    from app.services.agents import investigator
+
+    async def _unknown(ticker: object, exchange: object) -> None:
+        return None
+
+    monkeypatch.setattr(investigator, "_load_fiscal_anchor", _unknown)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_sec_sibling_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make ADR-075's same-issuer SEC listing resolver read an EMPTY SEC directory and NO
     registrant record, so a non-US company in any test resolves to "not an SEC

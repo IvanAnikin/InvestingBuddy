@@ -348,6 +348,14 @@ class ResearchFinding(Base):
         ),
         nullable=True,
     )
+    # ── Migration 045 (ADR-088): statement kind ───────────────────────────── #
+    #: ``actual | guidance | forecast | target | estimate | unknown``, declared by the
+    #: investigator at extraction and held to the period invariant. ``NULL`` = written
+    #: before ADR-088 (not declared).
+    statement_kind: Mapped[str | None] = mapped_column(sa.String(20))
+    #: How the kind was set, and for the period invariant the judged period and its end
+    #: (``withheld_period_not_ended:2026@2026-11-28``). Never statement text.
+    statement_kind_basis: Mapped[str | None] = mapped_column(sa.String(120))
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -373,6 +381,11 @@ class ResearchFinding(Base):
         sa.CheckConstraint(
             "direction IS NULL OR direction IN ('supportive', 'adverse', 'neutral')",
             name="ck_research_findings_direction",
+        ),
+        sa.CheckConstraint(
+            "statement_kind IS NULL OR statement_kind IN "
+            "('actual', 'guidance', 'forecast', 'target', 'estimate', 'unknown')",
+            name="ck_research_findings_statement_kind",
         ),
         sa.CheckConstraint(
             "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
