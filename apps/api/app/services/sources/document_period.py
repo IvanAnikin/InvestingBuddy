@@ -41,6 +41,7 @@ ADR-080 (QA campaign CLLS5-1 / CLLS4-2) adds two refusals and one stronger sourc
 
 from __future__ import annotations
 
+import calendar
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -48,11 +49,15 @@ from datetime import date, datetime
 from typing import Any
 
 from app.services.sources.date_semantics import (
+    FRAMING_DEFAULT,
+    FRAMING_WEAK,
+    REPORTING_PERIOD,
     ROLE_BODY,
     ROLE_HEADING,
     ROLE_HEADLINE,
     ROLE_TITLE,
-    is_reporting_period,
+    is_forward_label,
+    read_date_mention,
 )
 from app.services.sources.financial_period import (
     PERIOD_TYPE_ANNUAL,
@@ -88,6 +93,10 @@ BASIS_SEC_FISCAL_PERIOD_OF_REPORT = "sec_fiscal_period_of_report"
 #: chances to read a comparative year as the document's own.
 _MAX_SCAN_CHARS = 4_000
 _MAX_HEADINGS = 12
+#: Security review of PR #323: candidates read per rule and source. ADR-080 refuses
+#: mentions and reads on, so a page of 500 refused labels cost 500 classifications;
+#: a document's own period sits among its first few mentions.
+_MAX_CANDIDATES_PER_SOURCE = 48
 
 _MIN_YEAR = 1990
 _MAX_YEAR = 2100
@@ -243,7 +252,15 @@ _SENTENCE_END_RE = re.compile(r"(?<=[.!?;])\s+(?=[A-Z\"'(\[“‘])|\n+")
 #: guidance maintained", "Earnings release | Q3 2026". A later clause's outlook is not the
 #: headline's period. A colon or comma counts only before a space ("10:30", "1,234" are
 #: not clauses), a hyphen only between spaces ("first-half" is one word).
-_CLAUSE_END_RE = re.compile(r"\s*(?:[;|–—]|[:,](?=\s)|\s-(?=\s))\s*")
+#: Security review of PR #323: at most EIGHT spaces may precede the delimiter. An
+#: unbounded leading ``\s*`` backtracked quadratically on a run of whitespace (a title of
+#: 10,000 spaces took 16 s on the event loop — the gunicorn SIGKILL class); every
+#: attempt now costs O(1) before the delimiter must match.
+_CLAUSE_END_RE = re.compile(
+    r"[ \t]{0,8}(?:[;|–—]|[:,](?=\s)|(?<=\s)-(?=\s))\s*")
+#: Titles and headings are cut to this length before they are read: a real one is far
+#: shorter, and nothing upstream bounds them.
+_MAX_TITLE_CHARS = 500
 #: The first body segment is the document's headline line ("Third Quarter 2026
 #: Highlights", "Acme Q3 2026 Earnings") when it is no longer than this
 #: (``date_semantics.ROLE_HEADLINE``). A longer first segment is running text (a cover
@@ -294,30 +311,126 @@ def _source(parts: "list[tuple[str, str]]") -> _Source:
 
 
 def _clauses(texts: "list[str] | tuple[str, ...]", role: str) -> list[tuple[str, str]]:
-    return [(clause, role) for text in texts for clause in _CLAUSE_END_RE.split(text or "")]
+    return [
+        (clause, role)
+        for text in texts
+        for clause in _CLAUSE_END_RE.split((text or "").strip()[:_MAX_TITLE_CHARS])
+    ]
 
 
 def _body_parts(text: str) -> list[tuple[str, str]]:
     sentences = _SENTENCE_END_RE.split(text[:_MAX_SCAN_CHARS])
     parts: list[tuple[str, str]] = []
     for index, sentence in enumerate(sentences):
-        if index == 0 and len(sentence.strip()) <= _HEADLINE_MAX_CHARS:
-            parts.extend(_clauses([sentence], ROLE_HEADLINE))
+        headline = sentence.strip()
+        if index == 0 and len(headline) <= _HEADLINE_MAX_CHARS:
+            parts.extend(_clauses([headline], ROLE_HEADLINE))
         else:
             parts.append((sentence, ROLE_BODY))
     return parts
 
 
-def _frames_a_reporting_period(source: _Source, start: int, end: int) -> bool:
-    """Is ``source.text[start:end]`` framed as the period the document reports?
+def _segment_index(source: _Source, offset: int) -> int:
+    index = 0
+    for i, bound in enumerate(source.bounds):
+        if bound <= offset:
+            index = i
+    return index
+
+
+def _segment_text(source: _Source, index: int) -> str:
+    if not 0 <= index < len(source.bounds):
+        return ""
+    high = source.bounds[index + 1] if index + 1 < len(source.bounds) else len(source.text)
+    return source.text[source.bounds[index]:high].strip()
+
+
+def _framing_of(source: _Source, start: int, end: int) -> str | None:
+    """How ``source.text[start:end]`` is framed as the period the document reports
+    (``date_semantics.FRAMING_*``), or ``None`` when it is not a reporting period.
 
     The classification window is the segment(s) the mention sits in, read with the
-    framing role of the segment it starts in."""
+    framing role of the segment it starts in. Re-review of PR #323: an un-cued mention
+    in a title, heading or headline clause is NOT a reporting period when a clause next
+    to it is only a forward label — "Outlook: Q4 2026", "Q4 2026: guidance", "Trading
+    outlook | H2 2026" are split by punctuation, not by meaning."""
     low = max((b for b in source.bounds if b <= start), default=0)
     high = min((b for b in source.bounds if b >= end), default=len(source.text))
     segment = source.text[low:high]
-    return is_reporting_period(segment, start - low, end - low,
-                               role=source.role_at(start))
+    role = source.role_at(start)
+    reading = read_date_mention(segment, start - low, end - low, role=role)
+    if reading.role != REPORTING_PERIOD:
+        return None
+    if reading.framing == FRAMING_DEFAULT:
+        first = _segment_index(source, start)
+        last = _segment_index(source, max(start, end - 1))
+        for neighbour in (first - 1, last + 1):
+            if is_forward_label(_segment_text(source, neighbour)):
+                return None
+    return reading.framing
+
+
+#: Re-review of PR #323 — a period framed only WEAKLY (a measure, a lead verb, "for
+#: the") or only by a headline line's position must be OVER by the publication date:
+#: "Company expects record Q4 2026 sales", "Pre-announcement of Q4 2026 sales" and
+#: "Announced Q4 2026 restructuring plan" name a period still running. In body text it
+#: must also be RECENT — a results release follows its period closely, while "Revenue
+#: for Q3 2025 was $2m" in a 2026 strategic update is a comparative.
+_MAX_BODY_REPORTING_LAG_DAYS = 200
+
+
+def _calendar_end(found: DocumentPeriod) -> date | None:
+    period = found.period
+    if period.year is None:
+        return None
+    if period.period_type == PERIOD_TYPE_QUARTER and period.ordinal:
+        month = 3 * int(period.ordinal)
+    elif period.period_type == PERIOD_TYPE_HALF and period.ordinal:
+        month = 6 * int(period.ordinal)
+    elif period.period_type == PERIOD_TYPE_ANNUAL:
+        month = 12
+    else:
+        return None
+    year = int(period.year)
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+def _is_fiscal_basis(basis: str) -> bool:
+    return basis in (BASIS_FISCAL_LABEL, BASIS_FISCAL_PERIOD_END,
+                     BASIS_SEC_FISCAL_PERIOD_OF_REPORT)
+
+
+def _ended_by(found: DocumentPeriod, as_of: date) -> bool:
+    """Had the period ENDED by ``as_of``? A fiscal key names the year its fiscal year
+    ends in, so its quarter may end up to twelve months before the calendar reading —
+    the same lenient estimate the began-by rule uses."""
+    end = _calendar_end(found)
+    if end is None:
+        return True
+    if _is_fiscal_basis(found.basis):
+        year = end.year - 1
+        end = date(year, end.month, calendar.monthrange(year, end.month)[1])
+    return end <= as_of
+
+
+def _ended_recently(found: DocumentPeriod, as_of: date) -> bool:
+    """Did the period end no more than ``_MAX_BODY_REPORTING_LAG_DAYS`` before
+    ``as_of``? A fiscal period is read at its LATEST possible end (the calendar
+    reading), so the rule never refuses it for being old when it may not be."""
+    end = _calendar_end(found)
+    return end is None or (as_of - end).days <= _MAX_BODY_REPORTING_LAG_DAYS
+
+
+def _weakly_framed_and_unfit(found: DocumentPeriod, framing: str | None, role: str,
+                             as_of: date | None) -> bool:
+    if as_of is None:
+        return False
+    headline_default = framing == FRAMING_DEFAULT and role == ROLE_HEADLINE
+    if framing != FRAMING_WEAK and not headline_default:
+        return False
+    if not _ended_by(found, as_of):
+        return True
+    return role in (ROLE_BODY, ROLE_HEADLINE) and not _ended_recently(found, as_of)
 
 
 #: A candidate: the period, and where in the normalised text it was read.
@@ -603,15 +716,21 @@ def detect_document_period(
             for source in sources:
                 if not source.text:
                     continue
-                for found, start, end in rule(source.text):
+                for seen, (found, start, end) in enumerate(rule(source.text)):
+                    if seen >= _MAX_CANDIDATES_PER_SOURCE:
+                        break
                     if rule is not _period_end_candidates and any(
                         start < b < end for b in source.bounds
                     ):
                         # A label is one token pair: "…of 2031. Q3 2026" is not "2031 Q3".
                         continue
-                    if not _frames_a_reporting_period(source, start, end):
+                    framing = _framing_of(source, start, end)
+                    if framing is None:
                         continue
                     if as_of is not None and not _began_by(found, as_of):
+                        continue
+                    if _weakly_framed_and_unfit(found, framing, source.role_at(start),
+                                                as_of):
                         continue
                     return found
     except (AttributeError, TypeError, ValueError):  # pragma: no cover - defensive

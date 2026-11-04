@@ -6921,13 +6921,27 @@ The cause, confirmed in code:
    - Forward cues: runway into/through/until, fund operations into, expect, anticipate,
      target, guidance, outlook, forecast, plan to, by, no later than, deadline, due,
      expire/expiry, mature/maturity, readout, topline, first production/ore/sales,
-     commissioning, launch, completion, permit, approval.
+     commissioning, launch, completion, permit, approval. A forward verb AFTER the
+     mention is one too: will, would, should, to be, (is) expected to, is projected to,
+     is set to ("Q4 2026 revenue will reflect the new pricing").
    - Historical cues: compared with, versus, prior year. Document-date cues: dated,
      published on.
-   - Reporting cues: results, report, financial statements, trading update (strong); for
-     the, ended, interim, and a press release's own lead words — earnings, sales, revenue,
-     turnover, highlights, update, announced, reported, posted (weak). A weak cue never
-     outvotes a forward cue: "guidance for Q4 2026 revenue" names a measure too.
+   - Reporting cues have three strengths. STRONG: results, report, financial statements,
+     trading update. ANCHORED: ended, ending (a stated period end). WEAK: for the, interim,
+     and a press release's own lead words — earnings, sales, revenue, turnover,
+     highlights, update, announced, reported, posted. Only a strong cue outvotes a
+     forward cue: "guidance for Q4 2026 revenue" names a measure too.
+   - **A weakly framed period must be OVER** (re-review of PR #323). When a mention's
+     only framing is a weak cue, or the headline line's no-cue default, the period must
+     have ended by the publication date: "Company expects record Q4 2026 sales",
+     "Pre-announcement of Q4 2026 sales" and "Announced Q4 2026 restructuring plan"
+     (published 2026-10-28) date nothing. A fiscal key is judged by its earliest
+     possible end (twelve months before its calendar reading). In body text and the
+     headline line the period must also be RECENT — ended at most 200 days before
+     publication (read at a fiscal key's latest possible end), because a results release
+     follows its period closely: "Revenue for Q3 2025 was $2m" in a 2026 strategic
+     update is a comparative. Strong and anchored framing keep the began-by rule
+     alone.
    - The nearest non-reporting cue wins unless a strong reporting cue is strictly nearer
      (a tie goes to the forward reading).
    - With no cue, a title or heading names the document itself, so the mention is its
@@ -6940,6 +6954,11 @@ The cause, confirmed in code:
      first production update" are still refused; "Q3 2026: Revenue up 12%, full-year
      guidance raised", "Acme Q3 2026 revenue ahead of expectations" and "Interim results for
      the six months ended 30 June 2026 and outlook" keep their period.
+     A clause that is ONLY a forward label ("Outlook", "Guidance", "Production
+     guidance", "Trading outlook", "Outlook update") still governs an un-cued period in
+     the clause next to it: "Outlook: Q4 2026", "Q4 2026: guidance" and "Trading
+     outlook | H2 2026" are refused. A clause that says something about the outlook
+     ("outlook upgraded", "guidance raised") does not.
    - **The headline line**: the first body segment, when at most 200 characters, is read
      like a heading for the no-cue default ("Third Quarter 2026 Highlights", "Acme Q3 2026
      Earnings"), but any non-reporting cue in its window still refuses it, as in body text.
@@ -7049,8 +7068,9 @@ The cause, confirmed in code:
   states its period only as a bare label in running text ("our teams met investors in Q2
   2026") has no period from body text. Its title, headings, headline line or structured
   metadata must state it. This is fail-closed by design. A measure or a lead verb is
-  framing: "revenue grew in Q2 2026" and "today announced its third quarter 2026 revenue"
-  still date the document.
+  weak framing: "revenue grew in Q2 2026" and "today announced its third quarter 2026
+  revenue" still date the document — but only once that period has ended, and in body
+  text only while it is recent.
 - Existing tests that showed the old defect were updated: "the default body read DOES take
   the forecast" and "Q1 2028 first production update keeps Q1 2028 once begun". "First
   production" is an event date, so a title framed that way is refused at any date.
@@ -7080,9 +7100,27 @@ The cause, confirmed in code:
   stored that way before ADR-080 and less than a year ahead ("guidance for the first quarter
   ending March 31, 2027", published November 2026) is not cleared by it; the write path
   refuses it for new documents.
-- **Body text stays fail-closed.** A body sentence with any forward cue in its window ("Acme
-  reported Q3 2026 revenue ahead of expectations") dates nothing; only titles and headings
-  read the governing rule.
+- **Body text uses weak cues only for ended, recent periods.** A body sentence or headline
+  line framed only by a weak cue (a measure, a lead verb, "for the") dates the document
+  only when the period had ended by publication and ended at most 200 days before it. A
+  body sentence with any forward cue in its window ("Acme reported Q3 2026 revenue ahead of
+  expectations") dates nothing at all; only titles and headings read the governing rule. A
+  release published more than 200 days after its period, or a running-period update framed
+  only by a measure ("Q4 2026 sales to date"), is therefore not dated from body text.
+- **A strong cue still frames a period announced ahead of time.** "Acme to report Q4 2026
+  sales in January" (published in October) is read as 2026-Q4: "report" is a strong cue and
+  Q4 had begun. Only the began-by rule applies to strong framing.
+- **The sweep shares the run's transaction.** It is flush-only inside a savepoint on the
+  research run's session, so the row locks its UPDATEs take are held until the run
+  commits. Only the subject company's own stale rows are touched, and only once per run;
+  committing it separately would mean committing the run's shared session mid-run, which
+  no other pipeline step does.
+- **Detector input is bounded** (security review of PR #323). The clause splitter lets at
+  most eight spaces precede its delimiter (an unbounded leading `\s*` backtracked
+  quadratically: a title of 10,000 spaces took 16 s on the event loop). Titles and headings
+  are cut to 500 characters, the headline line is stripped before it is split, and at most
+  48 candidates are read per rule and source. Timing tests hold every entry point under
+  0.5 s on whitespace, dash, comma and label floods.
 - **The venue publication date is the date the venue printed.** `select_current_period_disclosure`
   uses `published_at.date()`. Every venue parser (Nasdaq Nordic, eMarket Storage) keeps the
   venue's own wall-clock time and only tags it UTC, so that is the date as published. A venue

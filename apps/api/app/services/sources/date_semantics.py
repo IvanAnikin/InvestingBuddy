@@ -103,14 +103,32 @@ _SUFFIX = "suffix"
 _BOTH = (_PREFIX, _SUFFIX)
 
 
+#: How firmly a reporting cue frames a mention (``MentionReading.framing``).
+#: STRONG — "results", "report", "trading update": it can outvote a farther forward cue.
+FRAMING_STRONG = "strong"
+#: ANCHORED — "ended", "ending": the mention is the period that ENDS on a stated date.
+#: It cannot outvote a forward cue ("guidance for the first quarter ending …").
+FRAMING_ANCHORED = "anchored"
+#: WEAK — "for the", "interim", a measure ("revenue", "sales") or a lead verb
+#: ("announced"): such words frame a period the document reports only once it is OVER.
+#: The caller holds a weakly framed period to that (review of PR #323, re-review).
+FRAMING_WEAK = "weak"
+#: No cue at all: a title, heading or headline line naming itself.
+FRAMING_DEFAULT = "default"
+
+
 @dataclass(frozen=True)
 class _Cue:
     role: str
     pattern: str
     sides: tuple[str, ...]
-    #: A strong reporting cue can outvote a farther forward cue; a weak one ("for the",
-    #: "ended") cannot, because "guidance for the first quarter ending …" uses it too.
-    strong: bool = True
+    #: For a reporting cue, how firmly it frames the mention (``FRAMING_*``). Only a
+    #: STRONG cue can outvote a farther forward cue.
+    framing: str = FRAMING_STRONG
+
+    @property
+    def strong(self) -> bool:
+        return self.framing == FRAMING_STRONG
 
 
 _CUES: tuple[_Cue, ...] = (
@@ -131,6 +149,12 @@ _CUES: tuple[_Cue, ...] = (
          r"plan(?:s|ned)?(?: to)?|intend(?:s|ed)?(?: to)?|aim(?:s|ed)?(?: to)?|goal"
          r"|on track|scheduled|estimated|will|is set to|are set to", (_PREFIX,)),
     _Cue(GUIDANCE_TARGET_DATE, r"planned|scheduled|estimated", (_SUFFIX,)),
+    # Re-review of PR #323 — a forward VERB after the mention: "Q4 2026 revenue will
+    # reflect the new pricing", "Sales in H2 2026 to be minimal", "revenue in H2 2026
+    # will decline".
+    _Cue(GUIDANCE_TARGET_DATE,
+         r"will|would|should|to be|is expected to|expected to|is projected to"
+         r"|is set to|are set to", (_SUFFIX,)),
     # Deadline / expiry / maturity.
     _Cue(DEADLINE_DATE, r"by|no later than|not later than|before|due(?: in| by)?",
          (_PREFIX,)),
@@ -155,9 +179,11 @@ _CUES: tuple[_Cue, ...] = (
          r"results?|reports?|reporting period|financial statements|accounts"
          r"|trading (?:update|statement)|activities report|interim report"
          r"|half ?year(?:ly)? (?:financial )?report|quarterly report", _BOTH),
+    # Reporting framing — anchored to a stated end.
+    _Cue(REPORTING_PERIOD, r"ended|ending", (_PREFIX,), framing=FRAMING_ANCHORED),
     # Reporting framing — weak.
-    _Cue(REPORTING_PERIOD, r"for the|for its|ended|ending|interim|half ?year(?:ly)?",
-         (_PREFIX,), strong=False),
+    _Cue(REPORTING_PERIOD, r"for the|for its|interim|half ?year(?:ly)?",
+         (_PREFIX,), framing=FRAMING_WEAK),
     # Review of PR #323 — a press release's own lead line: "today announced its third
     # quarter 2026 revenue", "reported third-quarter 2026 net sales", "posted record Q3
     # 2026 revenue", "Q3 2026 highlights", "Acme Q3 2026 Earnings", "Sales in the first
@@ -165,9 +191,9 @@ _CUES: tuple[_Cue, ...] = (
     # measure too, and a weak cue never outvotes a forward one.
     _Cue(REPORTING_PERIOD,
          r"earnings|net sales|sales|revenues?|turnover|highlights|update"
-         r"|key figures", _BOTH, strong=False),
+         r"|key figures", _BOTH, framing=FRAMING_WEAK),
     _Cue(REPORTING_PERIOD, r"announc(?:e|es|ed|ing)|reported|posted",
-         (_PREFIX,), strong=False),
+         (_PREFIX,), framing=FRAMING_WEAK),
 )
 
 _COMPILED: tuple[tuple[_Cue, re.Pattern[str]], ...] = tuple(
@@ -188,6 +214,8 @@ _PREFIX_CONNECTORS: frozenset[str] = frozenset(
         "at", "on", "during", "from", "until", "till", "through", "around", "about",
         "approximately", "as", "early", "mid", "late", "end", "start", "beginning",
         "calendar", "fiscal", "financial", "full", "year", "be", "is", "are",
+        # "Company expects record Q4 2026 sales" (re-review of PR #323).
+        "record",
     }
 )
 _SUFFIX_CONNECTORS: frozenset[str] = frozenset(
@@ -202,13 +230,55 @@ _SUFFIX_CONNECTORS: frozenset[str] = frozenset(
 )
 
 
+#: A clause that is NOTHING but a forward label: "Outlook", "Guidance", "Production
+#: guidance", "Trading outlook", "Outlook update". Split from its period by punctuation
+#: ("Outlook: Q4 2026", "Q4 2026: guidance", "Trading outlook | H2 2026") it still governs
+#: it — the re-review of PR #323 found the clause split had freed those periods. A clause
+#: that SAYS something about the outlook ("outlook upgraded", "guidance raised") is
+#: news in its own right and does not.
+_LABEL_FILLERS: frozenset[str] = frozenset(
+    {"update", "updated", "trading", "operating", "operational", "business", "revised",
+     "new", "current", "latest", "and"}
+)
+_FORWARD_LABEL_ROLES: frozenset[str] = frozenset(
+    {EVENT_DATE, GUIDANCE_TARGET_DATE, FORECAST_HORIZON, DEADLINE_DATE}
+)
+
+
+def is_forward_label(clause: str) -> bool:
+    """True when the normalised ``clause`` is only a forward cue and connector words."""
+    rest = f" {clause} "
+    found = False
+    for cue, regex in _COMPILED:
+        if cue.role in _FORWARD_LABEL_ROLES and regex.search(rest):
+            found = True
+            rest = regex.sub(" ", rest)
+    if not found:
+        return False
+    allowed = _PREFIX_CONNECTORS | _SUFFIX_CONNECTORS | _LABEL_FILLERS
+    return all(word in allowed for word in rest.split())
+
+
+@dataclass(frozen=True)
+class MentionReading:
+    """A mention's role and — for a reporting period — how firmly it is framed."""
+
+    role: str
+    #: ``FRAMING_*`` for a ``REPORTING_PERIOD``; ``None`` otherwise.
+    framing: str | None = None
+
+
 @dataclass(frozen=True)
 class _Hit:
     role: str
     distance: int
-    strong: bool
+    framing: str
     #: Nothing but connector words between the cue and the mention.
     governs: bool = True
+
+    @property
+    def strong(self) -> bool:
+        return self.framing == FRAMING_STRONG
 
 
 def _only_connectors(gap: str, connectors: frozenset[str]) -> bool:
@@ -221,13 +291,13 @@ def _hits(before: str, after: str) -> list[_Hit]:
         if _PREFIX in cue.sides:
             for match in regex.finditer(before):
                 hits.append(_Hit(
-                    cue.role, len(before) - match.end(), cue.strong,
+                    cue.role, len(before) - match.end(), cue.framing,
                     _only_connectors(before[match.end():], _PREFIX_CONNECTORS),
                 ))
         if _SUFFIX in cue.sides:
             for match in regex.finditer(after):
                 hits.append(_Hit(
-                    cue.role, match.start(), cue.strong,
+                    cue.role, match.start(), cue.framing,
                     _only_connectors(after[:match.start()], _SUFFIX_CONNECTORS),
                 ))
     return hits
@@ -236,7 +306,15 @@ def _hits(before: str, after: str) -> list[_Hit]:
 def classify_date_mention(
     text: str, start: int, end: int, *, role: str = ROLE_BODY
 ) -> str:
-    """The role of the period/date mention ``text[start:end]``. Never raises.
+    """The role of the period/date mention ``text[start:end]``. Never raises."""
+    return read_date_mention(text, start, end, role=role).role
+
+
+def read_date_mention(
+    text: str, start: int, end: int, *, role: str = ROLE_BODY
+) -> MentionReading:
+    """The role of the mention ``text[start:end]`` and, for a reporting period, how
+    firmly it is framed (``FRAMING_*``). Never raises.
 
     ``text`` must already be normalised (``document_period._normalise``). The decision:
 
@@ -258,22 +336,24 @@ def classify_date_mention(
         after = text[end:end + SUFFIX_WINDOW]
         hits = _hits(before, after)
     except (TypeError, ValueError):  # pragma: no cover - defensive
-        return UNCLASSIFIED
+        return MentionReading(UNCLASSIFIED)
     governed_only = role in (ROLE_TITLE, ROLE_HEADING)
     other = [h for h in hits
              if h.role != REPORTING_PERIOD and (h.governs or not governed_only)]
+    framings = {h.framing for h in hits if h.role == REPORTING_PERIOD}
     strong = [h for h in hits if h.role == REPORTING_PERIOD and h.strong]
-    weak = [h for h in hits if h.role == REPORTING_PERIOD and not h.strong]
     nearest_other = min(other, key=lambda h: h.distance) if other else None
     nearest_strong = min(strong, key=lambda h: h.distance) if strong else None
     if nearest_other is not None and (
         nearest_strong is None or nearest_other.distance <= nearest_strong.distance
     ):
-        return nearest_other.role
-    if nearest_strong is not None or weak:
-        return REPORTING_PERIOD
-    return (REPORTING_PERIOD if role in (ROLE_TITLE, ROLE_HEADING, ROLE_HEADLINE)
-            else UNCLASSIFIED)
+        return MentionReading(nearest_other.role)
+    for framing in (FRAMING_STRONG, FRAMING_ANCHORED, FRAMING_WEAK):
+        if framing in framings:
+            return MentionReading(REPORTING_PERIOD, framing)
+    if role in (ROLE_TITLE, ROLE_HEADING, ROLE_HEADLINE):
+        return MentionReading(REPORTING_PERIOD, FRAMING_DEFAULT)
+    return MentionReading(UNCLASSIFIED)
 
 
 def is_reporting_period(text: str, start: int, end: int, *, role: str = ROLE_BODY) -> bool:
@@ -287,10 +367,15 @@ __all__ = [
     "DOCUMENT_DATE",
     "EVENT_DATE",
     "FACT_PERIOD",
+    "FRAMING_ANCHORED",
+    "FRAMING_DEFAULT",
+    "FRAMING_STRONG",
+    "FRAMING_WEAK",
     "FORECAST_HORIZON",
     "FORWARD_ROLES",
     "GUIDANCE_TARGET_DATE",
     "HISTORICAL_REFERENCE_DATE",
+    "MentionReading",
     "PREFIX_WINDOW",
     "REPORTING_PERIOD",
     "ROLE_BODY",
@@ -300,5 +385,7 @@ __all__ = [
     "SUFFIX_WINDOW",
     "UNCLASSIFIED",
     "classify_date_mention",
+    "is_forward_label",
     "is_reporting_period",
+    "read_date_mention",
 ]

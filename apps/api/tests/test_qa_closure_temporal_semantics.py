@@ -1231,3 +1231,293 @@ def test_the_sweep_prefilter_compiles_for_postgresql() -> None:
     clause = func.substr(V.period_key, 1, 4) >= cast(extract("year", V.published_at), String)
     sql = str(clause.compile(dialect=postgresql.dialect()))
     assert "substr(" in sql and "EXTRACT(year FROM" in sql and "AS VARCHAR" in sql
+
+
+# --------------------------------------------------------------------------- #
+# 8. Re-review of PR #323 — no in-progress period through a weak cue, a clause  #
+#    split or a forward verb (the CLLS defect class itself)                     #
+# --------------------------------------------------------------------------- #
+
+# (a) A clause that is only a forward label still governs the period beside it.
+_LABEL_SPLIT_TITLES = [
+    "Outlook: Q4 2026",
+    "Guidance – Q4 2026",
+    "Production guidance: H2 2026",
+    "Trading outlook | H2 2026",
+    "Q4 2026: guidance",
+    "Guidance: Q4 2026 revenue of $1.2bn",
+    "Outlook update: Q4 2026 revenue",
+    # Item 2 — "update" and "record" between the cue and the period.
+    "Revenue guidance update for Q4 2026",
+    "Company expects record Q4 2026 sales",
+]
+
+
+@pytest.mark.parametrize("title", _LABEL_SPLIT_TITLES)
+def test_a_split_forward_label_still_refuses_a_title(title: str) -> None:
+    assert not detect_document_period(title=title, as_of=PUBLISHED).is_known
+
+
+@pytest.mark.parametrize("title", _LABEL_SPLIT_TITLES)
+def test_a_split_forward_label_still_refuses_a_heading(title: str) -> None:
+    assert not detect_document_period(headings=[title], as_of=PUBLISHED).is_known
+
+
+@pytest.mark.parametrize(
+    ("clause", "label"),
+    [
+        ("outlook", True), ("guidance", True), ("production guidance", True),
+        ("trading outlook", True), ("outlook update", True),
+        ("outlook upgraded", False), ("guidance raised", False),
+        ("targets confirmed", False), ("q3 2026", False), ("revenue up 12", False),
+        ("", False),
+    ],
+)
+def test_a_forward_label_clause_is_only_a_cue_and_connectors(clause: str, label: bool) -> None:
+    assert ds.is_forward_label(clause) is label
+
+
+# (b) A forward verb AFTER the mention is a cue too.
+@pytest.mark.parametrize(
+    ("text", "published"),
+    [
+        ("Strategic update\nQ4 2026 revenue will reflect the new pricing.", PUBLISHED),
+        ("Corporate update\nThe pivot means revenue in H2 2026 will decline.", PUBLISHED),
+        ("Corporate update\nH2 2026 sales will decline as the company exits the product.",
+         PUBLISHED),
+        ("Acme SA is a company. H2 2026 sales will decline as the company exits the product.",
+         PUBLISHED),
+        ("Company provides corporate update. Sales in H2 2026 to be minimal.", PUBLISHED),
+        ("Strategic update\nSecond quarter fiscal 2027 revenue will be $15bn.",
+         date(2026, 11, 12)),
+        ("Strategic update\nRevenue in Q4 2026 should benefit from the launch.", PUBLISHED),
+        ("Strategic update\nQ3 2026 revenue is expected to be restated.", PUBLISHED),
+    ],
+)
+def test_a_forward_verb_after_the_mention_refuses_it(text: str, published: date) -> None:
+    assert not detect_document_period(text=text, as_of=published).is_known
+
+
+def test_a_strong_cue_still_outvotes_a_later_forward_verb() -> None:
+    found = detect_document_period(
+        text="Q3 2026 results will be discussed on a call today.", as_of=PUBLISHED)
+    assert found.period.key == "2026-Q3"
+
+
+# (c) A weakly framed period must be over — and, in body text, recent.
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        ("text", "Pivot update\nRevenue for Q3 2025 was $2m."),
+        ("text", "Pivot announcement\nAnnounced Q4 2026 restructuring plan."),
+        ("text", "Business update\nThe company targets sales of $5m in H2 2026."),
+        ("text", "Highlights: first production targeted Q4 2026"),
+        ("title", "Pre-announcement of Q4 2026 sales"),
+        ("title", "Acme sets date for Q4 2026 earnings call"),
+        ("title", "Update on Q4 2026 revenue expectations"),
+        ("headings", "Q4 2026 guidance"),
+    ],
+)
+def test_a_weakly_framed_running_or_stale_period_is_refused(kind: str, text: str) -> None:
+    kwargs: dict = {"headings": [text]} if kind == "headings" else {kind: text}
+    assert not detect_document_period(as_of=PUBLISHED, **kwargs).is_known
+
+
+def test_a_weakly_framed_period_is_read_once_it_has_ended() -> None:
+    assert detect_document_period(text="Acme posted record Q3 2026 revenue.",
+                                  as_of=PUBLISHED).period.key == "2026-Q3"
+    assert not detect_document_period(text="Acme posted record Q3 2026 revenue.",
+                                      as_of=date(2026, 9, 15)).is_known
+
+
+def test_a_headline_line_period_must_have_ended() -> None:
+    assert not detect_document_period(text="Q4 2026: revenue grew 12%.",
+                                      as_of=PUBLISHED).is_known
+    assert detect_document_period(text="Q3 2026: revenue grew 12%.",
+                                  as_of=PUBLISHED).period.key == "2026-Q3"
+
+
+def test_body_text_reads_a_weak_cue_only_for_a_recent_period() -> None:
+    text = "Acme SA is a company. Revenue in the third quarter of 2026 was $5.1 billion."
+    assert detect_document_period(text=text, as_of=date(2027, 4, 1)).period.key == "2026-Q3"
+    # More than 200 days after the quarter ended it is a comparative, not the report.
+    assert not detect_document_period(text=text, as_of=date(2027, 6, 1)).is_known
+
+
+def test_a_title_weak_cue_needs_the_period_over_but_not_recent() -> None:
+    title = "Q3 2026 sales and FY2027 outlook"
+    assert detect_document_period(title=title, as_of=PUBLISHED).period.key == "2026-Q3"
+    assert detect_document_period(title=title, as_of=date(2027, 9, 1)).period.key == "2026-Q3"
+    assert not detect_document_period(title=title, as_of=date(2026, 9, 1)).is_known
+
+
+def test_a_strong_or_anchored_cue_keeps_the_began_by_rule() -> None:
+    """Strong and anchored framing are unchanged: begun is enough."""
+    assert detect_document_period(title="Q4 2026 Trading Update",
+                                  as_of=PUBLISHED).period.key == "2026-Q4"
+    assert detect_document_period(
+        text="Acme SA is a company. Results for the third quarter of 2026 are below.",
+        as_of=date(2027, 9, 1)).period.key == "2026-Q3"
+
+
+def test_a_weakly_framed_fiscal_period_is_judged_by_the_lenient_end() -> None:
+    # FY27 Q1 may have ended as early as March 2026 (a January fiscal year end).
+    found = detect_document_period(title="FY27 Q1 sales – outlook", as_of=date(2026, 7, 17))
+    assert found.period.key == "2027-Q1"
+    # Read at its LATEST end for recency, so a fiscal quarter is never "too old" early.
+    late = detect_document_period(
+        text="Acme SA is a company. Q1 FY27 revenue grew 8% to $3.1bn.",
+        as_of=date(2027, 8, 1))
+    assert late.period.key == "2027-Q1"
+
+
+# The sweep's SQL pre-filter reads the first four characters of a key as its year.
+@pytest.mark.parametrize(
+    "period",
+    [
+        ReportingPeriod(PERIOD_TYPE_ANNUAL, 2026, None, "2026"),
+        ReportingPeriod(PERIOD_TYPE_HALF, 2026, 2, "H2 2026"),
+        ReportingPeriod("quarter", 2027, 1, "Q1 2027"),
+        ReportingPeriod("split_year", 2025, None, "2025/26"),
+    ],
+)
+def test_every_reporting_period_key_is_year_first(period: ReportingPeriod) -> None:
+    import re
+
+    assert re.match(r"^(?:19|20)\d{2}(?:$|[-/])", period.key or "")
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Annual Report 2026", "Annual Report 2025/26", "2026 Annual Report",
+     "Annual report and accounts 2025-26"],
+)
+def test_the_annual_title_fallback_key_is_year_first(title: str) -> None:
+    import re
+
+    from app.services.corpus.identity import annual_period_from
+
+    key, _type, _basis = annual_period_from(title=title, url=None)
+    assert key is None or re.match(r"^(?:19|20)\d{2}", key)
+
+
+def test_every_corpus_period_key_writer_takes_a_year_first_key() -> None:
+    """Every ``period_key`` a corpus module writes comes from a year-first source:
+    ``period_fields`` / ``annual_period_from`` (both above), ``None``, or a key already
+    stored. A new writer must be added here deliberately."""
+    import ast
+    from pathlib import Path
+
+    import app.services.corpus as corpus
+
+    allowed_values = {
+        "period_key", "None", "None if address_keyed else period_key", "new[0]",
+        "version.period_key", "row.period_key", "chunk.period_key",
+    }
+    allowed_sources = {"period_fields", "annual_period_from"}
+    root = Path(corpus.__file__).parent
+    seen: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        source = path.read_text()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.keyword) and node.arg == "period_key":
+                value = ast.get_source_segment(source, node.value)
+                seen.append(f"{path.name}: {value}")
+                assert value in allowed_values, f"{path.name}: period_key={value}"
+            if isinstance(node, ast.Dict):
+                for k, v in zip(node.keys, node.values):
+                    if isinstance(k, ast.Constant) and k.value == "period_key":
+                        value = ast.get_source_segment(source, v)
+                        assert value in allowed_values, f"{path.name}: {value}"
+            if isinstance(node, ast.Assign):
+                names = [ast.get_source_segment(source, t) or "" for t in node.targets]
+                if any("period_key" in n and "period_key_" not in n for n in names):
+                    value = ast.get_source_segment(source, node.value) or ""
+                    ok = (value in allowed_values or value.startswith(("(None", "None,", "new[0],"))
+                          or value == "new"
+                          or any(value.startswith(f"{s}(") for s in allowed_sources))
+                    assert ok, f"{path.name}: {names} = {value}"
+    assert seen, "the scan found no writer at all"
+
+
+# --------------------------------------------------------------------------- #
+# 9. Security review of PR #323 — no regex or loop here is super-linear         #
+# --------------------------------------------------------------------------- #
+
+_ADVERSARIAL = {
+    "spaces": " " * 10_000,
+    "newlines": "\n" * 10_000,
+    "tabs": "\t" * 10_000,
+    "A-": "A-" * 3_000,
+    "a,": "a," * 5_000,
+    "spaced dashes": " -" * 5_000,
+    "colons": ": " * 5_000,
+    "labels": "Q3 2026 " * 1_500,
+    "fiscal labels": "fy27 q1 " * 1_500,
+    "period ends": "first quarter ended " * 500,
+}
+_BUDGET_SECONDS = 0.5
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"title": " " * 5_000},
+        {"title": " " * 10_000},
+        {"headings": ["\n" * 10_000]},
+        {"text": " " * 5_000},
+    ],
+    ids=["title-5k-spaces", "title-10k-spaces", "heading-10k-newlines", "text-5k-spaces"],
+)
+def test_the_reported_whitespace_inputs_are_fast(kwargs: dict) -> None:
+    import time
+
+    started = time.perf_counter()
+    detect_document_period(as_of=PUBLISHED, **kwargs)
+    assert time.perf_counter() - started < _BUDGET_SECONDS
+
+
+@pytest.mark.parametrize("name", sorted(_ADVERSARIAL))
+@pytest.mark.parametrize("kind", ["title", "url", "headings", "text"])
+def test_no_entry_point_is_slow_on_adversarial_text(kind: str, name: str) -> None:
+    import time
+
+    value = _ADVERSARIAL[name]
+    kwargs: dict = {"headings": [value] * 12} if kind == "headings" else {kind: value}
+    started = time.perf_counter()
+    detect_document_period(as_of=PUBLISHED, **kwargs)
+    assert time.perf_counter() - started < _BUDGET_SECONDS
+
+
+def test_the_clause_split_scales_linearly() -> None:
+    import time
+
+    from app.services.sources.document_period import _CLAUSE_END_RE
+
+    def cost(n: int) -> float:
+        started = time.perf_counter()
+        for _ in range(5):
+            _CLAUSE_END_RE.split(" " * n)
+        return time.perf_counter() - started
+
+    small, large = cost(2_000), cost(20_000)
+    # Ten times the input; quadratic backtracking would cost about a hundred times more.
+    assert large < max(small, 1e-4) * 40
+
+
+@pytest.mark.parametrize("name", sorted(_ADVERSARIAL))
+def test_the_forward_label_check_is_fast(name: str) -> None:
+    import time
+
+    started = time.perf_counter()
+    ds.is_forward_label(_ADVERSARIAL[name])
+    assert time.perf_counter() - started < _BUDGET_SECONDS
+
+
+def test_a_clause_split_still_reads_a_spaced_dash_and_a_colon() -> None:
+    from app.services.sources.document_period import _CLAUSE_END_RE
+
+    assert _CLAUSE_END_RE.split("Q1 FY27 update – guidance") == ["Q1 FY27 update", "guidance"]
+    assert _CLAUSE_END_RE.split("Q3 2026 sales - outlook") == ["Q3 2026 sales", "outlook"]
+    assert _CLAUSE_END_RE.split("Q3 2026: Revenue") == ["Q3 2026", "Revenue"]
+    assert _CLAUSE_END_RE.split("first-half 10:30 1,234") == ["first-half 10:30 1,234"]
