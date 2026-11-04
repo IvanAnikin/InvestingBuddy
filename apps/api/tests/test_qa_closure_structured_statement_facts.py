@@ -1393,14 +1393,16 @@ class TestLabelsAndReuse:
                             canonical_url="https://issuer.example/r.htm"), [prose]) is False
 
     def test_the_reader_ships_at_pipeline_version_22(self) -> None:
-        # #323 (ADR-080) took 21; the reader ships at 22, and both constants move together.
+        # #323 (ADR-080) took 21; the reader ships at 22. A later version (23, ADR-087)
+        # keeps the reader, so the current version never trails it; the re-read checks
+        # are all ``>= INLINE_XBRL_MIN_PIPELINE_VERSION``.
         from app.services.sources.extraction_pipeline_version import (
             CURRENT_EXTRACTION_PIPELINE_VERSION,
             INLINE_XBRL_MIN_PIPELINE_VERSION,
         )
 
         assert INLINE_XBRL_MIN_PIPELINE_VERSION == 22
-        assert CURRENT_EXTRACTION_PIPELINE_VERSION == INLINE_XBRL_MIN_PIPELINE_VERSION
+        assert CURRENT_EXTRACTION_PIPELINE_VERSION >= INLINE_XBRL_MIN_PIPELINE_VERSION
 
 
 class TestHeldFilingRereadBounds:
