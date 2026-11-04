@@ -3402,7 +3402,9 @@ When a run called `get_peer_set`, the `competitive_position` section of
 
 - `status` — `selected` (at least one comparable peer was returned) or `unavailable`;
 - `note` — the reader's sentence when `unavailable` (rendered under the empty peer table),
-  else `null`;
+  else `null`. It says the held companies "did not match" only when candidates were
+  excluded; with none to assess it is the neutral "No comparable held company is
+  available for a peer comparison.";
 - `selected` — the peer tickers returned;
 - `excluded` — up to 12 `{ticker, exchange, reason, score, reasons}` records of held
   same-industry candidates and externally discovered peers excluded as "not comparable"

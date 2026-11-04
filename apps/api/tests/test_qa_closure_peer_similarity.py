@@ -85,8 +85,9 @@ async def _company(session, ticker: str, **kw: Any) -> Company:  # noqa: ANN001
 
 
 def _co(**kw: Any) -> SimpleNamespace:
-    base: dict[str, Any] = {"ticker": "SUBJ", "sic_code": None, "description": None,
-                            "market_cap": None, "currency": None, "legal_entity_id": None}
+    base: dict[str, Any] = {"ticker": "SUBJ", "name": None, "sic_code": None,
+                            "description": None, "market_cap": None, "currency": None,
+                            "legal_entity_id": None}
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -373,6 +374,266 @@ class TestAssessPeer:
         verdict = assess_peer(_co(sic_code="73-72x", market_cap="n/a", currency="USD"),
                               _co(ticker="P", sic_code="123456", market_cap=-5, currency="USD"))
         assert not verdict.comparable
+
+
+class TestReviewOfPr325:
+    """Review repros (rv325/repro_gate.py, repro_e2e.py), each pinned."""
+
+    # 1 — another share class or listing of the subject is never its peer.
+    @pytest.mark.parametrize(
+        ("subject", "candidate"),
+        [
+            (dict(ticker="BRK-B", sic_code="6331"), dict(ticker="BRK-A", sic_code="6331")),
+            (dict(ticker="HEI", sic_code="3720"), dict(ticker="HEI.A", sic_code="3720")),
+            (dict(ticker="GOLD", name="Barrick Gold Corp", sic_code="1040"),
+             dict(ticker="ABX", name="Barrick Gold Corporation")),
+            (dict(ticker="CLLS", name="Cellectis S.A.", sic_code="2836"),
+             dict(ticker="ALCLS", name="CELLECTIS SA")),
+        ],
+    )
+    def test_another_share_class_or_listing_is_the_same_issuer(self, subject, candidate) -> None:  # noqa: ANN001
+        verdict = assess_peer(_co(**subject), _co(**candidate), shares_commodity=True,
+                              commodity="gold")
+        assert not verdict.comparable
+        assert verdict.exclusion == "not comparable: the same issuer as the subject"
+
+    def test_base_ticker_strips_only_a_one_letter_class_suffix(self) -> None:
+        from app.services.agent_tools.peer_similarity import base_ticker
+
+        assert base_ticker("brk-b") == "BRK" and base_ticker("HEI.A") == "HEI"
+        assert base_ticker("BF/B") == "BF" and base_ticker("ADBE") == "ADBE"
+        assert base_ticker("A") == "A" and base_ticker(None) == ""
+
+    def test_different_names_and_tickers_are_not_the_same_issuer(self) -> None:
+        verdict = assess_peer(_co(ticker="FCX", name="Freeport-McMoRan Inc", sic_code="1000"),
+                              _co(ticker="SCCO", name="Southern Copper Corp", sic_code="1000"),
+                              shares_commodity=True, commodity="copper")
+        assert verdict.comparable
+
+    async def test_share_class_end_to_end(self, session) -> None:  # noqa: ANN001
+        brkb = await _company(session, "BRK-B", name="Berkshire Hathaway Inc.",
+                              industry="Insurance", sic_code="6331")
+        await _company(session, "BRK-A", name="Berkshire Hathaway Inc.", industry="Insurance",
+                       sic_code="6331")
+        payload = await _peer_set(session, brkb)
+        assert payload["items"] == []
+        assert payload["excluded"][0]["reason"] == (
+            "not comparable: the same issuer as the subject"
+        )
+
+    # 2 — conglomerates, negations and legal wording.
+    def test_a_conglomerate_sharing_one_theme_is_not_a_peer(self) -> None:
+        conglomerate = (
+            "A collection of businesses: a search engine, online advertising, a video sharing "
+            "service whose creators rely on content creation tools, a cloud platform, "
+            "cybersecurity services and consumer devices."
+        )
+        assert len(business_themes(conglomerate)) >= 3
+        verdict = assess_peer(_co(ticker="ADBE", sic_code="7372", description=CREATIVE),
+                              _co(ticker="GOOGL", sic_code="7370", description=conglomerate))
+        assert not verdict.comparable
+        assert "diversified" in str(verdict.exclusion)
+        # With a specific four-digit SIC match the same conglomerate is a peer.
+        specific = assess_peer(
+            _co(sic_code="3829", description=CREATIVE),
+            _co(ticker="P", sic_code="3829", description=conglomerate),
+        )
+        assert specific.comparable
+
+    def test_a_candidate_whose_main_business_differs_is_not_a_peer(self) -> None:
+        # repro_e2e case B: two themes only, so not a conglomerate by count — but its
+        # first-named line of business is search, which the subject does not name.
+        verdict = assess_peer(
+            _co(ticker="ADBE", sic_code="7372",
+                description="Creative software for photo editing and graphic design; PDF tools."),
+            _co(ticker="GOOGL", sic_code="7370",
+                description="Search engine, online advertising, video sharing for content "
+                            "creation, cloud."),
+        )
+        assert not verdict.comparable
+        assert "main line of business" in str(verdict.exclusion)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Unlike creative software vendors, we do not offer photo editing or design tools.",
+            "We never provide graphic design services.",
+            "We have no PDF products and no e-signature products.",
+        ],
+    )
+    def test_a_negated_phrase_names_no_theme(self, text: str) -> None:
+        assert business_themes(text) == frozenset()
+
+    def test_negation_does_not_leak_past_its_window(self) -> None:
+        text = ("We do not sell hardware. Our products include photo editing software and "
+                "graphic design tools.")
+        assert "design and creative software" in business_themes(text)
+
+    def test_the_negated_diagnostics_lab_is_still_excluded(self) -> None:
+        tem = ("We are a clinical laboratory offering precision medicine and genomic "
+               "sequencing. Unlike creative software vendors, we do not offer photo editing "
+               "or design tools.")
+        verdict = assess_peer(_co(ticker="ADBE", sic_code="7372", description=CREATIVE),
+                              _co(ticker="TEM", sic_code="7372", description=tem))
+        assert not verdict.comparable
+        assert "different line of business" in str(verdict.exclusion)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "We maintain a vigorous defense of our patents and trademarks.",
+            "We may incur legal defense costs.",
+            "Management watches costs closely; our aircraft lease is immaterial.",
+            "Former military personnel make up part of our workforce.",
+        ],
+    )
+    def test_legal_or_ordinary_words_name_no_theme(self, text: str) -> None:
+        assert business_themes(text) == frozenset()
+
+    def test_two_software_companies_sharing_only_legal_wording_are_not_peers(self) -> None:
+        verdict = assess_peer(
+            _co(ticker="A", sic_code="7372",
+                description="Workflow software for hospitals. We pursue the defense of our "
+                            "patents."),
+            _co(ticker="B", sic_code="7371",
+                description="Payroll software. We may incur legal defense costs."),
+        )
+        assert not verdict.comparable
+
+    # 3 — broad SIC codes.
+    @pytest.mark.parametrize("sic", ["6798", "7379", "3990", "6794", "8731", "3841"])
+    def test_catch_all_codes_are_weak(self, sic: str) -> None:
+        assert sic in BROAD_SIC_CODES
+        assert not assess_peer(_co(sic_code=sic), _co(ticker="P", sic_code=sic)).comparable
+
+    # 4 — the note says only what happened.
+    def test_with_no_candidate_the_note_is_neutral(self) -> None:
+        selection = pr.peer_selection([{"items": [], "excluded": [], "excluded_count": 0}])
+        assert selection is not None and selection["status"] == "unavailable"
+        assert selection["note"] == pr.PEER_COMPARISON_NO_CANDIDATE_NOTE
+        assert "did not match" not in selection["note"]
+        assert safety_terms.scan_text(selection["note"]) == []
+
+    def test_with_excluded_candidates_the_note_says_they_did_not_match(self) -> None:
+        selection = pr.peer_selection([{"items": [], "excluded_count": 2}])
+        assert selection is not None
+        assert selection["note"] == pr.PEER_COMPARISON_UNAVAILABLE_NOTE
+
+    @pytest.mark.parametrize(
+        "payloads",
+        [
+            [{}],
+            [{"items": None, "excluded": [{"ticker": "X", "similarity": "bad"}]}],
+            [{"excluded_count": "n/a"}],
+            [{"items": "x", "excluded": "y", "excluded_count": -3}],
+            [{"excluded": [{"ticker": "X", "similarity": {"reasons": "a string"}}]}],
+        ],
+    )
+    def test_peer_selection_tolerates_malformed_payloads(self, payloads) -> None:  # noqa: ANN001
+        selection = pr.peer_selection(payloads)
+        assert selection is not None and selection["status"] == "unavailable"
+        assert selection["excluded_count"] >= 0
+        for row in selection["excluded"]:
+            assert isinstance(row["reasons"], list)
+
+    # 1 (external) and 5 — the identity record and a failing lookup.
+    async def test_external_peer_whose_identity_lists_the_subject_is_excluded(
+        self, session, monkeypatch  # noqa: ANN001
+    ) -> None:
+        from app.services.discovery import identity as identity_mod
+
+        subject = await _company(session, "CLLS", name="Cellectis S.A.", sic_code="2836",
+                                 description="Gene editing and CAR-T cell therapy.")
+        # A held company with a matching business — it would pass on its own record.
+        await _company(session, "ZZZ", industry=None, name="Zeta Bio Inc", sic_code="2836",
+                       description="Allogeneic CAR-T cell therapy developer.")
+
+        async def _verify(lead, **_kw):  # noqa: ANN001, ANN202
+            out = identity_mod.IdentityOutcome(
+                lead=lead, status="verified", ticker=lead.ticker,
+                exchange=identity_mod.normalise_venue(lead.exchange_raw), name=lead.name,
+                listing_source={"url": None, "tier": "issuer"},
+            )
+            out.securities = [{"ticker": "ZZZ", "exchange": "US"},
+                              {"ticker": "CLLS", "exchange": "US"}]
+            return out
+
+        payload = await self._run_external(session, monkeypatch, subject, _verify)
+        row = next(r for r in payload["excluded"] if r["ticker"] == "ZZZ")
+        assert row["reason"] == "not comparable: the same issuer as the subject"
+        assert payload["items"] == []
+
+    async def test_external_peer_whose_issuer_name_is_the_subjects_is_excluded(
+        self, session, monkeypatch  # noqa: ANN001
+    ) -> None:
+        from app.services.discovery import identity as identity_mod
+
+        subject = await _company(session, "CLLS", name="Cellectis S.A.", sic_code="2836")
+
+        async def _verify(lead, **_kw):  # noqa: ANN001, ANN202
+            out = identity_mod.IdentityOutcome(
+                lead=lead, status="verified", ticker=lead.ticker,
+                exchange=identity_mod.normalise_venue(lead.exchange_raw), name=lead.name,
+                listing_source={"url": None, "tier": "issuer"},
+            )
+            out.issuer = {"legal_name": "CELLECTIS"}
+            return out
+
+        payload = await self._run_external(session, monkeypatch, subject, _verify)
+        row = next(r for r in payload["excluded"] if r["ticker"] == "ZZZ")
+        assert row["reason"] == "not comparable: the same issuer as the subject"
+
+    async def test_a_failing_record_lookup_never_raises(self, session, monkeypatch) -> None:  # noqa: ANN001
+        from sqlalchemy.exc import OperationalError
+
+        from app.services.agent_tools.peer_similarity import EXCLUSION_UNVERIFIED
+        from app.services.discovery import identity as identity_mod
+
+        subject = await _company(session, "CRSW", sic_code="7372", description=CREATIVE)
+
+        async def _boom(*_a, **_kw):  # noqa: ANN202
+            raise OperationalError("SELECT", {}, Exception("db down"))
+
+        async def _verify(lead, **_kw):  # noqa: ANN001, ANN202
+            return identity_mod.IdentityOutcome(
+                lead=lead, status="verified", ticker=lead.ticker,
+                exchange=identity_mod.normalise_venue(lead.exchange_raw), name=lead.name,
+                listing_source={"url": None, "tier": "issuer"},
+            )
+
+        monkeypatch.setattr(peers, "_dynamic_peer_record", _boom)
+        payload = await self._run_external(session, monkeypatch, subject, _verify)
+        row = next(r for r in payload["excluded"] if r["ticker"] == "ZZZ")
+        assert row["reason"] == EXCLUSION_UNVERIFIED
+        assert "OperationalError" in row["similarity"]["reasons"][0]
+
+    async def _run_external(self, session, monkeypatch, subject, verify):  # noqa: ANN001, ANN202
+        import json
+
+        from app.services.discovery import identity as identity_mod
+        from app.services.providers.contracts import ConsumptionUnits
+
+        async def _ask(provider, query, cfg):  # noqa: ANN001, ANN202
+            return {"text": json.dumps({"companies": [
+                {"legal_name": "Zeta Bio Inc", "ticker": "ZZZ", "exchange": "Nasdaq",
+                 "listing_source_url": "https://zzz.example/ir", "why": "a peer"}]}),
+                "provider": "ds", "task_id": "t", "truncated": False, "opened_urls": [],
+                "warnings": [], "consumption": ConsumptionUnits(web_search_calls=1)}
+
+        monkeypatch.setattr("app.services.agents.routing.research_provider_for",
+                            lambda cfg: SimpleNamespace(transport=object()))
+        monkeypatch.setattr("app.services.discovery.leads._ask", _ask)
+        monkeypatch.setattr(identity_mod, "verify_identity", verify)
+        peers._PEER_MEMO.clear()
+        try:
+            return await peers._get_peer_set(
+                SimpleNamespace(session=session, cfg=SimpleNamespace(
+                    v3_dynamic_peer_discovery_enabled=True,
+                    v3_external_search_timeout_seconds=180)),
+                peers.validate_get_peer_set({"company_id": str(subject.id)}),
+            )
+        finally:
+            peers._PEER_MEMO.clear()
 
 
 class TestBusinessThemes:

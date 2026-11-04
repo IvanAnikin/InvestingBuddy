@@ -308,7 +308,11 @@ async def _dynamic_peers(
         )
     except Exception as exc:  # noqa: BLE001 - peers are enrichment, never fatal
         return {"gaps": [f"dynamic peer discovery failed ({type(exc).__name__})"]}
-    from app.services.agent_tools.peer_similarity import EXCLUSION_UNVERIFIED, assess_peer
+    from app.services.agent_tools.peer_similarity import (
+        EXCLUSION_UNVERIFIED,
+        PeerAssessment,
+        assess_peer,
+    )
 
     seen = {dedup_key(i.get("ticker"), i.get("exchange")) for i in held}
     seen.add(dedup_key(getattr(subject, "ticker", None), getattr(subject, "exchange", None)))
@@ -335,10 +339,32 @@ async def _dynamic_peers(
         # platform holds for this listing (its company row when held, else the exchange
         # directory's row). The provider's "why" is a claim, never a description: a
         # model saying two companies are peers is not evidence that they are.
-        record, commodities, shares = await _dynamic_peer_record(
-            getattr(context, "session", None), outcome, key, commodity
-        )
-        verdict = assess_peer(subject, record, shares_commodity=shares, commodity=commodity)
+        try:
+            record, commodities, shares = await _dynamic_peer_record(
+                getattr(context, "session", None), outcome, key, commodity
+            )
+        except Exception as exc:  # noqa: BLE001 - peers are enrichment, never fatal
+            # A failed lookup is an unverified peer, never an unchecked one.
+            excluded.append({
+                "ticker": outcome.ticker, "exchange": outcome.exchange, "name": outcome.name,
+                "source": "external_discovery", "reason": EXCLUSION_UNVERIFIED,
+                "similarity": {"comparable": False, "score": 0,
+                               "reasons": [f"the platform's record could not be read "
+                                           f"({type(exc).__name__})"],
+                               "insufficient_data": True},
+            })
+            continue
+        if _listing_record_names_subject(subject, outcome):
+            verdict = PeerAssessment(
+                False, 0,
+                ("the identity record lists the subject's own listing or legal name "
+                 "(another listing of the same issuer)",),
+                "not comparable: the same issuer as the subject",
+            )
+        else:
+            verdict = assess_peer(
+                subject, record, shares_commodity=shares, commodity=commodity
+            )
         if not verdict.comparable:
             excluded.append({
                 "ticker": outcome.ticker,
@@ -430,10 +456,41 @@ async def _dynamic_peer_record(
         commodities, _has_corpus, shares = await _commodity_reading(session, held, commodity)
         return held, commodities, shares
     record = SimpleNamespace(
-        ticker=outcome.ticker, sic_code=None, description=None, market_cap=None,
-        currency=None, legal_entity_id=None,
+        ticker=outcome.ticker, name=outcome.name, sic_code=None, description=None,
+        market_cap=None, currency=None, legal_entity_id=None,
     )
     return record, [], None
+
+
+def _listing_record_names_subject(subject: Any, outcome: Any) -> bool:
+    """ADR-061: does the peer's identity record show it is the SUBJECT's issuer?
+
+    True when any security the identity linked to the peer is one of the subject's
+    listings (by venue dedup key, or the same base ticker), or when the issuer's legal
+    name is the subject's.
+    """
+    from types import SimpleNamespace
+
+    from app.services.agent_tools.peer_similarity import base_ticker, same_issuer
+    from app.services.discovery.identity import dedup_key
+
+    subject_key = dedup_key(getattr(subject, "ticker", None), getattr(subject, "exchange", None))
+    subject_base = base_ticker(getattr(subject, "ticker", None))
+    for row in getattr(outcome, "securities", None) or []:
+        if not isinstance(row, dict):
+            continue
+        if subject_key and dedup_key(row.get("ticker"), row.get("exchange")) == subject_key:
+            return True
+        if subject_base and base_ticker(row.get("ticker")) == subject_base:
+            return True
+    issuer = getattr(outcome, "issuer", None)
+    legal_name = issuer.get("legal_name") if isinstance(issuer, dict) else None
+    if legal_name and same_issuer(
+        SimpleNamespace(ticker=None, name=getattr(subject, "name", None), legal_entity_id=None),
+        SimpleNamespace(ticker=None, name=legal_name, legal_entity_id=None),
+    ):
+        return True
+    return False
 
 
 def validate_get_peer_financials(arguments: dict[str, Any]) -> dict[str, Any]:

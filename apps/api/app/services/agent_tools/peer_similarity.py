@@ -23,8 +23,13 @@ no model:
 * the **size band** — when both market capitalisations are held in the same currency,
   a company more than ``MAX_SIZE_RATIO`` times larger or smaller is excluded: its
   margins and balance sheet are not a comparison;
-* the **same issuer** — a second listing of the subject (same ticker, or the same legal
-  entity) is never its own peer.
+* the **same issuer** — a second listing or share class of the subject (the same legal
+  entity, the same base ticker, or the same legal name) is never its own peer;
+* a **diversified company** — a description naming ``CONGLOMERATE_THEMES`` or more
+  themes — is a peer only with a specific four-digit SIC match, never on one shared
+  theme; without such a match, a candidate whose FIRST-named theme the subject does not
+  name is not a peer either. A theme phrase under a negation ("we do not offer photo
+  editing") is not read.
 
 Every candidate gets a score and its reasons. Below ``PASS_SCORE`` it is excluded as
 "not comparable" and recorded so; when no candidate passes, there is no peer comparison
@@ -54,26 +59,38 @@ SCORE_COMMODITY = 2
 #: nothing about either. Broad on purpose — size alone excludes only the extreme.
 MAX_SIZE_RATIO = 20.0
 
+#: A candidate whose description names this many reviewed themes is a conglomerate: it
+#: is a peer only with a specific (non-broad) four-digit SIC match.
+CONGLOMERATE_THEMES = 3
+
 #: SIC codes that span unrelated businesses, so four digits equal is only a weak signal
 #: and a description (or commodity) must match too. Reviewed list; extend with care.
 BROAD_SIC_CODES: frozenset[str] = frozenset({
     "1000",  # Metal mining — gold, copper, lithium and rare earths alike
     "2834",  # Pharmaceutical preparations
     "2836",  # Biological products — vaccines, gene editing, plasma alike
+    "3841",  # Surgical and medical instruments
+    "3990",  # Miscellaneous manufacturing industries
     "6770",  # Blank checks
+    "6794",  # Patent owners and lessors
+    "6798",  # Real estate investment trusts — data centres, malls, towers alike
     "7370",  # Computer programming, data processing, etc.
     "7371",  # Computer programming services
     "7372",  # Prepackaged software — any packaged-software business
     "7373",  # Computer integrated systems design
     "7374",  # Computer processing, data preparation
+    "7379",  # Computer related services, not elsewhere classified
     "7389",  # Business services, not elsewhere classified
+    "8731",  # Commercial physical and biological research
 })
 
 #: Reviewed business themes: label → phrases (matched on whole words, case-insensitive,
 #: punctuation ignored, so "e-signature" is "e signature"). A theme names a LINE OF
 #: BUSINESS that separates companies inside one canonical industry; generic words
 #: ("software", "cloud", "platform", "AI") are deliberately absent because they match
-#: everyone and so separate no one.
+#: everyone and so separate no one. Nor are single words with an ordinary-English or
+#: legal reading ("defense" of a patent, "watches" as a verb): a one-word phrase is kept
+#: only when it is a term of art.
 BUSINESS_THEMES: dict[str, tuple[str, ...]] = {
     "design and creative software": (
         "creative cloud", "creative software", "creative professionals",
@@ -123,10 +140,11 @@ BUSINESS_THEMES: dict[str, tuple[str, ...]] = {
     ),
     "semiconductors": (
         "semiconductor", "semiconductors", "integrated circuits", "integrated circuit",
-        "wafer", "wafers",
     ),
     "aerospace and defense": (
-        "aerospace", "defense", "defence", "military", "aircraft", "missile", "missiles",
+        "aerospace", "defense contractor", "defense systems", "defense electronics",
+        "defence systems", "military aircraft", "commercial aircraft", "aircraft engines",
+        "missile systems", "missile defense", "fighter jets",
     ),
     "industrial and building automation": (
         "industrial automation", "building automation", "process automation",
@@ -134,7 +152,7 @@ BUSINESS_THEMES: dict[str, tuple[str, ...]] = {
     ),
     "luxury goods": (
         "jewellery", "jewelry", "watchmaking", "luxury goods", "haute horlogerie",
-        "luxury watches", "watches", "watch brands",
+        "luxury watches", "watch brands", "swiss watches",
     ),
     "oil and gas": (
         "oil and gas", "exploration and production", "crude oil", "lng",
@@ -165,23 +183,61 @@ def _normalise(text: str) -> str:
     return " " + " ".join(_WORD.findall(text.lower())) + " "
 
 
-_THEME_PHRASES: dict[str, tuple[str, ...]] = {
-    theme: tuple(_normalise(p) for p in phrases) for theme, phrases in BUSINESS_THEMES.items()
+#: A phrase with one of these within ``NEGATION_WINDOW`` tokens before it is not a
+#: claim about the company: "we do not offer photo editing", "unlike creative software
+#: vendors". The negation carries through a coordinated list ("not … photo editing or
+#: design tools").
+NEGATORS: frozenset[str] = frozenset({"not", "no", "unlike", "never", "nor", "without"})
+NEGATION_WINDOW = 3
+_COORDINATORS: frozenset[str] = frozenset({"or", "and", "nor"})
+
+#: Theme → phrases as token tuples; and first token → (theme, phrase) for one pass.
+_THEME_TOKENS: dict[str, tuple[tuple[str, ...], ...]] = {
+    theme: tuple(tuple(_WORD.findall(p.lower())) for p in phrases)
+    for theme, phrases in BUSINESS_THEMES.items()
 }
+_BY_FIRST_TOKEN: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+for _theme, _phrases in _THEME_TOKENS.items():
+    for _phrase in _phrases:
+        _BY_FIRST_TOKEN.setdefault(_phrase[0], []).append((_theme, _phrase))
 
 
 def business_themes(text: str | None) -> frozenset[str]:
-    """The reviewed themes a description names. Empty when there is no description."""
+    """The reviewed themes a description names, not negated. Empty without a description."""
+    return frozenset(themes_in_order(text))
+
+
+def themes_in_order(text: str | None) -> list[str]:
+    """The themes in the order the description first names them (not negated).
+
+    One left-to-right pass over the tokens: each token is looked up as a phrase's first
+    word (a dict lookup), so the work is linear in the description's length.
+    """
     if not text:
-        return frozenset()
-    norm = _normalise(str(text)[:MAX_DESCRIPTION_CHARS])
-    return frozenset(
-        theme for theme, phrases in _THEME_PHRASES.items() if any(p in norm for p in phrases)
-    )
+        return []
+    tokens = _WORD.findall(str(text)[:MAX_DESCRIPTION_CHARS].lower())
+    found: dict[str, None] = {}
+    last_negated_end = -10  # end index (exclusive) of the last negated phrase
+    for i, token in enumerate(tokens):
+        for theme, phrase in _BY_FIRST_TOKEN.get(token, ()):
+            end = i + len(phrase)
+            if tuple(tokens[i:end]) != phrase:
+                continue
+            gap = tokens[last_negated_end:i] if last_negated_end <= i else []
+            negated = any(t in NEGATORS for t in tokens[max(0, i - NEGATION_WINDOW):i]) or (
+                0 < len(gap) <= 2 and all(t in _COORDINATORS for t in gap)
+            ) or last_negated_end == i
+            if negated:
+                last_negated_end = end
+            else:
+                found.setdefault(theme, None)
+    return list(found)
 
 
 def _sic(company: Any) -> str | None:
     raw = str(getattr(company, "sic_code", None) or "").strip()
+    if raw.endswith(".0"):  # a code that passed through a float ("7372.0")
+        raw = raw[:-2]
     digits = "".join(ch for ch in raw if ch.isdigit())
     return digits.zfill(4) if digits and len(digits) <= 4 else None
 
@@ -198,12 +254,42 @@ def _market_cap(company: Any) -> tuple[float, str] | None:
     return number, currency
 
 
-def _same_issuer(subject: Any, candidate: Any) -> bool:
+#: A share-class suffix on a ticker: "BRK-B", "HEI.A", "BF/B". One letter only, so a
+#: genuine ticker ending in a letter after a separator is the rare case it costs.
+_CLASS_SUFFIX = re.compile(r"[-./][A-Z]$")
+
+
+def base_ticker(ticker: Any) -> str:
+    """The ticker without a share-class suffix, upper-cased: "BRK-B" → "BRK"."""
+    raw = str(ticker or "").strip().upper()
+    return _CLASS_SUFFIX.sub("", raw) if len(raw) > 2 else raw
+
+
+def _issuer_name(name: Any) -> str:
+    from app.services.discovery.identity import normalised_name
+
+    return normalised_name(str(name)[:300]) if name else ""
+
+
+def same_issuer(subject: Any, candidate: Any) -> bool:
+    """Another listing or share class of the subject (ADR-061: issuer is not security).
+
+    The same legal entity; the same base ticker once a class suffix is stripped
+    ("BRK-A" / "BRK-B", "HEI" / "HEI.A"); or the same legal name once legal forms are
+    removed ("Cellectis S.A." on Euronext and Nasdaq, "Barrick Gold Corporation" on the
+    TSX and NYSE).
+    """
     entity = getattr(subject, "legal_entity_id", None)
     if entity is not None and entity == getattr(candidate, "legal_entity_id", None):
         return True
-    ticker = str(getattr(subject, "ticker", None) or "").strip().upper()
-    return bool(ticker) and ticker == str(getattr(candidate, "ticker", None) or "").strip().upper()
+    ticker = base_ticker(getattr(subject, "ticker", None))
+    if ticker and ticker == base_ticker(getattr(candidate, "ticker", None)):
+        return True
+    name = _issuer_name(getattr(subject, "name", None))
+    return bool(name) and name == _issuer_name(getattr(candidate, "name", None))
+
+
+_same_issuer = same_issuer
 
 
 @dataclass(frozen=True)
@@ -269,7 +355,8 @@ def assess_peer(
         reasons.append("size not compared (market capitalisation not held in one currency)")
 
     subject_themes = business_themes(getattr(subject, "description", None))
-    candidate_themes = business_themes(getattr(candidate, "description", None))
+    candidate_order = themes_in_order(getattr(candidate, "description", None))
+    candidate_themes = frozenset(candidate_order)
     shared = sorted(subject_themes & candidate_themes)
     if subject_themes and candidate_themes and not shared:
         return PeerAssessment(
@@ -303,6 +390,30 @@ def assess_peer(
     else:
         reasons.append("SIC not compared (not held for both)")
 
+    specific_sic = bool(
+        subject_sic and subject_sic == candidate_sic and subject_sic not in BROAD_SIC_CODES
+    )
+    if shared and len(candidate_themes) >= CONGLOMERATE_THEMES and not specific_sic:
+        # A diversified company names many lines of business; one of them matching is
+        # not a comparable for a single-line company unless its SIC says so too.
+        return PeerAssessment(
+            False, 0,
+            (*reasons,
+             f"a diversified business ({len(candidate_themes)} lines of business: "
+             f"{', '.join(sorted(candidate_themes))}) sharing only {', '.join(shared)}"),
+            "not comparable: a diversified company matched on one line of business only",
+        )
+    if shared and not specific_sic and candidate_order[0] not in subject_themes:
+        # The candidate's first-named business is not the subject's: a search company
+        # that also mentions "content creation" is not a design-software peer.
+        return PeerAssessment(
+            False, 0,
+            (*reasons,
+             f"its first-named line of business ({candidate_order[0]}) is not one the "
+             f"subject names; shared only {', '.join(shared)}"),
+            "not comparable: its main line of business differs",
+        )
+
     if shared:
         score += SCORE_THEME * min(len(shared), 2)
         business = True
@@ -328,11 +439,15 @@ def assess_peer(
 __all__ = [
     "BROAD_SIC_CODES",
     "BUSINESS_THEMES",
+    "CONGLOMERATE_THEMES",
     "EXCLUSION_NO_MATCH",
     "EXCLUSION_UNVERIFIED",
     "MAX_SIZE_RATIO",
     "PASS_SCORE",
     "PeerAssessment",
     "assess_peer",
+    "base_ticker",
     "business_themes",
+    "same_issuer",
+    "themes_in_order",
 ]
