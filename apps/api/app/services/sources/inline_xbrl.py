@@ -10,7 +10,12 @@ PURE AND DEFENSIVE
 ==================
 * Bytes in, facts out. No network, no database, no logging of content.
 * Bounded: input above ``MAX_INLINE_XBRL_BYTES`` is refused before parsing; at most
-  ``MAX_FACTS`` facts and ``MAX_CONTEXTS`` contexts are kept.
+  ``MAX_FACTS`` facts and ``MAX_CONTEXTS`` contexts are kept. Work per text chunk is
+  bounded too: at most ``MAX_OPEN_FACTS`` fact elements are tracked as open at once
+  (deeper ones are ignored and the document marked truncated), text is collected only
+  for numeric facts and the ``dei:`` fields, and at most ``MAX_FACT_TEXT`` characters of
+  it per fact — a longer "number" is unreadable and skipped. A crafted document of nested
+  or unclosed elements therefore costs linear time and bounded memory.
 * The stdlib HTML tokenizer is used, never an XML parser: it expands only the fixed HTML
   character references, never a DTD-declared or external entity, and it opens nothing.
 * ``ix:nonNumeric`` is ignored except the ``dei:`` document-period fields; a
@@ -32,6 +37,19 @@ from html.parser import HTMLParser
 MAX_INLINE_XBRL_BYTES = 40_000_000
 MAX_FACTS = 60_000
 MAX_CONTEXTS = 20_000
+#: Fact elements tracked as open at once; real filings nest one or two deep.
+MAX_OPEN_FACTS = 64
+#: Characters of text collected per numeric fact or ``dei:`` field.
+MAX_FACT_TEXT = 256
+#: Characters collected for one context date, member or unit measure.
+_MAX_FIELD_TEXT = 256
+#: Dimensions kept per context, measures per unit part, ``dei:`` elements per document.
+_MAX_DIMENSIONS = 64
+_MAX_MEASURES = 16
+_MAX_DEI_ELEMENTS = 256
+#: Significant digits a displayed number may carry. Every real figure fits in far fewer;
+#: a longer run of digits is not a figure and would overflow a float downstream.
+MAX_SIGNIFICANT_DIGITS = 30
 #: Bound on a scale attribute: 10^±20 covers every real filing.
 _MAX_ABS_SCALE = 20
 
@@ -39,7 +57,7 @@ REFUSED_TOO_LARGE = "too_large"
 REFUSED_UNREADABLE = "unreadable"
 
 _MARKER_RE = re.compile(rb"<[A-Za-z_][\w.-]*:nonfraction\b", re.IGNORECASE)
-_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)?$")
+_NUMBER_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 _DEI_FIELDS = frozenset(
     {
@@ -49,8 +67,18 @@ _DEI_FIELDS = frozenset(
         "dei:documenttype",
         "dei:currentfiscalyearenddate",
         "dei:amendmentflag",
+        "dei:entitycentralindexkey",
     }
 )
+#: Transformation formats read, by normalised local name (lower case, no ``-``/``_``),
+#: across Transformation Registries 1-5 and ``ixt-sec``. Anything else is skipped: a
+#: format read with the wrong separator rule is a wrong number, not a missing one.
+_DOT_DECIMAL_FORMATS = frozenset({"", "numdotdecimal", "numcommadot", "numspacedot"})
+_COMMA_DECIMAL_FORMATS = frozenset(
+    {"numcommadecimal", "numdotcomma", "numspacecomma", "numcomma"}
+)
+_ZERO_FORMATS = frozenset({"fixedzero", "zerodash"})
+_WORD_FORMATS = frozenset({"numwordsen", "numworden"})
 _WORD_ZEROS = frozenset({"no", "none", "nil", "zero", "-", "—", "–"})
 
 
@@ -101,6 +129,8 @@ class InlineXbrlDocument:
     #: The document's reporting period end: the context end of
     #: ``dei:DocumentPeriodEndDate``, else its printed date.
     period_end: date | None = None
+    #: The start of that context when it is a span (the year-to-date start), else None.
+    period_start: date | None = None
     fiscal_year_focus: int | None = None
     #: ``FY`` / ``Q1``–``Q4`` / ``H1`` / ``H2``, upper-cased.
     fiscal_period_focus: str | None = None
@@ -149,18 +179,20 @@ def _parse_number(text: str, fmt: str | None) -> Decimal | None:
     """The displayed magnitude of a ``nonFraction``, per its transformation format."""
     raw = " ".join(text.split())
     kind = (fmt or "").rpartition(":")[2].lower().replace("-", "").replace("_", "")
-    if "zero" in kind or kind == "zerodash":
+    if kind in _ZERO_FORMATS:
         return Decimal(0)
-    if "words" in kind:
+    if kind in _WORD_FORMATS:
         return Decimal(0) if raw.lower() in _WORD_ZEROS else None
-    if kind and not kind.startswith("num"):
-        return None  # an unknown transformation is never guessed
-    compact = raw.replace(" ", "").replace(" ", "").replace(" ", "")
-    if "commadecimal" in kind:
+    compact = "".join(raw.split()).replace("\u00a0", "").replace("\u202f", "")
+    if kind in _COMMA_DECIMAL_FORMATS:
         compact = compact.replace(".", "").replace("'", "").replace(",", ".")
-    else:
+    elif kind in _DOT_DECIMAL_FORMATS:
         compact = compact.replace(",", "").replace("'", "")
+    else:
+        return None  # an unknown transformation is never guessed
     if not _NUMBER_RE.match(compact):
+        return None
+    if len(compact.replace(".", "").lstrip("0")) > MAX_SIGNIFICANT_DIGITS:
         return None
     try:
         return Decimal(compact)
@@ -183,8 +215,14 @@ class _Collector(HTMLParser):
         self._unit_part = "num"
         self._target: str | None = None
         self._buf: list[str] = []
+        self._buf_len = 0
         self._member_axis: str | None = None
+        #: Open fact elements, innermost last; never longer than ``MAX_OPEN_FACTS``.
         self._open: list[dict] = []
+        #: The open builders that collect text (numeric facts and ``dei:`` fields).
+        self._collecting: list[dict] = []
+        #: Fact elements opened beyond ``MAX_OPEN_FACTS`` and not yet closed.
+        self._ignored = 0
         self._hidden = 0
         self._exclude = 0
 
@@ -206,7 +244,7 @@ class _Collector(HTMLParser):
             self._member_axis = a.get("dimension", "")
             self._begin("member")
         elif self._ctx is not None and local == "typedmember":
-            self._ctx["dims"].append((a.get("dimension", ""), "typed"))
+            self._add_dimension((a.get("dimension", ""), "typed"))
         elif local == "unit" and prefix and self._ctx is None:
             self._unit = {"id": a.get("id", ""), "num": [], "den": []}
             self._unit_part = "num"
@@ -217,19 +255,20 @@ class _Collector(HTMLParser):
         elif self._unit is not None and local == "measure":
             self._begin("measure")
         elif local == "nonfraction" and prefix:
-            self._open.append({
+            self._push({
                 "kind": "num", "name": a.get("name", ""),
                 "context": a.get("contextref", ""), "unit": a.get("unitref", ""),
                 "decimals": a.get("decimals") or None, "scale": a.get("scale", ""),
                 "format": a.get("format", ""), "sign": a.get("sign", ""),
                 "nil": a.get("xsi:nil", "").lower() == "true",
-                "hidden": self._hidden > 0, "text": [],
+                "hidden": self._hidden > 0, "text": [], "len": 0, "overflow": False,
             })
         elif local == "nonnumeric" and prefix:
             name = a.get("name", "")
-            self._open.append({
+            self._push({
                 "kind": "dei" if name.lower() in _DEI_FIELDS else "skip",
                 "name": name, "context": a.get("contextref", ""), "text": [],
+                "len": 0, "overflow": False,
             })
 
     def handle_endtag(self, tag: str) -> None:
@@ -248,15 +287,21 @@ class _Collector(HTMLParser):
             key = {"instant": "instant", "startdate": "start", "enddate": "end"}[local]
             self._ctx[key] = _parse_date(self._end())
         elif local == "explicitmember" and self._ctx is not None:
-            self._ctx["dims"].append((self._member_axis or "", self._end().strip()))
+            self._add_dimension((self._member_axis or "", self._end().strip()))
             self._member_axis = None
         elif local == "measure" and self._unit is not None:
-            self._unit[self._unit_part].append(self._end().strip())
+            measures = self._unit[self._unit_part]
+            measure = self._end().strip()
+            if len(measures) < _MAX_MEASURES:
+                measures.append(measure)
         elif local == "unit" and prefix and self._unit is not None:
             if self._unit["id"]:
                 self.units[self._unit["id"]] = self._unit
             self._unit = None
         elif local == "nonfraction" and prefix:
+            if self._ignored:
+                self._ignored -= 1
+                return
             builder = self._pop("num")
             if builder is not None:
                 if len(self.raw_facts) < MAX_FACTS:
@@ -264,37 +309,77 @@ class _Collector(HTMLParser):
                 else:
                     self.truncated = True
         elif local == "nonnumeric" and prefix:
+            if self._ignored:
+                self._ignored -= 1
+                return
             builder = self._pop(None)
             if builder is not None and builder["kind"] == "dei":
-                self.dei_raw.append(builder)
+                if len(self.dei_raw) < _MAX_DEI_ELEMENTS:
+                    self.dei_raw.append(builder)
 
     def handle_data(self, data: str) -> None:
-        if self._target is not None:
-            self._buf.append(data)
+        if self._target is not None and self._buf_len < _MAX_FIELD_TEXT:
+            self._buf.append(data[: _MAX_FIELD_TEXT - self._buf_len])
+            self._buf_len += len(self._buf[-1])
         if self._exclude:
             return
-        for builder in self._open:
-            builder["text"].append(data)
+        for builder in self._collecting:
+            if builder["overflow"]:
+                continue
+            room = MAX_FACT_TEXT - builder["len"]
+            if len(data) > room and data[room:].strip():
+                # More text than any figure or dei field carries: unreadable.
+                builder["overflow"] = True
+                builder["text"] = []
+                continue
+            chunk = data[:room] if len(data) > room else data
+            if chunk:
+                builder["text"].append(chunk)
+                builder["len"] += len(chunk)
 
     # -- helpers --------------------------------------------------------- #
 
     def _begin(self, target: str) -> None:
         self._target = target
         self._buf = []
+        self._buf_len = 0
 
     def _end(self) -> str:
         text = "".join(self._buf)
         self._target = None
         self._buf = []
+        self._buf_len = 0
         return text
+
+    def _add_dimension(self, member: tuple[str, str]) -> None:
+        if self._ctx is None:
+            return
+        if len(self._ctx["dims"]) < _MAX_DIMENSIONS:
+            self._ctx["dims"].append(member)
+        else:
+            self.truncated = True
+
+    def _push(self, builder: dict) -> None:
+        if self._ignored or len(self._open) >= MAX_OPEN_FACTS:
+            # Deeper than any real filing nests: ignored, so a crafted document of
+            # unclosed elements cannot make every text chunk cost O(open elements).
+            self._ignored += 1
+            self.truncated = True
+            return
+        self._open.append(builder)
+        if builder["kind"] != "skip":
+            self._collecting.append(builder)
 
     def _pop(self, kind: str | None) -> dict | None:
         for index in range(len(self._open) - 1, -1, -1):
             builder = self._open[index]
-            if kind is None and builder["kind"] in ("dei", "skip"):
-                return self._open.pop(index)
-            if kind is not None and builder["kind"] == kind:
-                return self._open.pop(index)
+            if (kind is None and builder["kind"] in ("dei", "skip")) or (
+                kind is not None and builder["kind"] == kind
+            ):
+                self._open.pop(index)
+                if builder["kind"] != "skip":
+                    self._collecting = [b for b in self._collecting if b is not builder]
+                return builder
         return None
 
 
@@ -334,7 +419,10 @@ def parse_inline_xbrl(
     document.truncated = collector.truncated
 
     for builder in collector.raw_facts:
-        fact = _resolve(builder, collector)
+        try:
+            fact = _resolve(builder, collector)
+        except ArithmeticError:  # one malformed tag never costs the document's facts
+            fact = None
         if fact is None:
             document.skipped += 1
             continue
@@ -349,6 +437,8 @@ def parse_inline_xbrl(
             document.period_end = ctx.get("end") or ctx.get("instant") or (
                 _parse_printed_date(text)
             )
+            if ctx.get("end") is not None and not ctx.get("dims"):
+                document.period_start = ctx.get("start")
     year = document.dei.get("dei:documentfiscalyearfocus", "").strip()
     if re.fullmatch(r"(?:19|20)\d{2}", year):
         document.fiscal_year_focus = int(year)
@@ -360,7 +450,7 @@ def parse_inline_xbrl(
 
 
 def _resolve(builder: dict, collector: _Collector) -> InlineXbrlFact | None:
-    if builder["nil"] or not builder["name"]:
+    if builder["nil"] or builder.get("overflow") or not builder["name"]:
         return None
     ctx = collector.contexts.get(builder["context"])
     if ctx is None:
@@ -400,7 +490,10 @@ def _resolve(builder: dict, collector: _Collector) -> InlineXbrlFact | None:
 __all__ = [
     "MAX_CONTEXTS",
     "MAX_FACTS",
+    "MAX_FACT_TEXT",
     "MAX_INLINE_XBRL_BYTES",
+    "MAX_OPEN_FACTS",
+    "MAX_SIGNIFICANT_DIGITS",
     "REFUSED_TOO_LARGE",
     "REFUSED_UNREADABLE",
     "InlineXbrlDocument",

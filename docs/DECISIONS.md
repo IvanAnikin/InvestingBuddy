@@ -7679,26 +7679,30 @@ Two structured sources were already in hand and unread:
 ### Decision
 1. **One reviewed concept map** (`app/integrations/xbrl_statement_concepts.py`) is shared
    by both readers. Each mapped concept gives a statement-view field, a normalizer field,
-   the issuer's own term, a priority, a kind (flow / instant), and a spend or ratio flag.
-   - Issuer terminology is kept: `ifrs-full:ProfitLoss` is "Profit (loss)";
+   the taxonomy's term for it, a priority, a kind (flow / instant), and a spend or ratio
+   flag.
+   - The taxonomy's terminology is kept (published as `taxonomy_label`; the filing's own
+     label linkbase is not read, so it is never called the issuer's term):
+     `ifrs-full:ProfitLoss` is "Profit (loss)";
      `ProfitLossFromOperatingActivities` is "Operating profit (loss)" and is never called
      EBIT.
    - No tag is total debt: IFRS `Borrowings` fills the `borrowings` line only.
    - An IFRS concept with no faithful US-GAAP counterpart is left unmapped.
-   - Bank lines are captured as tagged: `InterestIncomeExpenseNet`, provision for credit
-     losses, allowance, `Deposits`, net charge-offs and CET1 ratio. They go to a new
+   - Bank lines are captured as tagged: provision for credit losses, allowance,
+     `Deposits`, net charge-offs, and `InterestIncomeExpenseNet` only in a filing that
+     tags Group `Deposits` (see Review amendments). They go to a new
      `BANK_STATEMENT_FIELDS` set in `primary_fact_parser`. The names follow the banking
      playbook's metric keys, and the set is part of `ISSUER_STATEMENT_FIELDS`.
 2. **IFRS companyfacts** (`normalize_company_facts`). When `us-gaap` carries no headline
    statement concept (revenue, net income or assets) and `ifrs-full` is present:
    - The statements are read from `ifrs-full`, in the reporting currency. That currency
-     is the one most used by the annual-form entries of Revenue, ProfitLoss, Assets and
-     Equity. A tie normalizes nothing.
+     is the one of the most recently filed annual report, counted over its Revenue,
+     ProfitLoss, Assets and Equity entries. A tie inside that filing normalizes nothing.
    - The existing period selection, own-period rule, prior-year comparative and
      consistency check apply unchanged.
    - Units are `<CUR>_m`. Nothing is converted.
-   - `taxonomy` and `issuer_labels` are recorded, and each datapoint note names the
-     `ifrs-full` concept and the issuer's term.
+   - `taxonomy` and `taxonomy_labels` are recorded, and each datapoint note names the
+     `ifrs-full` concept and the taxonomy's term.
    - Debt: `Borrowings` is used when tagged, checked against current + non-current
      borrowings when both legs are tagged; otherwise the two legs are added. One leg alone
      is withheld (the ADR-067 partial-sum rule), and so is a total that disagrees with its
@@ -7745,13 +7749,14 @@ Two structured sources were already in hand and unread:
      qualified by its axis. Several members, or a typed member, are skipped.
    - **Values.** The currency comes from `unitRef`, and the scale as printed (`thousand`
      / `million` / `billion`). Spend lines must be positive; a negative tagged spend is
-     skipped, never flipped. A ratio (CET1) is stored as a percentage.
+     skipped, never flipped. A ratio (`pure` unit) would be stored as a percentage; no
+     ratio concept is mapped today.
    - **One reading per figure.** The concept priority decides between two concepts for
      one field (`NetIncomeLoss` over `ProfitLoss`). Two readings of one concept that
      disagree beyond their stated `decimals` fill nothing.
    - Provenance: `table_location = ixbrl:<concept>@<context>`, extraction method
      `inline_xbrl`, confidence 0.97, validated, `needs_human_review` kept. The statements
-     view's datapoint adds `xbrl_concept` and `issuer_label`.
+     view's datapoint adds `xbrl_concept` and `taxonomy_label`.
    - Up to 600 facts per document are kept, Group first.
    - A text reading of a tagged figure (same field, period and scope, or an unknown scope
      beside a tagged Group figure) is dropped in favour of the tag.
@@ -7777,9 +7782,90 @@ Two structured sources were already in hand and unread:
      fails, the filing still answers READY from what is held.
    - This is what makes Cellectis's held 6-K/A and PayPal's / JPM's held 10-Q yield
      facts on the next run.
-7. **Banks: no industrial derivation.** When bank lines fill a slot set,
-   `_derived_runway` records the cash runway as `not_meaningful` instead of computing it.
-   Neither path derives FCF or EBITDA from bank lines.
+7. **Banks: no industrial derivation.** When Group deposits fill a slot (and only
+   then), `_derived_runway` records the cash runway as `not_meaningful` instead of
+   computing it. Neither path derives FCF or EBITDA from bank lines.
+
+### Review amendments (PR #324)
+A security scan and a correctness review of the first commit found these; all are fixed
+in the same PR.
+
+**Security.**
+- **F1 — parser cost.** Every text chunk was appended to every open fact element, and
+  the open stack was unbounded: 1.2 MB of nested text blocks took 36 s / 909 MB. Now at
+  most `MAX_OPEN_FACTS` = 64 elements are tracked (deeper ones are ignored and the
+  document is marked truncated). Text is collected only for numeric facts and the
+  `dei:` fields, and at most `MAX_FACT_TEXT` = 256 characters per fact; a longer
+  "number" is skipped. Context dates, members, measures, dimensions and `dei:` elements
+  are capped too. Both repros now cost what the stdlib tokenizer itself costs for those
+  bytes, with peak memory under 2 MB.
+- **F2 — infinite values.** A displayed number has at most 30 significant digits, and
+  `_value_fields` refuses a non-finite float.
+- **F3 — one bad tag.** An `ArithmeticError` while resolving one fact skips that fact
+  only; `decimals` outside ±30 is read as "exact".
+- **F4.** `ExtractedFact.value_text` is clipped to 1,000 characters on persistence.
+- **F5.** Only ASCII digits are a number.
+- **F6 — bounded re-reads.** See decision 6, as amended below.
+
+**Correctness.**
+- **B1 — segment scope.** One member makes a segment only on a segment axis:
+  `StatementBusinessSegmentsAxis`, `ifrs-full:SegmentsAxis`, `StatementGeographicalAxis`
+  (`us-gaap` / `srt`) or `srt:ProductOrServiceAxis`. Every other axis (equity components,
+  collateral, VIEs, consolidation items, restatements, scenarios, fair-value bases,
+  parent-only, any extension axis) is skipped. On a business-segment axis, a generic
+  member ("Reportable Segment" of a single-segment filer, corporate, reconciling items,
+  eliminations) is skipped too. Real 10-Qs had produced JPM "Asset Pledged As
+  Collateral" total assets and PYPL "Reclassification out of AOCI" net income.
+- **B2 — bank status.** `us-gaap:InterestIncomeExpenseNet` is "Interest income
+  (expense), net" in an industrial, media or biotech filing (Disney −1,037m). It fills
+  `net_interest_income` only in a document that tags Group `us-gaap:Deposits`
+  (`bank_only`). A filer is a deposit-taking bank, and its runway `not_meaningful`, only
+  when Group deposits are reported — never because of a provision or an allowance
+  (Caterpillar's financing arm). `InterestIncomeExpenseAfterProvisionForLoanLoss` is not
+  net interest income and is unmapped. `RevenuesNetOfInterestExpense` fills revenue,
+  labelled "Revenues, net of interest expense", below every other revenue concept.
+- **CET1 dropped.** No `us-gaap` CET1 concept appears in the JPM, BAC or WFC
+  companyfacts; JPM tags an extension concept, and extension concepts are never mapped.
+  The `cet1_ratio` field stays (text extraction may fill it); no tag fills it.
+- **M1 — the frame is checked.** The `DocumentPeriodEndDate` context must be a span
+  whose length matches the focus (Q1 3, Q2/H1 6, Q3 9, FY/Q4/H2 12 months, ±10 days),
+  and the fiscal-year focus must be the year the fiscal year ends in (or the year
+  before, for a year ending January–March). Otherwise nothing is produced. An H1 6-K
+  tagged `FY` had relabelled H1 as H2; a 10-Q with a stale year focus had labelled
+  Q1 2026 as Q1 2025.
+- **M2.** A context ending more than 10 days after the document period end is skipped.
+- **M3 — IFRS currency.** See decision 2, as amended above: the latest annual filing
+  decides, not the historical majority.
+- **TR1 — formats.** Only the known separator formats are read: dot-decimal
+  (`numdotdecimal`, `numcommadot`, `numspacedot`, none) and comma-decimal
+  (`numcommadecimal`, `numdotcomma`, `numspacecomma`, `numcomma`), plus the zero and
+  zero-word formats. `numdotcomma` "1.234,5" had been read as 1.2345. Anything else is
+  skipped.
+- **The filer is the subject.** A document whose `dei:EntityCentralIndexKey` differs
+  from the CIK in its Archives address produces nothing.
+- **One equity definition.** `us-gaap` total equity is `StockholdersEquity` only; the
+  including-NCI concept is never a fallback (HON's statement of equity tags it at
+  opening dates, which had mixed two definitions across periods). `ifrs-full` total
+  equity is `Equity` only; `EquityAttributableToOwnersOfParent` fills nothing and is not
+  a normalizer alias. A conflict between two different tagged concepts is reported as
+  "different measures", not as the issuer stating one figure differently.
+- **IFRS borrowings legs** are `CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings`
+  and `NoncurrentPortionOfNoncurrentBorrowings` (the first commit used names that are
+  not `ifrs-full` elements). Not yet seen in a live filing: the Cellectis sample tags no
+  borrowings.
+- **Regeneration reuse.** `_requires_full_reextraction` is true for an SEC Archives
+  document stamped below 21 with no tagged fact, so an excerpts-only replay can no
+  longer restamp it to 21 without reading its tags.
+- **Decision 6, amended — bounded re-reads.**
+  - The acquirer is handed the held document's own file name when the caller names
+    none, so a held 6-K exhibit is re-read, not the filing's cover page.
+  - Every attempt is recorded, with its outcome, as an ingestion attempt
+    (`discovery_strategy = ixbrl_reread_v21`, under the ingestion-attempt gates), and a
+    recorded attempt is never repeated. So a failed fetch, or a document with no tags,
+    costs one budget slot once per pipeline version.
+  - Whether a document carries iXBRL is not known before it is fetched, so at most one
+    re-read happens per database session (one run).
+  - A re-read that raises, or cannot run, answers READY from the held copy.
 
 ### Not changed / known limits
 - **Rebase note.** PR #323 (ADR-080) also bumps the pipeline version to 21. Whichever
@@ -7790,14 +7876,16 @@ Two structured sources were already in hand and unread:
   quarter wins a current-period slot. A 10-Q's Q2 revenue sits beside its H1 cash flow.
   The runway uses one basis only, and a Q3 10-Q's nine-month cash flow is skipped, so it
   has no current-period runway.
-- The CET1 and net charge-off concept names are mapped as tagged where present. JPM-style
-  dimensional capital-ratio facts are segment-scoped and never fill a Group slot.
+- The net charge-off concept name is mapped as tagged where present; it is not verified
+  against a live bank filing. No CET1 concept is mapped (Review amendments).
+- Revenue disaggregated on `srt:ProductOrServiceAxis` is kept as a segment-scoped fact
+  ("Subscription Revenue"), as the review's axis list allows; it never fills a Group slot.
 - Inline XBRL from non-SEC hosts (ESEF annual reports on issuer sites) is not read.
 - Per-share figures have no statements-view field. EPS comes only from the normalizer.
 - No live run yet. Acceptance needs a Cellectis, PayPal and JPM rerun after deploy.
 
 ### Tests
-`tests/test_qa_closure_structured_statement_facts.py` (36 tests) covers:
+`tests/test_qa_closure_structured_statement_facts.py` (91 tests) covers:
 - the IFRS companyfacts fixture (trimmed Cellectis payload) with IFRS terms;
 - 6-K/A interim selection;
 - a non-USD filer kept in its own currency and refused by the USD consumers;
@@ -7808,4 +7896,11 @@ Two structured sources were already in hand and unread:
   concept priority, conflicting readings;
 - a US 10-Q snippet and a bank snippet (no runway, no FCF / EBITDA);
 - the SEC-only hook, the SQLite persistence → statements view round trip, and the
-  state-A re-read rules.
+  state-A re-read rules;
+- every review item: both F1 repros under 1 s and 20 MB, the open-stack and text bounds,
+  digit / ASCII / decimals / per-fact arithmetic guards, the `value_text` clip, the
+  segment-axis allowlist (13 non-segment and 5 segment cases), bank status and the
+  unmapped bank concepts, the frame checks and future contexts, the latest-filing IFRS
+  currency, the entity check, one equity definition and the conflict note,
+  `taxonomy_label`, the regeneration trigger, the version pin, and the bounded re-read
+  (held document name, once per version, once per run, READY on failure).

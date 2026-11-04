@@ -7,12 +7,23 @@ Two readers use it, so they can never disagree about what a concept means:
 * ``services.sources.inline_xbrl_facts`` reads the ``ix:nonFraction`` facts inside a held
   filing document and stores them as statement facts in the issuer statements view.
 
-THE ISSUER'S WORDS ARE KEPT
-===========================
-``label`` is the issuer's own term for the line: ``ifrs-full:ProfitLoss`` is
-"Profit (loss)", not "net income"; ``ifrs-full:ProfitLossFromOperatingActivities`` is
-"Operating profit (loss)" and is never called EBIT. The field name is only the slot a
-figure fills; the label travels with the figure.
+THE TAXONOMY'S WORDS ARE KEPT
+=============================
+``label`` is the TAXONOMY's term for the concept, not the filing's own caption (the
+filing's label linkbase is not read): ``ifrs-full:ProfitLoss`` is "Profit (loss)", not
+"net income"; ``ifrs-full:ProfitLossFromOperatingActivities`` is "Operating profit (loss)"
+and is never called EBIT. The field name is only the slot a figure fills; the label
+travels with the figure and is published as ``taxonomy_label``, never as the issuer's
+own words.
+
+ONE DEFINITION PER FIELD
+========================
+Where a taxonomy offers two definitions of one line (equity of the parent vs. equity
+including non-controlling interests), only ONE of them fills the field. A filing tags the
+other at periods where it does not tag the first (a statement of equity's opening
+balances), so a fallback would mix two definitions across periods of one series.
+``us-gaap`` total equity is ``StockholdersEquity``; ``ifrs-full`` total equity is
+``Equity``, the statement-of-financial-position total every IFRS filer tags.
 
 WHAT IS DELIBERATELY ABSENT
 ===========================
@@ -21,6 +32,16 @@ WHAT IS DELIBERATELY ABSENT
 * An IFRS concept with no faithful US-GAAP counterpart is not forced onto one.
 * Per-share figures in the statements view: it has no per-share field. The normalizer
   reads EPS from its own aliases.
+* A CET1 ratio. No ``us-gaap`` concept for it is tagged by the banks sampled (JPM, BAC,
+  WFC companyfacts): JPM tags an extension concept, and extension concepts are never
+  mapped. With no standard concept to read, the field is left unfilled.
+* ``us-gaap:InterestIncomeExpenseNet`` as net interest income for a non-bank.
+  Industrials, media and biotech filers tag it for "Interest income (expense), net" — a
+  below-the-line item, not a bank's net interest income. It fills the
+  ``net_interest_income`` field ONLY in a document that also tags Group ``Deposits``
+  (``bank_only``), and its label stays the taxonomy's "Interest income (expense), net".
+* ``us-gaap:InterestIncomeExpenseAfterProvisionForLoanLoss``: net interest income AFTER
+  provisions is not net interest income, so it fills nothing.
 
 Pure data. No imports from the rest of the application.
 """
@@ -43,7 +64,7 @@ class StatementConcept:
     statement_field: str | None
     #: The ``NormalizedSecFinancials`` attribute, or ``None``.
     normalizer_field: str | None
-    #: The issuer's own term for the line.
+    #: The taxonomy's term for the concept (not the filing's own caption).
     label: str
     #: Lower wins when two concepts of one document fill one field for one period.
     priority: int
@@ -52,6 +73,8 @@ class StatementConcept:
     spend: bool = False
     #: A ratio (``pure`` unit), stored as a percentage.
     ratio: bool = False
+    #: Read only from a document that tags Group ``us-gaap:Deposits`` (a bank's filing).
+    bank_only: bool = False
 
     @property
     def taxonomy(self) -> str:
@@ -72,9 +95,11 @@ def _c(
     *,
     spend: bool = False,
     ratio: bool = False,
+    bank_only: bool = False,
 ) -> StatementConcept:
     return StatementConcept(
-        concept, statement_field, normalizer_field, label, priority, kind, spend, ratio
+        concept, statement_field, normalizer_field, label, priority, kind, spend, ratio,
+        bank_only,
     )
 
 
@@ -115,12 +140,17 @@ STATEMENT_CONCEPTS: tuple[StatementConcept, ...] = (
        "Total current liabilities", 1, N),
     _c("us-gaap:StockholdersEquity", "total_equity", "shareholders_equity",
        "Total stockholders' equity", 1, N),
+    # A different definition: never a fallback for StockholdersEquity (module docstring).
     _c("us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
-       "total_equity", "shareholders_equity",
+       None, "shareholders_equity",
        "Total equity including noncontrolling interests", 2, N),
     # ── US GAAP, banks (captured as tagged; nothing derived from them) ─────
+    # Bank status is never inferred from one of these lines: issuer_financials treats a
+    # filer as a deposit-taking bank only when its Group ``Deposits`` are tagged.
     _c("us-gaap:InterestIncomeExpenseNet", "net_interest_income", None,
-       "Net interest income", 1, F),
+       "Interest income (expense), net", 1, F, bank_only=True),
+    _c("us-gaap:RevenuesNetOfInterestExpense", "revenue", "revenue",
+       "Revenues, net of interest expense", 5, F),
     _c("us-gaap:ProvisionForLoanLeaseAndOtherLosses", "provision_for_credit_losses", None,
        "Provision for credit losses", 1, F),
     _c("us-gaap:ProvisionForLoanLossesExpensed", "provision_for_credit_losses", None,
@@ -133,10 +163,6 @@ STATEMENT_CONCEPTS: tuple[StatementConcept, ...] = (
     _c("us-gaap:FinancingReceivableAllowanceForCreditLossesWriteOffsNet",
        "net_charge_offs", None, "Net charge-offs", 1, F),
     _c("us-gaap:Deposits", "deposits", None, "Deposits", 1, N),
-    _c("us-gaap:CommonEquityTierOneCapitalToRiskWeightedAssets", "cet1_ratio", None,
-       "Common equity tier 1 capital ratio", 1, N, ratio=True),
-    _c("us-gaap:CommonEquityTierOneCapitalRatio", "cet1_ratio", None,
-       "Common equity tier 1 capital ratio", 2, N, ratio=True),
     # ── IFRS (ifrs-full) ────────────────────────────────────────────────────
     _c("ifrs-full:Revenue", "revenue", "revenue", "Revenue", 1, F),
     _c("ifrs-full:RevenueFromContractsWithCustomers", "revenue", "revenue",
@@ -172,13 +198,17 @@ STATEMENT_CONCEPTS: tuple[StatementConcept, ...] = (
     _c("ifrs-full:CurrentLiabilities", "total_current_liabilities", None,
        "Current liabilities", 1, N),
     _c("ifrs-full:Equity", "total_equity", "shareholders_equity", "Total equity", 1, N),
-    _c("ifrs-full:EquityAttributableToOwnersOfParent", "total_equity", "shareholders_equity",
+    # A different definition: never a fallback for Equity (module docstring).
+    _c("ifrs-full:EquityAttributableToOwnersOfParent", None, None,
        "Equity attributable to owners of the parent", 2, N),
     # Borrowings are a balance-sheet LINE, never total debt (see the module docstring).
     _c("ifrs-full:Borrowings", "borrowings", None, "Borrowings", 1, N),
 )
 
 del F, N
+
+#: The concept whose Group presence marks a document as a deposit-taking bank's.
+BANK_MARKER_CONCEPT = "us-gaap:Deposits"
 
 STATEMENT_CONCEPT_BY_QNAME: dict[str, StatementConcept] = {
     c.concept: c for c in STATEMENT_CONCEPTS
@@ -190,8 +220,10 @@ IFRS_EPS_DILUTED: tuple[str, ...] = ("DilutedEarningsLossPerShare",)
 
 #: ``ifrs-full`` borrowings, read by the normalizer for its debt legs (ADR-085 §1).
 IFRS_BORROWINGS = "Borrowings"
-IFRS_CURRENT_BORROWINGS = "CurrentBorrowings"
-IFRS_NONCURRENT_BORROWINGS = "NoncurrentBorrowings"
+#: The two legs IAS 1 presents. Unverified against a live filing: the Cellectis sample tags
+#: no borrowings at all; with neither leg tagged the rule withholds the total (ADR-067).
+IFRS_CURRENT_BORROWINGS = "CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings"
+IFRS_NONCURRENT_BORROWINGS = "NoncurrentPortionOfNoncurrentBorrowings"
 
 
 def aliases_for(taxonomy: str, normalizer_field: str) -> list[str]:
@@ -204,13 +236,16 @@ def aliases_for(taxonomy: str, normalizer_field: str) -> list[str]:
     return [c.local_name for c in sorted(found, key=lambda c: c.priority)]
 
 
-def issuer_label(concept: str) -> str | None:
-    """The issuer's term for a tagged concept (``prefix:LocalName``), if mapped."""
+def taxonomy_label(concept: str) -> str | None:
+    """The taxonomy's term for a tagged concept (``prefix:LocalName``), if mapped.
+
+    Not the filing's own caption: the filing's label linkbase is not read."""
     mapped = STATEMENT_CONCEPT_BY_QNAME.get(concept)
     return mapped.label if mapped else None
 
 
 __all__ = [
+    "BANK_MARKER_CONCEPT",
     "IFRS_BORROWINGS",
     "IFRS_CURRENT_BORROWINGS",
     "IFRS_EPS_BASIC",
@@ -222,5 +257,5 @@ __all__ = [
     "STATEMENT_CONCEPT_BY_QNAME",
     "StatementConcept",
     "aliases_for",
-    "issuer_label",
+    "taxonomy_label",
 ]

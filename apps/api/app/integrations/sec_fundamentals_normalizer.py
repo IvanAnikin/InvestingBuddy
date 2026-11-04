@@ -61,7 +61,7 @@ from app.integrations.xbrl_statement_concepts import (
     IFRS_EPS_DILUTED,
     IFRS_NONCURRENT_BORROWINGS,
     aliases_for,
-    issuer_label,
+    taxonomy_label,
 )
 
 _COMPANY_FACTS_URL = f"{_EDGAR_BASE_URL}/api/xbrl/companyfacts/CIK{{cik}}.json"
@@ -483,7 +483,7 @@ class NormalizedSecFinancials:
     #: ``ifrs-full`` for a filer that tags IFRS (a 20-F / 40-F / 6-K filer).
     taxonomy: str = "us-gaap"
     #: ADR-085 — the issuer's own term per field (``net_income`` → "Profit (loss)").
-    issuer_labels: dict[str, str] = field(default_factory=dict)
+    taxonomy_labels: dict[str, str] = field(default_factory=dict)
 
     # ---- serialization -------------------------------------------------- #
 
@@ -544,7 +544,7 @@ class NormalizedSecFinancials:
                 "period_basis": self.period_basis,
                 "reporting_currency": self.reporting_currency,
                 "taxonomy": self.taxonomy,
-                "issuer_labels": dict(self.issuer_labels),
+                "taxonomy_labels": dict(self.taxonomy_labels),
                 "source_tier": self.source_tier,
                 "source_url": self.source_url,
                 "warnings": list(self.warnings),
@@ -718,12 +718,12 @@ class NormalizedSecFinancials:
         meta = self.field_periods.get(field_name)
         if not meta:
             return fallback
-        label = self.issuer_labels.get(field_name)
+        label = self.taxonomy_labels.get(field_name)
         return (
             f"FY{meta.get('fy')} {meta.get('fp') or ''} period ending "
             f"{meta.get('end')} (form {meta.get('form') or '?'}, "
             f"{meta.get('taxonomy') or self.taxonomy} concept {meta.get('concept')}"
-            + (f", issuer term \"{label}\"" if label else "")
+            + (f", taxonomy label \"{label}\"" if label else "")
             + "). Source tier T2_regulator_or_gov."
         ).strip()
 
@@ -1003,20 +1003,30 @@ def _us_gaap_is_sparse(us_gaap: dict[str, Any]) -> bool:
 
 
 def _ifrs_reporting_currency(ifrs: dict[str, Any]) -> str | None:
-    """The currency an IFRS filer's annual statements are tagged in, or ``None``.
+    """The currency of the filer's most recently FILED annual report, or ``None``.
 
-    Counted over the annual-form entries of the headline concepts; a tie between two
-    currencies is no answer, because guessing would label one currency as another.
+    A filer that changed its presentation currency (EUR → USD) reports in the new one,
+    however many years of the old one its history holds — so the currency is read from
+    the latest annual filing only (ADR-085 review), counted over the headline concepts it
+    tags. A tie between two currencies inside that filing (a convenience translation) is
+    no answer, because guessing would label one currency as another.
     """
-    counts: dict[str, int] = {}
+    annual_entries: list[tuple[str, dict]] = []
     for concept in _IFRS_CURRENCY_PROBES:
         for unit, entries in ((ifrs.get(concept) or {}).get("units") or {}).items():
             if not _CURRENCY_CODE_RE.match(unit):
                 continue
-            annual = sum(1 for e in entries or [] if e.get("form") in _ANNUAL_FORMS)
-            if annual:
-                counts[unit] = counts.get(unit, 0) + annual
-    if not counts:
+            annual_entries.extend(
+                (unit, e) for e in entries or [] if e.get("form") in _ANNUAL_FORMS
+            )
+    if not annual_entries:
+        return None
+    latest_filed = max(str(e.get("filed") or "") for _unit, e in annual_entries)
+    counts: dict[str, int] = {}
+    for unit, e in annual_entries:
+        if str(e.get("filed") or "") == latest_filed:
+            counts[unit] = counts.get(unit, 0) + 1
+    if not counts:  # pragma: no cover - the latest filing has at least one entry
         return None
     ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
     if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
@@ -1117,7 +1127,7 @@ def _apply_ifrs_borrowings(
     result.short_term_debt = current
     result.long_term_debt = noncurrent
     result.debt_basis = basis
-    result.issuer_labels["total_debt"] = "Borrowings"
+    result.taxonomy_labels["total_debt"] = "Borrowings"
 
 
 def latest_ifrs_interim_facts(
@@ -1223,7 +1233,7 @@ def latest_ifrs_interim_facts(
                 "source_url": url,
                 "page_number": None,
                 "excerpt_id": f"xbrl:ifrs-full:{concept}",
-                "issuer_label": issuer_label(f"ifrs-full:{concept}"),
+                "taxonomy_label": taxonomy_label(f"ifrs-full:{concept}"),
                 "confidence": "high",
                 "document_title": f"Form {newest.get('form')} ({filing_label}), SEC EDGAR XBRL",
                 "document_date": filed,
@@ -1452,11 +1462,11 @@ def normalize_company_facts(
         if metric.value is None:
             continue
         if taxonomy != "us-gaap" and metric.concept:
-            term = issuer_label(f"{taxonomy}:{metric.concept}") or _IFRS_EPS_TERMS.get(
+            term = taxonomy_label(f"{taxonomy}:{metric.concept}") or _IFRS_EPS_TERMS.get(
                 metric.concept
             )
             if term:
-                result.issuer_labels[name] = term
+                result.taxonomy_labels[name] = term
         result.field_periods[name] = {
             "fy": metric.fy,
             "fp": metric.fp,
