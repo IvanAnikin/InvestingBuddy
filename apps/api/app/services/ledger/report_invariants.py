@@ -288,10 +288,55 @@ _OWN_SUBJECTS: frozenset[str] = frozenset({
 _SUBJECT_DETERMINERS: frozenset[str] = frozenset({"the", "this", "our", ",", "and", "but"})
 
 
+#: Openers that structure the argument without scoping the claim (QA final review R2).
+_DISCOURSE_OPENERS: tuple[tuple[str, ...], ...] = (
+    ("in", "summary"), ("in", "particular"), ("in", "short"), ("in", "conclusion"),
+    ("in", "addition"), ("in", "general"), ("in", "total"), ("as", "a", "result"),
+    ("as", "such"), ("on", "balance"), ("if", "anything"), ("overall",),
+)
+#: A segment about the research itself or about NOW is not a scope: "In this report,
+#: no …", "In the evidence pack, no …", "As of today, no …", "At present, no …".
+_RESEARCH_OR_NOW: frozenset[str] = frozenset({
+    "evidence", "pack", "record", "report", "research", "analysis", "dataset",
+    "ledger", "platform", "today", "present", "now", "date", "currently", "moment",
+})
+#: "Since / as / because no issuer filings are present, …" is causal: it asserts the
+#: claim. "Since the merger, no …" is a scope.
+_CAUSAL: frozenset[str] = frozenset({"since", "as", "because"})
+_CLAUSE_CONJUNCTIONS: frozenset[str] = frozenset({"and", "but"})
+
+
+def _strip_openers(segment: list[str]) -> list[str]:
+    """The segment without leading skip words and discourse openers."""
+    k = 0
+    while k < len(segment):
+        if segment[k] in _LEADING_SKIP:
+            k += 1
+            continue
+        opener = next(
+            (o for o in _DISCOURSE_OPENERS if tuple(segment[k: k + len(o)]) == o), None
+        )
+        if opener is None:
+            break
+        k += len(opener)
+    return segment[k:]
+
+
+def _segment_scopes(segment: list[str]) -> bool:
+    """A segment that scopes what follows it: it opens with a qualifier and is not
+    about the research itself or about now."""
+    words = _strip_openers(segment)
+    if not words or words[0] not in _PREFIX_QUALIFIERS:
+        return False
+    return not any(t in _RESEARCH_OR_NOW for t in words)
+
+
 def _prefix_qualified(tokens: list[str], i: int) -> bool:
-    """True when the clause before ``tokens[i]`` scopes the claim: it opens with a
-    qualifier (in the claim's own comma segment or the one before it), or negates it
-    ("it is not the case that no …"). Looks back at most ``_PREFIX_WINDOW`` tokens."""
+    """True when the clause before ``tokens[i]`` scopes the claim: the claim's own comma
+    segment, or the one before it, opens with a qualifier ("For the December quarter,
+    no …", "Before the IPO no …"), or the claim itself is negated ("it is not the case
+    that no …"). A conjunction ("…, and no …") starts a new clause: only what follows
+    it counts. Looks back at most ``_PREFIX_WINDOW`` tokens."""
     lo = max(0, i - _PREFIX_WINDOW)
     start = lo
     for k in range(i - 1, lo - 1, -1):
@@ -299,7 +344,7 @@ def _prefix_qualified(tokens: list[str], i: int) -> bool:
             start = k + 1
             break
     clause = tokens[start:i]
-    if "not" in clause:
+    if clause[-1:] == ["that"] and "not" in clause[-6:]:
         return True
     segments: list[list[str]] = [[]]
     for tok in clause:
@@ -307,11 +352,14 @@ def _prefix_qualified(tokens: list[str], i: int) -> bool:
             segments.append([])
         else:
             segments[-1].append(tok)
-    for segment in segments[-2:]:
-        first = next((t for t in segment if t not in _LEADING_SKIP), None)
-        if first in _PREFIX_QUALIFIERS:
-            return True
-    return False
+    last = segments[-1]
+    cut = max((k for k, t in enumerate(last) if t in _CLAUSE_CONJUNCTIONS), default=None)
+    if cut is not None:
+        return _segment_scopes(last[cut + 1:])
+    if len(_strip_openers(last)) == 1 and _strip_openers(last)[0] in _CAUSAL:
+        last = []
+    candidates = [last, segments[-2]] if len(segments) > 1 else [last]
+    return any(_segment_scopes(segment) for segment in candidates)
 
 
 def _prefix_qualified_text(text: str, start: int) -> bool:
@@ -505,7 +553,10 @@ _ACCESSION_RE = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
 _FORM_RE = re.compile(r"\b(10-K|10-Q|20-F|40-F|6-K(?:/A)?|8-K)\b", re.I)
 #: Where the clause that names THE newest document ends.
 _ANCHOR_CLAUSE_END_RE = re.compile(
-    r";|,\s*(?:which|unlike|while|whereas)\b|\b(?:earlier|prior|previous|older|unlike"
+    # "(?<!\s)" lets the "and" branch start only at the FIRST character of a whitespace
+    # run; without it every position inside a long run restarts "\s+" (quadratic).
+    r";|,\s*(?:which|unlike|while|whereas)\b|(?<!\s),?\s+and\s+(?:the|its|an?)\b"
+    r"|\b(?:earlier|prior|previous|older|unlike"
     r"|superseded|supersedes|supersede|replaced|replaces)\b",
     re.I,
 )
@@ -558,7 +609,7 @@ class Violation:
         return {
             "rule": self.rule,
             "path": self.path,
-            "text": self.text[:400],
+            "text": _safe(self.text[:400]),
             "action": self.action,
             "reason": _safe(self.reason),
             "replacement": self.replacement[:400] if self.replacement else None,
@@ -630,6 +681,21 @@ def _rule_no_issuer_doc(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     )
 
 
+def _names_newest_form(text: str, state: Mapping[str, Any]) -> bool:
+    """The text names the newest held document's form type ("10-Q") or its label
+    ("September Quarterly Report", or "Quarterly Report" without the period word)."""
+    label = str((_g(state, "documents", "newest_issuer_document") or {}).get("form") or "")
+    label = " ".join(label.split()).lower()
+    if not label:
+        return False
+    if any(f.lower() == label for f in _FORM_RE.findall(text)):
+        return True
+    lowered = " ".join(text.split()).lower()
+    words = label.split()
+    candidates = {label} | ({" ".join(words[1:])} if len(words) >= 3 else set())
+    return any(c and c in lowered for c in candidates)
+
+
 def _rule_stale_latest(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     """An older DOCUMENT named as the newest. Only a date the sentence ties to the
     document it names (after the "newest/latest" anchor), or an accession the inventory
@@ -654,11 +720,8 @@ def _rule_stale_latest(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     clause = sentence[match.start(): match.end() + (cut.start() if cut else len(tail))]
     dated = _document_dates(clause)
     first_date_at = dated[0][0] if dated else len(clause)
-    newest_form = str((_g(state, "documents", "newest_issuer_document") or {}).get("form") or "")
-    if newest_form and any(
-        f.upper() == newest_form.upper() for f in _FORM_RE.findall(clause[:first_date_at])
-    ):
-        # It names the newest held form type before any date: not stale.
+    if _names_newest_form(clause[:first_date_at], state):
+        # It names the newest held document's form or label before any date: not stale.
         return None
     named_date: date | None = dated[0][1] if dated else None
     if named_date is None:

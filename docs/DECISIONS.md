@@ -6669,16 +6669,23 @@ UNQUALIFIED claim about the whole evidence inventory (review of PR #322):
   ASX-listed", "for the subsidiary", "confirming the guidance", "in German").
   Nor may a scope come FIRST: a clause that opens with a qualifier ("For the offtake
   partner, no …", "Before the IPO no …", "Unlike the peer, for which no …", "On the
-  litigation, there are no …") or negates the claim is kept, for every rule. In
+  litigation, there are no …") or negates the claim is kept, for every rule. An opener
+  about the research itself or about now ("In this report,", "In the evidence pack,",
+  "As of today,", "At present,"), a discourse opener ("In summary,", "On balance,", "As a
+  result,", "Overall,") and a causal "since / as / because no …" are NOT scopes; "not"
+  counts only when it negates the claim itself ("not the case that no …"); after "…, and"
+  only the new clause counts. In
   "<subject> has no …" the subject must be the research or the company under research
   ("the evidence pack", "the company"), not another entity ("Iluka", "the JV partner").
 - **Older document named as newest** compares only the FIRST date tied to a document
   ("dated", "filed on", "published", "released", a form type + date, an accession the
   inventory dates) inside the anchor's own clause — the clause ends at ";", ", which",
-  ", unlike", "earlier", "prior", "previous", "supersedes" … — with the newest document
+  ", unlike", ", and the", "earlier", "prior", "previous", "supersedes" … — with the
+  newest document
   the platform HOLDS. "The latest filing is the Q3 10-Q, which supersedes the 10-K filed
   2026-02-04" names an older document on purpose, and a clause that names the newest
-  held form type before any date is kept. A covered-period date ("covers
+  held form type or label ("10-Q", "September Quarterly Report", "Quarterly Report")
+  before any date is kept. A covered-period date ("covers
   1 July to 30 September", "share count on 2026-09-30", "restates FY2024") is never
   compared, and a cited finding's publication date never stands in for a held document
   (a spun-off subsidiary's IR page outranked the subject's own 10-Q). Generic nouns only:
@@ -6693,11 +6700,14 @@ UNQUALIFIED claim about the whole evidence inventory (review of PR #322):
   published is ignored, which keeps forward tags like CLLS4-2's "2028-H2" out).
 - Sentences over 600 characters are not checked. Every pattern and rule is timed on 41
   degenerate inputs built at scale 1 and 8: the time may grow by less than 24x (linear
-  is about 8x, quadratic 64x), judged once the large input takes over 50 ms, and nothing
-  may take 1 s — a quadratic pattern on the 8x inputs (8k-40k characters) takes seconds.
-  No absolute per-call budget, so CI load does not flake it (worst observed: 13 ms). Withholding
-  removes only the withheld sentence: separators, newlines and the other bullets of a
-  list stay.
+  is about 8x, quadratic 64x) on the fastest of five interleaved runs, judged once the
+  large input
+  takes over 200 ms, and nothing may take 1 s — a quadratic pattern on the 8x inputs
+  (8k-40k characters) takes seconds. No absolute per-call budget, so CI load does not
+  flake it (worst observed: 13 ms). Withholding removes only the withheld sentence:
+  separators, newlines and the other bullets of a list stay. The withheld sentence and
+  its reason are both recorded through the same neutralisation V2 applies to external
+  headlines.
 
 The header keeps a short council fact ("8 of 8 agents completed · degraded"); the reasons
 are a full-width wrapping line below the facts.

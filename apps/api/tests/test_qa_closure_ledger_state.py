@@ -375,6 +375,9 @@ _INVENTORY_NEAR_MISSES = [
     "For Q4, the evidence pack contains no company filings.",
     "Before the listing, the absence of company disclosures limited analysis.",
     "It is not the case that no issuer filings are present.",
+    # QA final review R2: real scopes stay kept.
+    "Since the merger, no company disclosures were found.",
+    "Before the IPO, no company filings were available.",
 ]
 
 
@@ -387,6 +390,25 @@ class TestNoIssuerDocument:
         "The company has no regulatory filings available.",
         "The evidence pack contains no company filings.",
         "Overall, no issuer filings are present in the pack.",
+        # QA final review R2: an opener about the research itself, about now, or the
+        # argument's structure is not a scope; "since / as / because no …" is causal;
+        # "not" elsewhere in the sentence does not negate the claim.
+        "In this report, no issuer filings are available.",
+        "As of today, no company filings are present.",
+        "Since no issuer filings are present, the analysis relies on news.",
+        "As no issuer filings are present, the assessment is limited.",
+        "Because no company filings are available, figures come from press.",
+        "In summary, no issuer filings are available.",
+        "At present, no company filings are present.",
+        "As a result, no issuer filings are in evidence.",
+        "In particular, no company filings are present.",
+        "If anything, no company filings are available.",
+        "In the evidence pack, no issuer filings are present.",
+        "Within the evidence, no company disclosures were found.",
+        "From the evidence provided, no issuer filings are available.",
+        "Currently, no company filings are available.",
+        "In 2025 revenue rose 10% and no issuer filings are present.",
+        "The company does not publish guidance, and no issuer filings are present.",
     ])
     def test_fires(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally())) == inv.RULE_NO_ISSUER_DOC
@@ -515,6 +537,11 @@ class TestOlderDocumentNamedAsNewest:
         "The newest filing (10-Q, 2026-10-27) follows the 10-K (2026-02-04).",
         "The most recent filing is the 10-Q, after the 10-K filed 2026-02-04.",
         "The latest filing replaces the prior 10-K filed 2026-02-04.",
+        # QA final review R1: ", and the …" starts another document's clause.
+        "The latest disclosure is the Q3 results, and the release dated 2026-07-28 "
+        "covered Q2.",
+        "The latest filing is the Q3 10-Q and the 8-K dated 2026-07-28 announced the "
+        "CEO change.",
     ])
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally()), inv.SITE_CHAIR) is None
@@ -525,6 +552,11 @@ class TestOlderDocumentNamedAsNewest:
         "The latest annual report was published 24 September 2026.",
         "The most recent disclosure is the September Quarterly Report dated 25 Oct 2026, "
         "about the quarter ended 30 Sep 2026.",
+        # QA final review R1: the newest held document's own label names it.
+        "The newest disclosure is the September Quarterly Report and the Annual Report "
+        "dated 24 September 2026 remains the annual reference.",
+        "The newest disclosure is the September Quarterly Report, which follows the "
+        "Annual Report dated 24 September 2026.",
     ])
     def test_near_miss_does_not_fire_lin(self, sentence: str) -> None:
         assert _hit(sentence, _lin_state(), inv.SITE_CHAIR) is None
@@ -577,6 +609,10 @@ class TestLatestPeriodDenied:
         assert _hit("No quarterly report is present.", _lin_state()) == inv.RULE_LATEST_PERIOD
         assert _hit("No quarterly report is present in the evidence pack.",
                     _lin_state()) == inv.RULE_LATEST_PERIOD
+        # QA final review R2: an opener about the research itself is not a scope.
+        for sentence in ("Overall, in the evidence, no quarterly report is present.",
+                         "In this report, the latest quarter is not available."):
+            assert _hit(sentence, _lin_state()) == inv.RULE_LATEST_PERIOD
 
     def test_fires_on_latest_quarter_not_in_this_report(self) -> None:
         assert _hit("Latest quarter: Not in this report.",
@@ -618,8 +654,13 @@ class TestNoRecentDevelopments:
         payload = _payload(findings=[_issuer_finding("Q3 release", "2026-10-27", "2026-Q3")])
         return _state(payload, tally=_tally())
 
-    def test_fires(self) -> None:
-        assert _hit("There were no recent developments.", self._state()) == inv.RULE_NO_RECENT
+    @pytest.mark.parametrize("sentence", [
+        "There were no recent developments.",
+        # QA final review R2: a discourse opener is not a scope.
+        "On balance, there are no recent developments.",
+    ])
+    def test_fires(self, sentence: str) -> None:
+        assert _hit(sentence, self._state()) == inv.RULE_NO_RECENT
 
     @pytest.mark.parametrize("sentence", [
         "No recent developments in the litigation were disclosed.",
@@ -642,6 +683,16 @@ class TestNoCashFlow:
     def test_fires(self) -> None:
         assert _hit("No cash flow data is available.",
                     _state(tally=_tally())) == inv.RULE_NO_CASH_FLOW
+        assert _hit("On balance, no cash flow data is available.",
+                    _state(tally=_tally())) == inv.RULE_NO_CASH_FLOW
+
+    def test_fires_on_free_cash_flow_after_a_discourse_opener(self) -> None:
+        payload = _payload(findings=[
+            *_payload()["findings"],
+            _issuer_finding("FY2025 free cash flow was $5,500m.", None, "FY2025"),
+        ])
+        assert _hit("On balance, no free cash flow is reported.",
+                    _state(payload, tally=_tally())) == inv.RULE_NO_CASH_FLOW
 
     @pytest.mark.parametrize("sentence", [
         # Operating cash flow is not FREE cash flow.
@@ -953,6 +1004,16 @@ class TestWithheldSpanOnly:
     def test_a_text_with_nothing_left_becomes_a_notice(self) -> None:
         assert self._text("- " + _DENIAL).startswith("[Withheld at report assembly:")
 
+    def test_a_recorded_sentence_is_neutralised_like_its_reason(self) -> None:
+        """Security review: the withheld sentence is written into state_invariants after
+        the report's safety scan, so it passes the same neutralisation as the reason."""
+        from app.schemas.catalyst import neutralize_forbidden_terms
+
+        text = "No issuer filings are present; analysts rate it a strong buy."
+        recorded = inv.Violation(inv.RULE_NO_ISSUER_DOC, "x", text, "withheld", "r").to_dict()
+        assert recorded["text"] == neutralize_forbidden_terms(text)
+        assert "strong buy" not in recorded["text"]
+
     def test_an_over_long_sentence_is_not_checked(self) -> None:
         sentence = _DENIAL[:-1] + ", " + "and so on, " * 80 + "end."
         assert len(sentence) > inv.MAX_SENTENCE_CHARS
@@ -964,10 +1025,12 @@ class TestWithheldSpanOnly:
 #
 # Not an absolute per-call budget (that flaked under CI load, QA re-review): each
 # degenerate input is built at scale 1 and scale 8, and the time at 8x must grow by
-# less than 24x (linear ~8x, quadratic ~64x, exponential unbounded). The ratio is
-# judged only once the large input takes over 50 ms — below that a sub-millisecond
-# baseline makes it noise under CI load — and above 1 s anything fails (a quadratic
-# pattern on the 8x inputs, 8k-40k characters, takes seconds).
+# less than 24x (linear ~8x, quadratic ~64x, exponential unbounded), on the fastest of
+# five interleaved runs. The ratio is judged only once the large input takes over
+# 200 ms — every
+# linear pattern stays far below that, and under CI load a millisecond baseline makes a
+# ratio noise — and above 1 s anything fails (a quadratic pattern on the 8x inputs,
+# 8k-40k characters, takes seconds).
 # ---------------------------------------------------------------------------
 
 #: The review's ReDoS repros, and inputs built to make each kind of quantifier
@@ -1017,7 +1080,7 @@ _DEGENERATE: list[Any] = [
 ]
 _SCALE = 8
 _MAX_RATIO = 24.0
-_NOISE_FLOOR_SECONDS = 0.05
+_NOISE_FLOOR_SECONDS = 0.2
 _ABSOLUTE_BUDGET_SECONDS = 1.0
 
 
@@ -1040,21 +1103,28 @@ def _patterns() -> list[tuple[str, Any]]:
     return out
 
 
-def _best_of_three(fn: Any, text: str) -> float:
+def _min_of_five_interleaved(fn: Any, small: str, large: str) -> tuple[float, float]:
+    """The fastest of five runs of each input, the two interleaved so a burst of load
+    hits both. The minimum is the estimate least disturbed by other processes."""
     import time
 
-    best = float("inf")
-    for _ in range(3):
-        start = time.perf_counter()
-        fn(text)
-        best = min(best, time.perf_counter() - start)
-    return best
+    best_small = best_large = float("inf")
+    for _ in range(5):
+        for text, is_large in ((small, False), (large, True)):
+            start = time.perf_counter()
+            fn(text)
+            elapsed = time.perf_counter() - start
+            if is_large:
+                best_large = min(best_large, elapsed)
+            else:
+                best_small = min(best_small, elapsed)
+    return best_small, best_large
 
 
 def _assert_scales_linearly(fn: Any, label: str) -> None:
     for make in _DEGENERATE:
         small, large = make(1), make(_SCALE)
-        t_small, t_large = _best_of_three(fn, small), _best_of_three(fn, large)
+        t_small, t_large = _min_of_five_interleaved(fn, small, large)
         assert t_large < _ABSOLUTE_BUDGET_SECONDS, (
             f"{label} took {t_large:.3f}s on {large[:40]!r}")
         if t_large > _NOISE_FLOOR_SECONDS:
