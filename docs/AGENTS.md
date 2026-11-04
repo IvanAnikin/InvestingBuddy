@@ -1641,6 +1641,9 @@ reader takes its counts and status lines from it.
   tied to a document against the newest document HELD (never a cited finding's date or
   a covered period), disagreement narration counts only ledger phrasing ("unresolved
   disagreement", "the red team disputed"), and only the withheld sentence is removed
-  (bullets and newlines are kept). Sentences over 600 characters are not checked.
+  (bullets and newlines are kept). Sentences over 600 characters are not checked. A
+  scope given first ("For the peer, no …"), another entity as subject ("Iluka has no
+  …"), a date outside the "latest" anchor's clause, and Red Team challenge wording never
+  cause a withhold.
 - `scripts/qa_replay_ledger_state.py <reports-dir>` replays the checker over stored
   report payloads, with the state derived from the payload. It makes no network call.

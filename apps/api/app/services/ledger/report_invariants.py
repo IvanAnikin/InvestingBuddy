@@ -257,6 +257,81 @@ def _tail_unqualified(tokens: list[str], k: int, verbs: frozenset[str] = frozens
     return False
 
 
+#: Tokens that end a clause for the prefix check (a comma does not: "For X, no …").
+_HARD_STOPS: frozenset[str] = frozenset({".", ";", ":", "!", "?", "—", "–", "-", "(", ")"})
+#: A clause that OPENS with one of these scopes what follows it (QA re-review X3):
+#: "For the December quarter, no …", "Before the IPO no …", "Unlike the peer, for which
+#: no …", "On the litigation, there are no …".
+_PREFIX_QUALIFIERS: frozenset[str] = frozenset({
+    "for", "on", "in", "before", "until", "till", "since", "unlike", "regarding",
+    "during", "after", "about", "concerning", "apart", "except", "besides", "beyond",
+    "outside", "within", "from", "prior", "excluding", "without", "as", "at", "by",
+    "under", "per", "when", "if", "where", "whereas", "unless", "although", "though",
+    "absent", "among", "between", "across", "over", "through", "throughout", "pending",
+})
+#: Words skipped before judging how a clause opens.
+_LEADING_SKIP: frozenset[str] = frozenset({
+    "and", "but", "so", "yet", "however", "also", "thus", "therefore", "moreover",
+    "furthermore", "additionally", "notably", "overall", "currently", "still",
+})
+_PREFIX_WINDOW = 40
+#: "<subject> has no …": the claim is about the subject's documents only when the
+#: subject is the research itself or the company under research.
+_SUBJECT_VERBS: frozenset[str] = frozenset({
+    "has", "have", "had", "holds", "hold", "contains", "contain", "includes", "include",
+    "shows", "show", "with",
+})
+_OWN_SUBJECTS: frozenset[str] = frozenset({
+    "evidence", "record", "pack", "report", "research", "ledger", "platform", "dataset",
+    "company", "issuer", "it",
+})
+_SUBJECT_DETERMINERS: frozenset[str] = frozenset({"the", "this", "our", ",", "and", "but"})
+
+
+def _prefix_qualified(tokens: list[str], i: int) -> bool:
+    """True when the clause before ``tokens[i]`` scopes the claim: it opens with a
+    qualifier (in the claim's own comma segment or the one before it), or negates it
+    ("it is not the case that no …"). Looks back at most ``_PREFIX_WINDOW`` tokens."""
+    lo = max(0, i - _PREFIX_WINDOW)
+    start = lo
+    for k in range(i - 1, lo - 1, -1):
+        if tokens[k] in _HARD_STOPS:
+            start = k + 1
+            break
+    clause = tokens[start:i]
+    if "not" in clause:
+        return True
+    segments: list[list[str]] = [[]]
+    for tok in clause:
+        if tok == ",":
+            segments.append([])
+        else:
+            segments[-1].append(tok)
+    for segment in segments[-2:]:
+        first = next((t for t in segment if t not in _LEADING_SKIP), None)
+        if first in _PREFIX_QUALIFIERS:
+            return True
+    return False
+
+
+def _prefix_qualified_text(text: str, start: int) -> bool:
+    """The prefix check for a regex-matched claim starting at ``start``."""
+    tokens = _tokens(text[max(0, start - 300): start])
+    return _prefix_qualified(tokens, len(tokens))
+
+
+def _own_subject(tokens: list[str], k: int) -> bool:
+    """``tokens[k]`` is the subject of "<subject> has no …": the research or the
+    company under research ("the company", "the evidence pack"), not another entity
+    ("Iluka", "the JV partner", "the peer company")."""
+    if _at(tokens, k) not in _OWN_SUBJECTS:
+        return False
+    before = _at(tokens, k - 1)
+    if _at(tokens, k) == "pack" and before == "evidence":
+        before = _at(tokens, k - 2)
+    return before is None or before in _SUBJECT_DETERMINERS
+
+
 def _denies_issuer_documents(text: str) -> bool:
     """An UNQUALIFIED claim that no issuer document is in the evidence:
 
@@ -270,13 +345,17 @@ def _denies_issuer_documents(text: str) -> bool:
     for i, tok in enumerate(tokens):
         if tok == "no":
             parsed = _item_list(tokens, i + 1)
-            if parsed is None or not parsed[1]:
+            if parsed is None or not parsed[1] or _prefix_qualified(tokens, i):
                 continue
             k = parsed[0]
             prev = _at(tokens, i - 1)
             if prev in _HAS_VERBS and _at(tokens, i - 2) in _INVENTORY_NOUNS:
                 if _tail_unqualified(tokens, k):
                     return True
+                continue
+            if prev in _SUBJECT_VERBS and not _own_subject(tokens, i - 2):
+                # "Iluka has no regulatory filings", "the JV partner has no company
+                # filings": a claim about ANOTHER entity's documents.
                 continue
             if _at(tokens, k) in _COPULAS:
                 k += 1
@@ -294,7 +373,7 @@ def _denies_issuer_documents(text: str) -> bool:
                 return True
         elif tok in ("absence", "lack") and _at(tokens, i + 1) == "of":
             parsed = _item_list(tokens, i + 2)
-            if parsed is None or not parsed[1]:
+            if parsed is None or not parsed[1] or _prefix_qualified(tokens, i):
                 continue
             k = _in_evidence(tokens, parsed[0]) or parsed[0]
             if _tail_unqualified(tokens, k, _ABSENCE_VERBS):
@@ -387,9 +466,12 @@ _EVIDENCE_ADEQUATE_RE = re.compile(
 #: "the red team disputed …", a disagreement id. A sentence about the WORLD disagreeing
 #: — "conflicting data on FY2026 operating profit", "analysts disagree", "guidance
 #: contradicts the consensus" — is a claim about the company, not about the research.
+#: Challenge wording is NOT a disagreement: the ledger records Red Team challenges
+#: separately (CFR: 5 challenges, 0 disagreements — "the red team challenged five
+#: findings" is true there). QA re-review X1.
 _LEDGER_DISAGREEMENT_RE = re.compile(
-    r"\b(?:unresolved\s+(?:disagreements?|disputes?|challenges?)"
-    r"|red[- ]team\s+(?:disputed|disputes|challenged|challenges|contested|contests)"
+    r"\b(?:unresolved\s+(?:disagreements?|disputes?)"
+    r"|red[- ]team\s+(?:disputed|disputes|contested|contests)"
     r"|disagreement\s+(?:id\s+)?[0-9a-f]{8}\b)",
     re.I,
 )
@@ -420,15 +502,23 @@ _DATE_ISO_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 _DATE_DMY_RE = re.compile(rf"\b(\d{{1,2}})\s+{_MONTH}\s+(\d{{4}})\b", re.I)
 _DATE_MDY_RE = re.compile(rf"\b{_MONTH}\s+(\d{{1,2}}),?\s+(\d{{4}})\b", re.I)
 _ACCESSION_RE = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
+_FORM_RE = re.compile(r"\b(10-K|10-Q|20-F|40-F|6-K(?:/A)?|8-K)\b", re.I)
+#: Where the clause that names THE newest document ends.
+_ANCHOR_CLAUSE_END_RE = re.compile(
+    r";|,\s*(?:which|unlike|while|whereas)\b|\b(?:earlier|prior|previous|older|unlike"
+    r"|superseded|supersedes|supersede|replaced|replaces)\b",
+    re.I,
+)
 
 
-def _document_dates(text: str) -> list[date]:
-    """The dates a text ties to a DOCUMENT (see ``_DOC_DATE_BEFORE_RE``)."""
-    out: list[date] = []
+def _document_dates(text: str) -> list[tuple[int, date]]:
+    """The dates a text ties to a DOCUMENT (see ``_DOC_DATE_BEFORE_RE``), with their
+    positions, in the order they appear."""
+    out: list[tuple[int, date]] = []
 
     def put(m: re.Match[str], value: date) -> None:
         if _DOC_DATE_BEFORE_RE.search(text[max(0, m.start() - 32): m.start()]):
-            out.append(value)
+            out.append((m.start(), value))
 
     for m in _DATE_ISO_RE.finditer(text):
         try:
@@ -445,7 +535,7 @@ def _document_dates(text: str) -> list[date]:
             put(m, date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))))
         except (ValueError, KeyError):
             continue
-    return out
+    return sorted(out, key=lambda item: item[0])
 
 
 # ---------------------------------------------------------------------------
@@ -556,23 +646,38 @@ def _rule_stale_latest(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     if newest_date is None:
         return None
     margin = timedelta(days=DOCUMENT_MARGIN_DAYS)
-    named = sentence[match.start():]
-    published = _document_dates(named)
-    if not published:
+    # Only the anchor's own clause names THE newest document: "the latest filing is the
+    # Q3 10-Q, which supersedes the 10-K filed 2026-02-04" dates an older document on
+    # purpose (QA re-review X2).
+    tail = sentence[match.end():]
+    cut = _ANCHOR_CLAUSE_END_RE.search(tail)
+    clause = sentence[match.start(): match.end() + (cut.start() if cut else len(tail))]
+    dated = _document_dates(clause)
+    first_date_at = dated[0][0] if dated else len(clause)
+    newest_form = str((_g(state, "documents", "newest_issuer_document") or {}).get("form") or "")
+    if newest_form and any(
+        f.upper() == newest_form.upper() for f in _FORM_RE.findall(clause[:first_date_at])
+    ):
+        # It names the newest held form type before any date: not stale.
+        return None
+    named_date: date | None = dated[0][1] if dated else None
+    if named_date is None:
+        accession = _ACCESSION_RE.search(clause)
         inventory = _g(state, "documents", "inventory") or []
-        published = [
-            d
-            for accession in _ACCESSION_RE.findall(named)
-            for entry in inventory
-            if isinstance(entry, Mapping) and entry.get("ref") == accession
-            and (d := as_date(entry.get("date"))) is not None
-        ]
-    # The newest date the sentence names decides: "newest is X, filed 2026-10-27, about
-    # the quarter ended 30 Sep" is not stale because something else in it is older.
-    if published and max(published) < newest_date - margin:
+        if accession is not None:
+            named_date = next(
+                (
+                    d
+                    for entry in inventory
+                    if isinstance(entry, Mapping) and entry.get("ref") == accession.group(0)
+                    and (d := as_date(entry.get("date"))) is not None
+                ),
+                None,
+            )
+    if named_date is not None and named_date < newest_date - margin:
         return _Hit(
             RULE_STALE_LATEST,
-            f"it names a document dated {max(published).isoformat()} as the newest, "
+            f"it names a document dated {named_date.isoformat()} as the newest, "
             f"while the issuer's {newest_text} is recorded",
         )
     return None
@@ -584,7 +689,9 @@ def _rule_latest_period(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
         return None
     for pattern in _LATEST_UNAVAILABLE_RES:
         m = pattern.search(sentence)
-        if not m or not _unqualified_after(sentence, m.end()):
+        if not m or not _unqualified_after(sentence, m.end()) or _prefix_qualified_text(
+            sentence, m.start()
+        ):
             continue
         noun = (m.groupdict().get("noun") or "").lower()
         if noun in _FIGURE_NOUNS and status != "facts_validated":
@@ -606,7 +713,8 @@ def _rule_no_recent(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     if not _g(state, "evidence", "recent_issuer_disclosure_cited"):
         return None
     m = _NO_RECENT_RE.search(sentence)
-    if m is None or not _unqualified_after(sentence, m.end()):
+    if (m is None or not _unqualified_after(sentence, m.end())
+            or _prefix_qualified_text(sentence, m.start())):
         return None
     _, newest = _newest(state)
     return _Hit(
@@ -620,7 +728,8 @@ def _rule_no_cash_flow(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     match = None
     for verbs, pattern in zip((frozenset(), _ABSENCE_VERBS), _NO_CASH_FLOW_RES, strict=True):
         m = pattern.search(sentence)
-        if m is not None and _unqualified_after(sentence, m.end(), verbs):
+        if (m is not None and _unqualified_after(sentence, m.end(), verbs)
+                and not _prefix_qualified_text(sentence, m.start())):
             match = m
             break
     if match is None:

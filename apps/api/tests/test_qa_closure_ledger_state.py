@@ -362,13 +362,32 @@ _INVENTORY_NEAR_MISSES = [
     "No primary company filings, financial statements, or verified company disclosures "
     "are included in the evidence pack.",
     "No audited company filings are available.",
+    # QA re-review X3: a scope BEFORE the claim, or another entity as its subject.
+    "Iluka has no regulatory filings available.",
+    "The JV partner has no company filings present.",
+    "The peer company has no regulatory filings available.",
+    "For the offtake partner Iluka, no company filings are present.",
+    "Unlike the peer, for which no company filings are available, the subject files 10-Qs.",
+    "Before the IPO no company filings were available.",
+    "Until 2024, no company disclosures were found.",
+    "On the acquisition, no issuer press releases are available.",
+    "In German, no issuer filings are available.",
+    "For Q4, the evidence pack contains no company filings.",
+    "Before the listing, the absence of company disclosures limited analysis.",
+    "It is not the case that no issuer filings are present.",
 ]
 
 
 class TestNoIssuerDocument:
     """PYPL3-1, CLLS-4: denying the issuer's documents while they are held and cited."""
 
-    @pytest.mark.parametrize("sentence", _REAL_INVENTORY_DENIALS)
+    @pytest.mark.parametrize("sentence", [
+        *_REAL_INVENTORY_DENIALS,
+        # The research itself, or the company under research, as the subject.
+        "The company has no regulatory filings available.",
+        "The evidence pack contains no company filings.",
+        "Overall, no issuer filings are present in the pack.",
+    ])
     def test_fires(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally())) == inv.RULE_NO_ISSUER_DOC
 
@@ -485,6 +504,17 @@ class TestOlderDocumentNamedAsNewest:
         # HON2: the three months ended June 30 is a covered period.
         "Newest results disclosure is for the three months ended June 30, 2026; "
         "discontinued operations shown in Q3.",
+        # QA re-review X2: a date of ANOTHER document, outside the anchor's clause, or
+        # after the newest form type is named.
+        "The latest filing is the Q3 10-Q, which supersedes the 10-K filed 2026-02-04.",
+        "The latest disclosure, unlike the 10-K filed 2026-02-04, includes segment data.",
+        "The latest issuer disclosure is the 10-Q; an earlier release dated 2026-07-28 "
+        "gave Q2 results.",
+        "The latest filing in evidence is the Q3 10-Q; the 8-K dated 2026-07-28 "
+        "announced the CEO change.",
+        "The newest filing (10-Q, 2026-10-27) follows the 10-K (2026-02-04).",
+        "The most recent filing is the 10-Q, after the 10-K filed 2026-02-04.",
+        "The latest filing replaces the prior 10-K filed 2026-02-04.",
     ])
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally()), inv.SITE_CHAIR) is None
@@ -569,6 +599,9 @@ class TestLatestPeriodDenied:
         "The latest quarter's figures are not available.",
         "Latest quarter figures are not in this report.",
         "The latest quarter: not available for the segment breakdown.",
+        # QA re-review X3: the scope comes first.
+        "For the December quarter, no quarterly report is present.",
+        "For Q4, the latest quarter is not available.",
     ])
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally())) is None
@@ -593,6 +626,7 @@ class TestNoRecentDevelopments:
         "No recent developments regarding the litigation.",
         "There were no new announcements on the dividend.",
         "No new disclosures were found about the merger.",
+        "On the litigation, there are no recent developments.",
     ])
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
         assert _hit(sentence, self._state()) is None
@@ -619,6 +653,9 @@ class TestNoCashFlow:
         "There is no operating cash flow data for the segment.",
         "No cash flow data is available for the segment.",
         "Lack of cash flow data for the subsidiary limits analysis.",
+        # QA re-review X3: the scope comes first.
+        "For the segment, no cash flow data is available.",
+        "For the segment, no operating cash flow is reported.",
     ])
     def test_near_miss_does_not_fire(self, sentence: str) -> None:
         assert _hit(sentence, _state(tally=_tally())) is None
@@ -734,6 +771,14 @@ class TestChairDisagreements:
         "There is a notable disagreement in the evidence regarding revenue.",
         "The red team found no disagreements.",
         "No unresolved disagreements remain.",
+        # QA re-review X1: challenges are recorded apart from disagreements (CFR: 5
+        # challenges, 0 disagreements).
+        "The red team challenged five findings; all challenges were resolved.",
+        "The red team challenged the FY2026 operating profit figure, and the challenge "
+        "was resolved.",
+        "Red-team challenges lowered confidence on two findings.",
+        "All unresolved challenges were closed in round two.",
+        "There are no unresolved challenges.",
     ])
     def test_a_disagreement_about_the_world_is_kept(self, sentence: str) -> None:
         state = _state(tally=_tally())
@@ -916,49 +961,64 @@ class TestWithheldSpanOnly:
 
 # ---------------------------------------------------------------------------
 # 7. Every pattern and rule runs in linear time (QA review B1)
+#
+# Not an absolute per-call budget (that flaked under CI load, QA re-review): each
+# degenerate input is built at scale 1 and scale 8, and the time at 8x must grow by
+# less than 24x (linear ~8x, quadratic ~64x, exponential unbounded). The ratio is
+# judged only once the large input takes over 50 ms — below that a sub-millisecond
+# baseline makes it noise under CI load — and above 1 s anything fails (a quadratic
+# pattern on the 8x inputs, 8k-40k characters, takes seconds).
 # ---------------------------------------------------------------------------
 
-#: The review's ReDoS repros, and inputs built to make each kind of quantifier backtrack.
-_DEGENERATE = [
-    "No issuer " + "press releases " * 10 + "mention it.",
-    "No issuer " + "filings " * 14 + "mention it.",
-    "No issuer " + "press releases " * 200 + "mention it.",
-    "No issuer " + "filings " * 400 + "x",
-    "No issuer filings, " * 300 + "x",
-    "No issuer " + "press releases, or " * 300 + "x",
-    "The evidence includes no issuer " + "filings or " * 300 + "x",
-    "absence of " + "financial data and " * 300 + "x",
-    "lack of " + "any primary " * 400 + "x",
-    "no " * 2000,
-    " " * 8000 + "x",
-    "\t" * 8000,
-    ", or " * 1500,
-    "latest quarter" + " " * 5000 + "x",
-    "latest quarterly " + "report " * 1000,
-    "newest " * 1500 + "filing",
-    "most recent " + "issuer " * 1000 + "filing",
-    "a" * 10000,
-    "1" * 10000,
-    "2026-" * 2000,
-    "dated " * 1500 + "2026-01-01",
-    "10-K " * 2000,
-    "cash flow " * 1000,
-    "no cash flow " * 600,
-    "evidence is " * 1000,
-    "unresolved " * 1500,
-    "no unresolved " * 1000,
-    "red team " * 1000,
-    "disagreement " * 1000,
-    "." * 10000,
-    ". " * 5000 + "A",
-    "\n" * 10000,
-    "- " * 5000,
-    "Deterministic synthesis: " + "1 " * 3000,
-    "September " * 1500 + "2026",
-    "30 " * 3000 + "September 2026",
-    "in the " * 1500 + "evidence",
+#: The review's ReDoS repros, and inputs built to make each kind of quantifier
+#: backtrack. Each builds its input at a scale ``k``.
+_DEGENERATE: list[Any] = [
+    lambda k: "No issuer " + "press releases " * (10 * k) + "mention it.",
+    lambda k: "No issuer " + "filings " * (14 * k) + "mention it.",
+    lambda k: "No issuer " + "press releases " * (100 * k) + "mention it.",
+    lambda k: "No issuer " + "filings " * (200 * k) + "x",
+    lambda k: "No issuer filings, " * (150 * k) + "x",
+    lambda k: "No issuer " + "press releases, or " * (150 * k) + "x",
+    lambda k: "The evidence includes no issuer " + "filings or " * (150 * k) + "x",
+    lambda k: "absence of " + "financial data and " * (150 * k) + "x",
+    lambda k: "lack of " + "any primary " * (200 * k) + "x",
+    lambda k: "For the peer, " * (100 * k) + "no issuer filings are present.",
+    lambda k: "Iluka has " * (200 * k) + "no issuer filings present.",
+    lambda k: "no " * (1000 * k),
+    lambda k: " " * (4000 * k) + "x",
+    lambda k: "\t" * (4000 * k),
+    lambda k: ", or " * (800 * k),
+    lambda k: "latest quarter" + " " * (2500 * k) + "x",
+    lambda k: "latest quarterly " + "report " * (500 * k),
+    lambda k: "newest " * (800 * k) + "filing",
+    lambda k: "most recent " + "issuer " * (500 * k) + "filing",
+    lambda k: "The latest filing is " + "the 10-K filed 2026-02-04, " * (100 * k),
+    lambda k: "a" * (5000 * k),
+    lambda k: "1" * (5000 * k),
+    lambda k: "2026-" * (1000 * k),
+    lambda k: "dated " * (800 * k) + "2026-01-01",
+    lambda k: "10-K " * (1000 * k),
+    lambda k: "cash flow " * (500 * k),
+    lambda k: "no cash flow " * (300 * k),
+    lambda k: "evidence is " * (500 * k),
+    lambda k: "unresolved " * (800 * k),
+    lambda k: "no unresolved " * (500 * k),
+    lambda k: "red team " * (500 * k),
+    lambda k: "disagreement " * (500 * k),
+    lambda k: "." * (5000 * k),
+    lambda k: ". " * (2500 * k) + "A",
+    lambda k: "\n" * (5000 * k),
+    lambda k: "- " * (2500 * k),
+    lambda k: "Deterministic synthesis: " + "1 " * (1500 * k),
+    lambda k: "September " * (800 * k) + "2026",
+    lambda k: "30 " * (1500 * k) + "September 2026",
+    lambda k: "in the " * (800 * k) + "evidence",
+    lambda k: "second " * (800 * k) + "newest filing",
 ]
-_BUDGET_SECONDS = 0.05
+_SCALE = 8
+_MAX_RATIO = 24.0
+_NOISE_FLOOR_SECONDS = 0.05
+_ABSOLUTE_BUDGET_SECONDS = 1.0
 
 
 def _patterns() -> list[tuple[str, Any]]:
@@ -980,24 +1040,35 @@ def _patterns() -> list[tuple[str, Any]]:
     return out
 
 
-def _worst(fn: Any) -> tuple[float, str]:
+def _best_of_three(fn: Any, text: str) -> float:
     import time
 
-    worst = (0.0, "")
-    for text in _DEGENERATE:
+    best = float("inf")
+    for _ in range(3):
         start = time.perf_counter()
         fn(text)
-        elapsed = time.perf_counter() - start
-        if elapsed > worst[0]:
-            worst = (elapsed, text[:40])
-    return worst
+        best = min(best, time.perf_counter() - start)
+    return best
+
+
+def _assert_scales_linearly(fn: Any, label: str) -> None:
+    for make in _DEGENERATE:
+        small, large = make(1), make(_SCALE)
+        t_small, t_large = _best_of_three(fn, small), _best_of_three(fn, large)
+        assert t_large < _ABSOLUTE_BUDGET_SECONDS, (
+            f"{label} took {t_large:.3f}s on {large[:40]!r}")
+        if t_large > _NOISE_FLOOR_SECONDS:
+            ratio = t_large / max(t_small, 1e-6)
+            assert ratio < _MAX_RATIO, (
+                f"{label}: {_SCALE}x input took {ratio:.1f}x the time on {large[:40]!r}")
 
 
 def test_the_pattern_inventory_is_complete() -> None:
     names = {name.split(".", 1)[1] for name, _ in _patterns()}
     assert {"_TOKEN_RE", "_LATEST_DOC_RE", "_DOC_DATE_BEFORE_RE", "_SENTENCE_RE",
             "_BULLET_RE", "_LEDGER_DISAGREEMENT_RE", "_LATEST_UNAVAILABLE_RES[1]",
-            "_NO_CASH_FLOW_RES[0]", "_CASH_FLOW_RE"} <= names
+            "_NO_CASH_FLOW_RES[0]", "_CASH_FLOW_RE", "_ANCHOR_CLAUSE_END_RE",
+            "_FORM_RE", "_ORDINAL_BEFORE_RE"} <= names
 
 
 @pytest.mark.parametrize("name,pattern", _patterns(), ids=[n for n, _ in _patterns()])
@@ -1008,28 +1079,20 @@ def test_every_pattern_is_linear_on_degenerate_input(name: str, pattern: Any) ->
             pass
         pattern.match(text)
 
-    elapsed, text = _worst(run)
-    assert elapsed < _BUDGET_SECONDS, f"{name} took {elapsed:.3f}s on {text!r}"
+    _assert_scales_linearly(run, name)
 
 
 @pytest.mark.parametrize("rule", inv._CHAIR_RULES, ids=lambda r: r.__name__)
 def test_every_rule_is_linear_on_degenerate_input(rule: Any) -> None:
     state = _state(tally=_tally())
     # The rules are called directly, past the sentence-length cap.
-    elapsed, text = _worst(lambda t: rule(t, state))
-    assert elapsed < _BUDGET_SECONDS, f"{rule.__name__} took {elapsed:.3f}s on {text!r}"
+    _assert_scales_linearly(lambda t: rule(t, state), rule.__name__)
 
 
 def test_the_token_scan_is_linear_on_degenerate_input() -> None:
-    elapsed, text = _worst(inv._denies_issuer_documents)
-    assert elapsed < _BUDGET_SECONDS, f"took {elapsed:.3f}s on {text!r}"
+    _assert_scales_linearly(inv._denies_issuer_documents, "_denies_issuer_documents")
 
 
 def test_a_whole_degenerate_text_is_checked_quickly() -> None:
-    import time
-
     enforcer = inv._Enforcer(_state(tally=_tally()))
-    start = time.perf_counter()
-    for text in _DEGENERATE:
-        enforcer.text(text, "x", inv.SITE_CHAIR)
-    assert time.perf_counter() - start < 1.0
+    _assert_scales_linearly(lambda t: enforcer.text(t, "x", inv.SITE_CHAIR), "enforcer")

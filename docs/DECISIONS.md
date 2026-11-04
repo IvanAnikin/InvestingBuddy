@@ -6667,9 +6667,18 @@ UNQUALIFIED claim about the whole evidence inventory (review of PR #322):
   must be its end, a connective, or a purpose clause ("to provide context") — never a
   scope ("on the acquisition", "for the December quarter", "because the company is
   ASX-listed", "for the subsidiary", "confirming the guidance", "in German").
-- **Older document named as newest** compares only a date tied to the DOCUMENT ("dated",
-  "filed on", "published", "released", a form type + date, an accession the inventory
-  dates) with the newest document the platform HOLDS. A covered-period date ("covers
+  Nor may a scope come FIRST: a clause that opens with a qualifier ("For the offtake
+  partner, no …", "Before the IPO no …", "Unlike the peer, for which no …", "On the
+  litigation, there are no …") or negates the claim is kept, for every rule. In
+  "<subject> has no …" the subject must be the research or the company under research
+  ("the evidence pack", "the company"), not another entity ("Iluka", "the JV partner").
+- **Older document named as newest** compares only the FIRST date tied to a document
+  ("dated", "filed on", "published", "released", a form type + date, an accession the
+  inventory dates) inside the anchor's own clause — the clause ends at ";", ", which",
+  ", unlike", "earlier", "prior", "previous", "supersedes" … — with the newest document
+  the platform HOLDS. "The latest filing is the Q3 10-Q, which supersedes the 10-K filed
+  2026-02-04" names an older document on purpose, and a clause that names the newest
+  held form type before any date is kept. A covered-period date ("covers
   1 July to 30 September", "share count on 2026-09-30", "restates FY2024") is never
   compared, and a cited finding's publication date never stands in for a held document
   (a spun-off subsidiary's IR page outranked the subject's own 10-Q). Generic nouns only:
@@ -6677,13 +6686,18 @@ UNQUALIFIED claim about the whole evidence inventory (review of PR #322):
 - **Disagreement narration** fires only on phrasing that refers to the research's own
   disagreements ("unresolved disagreement", "the red team disputed", a disagreement id).
   "Conflicting data on FY2026 operating profit" and "analysts disagree" are about the
-  world, not the ledger.
+  world, not the ledger. Challenge wording is not a disagreement: the ledger records Red
+  Team challenges separately (CFR: 5 challenges, 0 disagreements).
 - **Latest period** comes from statements, core filings and the issuer's own (or
   verified) findings, completed periods only (a period ending after its source was
   published is ignored, which keeps forward tags like CLLS4-2's "2028-H2" out).
-- Sentences over 600 characters are not checked. Every pattern and rule is timed on 37
-  degenerate inputs (budget 50 ms each; worst observed about 5 ms). Withholding removes
-  only the withheld sentence: separators, newlines and the other bullets of a list stay.
+- Sentences over 600 characters are not checked. Every pattern and rule is timed on 41
+  degenerate inputs built at scale 1 and 8: the time may grow by less than 24x (linear
+  is about 8x, quadratic 64x), judged once the large input takes over 50 ms, and nothing
+  may take 1 s — a quadratic pattern on the 8x inputs (8k-40k characters) takes seconds.
+  No absolute per-call budget, so CI load does not flake it (worst observed: 13 ms). Withholding
+  removes only the withheld sentence: separators, newlines and the other bullets of a
+  list stay.
 
 The header keeps a short council fact ("8 of 8 agents completed · degraded"); the reasons
 are a full-width wrapping line below the facts.
