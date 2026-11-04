@@ -2110,6 +2110,16 @@ def _enforce_research_state(
             _write_v2_report_content(report, repaired)
             violations.extend(content_violations)
     out = dict(result.v3)
+    try:
+        # ADR-087 — a later period supersedes: an older balance-sheet figure, "most
+        # recent fiscal year" summary or segment structure is labelled with its own date.
+        from app.services.ledger.period_supersession import apply_period_supersession
+
+        labelled, supersession = apply_period_supersession(
+            out, as_of=getattr(report, "created_at", None))
+        out = {**labelled, "period_supersession": supersession}
+    except Exception:  # noqa: BLE001 - labels are additive; they never cost the report
+        pass
     out["canonical_state"] = state
     out["state_invariants"] = invariants.InvariantResult(
         v3=out, llm_council=None, violations=violations

@@ -1647,3 +1647,44 @@ reader takes its counts and status lines from it.
   cause a withhold.
 - `scripts/qa_replay_ledger_state.py <reports-dir>` replays the checker over stored
   report payloads, with the state derived from the payload. It makes no network call.
+
+## Quarterly cash flow reports and later-period supersession (ADR-087)
+
+- `app/services/sources/asx_appendix_5b.py` reads an ASX Appendix 5B / 4C by its own
+  numbered items, from the PDF's row text. It reads operating, investing and financing net
+  cash, cash at quarter end, and the issuer's estimated quarters of funding (8.7 in a 5B,
+  8.5 in a 4C).
+  - The form checks itself: every "(item X)" restatement must match, and the runway must
+    equal the issuer's own ratio. A failed check yields no fact.
+  - The reader is wired after `_artifact_from_fetch` in `live_primary_document_extractor`
+    and never raises.
+  - The issuer's runway reaches the statements view as
+    `financial_statements_state.issuer_stated`, never as a platform derivation.
+- `app/services/ledger/period_supersession.py` is `apply_period_supersession(v3,
+  as_of=)`, which runs in `v3_pipeline._enforce_research_state` after the ADR-082
+  invariants. It labels these texts, and never deletes or rewords them:
+  - balance-sheet figures (cash, net debt, total debt, equity) older than the newest
+    issuer period the run holds, or more than a year old;
+  - third-party "most recent fiscal year" summaries older than the newest held annual;
+  - segment-structure sentences older than the newest held segment period.
+
+  A label is applied only when its date is certain; otherwise nothing is labelled.
+  - **The date.** A finding's date is its period key, else an "at / as of <date>"
+    balance date, else its source's date. It is never a forecast, maturity or filing
+    date, and never a day after publication. It is read from the finding's original
+    statement, never from a label this module added.
+  - **Sentences.** A sentence is labelled only when every subject figure it cites is
+    older than the newest held period, and every amount it prints is one of those
+    figures. Peer, competitor and "(not the company)" findings never date it.
+  - **Placement.** Labels go only at a sentence start the platform is sure of ("U.S." is
+    not one), and never cover an uncited sentence joined across an abbreviation.
+  - **Amounts.** A sentence's amount matches a cited figure only at the sentence's printed
+    precision ("$4.3bn" is 4,316.3m; "A$45.1m" is not A$44.0m).
+  - **Names.** Only an annual, interim or quarterly report or an Appendix 5B / 4C is
+    named. Anything else is "a newer issuer disclosure".
+  - **Segments.** No segment is ever called historical (ADR-087 known limit).
+
+  It also fills an undated segment finding's period when its text names exactly one that
+  had ended by the source's date. The record is `v3_research.period_supersession`.
+- `scripts/qa_replay_period_supersession.py <reports-dir>` replays the rule over stored
+  report payloads and prints every changed text. It makes no network call.

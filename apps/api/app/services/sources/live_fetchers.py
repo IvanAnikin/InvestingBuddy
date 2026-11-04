@@ -672,7 +672,7 @@ async def live_primary_document_extractor(
         resolver=resolver,
     )
     fetch_ms = int((time.perf_counter() - fetch_started) * 1000)
-    return await _artifact_from_fetch(
+    artifact = await _artifact_from_fetch(
         fetched,
         title=title_hint,
         original_language=original_language,
@@ -684,6 +684,16 @@ async def live_primary_document_extractor(
         period_policy=period_policy,
         published_at=published_at,
     )
+    if artifact.status == STATUS_EXTRACTED and fetched.document_type == "pdf":
+        # ADR-087: an ASX quarterly cash flow report (Appendix 5B / 4C) is read by its own
+        # numbered items, from the same bytes. Anything else is returned unchanged.
+        from app.services.sources.asx_appendix_5b import with_quarterly_cash_flow_facts
+
+        artifact.validated_facts = await _parse_off_loop(
+            with_quarterly_cash_flow_facts, artifact.validated_facts, fetched.content,
+            extraction=artifact.extraction, title=title_hint,
+        )
+    return artifact
 
 
 # --------------------------------------------------------------------------- #

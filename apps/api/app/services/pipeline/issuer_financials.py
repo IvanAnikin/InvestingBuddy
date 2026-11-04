@@ -402,6 +402,16 @@ def _derived_runway(
     return out
 
 
+def _issuer_stated(current: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """ADR-087 — the issuer's own runway figure, never raises."""
+    from app.services.sources.asx_appendix_5b import issuer_stated_runway
+
+    try:
+        return issuer_stated_runway(current)
+    except Exception:  # noqa: BLE001 - an additive record never costs the statements view
+        return []
+
+
 # ── States ────────────────────────────────────────────────────────────────── #
 
 
@@ -712,6 +722,9 @@ def build_financial_statements_state(
         "reporting_periods": periods.as_labels(),
         "slots": slots,
         "derived": _derived_runway(annual_by_field, current_by_field),
+        # ADR-087 — figures the issuer states as its own metric (an Appendix 5B's
+        # estimated quarters of funding), kept apart from the platform's derivations.
+        "issuer_stated": _issuer_stated(current_by_field),
         "conflicts": conflicts,
         "facts_read": len(facts),
         "documents_read": len({f.get("document_id") for f in facts if f.get("document_id")}),
