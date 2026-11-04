@@ -1162,7 +1162,7 @@ def test_the_extraction_pipeline_version_advanced_for_adr_080() -> None:
         CURRENT_EXTRACTION_PIPELINE_VERSION,
     )
 
-    assert CURRENT_EXTRACTION_PIPELINE_VERSION == 21
+    assert CURRENT_EXTRACTION_PIPELINE_VERSION >= 21  # 21 = ADR-080; ADR-085 moved it to 22
 
 
 # HIGH 1 / LOW 5 — the sweep never clears a fiscal key, and is never starved by the cap.

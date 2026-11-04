@@ -1325,21 +1325,21 @@ class TestLabelsAndReuse:
         assert _requires_full_reextraction(doc, [prose]) is True
         # Read at the reader's version, or not an SEC filing: excerpts-only reuse is fine.
         assert _requires_full_reextraction(
-            SimpleNamespace(pipeline_version=21, excerpts_json=doc.excerpts_json,
+            SimpleNamespace(pipeline_version=22, excerpts_json=doc.excerpts_json,
                             canonical_url=url), [prose]) is False
         assert _requires_full_reextraction(
             SimpleNamespace(pipeline_version=20, excerpts_json=doc.excerpts_json,
                             canonical_url="https://issuer.example/r.htm"), [prose]) is False
 
-    def test_the_reader_ships_at_pipeline_version_21(self) -> None:
-        # #323 also takes 21: whichever merges second renumbers BOTH constants.
+    def test_the_reader_ships_at_pipeline_version_22(self) -> None:
+        # #323 (ADR-080) took 21; the reader ships at 22, and both constants move together.
         from app.services.sources.extraction_pipeline_version import (
             CURRENT_EXTRACTION_PIPELINE_VERSION,
             INLINE_XBRL_MIN_PIPELINE_VERSION,
         )
 
-        assert INLINE_XBRL_MIN_PIPELINE_VERSION == 21
-        assert CURRENT_EXTRACTION_PIPELINE_VERSION >= INLINE_XBRL_MIN_PIPELINE_VERSION
+        assert INLINE_XBRL_MIN_PIPELINE_VERSION == 22
+        assert CURRENT_EXTRACTION_PIPELINE_VERSION == INLINE_XBRL_MIN_PIPELINE_VERSION
 
 
 class TestHeldFilingRereadBounds:

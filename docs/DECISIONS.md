@@ -7770,13 +7770,13 @@ Two structured sources were already in hand and unread:
 6. **Held filings — re-read once on re-encounter.** Production keeps no raw bytes
    (`V3_ARTIFACT_STORE_BACKEND=none`), so a filing acquired before this change cannot be
    re-parsed from storage.
-   - `CURRENT_EXTRACTION_PIPELINE_VERSION` moves to **21**, and
-     `INLINE_XBRL_MIN_PIPELINE_VERSION = 21` marks the first reader.
+   - `CURRENT_EXTRACTION_PIPELINE_VERSION` moves to **22** (21 is ADR-080's), and
+     `INLINE_XBRL_MIN_PIPELINE_VERSION = 22` marks the first reader.
    - In `ensure_filing_corpus_evidence` state A (searchable), a held document is re-read
      **once** through the normal acquirer, inside the caller's filing-body budget (it
      counts as an attempt) when all of these hold: the form can carry iXBRL (10-K, 10-Q,
      20-F, 40-F, 6-K and their amendments); it is an SEC Archives document; and it is
-     stamped below 21.
+     stamped below 22.
    - With the budget spent (`ready_only`) it is not re-read. An 8-K never is.
    - The re-read restamps the document, so the next run reuses it free. If the re-read
      fails, the filing still answers READY from what is held.
@@ -7854,13 +7854,13 @@ in the same PR.
   not `ifrs-full` elements). Not yet seen in a live filing: the Cellectis sample tags no
   borrowings.
 - **Regeneration reuse.** `_requires_full_reextraction` is true for an SEC Archives
-  document stamped below 21 with no tagged fact, so an excerpts-only replay can no
-  longer restamp it to 21 without reading its tags.
+  document stamped below 22 with no tagged fact, so an excerpts-only replay can no
+  longer restamp it to 22 without reading its tags.
 - **Decision 6, amended — bounded re-reads.**
   - The acquirer is handed the held document's own file name when the caller names
     none, so a held 6-K exhibit is re-read, not the filing's cover page.
   - Every attempt is recorded, with its outcome, as an ingestion attempt
-    (`discovery_strategy = ixbrl_reread_v21`, under the ingestion-attempt gates), and a
+    (`discovery_strategy = ixbrl_reread_v22`, under the ingestion-attempt gates), and a
     recorded attempt is never repeated. So a failed fetch, or a document with no tags,
     costs one budget slot once per pipeline version.
   - Whether a document carries iXBRL is not known before it is fetched, so at most one
@@ -7868,8 +7868,9 @@ in the same PR.
   - A re-read that raises, or cannot run, answers READY from the held copy.
 
 ### Not changed / known limits
-- **Rebase note.** PR #323 (ADR-080) also bumps the pipeline version to 21. Whichever
-  merges second must take 22 and move `INLINE_XBRL_MIN_PIPELINE_VERSION` with it.
+- **Version.** PR #323 (ADR-080) merged first with version 21, so ADR-085 ships at 22
+  and `INLINE_XBRL_MIN_PIPELINE_VERSION` is 22: a version-21 SEC row was read for its
+  text only and is due its re-read like a version-20 one.
 - A pipeline bump re-derives reused documents on the V2 reuse path, the same cost as
   versions 19 and 20 (see DEPLOYMENT.md).
 - The statements view keeps its existing slot rule: when H1 and Q2 end together, the

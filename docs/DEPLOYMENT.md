@@ -729,20 +729,21 @@ were already on.
   `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
 
-#### Extraction pipeline version 21 — inline XBRL in SEC filings (QA campaign 2026-11, ADR-085)
+#### Extraction pipeline version 22 — inline XBRL in SEC filings (QA campaign 2026-11, ADR-085)
 
-Version 21 adds the statements an SEC Archives filing body TAGS in inline XBRL
+Version 22 adds the statements an SEC Archives filing body TAGS in inline XBRL
 (`inline_xbrl_facts`) to the facts read from its text. The re-read cost is version 19's
 (below) on the V2 reuse path. In addition, a held 10-K / 10-Q / 20-F / 40-F / 6-K
-document stamped below 21 is re-read once on its next encounter in the V3 filing bridge
+document stamped below 22 (version 21 is ADR-080's forward-date rule, which reads no
+tags) is re-read once on its next encounter in the V3 filing bridge
 (`ensure_filing_corpus_evidence` state A). That re-read is one SEC Archives fetch of the
 held document inside the caller's existing filing-body budget; with the budget spent, it
 waits for a later run. At most one such re-read happens per run, and each is recorded as
-an ingestion attempt (`discovery_strategy = ixbrl_reread_v21`) so it is never repeated
-for that version, whatever its outcome. A report regeneration that reuses a pre-21 SEC
-Archives document with no tagged fact re-extracts it from its own address (Case B) rather
-than replaying excerpts. No migration and no new host. Rolling back to 20 is safe: version-21 rows keep
-`inline_xbrl` facts that version-20 code reads as ordinary validated facts.
+an ingestion attempt (`discovery_strategy = ixbrl_reread_v22`) so it is never repeated
+for that version, whatever its outcome. A report regeneration that reuses an SEC
+Archives document stamped below 22 with no tagged fact re-extracts it from its own address (Case B) rather
+than replaying excerpts. No migration and no new host. Rolling back to 21 is safe: version-22 rows keep
+`inline_xbrl` facts that version-21 code reads as ordinary validated facts.
 
 #### Extraction pipeline version 20 — table units (QA campaign 2026-11, ADR-064)
 
