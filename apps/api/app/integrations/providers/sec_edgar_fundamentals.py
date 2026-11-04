@@ -283,6 +283,18 @@ def merge_fundamentals(
 
     warnings: list[str] = []
     normalized = normalize_company_facts(data, ticker, cik)
+    if normalized.reporting_currency != "USD":
+        # ADR-085 — an IFRS filer's statements in another currency. The fundamentals
+        # summary is denominated in USD (``revenue_usd_m`` …) and nothing is ever
+        # converted, so they are not carried into it. The issuer statements view reads
+        # the same filings' tagged facts in their own currency.
+        warnings.append(
+            f"SEC EDGAR: {ticker.upper()} reports in {normalized.reporting_currency} "
+            f"({normalized.taxonomy}); the USD fundamentals summary does not carry "
+            "those statements, and no figure is converted."
+        )
+        warnings.extend(normalized.warnings)
+        return list(base), warnings
     points = normalized.to_datapoints()
     by_name = {dp.field_name: dp for dp in points}
 

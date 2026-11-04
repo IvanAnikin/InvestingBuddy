@@ -68,6 +68,9 @@ from app.services.sources.ingestion_status import (
     FAILURE_SCANNED_NO_TEXT,
     FAILURE_UNKNOWN,
 )
+from app.services.sources.inline_xbrl_facts import (
+    with_inline_xbrl_facts as _with_inline_xbrl_facts,
+)
 from app.services.sources.ocr_provider import (
     OcrBudget,
     OcrProvider,
@@ -615,6 +618,11 @@ async def _artifact_from_fetch(
             ),
             title_only_period=is_title_only(policy=period_policy),
             document_title=title,
+        )
+        # ADR-085: an SEC filing's TAGGED statements, read from the same bytes.
+        artifact.validated_facts = await _parse_off_loop(
+            _with_inline_xbrl_facts, artifact.validated_facts, fetched.content,
+            source_url=artifact.source_url,
         )
     artifact.period_policy = period_policy
     return artifact

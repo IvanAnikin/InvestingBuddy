@@ -361,8 +361,21 @@ from __future__ import annotations
 # document period. So a version-20 row's undated facts may carry a forecast period and
 # must be derived again, not replayed. Raw-text extraction is unchanged, so
 # ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
+# Version 22 (QA campaign 2026-11, ADR-085): an SEC Archives filing body also yields the
+# statements its inline XBRL TAGS (``inline_xbrl_facts``), with the period, scope and
+# currency of each tag's own context and unit. A version-21 SEC row was read for its
+# text only, so it holds none of them; on re-encounter the filing bridge re-reads such
+# a held 10-K / 10-Q / 20-F / 40-F / 6-K once (``INLINE_XBRL_MIN_PIPELINE_VERSION``).
+# Raw-text extraction is unchanged, so ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not
+# advance.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 21
+CURRENT_EXTRACTION_PIPELINE_VERSION = 22
+
+#: ADR-085 — the first version whose SEC filing-body extraction reads inline XBRL. A held
+#: SEC filing document stamped below it has never had its tagged statements read.
+#: It moves with the version that ships the iXBRL reader and must never trail
+#: ``CURRENT_EXTRACTION_PIPELINE_VERSION`` by a version that lacked the reader.
+INLINE_XBRL_MIN_PIPELINE_VERSION = 22
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
@@ -380,4 +393,5 @@ __all__ = [
     "LEGACY_EXTRACTION_PIPELINE_VERSION",
     "CURRENT_EXTRACTION_PIPELINE_VERSION",
     "EXTRACTION_TEXT_LAYER_MIN_VERSION",
+    "INLINE_XBRL_MIN_PIPELINE_VERSION",
 ]

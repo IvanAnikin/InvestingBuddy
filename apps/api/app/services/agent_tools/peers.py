@@ -365,6 +365,14 @@ FACTS_CACHE_TTL = timedelta(hours=1)
 FACTS_CACHE_MAX = 8
 
 
+def _non_usd_gap(ticker: str, n: Any) -> str:
+    """ADR-085 — an IFRS filer reporting in another currency is not put in a USD table."""
+    return (
+        f"{ticker}: statements are reported in {n.reporting_currency} ({n.taxonomy}); "
+        "these tables are in USD millions and figures are never converted"
+    )
+
+
 def total_debt_is_usable(n: Any) -> bool:
     """True when ``n.total_debt`` may feed net debt (ADR-067).
 
@@ -399,6 +407,8 @@ def _peer_metrics(
     n = normalize_company_facts(facts, ticker)
     if n.fiscal_year is None or n.period_basis != "annual":
         return [], [f"{ticker}: no annual statements could be normalised"]
+    if getattr(n, "reporting_currency", "USD") != "USD":
+        return [], [_non_usd_gap(ticker, n)]
     # THE SUBJECT'S RULES, not a looser copy: metrics derived from an inconsistent
     # statement are withheld, and net debt needs a total debt the normaliser published
     # on a complete basis — a partial total would show a leveraged peer holding net cash.
@@ -626,6 +636,8 @@ def statement_items(
     n = normalize_company_facts(facts, ticker)
     if n.fiscal_year is None or n.period_basis != "annual":
         return [], [f"{ticker}: no annual statements could be normalised"]
+    if getattr(n, "reporting_currency", "USD") != "USD":
+        return [], [_non_usd_gap(ticker, n)]
     period = f"FY{n.fiscal_year}"
     debt_usable = total_debt_is_usable(n)
     items: list[dict[str, Any]] = []
@@ -670,7 +682,10 @@ def statement_items(
             {
                 "id": f"secfin:{ticker}:{q_period}:{metric_id}",
                 "ticker": ticker,
-                "line": f"{label} (single quarter)" if metric_id in _FLOW_IDS else label,
+                "line": (
+                    f"{label} ({'half year' if quarter.startswith('H') else 'single quarter'})"
+                    if metric_id in _FLOW_IDS else label
+                ),
                 # Its own id: anything keyed by metric id (the peer table) must never
                 # take a quarter for the annual line of the same name.
                 "metric_id": f"{metric_id}_latest_quarter",
@@ -679,7 +694,7 @@ def statement_items(
                 "period": q_period,
                 "period_end": fact.get("period_end"),
                 "scope": "group",
-                "form": "10-Q",
+                "form": "6-K" if getattr(n, "taxonomy", "") == "ifrs-full" else "10-Q",
                 "filed": fact.get("document_date"),
                 "source_tier": "T2_regulator_or_gov",
                 "source_ref": fact.get("source_url"),

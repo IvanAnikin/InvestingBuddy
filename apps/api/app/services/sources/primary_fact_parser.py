@@ -103,6 +103,17 @@ FIELD_BORROWINGS = "borrowings"
 #: Issued / share capital / contributed equity.
 FIELD_ISSUED_CAPITAL = "issued_capital"
 
+# ADR-085 — a deposit-taking bank's own statement lines, read ONLY from the issuer's
+# inline-XBRL tags (never from prose). Names match the banking playbook's metric keys.
+# Nothing industrial is ever derived from them: no free cash flow, no EBITDA, no runway.
+FIELD_NET_INTEREST_INCOME = "net_interest_income"
+FIELD_PROVISION_FOR_CREDIT_LOSSES = "provision_for_credit_losses"
+FIELD_ALLOWANCE_FOR_CREDIT_LOSSES = "allowance_for_credit_losses"
+FIELD_DEPOSITS = "deposits"
+FIELD_NET_CHARGE_OFFS = "net_charge_offs"
+#: A percentage as the issuer prints it (15.7 means 15.7%), never a fraction.
+FIELD_CET1_RATIO = "cet1_ratio"
+
 # Private-use readiness PR-C — the parser's OWN vocabulary, exported so every
 # consumer admits exactly the fields this parser can actually produce.
 #
@@ -161,7 +172,21 @@ STATEMENT_DETAIL_FIELDS: frozenset[str] = frozenset(
 )
 
 #: Everything the issuer statements view may place in a slot.
-ISSUER_STATEMENT_FIELDS: frozenset[str] = FINANCIAL_STATEMENT_FIELDS | STATEMENT_DETAIL_FIELDS
+#: ADR-085 — a bank's statement lines (see the field definitions above).
+BANK_STATEMENT_FIELDS: frozenset[str] = frozenset(
+    {
+        FIELD_NET_INTEREST_INCOME,
+        FIELD_PROVISION_FOR_CREDIT_LOSSES,
+        FIELD_ALLOWANCE_FOR_CREDIT_LOSSES,
+        FIELD_DEPOSITS,
+        FIELD_NET_CHARGE_OFFS,
+        FIELD_CET1_RATIO,
+    }
+)
+
+ISSUER_STATEMENT_FIELDS: frozenset[str] = (
+    FINANCIAL_STATEMENT_FIELDS | STATEMENT_DETAIL_FIELDS | BANK_STATEMENT_FIELDS
+)
 
 #: Spend lines — stored as the POSITIVE amount spent (see the sign convention above).
 SPEND_FIELDS: frozenset[str] = frozenset(
@@ -1477,6 +1502,13 @@ __all__ = [
     "FINANCIAL_STATEMENT_FIELDS",
     "STATEMENT_DETAIL_FIELDS",
     "ISSUER_STATEMENT_FIELDS",
+    "BANK_STATEMENT_FIELDS",
+    "FIELD_NET_INTEREST_INCOME",
+    "FIELD_PROVISION_FOR_CREDIT_LOSSES",
+    "FIELD_ALLOWANCE_FOR_CREDIT_LOSSES",
+    "FIELD_DEPOSITS",
+    "FIELD_NET_CHARGE_OFFS",
+    "FIELD_CET1_RATIO",
     "SPEND_FIELDS",
     "IDENTITY_FIELDS",
     "NON_INTERCHANGEABLE_FIELD_PAIRS",

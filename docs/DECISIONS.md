@@ -7652,3 +7652,160 @@ initials run.
   wholly-owned subsidiary. Capital adequacy is assessed over a one-year horizon…"),
   is kept unscoped (JPM-5 without "the Bank"). With the alias ("JPMSE", "the Bank") it
   is scoped as before.
+
+## ADR-085: Statement Facts From What the SEC Already Tags — IFRS companyfacts and Inline XBRL in Held Filings
+
+**Date:** 2026-11-03 · **Status:** Accepted (implementation; live acceptance pending)
+**Trigger:** cross-sector QA campaign 2026-11, priorities P-3 / P-5. The issuer
+statements view (`pipeline/issuer_financials.build_financial_statements_state`) reported
+`facts_read=0` on every non-US run and on the held US 10-K / 10-Q of HON, ADBE, JPM and
+PYPL. Current-period figures, cash runway, bank KPIs and IFRS issuers' statements reached
+the report only by chance, through prose.
+
+### Context
+Two structured sources were already in hand and unread:
+1. **SEC companyfacts `ifrs-full`.** `normalize_company_facts` read `facts["us-gaap"]`
+   only. Cellectis (CIK 1627281) holds 299 `ifrs-full` concepts: 4,023 facts from 20-F
+   annual reports and 1,932 from 6-K/A interims through H1 2025. For example, Revenue
+   FY2025 72,949,000 USD; ProfitLoss −67,593,000; CashAndCashEquivalents at 2025-12-31
+   61,533,000; CashFlowsFromUsedInOperatingActivities −39,401,000.
+2. **Inline XBRL inside held filing documents.** Every 10-K / 10-Q since 2019–2021, and
+   every iXBRL 6-K / 6-K/A that ADR-077 selects, carries `ix:nonFraction` facts. Each fact
+   has a `contextRef` (an instant or a start/end, plus dimensional members), a `unitRef`,
+   a `scale`, `decimals` and a `sign`. The newest Cellectis interim (6-K/A
+   0001193125-26-389336, period 2026-06-30) is not yet in companyfacts; only the held
+   document has it. Nothing in the codebase parsed inline XBRL.
+
+### Decision
+1. **One reviewed concept map** (`app/integrations/xbrl_statement_concepts.py`) is shared
+   by both readers. Each mapped concept gives a statement-view field, a normalizer field,
+   the issuer's own term, a priority, a kind (flow / instant), and a spend or ratio flag.
+   - Issuer terminology is kept: `ifrs-full:ProfitLoss` is "Profit (loss)";
+     `ProfitLossFromOperatingActivities` is "Operating profit (loss)" and is never called
+     EBIT.
+   - No tag is total debt: IFRS `Borrowings` fills the `borrowings` line only.
+   - An IFRS concept with no faithful US-GAAP counterpart is left unmapped.
+   - Bank lines are captured as tagged: `InterestIncomeExpenseNet`, provision for credit
+     losses, allowance, `Deposits`, net charge-offs and CET1 ratio. They go to a new
+     `BANK_STATEMENT_FIELDS` set in `primary_fact_parser`. The names follow the banking
+     playbook's metric keys, and the set is part of `ISSUER_STATEMENT_FIELDS`.
+2. **IFRS companyfacts** (`normalize_company_facts`). When `us-gaap` carries no headline
+   statement concept (revenue, net income or assets) and `ifrs-full` is present:
+   - The statements are read from `ifrs-full`, in the reporting currency. That currency
+     is the one most used by the annual-form entries of Revenue, ProfitLoss, Assets and
+     Equity. A tie normalizes nothing.
+   - The existing period selection, own-period rule, prior-year comparative and
+     consistency check apply unchanged.
+   - Units are `<CUR>_m`. Nothing is converted.
+   - `taxonomy` and `issuer_labels` are recorded, and each datapoint note names the
+     `ifrs-full` concept and the issuer's term.
+   - Debt: `Borrowings` is used when tagged, checked against current + non-current
+     borrowings when both legs are tagged; otherwise the two legs are added. One leg alone
+     is withheld (the ADR-067 partial-sum rule), and so is a total that disagrees with its
+     legs. Lease liabilities are not added.
+   - `latest_ifrs_interim_facts` is the 6-K counterpart of `latest_quarter_facts`. It
+     reads the newest 6-K / 6-K/A accession filed after the annual report: a six-month
+     span is H1/H2, a quarter is used only when no half year is reported, and balances
+     take the filing's period.
+   - Basis changes (recasts, splits) are not checked for IFRS filers, and a warning says
+     so. The US-GAAP operating-income sanity check is US-GAAP only.
+   - **USD-only consumers refuse other currencies.** The fundamentals summary
+     (`revenue_usd_m` …) and the peer / statement tables are denominated in USD. So
+     `merge_fundamentals` does not carry a non-USD IFRS bundle into the summary, and
+     `peers` returns a gap ("reported in EUR … never converted"). A USD-reporting IFRS
+     filer such as Cellectis flows through as before. Non-USD issuers get their figures
+     through (3), in their own currency.
+3. **Inline-XBRL parser** (`app/services/sources/inline_xbrl.py`).
+   - Pure: bytes in, facts out.
+   - Uses the stdlib HTML tokenizer, which expands only the fixed HTML character
+     references and never a declared or external entity. No XML parser is used.
+   - Bounded: 40 MB input, 60,000 facts, 20,000 contexts.
+   - Reads contexts (instant / start–end, explicit and typed members), units (including
+     divide units), `scale`, `sign`, and the `num-dot-decimal`, `num-comma-decimal`,
+     zero-dash and `numwords` formats. Nil facts are skipped. An unknown format is
+     skipped and counted.
+   - `ix:hidden` facts are kept and marked. `ix:exclude` text is not part of a value.
+   - Of `ix:nonNumeric`, only the `dei:` period fields are read, so `ix:continuation`
+     never matters.
+4. **Tagged facts → statement facts** (`app/services/sources/inline_xbrl_facts.py`).
+   - **Period from the context, never from prose.** The frame is
+     `dei:DocumentPeriodEndDate` (its context end), `DocumentFiscalYearFocus` and
+     `DocumentFiscalPeriodFocus`; without all three, nothing is produced. Each context is
+     placed on that fiscal calendar within ±10 days, so a 52/53-week year still fits:
+     - ~3 months → the quarter;
+     - ~6 months ending at a half-year end → H1 / H2;
+     - ~12 months ending at a fiscal year end → the fiscal year;
+     - an instant → the balance at that point. A year-end instant is the fiscal year;
+       a half-year-end instant in a half-year frame (focus H1 / H2 / Q2) is H1, so cash
+       and the half's cash flows share one period.
+     - Nine-month and trailing spans are skipped.
+     So the prior-year comparative in a filing gets its own period.
+   - **Scope.** No dimension → Group. Exactly one explicit member → a segment named by
+     the member, never the Group: a member whose name is a Group or period word is
+     qualified by its axis. Several members, or a typed member, are skipped.
+   - **Values.** The currency comes from `unitRef`, and the scale as printed (`thousand`
+     / `million` / `billion`). Spend lines must be positive; a negative tagged spend is
+     skipped, never flipped. A ratio (CET1) is stored as a percentage.
+   - **One reading per figure.** The concept priority decides between two concepts for
+     one field (`NetIncomeLoss` over `ProfitLoss`). Two readings of one concept that
+     disagree beyond their stated `decimals` fill nothing.
+   - Provenance: `table_location = ixbrl:<concept>@<context>`, extraction method
+     `inline_xbrl`, confidence 0.97, validated, `needs_human_review` kept. The statements
+     view's datapoint adds `xbrl_concept` and `issuer_label`.
+   - Up to 600 facts per document are kept, Group first.
+   - A text reading of a tagged figure (same field, period and scope, or an unknown scope
+     beside a tagged Group figure) is dropped in favour of the tag.
+5. **Wiring.** One hook in `live_fetchers._artifact_from_fetch`, the shared body of the
+   SEC filing-body extractor. It runs off the event loop and acts only on an
+   `https://www.sec.gov/Archives/` document; other documents are unchanged. The facts
+   ride on `artifact.validated_facts` into `persist_primary_document_artifacts`, so they
+   land in `ExtractedFact` — the store `load_statement_facts` reads — under the existing
+   supersession rules. A report-regeneration re-extraction of such a document runs the
+   same hook.
+6. **Held filings — re-read once on re-encounter.** Production keeps no raw bytes
+   (`V3_ARTIFACT_STORE_BACKEND=none`), so a filing acquired before this change cannot be
+   re-parsed from storage.
+   - `CURRENT_EXTRACTION_PIPELINE_VERSION` moves to **21**, and
+     `INLINE_XBRL_MIN_PIPELINE_VERSION = 21` marks the first reader.
+   - In `ensure_filing_corpus_evidence` state A (searchable), a held document is re-read
+     **once** through the normal acquirer, inside the caller's filing-body budget (it
+     counts as an attempt) when all of these hold: the form can carry iXBRL (10-K, 10-Q,
+     20-F, 40-F, 6-K and their amendments); it is an SEC Archives document; and it is
+     stamped below 21.
+   - With the budget spent (`ready_only`) it is not re-read. An 8-K never is.
+   - The re-read restamps the document, so the next run reuses it free. If the re-read
+     fails, the filing still answers READY from what is held.
+   - This is what makes Cellectis's held 6-K/A and PayPal's / JPM's held 10-Q yield
+     facts on the next run.
+7. **Banks: no industrial derivation.** When bank lines fill a slot set,
+   `_derived_runway` records the cash runway as `not_meaningful` instead of computing it.
+   Neither path derives FCF or EBITDA from bank lines.
+
+### Not changed / known limits
+- **Rebase note.** PR #323 (ADR-080) also bumps the pipeline version to 21. Whichever
+  merges second must take 22 and move `INLINE_XBRL_MIN_PIPELINE_VERSION` with it.
+- A pipeline bump re-derives reused documents on the V2 reuse path, the same cost as
+  versions 19 and 20 (see DEPLOYMENT.md).
+- The statements view keeps its existing slot rule: when H1 and Q2 end together, the
+  quarter wins a current-period slot. A 10-Q's Q2 revenue sits beside its H1 cash flow.
+  The runway uses one basis only, and a Q3 10-Q's nine-month cash flow is skipped, so it
+  has no current-period runway.
+- The CET1 and net charge-off concept names are mapped as tagged where present. JPM-style
+  dimensional capital-ratio facts are segment-scoped and never fill a Group slot.
+- Inline XBRL from non-SEC hosts (ESEF annual reports on issuer sites) is not read.
+- Per-share figures have no statements-view field. EPS comes only from the normalizer.
+- No live run yet. Acceptance needs a Cellectis, PayPal and JPM rerun after deploy.
+
+### Tests
+`tests/test_qa_closure_structured_statement_facts.py` (36 tests) covers:
+- the IFRS companyfacts fixture (trimmed Cellectis payload) with IFRS terms;
+- 6-K/A interim selection;
+- a non-USD filer kept in its own currency and refused by the USD consumers;
+- the IFRS borrowings rules;
+- the iXBRL parser: scale, sign, durations, segment members, a hidden fact, comma
+  decimals, nil facts, entities, oversized input;
+- statement facts: a prior-year comparative gets its own period, a 52/53-week year,
+  concept priority, conflicting readings;
+- a US 10-Q snippet and a bank snippet (no runway, no FCF / EBITDA);
+- the SEC-only hook, the SQLite persistence → statements view round trip, and the
+  state-A re-read rules.

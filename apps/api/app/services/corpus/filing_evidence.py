@@ -71,6 +71,7 @@ from sqlalchemy import func, select, update
 from app.models.research_chunk import ResearchDocumentChunk
 from app.models.research_derivation import ResearchDocumentDerivation
 from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+from app.services.corpus.held_filing_facts import held_filing_needs_fact_reread
 from app.services.sources.sec_filing_documents import (
     format_accession,
     normalize_accession,
@@ -945,7 +946,11 @@ async def ensure_filing_corpus_evidence(
     state = await filing_evidence_state(
         session, company_id=company_id, accession=canonical, document_name=document_name
     )
-    if state.is_ready:
+    # ADR-085: a held filing read before its tagged statements were is re-read once.
+    reread = state.is_ready and not ready_only and await held_filing_needs_fact_reread(
+        session, extracted_document_id=state.extracted_document_id, form=form
+    )
+    if state.is_ready and not reread:
         await stamp_filing_date(
             session, version_id=state.version_id, filing_date=filing_date
         )
@@ -974,6 +979,11 @@ async def ensure_filing_corpus_evidence(
         )
 
     notes: list[str] = []
+    if reread:
+        notes.append(
+            "searchable, but held before its tagged statements were read; re-reading "
+            "the filing once (ADR-085)"
+        )
     if state.state == STATE_HISTORICAL_WITHOUT_CHUNKS:
         # STATE B — the case the cache made permanent. A cached document that cannot be
         # searched does not satisfy a corpus-evidence requirement, so reacquisition is

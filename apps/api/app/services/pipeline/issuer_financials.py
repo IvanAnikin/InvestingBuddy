@@ -231,6 +231,14 @@ def _datapoint(fact: dict[str, Any], *, period_basis: str | None = None) -> dict
     dp["document_title"] = fact.get("document_title")
     dp["document_date"] = fact.get("document_date")
     dp["fact_id"] = fact.get("fact_id")
+    locator = str(fact.get("excerpt_id") or "")
+    if locator.startswith("ixbrl:"):
+        # ADR-085 — a figure the issuer TAGGED: its concept and its own term for it.
+        from app.integrations.xbrl_statement_concepts import issuer_label
+
+        concept = locator.removeprefix("ixbrl:").split("@", 1)[0]
+        dp["xbrl_concept"] = concept
+        dp["issuer_label"] = issuer_label(concept)
     if period_basis:
         dp["period_basis"] = period_basis
     return dp
@@ -259,7 +267,25 @@ def _derived_runway(
         "operating_cash_flow": "operating_cash_flow",
         "capital_expenditure": "capital_expenditure",
     }
+    from app.services.sources.primary_fact_parser import BANK_STATEMENT_FIELDS
+
     for basis, slots in (("annual", annual), ("current_period", current)):
+        if BANK_STATEMENT_FIELDS & set(slots):
+            # ADR-085 — a deposit-taking bank's statements: a cash runway (like every
+            # other industrial derivation) has no reading for one. Recorded, not computed.
+            out.append({
+                "definition_key": CASH_RUNWAY_QUARTERS.key,
+                "label": CASH_RUNWAY_QUARTERS.label,
+                "status": "not_meaningful",
+                "value": None,
+                "basis": basis,
+                "provenance": "derived",
+                "detail": (
+                    "bank statement lines are reported; a cash runway is not a measure "
+                    "for a deposit-taking bank, so none is computed"
+                ),
+            })
+            continue
         if not all(field in slots for field in roles.values()):
             continue
         inputs: dict[str, Quantity] = {}
