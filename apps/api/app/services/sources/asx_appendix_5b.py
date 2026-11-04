@@ -149,7 +149,10 @@ _SECTION_RE = re.compile(r"^\d{1,2}\.\s")
 _SUB_ITEM_RE = re.compile(r"^\([a-z]{1,2}\)", re.I)
 _NOTE_RE = re.compile(r"^(?:note|answer)\b", re.I)
 _CONTINUATION_RE = re.compile(r"^[a-z(]")
-_AMOUNT_RE = re.compile(r"^(\()?(-)?(\d{1,3}(?:,\d{3})*|\d+)(\.\d{1,4})?(\))?$")
+#: The form prints every amount of four or more digits with thousands separators, so a
+#: separator-less run of four or more digits is not an amount: it is a footnote marker
+#: glued to one ("(24001)" = "(2,400)" + note 1), and is never read.
+_AMOUNT_RE = re.compile(r"^(\()?(-)?(\d{1,3}(?:,\d{3})*)(\.\d{1,4})?(\))?$")
 _NIL_TOKENS = frozenset({"-", "–", "—"})
 _NA_TOKENS = frozenset({"n/a", "na", "n.a."})
 _STRAY_RE = re.compile(r"^[A-Za-z]{1,4}$")

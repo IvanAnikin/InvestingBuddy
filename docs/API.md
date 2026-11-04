@@ -3461,12 +3461,14 @@ No new route. All of these keys are additive:
 
   The new statement field `issuer_estimated_quarters_of_funding` can also appear in
   `slots` as `issuer_estimated_quarters_of_funding_current_period`.
-- `source_summary_json.v3_research.period_supersession` (`version: 1`) records what the
+- `source_summary_json.v3_research.period_supersession` (`version: 2`) records what the
   rule did. It has these fields:
   - `as_of`;
   - `newest_issuer_periods`: per family (`cash`, `debt`, `equity`, `segments`,
-    `fiscal_year`), the `lower_bound`, `document` and `published` of the newest held
-    issuer period;
+    `fiscal_year`), the `lower_bound`, `document` (neutralised like the labels),
+    `published` and `named` of the newest held issuer period. `named` is false for a
+    document a label does not name (a 6-K, an activities report, a release); such a
+    label reads "a newer issuer disclosure of <date> is held";
   - `labelled[]`: `{rule, path, label}`;
   - `periods_filled[]`: `{finding_id, period_key}`;
   - `note`.

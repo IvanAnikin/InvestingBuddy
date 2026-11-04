@@ -15,7 +15,9 @@ THE ONE RULE
 A point-in-time balance-sheet figure (cash, net debt / net cash, total debt / borrowings,
 equity), a "most recent / latest / last fiscal year" summary, or a segment structure is
 never presented as current when it is not: it is LABELLED WITH ITS OWN DATE. Nothing is
-deleted and no figure is changed; a label is only ever a true date.
+deleted and no figure is changed; a label is only ever a true date. When the platform
+cannot be sure of the date, nothing is labelled: a missing label is a gap, a wrong one
+is wrong data.
 
 A text unit is labelled when it states such a claim WITHOUT a date of its own, and its
 as-of is known to be older than either
@@ -24,28 +26,52 @@ as-of is known to be older than either
   or
 * a year before the report (``STALE_AFTER_DAYS``), which no current balance sheet is.
 
-A "most recent fiscal year" claim is labelled when its source predates the issuer's held
-annual report by more than the longest annual reporting lag, even if it prints a year.
+A "most recent / latest / last fiscal year" claim is labelled when its source predates
+the issuer's held annual report by more than the longest annual reporting lag, even if
+it prints a year. ("Current fiscal year" is the year in progress, not a past one: never.)
+
+THE DATE OF A CLAIM (review of PR #326)
+=======================================
+A finding's as-of is, in this order, and never a day after its source's publication
+date (or, undated, the report date):
+1. the end of its ``period_key``;
+2. the latest balance-date phrase its text prints ("at / as of / as at <date>");
+3. "as of a source dated <publication date>".
+Any other date in the text — a forecast ("into 2028"), a maturity ("mature 15 March
+2030"), a filing date ("10-K filed 2026-02-03") — is never the figures' date. Every date
+is read from the finding's ORIGINAL statement: the labels this module adds are not text.
+
+A synthesis sentence is labelled only when
+* every subject finding it cites that carries a figure has a known as-of, and the
+  latest of them is older than the newer held issuer period (the label prints that
+  latest as-of);
+* every amount the sentence prints is one those findings print (a new figure — "rose
+  to A$31.3m" — or a peer's figure has no date the platform knows);
+* findings about another entity (a peer, a competitor, "(not the company)") are not the
+  subject's figures and never date the sentence.
+A label goes only at a sentence start the platform is sure of: across an abbreviation
+("U.S. Steel") the whole run of text is one unit, labelled at its start.
+
+A held document is NAMED in a label only when it is an annual report, an interim or
+quarterly report (10-K, 10-Q, 20-F, 40-F, half-year report), or an Appendix 5B / 4C;
+anything else (a 6-K, an activities report, a results release) is "a newer issuer
+disclosure".
 
 BOUNDS, NOT GUESSES
 ===================
 Every comparison is between an UPPER bound of the old claim's as-of and a LOWER bound of
-the newer one, so a label is only applied when it is certainly true:
-* the claim's as-of is at most: the latest date its text prints; else the end of its
-  period key; else its source's publication date. A synthesis sentence inherits the
-  latest as-of of the findings it cites for the same metric, and only when every one of
-  them has one.
-* a held document's period ends no earlier than its publication date minus the longest
-  reporting lag for its kind (an annual report 183 days, an interim or quarterly report
-  92 days); an Appendix 5B fact knows its quarter end exactly.
+the newer one: a held document's period ends no earlier than its publication date minus
+the longest reporting lag for its kind (an annual report 183 days, an interim or
+quarterly report 92 days); an Appendix 5B fact knows its quarter end exactly.
 
 SEGMENTS
 ========
 A segment finding without a period key takes the one period its own text names
-(``period_key_source: "statement_text"``). Where the run's issuer findings name the
-segments of a NEWER period (``scope_key`` ``segment:<name>``), an older finding about a
-segment absent from that perimeter is labelled historical. An undated synthesis sentence
-about segments that cites only older segment findings is labelled with their period.
+(``period_key_source: "statement_text"``), only when that period had ended by its
+source's publication date (ADR-080: a forward period is never a period tag). An undated
+synthesis sentence about segments that cites only older segment findings is labelled
+with their period. No segment is ever called historical: the run's segment scope keys
+are not a complete, normalised perimeter (ADR-087 known limit).
 
 Every pattern is linear and every input bounded (``MAX_TEXT_CHARS``). No issuer is named.
 """
@@ -60,7 +86,9 @@ from typing import Any
 
 from app.services.ledger.canonical_state import as_date, document_inventory, period_bounds
 
-SUPERSESSION_VERSION = 1
+#: 2: dates from the original statements and from period keys / balance-date phrases only;
+#: no "historical segment" rule; peers ignored; sure sentence starts (review of #326).
+SUPERSESSION_VERSION = 2
 
 #: A claim whose as-of is older than this before the report is not "current".
 STALE_AFTER_DAYS = 365
@@ -69,6 +97,9 @@ ANNUAL_LAG_DAYS = 183
 INTERIM_LAG_DAYS = 92
 #: Texts longer than this are not examined.
 MAX_TEXT_CHARS = 2000
+#: Two amounts are the same figure when they differ by at most this share (rounding:
+#: "USD 20.3bn" is "USD 20,256 million").
+AMOUNT_TOLERANCE = 0.05
 
 FAMILY_CASH = "cash"
 FAMILY_DEBT = "debt"
@@ -80,7 +111,6 @@ BALANCE_FAMILIES = (FAMILY_CASH, FAMILY_DEBT, FAMILY_EQUITY)
 RULE_LATEST_FISCAL_YEAR = "most_recent_fiscal_year_superseded"
 RULE_BALANCE_AS_OF = "balance_sheet_figure_dated"
 RULE_SEGMENT_AS_OF = "segment_structure_dated"
-RULE_SEGMENT_HISTORICAL = "segment_absent_from_newer_perimeter"
 
 #: Statement fields per balance-sheet family (``financial_statements_state.slots``).
 _SLOT_FIELDS: dict[str, tuple[str, ...]] = {
@@ -114,22 +144,51 @@ _HALF_RE = re.compile(
     r"\b(?:(?:H|HY)([12])?[\s-]{0,2}(?:FY)?[\s-]{0,2}((?:19|20)\d{2})"
     r"|((?:19|20)\d{2})-H([12]))\b", re.I)
 _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+#: What makes a printed date the date OF a balance ("at 31 December 2024", "as of
+#: June 30, 2025", "as at the end of March 2026"), read just before the date.
+_BALANCE_DATE_LEAD_RE = re.compile(
+    r"\b(?:as\s{1,3}(?:of|at)|at)(?:\s{1,3}the\s{1,3}end\s{1,3}of)?\s{1,3}$", re.I)
+#: A past full year; "current fiscal year" is the year in progress, never superseded.
 _LATEST_FY_RE = re.compile(
-    r"\b(?:most\s{1,3}recent|latest|last|current)\s{1,3}(?:full\s{1,3})?"
+    r"\b(?:most\s{1,3}recent|latest|last)\s{1,3}(?:full\s{1,3})?"
     r"(?:fiscal|financial|reporting)\s{1,3}year\b", re.I)
 _SEGMENT_RE = re.compile(r"\bsegments?\b(?!\s{1,3}(?:its|their|the)\b)", re.I)
 #: A money amount: a currency sign or code beside a number, or a number with a scale.
-_AMOUNT_RE = re.compile(
-    r"(?:[$€£¥]|\b(?:USD|AUD|A\$|US\$|EUR|GBP|CHF|CAD|JPY|NZD|HKD|SEK|DKK|NOK)\b)\s?\d"
-    r"|\d(?:[\d,.]{0,20})\s?(?:m|bn|b|k|million|billion|thousand)\b", re.I)
+#: (``_amounts`` keeps only matches with one of the two.)
+_MONEY_RE = re.compile(
+    r"(?:(?P<cur>[$€£¥]|\b(?:USD|AUD|A\$|US\$|EUR|GBP|CHF|CAD|JPY|NZD|HKD|SEK|DKK|NOK)\b)"
+    r"\s?)?(?P<num>\d{1,3}(?:,\d{3}){1,6}|\d{1,15})(?P<dec>\.\d{1,6})?"
+    r"(?:\s?(?P<scale>billion|bn|b|million|mn|m|thousand|k)\b)?", re.I)
+_SCALES = {"billion": 1e9, "bn": 1e9, "b": 1e9, "million": 1e6, "mn": 1e6, "m": 1e6,
+           "thousand": 1e3, "k": 1e3}
+#: A statement about another entity: a peer, competitor or rival, or the writer's own
+#: "(not the company)". ("peer-to-peer" is a payments product, not a peer.)
+_OTHER_ENTITY_RE = re.compile(
+    r"\b(?:(?<!-to-)peers?(?!-to-)|competitors?|rivals?)\b|\bnot\s{1,3}the\s{1,3}company\b",
+    re.I)
 _TOKEN_RE = re.compile(r"[a-z]+(?:'[a-z]?)?|\d")
-#: How every label this module writes begins (so a text is never labelled twice).
-_OWN_LABEL_STARTS = ("[as of ", "[figures ", "[segment structure ", "[historical segment")
+#: Every label this module writes: "[as of …", "[for …", "[at …", "[figures …" or
+#: "[segment structure …", ending in "is held]" or "over a year before this report]".
+_OWN_LABEL_RE = re.compile(
+    r"\[(?:as of |for |at |figures |segment structure )[^\[\]]{0,400}"
+    r"(?:is held|over a year before this report)\]\s?")
 #: A finding id (or its 8-character prefix) as a chair cites it; at least one letter, so
 #: an 8-digit number is never one.
 _HEX_ID_RE = re.compile(
     r"\b(?=[0-9]{0,7}[a-f])([0-9a-f]{8})(?:-[0-9a-f]{4}){0,3}(?:-[0-9a-f]{12})?\b")
 _SENTENCE_RE = re.compile(r"(?<=[.!?])[ \t]+(?=[A-Z\"'(\[])")
+#: A dotted abbreviation ("U.S", "e.g") before a full stop: not a sentence end.
+_DOTTED_RE = re.compile(r"[A-Za-z]\.[A-Za-z]")
+_ABBREVIATIONS = frozenset({
+    "mr", "mrs", "ms", "dr", "prof", "st", "inc", "co", "corp", "ltd", "plc", "llc", "no",
+    "nos", "vs", "etc", "approx", "est", "fig", "jr", "sr", "bros", "dept", "mt", "ft",
+    "ave", "gen", "gov", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept",
+    "oct", "nov", "dec",
+})
+#: A held document named in a label: an Appendix 5B / 4C …
+_NAMED_TITLE_RE = re.compile(r"\bappendix\s{0,3}(?:5b|4c)\b", re.I)
+#: … or one of these filings.
+_NAMED_FORMS = ("10-K", "10-Q", "20-F", "40-F")
 
 #: Tokens after "cash" that make it a flow or a cost, not a balance.
 _CASH_NOT_BALANCE_NEXT = frozenset({
@@ -165,25 +224,36 @@ def _month_end(year: int, month: int) -> date:
     return first_next - timedelta(days=1)
 
 
+def _dated_spans(text: str) -> list[tuple[int, date]]:
+    """``(start, date)`` of every date a text prints. A month-year ("June 2026" → its
+    last day) that is part of a day-precise date ("15 March 2025") is that date only."""
+    out: list[tuple[int, date]] = []
+    covered = bytearray(len(text))
+    for regex, order in ((_DMY_RE, (3, 2, 1)), (_MDY_RE, (3, 1, 2)), (_ISO_RE, (1, 2, 3))):
+        for m in regex.finditer(text):
+            y, mo, d = (m.group(i) for i in order)
+            month = int(mo) if mo.isdigit() else _MONTHS[mo[:3].lower()]
+            day = _day(int(y), month, int(d))
+            if day:
+                out.append((m.start(), day))
+                covered[m.start(): m.end()] = b"\x01" * (m.end() - m.start())
+    for m in _MONTH_YEAR_RE.finditer(text):
+        if any(covered[m.start(): m.end()]):
+            continue
+        out.append((m.start(), _month_end(int(m.group(2)), _MONTHS[m.group(1)[:3].lower()])))
+    return out
+
+
 def text_dates(text: str) -> list[date]:
     """Day-precise dates a text prints (``31 Dec 2024``, ``Dec 31, 2024``,
     ``2024-12-31``) and month-year dates (``June 2026`` → its last day)."""
-    out: list[date] = []
-    for m in _DMY_RE.finditer(text):
-        d = _day(int(m.group(3)), _MONTHS[m.group(2)[:3].lower()], int(m.group(1)))
-        if d:
-            out.append(d)
-    for m in _MDY_RE.finditer(text):
-        d = _day(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2)))
-        if d:
-            out.append(d)
-    for m in _ISO_RE.finditer(text):
-        d = _day(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        if d:
-            out.append(d)
-    for m in _MONTH_YEAR_RE.finditer(text):
-        out.append(_month_end(int(m.group(2)), _MONTHS[m.group(1)[:3].lower()]))
-    return out
+    return [day for _, day in _dated_spans(text)]
+
+
+def balance_dates(text: str) -> list[date]:
+    """The dates a text gives as the date OF a figure: "at / as of / as at <date>"."""
+    return [day for start, day in _dated_spans(text)
+            if _BALANCE_DATE_LEAD_RE.search(text[max(0, start - 30): start])]
 
 
 def _year(raw: str) -> int:
@@ -214,17 +284,27 @@ def has_own_date(text: str) -> bool:
     return bool(text_dates(text) or text_period_keys(text) or _YEAR_RE.search(text))
 
 
-def _upper_bound_of_text(text: str) -> date | None:
-    """The latest point any date or period in the text reaches, else ``None``."""
-    ends = list(text_dates(text))
-    for key in text_period_keys(text):
-        bounds = period_bounds(key)
-        if bounds:
-            ends.append(bounds[1])
-    if not ends:
-        for m in _YEAR_RE.finditer(text):
-            ends.append(date(int(m.group(1)), 12, 31))
-    return max(ends) if ends else None
+# ── Amounts ───────────────────────────────────────────────────────────────── #
+
+
+def _amounts(text: str) -> list[float]:
+    """The money amounts a text prints, in units."""
+    out: list[float] = []
+    for m in _MONEY_RE.finditer(text):
+        scale = (m.group("scale") or "").lower()
+        if not (m.group("cur") or scale):
+            continue
+        value = float(m.group("num").replace(",", "") + (m.group("dec") or ""))
+        out.append(value * _SCALES.get(scale, 1.0))
+    return out
+
+
+def _states_amount(text: str) -> bool:
+    return bool(_amounts(text))
+
+
+def _same_amount(a: float, b: float) -> bool:
+    return abs(a - b) <= AMOUNT_TOLERANCE * max(abs(a), abs(b))
 
 
 # ── Metric families ───────────────────────────────────────────────────────── #
@@ -283,17 +363,30 @@ def _families_of_document(kind: str, form: str | None) -> tuple[set[str], int] |
     return None
 
 
+def _nameable(kind: str, form: str | None) -> bool:
+    """A held document a label may name: an annual, interim or quarterly report, or an
+    Appendix 5B / 4C. A 6-K, an activities report or a release is not named."""
+    form_text = (form or "").strip().upper()
+    if form_text.startswith("6-K"):
+        return False
+    if _NAMED_TITLE_RE.search(form or "") or form_text.startswith(_NAMED_FORMS):
+        return True
+    return kind in ("annual_report", "interim_report")
+
+
 def newest_issuer_periods(v3: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Per family, the LOWER bound of the newest period the issuer's held documents give,
-    and which document gives it."""
-    from app.services.sources.asx_appendix_5b import parse_locator
+    which document gives it, and whether a label may name it."""
+    from app.services.sources.asx_appendix_5b import FORM_LABELS, parse_locator
 
     best: dict[str, dict[str, Any]] = {}
 
-    def offer(family: str, bound: date, what: str, published: date | None) -> None:
+    def offer(family: str, bound: date, what: str, published: date | None,
+              named: bool) -> None:
         current = best.get(family)
-        if current is None or bound > current["lower_bound"]:
-            best[family] = {"lower_bound": bound, "document": what,
+        if (current is None or bound > current["lower_bound"]
+                or (bound == current["lower_bound"] and named and not current["named"])):
+            best[family] = {"lower_bound": bound, "document": what, "named": named,
                             "published": published.isoformat() if published else None}
 
     for doc in document_inventory(v3):
@@ -304,56 +397,87 @@ def newest_issuer_periods(v3: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             continue
         fams, lag = reported
         what = doc.form or doc.kind.replace("_", " ")
+        named = _nameable(doc.kind, doc.form)
         for family in fams:
-            offer(family, doc.published - timedelta(days=lag), what, doc.published)
+            offer(family, doc.published - timedelta(days=lag), what, doc.published, named)
 
     statements = v3.get("financial_statements_state")
     slots = statements.get("slots") if isinstance(statements, Mapping) else None
-    for key, dp in (slots or {}).items():
+    for key, dp in (slots or {}).items() if isinstance(slots, Mapping) else ():
         if not isinstance(dp, Mapping):
             continue
         for family, fields in _SLOT_FIELDS.items():
             if not any(str(key).startswith(f + "_") for f in fields):
                 continue
-            exact = None
+            parsed = None
             for bit in dp.get("fact_provenance") or ():
                 if str(bit).startswith("excerpt="):
                     parsed = parse_locator(str(bit)[len("excerpt="):])
-                    exact = parsed[1] if parsed else None
-            published = as_date(dp.get("document_date"))
-            if exact is not None:
-                offer(family, exact, str(dp.get("document_title") or "issuer statement"),
-                      published)
+            if parsed is None:
+                continue
+            title = str(dp.get("document_title") or FORM_LABELS.get(parsed[0], parsed[0]))
+            # The fact came from the form itself: it is an Appendix 5B / 4C, whatever the
+            # announcement's headline says.
+            offer(family, parsed[1], title, as_date(dp.get("document_date")), True)
     return best
 
 
 # ── As-of of a claim ──────────────────────────────────────────────────────── #
 
 
-def _finding_as_of(finding: Mapping[str, Any]) -> tuple[date, str] | None:
-    """The upper bound of a finding's as-of and how it reads in a label."""
-    text = str(finding.get("statement") or "")[:MAX_TEXT_CHARS]
+def _statement(finding: Mapping[str, Any]) -> str:
+    """A finding's statement as written: without any label this module added."""
+    return _OWN_LABEL_RE.sub("", str(finding.get("statement") or "")[:MAX_TEXT_CHARS])
+
+
+def _about_other_entity(finding: Mapping[str, Any]) -> bool:
+    return bool(_OTHER_ENTITY_RE.search(_statement(finding)))
+
+
+def _finding_as_of(
+    finding: Mapping[str, Any], report_date: date | None = None
+) -> tuple[date, str] | None:
+    """The upper bound of a finding's as-of and how it reads in a label: its period key,
+    else its latest balance-date phrase, else its source's date — never a day after its
+    source's publication (or, undated, the report date)."""
+    text = _statement(finding)
     published = as_date(finding.get("source_published_at"))
-    bound = _upper_bound_of_text(text)
-    if bound is not None:
-        dates = text_dates(text)
-        if dates and max(dates) == bound:
-            return _clamp(bound, published), f"at {_fmt(bound)}"
-        keys = text_period_keys(text)
-        label = _key_label(max(keys, key=lambda k: (period_bounds(k) or (date.min,) * 2)[1])
-                           ) if keys else str(bound.year)
-        return _clamp(bound, published), f"for {label}"
+    ceiling = published or report_date or date.today()
     key = finding.get("period_key")
     bounds = period_bounds(key) if key else None
-    if bounds is not None:
-        return _clamp(bounds[1], published), f"for {_key_label(str(key))}"
+    if bounds is not None and bounds[1] <= ceiling:
+        return bounds[1], f"for {_key_label(str(key))}"
+    dated = [day for day in balance_dates(text) if day <= ceiling]
+    if dated:
+        latest = max(dated)
+        return latest, f"at {_fmt(latest)}"
     if published is not None:
         return published, f"as of a source dated {published.isoformat()}"
     return None
 
 
-def _clamp(bound: date, published: date | None) -> date:
-    return min(bound, published) if published else bound
+def _combined(
+    every: list[tuple[date, str] | None], shown: list[tuple[date, str] | None]
+) -> tuple[date, str] | None:
+    """``(latest as-of of EVERY figure, how the SHOWN ones read)``: one as-of reads as
+    itself ("for FY2025"); different ones as "up to" the latest ("up to 2026-Q2"), never
+    one period for figures of several. ``None`` when any as-of is unknown."""
+    if not every or not shown or any(a is None for a in (*every, *shown)):
+        return None
+    upper = max(a[0] for a in every if a is not None)
+    dated = [a for a in shown if a is not None]
+    latest = max(dated, key=lambda a: a[0])
+    if len({a[0] for a in dated}) == 1 and latest[0] == upper:
+        return upper, latest[1]
+    return upper, f"up to {_short(latest)}"
+
+
+def _short(as_of: tuple[date, str]) -> str:
+    """An as-of without its preposition: "FY2025", "31 Dec 2025", "20 Feb 2026"."""
+    label = as_of[1]
+    if label.startswith("for "):
+        return label[len("for "):]
+    return _fmt(as_of[0])
 
 
 def _fmt(day: date) -> str:
@@ -374,9 +498,9 @@ class _Labeller:
         self.newest = newest_issuer_periods(v3)
         self.actions: list[dict[str, Any]] = []
         self.periods_filled: list[dict[str, Any]] = []
+        #: SNAPSHOTS of the findings before any label is added (labels are not text).
         self.by_id: dict[str, Mapping[str, Any]] = {}
         self.by_label: dict[str, Mapping[str, Any]] = {}
-        self.perimeters: dict[date, set[str]] = {}
 
     # -- inputs --
     def index(self, v3: Mapping[str, Any]) -> None:
@@ -386,12 +510,16 @@ class _Labeller:
             raw = report.get("finding_labels")
             labels = dict(raw) if isinstance(raw, Mapping) else {}
         for finding in _findings(v3):
+            snapshot = dict(finding)
             fid = str(finding.get("finding_id") or "")
             if fid:
-                self.by_id.setdefault(fid, finding)
+                self.by_id.setdefault(fid, snapshot)
             label = finding.get("label") or labels.get(fid)
             if label:
-                self.by_label.setdefault(str(label), finding)
+                self.by_label.setdefault(str(label), self.by_id.get(fid, snapshot))
+
+    def as_of_of(self, finding: Mapping[str, Any]) -> tuple[date, str] | None:
+        return _finding_as_of(finding, self.as_of)
 
     def _stale(self, upper: date, family: str) -> dict[str, Any] | None:
         newer = self.newest.get(family)
@@ -407,14 +535,18 @@ class _Labeller:
         if not newer.get("document"):
             return "over a year before this report"
         when = f" of {newer['published']}" if newer.get("published") else ""
-        return f"the issuer's newer {newer['document']}{when} is held"
+        if newer.get("named"):
+            return f"the issuer's newer {newer['document']}{when} is held"
+        return f"a newer issuer disclosure{when} is held"
 
     # -- findings --
     def finding_label(self, finding: Mapping[str, Any]) -> tuple[str, str] | None:
-        text = str(finding.get("statement") or "")
-        if not text or len(text) > MAX_TEXT_CHARS or _body(text).startswith(_OWN_LABEL_STARTS):
+        raw = str(finding.get("statement") or "")
+        if not raw or len(raw) > MAX_TEXT_CHARS or _is_labelled(raw):
             return None
-        as_of = _finding_as_of(finding)
+        text = _statement(finding)
+        if _about_other_entity(finding):
+            return None  # "the issuer's newer report" is not that entity's report
         if _LATEST_FY_RE.search(text):
             published = as_date(finding.get("source_published_at"))
             newer = self.newest.get(FAMILY_ANNUAL)
@@ -423,9 +555,10 @@ class _Labeller:
                 return RULE_LATEST_FISCAL_YEAR, (
                     f"[as of a source dated {published.isoformat()}; not the latest fiscal "
                     f"year: {self._held_phrase(newer)}]")
+        as_of = self.as_of_of(finding)
         if has_own_date(text) or as_of is None:
             return None
-        if not _AMOUNT_RE.search(_strip_ids(text)):
+        if not _states_amount(_strip_ids(text)):
             return None
         for family in sorted(families(text)):
             newer = self._stale(as_of[0], family)
@@ -434,10 +567,11 @@ class _Labeller:
         return None
 
     def segment_period(self, finding: dict[str, Any]) -> None:
-        """Fill an undated segment finding's period from the one its text names."""
+        """Fill an undated segment finding's period from the one its text names, when
+        that period had ended by its source's publication (or the report) date."""
         if finding.get("period_key") or str(finding.get("domain")) not in _PERIMETER_DOMAINS:
             return
-        text = str(finding.get("statement") or "")[:MAX_TEXT_CHARS]
+        text = _statement(finding)
         scope = str(finding.get("scope_key") or "")
         if not (_is_segment_claim(text) or scope.startswith("segment:")):
             return
@@ -447,42 +581,15 @@ class _Labeller:
             # on a day) is not stating the period its figures are for.
             return
         key = next(iter(keys))
+        bounds = period_bounds(key)
+        ceiling = as_date(finding.get("source_published_at")) or self.as_of
+        if bounds is None or bounds[1] > ceiling:
+            return  # a target or a forecast ("output of 50kt in FY2028"): not a period
         finding["period_key"] = key
         finding["period_key_source"] = "statement_text"
         entry = {"finding_id": finding.get("finding_id"), "period_key": key}
         if entry not in self.periods_filled:
             self.periods_filled.append(entry)
-
-    def build_perimeters(self) -> None:
-        for finding in self.by_id.values():
-            scope = str(finding.get("scope_key") or "")
-            kinds = set(finding.get("source_kinds") or ())
-            if not scope.startswith("segment:") or not kinds & {"issuer_filing", "issuer_ir"}:
-                continue
-            bounds = period_bounds(finding.get("period_key"))
-            if bounds is None:
-                continue
-            self.perimeters.setdefault(bounds[1], set()).add(scope)
-
-    def segment_label(self, finding: Mapping[str, Any]) -> tuple[str, str] | None:
-        scope = str(finding.get("scope_key") or "")
-        text = str(finding.get("statement") or "")
-        if (not scope.startswith("segment:") or not text or len(text) > MAX_TEXT_CHARS
-                or _body(text).startswith(_OWN_LABEL_STARTS)
-                or str(finding.get("domain")) not in _PERIMETER_DOMAINS):
-            return None
-        bounds = period_bounds(finding.get("period_key"))
-        if bounds is None:
-            return None
-        newer = [end for end in self.perimeters if end > bounds[1]]
-        if not newer:
-            return None
-        latest = max(newer)
-        if scope in self.perimeters[latest]:
-            return None
-        return RULE_SEGMENT_HISTORICAL, (
-            f"[historical segment, {_key_label(str(finding.get('period_key')))}: not among "
-            f"the segments the issuer reports for a later period]")
 
     # -- sentences --
     def sentence_label(
@@ -490,45 +597,59 @@ class _Labeller:
     ) -> tuple[str, str] | None:
         text = _strip_ids(sentence).strip()
         if (not text or len(text) > MAX_TEXT_CHARS or not cited or has_own_date(text)
-                or _body(text).startswith(_OWN_LABEL_STARTS)):
+                or _is_labelled(text)):
             return None
-        stated = bool(_AMOUNT_RE.search(text))
+        subject = [f for f in cited if not _about_other_entity(f)]
+        with_figures = [f for f in subject if _states_amount(_strip_ids(_statement(f)))]
+        figure_dates = [self.as_of_of(f) for f in with_figures]
+        if any(a is None for a in figure_dates):
+            return None  # a cited figure the platform cannot date: no label is certain
+        stated = _amounts(text)
+        if not all(any(_same_amount(a, b) for f in with_figures
+                       for b in _amounts(_strip_ids(_statement(f)))) for a in stated):
+            return None  # a figure no subject finding gives (new, derived, or a peer's)
+        # The figures the sentence states are those of the findings that print them; a
+        # sentence that prints none rests on every figure it cites.
+        stating = [f for f in with_figures
+                   if any(_same_amount(a, b) for a in stated
+                          for b in _amounts(_strip_ids(_statement(f))))] if stated else []
         for family in sorted(families(text)):
-            backing = [f for f in cited if family in families(str(f.get("statement") or ""))]
-            as_ofs = [_finding_as_of(f) for f in backing]
-            if not backing or any(a is None for a in as_ofs):
-                continue
+            backing = [f for f in subject if family in families(_statement(f))]
             # A sentence that prints no figure still states one when every finding it
             # cites for the metric does ("maintains a cash position sufficient …").
-            if stated or all(_AMOUNT_RE.search(_strip_ids(str(f.get("statement") or "")))
-                             for f in backing):
-                upper, label = max((a for a in as_ofs if a is not None), key=lambda a: a[0])
-                newer = self._stale(upper, family)
-                if newer is not None:
-                    return RULE_BALANCE_AS_OF, (
-                        f"[figures {label}; {self._held_phrase(newer)}]")
+            if not backing or not (stated or all(f in with_figures for f in backing)):
+                continue
+            every = [*figure_dates, *(self.as_of_of(f) for f in backing)]
+            shown = [self.as_of_of(f) for f in stating] if stated else every
+            label = _combined(every, shown)
+            if label is None:
+                continue
+            newer = self._stale(label[0], family)
+            if newer is not None:
+                return RULE_BALANCE_AS_OF, (
+                    f"[figures {label[1]}; {self._held_phrase(newer)}]")
         if _is_segment_claim(text):
-            backing = [f for f in cited
-                       if _is_segment_claim(str(f.get("statement") or ""))
+            backing = [f for f in subject
+                       if _is_segment_claim(_statement(f))
                        and str(f.get("domain")) in _PERIMETER_DOMAINS]
-            as_ofs = [_finding_as_of(f) for f in backing]
-            if backing and all(a is not None for a in as_ofs):
-                upper, label = max((a for a in as_ofs if a is not None), key=lambda a: a[0])
-                newer = self.newest.get(FAMILY_SEGMENTS)
-                if newer is not None and upper < newer["lower_bound"]:
-                    return RULE_SEGMENT_AS_OF, (
-                        f"[segment structure as reported {label}; "
-                        f"{self._held_phrase(newer)}]")
+            every = [*figure_dates, *(self.as_of_of(f) for f in backing)]
+            label = _combined(every, every) if backing else None
+            newer = self.newest.get(FAMILY_SEGMENTS)
+            if label is not None and newer is not None and label[0] < newer["lower_bound"]:
+                return RULE_SEGMENT_AS_OF, (
+                    f"[segment structure {label[1]}; {self._held_phrase(newer)}]")
         return None
 
     def label_text(self, text: Any, cited_for: Any, path: str) -> Any:
-        """Label each sentence of a text that needs it; ``cited_for(sentence)`` gives the
-        findings a sentence cites."""
+        """Label each unit of a text that needs it; ``cited_for(unit)`` gives the findings
+        a unit cites. A unit begins at a sentence start the platform is sure of."""
         if not isinstance(text, str) or not text.strip() or len(text) > 20_000:
             return text
         pieces: list[tuple[str, str]] = []
         start = 0
         for m in _SENTENCE_RE.finditer(text):
+            if not _sure_break(text, m.start()):
+                continue  # "U.S. Steel": one unit with what follows
             pieces.append((text[start: m.start()], m.group(0)))
             start = m.end()
         pieces.append((text[start:], ""))
@@ -546,6 +667,21 @@ class _Labeller:
         return "".join(out) if changed else text
 
 
+def _sure_break(text: str, end: int) -> bool:
+    """True when the full stop / mark just before ``end`` certainly ends a sentence: not
+    after a single letter, a dotted abbreviation ("U.S") or a known one ("Inc", "No")."""
+    if text[end - 1] in "!?":
+        return True
+    i = end - 1
+    floor = max(0, i - 40)
+    while i > floor and not text[i - 1].isspace():
+        i -= 1
+    token = text[i: end - 1].strip("\"'()[]")
+    if not token or (len(token) == 1 and token.isalpha()):
+        return False
+    return not (_DOTTED_RE.search(token) or token.lower() in _ABBREVIATIONS)
+
+
 def _strip_ids(text: str) -> str:
     """The text without the finding ids a chair cites ("(finding_ids: 13aac435, …)")."""
     return _HEX_ID_RE.sub(" ", text)
@@ -555,13 +691,18 @@ def _body(text: str) -> str:
     """The text after the platform's own leading bracket labels ("[single source] …")."""
     body = text.lstrip()
     for _ in range(4):
-        if not body.startswith("[") or body.startswith(_OWN_LABEL_STARTS):
+        if not body.startswith("[") or _OWN_LABEL_RE.match(body):
             break
         end = body.find("]")
         if end == -1:
             break
         body = body[end + 1:].lstrip()
     return body
+
+
+def _is_labelled(text: str) -> bool:
+    """True when this module already labelled the text (so it is never labelled twice)."""
+    return bool(_OWN_LABEL_RE.match(_body(text)))
 
 
 def _findings(v3: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -605,20 +746,14 @@ def apply_period_supersession(
 
     for finding in _findings(out):
         labeller.segment_period(finding)
+    # Every label below is computed from these snapshots, taken before any is added.
     labeller.index(out)
-    labeller.build_perimeters()
 
     finding_labels: dict[str, tuple[str, str]] = {}
     for fid, indexed in labeller.by_id.items():
-        hit = labeller.finding_label(indexed) or labeller.segment_label(indexed)
+        hit = labeller.finding_label(indexed)
         if hit is not None:
             finding_labels[fid] = (hit[0], _safe(hit[1]))
-    for finding in _findings(out):
-        fid = str(finding.get("finding_id") or "")
-        if fid in finding_labels:
-            rule, label = finding_labels[fid]
-            finding["statement"] = _with_label(str(finding.get("statement") or ""), label)
-            finding["superseded_period_label"] = label
     for fid, (rule, label) in finding_labels.items():
         labeller.actions.append({"rule": rule, "path": f"finding:{fid}", "label": label})
 
@@ -660,11 +795,20 @@ def apply_period_supersession(
                 point["text"] = labeller.label_text(point.get("text"), by_ids,
                                                     f"chair.key_points[{i}]")
 
+    # Only now are the findings' own statements labelled.
+    for finding in _findings(out):
+        fid = str(finding.get("finding_id") or "")
+        if fid in finding_labels:
+            label = finding_labels[fid][1]
+            finding["statement"] = _with_label(str(finding.get("statement") or ""), label)
+            finding["superseded_period_label"] = label
+
     record = {
         "version": SUPERSESSION_VERSION,
         "as_of": today.isoformat(),
         "newest_issuer_periods": {
-            family: {**entry, "lower_bound": entry["lower_bound"].isoformat()}
+            family: {**entry, "lower_bound": entry["lower_bound"].isoformat(),
+                     "document": _safe(str(entry["document"]))}
             for family, entry in labeller.newest.items()
         },
         "labelled": labeller.actions,
@@ -673,16 +817,18 @@ def apply_period_supersession(
             "A balance-sheet figure, a 'most recent fiscal year' summary or a segment "
             "structure older than what the issuer's own held documents give (or more "
             "than a year old) is labelled with its own date; nothing is deleted or "
-            "changed."
+            "changed. A label is only applied when its date is certain."
         ),
     }
     return out, record
 
 
 __all__ = [
+    "AMOUNT_TOLERANCE",
     "SUPERSESSION_VERSION",
     "STALE_AFTER_DAYS",
     "apply_period_supersession",
+    "balance_dates",
     "families",
     "has_own_date",
     "newest_issuer_periods",

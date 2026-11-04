@@ -1,5 +1,5 @@
 """Research Integrity Closure E2 (ADR-087) — Appendix 5B / 4C reader, later period
-supersedes, segment perimeter.
+supersedes, segment periods; and the regressions of the PR #326 review (H1–L4).
 
 Fixtures only: every report text below is synthetic but laid out the way pdfplumber
 prints the real ASX forms (rows in reading order, wrapped labels, a split column header,
@@ -275,6 +275,30 @@ class TestAppendix5BReader:
         # "28,8601" is the value 28,860 with footnote marker 1: not a well-formed amount.
         assert r.items["4.1"].values == (28860,)
 
+    @pytest.mark.parametrize("token,expected", [
+        ("(24001)", (False, None)),   # "(2,400)" + footnote 1: never an amount (review L3)
+        ("1000", (False, None)),
+        ("-12345", (False, None)),
+        ("(2,400)", (True, -2400)),
+        ("999", (True, 999)),
+        ("4.50", (True, 4.5)),
+        ("-", (True, 0)),
+    ])
+    def test_a_separator_less_run_of_four_digits_is_not_an_amount(
+            self, token: str, expected: tuple[bool, float | None]) -> None:
+        assert m5b._amount(token) == expected
+
+    def test_a_footnote_glued_to_an_unformatted_value_gives_no_fact(self) -> None:
+        # Review L3 repro: a 6-month year to date whose 2.6 column reads "(24001)".
+        pages = [p.replace("(3 months)", "(6 months)")
+                 .replace("activities (12,400) (12,400)", "activities (12,400) (24001)")
+                 .replace("(5,210) (5,210)", "(5,210) (9,000)")
+                 .replace("(1,100) (1,100)", "(1,100) (2,000)") for p in PAGES_5B]
+        facts = m5b.statement_facts(_read(pages))
+        assert facts  # the rest of the form still reads
+        assert all(abs(f.value_numeric) != 24001 for f in facts)
+        assert ("investing_cash_flow", "2027-H1") not in {(f.label, f.period) for f in facts}
+
     def test_the_appendix_4c_reads_its_own_runway_item(self) -> None:
         r = _read(PAGES_4C)
         assert r.ok, (r.refusal, r.notes)
@@ -408,7 +432,10 @@ class TestLocator:
 
 # ── Linear patterns ───────────────────────────────────────────────────────── #
 
-_ADVERSARIAL = (" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000)
+_ADVERSARIAL = (" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000,
+                # the review's patterns: own labels, amounts, balance-date leads, U.S.
+                "[for " * 2000, "1," * 5000, "at " * 3000, "U.S. " * 2000,
+                "[as of x " * 1000 + "is held", "$1" * 4000)
 
 
 def _patterns(module) -> list[re.Pattern[str]]:  # noqa: ANN001
@@ -779,7 +806,7 @@ class TestSegments:
         assert record["periods_filled"] == [
             {"finding_id": f["finding_id"], "period_key": "FY2025"}]
         assert _sentences(out) == [
-            "[segment structure as reported for FY2025; the issuer's newer 10-Q of "
+            "[segment structure for FY2025; the issuer's newer 10-Q of "
             "2026-10-25 is held] The company operates three reportable segments."]
 
     def test_no_period_is_filled_from_an_event_on_a_date(self) -> None:
@@ -789,37 +816,66 @@ class TestSegments:
         out, record = ps.apply_period_supersession(_payload([f]), as_of=AS_OF)
         assert "period_key" not in out["findings"][0] and record["periods_filled"] == []
 
-    def test_a_segment_absent_from_the_newer_perimeter_is_historical(self) -> None:
-        def seg(n: int, scope: str, period: str) -> dict:
-            return _finding(f"8a2b3c4{n}-0000-0000-0000-00000000000{n}", f"F{n}",
-                            f"The {scope.split(':')[1]} segment reported revenue.",
-                            domain="business_model", scope_key=scope, period_key=period,
-                            source_kinds=["issuer_filing"])
+    # Review H2 (repros P4, P5, P5b, P6): the run's segment scope keys are no complete,
+    # normalised perimeter, so no segment is ever called historical.
+    @staticmethod
+    def _seg(n: int, scope: str, period: str | None,
+             kinds: tuple[str, ...] = ("issuer_filing",), text: str | None = None,
+             domain: str = "business_model") -> dict:
+        return _finding(f"8a2b3c4{n}-0000-0000-0000-00000000000{n}", f"F{n}",
+                        text or f"The {scope.split(':')[1]} segment reported revenue of "
+                        "$1.0bn.", domain=domain, scope_key=scope, period_key=period,
+                        source_kinds=list(kinds))
 
-        findings = [seg(1, "segment:digital_media", "FY2024"),
-                    seg(2, "segment:publishing", "FY2024"),
-                    seg(3, "segment:digital_media", "FY2025"),
-                    seg(4, "segment:digital_experience", "FY2025")]
+    @pytest.mark.parametrize("name", ["P4", "P5", "P5b", "P6"])
+    def test_no_segment_is_ever_labelled_historical(self, name: str) -> None:
+        seg = self._seg
+        findings = {
+            # A newer 10-Q finding covers one segment only.
+            "P4": [seg(1, "segment:jewellery maisons", "FY2025"),
+                   seg(2, "segment:specialist watchmakers", "FY2025"),
+                   seg(3, "segment:specialist watchmakers", "2026-Q2")],
+            # The same segment under a different scope key.
+            "P5": [seg(1, "segment:digital media", "FY2025"),
+                   seg(2, "segment:digital media segment", "2026-Q2")],
+            # A table header read as a segment.
+            "P5b": [seg(1, "segment:jewellery maisons", "FY2025"),
+                    seg(2, "segment:(a) information on reportable segments", "FY2026",
+                        kinds=("issuer_ir",))],
+            # A forecast for one segment.
+            "P6": [seg(1, "segment:mining", "FY2026"), seg(2, "segment:processing", "FY2026"),
+                   seg(9, "segment:mining", None, kinds=("issuer_ir",),
+                       domain="growth_pipeline",
+                       text="The mining segment targets output of 50kt in FY2028.")],
+        }[name]
         out, record = ps.apply_period_supersession(_payload(findings), as_of=AS_OF)
-        statements = [f["statement"] for f in out["findings"]]
-        assert statements[1] == (
-            "[historical segment, FY2024: not among the segments the issuer reports for a "
-            "later period] The publishing segment reported revenue.")
-        assert statements[0] == findings[0]["statement"]  # still reported later
-        assert statements[2:] == [findings[2]["statement"], findings[3]["statement"]]
-        assert [a["rule"] for a in record["labelled"]] == [ps.RULE_SEGMENT_HISTORICAL]
-
-    def test_a_third_party_segment_claim_never_defines_the_perimeter(self) -> None:
-        old = _finding("9a2b3c4d-0000-0000-0000-000000000001", "F1",
-                       "The publishing segment reported revenue.", domain="business_model",
-                       scope_key="segment:publishing", period_key="FY2024",
-                       source_kinds=["issuer_filing"])
-        third = _finding("9a2b3c4d-0000-0000-0000-000000000002", "F2",
-                         "The media segment grew.", domain="business_model",
-                         scope_key="segment:media", period_key="FY2025",
-                         source_kinds=["third_party"])
-        out, record = ps.apply_period_supersession(_payload([old, third]), as_of=AS_OF)
+        assert [f["statement"] for f in out["findings"]] == [f["statement"] for f in findings]
         assert record["labelled"] == []
+        assert not hasattr(ps, "RULE_SEGMENT_HISTORICAL")
+
+    def test_a_forward_period_is_never_filled(self) -> None:
+        # Review M3 (P6): "targets … in FY2028" is a target, not the finding's period.
+        f = self._seg(9, "segment:mining", None, kinds=("issuer_ir",),
+                      domain="growth_pipeline",
+                      text="The mining segment targets output of 50kt in FY2028.")
+        out, record = ps.apply_period_supersession(_payload([f]), as_of=AS_OF)
+        assert "period_key" not in out["findings"][0] or out["findings"][0]["period_key"] is None
+        assert "period_key_source" not in out["findings"][0]
+        assert record["periods_filled"] == []
+
+    def test_a_period_not_ended_by_publication_is_never_filled(self) -> None:
+        # Calendar FY2025 ends 31 Dec 2025: a source of 28 Nov 2025 cannot report it whole.
+        f = _finding("8a2b3c4a-0000-0000-0000-00000000000a", "F1",
+                     "In FY2025 the company reported three segments.",
+                     domain="business_model", source_published_at="2025-11-28")
+        g = _finding("8a2b3c4b-0000-0000-0000-00000000000b", "F2",
+                     "In FY2025 the company reported three segments.",
+                     domain="business_model", source_published_at="2026-01-15")
+        out, record = ps.apply_period_supersession(_payload([f, g]), as_of=AS_OF)
+        assert out["findings"][0].get("period_key") is None
+        assert out["findings"][1]["period_key"] == "FY2025"
+        assert record["periods_filled"] == [{"finding_id": g["finding_id"],
+                                             "period_key": "FY2025"}]
 
     def test_segments_as_a_verb_is_not_a_segment_claim(self) -> None:
         assert not ps._is_segment_claim("The bank segments its business into four lines.")
@@ -842,12 +898,279 @@ class TestFamilies:
         assert ps.families(text) == expected
 
     def test_dates_and_periods_in_text(self) -> None:
-        # (A day-precise date also reads as its month-year; the set is what counts.)
-        assert set(ps.text_dates("at 31 December 2024 and Dec 31, 2025 and 2026-06-30")) == {
-            date(2024, 12, 31), date(2025, 12, 31), date(2026, 6, 30)}
+        assert sorted(ps.text_dates("at 31 December 2024 and Dec 31, 2025 and 2026-06-30")) == [
+            date(2024, 12, 31), date(2025, 12, 31), date(2026, 6, 30)]
+        # Review M1 (P14): the month-year inside a full date is that date, never the
+        # month's end ("15 March 2025" is not 31 Mar 2025).
+        assert ps.text_dates("Cash was $500m at 15 March 2025.") == [date(2025, 3, 15)]
+        assert ps.text_dates("as of June 2025") == [date(2025, 6, 30)]
         assert set(ps.text_period_keys("Q1 2026, H1 2025, FY24")) == {
             "2026-Q1", "2025-H1", "FY2024"}
         assert not ps.has_own_date("The company holds cash of $4bn.")
+
+
+# ── The review of PR #326: one test per repro ─────────────────────────────── #
+
+_F1 = "a1b2c3d4-0000-0000-0000-000000000001"
+_F2 = "b1b2c3d4-0000-0000-0000-000000000002"
+_ANNUAL_2026 = {"core_disclosures": {"documents": [
+    {"state": "ready", "filing_date": "2026-09-24", "document_kind": "annual_report",
+     "headline": "Annual Report 2026"}]}}
+
+
+class TestReviewH1LabelsAreNotText:
+    def test_a_sentence_is_dated_from_the_original_statement(self) -> None:
+        # P12: the cited finding is itself labelled first; its label (which prints the
+        # 10-Q's date) must never become the sentence's date.
+        f = _finding(_F1, "F1", "The company held cash and equivalents of $4.2bn.",
+                     source_published_at="2026-02-10")
+        out, _ = ps.apply_period_supersession(_payload(
+            [f], sentences=[("Liquidity is ample with cash of $4.2bn.", ["F1"])],
+            **SEC_FILINGS), as_of=AS_OF)
+        assert _sentences(out) == [
+            "[figures as of a source dated 2026-02-10; the issuer's newer 10-Q of 2026-10-25 "
+            "is held] Liquidity is ample with cash of $4.2bn."]
+
+    def test_the_lin2_most_recent_fiscal_year_cash_keeps_its_source_date(self) -> None:
+        # Real LIN2: the koalagains "cash AUD 3.49m" page of 2026-02-20 was labelled
+        # "[figures at 24 Sep 2026…]" (the annual report's date, read from its own label).
+        f = _finding(_F1, "F42", "[reported in the press; not from a filing] Lindian "
+                     "Resources, most recent fiscal year: cash AUD 3.49m, total debt AUD "
+                     "0.2m, operating cash flow AUD -6.07m.",
+                     source_published_at="2026-02-20", source_kinds=["secondary_web"])
+        out, _ = ps.apply_period_supersession(_payload(
+            [f], sentences=[("Cash stood at AUD 3.49m with minimal debt.", ["F42"])],
+            **_ANNUAL_2026), as_of=AS_OF)
+        assert out["findings"][0]["statement"].startswith(
+            "[reported in the press; not from a filing] [as of a source dated 2026-02-20; "
+            "not the latest fiscal year: ")
+        assert _sentences(out) == [
+            "[figures as of a source dated 2026-02-20; the issuer's newer Annual Report 2026 "
+            "of 2026-09-24 is held] Cash stood at AUD 3.49m with minimal debt."]
+
+    def test_the_as_of_ignores_this_modules_own_labels(self) -> None:
+        labelled = {"statement": "[as of a source dated 2026-02-10; the issuer's newer 10-Q "
+                                 "of 2026-10-25 is held] Cash was $4.2bn.",
+                    "source_published_at": "2026-02-10"}
+        assert ps._finding_as_of(labelled) == (
+            date(2026, 2, 10), "as of a source dated 2026-02-10")
+
+    def test_a_finding_labelled_for_its_period_is_never_labelled_twice(self) -> None:
+        f = _finding(_F1, "F1", "Cash and equivalents were EUR 150m.", period_key="FY2025",
+                     source_published_at="2026-03-30")
+        once, _ = ps.apply_period_supersession(_payload([f], **SEC_FILINGS), as_of=AS_OF)
+        assert once["findings"][0]["statement"].startswith("[for FY2025; ")
+        twice, record = ps.apply_period_supersession(once, as_of=AS_OF)
+        assert twice["findings"] == once["findings"] and record["labelled"] == []
+
+
+class TestReviewM1TheDateOfTheFigures:
+    @pytest.mark.parametrize("statement,extra,label", [
+        # P1: a forecast year is not the figures' date.
+        ("Cash of A$45m funds operations into 2028.",
+         {"source_published_at": "2025-03-01"}, "as of a source dated 2025-03-01"),
+        # P1b: nor is a maturity date.
+        ("Net debt was $2.1bn; the bonds mature on 15 March 2030.",
+         {"source_published_at": "2025-03-01"}, "as of a source dated 2025-03-01"),
+        # P2: nor a filing date; the period key comes first.
+        ("At FY2025 (group, 10-K filed 2026-02-03) shareholders' equity was USD 20,256 "
+         "million.", {"period_key": "FY2025"}, "for FY2025"),
+        # P14: a day-precise balance date stays that day.
+        ("Cash was $500m at 15 March 2025.", {"source_published_at": "2025-04-01"},
+         "at 15 Mar 2025"),
+        # A balance date after publication is never the figures' date.
+        ("Cash was $500m as of 30 June 2026.", {"source_published_at": "2025-04-01"},
+         "as of a source dated 2025-04-01"),
+        # A forward period key falls back to the source date.
+        ("Net debt was $1.0bn.", {"period_key": "2028-H2", "source_published_at":
+                                   "2025-04-01"}, "as of a source dated 2025-04-01"),
+    ])
+    def test_the_label_date(self, statement: str, extra: dict, label: str) -> None:
+        assert ps._finding_as_of({"statement": statement, **extra},
+                                 date(2026, 11, 2))[1] == label
+
+    @pytest.mark.parametrize("statement,published,sentence,expected", [
+        ("Cash of A$45m funds operations into 2028.", "2025-03-01",
+         "The company holds a cash position of A$45m.", "as of a source dated 2025-03-01"),
+        ("Net debt was $2.1bn; the bonds mature on 15 March 2030.", "2025-03-01",
+         "Net debt of $2.1bn is manageable.", "as of a source dated 2025-03-01"),
+        ("Cash was $500m at 15 March 2025.", "2025-04-01", "Cash of $500m is ample.",
+         "at 15 Mar 2025"),
+    ])
+    def test_repro_sentences(self, statement: str, published: str, sentence: str,
+                             expected: str) -> None:
+        f = _finding(_F1, "F1", statement, source_published_at=published)
+        out, _ = ps.apply_period_supersession(
+            _payload([f], sentences=[(sentence, ["F1"])], **SEC_FILINGS), as_of=AS_OF)
+        assert _sentences(out) == [
+            f"[figures {expected}; the issuer's newer 10-Q of 2026-10-25 is held] {sentence}"]
+
+    def test_p2_a_filing_date_is_not_the_figures_date(self) -> None:
+        f = _finding(_F1, "F1", "At FY2025 (group, 10-K filed 2026-02-03) shareholders' "
+                     "equity was USD 20,256 million.", period_key="FY2025")
+        out, _ = ps.apply_period_supersession(_payload(
+            [f], sentences=[("Shareholders' equity of USD 20.3bn is solid.", ["F1"])],
+            **SEC_FILINGS), as_of=AS_OF)
+        assert _sentences(out)[0].startswith("[figures for FY2025; ")
+
+
+class TestReviewM2CurrentFiscalYear:
+    def test_the_current_fiscal_year_is_never_superseded(self) -> None:
+        # P3: guidance for the year in progress.
+        f = _finding(_F1, "F1", "The company expects revenue to grow 10% in the current "
+                     "fiscal year (FY2026).", source_published_at="2026-03-01")
+        out, record = ps.apply_period_supersession(_payload([f], **_ANNUAL_2026), as_of=AS_OF)
+        assert out["findings"][0]["statement"] == f["statement"] and record["labelled"] == []
+
+    def test_the_last_fiscal_year_still_is(self) -> None:
+        # P11 (correct before, kept).
+        f = _finding(_F1, "F1", "Revenue for the last fiscal year was A$12m.",
+                     source_published_at="2026-03-20")
+        out, _ = ps.apply_period_supersession(_payload([f], **_ANNUAL_2026), as_of=AS_OF)
+        assert out["findings"][0]["statement"].startswith(
+            "[as of a source dated 2026-03-20; not the latest fiscal year: the issuer's "
+            "newer Annual Report 2026 of 2026-09-24 is held] ")
+
+
+class TestReviewM4EveryCitedFigure:
+    def test_a_newer_cited_figure_means_no_label(self) -> None:
+        # PYPL3 sections[7].lead: FY2025 debt with a 2026-Q3 revenue figure; the 2026-Q3
+        # figure is not older than the held 10-Q.
+        old = _finding(_F1, "F1", "FY2025: long-term debt USD 9,987m vs cash USD 8,049m.",
+                       period_key="FY2025")
+        new = _finding(_F2, "F2", "Group revenue in 2026-Q3 was $8,584 million.",
+                       period_key="2026-Q3")
+        out, record = ps.apply_period_supersession(_payload([old, new], sentences=[
+            ("The company has manageable debt levels and profitability.", ["F1", "F2"])],
+            **SEC_FILINGS), as_of=AS_OF)
+        assert _sentences(out) == [
+            "The company has manageable debt levels and profitability."]
+        assert record["labelled"] == []
+
+    def test_older_figures_of_several_dates_read_up_to_the_latest(self) -> None:
+        # HON2 sections[7].lead: FY2025 net debt and a 2026-Q2 backlog, both older than a
+        # Q3 10-Q — never "figures for FY2025".
+        debt = _finding(_F1, "F1", "FY2025 Group total debt was $34,939m against $12,487m "
+                        "cash, net debt $22,452m.", period_key="FY2025")
+        backlog = _finding(_F2, "F2", "Backlog increased 12% to $38.0 billion as of June 30, "
+                           "2026.", period_key="2026-Q2")
+        out, _ = ps.apply_period_supersession(_payload([debt, backlog], sentences=[
+            ("Backlog grew, supported by manageable net debt.", ["F1", "F2"])],
+            **SEC_FILINGS), as_of=AS_OF)
+        assert _sentences(out) == [
+            "[figures up to 2026-Q2; the issuer's newer 10-Q of 2026-10-25 is held] Backlog "
+            "grew, supported by manageable net debt."]
+
+    def test_a_new_figure_in_the_sentence_means_no_label(self) -> None:
+        # P7: "rose to A$31.3m" is a figure no cited finding gives.
+        f = _finding(_F1, "F1", "The company held cash of A$3.49m.",
+                     source_published_at="2026-02-20")
+        text = "Cash rose to A$31.3m at quarter end from A$3.49m (finding_ids: a1b2c3d4)."
+        out, record = ps.apply_period_supersession(
+            _payload([f], synthesis=text, **SEC_FILINGS), as_of=AS_OF)
+        assert out["chair"]["synthesis"] == text
+        assert [a["path"] for a in record["labelled"]] == [f"finding:{_F1}"]
+
+    def test_a_peers_figure_never_dates_the_subject(self) -> None:
+        # P9: a peer's 30 Jun 2025 became the subject's label.
+        own = _finding(_F1, "F1", "Net debt was $1.6bn at 31 December 2024.",
+                       source_published_at="2025-02-01")
+        peer = _finding(_F2, "F2", "Peer South32 net debt was US$762m at 30 June 2025.",
+                        source_published_at="2025-08-28")
+        text = ("Net debt of $1.6bn compares with a peer at $0.8bn (finding_ids: a1b2c3d4, "
+                "b1b2c3d4).")
+        out, _ = ps.apply_period_supersession(
+            _payload([own, peer], synthesis=text, **SEC_FILINGS), as_of=AS_OF)
+        assert out["chair"]["synthesis"] == text  # the peer's $0.8bn has no subject date
+        # Cited beside the subject's own figure only, the peer is ignored.
+        text2 = "Net debt of $1.6bn is moderate (finding_ids: a1b2c3d4, b1b2c3d4)."
+        out2, _ = ps.apply_period_supersession(
+            _payload([own, peer], synthesis=text2, **SEC_FILINGS), as_of=AS_OF)
+        assert out2["chair"]["synthesis"].startswith(
+            "[figures at 31 Dec 2024; the issuer's newer 10-Q of 2026-10-25 is held] ")
+
+    def test_a_peer_finding_is_never_labelled_with_the_issuers_report(self) -> None:
+        peer = _finding(_F2, "F2", "Peer net debt was US$762m.",
+                        source_published_at="2025-08-28")
+        competitor = _finding(_F1, "F1", "Its largest competitor holds cash of $2bn.",
+                              source_published_at="2025-08-28")
+        out, record = ps.apply_period_supersession(
+            _payload([peer, competitor], **SEC_FILINGS), as_of=AS_OF)
+        assert record["labelled"] == []
+        assert not ps._about_other_entity({"statement": "Peer-to-peer volume was $1bn."})
+
+
+class TestReviewL1SureSentenceStarts:
+    @pytest.mark.parametrize("synthesis", [
+        # P13
+        "Net debt of $1.6bn is below that of U.S. Steel, but debt remains a concern "
+        "(finding_ids: a1b2c3d4).",
+        # P8
+        "Net debt sits near that of U.S. Steel at $1.6bn (finding_ids: a1b2c3d4).",
+    ])
+    def test_a_label_never_lands_mid_sentence(self, synthesis: str) -> None:
+        f = _finding(_F1, "F1", "Net debt was $1.6bn.", source_published_at="2025-02-01")
+        out, _ = ps.apply_period_supersession(
+            _payload([f], synthesis=synthesis, **SEC_FILINGS), as_of=AS_OF)
+        assert out["chair"]["synthesis"] == (
+            "[figures as of a source dated 2025-02-01; the issuer's newer 10-Q of "
+            f"2026-10-25 is held] {synthesis}")
+
+    @pytest.mark.parametrize("text,end,sure", [
+        ("Steel is up. Then", 12, True),
+        ("from the U.S. Steel", 13, False),
+        ("e.g. Some", 4, False),
+        ("Acme Inc. Its", 9, False),
+        ("Plan B. It", 7, False),
+        ("at $1.6bn. Then", 10, True),
+        ("(finding_ids: a1b2c3d4). The", 24, True),
+        ("Really? Yes", 7, True),
+    ])
+    def test_sure_breaks(self, text: str, end: int, sure: bool) -> None:
+        assert ps._sure_break(text, end) is sure
+
+
+class TestReviewL2WhatALabelNames:
+    def test_a_6k_is_not_named(self) -> None:
+        # P10
+        f = _finding(_F1, "F1", "Cash and equivalents were EUR 150m.", period_key="FY2025",
+                     source_published_at="2026-03-30")
+        out, record = ps.apply_period_supersession(_payload([f], core_filings={
+            "annual": {"state": "ready", "filing_date": "2026-03-30", "form": "20-F"},
+            "quarterly": {"state": "ready", "filing_date": "2026-10-20", "form": "6-K"}}),
+            as_of=AS_OF)
+        assert out["findings"][0]["statement"] == (
+            "[for FY2025; a newer issuer disclosure of 2026-10-20 is held] Cash and "
+            "equivalents were EUR 150m.")
+        assert record["newest_issuer_periods"]["cash"]["named"] is False
+
+    def test_an_activities_report_is_not_named_but_the_5b_beside_it_is(self) -> None:
+        f = _finding(_F1, "F1", "The company held cash of A$3.49m.",
+                     source_published_at="2026-02-20")
+        activities = {"state": "ready", "filing_date": "2026-10-25",
+                      "document_kind": "results_release", "headline": "September Quarterly "
+                      "Report"}
+        five_b = {**activities, "headline": "Appendix 5B"}
+        alone, _ = ps.apply_period_supersession(_payload(
+            [f], core_disclosures={"documents": [activities]}), as_of=AS_OF)
+        assert alone["findings"][0]["statement"].startswith(
+            "[as of a source dated 2026-02-20; a newer issuer disclosure of 2026-10-25 is "
+            "held] ")
+        both, _ = ps.apply_period_supersession(_payload(
+            [f], core_disclosures={"documents": [activities, five_b]}), as_of=AS_OF)
+        assert both["findings"][0]["statement"].startswith(
+            "[as of a source dated 2026-02-20; the issuer's newer Appendix 5B of 2026-10-25 "
+            "is held] ")
+
+    def test_the_records_document_names_are_neutralised(self) -> None:
+        # Review L4: a headline is issuer text; the record passes the same neutralisation
+        # as the labels.
+        disclosures = {"core_disclosures": {"documents": [
+            {"state": "ready", "filing_date": "2026-09-24", "document_kind": "annual_report",
+             "headline": "Annual Report 2026 and price target review"}]}}
+        _, record = ps.apply_period_supersession(_payload([], **disclosures), as_of=AS_OF)
+        documents = [e["document"] for e in record["newest_issuer_periods"].values()]
+        assert documents and all("price target" not in d for d in documents)
 
 
 # ── Wiring into report assembly ───────────────────────────────────────────── #

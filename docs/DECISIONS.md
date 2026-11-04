@@ -8115,7 +8115,9 @@ beyond pdfplumber on bytes already fetched).
   - footers.
 
   A footnote marker glued to a value ("107,9361") is not a well-formed amount, so that
-  line is not read.
+  line is not read. The form prints every amount of four or more digits with thousands
+  separators, so a separator-less run of four or more digits ("(24001)" = "(2,400)" plus
+  note 1) is never an amount either (review of PR #326, L3).
 - **Facts.** Each fact is a `ValidatedFact` at Group scope with confidence 0.9 and the
   extraction method `asx_quarterly_cash_flow_report`. Its locator
   (`table_location`) is `appendix_5b@2026-09-30#4.6`, and its page is the document page.
@@ -8153,40 +8155,104 @@ bracketed date label placed after the platform's own source labels.
     the slot's locator.
 
   A cited finding's publication date is never a held document.
+- **The rule of certainty.** A label is applied only when its date is certain. When the
+  platform cannot be sure, nothing is labelled: a missing label is a gap, a wrong one is
+  wrong data.
+- **The date of a finding** is, in this order, and never a day after its source's
+  publication date (or, when undated, the report date):
+  1. the end of its `period_key` → `for FY2025`;
+  2. the latest balance-date phrase its text prints ("at / as of / as at <date>") →
+     `at 31 Dec 2024`;
+  3. its source's date → `as of a source dated 2026-02-20`.
+
+  No other printed date is ever the figures' date: not a forecast ("funds operations
+  into 2028"), a maturity ("bonds mature 15 March 2030") or a filing date ("10-K filed
+  2026-02-03"). A month-year inside a full date ("15 March 2025") is that day, not the
+  month's end. Every date is read from the finding's ORIGINAL statement: labels this
+  module adds are stripped before any reading and never become text.
 - **Balance-sheet figures** (cash, net debt / net cash position, total debt, equity) are
-  labelled `[figures at 31 Dec 2024; …]` or `[as of a source dated 2026-02-10; …]` in
-  these cases:
-  - **an undated finding** with a money amount, when its source is older than the newest
-    held period;
-  - **a section sentence or chair sentence that prints no date,** when the latest as-of of
-    the findings it cites for that family is older than the newest held period. The
-    sentence must print an amount, or every finding it cites for the family must.
+  labelled in these cases:
+  - **an undated finding** with a money amount, when its date is older than the newest
+    held period: `[as of a source dated 2026-02-10; …]`, `[for FY2025; …]`;
+  - **a section sentence or chair sentence that prints no date**, when ALL of these hold:
+    - every subject finding it cites that carries a figure has a known date, and the
+      latest of them is older than the newest held period for the family;
+    - every amount the sentence prints is one those findings print, within 5% (so
+      "USD 20.3bn" is "USD 20,256 million"). A new figure ("rose to A$31.3m") or a
+      peer's figure has no date the platform knows;
+    - the sentence prints an amount, or every finding it cites for the family does.
+
+    The label prints the date of the figures the sentence states. That is the findings
+    that print its amounts or, for a sentence with none, every cited figure. One date
+    reads as itself (`[figures for FY2025; …]`). Several read as "up to" the latest
+    (`[figures up to 2026-Q2; …]`), never as one period for figures of several.
 
   Either way, a figure more than 365 days before the report is labelled `over a year
   before this report`. The families are found by a token scanner: cash flow, cash costs,
   "net cash from" and debt financing are not balances, and "equity" needs a preceding
   total, shareholders' or amount. Flows, policies and texts without a figure are never
   labelled.
+- **Another entity's findings.** A finding about a peer, competitor or rival, or one the
+  writer marks "(not the company)", is never labelled with the issuer's newer report,
+  and never dates a sentence about the subject. "Peer-to-peer" is a product, not a peer.
 - **"Most recent / latest / last fiscal year"** in a finding whose source is older than
   the newest held annual period is labelled `[as of a source dated …; not the latest
-  fiscal year: the issuer's newer <document> of <date> is held]`.
+  fiscal year: …]`. "Current fiscal year" is the year in progress and is never labelled.
+- **What a label names.** A held document is named only when it is an annual report, an
+  interim or quarterly report (10-K, 10-Q, 20-F, 40-F, a half-year report), or an
+  Appendix 5B / 4C. Anything else (a 6-K, an activities report, a results release) reads
+  `a newer issuer disclosure of <date> is held`. Of two documents of one day, the
+  nameable one is shown. The record's `newest_issuer_periods.<family>.document` passes
+  the same neutralisation as the labels, and `named` says whether a label may name it.
+- **Where a label goes.** A label goes only at a sentence start the platform is sure of.
+  A full stop after a single letter, a dotted abbreviation ("U.S.") or a known
+  abbreviation ("Inc.", "No.") does not end a sentence, so that run of text is one unit,
+  labelled at its start.
 - **Segments.**
   - An undated segment finding gets `period_key` (with
-    `period_key_source: "statement_text"`) only when its text names exactly one period and
-    prints no date. This applies only in perimeter domains.
+    `period_key_source: "statement_text"`) only when its text names exactly one period,
+    prints no date, and that period had ended by its source's publication date (or the
+    report date). A target ("output of 50kt in FY2028") is never a period tag (ADR-080).
+    This applies only in perimeter domains.
   - A sentence about the segment structure, citing segment findings older than the
-    newest held segment period, is labelled `[segment structure as reported for FY2025;
-    …]`.
-  - An issuer-sourced `segment:` finding that is absent from the perimeter of a later
-    issuer period is labelled `[historical segment, FY2024: not among the segments the
-    issuer reports for a later period]`.
+    newest held segment period, is labelled `[segment structure for FY2025; …]` (under
+    the same certainty rules as figures).
+  - No segment is ever labelled "historical". The first version did so for a segment
+    absent from "the perimeter of a later period". That perimeter was only the segment
+    scope keys that happened to exist at the latest period: there was no completeness
+    check and no name normalisation, and header junk and forecast periods fed it. It
+    labelled live segments historical (review repros P4, P5, P5b, P6), so the rule was
+    removed.
   - "segments its/their/the" (a verb) is not a segment claim.
-- **Idempotent.** Texts that already carry one of these labels are skipped, so running
-  the rule twice changes nothing.
+- **Idempotent.** Texts that already carry one of these labels (`[as of …`, `[for …`,
+  `[at …`, `[figures …`, `[segment structure …`, ending in `is held]` or `over a year
+  before this report]`) are skipped, so running the rule twice changes nothing.
 - **Linear and bounded.** Texts over 2,000 characters (findings and sentences) or 20,000
   characters (a whole text) are left alone. Every pattern in both modules is tested on
-  `" "*10000`, `"\n"*10000`, `"A-"*3000`, `"a,"*5000` and `"a."*3000`, each under 0.2 s.
+  adversarial strings (`" "*10000`, `"a."*3000`, `"[for "*2000`, `"1,"*5000`,
+  `"U.S. "*2000`, …), each under 0.2 s.
 - **Labels pass `neutralize_forbidden_terms`** because they quote document headlines.
+- `SUPERSESSION_VERSION` is **2**.
+
+### Review of PR #326
+
+The first version (`2ddd1ae`) was NO-GO on review:
+
+- **H1.** Sentence labels read their date from labels already prepended to the cited
+  findings. LIN2's "cash AUD 3.49m" page of 2026-02-20 read `[figures at 24 Sep 2026…]`.
+- **H2.** The historical-segment rule, described above.
+- **M1.** The label date was the latest date anywhere in the text.
+- **M2.** "current fiscal year" was matched as a past fiscal year.
+- **M3.** A forward segment period was stored.
+- **M4.** A sentence was labelled although it cited newer figures, and a peer's date
+  dated it.
+- **L1.** Labels landed mid-sentence.
+- **L2.** A 6-K or an activities report was named.
+- **L3.** "(24001)" was read as an amount.
+- **L4.** The version-bump comment was wrong, and the record's document names were not
+  neutralised.
+
+Each review repro is a regression test in `tests/test_qa_closure_appendix5b_supersession.py`.
 
 ### Replay over the 17 stored reports
 
@@ -8194,23 +8260,33 @@ The replay script is `scripts/qa_replay_period_supersession.py`. It makes no net
 call and writes nothing.
 
 **Before:** 0 labels in every report. **After:** 17 texts changed (14 labels) in 8
-reports, plus 2 segment periods filled. Each change was checked against its backing
-findings, and there are 0 wrong changes:
+reports, plus 1 segment period filled. Each change was checked against its backing
+findings:
 
 - **ADBE (4):**
-  - two segment-structure sentences ("…generated from its Digital Media and Digital
-    Experience segments…", sections 0 and 2) → `[segment structure as reported for
-    FY2025; the issuer's newer 10-Q of 2026-09-22 is held]`;
+  - the two segment-structure sentences ("…generated from its Digital Media and Digital
+    Experience segments…", sections 0 and 2) → `[segment structure as of a source dated
+    2025-11-28; the issuer's newer 10-Q of 2026-09-22 is held]`. Every figure they cite
+    is from sources of 2025-11-28;
   - "free cash flow generation exceeding its total debt" (s0, s7 lead) → `[figures for
     FY2025; the issuer's newer 10-Q of 2026-09-22 is held]`;
-  - one segment finding's period filled as FY2025.
-- **ANTO (1):** the chair sentence "Liquidity appears sufficient with net debt around
-  $1.6bn and cash plus equivalents at $4.3bn…" → `[figures at 31 Dec 2024; over a year
-  before this report]` (ANTO-3).
-- **HON (1):** "The company carries net debt against equity…" → `[figures for FY2025;
-  the issuer's newer 10-Q of 2026-10-22 is held]`.
-- **HON2 (1):** "…supported by strong cash flow and manageable net debt" (s7 lead) → the
-  same label. A segment finding's period was filled as 2026-Q1 from "Q1 2026".
+  - no segment period is filled. The finding's source (2025-11-28) predates the
+    calendar end of FY2025, so M3 refuses it.
+- **ANTO (2):**
+  - the chair sentence "Liquidity appears sufficient with net debt around $1.6bn and
+    cash plus equivalents at $4.3bn…" → `[figures for FY2024; over a year before this
+    report]` (ANTO-3). Its amounts are those of the two FY2024 findings; the "(not the
+    company)" Ecora finding is ignored;
+  - key point 8, "Unresolved disagreements exist on net debt reporting between findings
+    …", → `[figures up to FY2024; over a year before this report]`. Every figure it
+    cites is FY2024 or older.
+- **HON (1):** "The company carries net debt against equity…" → `[figures at 31 Dec
+  2025; the issuer's newer 10-Q of 2026-10-22 is held]`.
+- **HON2 (1):** "…supported by strong cash flow and manageable net debt" (s7 lead) →
+  `[figures up to 2026-Q2; the issuer's newer 10-Q of 2026-10-22 is held]`. It cites
+  FY2025 net debt, a 31-Mar-2026 and a 2026-Q2 backlog, all older than the held Q3
+  10-Q. A segment finding's period was filled as 2026-Q1 from "Q1 2026" (source of
+  2026-03-31).
 - **LIN2 (6 texts, 3 findings; each appears in `findings` and in its section copy):**
   - the third-party "total debt at AUD 0.2m versus AUD 58.36m equity" → `[as of a source
     dated 2026-02-20; the issuer's newer Annual Report 2026 of 2026-09-24 is held]`;
@@ -8218,10 +8294,11 @@ findings, and there are 0 wrong changes:
     3.49m, total debt AUD 0.2m, operating cash flow AUD -6.07m" → `[as of a source dated
     2026-02-20; not the latest fiscal year: the issuer's newer Annual Report 2026 of
     2026-09-24 is held]` (LIN2-1).
-- **PYPL (1), PYPL2 (1), PYPL3 (2):** balance-sheet sentences ("liabilities exceed
+- **PYPL (1), PYPL2 (1), PYPL3 (1):** the balance-sheet sentences ("liabilities exceed
   shareholders' equity", "long-term debt relative to cash and equity", "large cash
-  position", "manageable debt levels") → `[figures for FY2025 / at 31 Dec 2025; the
-  issuer's newer 10-Q of 2026-10-27 is held]`.
+  position") → `[figures for FY2025; the issuer's newer 10-Q of 2026-10-27 is held]`.
+  PYPL3's s7 lead ("manageable debt levels") is no longer labelled, because it cites a
+  2026-Q3 revenue figure that is not older than the 10-Q.
 - **Unchanged:** ANTO2, CFR, CLLS1–5, JPM and LIN.
   - LIN run 1's stored payload has no 5B facts, because they were never extracted. With
     this reader, its 5B gives `cash_and_equivalents_current_period` = A$45,087k at 30
@@ -8233,19 +8310,30 @@ findings, and there are 0 wrong changes:
 
 ### Known limits
 
+- **ADBE-1 is fixed for the present-tense structure sentence only.** The segment-perimeter
+  half ("a segment that no longer exists") is NOT addressed: the run's segment scope
+  keys are not a complete, normalised perimeter, so the platform cannot tell a dropped
+  segment from one it did not read. No segment is labelled historical.
+- **Peers are recognised by wording only.** A finding about another company that never
+  says "peer", "competitor", "rival" or "(not the company)" counts as the subject's. Its
+  date can then widen an "up to" label, as in ANTO key point 8 (South32 FY24). It never
+  dates a sentence whose amounts it does not print.
+- **Fiscal labels are calendar approximations.** `period_bounds` approximates them, so a
+  period key whose calendar end is after the source date is not used: a November- or
+  June-year-end FY2025 from a source dated before 31 Dec 2025 reads `as of a source
+  dated …`, and its segment period is not filled. A June-year-end issuer's `2027-Q1`
+  reads as Jan–Mar 2027 in period comparisons. Current-period selection is unaffected.
 - **The web does not render `issuer_stated` yet.** The figure is in the payload only.
 - **No capex-inclusive derived runway.** 5B items 2.1(c)/(d) are not emitted.
   `_derived_runway` still needs capex, and the issuer's 8.7 is not a substitute for it.
 - **Year-to-date coverage.** A 9- or 12-month year to date is not emitted, and only a
   half has its own period type.
-- **Fiscal labels are calendar approximations.** `period_bounds` approximates them, so a
-  June-year-end issuer's `2027-Q1` reads as Jan–Mar 2027 in period comparisons.
-  Current-period selection is unaffected.
 - **ANTO-3 is fixed only by the age trigger.** H1 2026 was never held for that run.
 - **V2 content and the legacy V2 council text are not labelled.** Only the V3 payload is.
 - **Labels are not localised.**
-- **The version bump re-reads every held disclosure once,** within the ADR-084 / item 21
-  budgets.
+- **The version bump re-reads every held disclosure once.**
+  `_read_by_an_older_pipeline` re-reads every held disclosure an older pipeline read, of
+  any kind (not only 5Bs), within the ADR-084 / item 21 budgets.
 - **A test was relaxed for the version bump.** `test_qa_closure_temporal_semantics`
   pinned version 21 with `==`. It now says `>= 21`, so it holds with E1's 22 and this
   change's 23.

@@ -372,8 +372,10 @@ from __future__ import annotations
 # (Appendix 5B, or Appendix 4C) is read by its own items (``asx_appendix_5b``): operating,
 # investing and financing cash flow, the cash at the end of the quarter and the issuer's
 # estimated quarters of funding, with the period of its "Quarter ended" header. A
-# version-22 row of such a report holds none of them, so a held 5B is re-read once
-# (``disclosures.acquisition._read_by_an_older_pipeline``). Raw-text extraction is
+# version-22 row of such a report holds none of them. The bump is not 5B-specific:
+# ``disclosures.acquisition._read_by_an_older_pipeline`` re-reads EVERY held disclosure
+# whose row an older pipeline derived (any kind, any issuer) once, within the existing
+# acquisition budgets; only the 5B/4C readings change. Raw-text extraction is
 # unchanged, so ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
 CURRENT_EXTRACTION_PIPELINE_VERSION = 23

@@ -1666,10 +1666,23 @@ reader takes its counts and status lines from it.
   - balance-sheet figures (cash, net debt, total debt, equity) older than the newest
     issuer period the run holds, or more than a year old;
   - third-party "most recent fiscal year" summaries older than the newest held annual;
-  - segment-structure sentences older than the newest held segment period;
-  - issuer segments absent from a later period's perimeter.
+  - segment-structure sentences older than the newest held segment period.
 
-  It also fills an undated segment finding's period when its text names exactly one. The
-  record is `v3_research.period_supersession`.
+  A label is applied only when its date is certain; otherwise nothing is labelled.
+  - **The date.** A finding's date is its period key, else an "at / as of <date>"
+    balance date, else its source's date. It is never a forecast, maturity or filing
+    date, and never a day after publication. It is read from the finding's original
+    statement, never from a label this module added.
+  - **Sentences.** A sentence is labelled only when every subject figure it cites is
+    older than the newest held period, and every amount it prints is one of those
+    figures. Peer, competitor and "(not the company)" findings never date it.
+  - **Placement.** Labels go only at a sentence start the platform is sure of ("U.S." is
+    not one).
+  - **Names.** Only an annual, interim or quarterly report or an Appendix 5B / 4C is
+    named. Anything else is "a newer issuer disclosure".
+  - **Segments.** No segment is ever called historical (ADR-087 known limit).
+
+  It also fills an undated segment finding's period when its text names exactly one that
+  had ended by the source's date. The record is `v3_research.period_supersession`.
 - `scripts/qa_replay_period_supersession.py <reports-dir>` replays the rule over stored
   report payloads and prints every changed text. It makes no network call.
