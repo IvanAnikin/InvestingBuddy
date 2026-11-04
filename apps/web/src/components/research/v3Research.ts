@@ -380,6 +380,10 @@ export type DomainSection = SectionHead & {
   commodityTable: CommodityRow[];
   /** competitive_position only. */
   peerTable: PeerRow[];
+  /** ADR-089 (competitive_position): why no peer comparison is shown when no held
+      company in the industry was comparable. Null when peers were selected, when no
+      peer set ran, and on older reports. */
+  peerSelectionNote: string | null;
   /** ADR-069 (financial_capacity, competitive_position): why generic metrics such as
       cash conversion or net debt are not shown for this business model. Null on every
       company the generic metrics describe, and on older reports. */
@@ -977,6 +981,7 @@ function readDomainSection(
     peerTable: records(r.peer_table)
       .map(readPeerRow)
       .filter((row): row is PeerRow => row !== null),
+    peerSelectionNote: isRecord(r.peer_selection) ? str(r.peer_selection.note) : null,
     metricsNote: str(r.metrics_note),
     webEvidence: readWebEvidenceBlock(r.web_evidence),
   };

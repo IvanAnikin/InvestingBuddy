@@ -908,6 +908,8 @@ async def _run(
             self.table_payloads: dict[str, list[dict[str, Any]]] = {
                 "get_industry_series": [],
                 "get_peer_financials": [],
+                # ADR-089 — what the peer set selected and excluded, for the report.
+                "get_peer_set": [],
             }
 
         def can_search_externally(self, role_id: str) -> bool:
@@ -1470,6 +1472,7 @@ async def _professional_report(
             getattr(company, "ticker", None),
             not_meaningful=not_meaningful_calculations,
         ),
+        peer_selection=pr.peer_selection(table_payloads.get("get_peer_set", [])),
         council_convened=council_convened,
         domain_cost=pr.domain_cost(
             [(row.domain, row.acquisition_log_json or []) for row in question_rows]

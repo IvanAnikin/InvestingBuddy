@@ -155,6 +155,9 @@ class ReportInputs:
     size_fit: Mapping[str, Any] | None = None
     commodity_rows: Sequence[Mapping[str, Any]] = ()
     peer_rows: Sequence[Mapping[str, Any]] = ()
+    #: ADR-089 — what the peer set selected and excluded (``peer_selection``); ``None``
+    #: when no peer set ran, and then the report is unchanged.
+    peer_selection: Mapping[str, Any] | None = None
     council_convened: bool = False
     domain_cost: Mapping[str, Any] = field(default_factory=dict)
     #: Findings the ledger holds for the run, before any bound; when it exceeds what
@@ -769,6 +772,9 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
     industry["commodity_table"] = [dict(row) for row in inputs.commodity_rows]
     competitive = next(s for s in sections if s["key"] == "competitive_position")
     competitive["peer_table"] = [dict(row) for row in inputs.peer_rows]
+    if inputs.peer_selection:
+        # Only when a peer set ran, so every other report is byte-identical.
+        competitive["peer_selection"] = dict(inputs.peer_selection)
     if inputs.not_meaningful_note:
         # Only when declared, so every other report is byte-identical.
         for key in ("financial_capacity", "competitive_position"):
@@ -1266,6 +1272,88 @@ def peer_rows(
     return sorted(rows, key=lambda r: (not r["is_subject"], r["ticker"]))
 
 
+#: ADR-089 — the reader's sentence when candidates were assessed and none was comparable.
+PEER_COMPARISON_UNAVAILABLE_NOTE = (
+    "No peer comparison is shown: the companies this platform holds in the same industry "
+    "did not match this company on SIC code, business description or commodity, or "
+    "differ too much in size, so none is a comparable. That is a limit of this research, "
+    "not a statement about the company."
+)
+#: ADR-089 — the neutral sentence when there was no candidate to assess at all.
+PEER_COMPARISON_NO_CANDIDATE_NOTE = (
+    "No comparable held company is available for a peer comparison. That is a limit of "
+    "this research, not a statement about the company."
+)
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+#: Excluded candidates recorded in the report's technical record, at most.
+MAX_PEER_EXCLUSIONS_SHOWN = 12
+
+
+def peer_selection(payloads: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """What the run's peer sets selected and excluded, for the report — ADR-089.
+
+    ``None`` when no peer set ran. ``status`` is ``"selected"`` when any comparable peer
+    was returned, else ``"unavailable"`` with the reader's note. Excluded candidates are
+    recorded by TICKER and reasons only: the reasons are this platform's own reviewed
+    wording, and a company name is not needed to audit the decision.
+    """
+    if not payloads:
+        return None
+    selected: dict[str, None] = {}
+    excluded: dict[str, dict[str, Any]] = {}
+    excluded_count = 0
+    for payload in payloads:
+        if not isinstance(payload, Mapping):
+            continue
+        items = payload.get("items")
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and item.get("ticker"):
+                selected.setdefault(str(item["ticker"]).upper(), None)
+        excluded_count = max(excluded_count, _nonnegative_int(payload.get("excluded_count")))
+        rows = payload.get("excluded")
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not row.get("ticker"):
+                continue
+            similarity = row.get("similarity")
+            if not isinstance(similarity, dict):
+                similarity = {}
+            reasons = similarity.get("reasons")
+            reason_list: list[Any] = reasons if isinstance(reasons, list) else []
+            excluded.setdefault(
+                str(row["ticker"]).upper(),
+                {
+                    "ticker": str(row["ticker"]).upper(),
+                    "exchange": row.get("exchange"),
+                    "reason": row.get("reason"),
+                    "score": similarity.get("score"),
+                    "reasons": [str(r) for r in reason_list][:8],
+                },
+            )
+    for ticker in selected:
+        excluded.pop(ticker, None)
+    available = bool(selected)
+    total_excluded = max(excluded_count, len(excluded))
+    # The "did not match" sentence only when candidates were actually assessed and
+    # excluded; with none to assess it would describe a comparison that never happened.
+    note = None if available else (
+        PEER_COMPARISON_UNAVAILABLE_NOTE if total_excluded > 0
+        else PEER_COMPARISON_NO_CANDIDATE_NOTE
+    )
+    return {
+        "status": "selected" if available else "unavailable",
+        "note": note,
+        "selected": list(selected),
+        "excluded": list(excluded.values())[:MAX_PEER_EXCLUSIONS_SHOWN],
+        "excluded_count": total_excluded,
+    }
+
+
 def domain_cost(
     questions: Sequence[tuple[str | None, Sequence[Mapping[str, Any]]]]
 ) -> dict[str, dict[str, int]]:
@@ -1296,6 +1384,7 @@ __all__ = [
     "commodity_rows",
     "domain_cost",
     "peer_rows",
+    "peer_selection",
     "screen",
     "REPORT_VERSION",
     "SECTION_TITLES",

@@ -91,6 +91,12 @@ async def _subject(session):
 
 async def test_verified_external_peer_is_added_with_its_basis(session, monkeypatch):
     subject = await _subject(session)
+    # ADR-089: a verified listing must also be COMPARABLE on a record the platform holds.
+    # Lynas is held (outside the subject's industry bucket, so the search finds it), and
+    # its own name reads as rare earths — the subject's commodity.
+    session.add(Company(id=uuid.uuid4(), ticker="LYC", exchange="ASX",
+                        name="Lynas Rare Earths Ltd", industry=None, status="new"))
+    await session.flush()
     monkeypatch.setattr("app.services.agents.routing.research_provider_for",
                         lambda cfg: SimpleNamespace(transport=_Transport(), provider_id="ds",
                                                     max_output_tokens=4000))

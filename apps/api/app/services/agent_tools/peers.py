@@ -13,6 +13,12 @@ The comparison is then made on figures produced by the SAME own-period rule and 
 defined metrics as the subject's, so "comparable" is a property of the pipeline rather
 than an assumption.
 
+A same-industry candidate is not yet a peer (ADR-089): the canonical industry is a coarse
+bucket, so each candidate must also be comparable on data the platform holds — SIC code,
+business description, commodity, size band (``peer_similarity``). One that is not is
+excluded as "not comparable" and recorded with its reasons; with none left there is no
+peer comparison, rather than a table of companies in other businesses.
+
 Peers the platform does not hold — the world's largest producers of a commodity, many of
 them listed outside the United States — are the job of the question's external research
 rung, whose every claim InvestingBuddy fetches and verifies itself. This tool does not
@@ -41,6 +47,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from app.services.agent_tools.session import ToolContext
 
 MAX_PEERS = 6
+#: ADR-089 — how many excluded candidates a peer set records with their reasons.
+MAX_EXCLUDED_RECORDED = 25
 PEER_UNITS: tuple[str, ...] = ("url_fetch_calls",)
 _SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
@@ -69,14 +77,44 @@ def validate_get_peer_set(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _commodity_reading(
+    session: Any, company: Any, commodity: str | None
+) -> tuple[list[str], bool, bool | None]:
+    """``(commodities, has_corpus, shares_commodity)`` for a HELD company.
+
+    UNKNOWN, not false, when the platform holds none of the company's documents and its
+    name names no commodity: "Freeport-McMoRan" says nothing about copper, and reporting
+    FCX as not a copper producer would be a statement about FCX the research never
+    checked.
+    """
+    from sqlalchemy import select
+
+    from app.models.research_chunk import ResearchDocumentChunk
+    from app.services.macro.commodities import identify_commodities
+
+    texts = (
+        await session.execute(
+            select(ResearchDocumentChunk.text)
+            .where(ResearchDocumentChunk.company_id == company.id)
+            .limit(200)
+        )
+    ).scalars().all()
+    mentions = identify_commodities([*texts, str(company.name or "")] if texts else [
+        " ".join([str(company.name or "")] * 5)
+    ])
+    commodities = [m.commodity.slug for m in mentions]
+    shares = (
+        (bool(commodity) and commodity in commodities) if (texts or commodities) else None
+    )
+    return commodities, bool(texts), shares
+
+
 async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> dict[str, Any]:
     import uuid
 
     from sqlalchemy import select
 
     from app.models.company import Company
-    from app.models.research_chunk import ResearchDocumentChunk
-    from app.services.macro.commodities import identify_commodities
     from app.services.sector_taxonomy import normalize_industry
 
     session = context.session
@@ -103,19 +141,28 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
         if (normalize_industry(getattr(c, "industry", None)) or getattr(c, "industry", None))
         == industry
     ]
+    from app.services.agent_tools.peer_similarity import assess_peer
+
     items: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
     for company in candidates:
-        texts = (
-            await session.execute(
-                select(ResearchDocumentChunk.text)
-                .where(ResearchDocumentChunk.company_id == company.id)
-                .limit(200)
-            )
-        ).scalars().all()
-        mentions = identify_commodities([*texts, str(company.name or "")] if texts else [
-            " ".join([str(company.name or "")] * 5)
-        ])
-        commodities = [m.commodity.slug for m in mentions]
+        commodities, has_corpus, shares_commodity = await _commodity_reading(
+            session, company, arguments["commodity"]
+        )
+        # ADR-089 — the bucket is where candidates come FROM, never why one is a peer.
+        verdict = assess_peer(
+            subject, company,
+            shares_commodity=shares_commodity, commodity=arguments["commodity"],
+        )
+        if not verdict.comparable:
+            excluded.append({
+                "ticker": company.ticker,
+                "exchange": company.exchange,
+                "name": company.name,
+                "reason": verdict.exclusion,
+                "similarity": verdict.to_dict(),
+            })
+            continue
         items.append(
             {
                 "id": f"peer:{company.ticker}:{company.exchange}",
@@ -124,31 +171,46 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
                 "name": company.name,
                 "industry": industry,
                 "commodities": commodities,
-                "commodity_basis": "corpus" if texts else "name_only",
-                # UNKNOWN, not false, when the platform holds none of the peer's
-                # documents and its name names no commodity: "Freeport-McMoRan" says
-                # nothing about copper, and reporting FCX as not a copper producer
-                # would be a statement about FCX the research never checked.
-                "shares_commodity": (
-                    (bool(arguments["commodity"]) and arguments["commodity"] in commodities)
-                    if (texts or commodities)
-                    else None
+                "commodity_basis": "corpus" if has_corpus else "name_only",
+                "shares_commodity": shares_commodity,
+                "basis": (
+                    "same canonical industry in the platform's company universe; "
+                    "similarity check: " + "; ".join(verdict.reasons)
                 ),
-                "basis": "same canonical industry in the platform's company universe",
+                "similarity": verdict.to_dict(),
                 "source_tier": "T3_curated_reference_list",
             }
         )
     items.sort(key=lambda i: (i["shares_commodity"] is not True,
                               i["shares_commodity"] is False,
-                              i["commodity_basis"] != "corpus", str(i["ticker"])))
+                              i["commodity_basis"] != "corpus",
+                              -int(i["similarity"]["score"]), str(i["ticker"])))
     items = items[: arguments["limit"]]
     gaps = []
+    if candidates and not items:
+        gaps.append(
+            f"No held company in {industry!r} is comparable to the subject: "
+            f"{len(excluded)} candidate(s) were excluded as not comparable (no SIC-code, "
+            "business-description or commodity match beyond the industry label, a "
+            "different line of business, or an extreme size gap). The peer comparison is "
+            "unavailable."
+        )
+    elif excluded:
+        gaps.append(
+            f"{len(excluded)} held candidate(s) in {industry!r} were excluded as not "
+            "comparable."
+        )
     # V3.19.7 — peers the platform does NOT hold, found and VERIFIED like any discovery
     # lead. The V3.18 limitation: MP Materials' "peers" were copper and steel producers
     # because those were the companies on file.
-    external = await _dynamic_peers(context, subject, industry, arguments, items)
+    # ADR-089 — an externally discovered peer passes the SAME gate; a held candidate
+    # already excluded above cannot come back through the search.
+    external = await _dynamic_peers(
+        context, subject, industry, arguments, [*items, *excluded]
+    )
     items.extend(external.get("items", []))
     gaps.extend(external.get("gaps", []))
+    excluded.extend(external.get("excluded", []))
     from app.services.agent_tools.external import SEARCH_WEB_UNITS
 
     spent = external.get("consumption")
@@ -160,9 +222,16 @@ async def _get_peer_set(context: "ToolContext", arguments: dict[str, Any]) -> di
     return {
         "items": items,
         "gaps": gaps,
-        "summary": f"{len(items)} candidate peer(s) with industry {industry!r}",
+        # ADR-089 — the technical record: who was a candidate, and why it is not a peer.
+        # Never evidence (only ``items`` are harvested), so nothing here can be cited.
+        "excluded": excluded[:MAX_EXCLUDED_RECORDED],
+        "excluded_count": len(excluded),
+        "summary": (
+            f"{len(items)} comparable peer(s) with industry {industry!r}; "
+            f"{len(excluded)} excluded as not comparable"
+        ),
         # External peers' names and reasons come from a provider, and are marked so.
-        "contains_untrusted_content": bool(external.get("items")),
+        "contains_untrusted_content": bool(external.get("items") or external.get("excluded")),
         # The paid search is reported like search_web's, so cost attribution sees it.
         "consumption": spent if spent is not None else units_for(SEARCH_WEB_UNITS),
     }
@@ -190,6 +259,12 @@ async def _dynamic_peers(
     commodity (never a user's text), then goes through ``discovery.identity`` — the same
     listing verification a discovery candidate must pass. An unverified lead is never a
     peer. What the peer shares with the subject is recorded as the basis.
+
+    ADR-089: a verified listing must ALSO pass ``peer_similarity.assess_peer`` on the
+    record the platform holds for it; one that does not is returned under ``excluded``
+    ("not comparable", or "comparability unverified" when the record is too thin).
+    ``held`` is every held candidate already decided — selected or excluded — so a
+    held company the gate excluded cannot return through the search.
     """
     import time
 
@@ -200,7 +275,8 @@ async def _dynamic_peers(
     cached = _PEER_MEMO.get(memo_key)
     if cached and time.monotonic() - cached[0] < _PEER_MEMO_SECONDS:
         # Reused: nothing was spent this time, so no consumption is reported.
-        return {"items": cached[1].get("items", []), "gaps": cached[1].get("gaps", [])}
+        return {"items": cached[1].get("items", []), "gaps": cached[1].get("gaps", []),
+                "excluded": cached[1].get("excluded", [])}
     try:
         from app.services.agents.routing import research_provider_for
         from app.services.discovery.identity import PRIMARY_GIVEN, dedup_key, verify_identity
@@ -232,9 +308,16 @@ async def _dynamic_peers(
         )
     except Exception as exc:  # noqa: BLE001 - peers are enrichment, never fatal
         return {"gaps": [f"dynamic peer discovery failed ({type(exc).__name__})"]}
+    from app.services.agent_tools.peer_similarity import (
+        EXCLUSION_UNVERIFIED,
+        PeerAssessment,
+        assess_peer,
+    )
+
     seen = {dedup_key(i.get("ticker"), i.get("exchange")) for i in held}
     seen.add(dedup_key(getattr(subject, "ticker", None), getattr(subject, "exchange", None)))
     items: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
     rejected = 0
     for lead in leads[: MAX_DYNAMIC_PEERS * 2]:
         if len(items) >= MAX_DYNAMIC_PEERS:
@@ -252,20 +335,64 @@ async def _dynamic_peers(
         why = _safe(lead.why, 200) or ""
         dims = [d for d, word in (("commodity", focus), ("industry", industry))
                 if word and str(word).lower().split()[0] in why.lower()]
+        # ADR-089 — the SAME comparability gate as a held candidate, on the record the
+        # platform holds for this listing (its company row when held, else the exchange
+        # directory's row). The provider's "why" is a claim, never a description: a
+        # model saying two companies are peers is not evidence that they are.
+        try:
+            record, commodities, shares = await _dynamic_peer_record(
+                getattr(context, "session", None), outcome, key, commodity
+            )
+        except Exception as exc:  # noqa: BLE001 - peers are enrichment, never fatal
+            # A failed lookup is an unverified peer, never an unchecked one.
+            excluded.append({
+                "ticker": outcome.ticker, "exchange": outcome.exchange, "name": outcome.name,
+                "source": "external_discovery", "reason": EXCLUSION_UNVERIFIED,
+                "similarity": {"comparable": False, "score": 0,
+                               "reasons": [f"the platform's record could not be read "
+                                           f"({type(exc).__name__})"],
+                               "insufficient_data": True},
+            })
+            continue
+        if _listing_record_names_subject(subject, outcome):
+            verdict = PeerAssessment(
+                False, 0,
+                ("the identity record lists the subject's own listing or legal name "
+                 "(another listing of the same issuer)",),
+                "not comparable: the same issuer as the subject",
+            )
+        else:
+            verdict = assess_peer(
+                subject, record, shares_commodity=shares, commodity=commodity
+            )
+        if not verdict.comparable:
+            excluded.append({
+                "ticker": outcome.ticker,
+                "exchange": outcome.exchange,
+                "name": outcome.name,
+                "source": "external_discovery",
+                "reason": (
+                    EXCLUSION_UNVERIFIED if verdict.insufficient_data else verdict.exclusion
+                ),
+                "similarity": verdict.to_dict(),
+            })
+            continue
         items.append({
             "id": f"peer:{outcome.ticker}:{outcome.exchange}",
             "ticker": outcome.ticker,
             "exchange": outcome.exchange,
             "name": outcome.name,
             "industry": None,
-            "commodities": [commodity] if commodity and "commodity" in dims else [],
+            "commodities": commodities,
             "commodity_basis": "external_discovery",
-            "shares_commodity": True if commodity and "commodity" in dims else None,
+            "shares_commodity": shares,
             "basis": (
                 "externally discovered peer, listing verified on "
                 f"{(outcome.listing_source or {}).get('tier')} page"
                 + (f"; shares {', '.join(dims)}" if dims else "")
+                + "; similarity check: " + "; ".join(verdict.reasons)
             ),
+            "similarity": verdict.to_dict(),
             "why_selected": why,
             "listing_source": (outcome.listing_source or {}).get("url"),
             "source_tier": (outcome.listing_source or {}).get("tier"),
@@ -278,8 +405,92 @@ async def _dynamic_peers(
     if rejected:
         gaps.append(f"{rejected} externally suggested peer(s) could not have their listing "
                     "verified and were not used")
-    _PEER_MEMO[memo_key] = (time.monotonic(), {"items": items, "gaps": gaps})
-    return {"items": items, "gaps": gaps, "consumption": consumption}
+    if excluded:
+        gaps.append(f"{len(excluded)} externally discovered peer(s) were excluded: not "
+                    "comparable, or comparability unverified on the data held")
+    _PEER_MEMO[memo_key] = (
+        time.monotonic(), {"items": items, "gaps": gaps, "excluded": excluded}
+    )
+    return {"items": items, "gaps": gaps, "excluded": excluded, "consumption": consumption}
+
+
+async def _dynamic_peer_record(
+    session: Any, outcome: Any, key: str | None, commodity: str | None
+) -> tuple[Any, list[str], bool | None]:
+    """``(record, commodities, shares_commodity)`` for a verified external peer.
+
+    The platform's own company row when it holds the listing (by the identity's
+    ``company_id``, else by the same dedup key), with the same corpus commodity reading
+    as a held candidate. Otherwise a record with no SIC, no description and an UNKNOWN
+    commodity, which can never pass: "comparability unverified". The exchange
+    directory's market cap is NOT used for the size band — directories report it in
+    different units (whole currency units, or millions) from ``companies.market_cap``,
+    and a unit slip would read as a 1,000,000x size gap.
+    """
+    from types import SimpleNamespace
+
+    from sqlalchemy import func, select
+
+    from app.models.company import Company
+    from app.services.discovery.identity import dedup_key
+
+    held = None
+    if session is not None:
+        try:
+            if getattr(outcome, "company_id", None):
+                held = await session.get(Company, uuid.UUID(str(outcome.company_id)))
+            if held is None and outcome.ticker:
+                rows = (
+                    await session.execute(
+                        select(Company)
+                        .where(func.upper(Company.ticker) == str(outcome.ticker).upper())
+                        .limit(20)
+                    )
+                ).scalars().all()
+                held = next(
+                    (c for c in rows if key and dedup_key(c.ticker, c.exchange) == key), None
+                )
+        except (ValueError, TypeError):
+            held = None
+    if held is not None:
+        commodities, _has_corpus, shares = await _commodity_reading(session, held, commodity)
+        return held, commodities, shares
+    record = SimpleNamespace(
+        ticker=outcome.ticker, name=outcome.name, sic_code=None, description=None,
+        market_cap=None, currency=None, legal_entity_id=None,
+    )
+    return record, [], None
+
+
+def _listing_record_names_subject(subject: Any, outcome: Any) -> bool:
+    """ADR-061: does the peer's identity record show it is the SUBJECT's issuer?
+
+    True when any security the identity linked to the peer is one of the subject's
+    listings (by venue dedup key, or the same base ticker), or when the issuer's legal
+    name is the subject's.
+    """
+    from types import SimpleNamespace
+
+    from app.services.agent_tools.peer_similarity import base_ticker, same_issuer
+    from app.services.discovery.identity import dedup_key
+
+    subject_key = dedup_key(getattr(subject, "ticker", None), getattr(subject, "exchange", None))
+    subject_base = base_ticker(getattr(subject, "ticker", None))
+    for row in getattr(outcome, "securities", None) or []:
+        if not isinstance(row, dict):
+            continue
+        if subject_key and dedup_key(row.get("ticker"), row.get("exchange")) == subject_key:
+            return True
+        if subject_base and base_ticker(row.get("ticker")) == subject_base:
+            return True
+    issuer = getattr(outcome, "issuer", None)
+    legal_name = issuer.get("legal_name") if isinstance(issuer, dict) else None
+    if legal_name and same_issuer(
+        SimpleNamespace(ticker=None, name=getattr(subject, "name", None), legal_entity_id=None),
+        SimpleNamespace(ticker=None, name=legal_name, legal_entity_id=None),
+    ):
+        return True
+    return False
 
 
 def validate_get_peer_financials(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -530,8 +741,9 @@ def _not_meaningful_block(context: "ToolContext") -> dict[str, Any]:
 GET_PEER_SET_SPEC = ToolSpec(
     name=TOOL_GET_PEER_SET,
     description=(
-        "Candidate peers from the platform's own company universe with the same canonical "
-        "industry, ranked by whether their own documents show the same commodity."
+        "Peers from the platform's own company universe with the same canonical industry "
+        "that are also COMPARABLE (ADR-089: SIC code, business description, commodity, "
+        "size band), ranked by whether their own documents show the same commodity."
     ),
     handler=_get_peer_set,
     validate_arguments=validate_get_peer_set,

@@ -791,6 +791,14 @@ function DomainBody({
 
       {section.commodityTable.length > 0 && <CommodityTable rows={section.commodityTable} />}
       {section.peerTable.length > 0 && <PeerTable rows={section.peerTable} />}
+      {section.peerTable.length === 0 && section.peerSelectionNote && (
+        <p
+          className="mt-3 max-w-2xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
+          data-testid="peer-comparison-unavailable-note"
+        >
+          {section.peerSelectionNote}
+        </p>
+      )}
       {section.metricsNote && (
         <p
           className="mt-3 max-w-2xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
