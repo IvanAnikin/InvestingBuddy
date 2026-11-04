@@ -1677,7 +1677,9 @@ reader takes its counts and status lines from it.
     older than the newest held period, and every amount it prints is one of those
     figures. Peer, competitor and "(not the company)" findings never date it.
   - **Placement.** Labels go only at a sentence start the platform is sure of ("U.S." is
-    not one).
+    not one), and never cover an uncited sentence joined across an abbreviation.
+  - **Amounts.** A sentence's amount matches a cited figure only at the sentence's printed
+    precision ("$4.3bn" is 4,316.3m; "A$45.1m" is not A$44.0m).
   - **Names.** Only an annual, interim or quarterly report or an Appendix 5B / 4C is
     named. Anything else is "a newer issuer disclosure".
   - **Segments.** No segment is ever called historical (ADR-087 known limit).

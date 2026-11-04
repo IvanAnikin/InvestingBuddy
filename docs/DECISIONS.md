@@ -8177,9 +8177,11 @@ bracketed date label placed after the platform's own source labels.
   - **a section sentence or chair sentence that prints no date**, when ALL of these hold:
     - every subject finding it cites that carries a figure has a known date, and the
       latest of them is older than the newest held period for the family;
-    - every amount the sentence prints is one those findings print, within 5% (so
-      "USD 20.3bn" is "USD 20,256 million"). A new figure ("rose to A$31.3m") or a
-      peer's figure has no date the platform knows;
+    - every amount the sentence prints is one those findings print, rounded to the
+      sentence's printed precision: within half a unit of its last printed digit after
+      scaling (so "USD 20.3bn" is "USD 20,256 million" and "$1.6bn" is $1,629.1m, but
+      "A$45.1m" is not A$44.0m). A new figure ("rose to A$31.3m") or a peer's figure has
+      no date the platform knows;
     - the sentence prints an amount, or every finding it cites for the family does.
 
     The label prints the date of the figures the sentence states. That is the findings
@@ -8206,8 +8208,14 @@ bracketed date label placed after the platform's own source labels.
   the same neutralisation as the labels, and `named` says whether a label may name it.
 - **Where a label goes.** A label goes only at a sentence start the platform is sure of.
   A full stop after a single letter, a dotted abbreviation ("U.S.") or a known
-  abbreviation ("Inc.", "No.") does not end a sentence, so that run of text is one unit,
-  labelled at its start.
+  abbreviation ("Inc.", "Ltd.") does not certainly end a sentence, so that run of text
+  is one unit, and its label never covers a sentence it does not date:
+  - the part before the last abbreviation cites nothing and states no figure, metric or
+    segment ("Revenue grew 8% in the U.S. Cash of $4.2bn is ample …") → the label goes
+    before the capitalised word after the abbreviation;
+  - that part states the metric itself ("Net debt of $1.6bn is below that of U.S.
+    Steel …") → the unit is one claim, labelled at its start;
+  - that part carries a citation of its own → no label.
 - **Segments.**
   - An undated segment finding gets `period_key` (with
     `period_key_source: "statement_text"`) only when its text names exactly one period,

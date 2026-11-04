@@ -1100,6 +1100,60 @@ class TestReviewM4EveryCitedFigure:
         assert not ps._about_other_entity({"statement": "Peer-to-peer volume was $1bn."})
 
 
+class TestReReviewB4PrintedPrecision:
+    def test_a_figure_only_near_the_cited_one_is_not_it(self) -> None:
+        # B4: A$45.1m is not A$44.0m (it was, within the old flat 5%).
+        f = _finding(_F1, "F1", "The company held cash of A$44.0m.",
+                     source_published_at="2026-02-10")
+        out, record = ps.apply_period_supersession(_payload(
+            [f], sentences=[("Cash of A$45.1m funds the next phase.", ["F1"])],
+            **SEC_FILINGS), as_of=AS_OF)
+        assert _sentences(out) == ["Cash of A$45.1m funds the next phase."]
+        assert [a["path"] for a in record["labelled"]] == [f"finding:{_F1}"]
+
+    @pytest.mark.parametrize("stated,figure,same", [
+        ("$1.6bn", 1_629.1e6, True),      # real rounding (ANTO)
+        ("$4.3bn", 4_316.3e6, True),      # real rounding (ANTO)
+        ("USD 20.3bn", 20_256e6, True),
+        ("A$45.1m", 44.0e6, False),       # B4
+        ("$4.1bn", 4.2e9, False),
+        ("$2bn", 1.6e9, True),            # printed to the billion
+        ("A$1,629m", 1_629.1e6, True),
+        ("A$1,629m", 1_600e6, False),
+    ])
+    def test_the_sentences_printed_precision(self, stated: str, figure: float,
+                                             same: bool) -> None:
+        (amount,) = ps._printed_amounts(stated)
+        assert ps._same_amount(amount, figure) is same
+
+
+class TestReReviewB2B3NoLabelOverAnUncitedSentence:
+    @pytest.mark.parametrize("before,after", [
+        # B2
+        ("Revenue grew 8% in the U.S.", "Cash of $4.2bn is ample (finding_ids: a1b2c3d4)."),
+        # B3
+        ("The company acquired Example Pty Ltd.",
+         "Liquidity is ample with cash of $4.2bn (finding_ids: a1b2c3d4)."),
+    ])
+    def test_the_label_starts_at_the_cited_sentence(self, before: str, after: str) -> None:
+        f = _finding(_F1, "F1", "The company held cash of $4.2bn.",
+                     source_published_at="2026-02-10")
+        out, _ = ps.apply_period_supersession(
+            _payload([f], synthesis=f"{before} {after}", **SEC_FILINGS), as_of=AS_OF)
+        assert out["chair"]["synthesis"] == (
+            f"{before} [figures as of a source dated 2026-02-10; the issuer's newer 10-Q of "
+            f"2026-10-25 is held] {after}")
+
+    def test_a_cited_part_before_the_join_is_unplaceable(self) -> None:
+        f = _finding(_F1, "F1", "The company held cash of $4.2bn.",
+                     source_published_at="2026-02-10")
+        text = ("Demand held (finding_ids: b1b2c3d4) in the U.S. Cash of $4.2bn is ample "
+                "(finding_ids: a1b2c3d4).")
+        out, _ = ps.apply_period_supersession(
+            _payload([f], synthesis=text, **SEC_FILINGS), as_of=AS_OF)
+        assert out["chair"]["synthesis"] == text
+
+
 class TestReviewL1SureSentenceStarts:
     @pytest.mark.parametrize("synthesis", [
         # P13

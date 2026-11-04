@@ -45,12 +45,17 @@ A synthesis sentence is labelled only when
 * every subject finding it cites that carries a figure has a known as-of, and the
   latest of them is older than the newer held issuer period (the label prints that
   latest as-of);
-* every amount the sentence prints is one those findings print (a new figure — "rose
-  to A$31.3m" — or a peer's figure has no date the platform knows);
+* every amount the sentence prints is one those findings print, rounded to the precision
+  the sentence prints ("$4.3bn" is 4,316.3m; "A$45.1m" is not A$44.0m). A new figure
+  ("rose to A$31.3m") or a peer's figure has no date the platform knows;
 * findings about another entity (a peer, a competitor, "(not the company)") are not the
   subject's figures and never date the sentence.
-A label goes only at a sentence start the platform is sure of: across an abbreviation
-("U.S. Steel") the whole run of text is one unit, labelled at its start.
+A label goes only at a sentence start the platform is sure of. Across an abbreviation the
+run of text is one unit: when the part before the last abbreviation cites nothing and
+states no figure or metric ("Revenue grew 8% in the U.S. Cash of $4.2bn …"), the label
+goes before the capitalised word after it; when that part states the metric ("Net debt
+of $1.6bn is below that of U.S. Steel"), at the unit's start; when it cites something of
+its own, nowhere.
 
 A held document is NAMED in a label only when it is an annual report, an interim or
 quarterly report (10-K, 10-Q, 20-F, 40-F, half-year report), or an Appendix 5B / 4C;
@@ -97,9 +102,9 @@ ANNUAL_LAG_DAYS = 183
 INTERIM_LAG_DAYS = 92
 #: Texts longer than this are not examined.
 MAX_TEXT_CHARS = 2000
-#: Two amounts are the same figure when they differ by at most this share (rounding:
-#: "USD 20.3bn" is "USD 20,256 million").
-AMOUNT_TOLERANCE = 0.05
+#: A sentence's amount is a cited figure when it is that figure ROUNDED TO THE PRECISION
+#: THE SENTENCE PRINTS: within half a unit of its last printed digit, after scaling
+#: ("$4.3bn" is 4,316.3m: within $0.05bn; "A$45.1m" is not A$44.0m).
 
 FAMILY_CASH = "cash"
 FAMILY_DEBT = "debt"
@@ -287,24 +292,35 @@ def has_own_date(text: str) -> bool:
 # ── Amounts ───────────────────────────────────────────────────────────────── #
 
 
-def _amounts(text: str) -> list[float]:
-    """The money amounts a text prints, in units."""
-    out: list[float] = []
+def _printed_amounts(text: str) -> list[tuple[float, float]]:
+    """``(value, half a unit of its last printed digit)`` of every money amount a text
+    prints, in units ("$4.3bn" → (4.3e9, 0.05e9); "A$1,629m" → (1.629e9, 0.5e6))."""
+    out: list[tuple[float, float]] = []
     for m in _MONEY_RE.finditer(text):
         scale = (m.group("scale") or "").lower()
         if not (m.group("cur") or scale):
             continue
-        value = float(m.group("num").replace(",", "") + (m.group("dec") or ""))
-        out.append(value * _SCALES.get(scale, 1.0))
+        decimals = m.group("dec") or ""
+        factor = _SCALES.get(scale, 1.0)
+        value = float(m.group("num").replace(",", "") + decimals)
+        half = 0.5 * 10.0 ** -max(len(decimals) - 1, 0) * factor
+        out.append((value * factor, half))
     return out
 
 
+def _amounts(text: str) -> list[float]:
+    """The money amounts a text prints, in units."""
+    return [value for value, _ in _printed_amounts(text)]
+
+
 def _states_amount(text: str) -> bool:
-    return bool(_amounts(text))
+    return bool(_printed_amounts(text))
 
 
-def _same_amount(a: float, b: float) -> bool:
-    return abs(a - b) <= AMOUNT_TOLERANCE * max(abs(a), abs(b))
+def _same_amount(stated: tuple[float, float], figure: float) -> bool:
+    """The sentence's ``stated`` amount is ``figure`` rounded to its printed precision."""
+    value, half = stated
+    return abs(value - figure) <= half * (1 + 1e-9)
 
 
 # ── Metric families ───────────────────────────────────────────────────────── #
@@ -604,7 +620,7 @@ class _Labeller:
         figure_dates = [self.as_of_of(f) for f in with_figures]
         if any(a is None for a in figure_dates):
             return None  # a cited figure the platform cannot date: no label is certain
-        stated = _amounts(text)
+        stated = _printed_amounts(text)
         if not all(any(_same_amount(a, b) for f in with_figures
                        for b in _amounts(_strip_ids(_statement(f)))) for a in stated):
             return None  # a figure no subject finding gives (new, derived, or a peer's)
@@ -645,26 +661,61 @@ class _Labeller:
         a unit cites. A unit begins at a sentence start the platform is sure of."""
         if not isinstance(text, str) or not text.strip() or len(text) > 20_000:
             return text
-        pieces: list[tuple[str, str]] = []
+        pieces: list[tuple[str, str, list[int]]] = []
         start = 0
+        joins: list[int] = []
         for m in _SENTENCE_RE.finditer(text):
             if not _sure_break(text, m.start()):
-                continue  # "U.S. Steel": one unit with what follows
-            pieces.append((text[start: m.start()], m.group(0)))
-            start = m.end()
-        pieces.append((text[start:], ""))
+                # "U.S. Steel" or "in the U.S. Cash …": one unit, remembering where a
+                # capitalised word follows the abbreviation.
+                joins.append(m.end() - start)
+                continue
+            pieces.append((text[start: m.start()], m.group(0), joins))
+            start, joins = m.end(), []
+        pieces.append((text[start:], "", joins))
         changed = False
         out: list[str] = []
-        for sentence, separator in pieces:
-            hit = self.sentence_label(sentence, cited_for(sentence))
-            if hit is not None:
-                rule, label = hit[0], _safe(hit[1])
-                lead = sentence[: len(sentence) - len(sentence.lstrip())]
-                sentence = f"{lead}{label} {sentence.lstrip()}"
+        for sentence, separator, unit_joins in pieces:
+            placed = self._place(sentence, unit_joins, cited_for)
+            if placed is not None:
+                offset, (rule, raw) = placed
+                label = _safe(raw)
+                if offset == 0:
+                    lead = sentence[: len(sentence) - len(sentence.lstrip())]
+                    sentence = f"{lead}{label} {sentence.lstrip()}"
+                else:
+                    sentence = f"{sentence[:offset]}{label} {sentence[offset:]}"
                 self.actions.append({"rule": rule, "path": path, "label": label})
                 changed = True
             out.append(sentence + separator)
         return "".join(out) if changed else text
+
+    def _place(
+        self, unit: str, joins: list[int], cited_for: Any
+    ) -> tuple[int, tuple[str, str]] | None:
+        """Where a unit's label goes, and the label; ``None`` for no label.
+
+        A unit joined across an abbreviation ("… in the U.S. Cash of $4.2bn …") may be
+        two sentences. Its label never covers text it does not date:
+        * the part before the last join cites nothing and states no figure, metric or
+          segment ("Revenue grew 8% in the U.S.") → judged and labelled from the
+          capitalised word after the join;
+        * that part states the metric itself ("Net debt of $1.6bn is below that of
+          U.S. Steel") → the unit is one claim, labelled at its start;
+        * that part carries a citation of its own → unplaceable: no label.
+        """
+        if not joins:
+            hit = self.sentence_label(unit, cited_for(unit))
+            return (0, hit) if hit is not None else None
+        cut = joins[-1]
+        head, tail = unit[:cut], unit[cut:]
+        if _HEX_ID_RE.search(head):
+            return None
+        if _states_amount(head) or families(head) or _is_segment_claim(head):
+            hit = self.sentence_label(unit, cited_for(unit))
+            return (0, hit) if hit is not None else None
+        hit = self.sentence_label(tail, cited_for(unit))
+        return (cut, hit) if hit is not None else None
 
 
 def _sure_break(text: str, end: int) -> bool:
@@ -824,7 +875,6 @@ def apply_period_supersession(
 
 
 __all__ = [
-    "AMOUNT_TOLERANCE",
     "SUPERSESSION_VERSION",
     "STALE_AFTER_DAYS",
     "apply_period_supersession",
