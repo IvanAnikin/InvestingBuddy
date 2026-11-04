@@ -2487,7 +2487,7 @@ REREVIEW_CASES: list[
         None, OWNER_SUBJECT, None,
     ),
     (
-        'mine-we', 'scoped',
+        'mine-we', 'subject',  # accepted missed scope: the mine follows the figure
         SubjectIdentity('Antofagasta plc', 'ANTO.L'),
         'Capital expenditure was $1.3 billion in 2024.',
         (
@@ -2991,11 +2991,12 @@ def test_rereview2_the_subjects_own_fact_stays_unscoped(
         ("Copper production was 143,000 tonnes in 2024.",
          "CENTINELA\nTotal copper production at Centinela was 143,000 tonnes in 2024, an "
          "increase on the Centinela Concentrator throughput."),
-        ("Capital expenditure was $1.3 billion in 2024.",
-         "CENTINELA\nWe invested $1.3 billion in 2024 on the Centinela Second "
-         "Concentrator."),
+        ("Production was 143,000 tonnes.",
+         "CENTINELA\nTotal copper production at Centinela was 143,000 tonnes in 2024."),
+        ("Production was 143,000 tonnes.",
+         "CENTINELA\nAt Centinela, we produced 143,000 tonnes in 2024."),
     ],
-    ids=["total-at-heading-noun", "we-on-the-heading-noun"],
+    ids=["total-at-heading-noun", "hb10-total-at-mine", "hb11-at-mine-we"],
 )
 def test_rereview2_a_locative_heading_noun_keeps_the_scope(statement: str, text: str) -> None:
     result = _one(statement, _ANTO, Passage("c1", text, owner=OWNER_SUBJECT))
@@ -3059,8 +3060,10 @@ class TestInvestigatorRereview2:
         "We " * 2000,
         "Co " * 2000,
         "Calderon" + "&" * 6000 + ", a former subsidiary",
+        ("A.B.C.D. " * 700)[:6000],
     ],
-    ids=["A-dash", "a-dot", "spaces", "space-run", "tab-run", "we", "co", "amp-run"],
+    ids=["A-dash", "a-dot", "spaces", "space-run", "tab-run", "we", "co", "amp-run",
+         "initials-run"],
 )
 def test_no_pattern_backtracks_on_a_degenerate_passage(text: str) -> None:
     # Security review (PR #320, MEDIUM): unbounded quantifiers in the acronym and
@@ -3075,3 +3078,110 @@ def test_no_pattern_backtracks_on_a_degenerate_passage(text: str) -> None:
     started = time.perf_counter()
     attribute_statement("Revenue was $5 million.", [passage], subject)
     assert time.perf_counter() - started < 0.5
+
+
+# ---------------------------------------------------------------------------
+# Final verification of PR #320: a Group total under a mine / segment heading
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "subject,statement,text",
+    [
+        (_ANTO, "Total capital expenditure was $2,478.1 million in 2025.",
+         "CENTINELA\nOur total capital expenditure was $2,478.1 million in 2025, with "
+         "$1,327.1 million spent on the Centinela Second Concentrator."),
+        (SubjectIdentity("Linde plc", "LIN"), "Total sales were $33.0 billion in 2024.",
+         "AMERICAS\nOur total sales were $33.0 billion in 2024, up 1%, while sales in the "
+         "Americas grew 5%."),
+        (_ANTO, "Copper production was 664,000 tonnes in 2024.",
+         "CENTINELA\nWe produced 664,000 tonnes in 2024, of which 143,000 tonnes came "
+         "from Centinela."),
+        (_ANTO, "Copper production rose 10% to 664,000 tonnes.",
+         "LOS PELAMBRES\nOur copper production rose 10% to 664,000 tonnes, driven by "
+         "higher grades at Los Pelambres."),
+        (_ANTO, "Copper production was 664,000 tonnes in total.",
+         "CENTINELA\nCentinela's ramp-up lifted our total copper production to 664,000 "
+         "tonnes in 2024."),
+        (_ANTO, "Capital expenditure was $1.3 billion in 2024.",
+         "CENTINELA\nWe invested $1.3 billion in 2024 on the Centinela Second "
+         "Concentrator."),
+    ],
+    ids=["hb5-capex-detail", "hb6-segment-growth", "hb7-came-from", "hb8-driven-at",
+         "hb9-lifted-our-total", "we-then-mine"],
+)
+def test_final_a_group_total_under_a_mine_heading_is_unscoped(
+    subject: SubjectIdentity, statement: str, text: str
+) -> None:
+    """The mine / segment named only AFTER the figure (or as a part of a total) is a
+    detail of a Group number: fail-safe, the statement stays unscoped."""
+    result = _one(statement, subject, Passage("c1", text, owner=OWNER_SUBJECT))
+    assert result.verdict == ps.VERDICT_SUBJECT, result.passages
+    assert result.scope_key is None
+
+
+def test_final_a_same_line_heading_is_its_own_signal() -> None:
+    result = _one(
+        "Capital expenditure was $2,478.1 million in 2025.",
+        _ANTO,
+        Passage(
+            "c1",
+            "CENTINELA — Our total capital expenditure was $2,478.1 million in 2025, "
+            "mostly on the Centinela Second Concentrator.",
+            owner=OWNER_SUBJECT,
+        ),
+    )
+    assert result.verdict == ps.VERDICT_SCOPED
+    assert result.scope_key == "segment:centinela"
+
+
+def test_final_a_same_line_heading_does_not_reach_the_next_line() -> None:
+    result = _one(
+        "Total capital expenditure was $2,478.1 million in 2025.",
+        _ANTO,
+        Passage(
+            "c1",
+            "CENTINELA — Throughput rose.\nOur total capital expenditure was $2,478.1 "
+            "million in 2025, with $1,327.1 million spent at Centinela.",
+            owner=OWNER_SUBJECT,
+        ),
+    )
+    assert result.scope_key is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Calyxt,    Inc., our former majority-owned subsidiary, was deconsolidated. There "
+        "can be no assurance that its seed production techniques will meet goals.",
+        "Calyxt    Inc., our former majority-owned subsidiary, was deconsolidated. There "
+        "can be no assurance that its seed production techniques will meet goals.",
+        "Calyxt,\t\t Inc., our former majority-owned subsidiary, was deconsolidated. "
+        "There can be no assurance that its seed production techniques will meet goals.",
+    ],
+    ids=["comma-spaces", "spaces", "tabs"],
+)
+def test_final_pdf_spacing_does_not_cost_recall(text: str) -> None:
+    result = _one(
+        "There is no assurance that seed production techniques will meet goals.",
+        _CELLECTIS,
+        Passage("c1", text, owner=OWNER_SUBJECT),
+    )
+    assert result.verdict == ps.VERDICT_OTHER, result.passages
+    assert result.others[0][1] == ps.FORMER_SUBSIDIARY
+
+
+def test_final_pdf_spacing_in_a_registered_name_on_its_own_site() -> None:
+    result = _one(
+        "Unit cash cost was $1,236/t in H1.",
+        SubjectIdentity(
+            "Lindian Resources Limited", "LIN", known_entities=("Iluka Resources Limited",)
+        ),
+        Passage(
+            "c1",
+            "Iluka Resources    Limited half-year results. Unit cash cost was $1,236/t in H1.",
+            company_site_host="iluka.com",
+        ),
+    )
+    assert result.verdict == ps.VERDICT_OTHER
+    assert result.others == (("Iluka Resources Limited", ps.OTHER_ISSUER),)

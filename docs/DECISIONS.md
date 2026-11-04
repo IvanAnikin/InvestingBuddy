@@ -7441,10 +7441,10 @@ sentence without an own-results verb is kept even when it is not the subject's.
     locative or possessive head: "at / on / in / from / for (the) Centinela…",
     "Centinela's…", or the sentence's own subject ("Centinela produced…"). Named as a
     part of a total it does not count: "of which Centinela contributed", "including Los
-    Pelambres", "with the Americas contributing", "excluding", "other than". So "Total
-    copper production at Centinela" and "We invested $1.3 billion… on the Centinela
-    Second Concentrator" stay Centinela's, and "Total copper production was 664,000
-    tonnes, of which Centinela contributed…" is the Group's.
+    Pelambres", "with the Americas contributing", "excluding", "other than", "came
+    from", "contributed by". So "Total copper production at Centinela" stays
+    Centinela's, and "Total copper production was 664,000 tonnes, of which Centinela
+    contributed…" is the Group's. (Narrowed again at final verification, below.)
   - (c) The lone-subsidiary rule (a sentence with no reference, scoped to the passage's
     only named subsidiary or JV) is **removed**. It scoped Group revenue, interest
     expense, EBITDA, net revenue, cash flow and tax rate to an acquired company, a
@@ -7463,15 +7463,53 @@ heading whose name never recurs in the excerpt, and a sentence that mixes the ot
 entity's risk with the subject's ("…which could reduce the value of our remaining
 stake"). Both stay kept.
 
+**Final verification of PR #320 at 232d807: a Group total under a mine heading.** Rule
+(b) still scoped four Group totals to a mine or segment, which is wrong data:
+"CENTINELA\nOur total capital expenditure was $2,478.1 million in 2025, with $1,327.1
+million spent on the Centinela Second Concentrator", "AMERICAS\nOur total sales were
+$33.0 billion in 2024, up 1%, while sales in the Americas grew 5%", "CENTINELA\nWe
+produced 664,000 tonnes in 2024, of which 143,000 tonnes came from Centinela" and "LOS
+PELAMBRES\nOur copper production rose 10% to 664,000 tonnes, driven by higher grades at
+Los Pelambres". With weak Group wording the mine or segment now counts as the head only
+when it appears **before the sentence's first figure** (a four-digit year aside), is
+not named as a part of a total, and is not followed by total wording before that figure
+("Centinela's ramp-up lifted our total copper production to 664,000 tonnes" is the
+Group's). After the figure it is a detail of a Group number. "Total copper production
+at Centinela was 143,000 tonnes" and "At Centinela, we produced 143,000 tonnes" stay
+Centinela's. A heading on the sentence's own line ("CENTINELA — Total capital
+expenditure was…") remains its own signal: only strong Group wording overrides it, and
+it does not reach the next line. Fail-safe: in doubt, unscoped. Accepted cost: "We
+invested $1.3 billion in 2024 on the Centinela Second Concentrator" under a CENTINELA
+heading is now kept unscoped (the mine follows the figure), and so is "At Centinela,
+our copper production was 143,000 tonnes" ("our" between the mine and the figure).
+
+**PDF spacing.** Each run of two or more spaces or tabs is collapsed once, at reader
+entry, to one space (or one tab if the run contains a tab: a table cell boundary).
+Every offset the reader computes is into the collapsed text, and the 6,000-character cap
+applies after the collapse. "Calyxt,    Inc., our former majority-owned subsidiary"
+is recognised again: the `{1,3}` bounds had cost that recall.
+
 **Bounded patterns (security review MEDIUM).** Every quantifier in
 `passage_subject.py` that can meet a long run of spaces, tabs or name characters is
 bounded (`[ \t]{1,3}`, `[\w-]{1,40}`, `[\w&.'’-]{0,40}`, `{1,60}`). A "word" longer
 than 60 characters is never a heading word or an alias, at most 200 legal-form names
 are read per passage, and mention overlap is checked by bisection rather than a scan.
-The acronym and namesake patterns took 1.3 s at 6,000 characters of "A-"; the whole
-attribution of a degenerate 6,000-character passage ("A-", "a.", runs of spaces or
-tabs, "We ", "Co ") now takes at most about 0.25 s, and no single pattern more than
-about 50 ms. `test_no_pattern_backtracks_on_a_degenerate_passage` guards it.
+The acronym and namesake patterns took 1.3 s at 6,000 characters of "A-". Sentence
+splitting rescanned the whole growing span after each abbreviation, which was quadratic
+on a run of initials ("A.B.C.D. " × 700: 690 ms). It now reads only the last 80
+characters. Measured timings (the earlier "at most about 0.25 s" claim was wrong): at
+the reviewer's final verification, `attribute_statement` took 0.72–0.95 s on 6,000
+characters of dense legal-suffix or comma lists ("Acme Inc. Beta Ltd. Gamma plc …",
+"Acme Inc, Acme Inc, …") and 0.25–0.31 s at the production cut of 1,500, and
+`_INLINE_HEADING_RE` took 79 ms on a 6,000-space line. On the development machine,
+before and after this change: initials at 6k 0.70–0.84 s → 0.08–0.10 s; a
+6,000-space passage 32–47 ms → under 1 ms (the reader never sees the run, so
+`_INLINE_HEADING_RE`'s 23–26 ms on a raw space line is no longer reachable); suffix and
+comma lists unchanged by the collapse, 0.23–0.29 s at 6k and 0.07–0.12 s at 1.5k
+(about three times that on the reviewer's machine). Those lists remain the slowest
+input. They are linear in the number of names, not backtracking.
+`test_no_pattern_backtracks_on_a_degenerate_passage` guards it, now including the
+initials run.
 
 **Accepted misses after the second re-review** (kept, never wrong):
 - a former subsidiary's text that continues with no pronoun, alias or heading ("Calyxt,

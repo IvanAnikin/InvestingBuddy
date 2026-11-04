@@ -918,6 +918,8 @@ class _Reader:
         self.subj = _Entity(name=subject.name or "the issuer", hint=SUBJECT, relationship=SUBJECT)
         self.entities: list[_Entity] = []
         self.mentions: list[_Mention] = []
+        #: Inline "KESTREL — …" prefix headings: position → end of that line.
+        self.prefix_heading_lines: dict[int, int] = {}
         self._starts: list[int] = []
         self._ends: list[int] = []
         self.heading_entity: _Entity | None = None
@@ -1371,11 +1373,24 @@ class _Reader:
                     )
                 )
                 body_start = line_start + prefix.end()
+                self.prefix_heading_lines[line_start] = line_start + len(line)
             for start, end in _split_sentences(text, body_start, line_start + len(line)):
                 for c_start, c_end in _split_clauses(text, start, end):
                     if text[c_start:c_end].strip():
                         spans.append((c_start, c_end))
         return spans, headings
+
+
+_BLANK_RUN_RE = re.compile(r"[ \t]{2,}")
+
+
+def _collapse_spacing(text: str) -> str:
+    """Each run of spaces becomes one space and each run containing a tab one tab (a
+    table cell boundary), so "Plantyx,    Inc." reads as "Plantyx, Inc." and no pattern
+    ever meets a long run. Newlines (line and heading structure) are kept. One greedy
+    pass, linear (a "[ \t]*\t" pattern would rescan a tab-free space run from every
+    start). Every offset the reader computes is into this text."""
+    return _BLANK_RUN_RE.sub(lambda m: "\t" if "\t" in m.group() else " ", text)
 
 
 def _caps_heading_line(line: str) -> bool:
@@ -1437,7 +1452,9 @@ def _split_sentences(text: str, start: int, end: int) -> list[tuple[int, int]]:
     out: list[tuple[int, int]] = []
     cursor = start
     for match in _SENTENCE_END_RE.finditer(text, start, end):
-        before = text[cursor: match.start() + 1]
+        # Only the tail: the cursor stays put across abbreviations ("A.B.C.D."), and
+        # rescanning the whole growing span each time was quadratic.
+        before = text[max(cursor, match.start() - 80): match.start() + 1]
         word = re.search(r"([\w.&'’-]+)[.!?]$", before)
         token = (word.group(1) if word else "").lower().rstrip(".")
         if token in _ABBREVIATIONS or re.fullmatch(r"(?:[a-z]\.){0,3}[a-z]", token):
@@ -1528,8 +1545,11 @@ def attribute_passage(
         return PassageAttribution(passage.citation_id, passage.owner, None, (), None, None, UNKNOWN)
     if not passage.analysable or not passage.text.strip():
         return _owner_only(passage, None, None)
-    if len(passage.text) > _MAX_PASSAGE_CHARS:
-        passage = replace(passage, text=passage.text[:_MAX_PASSAGE_CHARS])
+    passage = replace(
+        passage,
+        text=_collapse_spacing(passage.text[: _MAX_PASSAGE_CHARS * 4])[:_MAX_PASSAGE_CHARS],
+        heading=_collapse_spacing(passage.heading) if passage.heading else passage.heading,
+    )
     reader = _Reader(passage, subject, aliases)
     reader.read()
     section_scope = _section_scope(passage.heading, aliases, passage.text)
@@ -1605,12 +1625,15 @@ def attribute_passage(
 
     seg_start, seg_end = spans[best]
     sentence = reader.text[seg_start:seg_end]
-    inline = [scope for pos, scope, _entity in headings if pos <= seg_start]
-    scope = inline[-1] if inline else section_scope
+    inline = [(pos, scope) for pos, scope, _entity in headings if pos <= seg_start]
+    scope = inline[-1][1] if inline else section_scope
+    # "KESTREL — Total capital expenditure was…": a heading on the sentence's own line
+    # is its own signal; only strong Group wording overrides it.
+    same_line = bool(inline) and seg_start < reader.prefix_heading_lines.get(inline[-1][0], -1)
     weak_group = bool(_GROUP_WORDING_RE.search(sentence) or _FIRST_PERSON_RE.search(sentence))
     if scope and (
         _GROUP_STRONG_RE.search(sentence)
-        or (weak_group and not _scope_is_head(scope, sentence))
+        or (weak_group and not same_line and not _scope_is_head(scope, sentence))
     ):
         # A heading never narrows a sentence that speaks for the Group ("Group copper
         # production", "Total company sales", "Calderon's consolidated sales", "Net
@@ -1685,7 +1708,14 @@ def attribute_passage(
 #: The words before a heading noun that make it a part of a total, not the head.
 _PART_OF_TOTAL_RE = re.compile(
     r"\b(?:of[ \t]+which|including|includes|included|with|excluding|excludes|"
-    r"other[ \t]+than|except(?:[ \t]+for)?|besides|plus)[ \t]+(?:the[ \t]+)?$",
+    r"other[ \t]+than|except(?:[ \t]+for)?|besides|plus|came[ \t]+from|come[ \t]+from|"
+    r"comes[ \t]+from|contributed[ \t]+by)[ \t]+(?:the[ \t]+)?$",
+    re.IGNORECASE,
+)
+#: Total wording between a heading noun and the figure: the figure is the Group's.
+_TOTAL_WORDING_RE = re.compile(
+    r"\b(?:total|totals|totalling|totaling|overall|combined|together|aggregate|"
+    r"company|our)\b",
     re.IGNORECASE,
 )
 #: The words before a heading noun that make it the locative head ("at Centinela", "on
@@ -1694,21 +1724,40 @@ _LOCATIVE_RE = re.compile(r"\b(?:at|on|in|from|for)[ \t]+(?:the[ \t]+)?$", re.IG
 
 
 def _scope_is_head(scope: str, sentence: str) -> bool:
-    """The heading's mine / segment is the sentence's locative or possessive head:
-    "…at Centinela…", "…on the Centinela Second Concentrator…", "Centinela's…", or the
-    sentence's grammatical subject ("Centinela produced…")."""
+    """The heading's mine / segment heads the sentence's figure: a locative or
+    possessive head ("Total copper production at Kestrel was 143,000 tonnes", "At
+    Kestrel, we produced…", "Kestrel's output…") or the sentence's subject, placed
+    BEFORE its first figure (a year aside), not named as a part of a total ("of which…
+    came from Kestrel", "including Las Brisas"), and with no total wording between
+    it and the figure ("Kestrel's ramp-up lifted our total production to…"). After the
+    figure it is a detail of a Group number ("Our total capex was $2,478.1m, with
+    $1,327.1m on the Kestrel Second Concentrator"). In doubt: not the head."""
+    figure = next(
+        (
+            m
+            for m in _FIGURE_RE.finditer(sentence)
+            if not re.fullmatch(r"(?:19|20)\d\d", m.group(0).rstrip(",.;:"))
+        ),
+        None,
+    )
+    limit = figure.start() if figure else len(sentence)
     phrase = r"[ \t]+".join(re.escape(w) for w in scope.split())
     for hit in re.finditer(rf"(?<![\w&]){phrase}(?![\w&])", sentence, re.IGNORECASE):
+        if hit.start() >= limit:
+            break
         before = sentence[max(0, hit.start() - 30): hit.start()]
         if _PART_OF_TOTAL_RE.search(before):
             continue
         after = sentence[hit.end(): hit.end() + 3]
-        if (
+        if not (
             _LOCATIVE_RE.search(before)
             or after.startswith(("'s", "’s"))
             or re.fullmatch(r"[ \t]*(?:[Tt]he[ \t]+)?", sentence[: hit.start()])
         ):
-            return True
+            continue
+        if _TOTAL_WORDING_RE.search(sentence[hit.end(): limit]):
+            continue
+        return True
     return False
 
 
