@@ -71,6 +71,10 @@ from sqlalchemy import func, select, update
 from app.models.research_chunk import ResearchDocumentChunk
 from app.models.research_derivation import ResearchDocumentDerivation
 from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+from app.services.corpus.held_filing_facts import (
+    plan_held_filing_reread,
+    record_held_filing_reread,
+)
 from app.services.sources.sec_filing_documents import (
     format_accession,
     normalize_accession,
@@ -838,6 +842,9 @@ class AcquireOutcome:
     fetched: bool = False
     reason: str | None = None
     detail: str | None = None
+    #: The closed ingestion failure codes of a fetched-but-not-extracted document, so a
+    #: caller can tell a transient failure (timeout, 5xx, 429) from a definitive one.
+    failure_codes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -945,7 +952,17 @@ async def ensure_filing_corpus_evidence(
     state = await filing_evidence_state(
         session, company_id=company_id, accession=canonical, document_name=document_name
     )
-    if state.is_ready:
+    # ADR-085: a held filing read before its tagged statements were is re-read — the
+    # held document itself, once per pipeline version and at most once per run.
+    reread = None
+    if state.is_ready and not ready_only:
+        reread = await plan_held_filing_reread(
+            session,
+            company_id=company_id,
+            extracted_document_id=state.extracted_document_id,
+            form=form,
+        )
+    if state.is_ready and reread is None:
         await stamp_filing_date(
             session, version_id=state.version_id, filing_date=filing_date
         )
@@ -974,6 +991,30 @@ async def ensure_filing_corpus_evidence(
         )
 
     notes: list[str] = []
+    if reread is not None:
+        notes.append(
+            "searchable, but held before its tagged statements were read; re-reading "
+            "the filing once (ADR-085)"
+        )
+
+    async def _held_copy(plan: Any, extra: list[str]) -> FilingEvidenceResult:
+        """A re-read that could not run or failed: the held copy still answers READY.
+
+        Nothing definitive was learned (no outcome), so no once-per-version marker is
+        written unless the held row was nonetheless re-derived."""
+        await record_held_filing_reread(session, company_id=company_id, plan=plan, cfg=cfg)
+        await stamp_filing_date(
+            session, version_id=state.version_id, filing_date=filing_date
+        )
+        return FilingEvidenceResult(
+            state=STATE_READY,
+            accession=canonical,
+            version_id=state.version_id,
+            chunk_count=state.indexable_chunk_count,
+            reused=True,
+            attempted=True,
+            notes=[*notes, *extra],
+        )
     if state.state == STATE_HISTORICAL_WITHOUT_CHUNKS:
         # STATE B — the case the cache made permanent. A cached document that cannot be
         # searched does not satisfy a corpus-evidence requirement, so reacquisition is
@@ -985,6 +1026,8 @@ async def ensure_filing_corpus_evidence(
 
     normalized_cik = str(cik or "").strip()
     if not normalized_cik.isdigit():
+        if reread is not None:
+            return await _held_copy(reread, ["the re-read was not attempted: malformed CIK"])
         return FilingEvidenceResult(
             state=STATE_UNAVAILABLE,
             accession=canonical,
@@ -1003,6 +1046,10 @@ async def ensure_filing_corpus_evidence(
     optional: dict[str, Any] = {}
     if document_name is not None:
         optional["document_name"] = document_name
+    elif reread is not None and reread.document_name:
+        # The HELD document, not whichever one the filing index would offer first: a
+        # held 6-K exhibit re-read as the cover page would leave the held row stale.
+        optional["document_name"] = reread.document_name
     if filing_date_of(filing_date) is not None:
         optional["filing_date"] = filing_date_of(filing_date)
     if getattr(report_period, "is_known", False):
@@ -1019,6 +1066,9 @@ async def ensure_filing_corpus_evidence(
         )
     except Exception as exc:  # noqa: BLE001 - acquisition must not end a run
         logger.exception("Filing acquisition failed for %s", canonical)
+        if reread is not None:
+            # The filing was searchable before the re-read and still is.
+            return await _held_copy(reread, [f"the re-read failed: {type(exc).__name__}"])
         return FilingEvidenceResult(
             state=STATE_UNAVAILABLE,
             accession=canonical,
@@ -1031,6 +1081,10 @@ async def ensure_filing_corpus_evidence(
 
     if outcome.detail:
         notes.append(outcome.detail)
+    if reread is not None:
+        await record_held_filing_reread(
+            session, company_id=company_id, plan=reread, cfg=cfg, outcome=outcome
+        )
 
     # Re-read the state rather than believing the acquirer. Extraction can succeed while
     # indexing produces nothing — a partial outcome that would otherwise be recorded as

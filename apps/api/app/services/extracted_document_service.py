@@ -82,6 +82,9 @@ _MIME_TYPE_MAX = 100
 _EXTRACTION_METHOD_MAX = 50
 _LABEL_MAX = 200
 _TABLE_LOCATION_MAX = 200
+#: A fact's printed value as text. Real values are a few dozen characters; the column is
+#: unbounded TEXT, so a crafted document must not be able to store megabytes per fact.
+_VALUE_TEXT_MAX = 1000
 _STATUS_MAX = 50
 
 
@@ -528,7 +531,7 @@ async def _persist_validated_facts(
                 extracted_document_id=document.id,
                 label=_clip(getattr(fact, "label", "") or "", _LABEL_MAX) or "",
                 value_numeric=_to_decimal(getattr(fact, "value_numeric", None)),
-                value_text=getattr(fact, "value_text", None),
+                value_text=_clip(getattr(fact, "value_text", None), _VALUE_TEXT_MAX),
                 unit=getattr(fact, "unit", None),
                 currency=getattr(fact, "currency", None),
                 scale=getattr(fact, "scale", None),
@@ -883,10 +886,37 @@ def _requires_full_reextraction(
         garbled, not just under-interpreted; re-deriving facts from that
         same stale text under current-code semantics would silently keep
         serving the old, potentially-mislabeled values.
+      * (ADR-085 review) an SEC Archives filing stamped before
+        ``INLINE_XBRL_MIN_PIPELINE_VERSION`` whose active facts include no tagged
+        (inline-XBRL) fact: its tags live only in the bytes, so an excerpts-only
+        replay would restamp it current without ever reading them — and the bridge
+        would then never re-read it either.
     """
     if _has_unreconstructable_table_facts(facts, doc.excerpts_json):
         return True
+    if _tags_never_read(doc, facts):
+        return True
     return (doc.pipeline_version or 0) < EXTRACTION_TEXT_LAYER_MIN_VERSION
+
+
+def _tags_never_read(doc: ExtractedDocument, facts: "Sequence[ExtractedFact]") -> bool:
+    """A pre-reader SEC Archives filing with no tagged fact (see above). Pure."""
+    from app.services.sources.extraction_pipeline_version import (
+        INLINE_XBRL_MIN_PIPELINE_VERSION,
+    )
+    from app.services.sources.inline_xbrl_facts import (
+        EXTRACTION_METHOD_INLINE_XBRL,
+        is_sec_archive_url,
+    )
+
+    if (doc.pipeline_version or 0) >= INLINE_XBRL_MIN_PIPELINE_VERSION:
+        return False
+    if not is_sec_archive_url(getattr(doc, "canonical_url", None)):
+        return False
+    return not any(
+        getattr(fact, "extraction_method", None) == EXTRACTION_METHOD_INLINE_XBRL
+        for fact in facts
+    )
 
 
 async def _deactivate_active_facts(session: AsyncSession, document_id: uuid.UUID) -> None:
@@ -939,7 +969,7 @@ def _insert_active_facts(
                 extracted_document_id=document_id,
                 label=_clip(getattr(fact, "label", "") or "", _LABEL_MAX) or "",
                 value_numeric=_to_decimal(getattr(fact, "value_numeric", None)),
-                value_text=getattr(fact, "value_text", None),
+                value_text=_clip(getattr(fact, "value_text", None), _VALUE_TEXT_MAX),
                 unit=getattr(fact, "unit", None),
                 currency=getattr(fact, "currency", None),
                 scale=getattr(fact, "scale", None),

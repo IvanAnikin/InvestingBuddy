@@ -203,15 +203,7 @@ def _without_conflicts(
                         }
                         for f in group
                     ],
-                    "note": (
-                        (
-                            "The issuer's documents state this figure differently"
-                            if len({f.get("document_id") for f in group}) > 1
-                            else "One issuer document states this figure twice, differently,"
-                        )
-                        + " for the same period and scope. No value is shown for it; "
-                        "neither was chosen."
-                    ),
+                    "note": _conflict_note(group),
                 }
             )
     kept = [
@@ -223,6 +215,35 @@ def _without_conflicts(
     return kept, conflicts
 
 
+def _tagged_concept(fact: dict[str, Any]) -> str | None:
+    """The XBRL concept of a tagged figure (``ixbrl:<concept>@<context>``), else None."""
+    locator = str(fact.get("excerpt_id") or "")
+    if not locator.startswith("ixbrl:"):
+        return None
+    return locator.removeprefix("ixbrl:").split("@", 1)[0] or None
+
+
+def _conflict_note(group: list[dict[str, Any]]) -> str:
+    """Why one (field, period) has no value. Two different TAGGED concepts are two
+    measures, not one figure stated twice, and the note says so (ADR-085 review)."""
+    concepts = sorted({c for c in (_tagged_concept(f) for f in group) if c})
+    if len(concepts) > 1:
+        return (
+            "Different measures fill this field for the same period and scope ("
+            + "; ".join(concepts)
+            + "). No value is shown for it; neither was chosen."
+        )
+    return (
+        (
+            "The issuer's documents state this figure differently"
+            if len({f.get("document_id") for f in group}) > 1
+            else "One issuer document states this figure twice, differently,"
+        )
+        + " for the same period and scope. No value is shown for it; "
+        "neither was chosen."
+    )
+
+
 def _datapoint(fact: dict[str, Any], *, period_basis: str | None = None) -> dict[str, Any]:
     from app.services.final_report_generator import _primary_fact_dp
 
@@ -231,6 +252,14 @@ def _datapoint(fact: dict[str, Any], *, period_basis: str | None = None) -> dict
     dp["document_title"] = fact.get("document_title")
     dp["document_date"] = fact.get("document_date")
     dp["fact_id"] = fact.get("fact_id")
+    concept = _tagged_concept(fact)
+    if concept:
+        # ADR-085 — a figure the issuer TAGGED: its concept and the taxonomy's term for
+        # it (not the filing's own caption, which is not read).
+        from app.integrations.xbrl_statement_concepts import taxonomy_label
+
+        dp["xbrl_concept"] = concept
+        dp["taxonomy_label"] = taxonomy_label(concept)
     if period_basis:
         dp["period_basis"] = period_basis
     return dp
@@ -259,7 +288,29 @@ def _derived_runway(
         "operating_cash_flow": "operating_cash_flow",
         "capital_expenditure": "capital_expenditure",
     }
+    from app.services.sources.primary_fact_parser import FIELD_DEPOSITS
+
+    # ADR-085 review — a filer is a deposit-taking bank only when its Group deposits
+    # are reported. One bank-flavoured line (a provision, an allowance, "interest
+    # income, net") is reported by industrials and biotechs too, and never decides it.
+    is_bank = FIELD_DEPOSITS in annual or FIELD_DEPOSITS in current
     for basis, slots in (("annual", annual), ("current_period", current)):
+        if is_bank:
+            # A deposit-taking bank's statements: a cash runway (like every other
+            # industrial derivation) has no reading for one. Recorded, not computed.
+            out.append({
+                "definition_key": CASH_RUNWAY_QUARTERS.key,
+                "label": CASH_RUNWAY_QUARTERS.label,
+                "status": "not_meaningful",
+                "value": None,
+                "basis": basis,
+                "provenance": "derived",
+                "detail": (
+                    "Group deposits are reported; a cash runway is not a measure for a "
+                    "deposit-taking bank, so none is computed"
+                ),
+            })
+            continue
         if not all(field in slots for field in roles.values()):
             continue
         inputs: dict[str, Quantity] = {}

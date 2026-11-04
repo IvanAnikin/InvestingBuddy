@@ -54,6 +54,15 @@ from app.integrations.financial_data_provider import (
 )
 from app.integrations.providers.sec_edgar_provider import _EDGAR_BASE_URL, _pad_cik
 from app.integrations.sec_total_debt import ALL_CURRENT, ALL_LONG_TERM, derive_total_debt
+from app.integrations.xbrl_statement_concepts import (
+    IFRS_BORROWINGS,
+    IFRS_CURRENT_BORROWINGS,
+    IFRS_EPS_BASIC,
+    IFRS_EPS_DILUTED,
+    IFRS_NONCURRENT_BORROWINGS,
+    aliases_for,
+    taxonomy_label,
+)
 
 _COMPANY_FACTS_URL = f"{_EDGAR_BASE_URL}/api/xbrl/companyfacts/CIK{{cik}}.json"
 _EDGAR_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
@@ -470,6 +479,11 @@ class NormalizedSecFinancials:
     #: used, and a note for every term not tagged for the period.
     #: ``sec_total_debt.TotalDebt.to_dict()``; empty when no total was published.
     debt_basis: dict[str, Any] = field(default_factory=dict)
+    #: ADR-085 — the taxonomy the statement figures were read from: ``us-gaap``, or
+    #: ``ifrs-full`` for a filer that tags IFRS (a 20-F / 40-F / 6-K filer).
+    taxonomy: str = "us-gaap"
+    #: ADR-085 — the issuer's own term per field (``net_income`` → "Profit (loss)").
+    taxonomy_labels: dict[str, str] = field(default_factory=dict)
 
     # ---- serialization -------------------------------------------------- #
 
@@ -529,6 +543,8 @@ class NormalizedSecFinancials:
                 "accession_number": self.accession_number,
                 "period_basis": self.period_basis,
                 "reporting_currency": self.reporting_currency,
+                "taxonomy": self.taxonomy,
+                "taxonomy_labels": dict(self.taxonomy_labels),
                 "source_tier": self.source_tier,
                 "source_url": self.source_url,
                 "warnings": list(self.warnings),
@@ -559,6 +575,8 @@ class NormalizedSecFinancials:
         ).strip()
 
         dps: list[FundamentalDataPoint] = []
+        # ADR-085 — figures are in the reporting currency's millions; never converted.
+        money_m = f"{self.reporting_currency}_m"
 
         def _add(
             field_name: str,
@@ -602,16 +620,16 @@ class NormalizedSecFinancials:
                      "operating_cash_flow", "capital_expenditures", "dividends_paid",
                      "cash_and_equivalents", "total_assets", "total_liabilities",
                      "shareholders_equity", "short_term_debt", "long_term_debt"):
-            _add(name, getattr(self, name), "USD_m",
+            _add(name, getattr(self, name), money_m,
                  DataQuality.B_single_credible, self._note_for(name, period_note))
         for name in ("eps_basic", "eps_diluted"):
-            _add(name, getattr(self, name), "USD",
+            _add(name, getattr(self, name), self.reporting_currency,
                  DataQuality.B_single_credible, self._note_for(name, period_note))
 
         # Derived dollar aggregates.
-        _add("free_cash_flow", self.free_cash_flow, "USD_m", DataQuality.C_inferred,
+        _add("free_cash_flow", self.free_cash_flow, money_m, DataQuality.C_inferred,
              "Derived: operating_cash_flow - capital_expenditures. " + period_note)
-        _add("total_debt", self.total_debt, "USD_m", DataQuality.C_inferred,
+        _add("total_debt", self.total_debt, money_m, DataQuality.C_inferred,
              self._total_debt_note(period_note))
 
         # Derived ratios / growth (percent).
@@ -700,11 +718,13 @@ class NormalizedSecFinancials:
         meta = self.field_periods.get(field_name)
         if not meta:
             return fallback
+        label = self.taxonomy_labels.get(field_name)
         return (
             f"FY{meta.get('fy')} {meta.get('fp') or ''} period ending "
             f"{meta.get('end')} (form {meta.get('form') or '?'}, "
-            f"us-gaap concept {meta.get('concept')}). "
-            "Source tier T2_regulator_or_gov."
+            f"{meta.get('taxonomy') or self.taxonomy} concept {meta.get('concept')}"
+            + (f", taxonomy label \"{label}\"" if label else "")
+            + "). Source tier T2_regulator_or_gov."
         ).strip()
 
     def end_date_or_today(self) -> str:
@@ -961,6 +981,270 @@ def _apply_total_debt(
         )
 
 
+# ---------------------------------------------------------------------------
+# IFRS (ifrs-full) — ADR-085
+# ---------------------------------------------------------------------------
+
+#: The concepts whose presence makes ``us-gaap`` the statement taxonomy.
+_US_GAAP_HEADLINE = tuple(_REVENUE + _NET_INCOME + _TOTAL_ASSETS)
+#: Concepts whose units name an IFRS filer's reporting currency.
+_IFRS_CURRENCY_PROBES = ("Revenue", "ProfitLoss", "Assets", "Equity")
+_CURRENCY_CODE_RE = re.compile(r"^[A-Z]{3}$")
+_IFRS_EPS_TERMS = {
+    "BasicEarningsLossPerShare": "Basic earnings (loss) per share",
+    "DilutedEarningsLossPerShare": "Diluted earnings (loss) per share",
+}
+_IFRS_INTERIM_FORMS = {"6-K", "6-K/A"}
+
+
+def _us_gaap_is_sparse(us_gaap: dict[str, Any]) -> bool:
+    """True when ``us-gaap`` carries none of the headline statement concepts."""
+    return not any(us_gaap.get(concept) for concept in _US_GAAP_HEADLINE)
+
+
+def _ifrs_reporting_currency(ifrs: dict[str, Any]) -> str | None:
+    """The currency of the filer's most recently FILED annual report, or ``None``.
+
+    A filer that changed its presentation currency (EUR → USD) reports in the new one,
+    however many years of the old one its history holds — so the currency is read from
+    the latest annual filing only (ADR-085 review), counted over the headline concepts it
+    tags. A tie between two currencies inside that filing (a convenience translation) is
+    no answer, because guessing would label one currency as another.
+    """
+    annual_entries: list[tuple[str, dict]] = []
+    for concept in _IFRS_CURRENCY_PROBES:
+        for unit, entries in ((ifrs.get(concept) or {}).get("units") or {}).items():
+            if not _CURRENCY_CODE_RE.match(unit):
+                continue
+            annual_entries.extend(
+                (unit, e) for e in entries or [] if e.get("form") in _ANNUAL_FORMS
+            )
+    if not annual_entries:
+        return None
+    latest_filed = max(str(e.get("filed") or "") for _unit, e in annual_entries)
+    counts: dict[str, int] = {}
+    for unit, e in annual_entries:
+        if str(e.get("filed") or "") == latest_filed:
+            counts[unit] = counts.get(unit, 0) + 1
+    if not counts:  # pragma: no cover - the latest filing has at least one entry
+        return None
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return None
+    return ranked[0][0]
+
+
+def _ifrs_entry_at(
+    ifrs: dict[str, Any], concept: str, currency: str, period_end: str | None,
+    prefer_accn: str | None,
+) -> dict | None:
+    """``concept``'s annual-form entry at the period end, from the reporting filing first."""
+    end = _parse_end(period_end)
+    if end is None:
+        return None
+    pool = [
+        e
+        for e in ((ifrs.get(concept) or {}).get("units") or {}).get(currency, []) or []
+        if e.get("val") is not None
+        and e.get("form") in _ANNUAL_FORMS
+        and (at := _parse_end(e.get("end"))) is not None
+        and abs((at - end).days) <= _SAME_PERIOD_TOLERANCE_DAYS
+    ]
+    if not pool:
+        return None
+    return max(
+        pool,
+        key=lambda e: (bool(prefer_accn) and e.get("accn") == prefer_accn, e.get("filed") or ""),
+    )
+
+
+def _apply_ifrs_borrowings(
+    result: NormalizedSecFinancials, ifrs: dict[str, Any], currency: str,
+    warnings: list[str],
+) -> None:
+    """Debt from ``ifrs-full`` borrowings — one complete reading, or nothing (ADR-067).
+
+    ``Borrowings`` is total borrowings; ``CurrentBorrowings`` + ``NoncurrentBorrowings``
+    are its two legs. Published: the total when tagged (checked against both legs when
+    both are tagged), or both legs added. One leg alone is a partial sum and is never
+    published. Lease liabilities are a separate IFRS line and are not added.
+    """
+    def at(concept: str) -> float | None:
+        entry = _ifrs_entry_at(
+            ifrs, concept, currency, result.reporting_period_end, result.accession_number
+        )
+        return round(float(entry["val"]) / _MILLION, 2) if entry else None
+
+    total = at(IFRS_BORROWINGS)
+    current = at(IFRS_CURRENT_BORROWINGS)
+    noncurrent = at(IFRS_NONCURRENT_BORROWINGS)
+    if total is None and current is None and noncurrent is None:
+        return
+    basis: dict[str, Any] = {
+        "combination": None,
+        "formula": None,
+        "total": None,
+        "current": current,
+        "noncurrent": noncurrent,
+        "components": [],
+        "notes": [
+            "IFRS borrowings as tagged; lease liabilities are a separate line and are "
+            "not included"
+        ],
+        "withheld_reason": None,
+    }
+    if total is not None and current is not None and noncurrent is not None:
+        if abs(total - (current + noncurrent)) > max(1.0, abs(total) * 0.001):
+            basis["withheld_reason"] = (
+                f"ifrs-full:Borrowings {total:,.2f} does not equal CurrentBorrowings "
+                f"{current:,.2f} + NoncurrentBorrowings {noncurrent:,.2f}"
+            )
+        else:
+            basis.update(combination="ifrs_total", formula="ifrs-full:Borrowings",
+                         total=total)
+    elif total is not None:
+        basis.update(combination="ifrs_total", formula="ifrs-full:Borrowings", total=total)
+        current = noncurrent = None
+    elif current is not None and noncurrent is not None:
+        basis.update(
+            combination="ifrs_legs",
+            formula="ifrs-full:CurrentBorrowings + ifrs-full:NoncurrentBorrowings",
+            total=round(current + noncurrent, 2),
+        )
+    else:
+        basis["withheld_reason"] = (
+            "only one leg of IFRS borrowings (current or non-current) is tagged for the "
+            "period, and a partial sum is never published"
+        )
+    if basis["withheld_reason"]:
+        result.debt_basis = basis
+        warnings.append(
+            "SEC EDGAR: total_debt, debt_to_equity and net debt withheld — "
+            + str(basis["withheld_reason"]) + "."
+        )
+        return
+    result.total_debt = basis["total"]
+    result.short_term_debt = current
+    result.long_term_debt = noncurrent
+    result.debt_basis = basis
+    result.taxonomy_labels["total_debt"] = "Borrowings"
+
+
+def latest_ifrs_interim_facts(
+    ifrs: dict[str, Any], *, currency: str, annual_filed: str | None, cik: str | None,
+    annual_end: str | None = None,
+) -> list[dict[str, Any]]:
+    """The newest IFRS 6-K interim's own figures, when it is newer than the annual report.
+
+    The 6-K counterpart of ``latest_quarter_facts`` (ADR-085). A 20-F filer reports a
+    half year (or a quarter) on a 6-K / 6-K/A whose ``fp`` is the fiscal quarter its
+    period ends in. Rules, fail-closed:
+      * only the single newest 6-K accession, filed after the annual report, for a
+        period ending after the annual period;
+      * a six-month span is the half year (H1 / H2); a three-month span is the quarter
+        only when the filing reports no half year; a nine-month span is skipped;
+      * balances at the period end take the filing's period;
+      * ``ifrs-full`` concepts from the reviewed map, in the issuer's currency.
+    """
+    fields = (
+        ("revenue", aliases_for("ifrs-full", "revenue"), "flow"),
+        ("operating_profit", aliases_for("ifrs-full", "operating_income"), "flow"),
+        ("net_income", aliases_for("ifrs-full", "net_income"), "flow"),
+        ("cash_and_equivalents", aliases_for("ifrs-full", "cash_and_equivalents"), "instant"),
+        ("total_assets", aliases_for("ifrs-full", "total_assets"), "instant"),
+        ("total_equity", aliases_for("ifrs-full", "shareholders_equity"), "instant"),
+    )
+    entries: list[tuple[str, str, str, dict]] = []
+    for field_name, aliases, kind in fields:
+        for concept in aliases:
+            units = (ifrs.get(concept) or {}).get("units") or {}
+            for entry in units.get(currency, []) or []:
+                if entry.get("form") in _IFRS_INTERIM_FORMS and entry.get("accn"):
+                    entries.append((field_name, concept, kind, entry))
+    if not entries:
+        return []
+    newest = max(entries, key=lambda t: (t[3].get("end") or "", t[3].get("filed") or ""))[3]
+    accn, filed = newest.get("accn") or "", newest.get("filed") or ""
+    if not accn or (annual_filed and filed <= annual_filed):
+        return []
+    own = [t for t in entries if t[3].get("accn") == accn]
+    period_end = max((t[3].get("end") or "" for t in own), default="")
+    if not period_end or (annual_end and period_end <= annual_end):
+        return []
+    fp = str(newest.get("fp") or "").upper()
+    fy = newest.get("fy")
+    if not isinstance(fy, int):
+        return []
+    half = {"Q2": "H1", "H1": "H1", "Q4": "H2", "H2": "H2"}.get(fp)
+    has_half = half is not None and any(
+        t[2] == "flow"
+        and t[3].get("end") == period_end
+        and 170 <= (_duration_days(t[3]) or 0) <= 195
+        for t in own
+    )
+    quarter = fp if fp in ("Q1", "Q2", "Q3") else None
+    if has_half:
+        filing_label = f"{half} {fy}"
+    elif quarter:
+        filing_label = f"{quarter} {fy}"
+    else:
+        return []
+    cik_digits = str(int(cik)) if cik and str(cik).isascii() and str(cik).isdigit() else None
+    url = (
+        f"{_EDGAR_ARCHIVES_URL}/{cik_digits}/{accn.replace('-', '')}/"
+        if cik_digits and _ACCESSION_RE.fullmatch(accn)
+        else None
+    )
+    out: list[dict[str, Any]] = []
+    for field_name, aliases, kind in fields:
+        chosen: tuple[dict, str] | None = None
+        for concept in aliases:
+            for f, c, _k, e in own:
+                if c != concept or f != field_name or e.get("end") != period_end:
+                    continue
+                days = _duration_days(e)
+                if kind == "instant":
+                    if e.get("start"):
+                        continue
+                elif has_half:
+                    if days is None or not 170 <= days <= 195:
+                        continue
+                elif days is None or not 80 <= days <= 100:
+                    continue
+                chosen = (e, c)
+                break
+            if chosen is not None:
+                break
+        if chosen is None or chosen[0].get("val") is None:
+            continue
+        entry, concept = chosen
+        millions = round(float(entry["val"]) / _MILLION, 2)
+        out.append(
+            {
+                "field": field_name,
+                "value": f"{millions:,.2f}",
+                "numeric_value": millions,
+                "unit": None,
+                "currency": currency,
+                "scale": "million",
+                "period": filing_label,
+                "period_end": period_end,
+                "scope": "Group",
+                "source_url": url,
+                "page_number": None,
+                "excerpt_id": f"xbrl:ifrs-full:{concept}",
+                "taxonomy_label": taxonomy_label(f"ifrs-full:{concept}"),
+                "confidence": "high",
+                "document_title": f"Form {newest.get('form')} ({filing_label}), SEC EDGAR XBRL",
+                "document_date": filed,
+                "document_source_type": "sec_edgar_xbrl",
+                "source": "sec_edgar_xbrl",
+                "source_tier": "T2_regulator_or_gov",
+            }
+        )
+    return out
+
+
 def normalize_company_facts(
     data: dict,
     ticker: str,
@@ -997,27 +1281,61 @@ def normalize_company_facts(
         source_url=source_url,
     )
 
-    if not us_gaap:
+    # ADR-085 — a 20-F / 40-F / 6-K filer tags its statements in ``ifrs-full``, in its
+    # own reporting currency. Read when ``us-gaap`` carries no headline statement
+    # concept; never converted, and no IFRS concept is forced onto a US-GAAP meaning.
+    ifrs: dict[str, Any] = facts.get("ifrs-full", {}) or {}
+    taxonomy, tagged, money = "us-gaap", us_gaap, "USD"
+    if ifrs and _us_gaap_is_sparse(us_gaap):
+        currency = _ifrs_reporting_currency(ifrs)
+        if currency is None:
+            result.warnings.append(
+                f"SEC EDGAR: {ticker.upper()} tags IFRS statements, but no single "
+                "reporting currency could be read from them; nothing was normalized."
+            )
+            return result
+        taxonomy, tagged, money = "ifrs-full", ifrs, currency
+        result.taxonomy = taxonomy
+        result.reporting_currency = currency
+
+    if not tagged:
         result.warnings.append(
             f"SEC EDGAR: no us-gaap facts present for {ticker.upper()}. "
             "Company may not file XBRL data, or the payload was empty."
         )
         return result
 
+    def _aliases(name: str, us: list[str]) -> list[str]:
+        return us if taxonomy == "us-gaap" else aliases_for(taxonomy, name)
+
+    per_share = f"{money}/shares"
+    eps_basic_aliases = _EPS_BASIC if taxonomy == "us-gaap" else list(IFRS_EPS_BASIC)
+    eps_diluted_aliases = _EPS_DILUTED if taxonomy == "us-gaap" else list(IFRS_EPS_DILUTED)
+
     # ── Extract concepts ─────────────────────────────────────────────────
-    revenue = _select_metric(us_gaap, _REVENUE, "USD", True)
-    gross_profit = _select_metric(us_gaap, _GROSS_PROFIT, "USD", True)
-    operating_income = _select_metric(us_gaap, _OPERATING_INCOME, "USD", True)
-    net_income = _select_metric(us_gaap, _NET_INCOME, "USD", True)
-    eps_basic = _select_metric(us_gaap, _EPS_BASIC, "USD/shares", False)
-    eps_diluted = _select_metric(us_gaap, _EPS_DILUTED, "USD/shares", False)
-    ocf = _select_metric(us_gaap, _OPERATING_CASH_FLOW, "USD", True)
-    capex = _select_metric(us_gaap, _CAPEX, "USD", True)
-    dividends = _select_metric(us_gaap, _DIVIDENDS_PAID, "USD", True)
-    total_assets = _select_metric(us_gaap, _TOTAL_ASSETS, "USD", True)
-    total_liabilities = _select_metric(us_gaap, _TOTAL_LIABILITIES, "USD", True)
-    equity = _select_metric(us_gaap, _SHAREHOLDERS_EQUITY, "USD", True)
-    cash = _select_metric(us_gaap, _CASH, "USD", True)
+    revenue = _select_metric(tagged, _aliases("revenue", _REVENUE), money, True)
+    gross_profit = _select_metric(tagged, _aliases("gross_profit", _GROSS_PROFIT), money, True)
+    operating_income = _select_metric(
+        tagged, _aliases("operating_income", _OPERATING_INCOME), money, True
+    )
+    net_income = _select_metric(tagged, _aliases("net_income", _NET_INCOME), money, True)
+    eps_basic = _select_metric(tagged, eps_basic_aliases, per_share, False)
+    eps_diluted = _select_metric(tagged, eps_diluted_aliases, per_share, False)
+    ocf = _select_metric(
+        tagged, _aliases("operating_cash_flow", _OPERATING_CASH_FLOW), money, True
+    )
+    capex = _select_metric(tagged, _aliases("capital_expenditures", _CAPEX), money, True)
+    dividends = _select_metric(
+        tagged, _aliases("dividends_paid", _DIVIDENDS_PAID), money, True
+    )
+    total_assets = _select_metric(tagged, _aliases("total_assets", _TOTAL_ASSETS), money, True)
+    total_liabilities = _select_metric(
+        tagged, _aliases("total_liabilities", _TOTAL_LIABILITIES), money, True
+    )
+    equity = _select_metric(
+        tagged, _aliases("shareholders_equity", _SHAREHOLDERS_EQUITY), money, True
+    )
+    cash = _select_metric(tagged, _aliases("cash_and_equivalents", _CASH), money, True)
     shares = _select_metric(dei, _SHARES_OUTSTANDING, "shares", True)
 
     result.revenue = revenue.value
@@ -1081,7 +1399,7 @@ def normalize_company_facts(
         metric.prior_value = None
     if result.withheld_fields:
         detail = "; ".join(
-            f"{name} (us-gaap:{meta['concept']}, period ending {meta['end']}, "
+            f"{name} ({taxonomy}:{meta['concept']}, period ending {meta['end']}, "
             f"{meta['reason']})"
             for name, meta in sorted(result.withheld_fields.items())
         )
@@ -1093,7 +1411,11 @@ def normalize_company_facts(
         )
 
     # ── QA campaign 2026-11 — is "operating income" operating income? ───
-    if operating_income.value is not None and revenue.value is not None:
+    if (
+        taxonomy == "us-gaap"
+        and operating_income.value is not None
+        and revenue.value is not None
+    ):
         excess = operating_income_excess(
             us_gaap,
             accn=operating_income.accn,
@@ -1139,6 +1461,12 @@ def normalize_company_facts(
     ):
         if metric.value is None:
             continue
+        if taxonomy != "us-gaap" and metric.concept:
+            term = taxonomy_label(f"{taxonomy}:{metric.concept}") or _IFRS_EPS_TERMS.get(
+                metric.concept
+            )
+            if term:
+                result.taxonomy_labels[name] = term
         result.field_periods[name] = {
             "fy": metric.fy,
             "fp": metric.fp,
@@ -1205,8 +1533,11 @@ def normalize_company_facts(
                 "confirm no newer 10-K/20-F was filed."
             )
 
-    # ── Derived: total debt (ADR-067) ────────────────────────────────────
-    _apply_total_debt(result, us_gaap, warnings)
+    # ── Derived: total debt (ADR-067; ADR-085 for IFRS borrowings) ───────
+    if taxonomy == "us-gaap":
+        _apply_total_debt(result, us_gaap, warnings)
+    else:
+        _apply_ifrs_borrowings(result, tagged, money, warnings)
 
     # ── Derived: free cash flow ──────────────────────────────────────────
     if result.operating_cash_flow is not None and result.capital_expenditures is not None:
@@ -1303,16 +1634,25 @@ def normalize_company_facts(
 
     # ── Warn on missing key concepts ─────────────────────────────────────
     if result.revenue is None:
-        warnings.append("SEC EDGAR: revenue concept not found in us-gaap facts.")
+        warnings.append(f"SEC EDGAR: revenue concept not found in {taxonomy} facts.")
     if result.net_income is None:
-        warnings.append("SEC EDGAR: net_income concept not found in us-gaap facts.")
+        warnings.append(f"SEC EDGAR: net_income concept not found in {taxonomy} facts.")
     if result.shares_outstanding is None:
         warnings.append(
             "SEC EDGAR: shares outstanding unavailable (dei concept missing) — "
             "market capitalization cannot be computed."
         )
 
-    if result.period_basis == "annual":
+    if result.period_basis == "annual" and taxonomy != "us-gaap":
+        result.current_period_facts = latest_ifrs_interim_facts(
+            tagged, currency=money, annual_filed=result.filed_date, cik=resolved_cik,
+            annual_end=result.reporting_period_end,
+        )
+        warnings.append(
+            "SEC EDGAR: IFRS statements — restatements since the annual report "
+            "(perimeter recasts, share splits) are not checked for this filer."
+        )
+    elif result.period_basis == "annual":
         result.current_period_facts = latest_quarter_facts(
             us_gaap, annual_filed=result.filed_date, cik=resolved_cik,
             annual_end=result.reporting_period_end,
