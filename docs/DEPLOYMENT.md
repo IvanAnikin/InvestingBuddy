@@ -729,6 +729,22 @@ were already on.
   `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
 
+#### Extraction pipeline version 23 — Appendix 5B / 4C items (Research Integrity Closure E2, ADR-087)
+
+Version 23 adds the ASX quarterly cash flow report reader. A held Appendix 5B or 4C PDF
+now yields Group cash at quarter end, the operating, investing and financing net cash,
+and the issuer's own estimated quarters of funding. Version 22 is ADR-085 (PR #324). The
+re-read cost and paths are the same as version 19 (below): every held disclosure is
+re-read once on its company's next run, within `V3_DISCLOSURE_CORE_BUDGET_SECONDS`.
+
+- No migration and no new setting.
+- No new host is contacted. The reader works on the bytes the guarded fetcher already
+  holds.
+- Rolling back to 22 (or 21) is safe. The 5B facts stay in the database as validated
+  facts with extraction method `asx_quarterly_cash_flow_report`. Older code still shows
+  the cash and cash-flow facts and ignores the runway field, which it does not know. A
+  document read at 23 is not re-read by an older pipeline.
+
 #### Extraction pipeline version 22 — inline XBRL in SEC filings (QA campaign 2026-11, ADR-085)
 
 Version 22 adds the statements an SEC Archives filing body TAGS in inline XBRL

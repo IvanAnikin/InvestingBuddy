@@ -96,6 +96,11 @@ FIELD_EXPLORATION_CAPITALISED = "exploration_capitalised"
 FIELD_EXPLORATION_PAYMENTS = "exploration_payments"
 #: Payments for / capitalised mine or project development.
 FIELD_DEVELOPMENT_EXPENDITURE = "development_expenditure"
+#: ADR-087 — the issuer's OWN "estimated quarters of funding available" from an ASX
+#: quarterly cash flow report (Appendix 5B item 8.7 / Appendix 4C item 8.5), read only by
+#: ``asx_appendix_5b`` from that form. A ratio in quarters, stated by the issuer under its
+#: form's formula; never the platform's derived ``cash_runway_quarters``.
+FIELD_ISSUER_ESTIMATED_QUARTERS_OF_FUNDING = "issuer_estimated_quarters_of_funding"
 #: A bare "Borrowings" / "Loans and borrowings" line. Not ``total_debt``: a balance
 #: sheet prints it once under current and once under non-current liabilities, and
 #: either one alone is not the total.
@@ -168,6 +173,7 @@ STATEMENT_DETAIL_FIELDS: frozenset[str] = frozenset(
         FIELD_DEVELOPMENT_EXPENDITURE,
         FIELD_BORROWINGS,
         FIELD_ISSUED_CAPITAL,
+        FIELD_ISSUER_ESTIMATED_QUARTERS_OF_FUNDING,
     }
 )
 
@@ -1499,6 +1505,7 @@ __all__ = [
     "FIELD_DEVELOPMENT_EXPENDITURE",
     "FIELD_BORROWINGS",
     "FIELD_ISSUED_CAPITAL",
+    "FIELD_ISSUER_ESTIMATED_QUARTERS_OF_FUNDING",
     "FINANCIAL_STATEMENT_FIELDS",
     "STATEMENT_DETAIL_FIELDS",
     "ISSUER_STATEMENT_FIELDS",

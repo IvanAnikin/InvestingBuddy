@@ -368,8 +368,15 @@ from __future__ import annotations
 # a held 10-K / 10-Q / 20-F / 40-F / 6-K once (``INLINE_XBRL_MIN_PIPELINE_VERSION``).
 # Raw-text extraction is unchanged, so ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not
 # advance.
+# Version 23 (QA campaign 2026-11, ADR-087): an ASX quarterly cash flow report
+# (Appendix 5B, or Appendix 4C) is read by its own items (``asx_appendix_5b``): operating,
+# investing and financing cash flow, the cash at the end of the quarter and the issuer's
+# estimated quarters of funding, with the period of its "Quarter ended" header. A
+# version-22 row of such a report holds none of them, so a held 5B is re-read once
+# (``disclosures.acquisition._read_by_an_older_pipeline``). Raw-text extraction is
+# unchanged, so ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 22
+CURRENT_EXTRACTION_PIPELINE_VERSION = 23
 
 #: ADR-085 — the first version whose SEC filing-body extraction reads inline XBRL. A held
 #: SEC filing document stamped below it has never had its tagged statements read.

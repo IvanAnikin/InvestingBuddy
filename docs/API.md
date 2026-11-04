@@ -3443,6 +3443,40 @@ counts, refusals included. The size of the Council's own pack is
 `council_finding_count`. `challenges.findings_reviewed` is new. `chair.fallback_reason`
 can now also be `chair_model_failed`.
 
+## ADR-087 — issuer-stated runway and period supersession (no new endpoint)
+
+No new route. All of these keys are additive:
+
+- `source_summary_json.v3_research.financial_statements_state.issuer_stated` is a list,
+  usually empty. It holds the figures an issuer states as its own metric, kept apart from
+  `derived`. Today that is only an Appendix 5B / 4C's "Estimated quarters of funding
+  available". A record has these fields:
+  - `definition_key` `issuer_estimated_quarters_of_funding`, `label` and `issuer_label`
+    (the form and item);
+  - `value` and `value_as_printed`;
+  - `period_key` and `as_at` (the quarter end);
+  - `basis` `current_period`, `provenance` `issuer_stated` and `status` `stated`;
+  - `document_title`, `document_date`, `source_url` and `fact_id`;
+  - `formula` (what the issuer's ratio counts) and `note`.
+
+  The new statement field `issuer_estimated_quarters_of_funding` can also appear in
+  `slots` as `issuer_estimated_quarters_of_funding_current_period`.
+- `source_summary_json.v3_research.period_supersession` (`version: 1`) records what the
+  rule did. It has these fields:
+  - `as_of`;
+  - `newest_issuer_periods`: per family (`cash`, `debt`, `equity`, `segments`,
+    `fiscal_year`), the `lower_bound`, `document` and `published` of the newest held
+    issuer period;
+  - `labelled[]`: `{rule, path, label}`;
+  - `periods_filled[]`: `{finding_id, period_key}`;
+  - `note`.
+- In `v3_research.findings[]` and in each section's `findings[]`, a labelled finding's
+  `statement` starts with its date label (after the platform's own source labels) and
+  carries `superseded_period_label`. A segment finding whose period came from its text
+  has `period_key` and `period_key_source: "statement_text"`. Section `lead.text`,
+  `sentences[].text`, `chair.synthesis` and `chair.key_points[].text` may carry the same
+  bracketed labels. Nothing is removed.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

@@ -8044,3 +8044,208 @@ stored report had a peer set.
   corpus, so it is always excluded as "comparability unverified". With dynamic discovery
   on in production, this means the search effectively adds only companies the platform
   already holds (outside the subject's bucket) or none.
+
+## ADR-087: An ASX Quarterly Cash Flow Report Is Read by Its Own Items; a Later Period Supersedes
+
+**Date:** 2026-11-04 · **Status:** Accepted (implementation)
+**Trigger:** QA campaign 2026-11, Research Integrity Closure batch E2:
+
+| Defect | What happened |
+|---|---|
+| LIN-2 | The held Appendix 5B (26 corpus chunks) gave `facts_read=0`. There was no cash at quarter end and no runway, although the form prints both. |
+| LIN2-1 | A third party's "most recent fiscal year" figures (cash, debt, operating cash flow), from a page dated 2026-02-20, were shown as current although the issuer's Annual Report 2026 (2026-09-24) was held. |
+| ANTO-3 | Net debt at 31 Dec 2024 was stated as current liquidity in the chair synthesis of a 2026-11 report. |
+| ADBE-1 | A segment structure that no longer exists was presented as current, and the segment findings carried no period. |
+
+### Decision
+
+**1. Appendix 5B / 4C reader** (`app/services/sources/asx_appendix_5b.py`, pure, no I/O
+beyond pdfplumber on bytes already fetched).
+
+- **Input.** The reader takes the PDF's row-ordered page text, from the first page whose
+  extracted text names "Appendix 5B/4C" (or page 1 when the title does), for at most 8
+  pages and 60,000 characters. The platform's layout blocks put a 5B's labels and values
+  in separate blocks, so they cannot be paired; a test pins that no fact is produced from
+  that shape.
+- **Form.** The text must name "Appendix 5B" or "Appendix 4C" AND "quarterly cash flow
+  report". A text that names both forms is refused.
+- **Period.** The quarter end comes only from the form's own `Quarter ended ("current
+  quarter")` header. It must be a month end, and two different header dates are refused.
+  The fiscal position comes from `Year to date (N months)`. The quarter is keyed by the
+  fiscal year it ends in (ADR-065):
+  - a quarter ended 30 Sep 2026 with a 3-month year to date is `2027-Q1`;
+  - a quarter ended 31 Dec 2026 with a 6-month year to date is `2027-Q2`, with a year to
+    date of `2027-H1`;
+  - a 9-month calendar year to date is `2026-Q3`.
+
+  A 9- or 12-month year to date is not emitted as a fact.
+- **Currency and scale.** These come from `$A'000` / `$US'000` / `$NZ'000` (`thousand`).
+  A second, different currency header is refused.
+- **Columns.** A two-value line is read only under a "Current quarter … Year to date"
+  header (on one line or on two consecutive lines). A reversed header, a "Previous
+  quarter" header or a different number of values is not read. "-" reads as nil.
+- **Items.** An item is identified by section and label, then checked against the form's
+  numbering:
+
+  | Item | 5B | 4C |
+  |---|---|---|
+  | Net cash from operating activities | 1.9 | 1.9 |
+  | Net cash from investing activities | 2.6 | 2.6 |
+  | Net cash from financing activities | 3.10 | 3.10 |
+  | Cash and cash equivalents at end of period | 4.6 | 4.6 |
+  | Estimated quarters of funding available | 8.7 | **8.5** |
+
+  The batch brief said "8.8 in 4C". On the 17/07/20 Appendix 4C, item 8.5 is "Estimated
+  quarters of funding available (item 8.4 divided by item 8.1)". An item printed under
+  another number is not read.
+- **Self-check.** The form checks itself:
+  - every "(item X)" restatement must equal its item, column by column;
+  - cash at the end of the period must be equal in both columns;
+  - with a 3-month year to date, the two columns must be equal;
+  - the issuer's quarters of funding must equal its own stated ratio (8.6 / 8.3, or 8.4 /
+    8.1 in a 4C) within 0.05 plus 1%, or match it as an integer floor.
+
+  A failed restatement refuses the whole reading. A failed ratio drops only the runway.
+- **PDF-text interleaving tolerated:**
+  - wrapped labels with the values on either line;
+  - the 8.7 value printed in the middle of its wrapped label;
+  - a split column header;
+  - the `Quarter ended` header sharing lines with the ABN;
+  - watermark fragments, which are lines of 1–4 letters;
+  - footers.
+
+  A footnote marker glued to a value ("107,9361") is not a well-formed amount, so that
+  line is not read.
+- **Facts.** Each fact is a `ValidatedFact` at Group scope with confidence 0.9 and the
+  extraction method `asx_quarterly_cash_flow_report`. Its locator
+  (`table_location`) is `appendix_5b@2026-09-30#4.6`, and its page is the document page.
+  The runway is the new statement-detail field `issuer_estimated_quarters_of_funding`
+  (unit `quarters`, no currency).
+- **Merge.** A text reading of the same field and period at Group or unknown scope is
+  dropped, because it is the lesser reading of the same statement. Segment-scoped
+  readings are kept.
+- **Hook.** `live_primary_document_extractor` calls
+  `with_quarterly_cash_flow_facts` (off the event loop) after `_artifact_from_fetch` on an
+  extracted PDF. Anything else is returned unchanged, and the hook never raises.
+- **Statements view.** `financial_statements_state.issuer_stated` is a list beside, never
+  inside, `derived`. It holds the issuer's own runway with its item label, formula
+  (`RUNWAY_BASIS`), quarter end, period key, document and fact id, and the note "not
+  computed by InvestingBuddy and not a forecast".
+- **Pipeline version.** Extraction pipeline version **23** (22 is reserved for ADR-085,
+  PR #324), so every held disclosure is re-read once.
+
+**2. A later period supersedes** (`app/services/ledger/period_supersession.py`, pure).
+
+`apply_period_supersession(v3, as_of=report.created_at)` runs inside
+`v3_pipeline._enforce_research_state` (ADR-082) and stores
+`v3_research.period_supersession`. Nothing is deleted or reworded. A text gets a
+bracketed date label placed after the platform's own source labels.
+
+- **What the held documents give.** For each family (cash, debt, equity, segments,
+  fiscal_year), the newest issuer period is the lower bound of what the held issuer
+  documents report:
+  - an annual report or 10-K/20-F/40-F reports every family, published up to 183 days
+    after its period;
+  - an interim report or 10-Q/6-K reports every family except fiscal_year, with a lag of
+    92 days;
+  - a results release reports cash, or every family when it is a full-year release;
+  - a 5B current-period statement slot gives cash at its exact quarter end, read from
+    the slot's locator.
+
+  A cited finding's publication date is never a held document.
+- **Balance-sheet figures** (cash, net debt / net cash position, total debt, equity) are
+  labelled `[figures at 31 Dec 2024; …]` or `[as of a source dated 2026-02-10; …]` in
+  these cases:
+  - **an undated finding** with a money amount, when its source is older than the newest
+    held period;
+  - **a section sentence or chair sentence that prints no date,** when the latest as-of of
+    the findings it cites for that family is older than the newest held period. The
+    sentence must print an amount, or every finding it cites for the family must.
+
+  Either way, a figure more than 365 days before the report is labelled `over a year
+  before this report`. The families are found by a token scanner: cash flow, cash costs,
+  "net cash from" and debt financing are not balances, and "equity" needs a preceding
+  total, shareholders' or amount. Flows, policies and texts without a figure are never
+  labelled.
+- **"Most recent / latest / last fiscal year"** in a finding whose source is older than
+  the newest held annual period is labelled `[as of a source dated …; not the latest
+  fiscal year: the issuer's newer <document> of <date> is held]`.
+- **Segments.**
+  - An undated segment finding gets `period_key` (with
+    `period_key_source: "statement_text"`) only when its text names exactly one period and
+    prints no date. This applies only in perimeter domains.
+  - A sentence about the segment structure, citing segment findings older than the
+    newest held segment period, is labelled `[segment structure as reported for FY2025;
+    …]`.
+  - An issuer-sourced `segment:` finding that is absent from the perimeter of a later
+    issuer period is labelled `[historical segment, FY2024: not among the segments the
+    issuer reports for a later period]`.
+  - "segments its/their/the" (a verb) is not a segment claim.
+- **Idempotent.** Texts that already carry one of these labels are skipped, so running
+  the rule twice changes nothing.
+- **Linear and bounded.** Texts over 2,000 characters (findings and sentences) or 20,000
+  characters (a whole text) are left alone. Every pattern in both modules is tested on
+  `" "*10000`, `"\n"*10000`, `"A-"*3000`, `"a,"*5000` and `"a."*3000`, each under 0.2 s.
+- **Labels pass `neutralize_forbidden_terms`** because they quote document headlines.
+
+### Replay over the 17 stored reports
+
+The replay script is `scripts/qa_replay_period_supersession.py`. It makes no network
+call and writes nothing.
+
+**Before:** 0 labels in every report. **After:** 17 texts changed (14 labels) in 8
+reports, plus 2 segment periods filled. Each change was checked against its backing
+findings, and there are 0 wrong changes:
+
+- **ADBE (4):**
+  - two segment-structure sentences ("…generated from its Digital Media and Digital
+    Experience segments…", sections 0 and 2) → `[segment structure as reported for
+    FY2025; the issuer's newer 10-Q of 2026-09-22 is held]`;
+  - "free cash flow generation exceeding its total debt" (s0, s7 lead) → `[figures for
+    FY2025; the issuer's newer 10-Q of 2026-09-22 is held]`;
+  - one segment finding's period filled as FY2025.
+- **ANTO (1):** the chair sentence "Liquidity appears sufficient with net debt around
+  $1.6bn and cash plus equivalents at $4.3bn…" → `[figures at 31 Dec 2024; over a year
+  before this report]` (ANTO-3).
+- **HON (1):** "The company carries net debt against equity…" → `[figures for FY2025;
+  the issuer's newer 10-Q of 2026-10-22 is held]`.
+- **HON2 (1):** "…supported by strong cash flow and manageable net debt" (s7 lead) → the
+  same label. A segment finding's period was filled as 2026-Q1 from "Q1 2026".
+- **LIN2 (6 texts, 3 findings; each appears in `findings` and in its section copy):**
+  - the third-party "total debt at AUD 0.2m versus AUD 58.36m equity" → `[as of a source
+    dated 2026-02-20; the issuer's newer Annual Report 2026 of 2026-09-24 is held]`;
+  - "…share count grew 0.98% last fiscal year" and "most recent fiscal year: cash AUD
+    3.49m, total debt AUD 0.2m, operating cash flow AUD -6.07m" → `[as of a source dated
+    2026-02-20; not the latest fiscal year: the issuer's newer Annual Report 2026 of
+    2026-09-24 is held]` (LIN2-1).
+- **PYPL (1), PYPL2 (1), PYPL3 (2):** balance-sheet sentences ("liabilities exceed
+  shareholders' equity", "long-term debt relative to cash and equity", "large cash
+  position", "manageable debt levels") → `[figures for FY2025 / at 31 Dec 2025; the
+  issuer's newer 10-Q of 2026-10-27 is held]`.
+- **Unchanged:** ANTO2, CFR, CLLS1–5, JPM and LIN.
+  - LIN run 1's stored payload has no 5B facts, because they were never extracted. With
+    this reader, its 5B gives `cash_and_equivalents_current_period` = A$45,087k at 30
+    Sep 2026 (2027-Q1) and a stated 4.50 quarters of funding.
+  - On the real LIN 5B (offline, from the held PDF), the reader read operating cash flow
+    −7,349, investing −55,483, financing nil, cash 45,087 and runway 4.50, all in AUD
+    thousands. The same issuer's quarterly activities report was refused
+    (`not_a_quarterly_cash_flow_report`).
+
+### Known limits
+
+- **The web does not render `issuer_stated` yet.** The figure is in the payload only.
+- **No capex-inclusive derived runway.** 5B items 2.1(c)/(d) are not emitted.
+  `_derived_runway` still needs capex, and the issuer's 8.7 is not a substitute for it.
+- **Year-to-date coverage.** A 9- or 12-month year to date is not emitted, and only a
+  half has its own period type.
+- **Fiscal labels are calendar approximations.** `period_bounds` approximates them, so a
+  June-year-end issuer's `2027-Q1` reads as Jan–Mar 2027 in period comparisons.
+  Current-period selection is unaffected.
+- **ANTO-3 is fixed only by the age trigger.** H1 2026 was never held for that run.
+- **V2 content and the legacy V2 council text are not labelled.** Only the V3 payload is.
+- **Labels are not localised.**
+- **The version bump re-reads every held disclosure once,** within the ADR-084 / item 21
+  budgets.
+- **A test was relaxed for the version bump.** `test_qa_closure_temporal_semantics`
+  pinned version 21 with `==`. It now says `>= 21`, so it holds with E1's 22 and this
+  change's 23.
