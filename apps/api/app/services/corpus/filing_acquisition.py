@@ -147,6 +147,7 @@ async def acquire_sec_filing(
             fetched=True,
             reason="extraction_failed",
             detail=f"no extracted document; failure codes: {', '.join(codes)}",
+            failure_codes=tuple(codes),
         )
 
     if getattr(report_period, "is_known", False):

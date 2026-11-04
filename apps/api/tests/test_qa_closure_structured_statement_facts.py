@@ -1094,10 +1094,10 @@ class TestScopeAxes:
         [
             ("us-gaap:StatementBusinessSegmentsAxis", "jpm:CommercialAndInvestmentBankMember",
              "Commercial And Investment Bank"),
-            ("srt:StatementGeographicalAxis", "srt:AmericasMember", "Americas"),
-            ("us-gaap:StatementGeographicalAxis", "country:US", "US"),
+            ("srt:StatementGeographicalAxis", "srt:AmericasMember", "Americas (geographic)"),
+            ("us-gaap:StatementGeographicalAxis", "country:US", "US (geographic)"),
             ("srt:ProductOrServiceAxis", "adbe:SubscriptionRevenueMember",
-             "Subscription Revenue"),
+             "Subscription Revenue (product)"),
             ("ifrs-full:SegmentsAxis", "clls:ClinicalProgramsMember", "Clinical Programs"),
         ],
     )
@@ -1106,6 +1106,67 @@ class TestScopeAxes:
 
         fact = self._facts_for(axis, member)[("revenue", "2026-Q1", label)]
         assert fact.value_numeric == 4_000 and parse_scope(fact.scope).is_segment
+
+    @pytest.mark.parametrize(
+        ("axis", "member", "kind"),
+        [
+            ("srt:StatementGeographicalAxis", "srt:NorthAmericaMember", "geographic"),
+            ("us-gaap:StatementGeographicalAxis", "country:GB", "geographic"),
+            ("srt:ProductOrServiceAxis", "us-gaap:ProductMember", "product"),
+        ],
+    )
+    def test_a_geographic_or_product_split_fills_revenue_only(
+        self, axis: str, member: str, kind: str
+    ) -> None:
+        # JPM 10-K: North America 44,573m net income, GB total assets — not segments.
+        contexts = [_context("seg", start="2026-01-01", end="2026-03-31",
+                             member=(axis, member)),
+                    _context("segbs", instant="2026-03-31", member=(axis, member))]
+        body = (_nf("us-gaap:Revenues", "seg", "4,000")
+                + _nf("us-gaap:NetIncomeLoss", "seg", "1,500")
+                + _nf("us-gaap:Assets", "segbs", "90,000"))
+        facts = _facts(_q1_doc(body, contexts))
+        assert {k[0] for k in facts} == {"revenue"}
+        (revenue,) = facts.values()
+        assert revenue.scope.endswith(f"({kind})")
+        assert f"scope axis: {kind}" in revenue.validation_notes
+
+    def test_a_business_segment_on_any_field_carries_its_axis_kind(self) -> None:
+        facts = self._facts_for("us-gaap:StatementBusinessSegmentsAxis",
+                                "jpm:CommercialAndInvestmentBankMember")
+        net = facts[("net_income", "2026-Q1", "Commercial And Investment Bank")]
+        assert "scope axis: business_segment" in net.validation_notes
+        assert "scope axis: group" in facts[("revenue", "2026-Q1", "Group")].validation_notes
+
+    def test_a_region_and_a_segment_of_the_same_words_never_share_a_key(self) -> None:
+        from app.services.sources.fact_scope import parse_scope
+
+        business = self._facts_for("us-gaap:StatementBusinessSegmentsAxis",
+                                   "acme:AmericasMember")
+        region = self._facts_for("srt:StatementGeographicalAxis", "srt:AmericasMember")
+        b = business[("revenue", "2026-Q1", "Americas")]
+        r = region[("revenue", "2026-Q1", "Americas (geographic)")]
+        assert parse_scope(b.scope).scope_key != parse_scope(r.scope).scope_key
+
+    @pytest.mark.parametrize(
+        ("axis", "member"),
+        [
+            ("srt:StatementGeographicalAxis", "jpm:TotalInternationalMember"),
+            ("srt:StatementGeographicalAxis", "acme:AllOtherCountriesMember"),
+            ("srt:StatementGeographicalAxis", "acme:OtherCountriesMember"),
+            ("srt:ProductOrServiceAxis", "acme:ConsolidatedProductsMember"),
+            ("us-gaap:StatementBusinessSegmentsAxis", "acme:TotalSegmentsMember"),
+            ("us-gaap:StatementBusinessSegmentsAxis", "acme:OthersMember"),
+            ("ifrs-full:SegmentsAxis", "acme:EuropeSubtotalMember"),
+        ],
+    )
+    def test_a_subtotal_member_is_skipped_on_every_axis(self, axis: str, member: str) -> None:
+        assert {k[2] for k in self._facts_for(axis, member)} == {"Group"}
+
+    def test_a_name_that_only_starts_like_a_subtotal_is_kept(self) -> None:
+        facts = self._facts_for("us-gaap:StatementBusinessSegmentsAxis",
+                                "acme:AlliancePharmaMember")
+        assert ("revenue", "2026-Q1", "Alliance Pharma") in facts
 
 
 class TestBankStatus:
@@ -1391,14 +1452,73 @@ class TestHeldFilingRereadBounds:
         calls: list[dict] = []
 
         async def _acquire(_s, **kw):  # noqa: ANN001, ANN003, ANN202
-            calls.append(kw)  # fetched, but the held row is never restamped
-            return AcquireOutcome(acquired=False, fetched=True, reason="extraction_failed")
+            calls.append(kw)  # fetched, and definitively unreadable
+            return AcquireOutcome(acquired=False, fetched=True, reason="extraction_failed",
+                                  failure_codes=("empty_extraction",))
 
         first = await self._run(session, company, _acquire)
         assert first.state == "ready" and len(calls) == 1
         self._new_run(session)
         second = await self._run(session, company, _acquire)
         assert second.reused is True and second.attempted is False and len(calls) == 1
+
+    @pytest.mark.parametrize(
+        "codes", [("fetch_timeout",), ("http_server_error",), ("http_client_error",),
+                  ("unknown",), ()],
+    )
+    async def test_a_transient_failure_is_retried_in_a_later_run(
+        self, session, monkeypatch, codes  # noqa: ANN001
+    ) -> None:
+        from app.services.corpus.filing_evidence import AcquireOutcome
+
+        company, doc = await self._held(session, pipeline_version=20)
+        self._ready(monkeypatch, doc.id)
+        calls: list[dict] = []
+
+        async def _acquire(_s, **kw):  # noqa: ANN001, ANN003, ANN202
+            calls.append(kw)
+            return AcquireOutcome(acquired=False, fetched=True, reason="extraction_failed",
+                                  failure_codes=codes)
+
+        await self._run(session, company, _acquire)
+        # Same run: the per-run bound holds.
+        assert (await self._run(session, company, _acquire)).attempted is False
+        self._new_run(session)
+        await self._run(session, company, _acquire)
+        assert len(calls) == 2  # no marker was written, so the next run retried
+
+    async def test_a_fetch_error_writes_no_marker(
+        self, session, monkeypatch  # noqa: ANN001
+    ) -> None:
+        from app.services.corpus.filing_evidence import AcquireOutcome
+
+        company, doc = await self._held(session, pipeline_version=20)
+        self._ready(monkeypatch, doc.id)
+        calls: list[dict] = []
+
+        async def _acquire(_s, **kw):  # noqa: ANN001, ANN003, ANN202
+            calls.append(kw)
+            return AcquireOutcome(acquired=False, reason="fetch_error", detail="ConnectError")
+
+        await self._run(session, company, _acquire)
+        self._new_run(session)
+        await self._run(session, company, _acquire)
+        assert len(calls) == 2
+
+    def test_which_outcomes_are_definitive(self) -> None:
+        from app.services.corpus.filing_evidence import AcquireOutcome
+        from app.services.corpus.held_filing_facts import is_definitive_outcome
+
+        assert is_definitive_outcome(AcquireOutcome(acquired=True, fetched=True))
+        assert is_definitive_outcome(AcquireOutcome(
+            acquired=False, fetched=True, reason="extraction_failed",
+            failure_codes=("unsupported_content_type",)))
+        assert not is_definitive_outcome(AcquireOutcome(
+            acquired=False, fetched=True, reason="extraction_failed",
+            failure_codes=("empty_extraction", "fetch_timeout")))
+        assert not is_definitive_outcome(AcquireOutcome(acquired=False,
+                                                        reason="no_document_resolved"))
+        assert not is_definitive_outcome(None)
 
     async def test_at_most_one_re_read_per_run(self, session) -> None:  # noqa: ANN001
         from app.models.extracted_document import ExtractedDocument
@@ -1436,6 +1556,7 @@ class TestHeldFilingRereadBounds:
         out = await self._run(session, company, _boom)
         assert out.state == "ready" and out.reused is True and out.attempted is True
         assert any("re-read failed" in n for n in out.notes)
+        # A raised error is not definitive: no marker, so a later run retries.
         self._new_run(session)
-        again = await self._run(session, company, _boom)  # recorded: not repeated
-        assert again.state == "ready" and again.attempted is False
+        again = await self._run(session, company, _boom)
+        assert again.state == "ready" and again.attempted is True

@@ -738,9 +738,11 @@ document stamped below 22 (version 21 is ADR-080's forward-date rule, which read
 tags) is re-read once on its next encounter in the V3 filing bridge
 (`ensure_filing_corpus_evidence` state A). That re-read is one SEC Archives fetch of the
 held document inside the caller's existing filing-body budget; with the budget spent, it
-waits for a later run. At most one such re-read happens per run, and each is recorded as
-an ingestion attempt (`discovery_strategy = ixbrl_reread_v22`) so it is never repeated
-for that version, whatever its outcome. A report regeneration that reuses an SEC
+waits for a later run. At most one such re-read happens per run. A re-read with a
+definitive outcome (the document was re-derived, or fetched and cannot be read) is
+recorded as an ingestion attempt (`discovery_strategy = ixbrl_reread_v22`) and never
+repeated for that version; a transient failure (network, 5xx, 429, timeout) records
+nothing and is retried on a later run. A report regeneration that reuses an SEC
 Archives document stamped below 22 with no tagged fact re-extracts it from its own address (Case B) rather
 than replaying excerpts. No migration and no new host. Rolling back to 21 is safe: version-22 rows keep
 `inline_xbrl` facts that version-21 code reads as ordinary validated facts.

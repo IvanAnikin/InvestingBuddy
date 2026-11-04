@@ -7816,6 +7816,15 @@ in the same PR.
   member ("Reportable Segment" of a single-segment filer, corporate, reconciling items,
   eliminations) is skipped too. Real 10-Qs had produced JPM "Asset Pledged As
   Collateral" total assets and PYPL "Reclassification out of AOCI" net income.
+- **B1, second review.** A geographic or product/service member fills REVENUE only: the
+  JPM 10-K had stored North America net income (44,573m) and "GB" total assets as
+  segment facts. Such a scope is labelled "<member> (geographic)" / "<member>
+  (product)", so a region never shares a scope key with a business segment of the same
+  words, and each fact's notes carry `scope axis: group | business_segment |
+  geographic | product` (no column holds it; the label suffix is what persists). A
+  subtotal member on any axis — a local name starting `Total` / `All` / `Other(s)` /
+  `Consolidated`, or ending `Subtotal` ("Total International") — overlaps its siblings
+  and is skipped.
 - **B2 — bank status.** `us-gaap:InterestIncomeExpenseNet` is "Interest income
   (expense), net" in an industrial, media or biotech filing (Disney −1,037m). It fills
   `net_interest_income` only in a document that tags Group `us-gaap:Deposits`
@@ -7859,10 +7868,14 @@ in the same PR.
 - **Decision 6, amended — bounded re-reads.**
   - The acquirer is handed the held document's own file name when the caller names
     none, so a held 6-K exhibit is re-read, not the filing's cover page.
-  - Every attempt is recorded, with its outcome, as an ingestion attempt
+  - An attempt with a DEFINITIVE outcome is recorded as an ingestion attempt
     (`discovery_strategy = ixbrl_reread_v22`, under the ingestion-attempt gates), and a
-    recorded attempt is never repeated. So a failed fetch, or a document with no tags,
-    costs one budget slot once per pipeline version.
+    recorded attempt is never repeated. Definitive means the held row was re-derived,
+    the document was acquired, or it was fetched and failed extraction with only
+    non-transient codes (`AcquireOutcome.failure_codes`). So a document with no tags
+    costs one budget slot once per pipeline version. A raised error, a fetch error, an
+    unresolved index, or any transient code (timeout, 5xx, 4xx including 429, an
+    exhausted budget, `unknown`) writes nothing, and a later run retries it.
   - Whether a document carries iXBRL is not known before it is fetched, so at most one
     re-read happens per database session (one run).
   - A re-read that raises, or cannot run, answers READY from the held copy.
@@ -7879,14 +7892,16 @@ in the same PR.
   has no current-period runway.
 - The net charge-off concept name is mapped as tagged where present; it is not verified
   against a live bank filing. No CET1 concept is mapped (Review amendments).
-- Revenue disaggregated on `srt:ProductOrServiceAxis` is kept as a segment-scoped fact
-  ("Subscription Revenue"), as the review's axis list allows; it never fills a Group slot.
+- Revenue disaggregated by geography or product is kept as a segment-scoped fact
+  ("Subscription Revenue (product)", "EMEA (geographic)"); it never fills a Group slot.
+  `fact_scope.names_a_business_segment` still counts such a scope as a segment. Two
+  non-subtotal regions can still overlap (ADBE's 10-K tags "US" beside "Americas").
 - Inline XBRL from non-SEC hosts (ESEF annual reports on issuer sites) is not read.
 - Per-share figures have no statements-view field. EPS comes only from the normalizer.
 - No live run yet. Acceptance needs a Cellectis, PayPal and JPM rerun after deploy.
 
 ### Tests
-`tests/test_qa_closure_structured_statement_facts.py` (91 tests) covers:
+`tests/test_qa_closure_structured_statement_facts.py` (111 tests) covers:
 - the IFRS companyfacts fixture (trimmed Cellectis payload) with IFRS terms;
 - 6-K/A interim selection;
 - a non-USD filer kept in its own currency and refused by the USD consumers;
@@ -7904,4 +7919,8 @@ in the same PR.
   unmapped bank concepts, the frame checks and future contexts, the latest-filing IFRS
   currency, the entity check, one equity definition and the conflict note,
   `taxonomy_label`, the regeneration trigger, the version pin, and the bounded re-read
-  (held document name, once per version, once per run, READY on failure).
+  (held document name, once per version, once per run, READY on failure);
+- the second review: geographic / product splits fill revenue only and carry their axis
+  kind, subtotal members on every axis, a region and a segment of the same words, and
+  the re-read marker written only on a definitive outcome (transient codes, a fetch
+  error and a raised error are retried by a later run).

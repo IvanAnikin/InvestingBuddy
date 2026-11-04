@@ -842,6 +842,9 @@ class AcquireOutcome:
     fetched: bool = False
     reason: str | None = None
     detail: str | None = None
+    #: The closed ingestion failure codes of a fetched-but-not-extracted document, so a
+    #: caller can tell a transient failure (timeout, 5xx, 429) from a definitive one.
+    failure_codes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -995,7 +998,10 @@ async def ensure_filing_corpus_evidence(
         )
 
     async def _held_copy(plan: Any, extra: list[str]) -> FilingEvidenceResult:
-        """A re-read that could not run or failed: the held copy still answers READY."""
+        """A re-read that could not run or failed: the held copy still answers READY.
+
+        Nothing definitive was learned (no outcome), so no once-per-version marker is
+        written unless the held row was nonetheless re-derived."""
         await record_held_filing_reread(session, company_id=company_id, plan=plan, cfg=cfg)
         await stamp_filing_date(
             session, version_id=state.version_id, filing_date=filing_date
@@ -1077,7 +1083,7 @@ async def ensure_filing_corpus_evidence(
         notes.append(outcome.detail)
     if reread is not None:
         await record_held_filing_reread(
-            session, company_id=company_id, plan=reread, cfg=cfg
+            session, company_id=company_id, plan=reread, cfg=cfg, outcome=outcome
         )
 
     # Re-read the state rather than believing the acquirer. Extraction can succeed while

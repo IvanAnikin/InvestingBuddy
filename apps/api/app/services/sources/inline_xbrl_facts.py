@@ -25,11 +25,19 @@ THE RULES (all fail-closed)
   skipped. So the prior-year comparative in a filing gets ITS OWN period. A context that
   ends after the document's period end (+10 days) is not an actual and is skipped.
 * **Scope from the context.** No dimension → the Group. Exactly one explicit member on a
-  SEGMENT axis (business segments, geography, product or service — ``_SEGMENT_AXES``) → a
-  segment named by that member, never the Group. Any other axis (equity components,
-  collateral, VIEs, consolidation items, restatements, scenarios, fair-value levels,
-  parent-only) and every intersection or typed member → skipped. A Group figure split by
-  such an axis is not a business segment.
+  SEGMENT axis → a segment named by that member, never the Group:
+  - a business-segment axis (``StatementBusinessSegmentsAxis``, ``ifrs-full:SegmentsAxis``)
+    for any field;
+  - a geographic or product/service axis for REVENUE only, labelled
+    "<member> (geographic)" / "<member> (product)" so a region never shares a scope key
+    with a business segment of the same words. A balance sheet or a profit split by
+    country is not a segment report.
+  A subtotal member on any axis (``Total…``, ``All…``, ``Other…``, ``Consolidated…``,
+  ``…Subtotal``) overlaps its siblings and is skipped; so is a generic business-segment
+  member (a single-segment filer's "Reportable Segment", corporate, eliminations). Any
+  other axis (equity components, collateral, VIEs, consolidation items, restatements,
+  scenarios, fair-value levels, parent-only) and every intersection or typed member →
+  skipped. The axis kind travels in the fact's notes (``scope axis: …``).
 * **Bank lines only in a bank's filing.** A ``bank_only`` concept is read only from a
   document that tags Group ``us-gaap:Deposits``.
 * **The filer is the subject.** A document whose ``dei:EntityCentralIndexKey`` differs
@@ -105,6 +113,18 @@ _SEGMENT_AXES = frozenset(
 )
 _SEGMENT_AXIS_PREFIXES = frozenset({"us-gaap", "srt", "ifrs-full"})
 _BUSINESS_SEGMENT_AXES = frozenset({"StatementBusinessSegmentsAxis", "SegmentsAxis"})
+_GEOGRAPHIC_AXES = frozenset({"StatementGeographicalAxis"})
+_PRODUCT_AXES = frozenset({"ProductOrServiceAxis"})
+SCOPE_AXIS_GROUP = "group"
+SCOPE_AXIS_BUSINESS_SEGMENT = "business_segment"
+SCOPE_AXIS_GEOGRAPHIC = "geographic"
+SCOPE_AXIS_PRODUCT = "product"
+#: The only field a geographic or product/service split may fill.
+_DISAGGREGATED_FIELDS = frozenset({"revenue"})
+#: A member that sums its siblings (or the rest of them) on any axis.
+_SUBTOTAL_MEMBER_RE = re.compile(
+    r"^(?:Total|All|Others?|Consolidated)(?=[A-Z0-9_]|$)|Subtotal$"
+)
 #: Members of a business-segment axis that are not a named segment.
 _GENERIC_SEGMENT_RE = re.compile(
     r"^(?:(?:single|one|total)\s+)?(?:reportable|operating)?\s*segments?$"
@@ -222,13 +242,17 @@ def _words(qname: str, suffix: str) -> str:
     return _CAMEL_RE.sub(" ", local).strip()
 
 
-def scope_label(dimensions: tuple[tuple[str, str], ...]) -> str | None:
-    """``"Group"`` for no dimension; the member's name for one member on a segment axis;
-    ``None`` otherwise (any other axis, an intersection, a typed member)."""
+def scope_of(
+    dimensions: tuple[tuple[str, str], ...], *, field: str | None = None
+) -> tuple[str, str] | None:
+    """``(scope label, axis kind)`` for one fact of ``field``, or ``None`` to skip it.
+
+    ``("Group", "group")`` for no dimension; see the module rules for the rest.
+    """
     from app.services.sources.fact_scope import is_group_label, is_period_label, parse_scope
 
     if not dimensions:
-        return "Group"
+        return "Group", SCOPE_AXIS_GROUP
     if len(dimensions) != 1:
         return None
     axis, member = dimensions[0]
@@ -237,18 +261,38 @@ def scope_label(dimensions: tuple[tuple[str, str], ...]) -> str | None:
     axis_prefix, _, axis_local = axis.rpartition(":")
     if axis_local not in _SEGMENT_AXES or axis_prefix not in _SEGMENT_AXIS_PREFIXES:
         return None
-    if axis_local in _BUSINESS_SEGMENT_AXES and _GENERIC_SEGMENT_RE.search(
-        _words(member, "Member")
-    ):
-        # "Reportable Segment" of a single-segment filer, "Corporate", reconciling items
-        # and eliminations: none of them names a business segment.
-        return None
-    label = _words(member, "Member")
+    member_local = member.rpartition(":")[2]
+    if member_local.endswith("Member"):
+        member_local = member_local[: -len("Member")]
+    if _SUBTOTAL_MEMBER_RE.search(member_local):
+        return None  # "Total International" overlaps the countries beside it
+    words = _words(member, "Member")
+    if axis_local in _BUSINESS_SEGMENT_AXES:
+        if _GENERIC_SEGMENT_RE.search(words):
+            # "Reportable Segment" of a single-segment filer, "Corporate", reconciling
+            # items and eliminations: none of them names a business segment.
+            return None
+        kind, suffix = SCOPE_AXIS_BUSINESS_SEGMENT, ""
+    else:
+        if field not in _DISAGGREGATED_FIELDS:
+            return None  # a balance or a profit by country is not a segment report
+        kind = SCOPE_AXIS_GEOGRAPHIC if axis_local in _GEOGRAPHIC_AXES else SCOPE_AXIS_PRODUCT
+        suffix = f" ({kind})"
+    label = words
     if not label or is_group_label(label) or is_period_label(label):
         label = f"{label or member} ({_words(axis, 'Axis') or axis})"
+    label = f"{label}{suffix}"
     if not parse_scope(label).is_segment:  # pragma: no cover - defence in depth
         label = f"Segment: {label}"
-    return label
+    return label, kind
+
+
+def scope_label(
+    dimensions: tuple[tuple[str, str], ...], *, field: str | None = None
+) -> str | None:
+    """The scope label ``scope_of`` gives, or ``None``."""
+    scoped = scope_of(dimensions, field=field)
+    return scoped[0] if scoped else None
 
 
 # ── Facts ─────────────────────────────────────────────────────────────────── #
@@ -318,6 +362,7 @@ def statement_facts_from_inline_xbrl(document: InlineXbrlDocument) -> list[Any]:
         for fact in document.facts
     )
 
+    axis_of_scope: dict[str, str] = {}
     # (field, period, scope) -> list of (priority, fact, mapped, value fields)
     candidates: dict[tuple[str, str, str], list[tuple[int, InlineXbrlFact,
                                                        StatementConcept, dict]]] = {}
@@ -333,9 +378,11 @@ def statement_facts_from_inline_xbrl(document: InlineXbrlDocument) -> list[Any]:
             continue
         if mapped.kind == KIND_FLOW and fact.is_instant:  # pragma: no cover - above
             continue
-        scope = scope_label(fact.dimensions)
-        if scope is None:
+        scoped = scope_of(fact.dimensions, field=mapped.statement_field)
+        if scoped is None:
             continue
+        scope, scope_axis = scoped
+        axis_of_scope[scope] = scope_axis
         period = period_label(
             fact, fiscal_year=year, fiscal_year_end=fiscal_year_end, half_frame=half_frame
         )
@@ -349,6 +396,7 @@ def statement_facts_from_inline_xbrl(document: InlineXbrlDocument) -> list[Any]:
 
     out: list[Any] = []
     for (field_name, period, scope), group in candidates.items():
+        axis_note = f"scope axis: {axis_of_scope.get(scope, SCOPE_AXIS_GROUP)}"
         best_priority = min(p for p, *_ in group)
         best = [entry for entry in group if entry[0] == best_priority]
         chosen = _consistent_reading(best)
@@ -372,6 +420,7 @@ def statement_facts_from_inline_xbrl(document: InlineXbrlDocument) -> list[Any]:
                 validation_notes=[
                     f"taxonomy label: {mapped.label}",
                     f"tagged {fact.concept} in context {fact.context_id}",
+                    axis_note,
                 ],
                 **values,
             )
@@ -469,7 +518,12 @@ __all__ = [
     "is_sec_archive_url",
     "merge_with_text_facts",
     "period_label",
+    "SCOPE_AXIS_BUSINESS_SEGMENT",
+    "SCOPE_AXIS_GEOGRAPHIC",
+    "SCOPE_AXIS_GROUP",
+    "SCOPE_AXIS_PRODUCT",
     "scope_label",
+    "scope_of",
     "statement_facts_from_inline_xbrl",
     "with_inline_xbrl_facts",
 ]

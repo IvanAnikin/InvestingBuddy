@@ -16,10 +16,12 @@ BOUNDED (ADR-085 review)
 * **The held document, not another one.** The acquirer is handed the held document's
   own file name, so a held 6-K exhibit is re-read — not the filing's cover page, which
   would leave the held row stale and due again on every run.
-* **Once per pipeline version.** Whatever its outcome, the attempt is recorded as an
-  ingestion attempt (``discovery_strategy`` = ``REREAD_STRATEGY``) for the company and
-  the document's address; a recorded attempt is never repeated. A fetch that failed or
-  a document that turned out to carry no tags therefore costs one budget slot, once.
+* **Once per pipeline version.** A re-read with a DEFINITIVE outcome — the held row was
+  re-derived, or the document was fetched and cannot be read — is recorded as an
+  ingestion attempt (``discovery_strategy`` = ``ixbrl_reread_v<N>``) for the company and
+  the document's address; a recorded attempt is never repeated. A document that turned
+  out to carry no tags therefore costs one budget slot, once. A transient failure
+  (network, 5xx, 429, timeout) records nothing, so a later run retries it.
   (Recording follows the ingestion-attempt gates; with them off, the next bound holds.)
 * **At most one per run.** Whether a held document carries inline XBRL is not known
   before it is fetched, so at most ``MAX_REREADS_PER_SESSION`` re-read happens per
@@ -179,14 +181,57 @@ async def plan_held_filing_reread(
     )
 
 
-async def record_held_filing_reread(
-    session: Any, *, company_id: uuid.UUID, plan: HeldFilingReread, cfg: Any
-) -> None:
-    """Record that ``plan`` was attempted, with its outcome. Never raises.
+#: Failure codes that say "try again later", never "this document cannot be read":
+#: timeouts, 5xx, 4xx (a 429 is a client-error class), an exhausted budget, a client
+#: that was not available, and an unclassified failure.
+TRANSIENT_FAILURE_CODES: frozenset[str] = frozenset(
+    {
+        "fetch_timeout",
+        "extraction_timeout",
+        "http_server_error",
+        "http_client_error",
+        "budget_exhausted",
+        "preflight_budget_exhausted",
+        "client_unavailable",
+        "unknown",
+    }
+)
 
-    The outcome is read from the held row itself: restamped at the reader's version
-    means its tags were read; anything else is a failed re-read, recorded all the same
-    so it is not repeated.
+
+def is_definitive_outcome(outcome: Any) -> bool:
+    """Did the acquisition settle the question, whatever the held row now says?
+
+    True when the document was acquired (so the held row was re-derived, or the filing
+    no longer serves those bytes), or when it was fetched and failed extraction for a
+    reason that will not change (not text, empty, unsupported). A raised error, a
+    fetch error, an unresolved index, or any transient failure code is not definitive:
+    the next run may retry (the per-run bound still applies)."""
+    if outcome is None:
+        return False
+    if getattr(outcome, "acquired", False):
+        return True
+    codes = set(getattr(outcome, "failure_codes", ()) or ())
+    return (
+        getattr(outcome, "reason", None) == "extraction_failed"
+        and bool(codes)
+        and not codes & TRANSIENT_FAILURE_CODES
+    )
+
+
+async def record_held_filing_reread(
+    session: Any,
+    *,
+    company_id: uuid.UUID,
+    plan: HeldFilingReread,
+    cfg: Any,
+    outcome: Any = None,
+) -> None:
+    """Record ``plan``'s re-read once its outcome is definitive. Never raises.
+
+    The held row is read first: restamped at the reader's version means its tags were
+    read (recorded as extracted). Otherwise the attempt is recorded as failed only when
+    ``is_definitive_outcome(outcome)`` — a transient failure (network, 5xx, 429,
+    timeout) writes nothing, so the next run can retry.
     """
     from app.models.document_ingestion_attempt import (
         STATUS_EXTRACTED,
@@ -209,6 +254,8 @@ async def record_held_filing_reread(
                 )
             ).scalar_one_or_none()
             read = (version or 0) >= INLINE_XBRL_MIN_PIPELINE_VERSION
+            if not read and not is_definitive_outcome(outcome):
+                return
             await record_ingestion_attempts(
                 session,
                 company_id=company_id,
@@ -238,8 +285,10 @@ def _version_query(model: Any, document_id: uuid.UUID) -> Any:
 __all__ = [
     "IXBRL_CAPABLE_FORMS",
     "MAX_REREADS_PER_SESSION",
+    "TRANSIENT_FAILURE_CODES",
     "HeldFilingReread",
     "held_filing_needs_fact_reread",
+    "is_definitive_outcome",
     "plan_held_filing_reread",
     "record_held_filing_reread",
 ]
