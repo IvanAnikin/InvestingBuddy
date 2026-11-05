@@ -8644,14 +8644,20 @@ unambiguously bind the same figure to different periods.
    or carries a two-year column header ("2026 2025"), never lends its stored key to a
    figure. Bare dates on the source side date their own figures ("September 30, 2026
    $ 6,120; December 31, 2025 $ 8,048").
-9. **Positively about the subject** (P1-3, P2-4). A finding closes or supersedes a gap
-   only when it is positively about the subject. Findings carry no persisted subject
-   verdict (ADR-083 drops another entity's statement at creation), so the text decides:
+9. **Positively about the subject** (P1-3, P2-4; re-review). A finding closes or
+   supersedes a gap only when its subject is POSITIVELY the research subject. Findings
+   carry no persisted subject verdict (ADR-083 drops another entity's statement at
+   creation), so the text decides, with ``reconcile(subject_name=…, subject_ticker=…)``:
    - a peer / competitor / customer / client / supplier / offtaker / counterparty /
-     "unlike" marker, or a legal-suffix organisation name before the figure that is not
-     the subject's (``reconcile(subject_name=…)``, ADR-083 ``subject_aliases``), gives
-     `subject_not_established`;
-   - that reason is NONCOMPARABLE: never CLOSED, never SUPERSEDED.
+     "unlike" marker anywhere → not established;
+   - the subject's distinctive name word or ticker in the statement → established;
+   - otherwise established only when no capitalised proper noun precedes the first
+     figure. Each capitalised word there must be generic ("Revenue", "Cash", "The
+     company", "Group", months, currencies, regions), one of the subject's own name
+     words, or a word of the finding's own scope or project. "Albemarle reported cash
+     …", "SQM's FY2025 revenue …", "Pilbara Minerals posted …" are not established.
+   - Not established is `subject_not_established`, which is NONCOMPARABLE: never
+     CLOSED, never SUPERSEDED.
 10. **Forecast and sub-scope wording** (P2-4).
     - should / could / may (not the month) / might / would / seen / "analysts see" /
       goal / midpoint / range / pro forma / consensus / estimate / aims / on track /
@@ -8689,17 +8695,27 @@ unambiguously bind the same figure to different periods.
     runs in about 0.2 s; the enforcer stress case (300 findings, a 20k synthesis) in
     about 0.3–0.7 s.
 
-### Replay (17 stored reports, payload-derived; before = `origin/main` 29bc487)
+### Replay (17 stored reports, payload-derived; before = `origin/main` 0749c49)
 - Gap status: before OPEN 498 / PARTIALLY_CLOSED 182; after OPEN 497 /
-  PARTIALLY_CLOSED 169 / NONCOMPARABLE 14. There are **0 new CLOSED or SUPERSEDED**.
+  PARTIALLY_CLOSED 152 / NONCOMPARABLE 31. There are **0 new CLOSED or SUPERSEDED**.
   - LIN2 gap `2234b6ac` (post-placement cash): OPEN → PARTIALLY_CLOSED via finding
     `ecbd18cd`, the 30-Sep-2026 cash balance (partial: the gap also asks for the capex
     schedule and the facility drawdown).
   - CLLS5 gaps `f57c51dc`, `9b8f0b4a`: PARTIALLY_CLOSED → NONCOMPARABLE. Their only
     answer is an undated 2023 web statement (`75122f42`).
-  - CLLS3: 12 gaps went PARTIALLY_CLOSED → NONCOMPARABLE (`subject_not_established`).
-    Their only answer was finding `16a65ab8`, "Peer-set member Moderna FY2025 Group:
-    revenue …", a peer's figures partly answering the subject's gaps on `main`.
+  - PARTIALLY_CLOSED → NONCOMPARABLE, `subject_not_established`, another entity's
+    figures (correct):
+    - CLLS3, 12 gaps: finding `16a65ab8`, "Peer-set member Moderna FY2025 Group …";
+    - CLLS4, 8 gaps: finding `d56031ac`, "EY reports biotech industry revenue …".
+  - PARTIALLY_CLOSED → NONCOMPARABLE, `subject_not_established`, the subject's own
+    asset, segment or contract named without the subject (over-conservative, never a
+    close):
+    - LIN, 2 gaps / LIN2, 2 gaps: `211d565c` / `9e212355`, "Kangankunde Ore Reserve …"
+      (the subject's project, not recognised as a project);
+    - LIN, 4 gaps: `79653f52`, "Carester SAS holds a binding 10-year offtake …" (the
+      subject's offtake, stated with the counterparty as subject);
+    - HON2, 1 gap: `bd84bf62`, "Aerospace Technologies reported Q1 2026 net sales …"
+      (the subject's segment under a garbled scope key).
 - Chair: 1 sentence withheld. It is PYPL2 `chair.key_points[3]`: "+26%" stated for
   Q3 2026 while the cited finding states it for Q2 2026.
 - Content: 6 V2 primary-document lines repaired, with de-duplicated counts: CLLS2 1;
@@ -8721,7 +8737,8 @@ unambiguously bind the same figure to different periods.
 - Scope is compared only on clean segment names. Parsed fragments such as
   "segment:2. segment reporting" are ignored. Any unexplained upper-case acronym in a
   claim keeps a segment figure (it may be the segment's).
-- The subject test is lexical: a peer named without a legal suffix or a relationship
-  word ("Albemarle's revenue …") is not caught by it. ADR-083 drops such statements at
-  creation.
+- The subject test is lexical and conservative: a statement about the subject's own
+  project, segment or contract that never names the subject (and whose project the
+  field reader does not recognise) is NONCOMPARABLE rather than PARTIALLY_CLOSED (the
+  LIN / LIN2 / HON2 rows above). It never closes on another entity's figure.
 - Stored payloads predate ADR-084, so `EXTRACTION_FAILED` does not occur in the replay.

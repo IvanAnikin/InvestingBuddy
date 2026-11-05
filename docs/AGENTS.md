@@ -1751,8 +1751,9 @@ reader takes its counts and status lines from it.
   never closes a gap. A later balance supersedes an older-dated balance gap. An
   unanswered gap whose document is held but unread (`acquired_not_read`) is
   `EXTRACTION_FAILED`. A finding closes or supersedes only when it is positively about
-  the subject (`reconcile(subject_name=…)`): a peer / customer / supplier /
-  counterparty marker, or another company's legal name before the figure, makes it
+  the subject (`reconcile(subject_name=…, subject_ticker=…)`): it names the subject, or
+  names no proper noun before its figure. A peer / customer / supplier / counterparty
+  marker, or another name before the figure ("Albemarle reported cash …"), makes it
   `NONCOMPARABLE`. Forecast and hypothetical wording (should, could, seen, consensus,
   pro forma, …) never closes a historical gap. Sub-scope wording (a business, region,
   division, "in Europe") never closes a Group gap unless the fact is group-scoped.

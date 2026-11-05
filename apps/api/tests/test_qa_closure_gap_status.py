@@ -601,6 +601,44 @@ class TestReviewGapStatus:
                        [_finding("f1", statement, period_key="FY2025")])
         assert verdict.gap_status not in (gr.GAP_STATUS_CLOSED, gr.GAP_STATUS_SUPERSEDED)
 
+    @pytest.mark.parametrize("statement", [
+        "Albemarle reported FY2025 revenue of US$5.4bn.",
+        "SQM's FY2025 revenue was US$4.5bn.",
+        "Pilbara Minerals posted FY2025 revenue of A$1.2bn.",
+    ])
+    def test_re_review_a_named_peer_never_closes_a_revenue_gap(self, statement: str) -> None:
+        verdict = _one(_gap("FY2025 revenue was not acquired"),
+                       [_finding("f1", statement, period_key="FY2025")],
+                       subject_name="Liontown Resources Ltd", subject_ticker="LTR")
+        assert verdict.gap_status == gr.GAP_STATUS_NONCOMPARABLE
+        assert gr.REASON_SUBJECT_UNCERTAIN in verdict.reasons
+
+    @pytest.mark.parametrize("statement", [
+        "Albemarle reported cash and cash equivalents of US$5.4bn.",
+        "SQM's cash and cash equivalents were US$4.5bn.",
+        "Pilbara Minerals posted cash and cash equivalents of A$1.2bn.",
+    ])
+    def test_re_review_a_named_peers_later_balance_never_supersedes(self,
+                                                                    statement: str) -> None:
+        verdict = _one(_gap(self.CASH_GAP), [_finding(
+            "f1", statement, period_key="2026-09-30", published_at=date(2026, 10, 25))],
+            subject_name="Liontown Resources Ltd", subject_ticker="LTR")
+        assert verdict.gap_status == gr.GAP_STATUS_NONCOMPARABLE
+        assert gr.REASON_SUBJECT_UNCERTAIN in verdict.reasons
+
+    @pytest.mark.parametrize("statement", [
+        "Liontown reported FY2025 revenue of A$300m.",
+        "LTR FY2025 revenue was A$300m.",
+        "Revenue for FY2025 was A$300m.",
+        "The Group's FY2025 revenue was A$300m.",
+        "In FY2025 the company's revenue was A$300m.",
+    ])
+    def test_re_review_the_subjects_own_statement_still_closes(self, statement: str) -> None:
+        verdict = _one(_gap("FY2025 revenue was not acquired"),
+                       [_finding("f1", statement, period_key="FY2025")],
+                       subject_name="Liontown Resources Ltd", subject_ticker="LTR")
+        assert verdict.gap_status == gr.GAP_STATUS_CLOSED, verdict.reasons
+
     def test_p1_3_the_subjects_own_legal_name_still_closes(self) -> None:
         finding = _finding("f1", "Lindian Resources Limited reported FY2025 revenue of "
                                  "US$300m.", period_key="FY2025")

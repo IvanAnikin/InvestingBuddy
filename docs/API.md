@@ -3536,7 +3536,7 @@ Additive keys under `source_summary_json.v3_research`:
   ledger disagreement id. `documents.issuer_documents_held` counts each document once,
   however many origins list it.
 - Gap reason `subject_not_established`: the finding names a related or compared entity,
-  or another company before its figure. It makes the gap `NONCOMPARABLE`, never
+  or a proper noun other than the subject before its figure. It makes the gap `NONCOMPARABLE`, never
   `CLOSED` or `SUPERSEDED`.
 - Claim-check notices name periods in reader form ("six months to 30 Jun 2026"), never
   as stored keys.

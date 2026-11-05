@@ -927,24 +927,83 @@ def _forward_reasons(finding: FindingFacts, requirement: str, gap_text: str) -> 
     return []
 
 
-def subject_alias_set(subject_name: str | None) -> frozenset[str]:
-    """The subject's distinctive name words (ADR-083 ``subject_aliases``), folded."""
-    if not isinstance(subject_name, str) or not subject_name.strip():
-        return frozenset()
+@dataclass(frozen=True)
+class SubjectWords:
+    """ADR-086 — the words that name the research subject, folded.
+
+    ``distinctive``: words that establish the subject when a statement uses them (its
+    ADR-083 ``subject_aliases`` and its ticker). ``own``: every word of its name, generic
+    ones included ("resources", "group"); a capitalised word from it never counts as
+    another entity's name."""
+
+    distinctive: frozenset[str] = frozenset()
+    own: frozenset[str] = frozenset()
+
+
+NO_SUBJECT = SubjectWords()
+
+
+def subject_words(subject_name: str | None, ticker: str | None = None) -> SubjectWords:
+    """The subject's name and ticker as ``SubjectWords`` (empty when unknown)."""
+    from app.services.discovery.identity import name_tokens
     from app.services.entities.passage_subject import subject_aliases
 
-    return subject_aliases(subject_name)
+    name = subject_name if isinstance(subject_name, str) else ""
+    distinctive = set(subject_aliases(name)) if name.strip() else set()
+    own = set(name_tokens(name)) | set(distinctive)
+    if isinstance(ticker, str) and ticker.strip():
+        symbol = ticker.strip().lower()
+        for part in {symbol, symbol.split(".")[0], symbol.split(":")[-1]}:
+            if len(part) >= 2:
+                distinctive.add(part)
+                own.add(part)
+    return SubjectWords(frozenset(distinctive), frozenset(own))
 
 
-def _subject_reasons(finding: FindingFacts, aliases: frozenset[str]) -> list[str]:
-    """ADR-086 (review P1-3) — a finding closes or supersedes a gap only when it is
-    POSITIVELY about the subject. Findings carry no persisted subject verdict (ADR-083
-    drops another entity's statement at creation), so the text decides:
+def subject_alias_set(subject_name: str | None) -> frozenset[str]:
+    """The subject's distinctive name words (ADR-083 ``subject_aliases``), folded."""
+    return subject_words(subject_name).distinctive
+
+
+#: Capitalised words that name no entity: sentence-initial metric and period words,
+#: months, currencies, units, articles and prepositions (review re-review: a finding
+#: that names no proper noun before its figure is the subject's own).
+_GENERIC_CAPITALISED: frozenset[str] = frozenset("""
+a an the it its this these that our we in at as of for on by to from during over after
+before following since until under per with and or according quarter quarterly half
+year years annual interim fiscal financial full first second third fourth months
+month period ended ending end date as-at fy cy ytd ttm ltm h q revenue revenues sales
+cash equivalents balance liquidity net total gross group consolidated company firm
+issuer entity bank business operating operations operational free underlying reported
+statutory adjusted profit income loss losses margin margins earnings ebitda ebit eps
+nii nim cet tier roe roa roic rotce book value assets liabilities equity debt
+borrowings capital capex expenditure expenditures opex aisc cost costs production
+output volume volumes shares share dividend dividends inventory receivables payables
+current non-current long-term short-term report results statement statements filing
+disclosure appendix management mgmt says said reported reports posted note notes
+usd aud eur gbp cad chf nzd hkd jpy cny us au nz hk uk eu mn bn
+january february march april may june july august september october november december
+jan feb mar apr jun jul aug sep sept oct nov dec
+asia europe emea apac americas africa china japan india australia canada brazil mexico
+germany france latin america north south middle east west united kingdom states usa
+""".split())
+#: A capitalised word in a statement (a possessive "'s" is stripped by the caller).
+_CAPITALISED_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z][A-Za-z&'’-]{0,40}")
+_STATEMENT_WORD_RE = re.compile(r"[a-z0-9&]+")
+
+
+def _subject_reasons(finding: FindingFacts, subject: SubjectWords) -> list[str]:
+    """ADR-086 (review P1-3; re-review) — a finding closes or supersedes a gap only when
+    its subject is POSITIVELY the research subject. Findings carry no persisted subject
+    verdict (ADR-083 drops another entity's statement at creation), so the text decides:
 
     * a related / compared-entity marker (peer, customer, supplier, counterparty,
       "unlike") anywhere → not established;
-    * an organisation name with a legal suffix BEFORE the figure that is not the
-      subject's (``aliases``; no aliases known → any such name) → not established.
+    * the subject's distinctive name word or ticker in the statement → established;
+    * otherwise established only when no capitalised proper noun precedes the first
+      figure: every capitalised word there is generic (``_GENERIC_CAPITALISED``: "Revenue",
+      "Cash", "The company", "Group", months, currencies) or one of the subject's own
+      name words. "Albemarle reported cash …", "SQM's FY2025 revenue …" are not.
 
     Not established is NONCOMPARABLE: never CLOSED, never SUPERSEDED."""
     text = (finding.statement or "")[:600]
@@ -952,12 +1011,30 @@ def _subject_reasons(finding: FindingFacts, aliases: frozenset[str]) -> list[str
         return []
     if _RELATED_ENTITY_RE.search(text):
         return [REASON_SUBJECT_UNCERTAIN]
+    from app.services.discovery.identity import _fold  # noqa: PLC2701
+
+    words = set(_STATEMENT_WORD_RE.findall(_fold(text)))
+    if subject.distinctive and words & subject.distinctive:
+        return []
+    # The finding's own scope (a segment, a region) and its own project (the subject's
+    # asset, ``finding_fields``) name parts of the subject, not another entity.
+    scope_words = set(_STATEMENT_WORD_RE.findall(
+        _fold((finding.scope_key or "").partition(":")[2])))
+    project_words = set(_STATEMENT_WORD_RE.findall(_fold(finding.project or "")))
+    allowed = subject.own | scope_words | project_words
     money = rf.MONEY_RE.search(text)
     head = text[:money.start()] if money else text
     for m in _LEGAL_NAME_RE.finditer(head):
-        words = subject_alias_set(m.group("name"))
-        if aliases and words and words & aliases:
-            continue  # the subject's own legal name
+        name_words = subject_alias_set(m.group("name"))
+        if not (subject.distinctive and name_words and name_words & subject.distinctive):
+            return [REASON_SUBJECT_UNCERTAIN]
+    for m in _CAPITALISED_RE.finditer(head):
+        token = _fold(m.group(0)).rstrip("'’-")
+        if token.endswith(("'s", "’s")):
+            token = token[:-2]
+        parts = [t for t in re.split(r"[-&'’]+", token) if t]
+        if all(len(t) <= 1 or t in _GENERIC_CAPITALISED or t in allowed for t in parts):
+            continue
         return [REASON_SUBJECT_UNCERTAIN]
     return []
 
@@ -1035,7 +1112,7 @@ def _assess(
     gap_period: str | None,
     scope: str | None,
     as_of: date | None = None,
-    subject_aliases: frozenset[str] = frozenset(),
+    subject_aliases: SubjectWords = NO_SUBJECT,
 ) -> list[str] | None:
     """``[]`` when the finding fully answers, reasons when partly, ``None`` when not."""
     if finding.is_non_actual and _asks_for_reported_value(requirement):
@@ -1107,6 +1184,7 @@ def reconcile(
     question_fields: Mapping[str, Sequence[str]] | None = None,
     as_of: date | None = None,
     subject_name: str | None = None,
+    subject_ticker: str | None = None,
 ) -> list[GapVerdict]:
     """One verdict per gap. Pure: the caller persists. ``as_of`` is the run date that
     "current" and "has this target passed" are judged against. ``subject_name`` lets a
@@ -1119,7 +1197,7 @@ def reconcile(
         ready_docs.setdefault(doc.kind, doc)
     by_question = dict(question_fields or {})
     today = as_of or date.today()
-    aliases = subject_alias_set(subject_name)
+    aliases = subject_words(subject_name, subject_ticker)
     return [_reconcile_one(gap, live, facts, ready_docs, by_question, today, aliases)
             for gap in gaps]
 
@@ -1131,7 +1209,7 @@ def _reconcile_one(
     ready_docs: Mapping[str, DocumentFacts],
     question_fields: Mapping[str, Sequence[str]],
     as_of: date | None = None,
-    aliases: frozenset[str] = frozenset(),
+    aliases: SubjectWords = NO_SUBJECT,
 ) -> GapVerdict:
     verdict = _reconcile_core(gap, findings, facts, ready_docs, question_fields, as_of,
                               aliases)
@@ -1176,7 +1254,7 @@ def _reconcile_core(
     ready_docs: Mapping[str, DocumentFacts],
     question_fields: Mapping[str, Sequence[str]],
     as_of: date | None = None,
-    aliases: frozenset[str] = frozenset(),
+    aliases: SubjectWords = NO_SUBJECT,
 ) -> GapVerdict:
     if gap.status == ledger.GAP_CLOSED:
         return GapVerdict(
@@ -1518,6 +1596,7 @@ async def reconcile_run(
     core_disclosures: Mapping[str, Any] | None = None,
     as_of: date | None = None,
     subject_name: str | None = None,
+    subject_ticker: str | None = None,
 ) -> dict[str, Any]:
     """Supersede, reconcile, persist. Returns the record the report carries."""
     as_of = as_of or date.today()
@@ -1616,6 +1695,7 @@ async def reconcile_run(
         question_fields=question_field_map(question_rows),
         as_of=as_of,
         subject_name=subject_name,
+        subject_ticker=subject_ticker,
     )
     gaps_by_id = {str(row.id): row for row in gap_rows}
     for verdict in verdicts:

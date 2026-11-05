@@ -1366,6 +1366,7 @@ async def reconcile_step(session: Any, run: Any, *, company: Any, outcome: Any) 
                 core_disclosures=outcome.core_disclosures,
                 # ADR-086: the subject's own legal name is not "another company".
                 subject_name=getattr(company, "name", None),
+                subject_ticker=getattr(company, "ticker", None),
             )
     except Exception as exc:  # noqa: BLE001 - reconciliation must not end the run
         outcome.degraded.append(
