@@ -178,6 +178,11 @@ class V3ResearchOutcome:
     #: periods (not begun by the document's publication date) cleared from versions,
     #: chunks and documents. EMPTY — and absent from ``to_dict()`` — when the corpus is off.
     period_sweep: dict[str, Any] = field(default_factory=dict)
+    #: ADR-088 — the admin / technical record of statement kinds: counts per kind and
+    #: every statement WITHHELD because its period had not ended (kept in the ledger,
+    #: ``withdrawn``, with its reason). EMPTY — and absent from ``to_dict()`` — when no
+    #: finding of the run declared a kind.
+    statement_kinds: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -201,6 +206,8 @@ class V3ResearchOutcome:
             payload["primary_document_coverage"] = dict(self.primary_document_coverage)
         if self.period_sweep:
             payload["period_sweep"] = dict(self.period_sweep)
+        if self.statement_kinds:
+            payload["statement_kinds"] = dict(self.statement_kinds)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -386,6 +393,7 @@ async def run_v3_research(
     for migration, check in (
         ("041", schema_readiness.migration_041_readiness),
         ("043", schema_readiness.migration_043_readiness),
+        ("045", schema_readiness.migration_045_readiness),
     ):
         readiness = await check(session)
         if not readiness.ready:
@@ -632,8 +640,10 @@ async def _run(
         mining_sector=bool(classification.industry) and MINING_MATERIALS.applies_to.matches(
             industry=classification.industry),
     )
-    if stage.signals or stage.basis:
+    if stage.signals or stage.basis or stage.commercial_stage:
         outcome.stage = stage.to_dict()
+    # ADR-088 (LIN-1) — positively shown, or None (then no synthesis gate applies).
+    commercial_stage = stage.commercial_stage
     if stage.is_development_stage:
         _mark_pre_revenue(outcome, stage)
     # Open-web W5 — wave 2 + RISK web research for THIS company (spec §7.1), after the
@@ -749,6 +759,9 @@ async def _run(
         signals=stage.signals,
     )
     outcome.not_meaningful_metrics = applicability.to_dict()
+    # ADR-088 — what every model in the run is told about the company (PYPL-4, LIN-1):
+    # the metrics that have no reading for it, and a pre-commercial stage.
+    company_notes = company_context_notes(applicability, commercial_stage)
 
     # 3. The ledger run.
     run = await ledger.open_run(
@@ -1011,6 +1024,7 @@ async def _run(
                 ),
                 # ADR-084 review M2: a re-read near the run's cap runs one query.
                 max_tool_calls=limits.max_tool_calls,
+                company_notes=company_notes,
             )
             result = await worker.investigate(
                 role_id=role_id,
@@ -1093,7 +1107,9 @@ async def _run(
             wall_seconds=limits.max_wall_seconds - loop_result.elapsed_seconds
         )
         risk_evidence = await web_followup.risk_evidence()
-    red = LLMRedTeam(client=model_routing.client_for(SLOT_RED_TEAM))
+    red = LLMRedTeam(
+        client=model_routing.client_for(SLOT_RED_TEAM), context_notes=company_notes
+    )
     if web_followup is not None:
         red.risk_evidence = risk_evidence
         red.issuer_key = getattr(company, "id", None)
@@ -1148,7 +1164,12 @@ async def _run(
     verdict: ChairVerdict = await LLMChair(
         client=model_routing.client_for(SLOT_CHAIR),
         subject={"name": getattr(company, "name", None),
-                 "ticker": getattr(company, "ticker", None)},
+                 "ticker": getattr(company, "ticker", None),
+                 **({"commercial_stage": commercial_stage} if commercial_stage else {}),
+                 # ADR-088 (PYPL-4) — the synthesis states no net debt it has no reading.
+                 **({"net_debt_not_meaningful": True}
+                    if "net_debt" in applicability.calculations else {})},
+        context_notes=company_notes,
     ).deliberate(council)
     outcome.chair = verdict.to_dict()
     if verdict.deterministic_fallback:
@@ -1178,6 +1199,12 @@ async def _run(
             session, run, inventory=primary_inventory,
             core_filings=outcome.core_filings, core_disclosures=outcome.core_disclosures,
         )
+    # ADR-088 — the statement-kind record (admin surface). A failure costs the block only.
+    try:
+        async with session.begin_nested():
+            outcome.statement_kinds = await _statement_kind_record(session, run)
+    except Exception:  # noqa: BLE001 - an admin block must not end the run
+        outcome.statement_kinds = {}
     # ADR-082 — the ledger's own counts, once, after every step that can change them
     # (Red Team withdrawals, reconciliation). The canonical state is built from this at
     # report assembly. A failure costs the tally only: the state is then derived from
@@ -1233,6 +1260,7 @@ async def _run(
             web_context=outcome.web_context or None,
             not_meaningful_calculations=applicability.calculations,
             not_meaningful_note=applicability.reader_note or None,
+            commercial_stage=commercial_stage,
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1246,6 +1274,76 @@ async def _run(
         web_units,
     )
     await session.flush()
+
+
+async def _statement_kind_record(session: Any, run: Any) -> dict[str, Any]:
+    """ADR-088 — counts per declared statement kind (live findings), and every statement
+    withheld because its period had not ended, with its reason. ``{}`` when no finding
+    of the run declared a kind. Ids, kinds and reasons only: never statement text."""
+    from sqlalchemy import select
+
+    from app.models.ledger import ResearchFinding
+    from app.services.statement_kind import BASIS_WITHHELD
+
+    rows = (
+        await session.execute(
+            select(
+                ResearchFinding.id,
+                ResearchFinding.statement_kind,
+                ResearchFinding.statement_kind_basis,
+                ResearchFinding.verification_status,
+            ).where(
+                ResearchFinding.research_run_id == run.id,
+                ResearchFinding.statement_kind.is_not(None),
+            )
+        )
+    ).all()
+    if not rows:
+        return {}
+    counts: dict[str, int] = {}
+    withheld: list[dict[str, Any]] = []
+    reclassified = 0
+    for finding_id, kind, basis, status in rows:
+        basis = str(basis or "")
+        if basis.startswith(BASIS_WITHHELD):
+            withheld.append({"finding_id": str(finding_id), "reason": basis[:120]})
+            continue
+        if status == "withdrawn":
+            continue
+        counts[str(kind)] = counts.get(str(kind), 0) + 1
+        if basis.startswith("reclassified"):
+            reclassified += 1
+    return {
+        "counts": dict(sorted(counts.items())),
+        "reclassified_period_not_ended": reclassified,
+        "withheld_period_not_ended": withheld[:40],
+    }
+
+
+def company_context_notes(applicability: Any, commercial_stage: str | None) -> tuple[str, ...]:
+    """ADR-088 — what the investigator, Red Team and Chair are told about the company, from
+    the platform's own declarations (never from a model): the metrics that have no reading
+    for it (ADR-069, PYPL-4) and a pre-commercial stage (LIN-1). ``()`` for a company with
+    neither, so every other run's prompts are unchanged."""
+    notes: list[str] = []
+    calculations = sorted(getattr(applicability, "calculations", ()) or ())
+    categories = sorted(getattr(applicability, "financial_categories", ()) or ())
+    if calculations or categories:
+        names = ", ".join(n.replace("_", " ") for n in [*calculations, *categories])
+        reason = str(getattr(applicability, "reason", "") or "").strip()
+        notes.append(
+            f"Not meaningful for this company and not to be stated or judged: {names}."
+            + (f" Why: {reason[:600]}" if reason else "")
+        )
+    if commercial_stage:
+        notes.append(
+            "The company's own documents show it is "
+            f"{commercial_stage.replace('_', '-')}: it is not yet a commercial operation. "
+            "Do not describe it as producing, mining, selling or earning revenue from a "
+            "product unless the evidence reports actual production or sales for a period "
+            "that has ended."
+        )
+    return tuple(notes)
 
 
 async def reconcile_step(session: Any, run: Any, *, company: Any, outcome: Any) -> None:
@@ -1298,6 +1396,7 @@ async def _professional_report(
     web_context: dict[str, Any] | None = None,
     not_meaningful_calculations: "frozenset[str]" = frozenset(),
     not_meaningful_note: str | None = None,
+    commercial_stage: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1394,6 +1493,7 @@ async def _professional_report(
                 str(row.superseded_by_finding_id) if row.superseded_by_finding_id else None
             ),
             superseded_fields=tuple(superseded_fields.get(str(row.id), ())),
+            statement_kind=getattr(row, "statement_kind", None),
         )
         for row in finding_rows
     ]
@@ -1457,6 +1557,12 @@ async def _professional_report(
             # Item 20 — only when the stage detector proved it, so every other
             # company's subject is unchanged.
             **({"stage": stage} if stage else {}),
+            # ADR-088 (LIN-1) — the pre-commercial stage the synthesis gate reads.
+            **({"commercial_stage": commercial_stage} if commercial_stage else {}),
+            # ADR-088 (PYPL-4) — read by the synthesis gate: no net debt where it has no
+            # reading (a bank, a payment institution).
+            **({"net_debt_not_meaningful": True}
+               if "net_debt" in not_meaningful_calculations else {}),
         },
         questions=questions,
         findings=findings,

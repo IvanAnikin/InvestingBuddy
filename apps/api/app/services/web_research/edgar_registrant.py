@@ -248,7 +248,17 @@ def registrant_verdict(
     """
     if not is_edgar_filing_url(url):
         return None
-    cik = edgar_cik(url)
+    return cik_verdict(edgar_cik(url), own_ciks, other_ciks=other_ciks)
+
+
+def cik_verdict(
+    cik: str | None,
+    own_ciks: Iterable[str],
+    *,
+    other_ciks: Collection[str] | None,
+) -> str:
+    """Whose filing a registrant CIK makes a page — :func:`registrant_verdict`'s rule for
+    a CIK read from anywhere (an EDGAR address, or an EDGAR header the page prints)."""
     if cik is None:
         return EDGAR_UNIDENTIFIED
     own = {c for c in (normalise_cik(v) for v in own_ciks) if c}
@@ -260,14 +270,60 @@ def registrant_verdict(
     return EDGAR_OTHER if cik in others else EDGAR_UNIDENTIFIED
 
 
+# ── ADR-088 (ADBE-2): a filing is a filing wherever it is held ───────────────── #
+
+#: How much of a page's text is read for a filing's cover or header. A filing announces
+#: itself on its first page.
+FILING_SIGNAL_CHARS = 6000
+_SEC_COVER_RE = re.compile(r"securities\s{1,4}and\s{1,4}exchange\s{1,4}commission", re.I)
+_FORM_TYPE_RE = re.compile(
+    r"\bform\s{1,4}(?:10-k|10-q|20-f|40-f|8-k|6-k|s-1|f-1|10-kt|10-k405)\b", re.I
+)
+_FILING_ANCHOR_RE = re.compile(
+    r"\bcommission\s{1,4}file\s{1,4}(?:number|no\.?)"
+    r"|\bexact\s{1,4}name\s{1,4}of\s{1,4}registrant"
+    r"|\baccession\s{1,4}number\b",
+    re.I,
+)
+#: The EDGAR submission header's registrant CIK ("CENTRAL INDEX KEY: 0000796343").
+_HEADER_CIK_RE = re.compile(r"\bcentral\s{1,4}index\s{1,4}key:?[ \t]{0,8}(\d{1,10})\b", re.I)
+
+
+def is_filing_copy_text(text: str | None) -> bool:
+    """Does a page's own text OPEN like an SEC filing — the Commission's name, a form
+    type and a filing anchor (a commission file number, the registrant-name line, an
+    accession number) on its first page? A page quoting a filing in passing does not:
+    all three are needed, near the top. Linear: three independent scans of a bounded
+    prefix."""
+    head = (text or "")[:FILING_SIGNAL_CHARS]
+    return bool(
+        _SEC_COVER_RE.search(head) and _FORM_TYPE_RE.search(head)
+        and _FILING_ANCHOR_RE.search(head)
+    )
+
+
+def edgar_header_cik(text: str | None) -> str | None:
+    """The ONE registrant CIK an EDGAR submission header in ``text`` prints, or None (no
+    header, or a header naming several — a subject company and a filer)."""
+    ciks = {
+        normalise_cik(match.group(1))
+        for match in _HEADER_CIK_RE.finditer((text or "")[:FILING_SIGNAL_CHARS])
+    }
+    ciks.discard(None)
+    return next(iter(ciks)) if len(ciks) == 1 else None
+
+
 __all__ = [
     "EDGAR_COUNTERPARTY",
     "EDGAR_OTHER",
     "EDGAR_OWN",
     "EDGAR_UNIDENTIFIED",
     "EDGAR_VERDICTS",
+    "cik_verdict",
     "edgar_cik",
+    "edgar_header_cik",
     "filing_names_subject",
+    "is_filing_copy_text",
     "is_edgar_filing_url",
     "is_ownership_filing_url",
     "is_sec_host",

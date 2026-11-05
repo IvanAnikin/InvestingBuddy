@@ -46,7 +46,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.services import material_events
+from app.services import commercial_claims, material_events
 from app.services.council_v2.inputs import CouncilInput
 from app.services.llm.schemas import (
     ALLOWED_COMMITTEE_LABELS,
@@ -133,14 +133,37 @@ def _gate_material_events(
         sentence for sentence in sentences
         if not material_events.uncited_sentence_blocked(sentence, vetted, parties, subject)
     ]
+    # ADR-088 (PYPL-4): no net debt where the company's balance sheet gives it no reading.
+    from app.services.playbooks.applicability import net_debt_sentence_blocked
+
+    verdict.key_points = [
+        point for point in verdict.key_points
+        if not net_debt_sentence_blocked(str(point.get("text") or ""), subject)
+    ]
+    kept = [sentence for sentence in kept if not net_debt_sentence_blocked(sentence, subject)]
+    # ADR-088 (LIN-1): a pre-commercial company is not described as producing, mining or
+    # selling unless some finding of the run reports actual production or sales.
+    if commercial_claims.pre_commercial_stage(subject) is not None and not (
+        commercial_claims.evidenced(council_input.findings)
+    ):
+        verdict.key_points = [
+            point for point in verdict.key_points
+            if not commercial_claims.claims_commercial_operation(
+                str(point.get("text") or ""), subject)
+        ]
+        kept = [
+            sentence for sentence in kept
+            if not commercial_claims.claims_commercial_operation(sentence, subject)
+        ]
     if len(kept) != len(sentences):
         verdict.synthesis = " ".join(kept)
         if not kept and not verdict.deterministic_fallback:
             # Nothing of the chair's prose survived: the ledger's own state stands.
             verdict.synthesis = (
                 f"{_ledger_state(council_input)} The chair's own synthesis was withheld: "
-                "it stated only material corporate events that no filing, regulator or "
-                "established press source in this run supports."
+                "it stated only material corporate events, a commercial operation or "
+                "a metric with no reading for this company, that no source in this run "
+                "supports."
             )
             verdict.deterministic_fallback = True
             verdict.fallback_reason = FALLBACK_MATERIAL_EVENT
@@ -249,6 +272,9 @@ class LLMChair:
     #: ``{"name", "ticker"}`` of the run's company, so a material event can be told to
     #: be ABOUT it (ADR-078). Optional: without it, "the company" / "the board" still is.
     subject: Mapping[str, Any] | None = None
+    #: ADR-088 — platform-set context lines (metrics with no reading for this company,
+    #: a pre-commercial stage). Empty (the default) leaves the prompt exactly as it was.
+    context_notes: tuple[str, ...] = ()
 
     async def deliberate(self, council_input: CouncilInput) -> ChairVerdict:
         # The conflict the Chair is required to surface, taken from the ledger BEFORE
@@ -292,6 +318,9 @@ class LLMChair:
             "as fact unless a finding whose source_kinds include issuer_filing, "
             "issuer_ir, government_or_regulator, third_party_filing or quality_media "
             "states it.\n"
+            "8. A finding whose statement_kind is guidance, target, forecast or estimate "
+            "is an expectation, not a reported result: say whose, never that it "
+            "happened.\n"
             "\n"
             'Return ONLY JSON: {"label": str, "fundamental_setup": str, "synthesis": '
             'str, "key_points": [{"text": str, "finding_id": str}]}'
@@ -346,7 +375,17 @@ class LLMChair:
         return _gate_material_events(verdict, council_input, self.subject)
 
     def _prompt(self, council_input: CouncilInput) -> str:
-        lines = ["FINDINGS (cite by finding_id):"]
+        lines = (
+            [
+                "COMPANY CONTEXT (set by the platform from the company's own documents, "
+                "not evidence to cite):",
+                *(f"  - {note}" for note in self.context_notes),
+                "",
+            ]
+            if self.context_notes
+            else []
+        )
+        lines.append("FINDINGS (cite by finding_id):")
         for finding in council_input.findings[:MAX_FINDINGS_IN_PROMPT]:
             lines.append(
                 json.dumps(
@@ -364,6 +403,13 @@ class LLMChair:
                         "source_published_at": getattr(finding, "source_published_at", None),
                         "superseded_by_finding_id": getattr(
                             finding, "superseded_by_finding_id", None
+                        ),
+                        # ADR-088 — guidance, a forecast, a target or an estimate is
+                        # never a reported result.
+                        **(
+                            {"statement_kind": finding.statement_kind}
+                            if getattr(finding, "statement_kind", None)
+                            else {}
                         ),
                     },
                     default=str,

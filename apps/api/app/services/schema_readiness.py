@@ -44,6 +44,11 @@ MIGRATION_043_COLUMNS: dict[str, tuple[str, ...]] = {
     "research_findings": ("source_published_at", "superseded_by_finding_id"),
 }
 
+#: Columns migration 045 (ADR-088, statement kind) adds.
+MIGRATION_045_COLUMNS: dict[str, tuple[str, ...]] = {
+    "research_findings": ("statement_kind", "statement_kind_basis"),
+}
+
 _CACHE_SECONDS = 300.0
 _cache: dict[str, tuple[float, bool, tuple[str, ...]]] = {}
 
@@ -74,6 +79,11 @@ async def migration_041_readiness(session: Any, *, use_cache: bool = True) -> Re
 async def migration_043_readiness(session: Any, *, use_cache: bool = True) -> Readiness:
     """Whether every column migration 043 adds is present. Never raises."""
     return await _readiness(session, "043", MIGRATION_043_COLUMNS, use_cache=use_cache)
+
+
+async def migration_045_readiness(session: Any, *, use_cache: bool = True) -> Readiness:
+    """Whether every column migration 045 adds is present. Never raises."""
+    return await _readiness(session, "045", MIGRATION_045_COLUMNS, use_cache=use_cache)
 
 
 async def _readiness(
@@ -113,8 +123,10 @@ def reset_cache() -> None:
 __all__ = [
     "MIGRATION_041_COLUMNS",
     "MIGRATION_043_COLUMNS",
+    "MIGRATION_045_COLUMNS",
     "Readiness",
     "migration_041_readiness",
     "migration_043_readiness",
+    "migration_045_readiness",
     "reset_cache",
 ]

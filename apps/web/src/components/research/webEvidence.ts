@@ -160,6 +160,9 @@ const STATEMENT_LABEL_WORDS: Record<string, string> = {
   "reported in the press; not from a filing": "Reported in the press; not from a filing",
   "reported in the press; a filing figure differs":
     "Reported in the press; a filing figure differs",
+  // ADR-088: a copy of a filing whose registrant was not verified as the issuer.
+  "filing copy; registrant not verified as the issuer":
+    "Filing copy; registrant not verified as the issuer",
 };
 
 export function statementLabelWords(label: string | null | undefined): string | null {
@@ -172,7 +175,7 @@ export function statementLabelWords(label: string | null | undefined): string | 
 
 /** A W4 label is a leading `[...]` the producer prepends to a statement. */
 const LEADING_LABEL_RE =
-  /^\[((?:company says(?:; not from a filing)?|management says|single source(?: estimate)?|company describes itself as …|issuer technical claim|anecdotal|ungrounded web claim|estimate by [^\]]{1,120}|reported in the press[^\]]{0,200}))\]\s*/i;
+  /^\[((?:company says(?:; not from a filing)?|management says|single source(?: estimate)?|company describes itself as …|issuer technical claim|anecdotal|ungrounded web claim|filing copy; registrant not verified as the issuer|estimate by [^\]]{1,120}|reported in the press[^\]]{0,200}))\]\s*/i;
 
 /**
  * Split a leading W4 label off a statement so it can be shown as a chip.

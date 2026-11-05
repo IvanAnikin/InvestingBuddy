@@ -326,6 +326,34 @@ def classify_source(
     )
 
 
+def with_filing_copy_signal(
+    classification: SourceClassification, text: str | None
+) -> SourceClassification:
+    """ADR-088 (ADBE-2): a page whose OWN TEXT is an SEC filing (its cover page) is a
+    filing, whatever host served it — never ``unknown_web``, a press page or an
+    aggregator. On a VERIFIED issuer domain it is the issuer's own filing copy
+    (``issuer_filing``); anywhere else a ``regulatory_filing`` whose registrant the
+    investigator judges per run (ADR-079), never the issuer's by host alone. A page
+    already classified as a filing system's, or one that does not open like a filing,
+    is returned unchanged."""
+    from dataclasses import replace
+
+    from app.services.web_research.edgar_registrant import is_filing_copy_text
+
+    if classification.source_class in (SC_ISSUER_FILING, SC_REGULATORY_FILING,
+                                       SC_EXCHANGE_ANNOUNCEMENT):
+        return classification
+    if not is_filing_copy_text(text):
+        return classification
+    source_class = (
+        SC_ISSUER_FILING if classification.rule == "issuer_domain" else SC_REGULATORY_FILING
+    )
+    # Review P0: the page's own text names the document kind, never its standing. The
+    # tier and access class stay the HOST's: a filing cover printed on an unknown host is
+    # not a T1 primary filing.
+    return replace(classification, source_class=source_class, rule="page_signal")
+
+
 # ── Document kind (spec §11.2) ──────────────────────────────────────────── #
 
 _KIND_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (

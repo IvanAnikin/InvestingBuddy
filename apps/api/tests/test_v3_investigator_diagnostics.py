@@ -487,6 +487,10 @@ class TestDiagnosticsCarryNoSensitiveContent:
             # statements scoped to a subsidiary / JV / mine heading. Counts.
             "statements_about_implicit_other_entity",
             "statements_scoped_to_entity",
+            # QA closure (ADR-088) — statements whose period had not ended: relabelled
+            # forward, or withheld. Counts.
+            "statements_reclassified_period_not_ended",
+            "statements_withheld_period_not_ended",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 

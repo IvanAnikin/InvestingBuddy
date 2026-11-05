@@ -307,14 +307,17 @@ async def research_schema_readiness(db: AsyncSession = Depends(get_db)) -> dict:
     from app.services.schema_readiness import (
         migration_041_readiness,
         migration_043_readiness,
+        migration_045_readiness,
     )
 
     readiness = await migration_041_readiness(db, use_cache=False)
     readiness_043 = await migration_043_readiness(db, use_cache=False)
+    readiness_045 = await migration_045_readiness(db, use_cache=False)
     return {
         "migration": "041",
         **readiness.to_dict(),
         "migration_043": readiness_043.to_dict(),
+        "migration_045": readiness_045.to_dict(),
     }
 
 

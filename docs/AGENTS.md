@@ -1688,3 +1688,56 @@ reader takes its counts and status lines from it.
   had ended by the source's date. The record is `v3_research.period_supersession`.
 - `scripts/qa_replay_period_supersession.py <reports-dir>` replays the rule over stored
   report payloads and prints every changed text. It makes no network call.
+
+## Finding semantics: statement kind, business stage, customer funds (ADR-088)
+
+- **Investigator output.** Each finding in the structured reply now carries
+  `statement_kind` (`actual` · `guidance` · `forecast` · `target` · `estimate` ·
+  `unknown`) and `period` (the period the stated figures are FOR, e.g. `FY2026`,
+  `Q4 FY2026`, or null). Prompt rule 9 defines them. `statement_kind.decide` holds the
+  declaration to one invariant: a statement declared `actual` (or `unknown`) whose
+  DECLARED period had not ended at its newest cited source's publication date (and the
+  run date) is reclassified to the forward kind its words carry, else withheld (kept in
+  the ledger, `withdrawn`, with the reason). Fiscal periods are judged on the issuer's
+  calendar (SEC companyfacts anchor, ±7 days for 52/53-week years; never read without
+  the listing's exchange) when the statement rests on the issuer's own documents or is
+  ABOUT the subject (ADR-083 passage verdict `subject`, or the subject is the opening
+  named entity — never a later mention or "the company's supplier X"), whatever the
+  source host; otherwise at their earliest possible end. A declared non-actual kind is
+  always kept. When no kind is declared, a fallback only
+  ever labels forward (an unended, forward-framed period at the run date, never on a
+  statement that also names an ended period, "the year ended …", "so far" or "year to
+  date" included). Diagnostics: `statements_reclassified_period_not_ended`,
+  `statements_withheld_period_not_ended`.
+- **Downstream.** Non-actual findings carry `statement_kind` to the Red Team and the
+  Chair (prompt rule 8: an expectation, not a result), never take a financial-statement
+  trust reading, never enter a contradiction with a reported value, never answer a gap
+  asking for a reported money value, are marked for the editor, and are not the
+  deterministic synthesis pick while a section holds a reported statement.
+- **Business stage.** `classification.stage` reads "revenue is interest income only" as
+  no operating revenue (P1) and names a `commercial_stage` (`pre_revenue` ·
+  `development` · `pre_production` · `clinical`) only when P1 holds AND the issuer's own
+  wording describes the company itself (not a project, pipeline, plant or cost line);
+  "commercial-stage" anywhere in its text vetoes. It fails toward no stage.
+  `commercial_claims` withholds, from the chair's synthesis and key points, the editor's
+  sentences and the deterministic pick, a present-tense claim that the subject produces,
+  mines, sells or earns revenue from something, unless an issuer finding reports actual
+  production or sales with a figure. Collaboration, licence, royalty, milestone, grant
+  and interest revenue are not such a claim, nor is selling shares, stakes, assets or
+  reports. Findings are never filtered.
+- **Customer funds.** The signal `customer_funds_balance_sheet` (a customer-funds
+  LIABILITY balance-sheet row plus one other customer-funds row, each a caption followed
+  by a figure in the issuer's official documents; a licence or a receivable never
+  counts) carries
+  a not-meaningful declaration (`net_debt`, `net_debt_to_ebitda`, `current_ratio`)
+  whatever the methodology. The statement tools do not compute them; the investigator,
+  Red Team and Chair get a `COMPANY CONTEXT` line saying so (and the pre-commercial
+  stage); a synthesis sentence stating net debt for such a company is withheld (a
+  cash-flow line such as "net cash provided by operating activities" is not net debt).
+- **Filing copies.** A web page whose own first page is an SEC filing is a filing
+  (`issuer_filing` on a verified issuer domain, else `regulatory_filing`) but keeps its
+  host's tier. Off EDGAR a printed CIK can place it with another registrant, never with
+  the subject: such a copy is an unidentified third-party filing, labelled `filing copy;
+  registrant not verified as the issuer`, never "reported in the press" and never the
+  issuer's own. Only a filing a filing system served (or a verified issuer domain) is
+  never the press side of a contradiction.

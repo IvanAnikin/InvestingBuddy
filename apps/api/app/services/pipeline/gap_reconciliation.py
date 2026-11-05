@@ -167,6 +167,9 @@ class FindingFacts:
     #: The statement itself is read WITHOUT it: a label is not part of the claim, and the
     #: relabel text must never be parsed as a figure (open-web W4 review H3).
     trust_label: str | None = None
+    #: ADR-088 — the declared statement kind. Guidance, a forecast, a target or an
+    #: estimate never answers a gap that asks for a reported value.
+    statement_kind: str | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> "FindingFacts":
@@ -191,7 +194,14 @@ class FindingFacts:
             superseded_by=str(superseded) if superseded else None,
             stated_period=rf.statement_period(statement),
             trust_label=trust_label,
+            statement_kind=getattr(row, "statement_kind", None),
         )
+
+    @property
+    def is_non_actual(self) -> bool:
+        from app.services.statement_kind import is_non_actual
+
+        return is_non_actual(self.statement_kind)
 
     @property
     def is_context_only(self) -> bool:
@@ -223,6 +233,7 @@ class FindingFacts:
             # Bounded; lets a project named without an asset noun still be matched.
             "statement": self.statement[:300],
             "trust_label": self.trust_label,
+            **({"statement_kind": self.statement_kind} if self.statement_kind else {}),
         }
 
 
@@ -808,6 +819,10 @@ def _assess(
     as_of: date | None = None,
 ) -> list[str] | None:
     """``[]`` when the finding fully answers, reasons when partly, ``None`` when not."""
+    if finding.is_non_actual and _asks_for_reported_value(requirement):
+        # ADR-088: guidance, a forecast, a target or an estimate is not the reported
+        # value a history field asks for (a guidance-type field is answered by guidance).
+        return None
     today = as_of or date.today()
     reasons: list[str] = []
     for part in (
@@ -830,6 +845,16 @@ def _assess(
         # Never a closing finding, whatever source kinds it cites (review H3).
         reasons.append(REASON_WEB_CONTEXT_ONLY)
     return reasons
+
+
+def _asks_for_reported_value(requirement: str) -> bool:
+    """A money field that is HISTORY — never a guidance-type (supersedable) field."""
+    field = rf.FIELDS_BY_KEY.get(requirement)
+    return (
+        requirement not in rf.SUPERSEDABLE_FIELDS
+        and field is not None
+        and field.needs == rf.NEEDS_MONEY
+    )
 
 
 def _fact_covers(
@@ -1331,6 +1356,7 @@ def closers_from_payload(items: Iterable[Mapping[str, Any]]) -> list[FindingFact
             source_kinds=tuple(item.get("source_kinds") or ()),
             published_at=rf.parse_date(item.get("source_published_at")),
             superseded_by=item.get("superseded_by_finding_id"),
+            statement_kind=item.get("statement_kind"),
         ))
     return out
 

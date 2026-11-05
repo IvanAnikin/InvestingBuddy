@@ -97,6 +97,9 @@ class FindingRef:
     #: replaced it as current guidance (``None`` = current).
     source_published_at: str | None = None
     superseded_by_finding_id: str | None = None
+    #: ADR-088 — ``actual | guidance | forecast | target | estimate | unknown``; ``None``
+    #: for a finding written before the kind was declared.
+    statement_kind: str | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> "FindingRef":
@@ -124,6 +127,7 @@ class FindingRef:
             superseded_by_finding_id=_str_or_none(
                 getattr(row, "superseded_by_finding_id", None)
             ),
+            statement_kind=getattr(row, "statement_kind", None),
         )
 
     @property
@@ -155,6 +159,9 @@ class FindingRef:
             "references_finding_ids": list(self.references_finding_ids),
             "source_published_at": self.source_published_at,
             "superseded_by_finding_id": self.superseded_by_finding_id,
+            # Emitted only when declared, so a finding written before ADR-088 serialises
+            # exactly as it did.
+            **({"statement_kind": self.statement_kind} if self.statement_kind else {}),
         }
 
 
