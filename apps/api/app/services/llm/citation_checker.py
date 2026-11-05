@@ -46,6 +46,7 @@ from app.services.knowledge_state import (
     correct_issuer_assertions,
     word_as_platform_gap,
 )
+from app.services.ledger import claim_checks
 from app.services.llm.gap_attribution import ground_gap_text
 from app.services.llm.ratio_guard import evidence_numbers, unsupported_percentages
 from app.services.llm.schemas import (
@@ -340,6 +341,19 @@ def check_and_sanitize(
             )
             continue
 
+        # 3b. ADR-086 — the claim must state each cited figure for the period and
+        # scope its source states it for, and never present a platform-derived ratio
+        # as reported. A derived ratio is labelled; any other mismatch is dropped.
+        if evidence_by_id:
+            verdict = _claim_verdict(candidate.claim, candidate.citation_ids, evidence_by_id)
+            if verdict is not None and verdict.replacement is not None:
+                candidate = candidate.model_copy(update={"claim": verdict.replacement})
+                issues.append(f"{output.agent_name}: {_verdict_note(verdict, 'labelled')}")
+            elif verdict is not None:
+                dropped_for_semantic_mismatch += 1
+                issues.append(f"{output.agent_name}: {_verdict_note(verdict, 'dropped')}")
+                continue
+
         clean_points.append(candidate)
     output.key_points = clean_points
     if dropped_for_semantic_mismatch:
@@ -453,6 +467,18 @@ def check_and_sanitize(
                 "with incompatible scope/period (semantic mismatch)."
             )
             continue
+        if evidence_by_id:
+            verdict = _claim_verdict(
+                checked_implication.statement, checked_implication.citation_ids, evidence_by_id
+            )
+            if verdict is not None and verdict.replacement is not None:
+                checked_implication = checked_implication.model_copy(
+                    update={"statement": verdict.replacement}
+                )
+                issues.append(f"{output.agent_name}: {_verdict_note(verdict, 'labelled')}")
+            elif verdict is not None:
+                issues.append(f"{output.agent_name}: {_verdict_note(verdict, 'dropped')}")
+                continue
         clean_implications.append(checked_implication)
     output.implications = clean_implications
 
@@ -487,6 +513,28 @@ def check_and_sanitize(
         output.synthesis = None
 
     return output, issues
+
+
+def _claim_verdict(
+    claim: str, citation_ids: list[str], evidence_by_id: dict[str, Any]
+) -> claim_checks.ClaimVerdict | None:
+    """ADR-086 claim check of one statement against the evidence items it cites."""
+    sources = [
+        source
+        for source in (
+            claim_checks.source_of_evidence(evidence_by_id[cid])
+            for cid in citation_ids
+            if cid in evidence_by_id
+        )
+        if source is not None
+    ]
+    return claim_checks.check_claim(claim, sources) if sources else None
+
+
+def _verdict_note(verdict: claim_checks.ClaimVerdict, action: str) -> str:
+    """An issue note naming the rule and its reason — never the claim's text."""
+    what = "a claim was labelled" if action == "labelled" else "dropped a claim"
+    return f"{what} ({verdict.rule}): {verdict.reason}."
 
 
 def _implication_violates_grounding(

@@ -850,6 +850,45 @@ def _published_at_of(item: dict[str, Any]) -> date | None:
     return None
 
 
+#: ADR-086 — how a finding's period was set when it was not inherited from evidence.
+PERIOD_BASIS_TEXT_STATED = "text_stated"
+
+
+def _text_stated_period(
+    statement: str, cited: "list[str]", evidence: "Sequence[_Evidence]"
+) -> str | None:
+    """ADR-086 — the one reporting period a WEB finding's own text states, or ``None``.
+
+    Only for a statement citing open-web evidence (``_Evidence.web``) whose citations
+    agree on a publication date (``_inherited_published_at``): the period must be
+    framed as reported, not forecast, and have ended by then
+    (``document_period.statement_reporting_periods``). Two periods, none, or an undated
+    source leave the finding without one."""
+    by_id = {item.citation_id: item for item in evidence}
+    if not any(by_id[c].web for c in cited if c in by_id):
+        return None
+    published = _inherited_published_at(cited, evidence)
+    if published is None:
+        return None
+    from app.services.sources.document_period import statement_reporting_periods
+
+    periods = statement_reporting_periods(statement, as_of=published)
+    if len(periods) != 1:
+        return None
+    # Review P3: two DISTINCT periods of the same granularity ("Q3 2026 results vs Q3
+    # 2025", "Q3 2025 …; Q3 2026 …") are a comparison the statement makes; which one a
+    # figure belongs to is not a single reporting period.
+    from app.services.ledger.claim_period import mentions, period_of_key
+
+    chosen = period_of_key(periods[0])
+    if chosen is not None:
+        same_span = {p.key for p in mentions(statement, classify=False)
+                     if p.span == chosen.span}
+        if len(same_span) > 1:
+            return None
+    return periods[0]
+
+
 def _inherited_published_at(
     cited: "list[str]", evidence: "Sequence[_Evidence]"
 ) -> date | None:
@@ -4003,6 +4042,16 @@ class LLMInvestigator:
                 self.diagnostics.statements_reclassified_period_not_ended += 1
             elif kind.withheld:
                 self.diagnostics.statements_withheld_period_not_ended += 1
+
+            period_basis: str | None = None
+            if period_key is None:
+                # ADR-086 (PYPL2-5): a WEB finding whose evidence carries no period, but
+                # whose own text states exactly one reporting period (ADR-080 framing,
+                # judged against the source's publication date), carries that period —
+                # so the chair claim check can see "Q2" on a Q2 growth figure.
+                stated = _text_stated_period(statement, real, evidence)
+                if stated is not None:
+                    period_key, period_basis = stated, PERIOD_BASIS_TEXT_STATED
             findings.append(
                 FindingDraft(
                     statement=statement[:2000],
@@ -4011,10 +4060,12 @@ class LLMInvestigator:
                     mechanism=(str(raw.get("mechanism") or "").strip() or None),
                     direction=direction,
                     confidence=confidence,
-                    # Inherited from the evidence, NEVER from the model's prose. A
-                    # period the model wrote in a sentence is a period no invariant can
-                    # reach.
+                    # Inherited from the evidence. Only when the evidence carries none
+                    # and the cited evidence is open-web text is the statement's own
+                    # single, ADR-080-framed reporting period used, and it is marked
+                    # ``text_stated`` (ADR-086).
                     period_key=period_key,
+                    period_basis=period_basis,
                     scope_key=scope_key,
                     source_published_at=published_at,
                     statement_kind=kind.kind,

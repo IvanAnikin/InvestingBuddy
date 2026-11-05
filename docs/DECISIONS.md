@@ -8530,3 +8530,213 @@ name the subject.
 - Commercial-claim backing reads the issuer's own findings only; a `third_party_filing`
   carrying the issuer's production figure does not back a claim (fails toward
   withholding).
+
+---
+
+## ADR-086: A Gap Has One Status, a Web Finding States Its Period, and a Claim Is Held to What It Cites
+
+**Date:** 2026-11-04 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** cross-sector QA campaign 2026-11 (Research Integrity Closure batch D2).
+Defects: LIN2-1 / LIN-2 (gap half), JPM-6, PYPL-5, PYPL2-5, LIN-6 / ANTO-5 (chair
+half), and the legacy V2 line "No issuer annual report or equivalent primary document
+has been ingested and parsed".
+
+### What was wrong
+- A cash gap stayed open beside a finding stating the 30-Sep-2026 cash balance
+  (LIN2-1). The finding was filed under the catalysts domain with no period key, its
+  "$A45,087k" was not read as money, and "Quarter ended 30 Sep 2026" was not read as a
+  period.
+- Gap verdicts had four values (`closed`, `partially_closed`, `superseded`,
+  `still_open`). They could not say "answered only by an undated or forecast figure", or
+  "the document is held but was not read" (ADR-084 `acquired_not_read`).
+- Council and chair claims restated cited figures under another period or scope: H1
+  presented as Q2, a Corporate-segment figure as the Firm's, a platform-derived ROE as
+  reported (JPM-6), FY2025 cash dated 2026-09-30 (PYPL-5), and Q2 BNPL growth spliced
+  into a Q3 sentence (PYPL2-5). Web findings had `period_key` None, so nothing could
+  compare them. Percentages were not compared at all.
+- A chair sentence could name a disagreement id the ledger does not hold while other
+  disagreements were recorded. The ADR-082 rule only fired when none were recorded.
+- The V2 thin-evidence line about the primary issuer document was written from the V2
+  pack. It still said nothing was ingested when the ledger held a 20-F or quarterly
+  report.
+
+### Decision
+1. **Gap status vocabulary** (`gap_reconciliation.GAP_STATUSES`): `OPEN`,
+   `PARTIALLY_CLOSED`, `CLOSED`, `SUPERSEDED`, `NONCOMPARABLE`, `EXTRACTION_FAILED`.
+   It is persisted per gap as `research_gaps.reconciliation_json.gap_status` (the
+   column's CHECK keeps the four legacy values, so no migration). It is also emitted as
+   `v3_research.gaps[*].gap_status`, on professional-research gap entries, and in the
+   record's `gap_status_counts` (record `version: 4`). Reconciliation matches on entity,
+   period, scope and metric:
+   - A finding whose statement names another entity as its subject ("(a peer, not the
+     company)") never addresses the subject's gap.
+   - A forecast, target or guidance clause, or a forward period mention, never closes a
+     gap about a historical metric (revenue, operating cash flow, cash, net debt,
+     period capex). It is `forward_looking_not_historical`.
+   - A segment fact never closes a Group gap. An unscoped finding whose text names a
+     segment is `scope_differs`. A Group fact never answers a segment gap.
+   - Periods are ordered by their end dates (`claim_period`). An older period is
+     `older_period`; a later one is `later_period`. For a balance (cash, net debt), a
+     later balance from a primary source supersedes the older-dated gap (`SUPERSEDED`,
+     `superseded_by_finding_id`). It never closes it.
+   - When every addressing finding is non-comparable (`period_unknown`,
+     `value_date_unknown`, `forward_looking_not_historical`), the gap is `NONCOMPARABLE`.
+   - An unanswered gap whose own knowledge state or question is `acquired_not_read` is
+     `EXTRACTION_FAILED`. A held document never supersedes such a gap.
+   - Metrics are matched across domains: structured fields first (the claim key), then
+     the statement text. A finding's period is its evidence's key, else the period its
+     own words state (`text_period`: `rf.statement_period`, else the one non-forward
+     mention `claim_period` reads). "$A" is Australian dollars.
+2. **Web findings state their period.** When an investigator statement cites open-web
+   evidence whose citations agree on a publication date, it has no evidence period. If
+   `document_period.statement_reporting_periods` reads exactly one ADR-080-framed
+   reporting period from its text (framed as reported, begun and ended by that date),
+   the finding takes that `period_key`. `research_findings.period_type` records the
+   basis `text_stated`, and payload findings carry `period_basis: "text_stated"`.
+3. **Claim checks** (`app/services/ledger/claim_checks.py`, pure; periods in
+   `claim_period.py`). Percentages, multiples and amounts with a currency, scale or
+   decimal are figures. Bare integers (years, counts, "section 172") are not. Each claim
+   clause is checked against the sources that state each figure:
+   - `claim_period_differs_from_cited_source`: every source states the figure for a
+     known period, and none is compatible with the clause's period. A clause takes the
+     sentence's period only when the sentence has exactly one and the clause has no
+     comparative cue. A forecast or guidance clause is never period-checked, on either
+     side.
+   - `claim_scope_differs_from_cited_source`: every source states the figure for one
+     named segment, and the claim never names it.
+   - `derived_ratio_presented_as_reported`: an ROE / ROTCE / ROA / ROIC whose only
+     support is a platform calculation is labelled "(platform-derived)". It is withheld
+     when the clause says "reported".
+
+   Sites:
+   - The V3 chair: the ADR-082 enforcer checks each key point against the findings it
+     cites (`finding_id` and the ids in its text). It withholds the sentence (the admin
+     record keeps the text and reason in `state_invariants`) or rewrites it with the
+     label.
+   - The legacy V2 council: `citation_checker.check_and_sanitize` checks each key point
+     and implication at generation, against the cited `EvidenceItem`s' `period`, `scope`
+     and excerpt (`derived_financial_metric` / T6 items are derived). It drops the claim
+     with an issue note naming the rule, or labels it.
+4. **Disagreement ids.** When the ledger's unresolved ids are known, a chair sentence
+   naming "disagreement <8 hex>" that is not among them is withheld
+   (`chair_disagreement_id_not_in_ledger`), even when other disagreements are recorded.
+5. **The V2 primary-document line derives from the canonical state.**
+   `enforce_content` replaces the "Primary issuer document" missing-evidence group with
+   "The platform holds N issuer primary document(s); the newest is the <form> dated
+   <date>." (plus "No statement figure was extracted …" when current-period extraction
+   failed) whenever the ledger holds issuer documents
+   (`primary_document_group_denied_while_held`).
+6. **Council status (ADR-082) re-verified.** No new gap was found in council status.
+
+### Review fixes (PR review NO-GO, 2026-11-04)
+The governing rule: **a check that cannot tell which period a figure belongs to keeps
+the sentence.** A claim is withheld only on a positive mismatch, when both sides
+unambiguously bind the same figure to different periods.
+
+7. **Comparison figures** (P1-1). A figure right after a comparison cue ("from $7.9bn",
+   "versus $7.9bn", "compared with $7.9bn", "up from") is bound only to a period it
+   names after itself. So is a figure followed by comparison-period words ("a year
+   earlier", "the prior-year quarter", "year-ago", "last year"). Otherwise its period is
+   unknown. A source stating the figure for ANY period the claim mentions is never a
+   mismatch. "versus stronger BNPL (+26%)" is a contrast of two products in one period,
+   not a comparison period: the cue must sit directly before the figure.
+8. **The source side** (P1-2). A source text that names more than one period or date,
+   or carries a two-year column header ("2026 2025"), never lends its stored key to a
+   figure. Bare dates on the source side date their own figures ("September 30, 2026
+   $ 6,120; December 31, 2025 $ 8,048").
+9. **Positively about the subject** (P1-3, P2-4; re-review). A finding closes or
+   supersedes a gap only when its subject is POSITIVELY the research subject. Findings
+   carry no persisted subject verdict (ADR-083 drops another entity's statement at
+   creation), so the text decides, with ``reconcile(subject_name=…, subject_ticker=…)``:
+   - a peer / competitor / customer / client / supplier / offtaker / counterparty /
+     "unlike" marker anywhere → not established;
+   - the subject's distinctive name word or ticker in the statement → established;
+   - otherwise established only when no capitalised proper noun precedes the first
+     figure. Each capitalised word there must be generic ("Revenue", "Cash", "The
+     company", "Group", months, currencies, regions), one of the subject's own name
+     words, a word of the finding's own scope or project, a word the gap's own text
+     uses, or research-field / asset vocabulary ("Nameplate capacity", "The Foo DFS"). "Albemarle reported cash
+     …", "SQM's FY2025 revenue …", "Pilbara Minerals posted …" are not established.
+   - Not established is `subject_not_established`, which is NONCOMPARABLE: never
+     CLOSED, never SUPERSEDED.
+10. **Forecast and sub-scope wording** (P2-4).
+    - should / could / may (not the month) / might / would / seen / "analysts see" /
+      goal / midpoint / range / pro forma / consensus / estimate / aims / on track /
+      intends are forward. They never close or supersede a historical gap; "Pro forma
+      net debt" never supersedes.
+    - Only a group-scoped fact, or one with no sub-scope wording (business, region,
+      unit, division, segment, subsidiary, "from <X> customers", "in <region/country>"),
+      closes a Group gap. IFRS 15 "revenue from contracts with customers" is not
+      sub-scope wording.
+11. **Documents counted once** (P2-5). ``canonical_state.unique_documents`` merges
+    entries whose references match (reduced to their last token, so "03143834" and
+    "…idsId=03143834" are one document) or that share a form and a date.
+12. **Period-independent figures** (P2-6, P2-7, P3).
+    - Not period-checked: stake / ownership / royalty / coupon / tax-rate / interest-rate
+      percentages, and outlook claims ("now seen at", "expects", "outlook", "target",
+      "projected", "forecast").
+    - A nine-month / year-to-date / trailing figure takes only a nine-month or year span
+      it names, else unknown.
+    - A short upper-case acronym ("AWM") counts as naming the segment.
+13. **Disagreement ids** (P2-8). The state carries every ledger disagreement id
+    (``disagreements.ids``, resolved ones included). A named id is checked against all
+    of them. When only the unresolved ids are known and there are fewer of them than
+    recorded disagreements, nothing is judged. A token with no a–f letter ("20261031")
+    is never an id.
+14. **Text periods** (P3).
+    - A publication date ("dated …", "Published …", "On <date>, the company reported …")
+      is not a period.
+    - The text-stated setter leaves `period_key` None when the text names two distinct
+      periods of one granularity ("Q3 2026 results vs Q3 2025").
+    - Notices use reader labels ("six months to 30 Jun 2026"), never stored keys
+      ("HYE2026-06-30").
+15. **Bounded cost** (P3). The source index is lazy and cached per source; figures per
+    claim (12), per source (40), sentences (30) and characters (2,000) per source are
+    capped; figure comparison is memoised. The adversarial claim with 16 heavy sources
+    runs in about 0.2 s; the enforcer stress case (300 findings, a 20k synthesis) in
+    about 0.3–0.7 s.
+
+### Replay (17 stored reports, payload-derived; before = `origin/main` 0749c49)
+- Gap status: before OPEN 498 / PARTIALLY_CLOSED 182; after OPEN 497 /
+  PARTIALLY_CLOSED 153 / NONCOMPARABLE 30. There are **0 new CLOSED or SUPERSEDED**.
+  - LIN2 gap `2234b6ac` (post-placement cash): OPEN → PARTIALLY_CLOSED via finding
+    `ecbd18cd`, the 30-Sep-2026 cash balance (partial: the gap also asks for the capex
+    schedule and the facility drawdown).
+  - CLLS5 gaps `f57c51dc`, `9b8f0b4a`: PARTIALLY_CLOSED → NONCOMPARABLE. Their only
+    answer is an undated 2023 web statement (`75122f42`).
+  - PARTIALLY_CLOSED → NONCOMPARABLE, `subject_not_established`, another entity's
+    figures (correct):
+    - CLLS3, 12 gaps: finding `16a65ab8`, "Peer-set member Moderna FY2025 Group …";
+    - CLLS4, 8 gaps: finding `d56031ac`, "EY reports biotech industry revenue …".
+  - PARTIALLY_CLOSED → NONCOMPARABLE, `subject_not_established`, the subject's own
+    asset or contract named without the subject (over-conservative, never a close):
+    - LIN, 2 gaps / LIN2, 2 gaps: `211d565c` / `9e212355`, "Kangankunde Ore Reserve …"
+      (the subject's project, not recognised as a project);
+    - LIN, 4 gaps: `79653f52`, "Carester SAS holds a binding 10-year offtake …" (the
+      subject's offtake, stated with the counterparty as subject).
+- Chair: 1 sentence withheld. It is PYPL2 `chair.key_points[3]`: "+26%" stated for
+  Q3 2026 while the cited finding states it for Q2 2026.
+- Content: 6 V2 primary-document lines repaired, with de-duplicated counts: CLLS2 1;
+  CLLS3, CLLS4, CLLS5 2; LIN, LIN2 5.
+- Two false withholds found in the first replay are fixed and are now regression tests:
+  - ANTO: FY guidance cited from a Q2 report;
+  - ANTO2: "section 172" read as a figure.
+
+### Known limits
+- Stored payloads carry neither legacy evidence items nor V3 red-team challenge text.
+  JPM-6 and PYPL-5 as legacy or red-team text are covered by synthetic tests only.
+- **V3 red-team challenge text is not checked.** The V3 payload records only challenge
+  counts (``v3_research.challenges``), never challenge sentences, so no user-facing
+  red-team sentence exists for the enforcer to check. Legacy council red-team claims are
+  checked at generation (``citation_checker``).
+- `rf.statement_period` (pre-existing) still returns a forward label ("runway into
+  H2 2028"). Such a finding is kept out of historical gaps by the forward reason, not by
+  its period.
+- Scope is compared only on clean segment names. Parsed fragments such as
+  "segment:2. segment reporting" are ignored. Any unexplained upper-case acronym in a
+  claim keeps a segment figure (it may be the segment's).
+- The subject test is lexical and conservative: a statement about the subject's own
+  project, segment or contract that never names the subject (and whose project the
+  field reader does not recognise) is NONCOMPARABLE rather than PARTIALLY_CLOSED (the
+  LIN / LIN2 rows above). It never closes on another entity's figure.
+- Stored payloads predate ADR-084, so `EXTRACTION_FAILED` does not occur in the replay.

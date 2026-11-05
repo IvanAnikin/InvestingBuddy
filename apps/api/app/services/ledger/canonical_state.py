@@ -36,7 +36,7 @@ No issuer is named anywhere in this module. Nothing here calls a network.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -161,6 +161,9 @@ class LedgerTally:
     gaps_by_status: dict[str, int] = field(default_factory=dict)
     disagreements: int | None = None
     unresolved_disagreement_ids: tuple[str, ...] | None = None
+    #: ADR-086 — EVERY disagreement id the ledger holds, resolved ones included: a
+    #: chair sentence naming a resolved disagreement is not naming an unknown one.
+    disagreement_ids: tuple[str, ...] | None = None
     #: Only when the ids are not known (a payload replay).
     unresolved_count: int | None = None
 
@@ -223,6 +226,7 @@ async def tally_ledger(session: Any, run: Any) -> LedgerTally:
         unresolved_disagreement_ids=tuple(
             sorted(str(i) for i, res in disagreement_rows if res == ledger.UNRESOLVED)
         ),
+        disagreement_ids=tuple(sorted(str(i) for i, _res in disagreement_rows)),
     )
 
 
@@ -344,6 +348,50 @@ def document_inventory(v3: Mapping[str, Any]) -> list[HeldDocument]:
                 )
             )
     return out
+
+
+_REF_TAIL_RE = re.compile(r"[^/=?&#]+$")
+
+
+def _ref_key(ref: str | None) -> str | None:
+    """A document reference reduced to its last token: "03143834" and
+    ".../announcement.do?display=pdf&idsId=03143834" are one document."""
+    if not ref:
+        return None
+    tail = _REF_TAIL_RE.search(ref.strip().rstrip("/"))
+    return tail.group(0).lower() if tail else ref.strip().lower()
+
+
+def unique_documents(docs: Sequence[HeldDocument]) -> list[HeldDocument]:
+    """ADR-086 (review P2-5) — one entry per DOCUMENT: the same filing is listed by
+    several origins (core filings, disclosures, the statements' own document). Two
+    entries are one document when their references match, or when they share a form
+    and a date. The entry with a reference is kept."""
+    groups: list[tuple[set[tuple[str, ...]], HeldDocument]] = []
+    for doc in docs:
+        keys: set[tuple[str, ...]] = set()
+        ref = _ref_key(doc.ref)
+        if ref:
+            keys.add(("ref", ref))
+        if doc.form:
+            keys.add(("form", doc.form.strip().lower(), doc.published.isoformat()))
+        if not keys:
+            keys.add(("kind", doc.kind, doc.published.isoformat()))
+        merged = [g for g in groups if g[0] & keys]
+        if not merged:
+            groups.append((keys, doc))
+            continue
+        union = set(keys)
+        for g in merged:
+            union |= g[0]
+        candidates = [g[1] for g in merged] + [doc]
+        keep = next((d for d in candidates if d.ref), candidates[0])
+        # The merged entry keeps the FIRST position (list order breaks date ties).
+        at = groups.index(merged[0])
+        groups[at] = (union, keep)
+        for g in merged[1:]:
+            groups.remove(g)
+    return [doc for _keys, doc in groups]
 
 
 def _latest_period(
@@ -698,7 +746,8 @@ def build_canonical_state(
     tally = tally or _derived_tally(v3)
 
     inventory = document_inventory(v3)
-    issuer_docs = [d for d in inventory if d.origin != "cited_finding"]
+    # One entry per document, however many origins list it (ADR-086).
+    issuer_docs = unique_documents([d for d in inventory if d.origin != "cited_finding"])
     # The newest document is one the platform HOLDS (filings, disclosures, statement
     # documents). A cited finding's publication date is not: the finding may be about a
     # different issuer the page also names (QA review N1: a spun-off subsidiary's page
@@ -766,6 +815,9 @@ def build_canonical_state(
                 if tally.unresolved_disagreement_ids is not None
                 else None
             ),
+            "ids": (
+                list(tally.disagreement_ids) if tally.disagreement_ids is not None else None
+            ),
         },
         "documents": {
             "issuer_documents_held": len(issuer_docs),
@@ -800,6 +852,7 @@ __all__ = [
     "CANONICAL_STATE_VERSION",
     "CURRENT_WINDOW_DAYS",
     "HeldDocument",
+    "unique_documents",
     "LedgerTally",
     "as_date",
     "build_canonical_state",

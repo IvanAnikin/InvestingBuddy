@@ -144,6 +144,8 @@ class GapView:
     reconciliation_status: str | None = None
     addressed_by_finding_ids: tuple[str, ...] = ()
     reconciliation_reasons: tuple[str, ...] = ()
+    #: ADR-086 — the report's gap status (``gap_reconciliation.GAP_STATUSES``).
+    gap_status: str | None = None
 
 
 @dataclass
@@ -841,6 +843,8 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         }
         if g.reconciliation_status:
             entry["reconciliation_status"] = g.reconciliation_status
+        if g.gap_status:
+            entry["gap_status"] = g.gap_status
         if g.reconciliation_status == "partially_closed":
             entry["partially_addressed_by"] = [
                 labels[f] for f in g.addressed_by_finding_ids if f in labels

@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from app.services.ledger import claim_checks
 from app.services.ledger.canonical_state import (
     FALLBACK_CHAIR_FAILED,
     FALLBACK_NO_MODEL,
@@ -69,6 +70,14 @@ RULE_NO_ISSUER_DOC = "issuer_document_denied_while_held_and_cited"
 RULE_UNKNOWN_DISAGREEMENT_ID = "chair_disagreement_id_not_in_ledger"
 RULE_UNBACKED_DISAGREEMENT = "disagreement_narrated_with_none_recorded"
 RULE_COUNCIL_STATUS = "council_status_overstated"
+#: ADR-086 — a chair / council claim that misstates the period or scope of the finding
+#: it cites, or presents a platform-derived ratio as reported (``claim_checks``).
+RULE_CLAIM_PERIOD = claim_checks.RULE_CLAIM_PERIOD
+RULE_CLAIM_SCOPE = claim_checks.RULE_CLAIM_SCOPE
+RULE_DERIVED_AS_REPORTED = claim_checks.RULE_DERIVED_AS_REPORTED
+#: ADR-086 — the V2 "no primary issuer document ingested" line, while the ledger holds
+#: issuer documents.
+RULE_PRIMARY_DOC_GROUP = "primary_document_group_denied_while_held"
 
 RULES: tuple[str, ...] = (
     RULE_FINDING_COUNT,
@@ -84,6 +93,10 @@ RULES: tuple[str, ...] = (
     RULE_UNKNOWN_DISAGREEMENT_ID,
     RULE_UNBACKED_DISAGREEMENT,
     RULE_COUNCIL_STATUS,
+    RULE_CLAIM_PERIOD,
+    RULE_CLAIM_SCOPE,
+    RULE_DERIVED_AS_REPORTED,
+    RULE_PRIMARY_DOC_GROUP,
 )
 
 #: Where a text sits. The chair is checked for everything; other texts are checked for
@@ -823,11 +836,44 @@ def _rule_evidence_adequate(sentence: str, state: Mapping[str, Any]) -> _Hit | N
     )
 
 
+#: A disagreement id prefix in a disagreement context. It must contain a letter a–f:
+#: "disagreement 20261031" is a date, not an id (review P2-8).
+_DISAGREEMENT_ID_RE = re.compile(
+    r"\bdisagreement[ \t]{1,3}(?:id[ \t]{1,3})?(?P<id>(?=[0-9]{0,7}[a-f])[0-9a-f]{8})\b",
+    re.I)
+
+
+def _ledger_disagreement_ids(state: Mapping[str, Any]) -> list[str] | None:
+    """ADR-086 (review P2-8) — every disagreement id the ledger holds, RESOLVED ones
+    included, or ``None`` when that is not known. Only the unresolved ids known, and
+    fewer of them than recorded disagreements: a named id may be a resolved one, so
+    nothing can be said."""
+    every = _g(state, "disagreements", "ids")
+    if every is not None:
+        return [str(i) for i in every]
+    unresolved = _g(state, "disagreements", "unresolved_ids")
+    total = _g(state, "disagreements", "total")
+    if unresolved is not None and total is not None and int(total) == len(list(unresolved)):
+        return [str(i) for i in unresolved]
+    return None
+
+
 def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     """A LEDGER disagreement narrated while the ledger records none. Only phrasing that
-    refers to the research's own disagreements counts (QA review B2)."""
+    refers to the research's own disagreements counts (QA review B2).
+
+    ADR-086 (LIN-6): a sentence naming a disagreement BY ID is held to the ledger's ids
+    whenever they are known, even when other disagreements are recorded."""
     if sentence.startswith("Deterministic synthesis:"):
         return None
+    known = _ledger_disagreement_ids(state)
+    if known is not None:
+        named = [m.group("id").lower() for m in _DISAGREEMENT_ID_RE.finditer(sentence)]
+        prefixes = {str(k).lower()[:8] for k in known}
+        missing = [n for n in named if n not in prefixes]
+        if missing:
+            return _Hit(RULE_UNKNOWN_DISAGREEMENT_ID,
+                        "it cites a disagreement id the research ledger does not hold")
     unresolved = _g(state, "disagreements", "unresolved")
     total = _g(state, "disagreements", "total")
     if unresolved != 0 or (total not in (0, None)):
@@ -938,11 +984,32 @@ def withheld_notice(reason: str) -> str:
 
 
 class _Enforcer:
-    def __init__(self, state: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        state: Mapping[str, Any],
+        sources: Mapping[str, claim_checks.ClaimSource] | None = None,
+    ) -> None:
         self.state = state
         self.violations: list[Violation] = []
+        #: ADR-086 — the run's findings by id, for the chair claim check. ``None``: no
+        #: claim is checked against what it cites.
+        self.sources = sources
 
-    def _line(self, line: str, path: str, site: str, reasons: list[str]) -> tuple[str | None, bool]:
+    def _claim(self, sentence: str, cited: tuple[str, ...]) -> _Hit | None:
+        """ADR-086 — a chair claim checked against the findings it cites."""
+        if not self.sources:
+            return None
+        ids = dict.fromkeys([*cited, *claim_checks.cited_ids(sentence)])
+        found = [self.sources[i] for i in ids if i in self.sources]
+        if not found:
+            return None
+        verdict = claim_checks.check_claim(sentence, found)
+        if verdict is None:
+            return None
+        return _Hit(verdict.rule, verdict.reason, verdict.replacement)
+
+    def _line(self, line: str, path: str, site: str, reasons: list[str],
+              cited: tuple[str, ...] = ()) -> tuple[str | None, bool]:
         """One line: ``(the line as it stays, changed)``; the line is ``None`` when every
         sentence in it was withheld. Separators between kept sentences, the bullet marker
         and trailing whitespace are kept as written (QA review M1)."""
@@ -962,6 +1029,8 @@ class _Enforcer:
         changed = False
         for sentence, separator in pieces:
             hit = check_sentence(sentence, self.state, site=site)
+            if hit is None and site == SITE_CHAIR and len(sentence) <= MAX_SENTENCE_CHARS:
+                hit = self._claim(sentence, cited)
             if hit is None:
                 kept.append((sentence, separator))
                 continue
@@ -981,7 +1050,7 @@ class _Enforcer:
         text = "".join(s + sep for s, sep in kept[:-1]) + kept[-1][0]
         return prefix + text + body[len(core):], True
 
-    def text(self, value: Any, path: str, site: str) -> Any:
+    def text(self, value: Any, path: str, site: str, cited: tuple[str, ...] = ()) -> Any:
         """Check one text; return it repaired, with offending sentences withheld. Only
         the withheld span is removed: a bullet whose every sentence is withheld is
         dropped, its neighbours are not. A text left with nothing is replaced by a notice
@@ -992,7 +1061,7 @@ class _Enforcer:
         reasons: list[str] = []
         changed = False
         for line in value.split("\n"):
-            kept_line, line_changed = self._line(line, path, site, reasons)
+            kept_line, line_changed = self._line(line, path, site, reasons, cited)
             changed = changed or line_changed
             if kept_line is not None:
                 lines.append(kept_line)
@@ -1140,7 +1209,7 @@ def enforce(
     partial payload."""
     out = copy.deepcopy(dict(v3))
     legacy = copy.deepcopy(dict(llm_council)) if isinstance(llm_council, Mapping) else None
-    enforcer = _Enforcer(state)
+    enforcer = _Enforcer(state, sources=finding_sources(out.get("findings")))
 
     _structured(enforcer, out, legacy)
 
@@ -1150,8 +1219,13 @@ def enforce(
                                            SITE_CHAIR)
         for i, point in enumerate(chair.get("key_points") or ()):
             if isinstance(point, dict):
+                # ADR-086: a key point cites its findings in a field and in its text.
+                cited = tuple(dict.fromkeys(
+                    [str(point.get("finding_id") or "").lower()]
+                    + claim_checks.cited_ids(str(point.get("text") or ""))
+                ))
                 point["text"] = enforcer.text(point.get("text"), f"chair.key_points[{i}]",
-                                              SITE_CHAIR)
+                                              SITE_CHAIR, cited=cited)
     for i, finding in enumerate(out.get("findings") or ()):
         if isinstance(finding, dict):
             finding["statement"] = enforcer.text(finding.get("statement"),
@@ -1165,12 +1239,75 @@ def enforce(
     return InvariantResult(v3=out, llm_council=legacy, violations=enforcer.violations)
 
 
+def finding_sources(findings: Any) -> dict[str, claim_checks.ClaimSource]:
+    """ADR-086 — the payload's findings by id, as claim-check sources."""
+    out: dict[str, claim_checks.ClaimSource] = {}
+    for finding in findings or ():
+        if isinstance(finding, Mapping):
+            source = claim_checks.source_of_finding(dict(finding))
+            if source is not None:
+                out[source.source_id.lower()] = source
+    return out
+
+
 #: Keys of the V2 report content whose values are identifiers or vocabulary, never
 #: sentences about the research.
 _CONTENT_SKIP_KEYS: frozenset[str] = frozenset({
     "type", "provenance", "classification", "url", "source_url", "id", "source_id",
     "citation_ids", "evidence_ids", "ticker", "exchange", "isin", "lei", "slug",
 })
+
+
+#: The V2 thin-evidence line about the primary issuer document
+#: (``final_report_generator._thin_missing_groups``). V2 writes it from its OWN evidence
+#: pack, before the research ledger runs.
+PRIMARY_DOC_GROUP_CATEGORY = "Primary issuer document"
+
+
+def primary_document_group(state: Mapping[str, Any]) -> dict[str, str] | None:
+    """ADR-086 — the V2 "Primary issuer document" line DERIVED from the canonical
+    state, or ``None`` when the ledger holds no issuer document (the V2 line stands)."""
+    held = int(_g(state, "documents", "issuer_documents_held") or 0)
+    if held <= 0:
+        return None
+    published, described = _newest(state)
+    failed = bool(_g(state, "current_period", "extraction_failed"))
+    detail = (
+        f"The platform holds {held} issuer primary document(s)"
+        + (f"; the newest is the {described}" if published else "")
+        + "."
+        + (" No statement figure was extracted from the current-period report."
+           if failed else "")
+    )
+    return {
+        "category": PRIMARY_DOC_GROUP_CATEGORY,
+        "status": "held; figures not extracted" if failed else "held",
+        "detail": _safe(detail),
+    }
+
+
+def _repair_primary_document_group(enforcer: "_Enforcer", content: dict[str, Any]) -> None:
+    thin = content.get("thin_evidence_state")
+    groups = thin.get("missing_evidence_groups") if isinstance(thin, dict) else None
+    if not isinstance(groups, list):
+        return
+    derived = primary_document_group(enforcer.state)
+    if derived is None:
+        return
+    for i, group in enumerate(groups):
+        if not isinstance(group, dict) or group.get("category") != PRIMARY_DOC_GROUP_CATEGORY:
+            continue
+        if group.get("detail") == derived["detail"]:
+            continue
+        enforcer.violations.append(Violation(
+            RULE_PRIMARY_DOC_GROUP,
+            f"content.thin_evidence_state.missing_evidence_groups[{i}]",
+            str(group.get("detail") or ""), "repaired",
+            "the V2 evidence pack was assembled before the research ledger ran; the "
+            "ledger holds issuer primary documents",
+            derived["detail"],
+        ))
+        groups[i] = {**group, **derived}
 
 
 def enforce_content(
@@ -1183,6 +1320,7 @@ def enforce_content(
         return None, []
     out = copy.deepcopy(dict(content))
     enforcer = _Enforcer(state)
+    _repair_primary_document_group(enforcer, out)
 
     def walk(node: Any, path: str) -> None:
         if isinstance(node, dict):
@@ -1241,6 +1379,8 @@ __all__ = [
     "check_sentence",
     "enforce",
     "enforce_content",
+    "finding_sources",
     "legacy_council_block",
+    "primary_document_group",
     "withheld_notice",
 ]

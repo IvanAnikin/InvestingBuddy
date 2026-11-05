@@ -133,6 +133,9 @@ class FindingDraft:
     direction: str | None = None
     confidence: float | None = None
     period_key: str | None = None
+    #: ADR-086 — how ``period_key`` was set when not inherited from the evidence
+    #: (``text_stated``); persisted in the finding's ``period_type`` column.
+    period_basis: str | None = None
     scope_key: str | None = None
     #: V3.18.2 — source kinds of the cited evidence, for the finding's provenance.
     source_kinds: tuple[str, ...] = ()
@@ -493,6 +496,8 @@ async def run_investigation(
                         direction=draft.direction,
                         confidence=draft.confidence,
                         period_key=draft.period_key,
+                        # ADR-086: the basis of a period not inherited from evidence.
+                        period_type=getattr(draft, "period_basis", None),
                         scope_key=draft.scope_key,
                         originating_role=role_id,
                         # V3.18.2 — ownership. The finding belongs to its question's
