@@ -53,6 +53,7 @@ Runs once, after the Red Team and before the Chair and the report are assembled:
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -987,12 +988,35 @@ jan feb mar apr jun jul aug sep sept oct nov dec
 asia europe emea apac americas africa china japan india australia canada brazil mexico
 germany france latin america north south middle east west united kingdom states usa
 """.split())
+#: Study, asset and document words a statement about the subject's own asset opens with
+#: ("The Foo DFS estimates …", "Ore Reserve …", "Nameplate capacity …").
+_ASSET_WORDS: frozenset[str] = frozenset("""
+dfs pfs bfs scoping study studies definitive feasibility pre-feasibility ore reserve
+reserves resource resources mineral mine mines project projects plant refinery stage
+phase line lines facility facilities nameplate capacity commissioning construction
+expansion deposit concentrate offtake contract agreement
+""".split())
+
+
+@functools.lru_cache(maxsize=1)
+def _field_vocabulary() -> frozenset[str]:
+    """Words of every research field's label, aliases and patterns ("nameplate",
+    "capacity", "capital"): a statement opening with a metric word names no entity."""
+    words: set[str] = set(_ASSET_WORDS)
+    for f in rf.FIELDS:
+        for text in (f.label, *f.fact_labels, *f.metric_aliases, *f.patterns):
+            words.update(re.findall(r"[a-z]{3,}", text.lower()))
+    return frozenset(words)
+
+
 #: A capitalised word in a statement (a possessive "'s" is stripped by the caller).
 _CAPITALISED_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z][A-Za-z&'’-]{0,40}")
 _STATEMENT_WORD_RE = re.compile(r"[a-z0-9&]+")
 
 
-def _subject_reasons(finding: FindingFacts, subject: SubjectWords) -> list[str]:
+def _subject_reasons(
+    finding: FindingFacts, subject: SubjectWords, gap_text: str = ""
+) -> list[str]:
     """ADR-086 (review P1-3; re-review) — a finding closes or supersedes a gap only when
     its subject is POSITIVELY the research subject. Findings carry no persisted subject
     verdict (ADR-083 drops another entity's statement at creation), so the text decides:
@@ -1021,7 +1045,10 @@ def _subject_reasons(finding: FindingFacts, subject: SubjectWords) -> list[str]:
     scope_words = set(_STATEMENT_WORD_RE.findall(
         _fold((finding.scope_key or "").partition(":")[2])))
     project_words = set(_STATEMENT_WORD_RE.findall(_fold(finding.project or "")))
-    allowed = subject.own | scope_words | project_words
+    # A word the subject's own gap uses ("Capex for the Foo Project …") names the
+    # subject's asset; metric and asset vocabulary names no entity.
+    gap_words = set(_STATEMENT_WORD_RE.findall(_fold(gap_text or "")))
+    allowed = subject.own | scope_words | project_words | gap_words | _field_vocabulary()
     money = rf.MONEY_RE.search(text)
     head = text[:money.start()] if money else text
     for m in _LEGAL_NAME_RE.finditer(head):
@@ -1134,7 +1161,7 @@ def _assess(
         reasons.extend(part)
     reasons.extend(_family_subtype_reasons(finding, requirement))
     reasons.extend(_forward_reasons(finding, requirement, gap_text))
-    reasons.extend(_subject_reasons(finding, subject_aliases))
+    reasons.extend(_subject_reasons(finding, subject_aliases, gap_text))
     reasons.extend(_balance_reasons(finding, requirement, today))
     reasons.extend(_period_reasons(finding, gap_period))
     reasons.extend(_recency_reasons(finding, gap_text, requirement, today))

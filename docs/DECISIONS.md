@@ -8654,7 +8654,8 @@ unambiguously bind the same figure to different periods.
    - otherwise established only when no capitalised proper noun precedes the first
      figure. Each capitalised word there must be generic ("Revenue", "Cash", "The
      company", "Group", months, currencies, regions), one of the subject's own name
-     words, or a word of the finding's own scope or project. "Albemarle reported cash
+     words, a word of the finding's own scope or project, a word the gap's own text
+     uses, or research-field / asset vocabulary ("Nameplate capacity", "The Foo DFS"). "Albemarle reported cash
      …", "SQM's FY2025 revenue …", "Pilbara Minerals posted …" are not established.
    - Not established is `subject_not_established`, which is NONCOMPARABLE: never
      CLOSED, never SUPERSEDED.
@@ -8697,7 +8698,7 @@ unambiguously bind the same figure to different periods.
 
 ### Replay (17 stored reports, payload-derived; before = `origin/main` 0749c49)
 - Gap status: before OPEN 498 / PARTIALLY_CLOSED 182; after OPEN 497 /
-  PARTIALLY_CLOSED 152 / NONCOMPARABLE 31. There are **0 new CLOSED or SUPERSEDED**.
+  PARTIALLY_CLOSED 153 / NONCOMPARABLE 30. There are **0 new CLOSED or SUPERSEDED**.
   - LIN2 gap `2234b6ac` (post-placement cash): OPEN → PARTIALLY_CLOSED via finding
     `ecbd18cd`, the 30-Sep-2026 cash balance (partial: the gap also asks for the capex
     schedule and the facility drawdown).
@@ -8708,14 +8709,11 @@ unambiguously bind the same figure to different periods.
     - CLLS3, 12 gaps: finding `16a65ab8`, "Peer-set member Moderna FY2025 Group …";
     - CLLS4, 8 gaps: finding `d56031ac`, "EY reports biotech industry revenue …".
   - PARTIALLY_CLOSED → NONCOMPARABLE, `subject_not_established`, the subject's own
-    asset, segment or contract named without the subject (over-conservative, never a
-    close):
+    asset or contract named without the subject (over-conservative, never a close):
     - LIN, 2 gaps / LIN2, 2 gaps: `211d565c` / `9e212355`, "Kangankunde Ore Reserve …"
       (the subject's project, not recognised as a project);
     - LIN, 4 gaps: `79653f52`, "Carester SAS holds a binding 10-year offtake …" (the
-      subject's offtake, stated with the counterparty as subject);
-    - HON2, 1 gap: `bd84bf62`, "Aerospace Technologies reported Q1 2026 net sales …"
-      (the subject's segment under a garbled scope key).
+      subject's offtake, stated with the counterparty as subject).
 - Chair: 1 sentence withheld. It is PYPL2 `chair.key_points[3]`: "+26%" stated for
   Q3 2026 while the cited finding states it for Q2 2026.
 - Content: 6 V2 primary-document lines repaired, with de-duplicated counts: CLLS2 1;
@@ -8740,5 +8738,5 @@ unambiguously bind the same figure to different periods.
 - The subject test is lexical and conservative: a statement about the subject's own
   project, segment or contract that never names the subject (and whose project the
   field reader does not recognise) is NONCOMPARABLE rather than PARTIALLY_CLOSED (the
-  LIN / LIN2 / HON2 rows above). It never closes on another entity's figure.
+  LIN / LIN2 rows above). It never closes on another entity's figure.
 - Stored payloads predate ADR-084, so `EXTRACTION_FAILED` does not occur in the replay.
