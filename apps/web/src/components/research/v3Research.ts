@@ -143,6 +143,14 @@ export type V3CanonicalState = {
   chairReasonText: string | null;
   /** Report-status sentences repaired or withheld at assembly. */
   invariantViolations: number;
+  /** ADR-091 — the run's web searches: the company web stage's plus the investigators'. */
+  webSearchesTotal: number | null;
+  webStageSearches: number | null;
+  investigatorSearches: number | null;
+  /** ADR-091 — primary documents the run read (one per document). */
+  documentsRead: number | null;
+  /** ADR-091 — how many of the open gaps the payload lists. */
+  gapsListed: number | null;
 };
 
 /** How the page labels the legacy V2 council beside a V3 run. */
@@ -271,6 +279,9 @@ export type ProfessionalFinding = {
   supersededFields: string[];
   /** Current guidance only: the prior statements it replaced. */
   supersedes: { label: string | null; sourcePublishedAt: string | null }[];
+  /** ADR-091 — another company's figure shown as context, never as a peer benchmark,
+      because no comparable company was found. Null on every other finding. */
+  contextLabel: string | null;
 };
 
 /** A question a section was asked and could not settle. */
@@ -547,6 +558,10 @@ export type V3FinancialStatements = {
   conflictCount: number;
   /** Item 20 — "Revenue: pre-revenue / not applicable yet" for a proved developer. */
   revenueStatus: { label: string; note: string | null } | null;
+  /** ADR-091 — the latest part-year period the run HOLDS
+      (`canonical_state.status.latest_interim`): a quarter is an interim period, and an
+      interim stated only in issuer findings is labelled so. Null when none is held. */
+  canonicalLatestInterim?: string | null;
 };
 
 /** A V2 gap statement, labelled against the V3 findings. */
@@ -867,6 +882,7 @@ function readProfessionalFinding(r: Record<string, unknown>): ProfessionalFindin
       label: str(x.label),
       sourcePublishedAt: str(x.source_published_at),
     })),
+    contextLabel: r.context_only === true ? str(r.context_label) : null,
   };
 }
 
@@ -1175,7 +1191,10 @@ export function readV3Research(sourceSummary: unknown): V3Research | null {
     }),
     professionalResearch,
     gapReconciliation: readGapReconciliation(raw.gap_reconciliation),
-    financialStatements: readStatementsPayload(raw.financial_statements_state),
+    financialStatements: readStatementsPayload(
+      raw.financial_statements_state,
+      raw.canonical_state,
+    ),
     webContext: readWebContext(raw.web_context),
     canonicalState: readCanonicalState(raw.canonical_state, raw.state_invariants),
     legacyCouncil: readLegacyCouncil(raw.legacy_council),
@@ -1192,6 +1211,7 @@ export function readCanonicalState(
   const findings = isRecord(v.findings) ? v.findings : {};
   const gaps = isRecord(v.gaps) ? v.gaps : {};
   const disagreements = isRecord(v.disagreements) ? v.disagreements : {};
+  const status = canonicalStatus(v);
   const council = isRecord(v.council) ? v.council : {};
   const chair = isRecord(v.chair) ? v.chair : {};
   const checks = isRecord(invariants) ? invariants : {};
@@ -1206,6 +1226,11 @@ export function readCanonicalState(
     councilDegraded: bool(council.degraded) ?? false,
     chairReasonText: str(chair.reason_text),
     invariantViolations: num(checks.violations_total) ?? 0,
+    webSearchesTotal: status.webSearchesTotal,
+    webStageSearches: status.webStageSearches,
+    investigatorSearches: status.investigatorSearches,
+    documentsRead: status.documentsRead,
+    gapsListed: status.gapsListed,
   };
 }
 
@@ -1235,7 +1260,10 @@ function readStatementState(v: unknown): StatementState | null {
   };
 }
 
-function readStatementsPayload(v: unknown): V3FinancialStatements | null {
+function readStatementsPayload(
+  v: unknown,
+  canonical: unknown = null,
+): V3FinancialStatements | null {
   if (!isRecord(v) || Object.keys(v).length === 0) return null;
   const periods = isRecord(v.reporting_periods) ? v.reporting_periods : {};
   return {
@@ -1274,6 +1302,31 @@ function readStatementsPayload(v: unknown): V3FinancialStatements | null {
             note: str(v.revenue_status.note),
           }
         : null,
+    canonicalLatestInterim: canonicalStatus(canonical).latestInterim,
+  };
+}
+
+/** ADR-091 — the canonical status lines (`canonical_state.status`), each null when the
+    report predates them. */
+export function canonicalStatus(canonical: unknown): {
+  latestInterim: string | null;
+  webSearchesTotal: number | null;
+  webStageSearches: number | null;
+  investigatorSearches: number | null;
+  documentsRead: number | null;
+  gapsListed: number | null;
+} {
+  const status = isRecord(canonical) && isRecord(canonical.status) ? canonical.status : {};
+  const interim = isRecord(status.latest_interim) ? status.latest_interim : {};
+  const searches = isRecord(status.web_searches) ? status.web_searches : {};
+  const gaps = isRecord(status.gaps) ? status.gaps : {};
+  return {
+    latestInterim: str(interim.label),
+    webSearchesTotal: num(searches.total),
+    webStageSearches: num(searches.web_stage),
+    investigatorSearches: num(searches.investigators),
+    documentsRead: num(status.documents_read),
+    gapsListed: num(gaps.listed),
   };
 }
 
@@ -1285,7 +1338,10 @@ export function readFinancialStatements(
   sourceSummary: unknown,
 ): V3FinancialStatements | null {
   if (!isRecord(sourceSummary) || !isRecord(sourceSummary.v3_research)) return null;
-  return readStatementsPayload(sourceSummary.v3_research.financial_statements_state);
+  return readStatementsPayload(
+    sourceSummary.v3_research.financial_statements_state,
+    sourceSummary.v3_research.canonical_state,
+  );
 }
 
 function readV2Labels(v: unknown, keyField: "field" | "key"): V2ItemLabel[] {

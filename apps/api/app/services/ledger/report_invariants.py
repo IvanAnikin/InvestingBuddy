@@ -78,6 +78,14 @@ RULE_DERIVED_AS_REPORTED = claim_checks.RULE_DERIVED_AS_REPORTED
 #: ADR-086 — the V2 "no primary issuer document ingested" line, while the ledger holds
 #: issuer documents.
 RULE_PRIMARY_DOC_GROUP = "primary_document_group_denied_while_held"
+#: ADR-091 — a status line (a count, "not sourced", "not in this report") that
+#: contradicts the canonical state.
+RULE_STATUS_LINE = "status_line_contradicts_canonical_state"
+#: ADR-091 — a chair sentence citing a finding id the run's ledger does not hold.
+RULE_CITED_FINDING_UNKNOWN = "chair_cited_finding_not_in_ledger"
+#: ADR-091 — a chair sentence narrating a disagreement / conflict / contradiction
+#: between cited findings that no recorded disagreement pairs.
+RULE_PHANTOM_CONFLICT = "conflict_narrated_between_unpaired_findings"
 
 RULES: tuple[str, ...] = (
     RULE_FINDING_COUNT,
@@ -97,6 +105,9 @@ RULES: tuple[str, ...] = (
     RULE_CLAIM_SCOPE,
     RULE_DERIVED_AS_REPORTED,
     RULE_PRIMARY_DOC_GROUP,
+    RULE_STATUS_LINE,
+    RULE_CITED_FINDING_UNKNOWN,
+    RULE_PHANTOM_CONFLICT,
 )
 
 #: Where a text sits. The chair is checked for everything; other texts are checked for
@@ -843,6 +854,71 @@ _DISAGREEMENT_ID_RE = re.compile(
     re.I)
 
 
+#: ADR-091 — wording that narrates a conflict between findings.
+#:
+#: Re-review round 3: CONSERVATIVE by design. A missed check is acceptable; a false
+#: withhold is not. Only a sentence that explicitly sets two research subjects against
+#: each other with a conflict verb counts:
+#:
+#: * "finding <A> and finding <B> disagree", "(finding_id: <A>) and (finding_id: <B>)
+#:   conflict";
+#: * "<A> vs <B>" between two finding ids;
+#: * "(the) findings / sources / filings conflict | disagree | contradict" followed by
+#:   "each other", "one another" or "on <x>";
+#: * "conflict | disagreement | inconsistency | contradiction | discrepancy between (the)
+#:   (two) findings / sources / filings", or between two finding ids;
+#: * "the filing's <metric> … contradicts the release's".
+#:
+#: "Contested", "different … figures", "differ", "diverge" and "at odds with" are not
+#: read: they describe as often as they conflict ("figures differ by region", "the
+#: patent is contested in court").
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_ID_REF = rf"\(?(?:finding(?:_id)?[ \t]{{0,2}}:?[ \t]{{0,3}})?{_UUID}\)?"
+_PLURAL_SUBJECTS = r"(?:findings|sources|filings)"
+_DOC_NOUN = r"(?:filing|release|report|source|finding|document|statement)"
+_CONFLICT_VERB = r"(?:conflict|disagree|contradict|are[ \t]{1,3}inconsistent)"
+_CONFLICT_WORDS_RE = re.compile(
+    rf"{_ID_REF}[ \t]{{1,3}}and[ \t]{{1,3}}{_ID_REF}[ \t]{{1,3}}{_CONFLICT_VERB}\b"
+    rf"|\b{_UUID}[ \t]{{1,3}}(?:vs\.?|versus)[ \t]{{1,3}}[0-9a-f]{{8}}\b"
+    rf"|\b{_PLURAL_SUBJECTS}[ \t]{{1,3}}(?:conflict|disagree|contradict)[ \t]{{1,3}}"
+    r"(?:each[ \t]{1,3}other|one[ \t]{1,3}another|on)\b"
+    r"|\b(?:conflicts?|disagreements?|inconsistency|inconsistencies|contradictions?|"
+    r"discrepancy|discrepancies)[ \t]{1,3}between[ \t]{1,3}(?:the[ \t]{1,3})?"
+    # Round 4: "conflicts between sources of supply" is not about research sources.
+    rf"(?:two[ \t]{{1,3}})?(?:{_PLURAL_SUBJECTS}\b(?![ \t]{{1,3}}of\b)|{_ID_REF})"
+    rf"|\b{_DOC_NOUN}['’]s[ \t]{{1,3}}(?:[\w$€£.,%/-]{{1,20}}[ \t]{{1,3}}){{0,5}}?"
+    rf"contradicts[ \t]{{1,3}}the[ \t]{{1,3}}{_DOC_NOUN}['’]s\b",
+    re.IGNORECASE,
+)
+_CONFLICT_NEGATION_RE = re.compile(
+    r"\b(?:no|not|nor|never|without|nothing|none|neither)[ \t]{1,3}(?:\w{1,20}[ \t]{1,3}){0,2}$",
+    re.IGNORECASE,
+)
+#: Re-review R-P1 / round 3: a negation INSIDE the matched words ("the filings do not
+#: conflict", "don't disagree", "contradicts nothing").
+_NEGATION_IN_SPAN_RE = re.compile(
+    r"\b(?:no|not|never|cannot|nothing|none)\b|n['’]t\b", re.IGNORECASE)
+#: Round 3: a negation or limiter right AFTER the match ("disagree on timing only",
+#: "conflict on nothing", "differ … not in figures").
+_NEGATION_AFTER_RE = re.compile(r"\b(?:nothing|not[ \t]{1,3}in|only)\b", re.IGNORECASE)
+
+
+def _narrates_conflict(sentence: str) -> bool:
+    """ADR-091 (review P1-1, re-review rounds 2–3) — a conflict explicitly narrated
+    between research subjects, negated neither before, inside nor right after the
+    matched words."""
+    text = sentence[:MAX_SENTENCE_CHARS]
+    for match in _CONFLICT_WORDS_RE.finditer(text):
+        before = text[max(0, match.start() - 40): match.start()]
+        after = text[match.end(): match.end() + 30]
+        if (_CONFLICT_NEGATION_RE.search(before)
+                or _NEGATION_IN_SPAN_RE.search(match.group())
+                or _NEGATION_AFTER_RE.search(after)):
+            continue
+        return True
+    return False
+
+
 def _ledger_disagreement_ids(state: Mapping[str, Any]) -> list[str] | None:
     """ADR-086 (review P2-8) — every disagreement id the ledger holds, RESOLVED ones
     included, or ``None`` when that is not known. Only the unresolved ids known, and
@@ -935,7 +1011,43 @@ def _rule_fallback_reason(sentence: str, state: Mapping[str, Any]) -> _Hit | Non
                 replacement)
 
 
+#: ADR-091 — the V2 schema's count of required REPORT FIELDS left empty, worded as
+#: research gaps ("Blocking research gaps: 27", "27 blocking research gaps identified").
+_BLOCKING_GAPS_RE = re.compile(
+    r"\b(?P<n1>\d{1,4})[ \t]{1,3}blocking[ \t]{1,3}research[ \t]{1,3}gaps\b"
+    r"|\bBlocking[ \t]{1,3}research[ \t]{1,3}gaps:[ \t]{0,3}(?P<n2>\d{1,4})\b",
+    re.IGNORECASE,
+)
+
+
+def _rule_blocking_gaps(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """ADR-091 (CLLS6-3, PYPL4-6) — a V2 "N blocking research gaps" count that is not
+    the ledger's open-gap count is a status line contradicting the canonical state. It
+    counts required report fields (identity.isin, self_critique …), so it is repaired to
+    say so, with the ledger's count beside it."""
+    match = _BLOCKING_GAPS_RE.search(sentence)
+    if match is None:
+        return None
+    open_gaps = _g(state, "gaps", "open")
+    said = int(match.group("n1") or match.group("n2"))
+    if not isinstance(open_gaps, int) or said == open_gaps:
+        return None
+    if match.group("n1"):
+        words = (f"{said} required report field(s) not yet filled (the research ledger "
+                 f"records {open_gaps} open research gaps)")
+    else:
+        words = (f"Required report fields not yet filled: {said} (the research ledger "
+                 f"records {open_gaps} open research gaps)")
+    return _Hit(
+        RULE_STATUS_LINE,
+        f"the V2 count is of required report fields, not research gaps; the ledger "
+        f"records {open_gaps} open gaps",
+        sentence[: match.start()] + words + sentence[match.end():],
+    )
+
+
 _RECORD_RULES = (
+    _rule_blocking_gaps,
     _rule_no_issuer_doc,
     _rule_stale_latest,
     _rule_latest_period,
@@ -994,12 +1106,42 @@ class _Enforcer:
         #: ADR-086 — the run's findings by id, for the chair claim check. ``None``: no
         #: claim is checked against what it cites.
         self.sources = sources
+        #: ADR-091 — every finding id the ledger holds, when the payload lists them all
+        #: (``None``: a cited id cannot be proved absent).
+        self.finding_ids: set[str] | None = None
+
+    def _cited_exist(self, ids: list[str]) -> _Hit | None:
+        """ADR-091 — every finding id a chair sentence cites is in the ledger."""
+        if self.finding_ids is not None and any(i not in self.finding_ids for i in ids):
+            return _Hit(RULE_CITED_FINDING_UNKNOWN,
+                        "it cites a finding the research ledger does not hold")
+        return None
+
+    def _conflict_backed(self, sentence: str, ids: list[str]) -> _Hit | None:
+        """ADR-091 — a conflict narrated between cited findings is one the ledger
+        records: some recorded disagreement pairs two of the cited findings."""
+        pairs = _g(self.state, "disagreements", "finding_pairs")
+        if not isinstance(pairs, list) or len(ids) < 2:
+            return None
+        if not _narrates_conflict(sentence):
+            return None
+        wanted = set(ids)
+        for pair in pairs:
+            if isinstance(pair, (list, tuple)) and len(pair) == 2 and {
+                str(pair[0]).lower(), str(pair[1]).lower()
+            } <= wanted:
+                return None
+        return _Hit(RULE_PHANTOM_CONFLICT,
+                    "it narrates a conflict between findings no recorded disagreement pairs")
 
     def _claim(self, sentence: str, cited: tuple[str, ...]) -> _Hit | None:
         """ADR-086 — a chair claim checked against the findings it cites."""
+        ids = [i for i in dict.fromkeys([*cited, *claim_checks.cited_ids(sentence)]) if i]
+        hit = self._cited_exist(ids) or self._conflict_backed(sentence, ids)
+        if hit is not None:
+            return hit
         if not self.sources:
             return None
-        ids = dict.fromkeys([*cited, *claim_checks.cited_ids(sentence)])
         found = [self.sources[i] for i in ids if i in self.sources]
         if not found:
             return None
@@ -1198,6 +1340,52 @@ def _structured(enforcer: _Enforcer, v3: dict[str, Any], legacy: dict[str, Any] 
             ))
 
 
+def _status_violation(enforcer: _Enforcer, path: str, said: Any, value: Any,
+                      reason: str) -> None:
+    enforcer.violations.append(Violation(
+        RULE_STATUS_LINE, path, str(said), "repaired", reason, str(value),
+    ))
+
+
+def _status_lines(enforcer: _Enforcer, v3: Mapping[str, Any]) -> None:
+    """ADR-091 — a status line the page shows that contradicts the canonical state is a
+    violation. Each is repaired WHERE THE PAGE READS IT: ``canonical_state.status``
+    replaces the payload field in every status line (the field itself stays as its
+    producer wrote it, e.g. the cost basis's investigator search count)."""
+    status = _g(enforcer.state, "status")
+    if not isinstance(status, Mapping):
+        return
+    consumption = v3.get("consumption")
+    searches = _g(enforcer.state, "status", "web_searches", "total")
+    if isinstance(consumption, Mapping) and isinstance(searches, int):
+        said = consumption.get("web_search_calls")
+        if isinstance(said, int) and said != searches:
+            _status_violation(
+                enforcer, "consumption.web_search_calls", said, searches,
+                f"the line counted the investigators' searches only; the run made "
+                f"{searches} web searches, "
+                f"{_g(enforcer.state, 'status', 'web_searches', 'web_stage')} of them in "
+                "the company web stage")
+    statements = v3.get("financial_statements_state")
+    interim = _g(enforcer.state, "status", "latest_interim", "label")
+    periods = statements.get("reporting_periods") if isinstance(statements, Mapping) else None
+    if isinstance(periods, Mapping) and interim and not periods.get("latest_interim"):
+        _status_violation(
+            enforcer, "financial_statements_state.reporting_periods.latest_interim",
+            None, interim,
+            "no half-year label is held, but a part-year period is: the latest interim "
+            "is not absent")
+    loop = v3.get("loop")
+    gaps_open = _g(enforcer.state, "gaps", "open")
+    if isinstance(loop, Mapping) and isinstance(gaps_open, int):
+        said = loop.get("gaps_open")
+        if isinstance(said, int) and said != gaps_open:
+            _status_violation(
+                enforcer, "loop.gaps_open", said, gaps_open,
+                f"the loop counted every gap it recorded ({said}), closed ones included; "
+                f"the ledger records {gaps_open} open")
+
+
 def enforce(
     v3: Mapping[str, Any],
     state: Mapping[str, Any],
@@ -1210,8 +1398,10 @@ def enforce(
     out = copy.deepcopy(dict(v3))
     legacy = copy.deepcopy(dict(llm_council)) if isinstance(llm_council, Mapping) else None
     enforcer = _Enforcer(state, sources=finding_sources(out.get("findings")))
+    enforcer.finding_ids = ledger_finding_ids(out.get("findings"), state)
 
     _structured(enforcer, out, legacy)
+    _status_lines(enforcer, out)
 
     chair = out.get("chair")
     if isinstance(chair, dict):
@@ -1237,6 +1427,20 @@ def enforce(
     _walk_report(enforcer, out.get("professional_research"))
     _walk_legacy(enforcer, legacy)
     return InvariantResult(v3=out, llm_council=legacy, violations=enforcer.violations)
+
+
+def ledger_finding_ids(findings: Any, state: Mapping[str, Any]) -> set[str] | None:
+    """ADR-091 — every finding id of the run, or ``None`` when the payload's list is not
+    known to be complete (it holds fewer findings than the ledger counted)."""
+    ids = {
+        str(f.get("finding_id") or f.get("id") or "").lower()
+        for f in findings or () if isinstance(f, Mapping)
+    }
+    ids.discard("")
+    total = _g(state, "findings", "total")
+    if not isinstance(total, int) or len(ids) < total:
+        return None
+    return ids
 
 
 def finding_sources(findings: Any) -> dict[str, claim_checks.ClaimSource]:
@@ -1310,6 +1514,71 @@ def _repair_primary_document_group(enforcer: "_Enforcer", content: dict[str, Any
         groups[i] = {**group, **derived}
 
 
+#: ADR-091 — the V2 "not sourced" note on a report whose statements view holds figures.
+_FUNDAMENTALS_NOT_SOURCED = "Financial-statement fundamentals not sourced"
+
+
+def statement_facts_note(state: Mapping[str, Any]) -> str | None:
+    """ADR-091 — the fundamentals line DERIVED from the canonical state, or ``None`` when
+    the statements view holds no figure (the V2 line stands)."""
+    facts = _g(state, "status", "statement_facts")
+    if not isinstance(facts, Mapping) or not facts.get("held"):
+        return None
+    tagged = int(facts.get("sec_tagged_slots") or 0)
+    return (
+        f"Financial-statement figures are held: {int(facts.get('slots') or 0)} statement "
+        f"line(s) read from the issuer's own documents"
+        + (f", {tagged} of them from the XBRL tags in its SEC filings" if tagged else "")
+        + " (see Key financials). This note was written before the research ledger ran."
+    )
+
+
+def _repair_statement_status(enforcer: "_Enforcer", content: dict[str, Any]) -> None:
+    """ADR-091 (JPM2-D4, PYPL4-6, CLLS6-3) — V2 status lines written from the V2 pack
+    before the ledger ran: "fundamentals not sourced", "Regulator structured financial
+    facts (SEC XBRL): not sourced", "Issuer newsroom: not sourced". Repaired from the
+    canonical state when it holds what the line denies."""
+    note = statement_facts_note(enforcer.state)
+    if note is not None:
+        for path, holder, key in (
+            ("content.data_availability_summary.fundamentals_note",
+             content.get("data_availability_summary"), "fundamentals_note"),
+            ("content.financial_snapshot.fundamentals_note.value",
+             _g(content, "financial_snapshot", "fundamentals_note"), "value"),
+        ):
+            if not isinstance(holder, dict):
+                continue
+            said = holder.get(key)
+            if isinstance(said, str) and said.startswith(_FUNDAMENTALS_NOT_SOURCED):
+                enforcer.violations.append(Violation(
+                    RULE_STATUS_LINE, path, said, "repaired",
+                    "the statements view holds issuer statement figures", note))
+                holder[key] = note
+    channels = _g(content, "evidence_channels", "channels")
+    if not isinstance(channels, list):
+        return
+    tagged = int(_g(enforcer.state, "status", "statement_facts", "sec_tagged_slots") or 0)
+    releases = int(_g(enforcer.state, "status", "results_releases_read") or 0)
+    for i, channel in enumerate(channels):
+        if not isinstance(channel, dict) or channel.get("detail") != "not sourced":
+            continue
+        detail = None
+        if channel.get("channel") == "regulator_structured_facts" and tagged:
+            detail = (f"available — {tagged} statement line(s) read from the XBRL tags in "
+                      "the issuer's SEC filings (financial statements view)")
+        elif channel.get("channel") == "issuer_newsroom" and releases:
+            detail = (f"available — {releases} issuer results release(s) read as primary "
+                      "documents")
+        if detail is None:
+            continue
+        enforcer.violations.append(Violation(
+            RULE_STATUS_LINE, f"content.evidence_channels.channels[{i}].detail",
+            "not sourced", "repaired",
+            "the V2 channel inventory was assembled before the research ledger ran",
+            detail))
+        channels[i] = {**channel, "available": True, "detail": detail}
+
+
 def enforce_content(
     content: Mapping[str, Any] | None, state: Mapping[str, Any]
 ) -> tuple[dict[str, Any] | None, list[Violation]]:
@@ -1321,6 +1590,7 @@ def enforce_content(
     out = copy.deepcopy(dict(content))
     enforcer = _Enforcer(state)
     _repair_primary_document_group(enforcer, out)
+    _repair_statement_status(enforcer, out)
 
     def walk(node: Any, path: str) -> None:
         if isinstance(node, dict):

@@ -3565,6 +3565,59 @@ Additive keys under `source_summary_json.v3_research.financial_statements_state`
   (`"topics_not_carried"` for a count-satisfied question) and `why_topics`, and may stop
   with `run_tool_budget_low`.
 
+## ADR-091 — status lines, fiscal calendar, peer context (no new endpoint)
+
+Additive keys under `source_summary_json.v3_research`:
+
+- `canonical_state.status`: what every status line shows.
+  - `latest_interim {label, basis}`, where `basis` is `statement_facts` or
+    `issuer_findings`;
+  - `web_searches {total, web_stage, investigators}`;
+  - `documents_read`;
+  - `statement_facts {held, slots, facts_read, sec_tagged_slots}`;
+  - `results_releases_read`;
+  - `gaps {open, listed}`.
+
+  The web reads these in place of `consumption.web_search_calls`, `loop.gaps_open`,
+  the V2 primary-documents count and a missing `reporting_periods.latest_interim`.
+- `canonical_state.documents` gains:
+  - `issuer_documents_held_basis` (`inventory` | `document_coverage`). The held count
+    now includes the primary documents parsed.
+  - `fiscal_year_end`: `{month, basis, mentions?}` or `null`, where `basis` is
+    `sec_annual_period_of_report` or `issuer_documents_stated`.
+
+  `latest_reporting_period` is read on that fiscal calendar.
+- `canonical_state.disagreements.finding_pairs`: the `[finding_a_id, finding_b_id]` of
+  each ledger disagreement, or `null` on a payload replay.
+- New `state_invariants` rules:
+  - `status_line_contradicts_canonical_state`, always `repaired`;
+  - `chair_cited_finding_not_in_ledger`;
+  - `conflict_narrated_between_unpaired_findings`.
+- `professional_research.sections[competitive_position]`, when
+  `peer_selection.status == "unavailable"`:
+  - `peer_table` is `[]`;
+  - a finding stating another company's figure gains `context_only: true` and
+    `context_label`;
+  - the section gains `context_findings_labelled`.
+- Investigator diagnostics gain `statements_forward_period_replaced` and
+  `statements_fiscal_quarter_rekeyed`.
+- Changed meaning: a gap answered only by another scope (`scope_differs`), or by
+  another period AND another metric, is `NONCOMPARABLE` (was `PARTIALLY_CLOSED`).
+- Review round 1:
+  - `context_only` is set only when the clause holding the first figure opens with a
+    named entity carrying an explicit "(a peer, not the company)" / "(a peer)" / "(a
+    competitor)" / "(a rival)" marker, followed directly by a reporting verb, and the
+    subject is named nowhere in the statement. Several things never set it: a lead word
+    before the name, a noun or relational verb after the marker, a punctuation break
+    before the figure, a "versus / while …" second figure, a bare legal name, or a peer
+    possessive.
+  - `status.latest_interim.label` uses the fiscal key ("Q1 FY2027") when the issuer's
+    year end is not December AND the finding's `period_basis` is `text_stated` or
+    `fiscal`. For a non-December year end, an inherited key is ambiguous and is left
+    out of `latest_interim` and `documents.latest_reporting_period`, which may then be
+    `null`.
+  - `scope_differs` from a product line applies only to revenue gaps.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

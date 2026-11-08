@@ -228,6 +228,13 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
         <Stat
           label="Open gaps"
           value={n(v3.canonicalState?.openGapCount ?? consumption?.gapsOpen ?? v3.gaps.length)}
+          hint={
+            v3.canonicalState?.gapsListed != null &&
+            v3.canonicalState.openGapCount != null &&
+            v3.canonicalState.gapsListed < v3.canonicalState.openGapCount
+              ? `${v3.canonicalState.gapsListed} listed below`
+              : undefined
+          }
         />
         <Stat label="Rounds" value={n(v3.rounds)} hint={`${n(v3.tasksRun)} tasks`} />
         <Stat
@@ -442,7 +449,17 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
             </span>
           </summary>
           <dl className="mt-4 grid grid-cols-2 gap-5 sm:grid-cols-4">
-            <Stat label="Web searches" value={n(consumption.webSearchCalls)} />
+            <Stat
+              label="Web searches"
+              value={n(v3.canonicalState?.webSearchesTotal ?? consumption.webSearchCalls)}
+              hint={
+                v3.canonicalState?.webSearchesTotal != null
+                  ? `${n(v3.canonicalState.webStageSearches)} web stage · ${n(
+                      v3.canonicalState.investigatorSearches,
+                    )} by investigators`
+                  : undefined
+              }
+            />
             <Stat
               label="URL retrievals"
               value={n(consumption.urlFetchCalls)}

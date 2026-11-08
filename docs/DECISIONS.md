@@ -8954,3 +8954,441 @@ page text). Acquisition-log re-read steps gain `trigger` and `why_topics`.
 - A narrative topic (acquisitions) counts as carried when its name appears.
 - CFR's stored scale errors ("8 257" read as billions) predate this change and are not
   addressed here.
+
+## ADR-091: A Status Line Is the Canonical State's; Scope and Fiscal Calendar Decide What a Figure Is
+
+**Date:** 2026-11-08 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** cross-sector QA campaign 2026-11, rerun closure batch H2. The defects came
+from the reruns CLLS6, PYPL4, JPM2, HON3, LIN3 and CFR2.
+
+### What was wrong
+1. **Status lines contradicted the ledger.** Each line had its own producer:
+   - "Latest interim: Not in this report": `reporting_periods.latest_interim` only takes
+     half-years, so a quarterly reporter had none.
+   - "Web searches 1": `consumption.web_search_calls` counts investigator tool rows
+     only. JPM2 ran 33 company web-stage searches.
+   - "2 documents read": the V2 ingestion list, against 5–16 documents parsed.
+   - Open-gap count: `loop.gaps_open` counted every gap, closed ones included.
+   - "SEC XBRL not sourced", "fundamentals not sourced", "N blocking research gaps",
+     "8-K 0 facts": V2 lines written from the V2 pack before V3 ran. The blocking count
+     was a count of schema fields.
+2. **Period inheritance.**
+   - CLLS6: an H1 statement inherited "2027-Q4" from a going-concern chunk.
+   - PYPL4: "2025" and "FY2025" tags on one filing were treated as disagreeing.
+3. **Comparability.**
+   - A segment or product-line figure partly closed Group gaps: "Braintree revenue up
+     ~$1.1bn" (PYPL4), "Payments revenue $19.3bn, Lending …" (JPM2).
+   - `scope_differs` led to PARTIALLY_CLOSED.
+   - A stale 2023 fact counted as a covering fact.
+4. **Segment as Firm.** SEC HTML filings parse with no sections, so the CIB "Selected
+   metrics" chunk carries no scope. A chair claim restated the segment's figure as the
+   Firm's.
+5. **Applicability.** A bank was asked the generic growth-pipeline and operations
+   questions, and the growth analyst's focus named permits, construction and offtake for
+   every company.
+6. **Commercial claims.** "owns the … plant making MREC", "extracts", "processes" and
+   "ships" were not read as claims of commercial operation.
+7. **Peer note vs peer data.** The peer comparison was "unavailable" (ADR-089), yet
+   another company's unit cost sat in the competitive section as if it were peer data
+   (LIN3).
+8. **Fiscal calendar (CFR2, March year end).**
+   - `canonical_state` reported 0 issuer documents held, though 16 were parsed: a
+     non-SEC issuer's reports arrive through the corpus, not through core filings or a
+     covered venue.
+   - It gave the latest period as "2025", ending 2025-12-31. `period_bounds` read
+     "Q1 2027" and "FY2026" on the calendar, so both looked unended and were skipped.
+   - The issuer's Q1 FY2027 findings (quarter to 30 Jun 2026) were keyed "2026-Q1". The
+     key was inherited from the chunk, although the statement's own "first quarter ended
+     30 June 2026" reads as 2027-Q1 under ADR-065.
+9. **Phantom chair disagreement (CFR2).**
+   - "…the Group reports a net cash position, not net debt" was a NEGATED clause naming
+     `metric:net_debt` (and `metric:cash`). `contradicted_absences` therefore paired it
+     against the net-cash findings it agrees with, and recorded both ledger
+     disagreements.
+   - A second false denial came from the source label "[company says; not from a
+     filing]".
+   - The chair then narrated a "net cash vs net debt" conflict. Both cited findings
+     exist; no real conflict does.
+
+### Decision
+1. **`canonical_state.status`** is the single source for every status line:
+   - `latest_interim {label, basis}`: statement facts first, including a quarter; else
+     the newest ended part-year period the issuer's findings state, labelled "statement
+     lines not extracted";
+   - `web_searches {total, web_stage, investigators}`;
+   - `documents_read`: primary documents read, one per document;
+   - `statement_facts {held, slots, facts_read, sec_tagged_slots}`;
+   - `results_releases_read`;
+   - `gaps {open, listed}`.
+
+   New invariant rule `status_line_contradicts_canonical_state`:
+   - A payload status field that disagrees is recorded as repaired. The page reads the
+     canonical value, and the payload field stays as its producer wrote it.
+   - V2 "not sourced" fundamentals notes and evidence channels, and V2 "N blocking
+     research gaps" lines, are rewritten from the state. The blocking line becomes "N
+     required report field(s) not yet filled (the research ledger records M open
+     research gaps)".
+
+   The web shows the canonical searches total, the documents read, the latest interim
+   and the open/listed gaps. A document with no persisted statement line reads "text
+   read · no statement line persisted", never "0 facts".
+2. **Inherited periods.**
+   - An inherited period that had not ended when the source was published loses to the
+     ONE ended reporting period the statement's own text states (`text_stated`,
+     diagnostic `statements_forward_period_replaced`).
+   - "2025" and "FY2025" agree unless the fiscal year is known not to be the calendar
+     year.
+3. **Comparability.**
+   - `scope_differs` is a non-comparable reason, and so is another period combined with
+     another metric. Such a finding is NONCOMPARABLE.
+   - Only an older period of the same metric and scope stays PARTIALLY_CLOSED.
+   - An unscoped finding whose capitalised, non-subject, non-generic name sits directly
+     before the revenue/sales word is `scope_differs`.
+   - Covering facts exclude facts older than the newest annual year when the gap names
+     no period.
+4. **Stated segment.** Because a scope cannot be attributed reliably from HTML
+   chunking, the claim check uses the finding's own words. An unscoped finding naming
+   exactly one capitalised segment / division / business unit carries
+   `segment:<name>` as its claim scope (`claim_checks.stated_segment`). A chair claim
+   that restates the figure without naming the segment is withheld. An acronym source
+   ("CIB segment") is named by a claim that spells it out ("Commercial & Investment
+   Bank segment").
+5. **Applicability.**
+   - Banks skip `growth_pipeline` and `operations_and_assets`, besides cash generation
+     (ADR-069).
+   - The growth analyst's focus is sector-neutral. Permits, construction and offtake
+     stay in the resource playbooks' own development-stage questions.
+6. **Commercial claims.**
+   - New verbs: makes, extracts, processes, ships, manufactures and refines; their
+     "is …ing" forms; and "operates a producing mine/plant/…".
+   - An owned or operated asset followed by a present participle is also a claim.
+   - The non-product object exclusions stay. A possessive or a forward word between
+     the subject and the verb is not a claim.
+   - "plan\w*" no longer matches "plant".
+7. **Peer context.** When `peer_selection.status` is `unavailable`:
+   - the peer table is empty;
+   - a competitive-section finding that states a quantity and SAYS it is about another
+     company ("a peer, not the company", "competitor"), and that the subject test does
+     not place on the subject, is marked `context_only` with the label "Context only —
+     not a comparable company…". An unmarked brand or subsidiary is never labelled.
+8. **Fiscal calendar.**
+   - `canonical_state.fiscal_year_end(v3)` takes the month from:
+     - the SEC annual period of report; else
+     - the year end the issuer's own findings state ("year ended 31 March 2026"). This
+       needs at least two mentions with three quarters agreeing, and a January/February
+       year end is no basis (ADR-065).
+   - `period_bounds(key, fiscal_year_end_month=)` reads keys on that calendar (ADR-065
+     convention). The latest reporting period uses it, and records
+     `documents.fiscal_year_end`.
+   - `issuer_documents_held` also counts the primary documents parsed
+     (`issuer_documents_held_basis: document_coverage`).
+   - In the investigator, an inherited quarter key loses to the statement's own reading
+     of the same quarter one year apart (`2026-Q1` → `2027-Q1`, diagnostic
+     `statements_fiscal_quarter_rekeyed`). When the statement does not state its
+     quarter, the key stands; nothing is guessed.
+9. **Phantom conflicts.**
+   - A contrast between two fields ("net cash …, not net debt", "rather than",
+     "instead of") is no denial. A contrast limited to a period class ("annually, not
+     quarterly") still is. A source label's "not from a filing" is no denial.
+   - New chair rules:
+     - `chair_cited_finding_not_in_ledger`: a key point or synthesis sentence citing a
+       finding id the run does not hold. This is checked only when the payload lists
+       every ledger finding.
+     - `conflict_narrated_between_unpaired_findings`: a sentence narrating a
+       disagreement / conflict / contradiction between two or more cited findings that
+       no recorded disagreement pairs.
+   - `canonical_state.disagreements.finding_pairs` lists the ledger pairs; it is `None`
+     on a payload replay.
+
+### Replay (12 stored reports, `scripts/qa_replay_gap_status.py`, base `e8726e4`)
+- **Gap status.** 480 gaps.
+  - Distribution before: OPEN 376 / PARTIALLY_CLOSED 98 / NONCOMPARABLE 6.
+  - After: 376 / 95 / 9.
+  - 3 changes, all PARTIALLY_CLOSED → NONCOMPARABLE, all correct:
+    - HON2 `f42bc8e1`: a press figure for one segment, for a garbled-segment-table gap;
+    - HON3 `0a473a6f`: a geographic segment's revenue does not say what the segments
+      sell;
+    - HON3 `6d7ec4b1`: an FY2025 cash-conversion figure for a discarded-statement gap,
+      on another period and metric.
+  - LIN2 `2234b6ac` stays PARTIALLY_CLOSED via `ecbd18cd` (the ADR-086 partial close
+    holds).
+  - PYPL4 / JPM2's product-line closes were CLOSED gaps without their text in the
+    payload, so they cannot be replayed. They are covered by tests.
+- **Enforcer.** 131 new violations, 0 gone, 0 withholds.
+  - 130 are status-line repairs:
+    - 96 V2 blocking-gap lines;
+    - 12 web-search counts;
+    - 10 latest-interim labels, e.g. CFR2 Q1 2027, CLLS6 "H1 2026 — stated in issuer
+      findings";
+    - 8 evidence channels;
+    - 4 fundamentals notes.
+  - The remaining one is CLLS6's primary-document line (11 documents held, was 2).
+  - The first replay found one false withhold: JPM2's spelled-out CIB key point. It is
+    fixed and is a regression test.
+- **Canonical documents.**
+  - CFR2: held 0 → 16; latest "2025" (2025-12-31) → "Q1 2027" (2026-06-30), FYE March.
+  - LIN3: latest None → "Q1 2027" (2026-09-30), FYE June.
+  - The calendar issuers' latest periods are unchanged.
+- **D9 (CFR2).**
+  - The fixed detector records 0 of the 3 stored absence pairs; every other report's
+    pairs are unchanged (CLLS6 1, HON2 1, HON3 1, LIN3 3).
+  - A replay under the ledger the fixed detector would write withholds the 3 CFR2 chair
+    sentences narrating the net-cash conflict, and nothing in HON3 or LIN3.
+- **Commercial claims.** The same synthesis claims are detected before and after:
+  - CFR, CFR2, JPM2 and PYPL3, all commercial companies. The gate does not apply.
+  - Under a forced pre-commercial stage, only JPM2 would withhold, as at base.
+- **Peer labelling.** Applied in 5 reports with peers unavailable. It labels 1 finding,
+  LIN3's peer unit cost; it labels nothing in CFR2, CLLS6, JPM2 or PYPL4.
+
+### Known limits
+- SEC HTML filings still parse with no sections. The stated-segment fallback catches
+  only a finding that names its segment.
+- LIN3's stage is None because its annual statements were not extracted, so the
+  commercial gate cannot apply there. Findings are never gated (ADR-088).
+- The producing-miner playbook still asks about permits; only the growth analyst's
+  focus is neutral.
+- A model's own mislabel ("Q1 FY2026" for FY2027's Q1) is kept: the text states that
+  key.
+- The CFR2 statement withheld as `2026@2025-12-31` rests on a document date predating
+  its period (batch H1's area).
+- Disagreement pairs are unknown on a payload replay. The phantom-conflict rule needs
+  the live ledger; the D9 replay simulates it.
+- CLOSED gaps whose text is not in the payload cannot be replayed.
+
+### Review round 1 (NO-GO on `61cb9a2`)
+
+Each reviewer repro (r1–r14) is a regression test in `tests/test_qa_closure_rerun_h2.py`,
+with negative cases.
+
+- **Conflict wording (P1-1).** A chair sentence counts as narrating a finding conflict
+  only when the conflict word governs findings, sources or figures:
+  - "findings conflict", "conflicting findings", "a disagreement between …", "at odds
+    with", or "<id> vs <id>".
+  - A negated form ("no conflict", "nothing is inconsistent") is not a conflict.
+  - A legal, contract or patent "dispute" and "litigation" are never a finding conflict.
+- **Stated segment (P1-2).** `stated_segment` returns no segment when:
+  - the finding has whole-company wording (group, total, consolidated, firm-wide,
+    overall, worldwide);
+  - the segment does not govern a figure in the same clause;
+  - the segment appears only after "driven by", "excluding", "sale of" and similar
+    phrases.
+- **Peer label (P1-3).** A figure is labelled "not a comparable" only when another
+  company owns it. That means one of:
+  - an explicit "(a peer, not the company)" marker;
+  - a peer possessive ("peers' …");
+  - a named legal entity that is not the subject.
+
+  It is never labelled when the subject's name or ticker, or "the company / its / our /
+  we", is in the statement. This covers "the company's AISC is below peers'".
+- **Sub-line scope (P1-4).**
+  - `_sub_line_reasons` applies only to revenue-family requirements, and reads only the
+    clause that states the requirement's figure.
+  - A legal suffix (S.A., Ltd, Inc) is not a product line.
+  - Worldwide, global, company-wide and total-company figures are the whole company's.
+  - So a cash gap is never NONCOMPARABLE because a product-revenue clause sits beside
+    the cash figure.
+- **Fiscal year end (P2-1/P2-2).**
+  - "Half-year / six / nine months / quarter / year-to-date ended …" is not a year-end
+    mention.
+  - `latest_interim` reads quarter keys on the fiscal calendar and labels them "Q1
+    FY2027".
+  - The investigator rekeys an inherited quarter only from the calendar reading to the
+    fiscal reading, which is exactly one year later.
+- **Evidence panel (P2-3).** "text read · no statement line persisted" is shown only for
+  a document whose status is `extracted`.
+- **Commercial claims (P2-4).** None of these is a commercial operation:
+  - a negation after the verb ("processes no ore");
+  - a non-product object (progress, value, payments, decisions, samples, investment,
+    applications …);
+  - a pilot or demonstration plant;
+  - a forward tail ("once commissioned", "when complete", "at full capacity").
+
+  "has" alone is no longer read as ownership of an operating asset.
+- **Contrast denials (P3).** In "<head>, not <tail>" where the head affirmatively names
+  a field:
+  - a tail naming a field denies only the tail's field;
+  - a tail naming only a period class denies the head's field for that class, unless
+    the head states a figure ("Q3 revenue was USD 4,994m — quarterly, not annual"
+    denies nothing);
+  - a tail naming neither ("…, not EBITDA") denies nothing.
+- **P3 tests.**
+  - A September year-end SEC filer.
+  - `_newest_annual_year` and `_fact_is_stale`.
+  - A comparable partial answer is preferred over a non-comparable one.
+  - Malformed payloads.
+  - Timing bounds on loaded hosts were raised from 0.2 s to 0.5 s and from 0.5 s to
+    1.0 s.
+
+**Replay after the review fixes, against `61cb9a2`.**
+- Gap distribution: no change (376 OPEN / 95 PARTIALLY_CLOSED / 9 NONCOMPARABLE).
+- Enforcer: 0 new and 0 gone violations.
+- Commercial claims: no change.
+- Peer labelling: LIN3's Iluka figure is still the only finding labelled.
+- Contradicted absences: HON2's stored pair (98555d8a "… — quarterly, not annual" vs
+  the FY2025 revenue finding) is no longer recorded. It was a false disagreement.
+  CFR2 is still 0 of 3; CLLS6, HON3 and LIN3 are unchanged.
+
+### Review round 2 (re-review of `fcc37ea`)
+
+- **Conflict wording.**
+  - A negation inside the matched words is no conflict: "the filings do not conflict",
+    "are not inconsistent", "don't disagree" (R-P1).
+  - "differ" counts only before "on …" or "materially". "Figures differ by region" and
+    "reports differ in scope" describe; they do not conflict (R-P2).
+  - These forms are now caught (R-P3):
+    - a finding id as the subject: "finding <id> and finding <id> disagree",
+      "(finding_id: <id>) … disagree";
+    - a possessive: "the filing's net debt … contradicts";
+    - "diverge", "is contested", and "different … figures".
+- **Peer label (R-P4).**
+  - An explicit marker ("(a peer, not the company)", "(a competitor)") or a peer
+    possessive before the first figure labels it, whatever pronoun follows in a later
+    clause.
+  - Only the subject's name, ticker or pronoun BEFORE the first figure in its clause
+    blocks the label.
+  - A bare legal name still needs the subject to be unnamed anywhere in the statement.
+- **Interim label (R-P7).**
+  - Only a finding whose key the statement's own words set (`period_basis` `text_stated`
+    or `fiscal`) is read and labelled on the fiscal calendar ("Q4 FY2026" for a September
+    year-end SEC filer).
+  - An inherited corpus tag keeps its calendar reading and label ("Q3 2026").
+- **Timing.**
+  - Per-pattern `finditer` checks are back to 0.2 s.
+  - Whole-function checks keep the raised bounds.
+- **Replay against `fcc37ea`.**
+  - 0 changed gaps; 0 new and 0 gone enforcer violations.
+  - No report's latest-interim label changes: every replayed report reads it from
+    statement facts or a calendar key.
+
+### Review round 3 (final check of `275677e`): conservative design
+
+Rounds 1 and 2 tuned wording heuristics in both directions. Round 3 replaces them with
+a conservative rule: a missed check is acceptable, a false withhold or a false label is
+not. This round supersedes the round-2 conflict and peer rules above.
+
+- **Conflict check (`conflict_narrated_between_unpaired_findings`).** A chair sentence
+  is withheld only when it explicitly sets two research subjects against each other
+  with a conflict verb:
+  - "finding <A> and finding <B> disagree / conflict / contradict / are inconsistent",
+    including "(finding_id: <A>) and (finding_id: <B>) …";
+  - "<A> vs <B>" between two finding ids;
+  - "(the) findings / sources / filings conflict / disagree / contradict", followed by
+    "each other", "one another" or "on <x>";
+  - "conflict / disagreement / inconsistency / contradiction / discrepancy between (the)
+    (two) findings / sources / filings", or between finding ids;
+  - "the <document>'s <metric> … contradicts the <document>'s".
+
+  These are not read: "contested", "different … figures", "differ", "diverge", "at
+  odds with", "conflicting findings".
+
+  A match is skipped when any of these is present:
+  - a negation in the 40 characters before it;
+  - a negation inside it (no, not, never, cannot, nothing, none, n't);
+  - "nothing", "not in" or "only" in the 30 characters after it.
+
+  **Accepted misses** (pinned as tests): "conflicting findings exist", "at odds with",
+  "different net debt figures", "net debt is contested", "the filings diverge", "the
+  figures differ materially", "a discrepancy in net debt between the filing and the
+  release", "the 10-K states X while the release states Y".
+
+  **Replay cost:** in CFR2, `chair.key_points[2]` ("… however, conflicting findings
+  exist on this point") is no longer withheld under the D9 ledger. CFR2's other two
+  conflict sentences are still withheld by `disagreement_narrated_with_none_recorded`.
+- **Peer label.** A finding is labelled "not a comparable" only in two cases:
+  - **(a) Explicit marker.** The clause holding the first figure opens with a named
+    entity carrying exactly one of these markers: "(a peer, not the company)", "(a
+    peer)", "(a competitor)", "(a rival)". The subject must not be named before the
+    figure.
+  - **(b) Named legal entity.** A legally-suffixed name precedes the first figure in its
+    clause, and the subject (name, ticker, "the company", its / our / we) appears
+    nowhere in the statement.
+
+  A peer possessive ("peers' A$1,100/t") never labels: such findings usually mix the
+  subject's own figure with the peers' figure. A detached or malformed marker never
+  labels either: "A peer, not the company: …", "(a competitor to MP)", "(a peer of
+  Iluka)", "(a rival's buyers)".
+- **Fiscal calendar (`_latest_period`, `_latest_interim`).**
+  - For a non-December year end, the fiscal reading applies only to keys known to be
+    fiscal:
+    - statement facts;
+    - SEC periods of report;
+    - a finding whose `period_basis` is `text_stated` or `fiscal`.
+  - An inherited finding key is ambiguous (calendar or fiscal?) and is excluded from
+    both. "Runway into Q1 2027" tagged `2027-Q1` is no longer the latest period of a
+    March year-end issuer.
+  - An inherited `FY2026` is excluded too. Missing beats wrong.
+  - Calendar-year (December or unknown) issuers are unchanged.
+
+### Review round 4 (final check of `78fdb5b`): peer label maximally conservative
+
+This round supersedes the round-3 peer rule.
+
+- **Labelling.** A finding is labelled "not a comparable" only when the clause holding
+  its first figure OPENS with a named entity carrying exactly "(a peer, not the
+  company)", "(a peer)", "(a competitor)" or "(a rival)", and all of these hold:
+  - the opening word is not a comparison or role word (Unlike, Like, Versus, Compared,
+    Relative, Ahead, Against, As, Beside, Than, Following, Supplier, Customer, Partner,
+    Buyer, Offtaker, …);
+  - no punctuation break (comma, colon, semicolon, dash, parenthesis, full stop) sits
+    between the marker and the figure;
+  - the subject is not named before the figure;
+  - no second figure follows "versus", "vs", "compared with/to", "against" or "relative
+    to". Such a finding mixes the peer's figure with the subject's.
+- **Path (b) removed.** A named legal entity owning the figure no longer labels, so
+  "Rival Mining Ltd reported revenue …" and "MP Materials Corp reported …" are not
+  labelled.
+- **Conflict check.** "between (the) sources / filings / findings" no longer counts
+  when followed by "of" ("conflicts between sources of supply").
+- **Accepted misses** (pinned as tests):
+  - a marker followed by a colon ("Iluka (a peer, not the company): H1 2026 unit cash
+    cost $1,236/t …") — this is LIN3's live finding, so the replay no longer labels it;
+  - a legal name with no marker;
+  - a marker with a "versus …" comparison figure ("… $1,236/t vs $1,138/t").
+- **Replay.** LIN3's Iluka finding is no longer labelled. LIN2's ("Iluka Resources (a
+  peer, not the company) reported … $1,236/t …, up 9% from $1,138/t") still would be,
+  but labelling is not applied there because LIN2 records no peer selection. No other report
+  changes.
+
+### Review round 5 (narrow final check of `4ddc7da`): peer-label guards
+
+These guards tighten the round-4 rule:
+
+- **Subject named anywhere (P2-a).** If the statement names the subject anywhere, the
+  finding is never labelled. This covers its name or ticker, "the company", and its /
+  our / we, even in a later clause ("…; its margin was 30%", "…; we note its runway").
+- **Owner test inverted (P2-b).**
+  - The marker must come straight after the name.
+  - The name must open the clause with no lead word. It is rejected when its first
+    token ends in -ing ("Outpacing", "Matching") or when any token is a preposition,
+    adverb, conjunction, comparison or role word ("Similar To", "Alongside", …).
+  - The word right after the marker must be a reporting verb (reported, produced,
+    posted, had / has, was / were, sold, recorded, generated, delivered, achieved,
+    realised, earned, booked, mined, held).
+  - So a noun ("Iluka (a peer) output was …", "AISC …"), a conjunction ("and Mt Weld
+    …") or a relational verb ("bought", "supplied", "cut", "trails") never labels.
+- **Comparison words (P3).** "while" and "whereas" are added to the comparison words
+  that mark a mixed finding.
+- **Accepted misses:**
+  - an asset of the subject named without the subject's name ("Iluka (a peer) supplied
+    5,000t to Mt Weld" is unlabelled only because "supplied" is not a reporting verb;
+    "Iluka (a peer) reported 6,000t, shipped to Mt Weld" would label);
+  - a peer finding that also names the subject anywhere;
+  - reporting verbs outside the list.
+- **Replay.** No change against `4ddc7da`. LIN2's Iluka finding still satisfies the
+  rule; it is not applied there because LIN2 records no peer selection.
+
+### Documented limits (re-review)
+- **R-P5 (subsidiaries):** the subject's subsidiaries are recognised only when they
+  carry the subject's name. A differently-named subsidiary carrying an explicit peer
+  marker would still be labelled. Since round 4 an unmarked one ("Kalgoorlie Rare Earths
+  Processing Pty Ltd") is not labelled. A subsidiary list is not available to the
+  labeller.
+- **R-P6 (contrast denials):**
+  - A head stating a figure in a unit the head-figure rule does not read ("10,500t …,
+    not annual") still denies the head's field for the tail's period class.
+  - Conversely, a head stating a figure denies nothing, even when the period-class tail
+    is meant as a denial ("FY2025 revenue of $5.0bn is disclosed annually, not
+    quarterly").
+- **Fiscal calendar:** for a non-December issuer whose findings carry only inherited
+  keys, there may be no latest period or interim at all. The status line then shows
+  none rather than a guess.

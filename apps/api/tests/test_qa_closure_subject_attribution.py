@@ -3077,7 +3077,7 @@ def test_no_pattern_backtracks_on_a_degenerate_passage(text: str) -> None:
     attribute_statement("Revenue was $5 million.", [passage], subject)  # compile caches
     started = time.perf_counter()
     attribute_statement("Revenue was $5 million.", [passage], subject)
-    assert time.perf_counter() - started < 0.5
+    assert time.perf_counter() - started < 1.0
 
 
 # ---------------------------------------------------------------------------

@@ -491,6 +491,10 @@ class TestDiagnosticsCarryNoSensitiveContent:
             # forward, or withheld. Counts.
             "statements_reclassified_period_not_ended",
             "statements_withheld_period_not_ended",
+            # ADR-091 — an inherited forward period replaced by the stated one, and a
+            # calendar-keyed quarter rekeyed on the fiscal year. Counts.
+            "statements_forward_period_replaced",
+            "statements_fiscal_quarter_rekeyed",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 

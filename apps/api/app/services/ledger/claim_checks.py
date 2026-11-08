@@ -495,12 +495,29 @@ def _segment_name(scope: str | None) -> str | None:
     return " ".join(words)
 
 
+_INITIAL_SKIP: frozenset[str] = frozenset({"&", "and", "of", "the"})
+
+
+def _spelled_out(claim: str, name: str) -> bool:
+    """ADR-091 — the source names the segment by an acronym ("CIB segment") and the
+    claim spells it out ("the Commercial & Investment Bank segment")."""
+    if " " in name or not 2 <= len(name) <= 5 or not name.isalpha():
+        return False
+    stated = stated_segment(claim)
+    if stated is None:
+        return False
+    words = [w for w in stated.removeprefix("segment:").split() if w not in _INITIAL_SKIP]
+    return "".join(w[0] for w in words if w) == name
+
+
 def _names_scope(claim: str, name: str) -> bool:
     """The claim names the segment: one of its words, or (review P3) a short upper-case
     acronym — "AWM" for "asset & wealth management". An acronym that is not obviously
     something else is taken as the segment's: the check cannot tell, so it keeps."""
     claim_low = claim.lower()
     if any(len(w) >= 4 and w in claim_low for w in name.split()) or name in claim_low:
+        return True
+    if _spelled_out(claim, name):
         return True
     return any(token not in _NOT_SEGMENT_ACRONYMS
                for token in _ACRONYM_RE.findall(claim[:MAX_CLAIM_CHARS]))
@@ -634,6 +651,77 @@ def ratio_keys_of(text: str | None) -> frozenset[str]:
 DERIVED_SOURCE_KINDS: frozenset[str] = frozenset({"platform_calculation"})
 
 
+#: ADR-091 — a statement that names ONE segment by its capitalised name: "In the
+#: Corporate segment, net revenue was $93m", "the Commercial & Investment Bank segment".
+#: Bounded repetition over a closed token class; the plural ("segments") lists several.
+_STATED_SEGMENT_RE = re.compile(
+    r"\b(?P<name>[A-Z][\w&'’-]{0,30}(?:[ \t]{1,3}(?:&[ \t]{1,3})?[A-Z][\w&'’-]{0,30}){0,3})"
+    r"[ \t]{1,3}(?:segment|division|business[ \t]{1,3}unit|line[ \t]{1,3}of[ \t]{1,3}"
+    r"business)\b(?!s)"
+)
+_NOT_A_SEGMENT_NAME: frozenset[str] = frozenset(
+    {"group", "the group", "each", "every", "reportable", "operating", "the", "one",
+     "another", "other", "this", "that", "its"}
+)
+
+
+#: Review P1-2 — whole-company wording: the statement's figure is the Group's, whatever
+#: segment it also mentions. "(not Group)" / "non-group" is not such wording.
+_WHOLE_COMPANY_RE = re.compile(
+    r"(?<!not )(?<!non-)\b(?:group|total|consolidated|firm-?wide|group-?wide|"
+    r"company-?wide|overall|worldwide)\b",
+    re.IGNORECASE,
+)
+#: A segment that is only MENTIONED next to a figure, never its owner.
+_MENTIONED_SEGMENT_RE = re.compile(
+    r"\b(?:driven[ \t]{1,3}by|led[ \t]{1,3}by|helped[ \t]{1,3}by|excluding|excl\.?|"
+    r"except(?:[ \t]{1,3}for)?|other[ \t]{1,3}than|outside|sale[ \t]{1,3}of|disposal[ \t]{1,3}of|"
+    r"divestment[ \t]{1,3}of|divestiture[ \t]{1,3}of|exit[ \t]{1,3}from|spin-?off[ \t]{1,3}of)"
+    r"(?:[ \t]{1,3}[\w&'’-]{1,30}){0,4}[ \t]{0,3}$",
+    re.IGNORECASE,
+)
+_SEGMENT_CLAUSE_RE = re.compile(r";|\.(?:[ \t]|$)|\n")
+
+
+def stated_segment(statement: str | None) -> str | None:
+    """ADR-091 — ``segment:<name>`` when an unscoped finding's own words name exactly
+    one segment that OWNS its figure, else ``None``. Used only for the claim check: a
+    chair claim restating such a figure without the segment is a figure presented as the
+    company's.
+
+    Review P1-2: the segment must sit in the same clause as a figure and before it; a
+    segment named after "driven by", "excluding", "sale of" … is only mentioned; and any
+    whole-company wording (group, total, consolidated, firm-wide) means the figure is the
+    company's."""
+    text = str(statement or "")[:600]
+    if _WHOLE_COMPANY_RE.search(text):
+        return None
+    names: set[str] = set()
+    start = 0
+    bounds = [m.start() for m in _SEGMENT_CLAUSE_RE.finditer(text)] + [len(text)]
+    for end in bounds:
+        clause = text[start:end]
+        offset = start
+        start = end + 1
+        figs = figures(clause, 4)
+        if not figs:
+            continue
+        first = figs[0].start
+        for m in _STATED_SEGMENT_RE.finditer(clause):
+            if m.start() > first:
+                continue
+            if _MENTIONED_SEGMENT_RE.search(text[max(0, offset + m.start() - 60):
+                                                 offset + m.start()]):
+                continue
+            names.add(
+                m.group("name").strip().lower().removeprefix("the ").removeprefix("in ")
+                .strip())
+    names = {n for n in names if n not in _NOT_A_SEGMENT_NAME}
+    if len(names) != 1:
+        return None
+    return f"segment:{next(iter(names))}"
+
+
 def source_of_finding(finding: dict[str, object]) -> ClaimSource | None:
     """A payload finding (``v3_research.findings[*]``) as a claim source."""
     fid = str(finding.get("finding_id") or "")
@@ -648,7 +736,7 @@ def source_of_finding(finding: dict[str, object]) -> ClaimSource | None:
         source_id=fid,
         text=statement,
         period=str(finding.get("period_key") or "") or None,
-        scope=str(finding.get("scope_key") or "") or None,
+        scope=str(finding.get("scope_key") or "") or stated_segment(statement),
         derived=derived,
         ratio_keys=ratio_keys_of(statement) if derived else frozenset(),
     )

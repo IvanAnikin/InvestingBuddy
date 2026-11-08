@@ -497,6 +497,7 @@ export default async function ResearchReportPage({
             channels={view.channels}
             reportId={report.id}
             webSources={webSources}
+            documentsRead={v3?.canonicalState?.documentsRead ?? null}
             sourceNotes={[
               view.snapshot.currentPeriodNote,
               view.snapshot.statementsNote,

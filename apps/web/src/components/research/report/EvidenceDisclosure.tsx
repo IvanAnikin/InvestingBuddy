@@ -26,7 +26,10 @@ export default function EvidenceDisclosure({
   reportId,
   sourceNotes = [],
   webSources = [],
+  documentsRead = null,
 }: {
+  /** ADR-091 — `canonical_state.status.documents_read`; null on older reports. */
+  documentsRead?: number | null;
   primaryDocuments: ReportPrimaryDocumentsResponse | null;
   disclosures: DisclosureView[];
   appendix: AppendixView;
@@ -50,10 +53,11 @@ export default function EvidenceDisclosure({
     (d) => d.status !== "discovered",
   );
   const counts: string[] = [];
-  if (documents.length > 0) {
-    counts.push(
-      `${documents.length} document${documents.length === 1 ? "" : "s"} read`,
-    );
+  // ADR-091: the run's own count of primary documents read (canonical state) when it
+  // has one; the V2 ingestion list below covers only the documents V2 attempted.
+  const read = Math.max(documentsRead ?? 0, documents.length);
+  if (read > 0) {
+    counts.push(`${read} document${read === 1 ? "" : "s"} read`);
   }
   if (disclosures.length > 0) {
     counts.push(

@@ -50,6 +50,7 @@ function DocumentCard({
   title,
   meta,
   facts,
+  extracted,
   factLabel,
   url,
   warnings,
@@ -57,6 +58,8 @@ function DocumentCard({
   title: string;
   meta: string[];
   facts: number;
+  /** ADR-091 review P2-3: "text read" only for a document whose text was extracted. */
+  extracted: boolean;
   factLabel: string;
   url: string | null;
   warnings: string[];
@@ -80,7 +83,11 @@ function DocumentCard({
           </span>
         )}
         <span className="shrink-0 font-mono text-xs text-[color:var(--ib-ink-3)]">
-          {facts} {factLabel}
+          {/* ADR-091: "0 facts" read as "nothing in it" beside findings citing the
+              document's text; a document with no persisted statement line says so. */}
+          {facts > 0 || !extracted
+            ? `${facts} ${factLabel}`
+            : "text read · no statement line persisted"}
         </span>
       </div>
       {meta.length > 0 && (
@@ -221,6 +228,7 @@ function EvidenceBody({
                   doc.status !== "extracted" ? doc.status : "",
                 ].filter(Boolean)}
                 facts={doc.persisted_validated_fact_count}
+                extracted={doc.status === "extracted"}
                 factLabel={doc.fact_count_label}
                 warnings={doc.failure_code ? [doc.failure_code] : []}
               />

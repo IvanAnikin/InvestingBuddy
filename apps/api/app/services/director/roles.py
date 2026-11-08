@@ -283,8 +283,10 @@ EVENT_ANALYST = RoleSpec(
     role_id="event_analyst",
     display_name="Growth & Catalyst Analyst",
     focus=(
-        "The project pipeline and dated catalysts: capacity additions, capex, "
-        "permits, construction status, offtake and contracts, expected timing."
+        # ADR-091 (JPM2-D7): sector-neutral. Permits, construction status and offtake
+        # are asked by the resource playbooks' own questions, not of every company.
+        "The growth pipeline and dated catalysts: new products, capacity or expansion "
+        "projects, the investment behind them, contracts and expected timing."
     ),
     tools=frozenset(
         {TOOL_GET_IR_EVENTS, TOOL_GET_RECENT_FILINGS, TOOL_SEARCH_COMPANY_CORPUS}
