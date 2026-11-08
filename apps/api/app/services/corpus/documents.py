@@ -344,6 +344,15 @@ async def upsert_document_version(
             existing.extracted_document_id = payload.extracted_document_id
         if web is not None and web.web_fetch_attempt_id and not existing.web_fetch_attempt_id:
             existing.web_fetch_attempt_id = web.web_fetch_attempt_id
+        if payload.published_at is not None and existing.published_at is None:
+            # ADR-090 — backfill only, version and chunks (ADR-076's NULL-only stamp): a
+            # filing exhibit first stored undated takes its filing's date when met again.
+            from app.services.corpus.filing_evidence import stamp_filing_date
+
+            await session.flush()
+            await stamp_filing_date(
+                session, version_id=existing.id, filing_date=payload.published_at
+            )
         await session.flush()
         return existing
 

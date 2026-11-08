@@ -136,9 +136,335 @@ async def load_statement_facts(session: Any, company_id: Any) -> list[dict[str, 
                 "document_title": document.title,
                 "document_date": document.doc_date.isoformat() if document.doc_date else None,
                 "document_source_type": document.source_type,
+                # ADR-090 — the document's own tier: only an issuer or official document
+                # (a T1 tier) states the issuer's statements.
+                "document_source_tier": document.source_tier,
             }
         )
     return out
+
+
+# ── Which facts may fill a statement slot (ADR-090) ───────────────────────── #
+
+#: Why a fact fills no slot and enters no conflict. Recorded (counts and a bounded list
+#: of field / period / reason / document title), never the fact's text.
+WITHHELD_NOT_A_NUMBER = "not_a_number"
+WITHHELD_NOT_AN_ISSUER_DOCUMENT = "not_an_issuer_document"
+WITHHELD_FORWARD_STATEMENT = "forward_statement"
+WITHHELD_ANNUAL_PERIOD_NOT_ENDED = "annual_period_not_ended"
+WITHHELD_PERIOD_NOT_ENDED = "period_not_ended"
+
+_PERIOD_REASONS = frozenset({WITHHELD_ANNUAL_PERIOD_NOT_ENDED, WITHHELD_PERIOD_NOT_ENDED})
+
+#: How many withheld facts are listed by name in the payload (all are counted).
+MAX_WITHHELD_LISTED = 40
+
+#: How a statement prints a nil row (read as 0 by the statement parsers).
+_NIL_MARKS = frozenset({"-", "–", "—", "nil", "Nil", "NIL"})
+
+#: A figure inside a fact's as-printed value: digit groups joined by a thousands
+#: separator ("4,994", "3 484", "1'250", "8.257"), an optional decimal part, an optional
+#: sign or accounting brackets. Every repetition is bounded: linear on any input.
+_FIGURE_TOKEN_RE = re.compile(
+    r"(?<![\d.,])\(?-?\d{1,3}(?:[,.'\u00a0\u202f ]\d{3}){1,8}(?:[.,]\d{1,12})?\)?"
+    r"|(?<![\d.,])\(?-?\d{1,24}(?:[.,]\d{1,12})?\)?"
+)
+
+#: ADR-080 forward cues (``date_semantics`` guidance / target / forecast rows) as they
+#: occur in a fact's OWN value text ("EBIT target was also cut to $4.35bn", "sales
+#: guidance of $19.8 billion", "expects revenue of …"). "estimated" is deliberately not a
+#: cue: an Appendix 5B states "estimated quarters of funding" as its own item (ADR-087).
+_FORWARD_FACT_RE = re.compile(
+    r"\b(?:target(?:s|ed|ing)?|guidance|guid(?:e|es|ed|ing)|outlook"
+    r"|expect(?:s|ed|ing|ation|ations)?|anticipat(?:e|es|ed|ing)"
+    r"|forecast(?:s|ed|ing)?|projected|projections?|consensus)\b"
+)
+
+
+def _figure_readings(token: str) -> list[float]:
+    """Every reading of an as-printed figure: "4,994" (comma groups) and "22,4" (comma
+    decimal) are both tried, and the fact's own parsed number decides which it was."""
+    text = token.strip().strip("()").lstrip("-")
+    for blank in "'\u00a0\u202f ":
+        text = text.replace(blank, "")
+    out: list[float] = []
+    for candidate in (text.replace(",", ""), text.replace(".", "").replace(",", ".")):
+        try:
+            out.append(float(candidate))
+        except ValueError:
+            continue
+    return out
+
+
+def slot_number(fact: dict[str, Any]) -> str | None:
+    """The fact's value as a NUMBER, as printed ("4,994", "(1,953)", "4.35"), or ``None``.
+
+    A slot only ever holds a parsed numeric value (ADR-090 a). A fact whose stored value
+    text holds no figure equal to its parsed ``numeric_value`` — a sentence, a label, a
+    different number — fills no slot. A fact with no value text shows its parsed number.
+    """
+    import math
+
+    raw = fact.get("numeric_value")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    text = str(fact.get("value") or "").strip()
+    if not text:
+        return f"{number:,.12g}" if abs(number) >= 1000 else f"{number:.12g}"
+    if number == 0 and text in _NIL_MARKS:
+        # A statement's printed nil ("-" in an Appendix 5B row) is the number zero.
+        return "0"
+    for match in _FIGURE_TOKEN_RE.finditer(text[:500]):
+        for reading in _figure_readings(match.group(0)):
+            if abs(reading - abs(number)) <= max(abs(number), 1.0) * 1e-9:
+                return match.group(0).strip()
+    return None
+
+
+def _reference_date(fact: dict[str, Any], as_of: date) -> date:
+    """The date a fact's period must have ended by: its document's date when known (no
+    document reports a period that had not ended when it was published), never later
+    than the run date."""
+    raw = str(fact.get("document_date") or "")[:10]
+    try:
+        published = date.fromisoformat(raw) if raw else None
+    except ValueError:
+        published = None
+    return min(published, as_of) if published is not None else as_of
+
+
+def annual_has_ended(year: int, reference: date, anchor: Any = None) -> bool:
+    """Had fiscal year ``year`` ENDED by ``reference``? Fail closed (ADR-090 b).
+
+    With the issuer's fiscal calendar (an ADR-088 ``FiscalYearAnchor``) the year ends
+    where the anchor projects it, plus the 52/53-week tolerance. Without one the year is
+    read as the CALENDAR year: it has ended only after 31 December. The reverse of
+    ADR-088's lenient reading on purpose — there, wrongly calling a period unended would
+    withhold a true statement; here, wrongly calling it ended puts a part-year figure in
+    an annual slot. Missing data is acceptable; wrong data is not.
+    """
+    from app.services.statement_kind import FISCAL_END_TOLERANCE
+
+    end: date | None = None
+    margin = timedelta(0)
+    if anchor is not None:
+        try:
+            end = anchor.year_end(int(year))
+            margin = FISCAL_END_TOLERANCE
+        except Exception:  # noqa: BLE001 - a malformed anchor means the calendar year
+            end = None
+    if end is None:
+        end = date(int(year), 12, 31)
+    return reference > end + margin
+
+
+def _fiscal_label_year(fact: dict[str, Any]) -> int | None:
+    """The fiscal year of an interim period the fact's OWN document is titled or
+    addressed as, in the issuer's explicit fiscal labelling ("FY27 Q1 sales"), when the
+    fact states a figure for that same period — else ``None``.
+
+    The issuer has reported part of fiscal year N+1, so its fiscal year N is over: the
+    one calendar fact a non-SEC issuer's own documents give (ADR-065 labels). Read with
+    ADR-080's detector, which refuses a forward label ("Outlook for FY27 Q1")."""
+    from app.services.sources.document_period import BASIS_FISCAL_LABEL, document_period_of
+    from app.services.sources.financial_period import parse_period
+
+    stated = parse_period(fact.get("period"))
+    if not stated.is_interim or not stated.year:
+        return None
+    raw = str(fact.get("document_date") or "")[:10]
+    try:
+        published = date.fromisoformat(raw) if raw else None
+    except ValueError:
+        published = None
+    found = document_period_of(
+        title=fact.get("document_title"), url=fact.get("source_url"), extraction=None,
+        as_of=published,
+    )
+    if not found.is_known or found.basis != BASIS_FISCAL_LABEL:
+        return None
+    if found.period.label() != stated.label():
+        return None
+    return found.period.year
+
+
+#: An issuer document that IS its annual report or full-year results ("Annual Report
+#: 2025", "Full year results 2025/26"), never a notice of one, its governance statement
+#: or an outlook. Bounded alternations: linear.
+_ANNUAL_TITLE_RE = re.compile(
+    r"\bannual\s+(?:financial\s+)?report\b"
+    r"|\b(?:final|full[\s-]year|annual|preliminary)\s+results\b",
+    re.IGNORECASE,
+)
+_NOT_ANNUAL_TITLE_RE = re.compile(
+    r"\bcorporate\s+governance\b|\bappendix\s+4g\b|\bnotice\s+of\b|\bletter\s+to\b"
+    r"|\bproxy\b|\bsustainab|\besg\b|\bpresentation\b|\bbriefing\b|\bwebcast\b"
+    r"|\bconference\s+call\b|\boutlook\b|\bguidance\b|\bresults\s+date\b|\binvitation\b",
+    re.IGNORECASE,
+)
+
+
+#: A two-digit fiscal label ("FY26") in an annual report's title or file name.
+_SHORT_FY_RE = re.compile(r"\bfy\s?(\d{2})\b", re.IGNORECASE)
+_NAME_SEPARATORS_RE = re.compile(r"[-_+.]")
+
+
+def _url_file_name(fact: dict[str, Any]) -> str:
+    """The last path segment of the fact's source URL, as words ("fy26-annual-report.pdf"
+    → "fy26 annual report pdf")."""
+    from urllib.parse import unquote, urlsplit
+
+    try:
+        path = urlsplit(str(fact.get("source_url") or "")[:2000]).path
+    except ValueError:
+        return ""
+    return _NAME_SEPARATORS_RE.sub(" ", unquote(path.rsplit("/", 1)[-1]))[:300]
+
+
+def _annual_name_year(name: str) -> int | None:
+    """The one fiscal year a document name says it is the annual report for, or None."""
+    if not name or not _ANNUAL_TITLE_RE.search(name) or _NOT_ANNUAL_TITLE_RE.search(name):
+        return None
+    years = {
+        int(m.group(1)[:4]) + (1 if "/" in m.group(1) else 0)
+        for m in _HEADLINE_YEAR_RE.finditer(name)
+    }
+    years |= {2000 + int(m.group(1)) for m in _SHORT_FY_RE.finditer(name)}
+    return next(iter(years)) if len(years) == 1 else None
+
+
+def _annual_document_year(fact: dict[str, Any]) -> int | None:
+    """The fiscal year the fact's own document says it is the annual report (or full-year
+    results) FOR — one year in its title ("Annual Report 2025" → 2025, "2025/26" → 2026)
+    — else ``None``. An issuer publishing its annual report for year N is the evidence
+    that year N had ended, on any fiscal calendar."""
+    year = None
+    for name in (str(fact.get("document_title") or "")[:300], _url_file_name(fact)):
+        year = _annual_name_year(name)
+        if year is not None:
+            break
+    if year is None:
+        return None
+    raw = str(fact.get("document_date") or "")[:10]
+    try:
+        published = date.fromisoformat(raw) if raw else None
+    except ValueError:
+        published = None
+    if published is not None and published < date(year, 1, 1):
+        return None  # dated before the year it names began: not that year's report
+    return year
+
+
+def _ineligibility(
+    fact: dict[str, Any], *, as_of: date, anchor: Any, fiscal_year_begun: int | None = None
+) -> str | None:
+    """Why ``fact`` may not fill a statement slot or enter a conflict, or ``None``."""
+    from app.services.sources.financial_period import PERIOD_TYPE_ANNUAL, parse_period
+    from app.services.statement_kind import Period, not_ended_by
+
+    tier = fact.get("document_source_tier")
+    if tier is not None and not str(tier).startswith("T1"):
+        # A web article, an aggregator or a trade publication restating a figure is not
+        # the issuer's statement, whatever the platform's extractor read from it.
+        return WITHHELD_NOT_AN_ISSUER_DOCUMENT
+    if slot_number(fact) is None:
+        return WITHHELD_NOT_A_NUMBER
+    if _FORWARD_FACT_RE.search(str(fact.get("value") or "")[:500].lower()):
+        return WITHHELD_FORWARD_STATEMENT
+    period = parse_period(fact.get("period"))
+    if period.is_unknown or not period.year:
+        return None
+    reference = _reference_date(fact, as_of)
+    if period.period_type == PERIOD_TYPE_ANNUAL:
+        if fiscal_year_begun is not None and period.year < fiscal_year_begun:
+            return None
+        if _annual_document_year(fact) == period.year:
+            return None
+        if not annual_has_ended(period.year, reference, anchor):
+            return WITHHELD_ANNUAL_PERIOD_NOT_ENDED
+        return None
+    # An interim or split-year period: refused when it demonstrably had not ended
+    # (ADR-088's reading, which never calls a period unended that may have ended).
+    if period.is_interim and period.ordinal:
+        kind = "quarter" if period.period_type == "quarter" else "half"
+        judged = Period(kind, period.year, period.ordinal)
+    else:
+        # A split year "2025/26" ends somewhere in its second calendar year.
+        judged = Period("annual", period.year + 1, calendar=True)
+        if reference < date(period.year + 1, 1, 1):
+            return WITHHELD_PERIOD_NOT_ENDED
+        return None
+    if not_ended_by(judged, reference, anchor) is not None:
+        return WITHHELD_PERIOD_NOT_ENDED
+    return None
+
+
+def eligible_statement_facts(
+    facts: list[dict[str, Any]], *, as_of: date, anchor: Any = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(eligible, withheld)``: the facts that may fill a slot or enter a conflict, and
+    one record per refused fact (field, period, reason, document title and date)."""
+    eligible, withheld, _begun, _period_only = _eligible(facts, as_of=as_of, anchor=anchor)
+    return eligible, withheld
+
+
+def statement_slot_facts(
+    facts: list[dict[str, Any]] | None, *, as_of: date, anchor: Any = None
+) -> list[dict[str, Any]]:
+    """The facts a canonical statement slot may take — the V2 financial snapshot's
+    filter (ADR-090). Facts that are not statement figures (identity fields, employee
+    counts) are judged the same way; a non-dict is dropped."""
+    return eligible_statement_facts(
+        [f for f in facts or [] if isinstance(f, dict)], as_of=as_of, anchor=anchor
+    )[0]
+
+
+def _eligible(
+    facts: list[dict[str, Any]], *, as_of: date, anchor: Any = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int | None, list[dict[str, Any]]]:
+    """:func:`eligible_statement_facts`, plus the latest fiscal year the issuer's own
+    documents show had begun (see :func:`_fiscal_label_year`), when one does, and the
+    facts withheld ONLY for their period (they may still block a slot)."""
+    from app.services.sources.financial_period import PERIOD_TYPE_ANNUAL, parse_period
+
+    # First the part-year facts: an eligible one in a document the issuer titled with
+    # its own fiscal label is the evidence that an earlier fiscal year had ended.
+    begun: int | None = None
+    for fact in facts:
+        if parse_period(fact.get("period")).period_type == PERIOD_TYPE_ANNUAL:
+            continue
+        if _ineligibility(fact, as_of=as_of, anchor=anchor) is not None:
+            continue
+        year = _fiscal_label_year(fact)
+        if year is not None and (begun is None or year > begun):
+            begun = year
+    eligible: list[dict[str, Any]] = []
+    withheld: list[dict[str, Any]] = []
+    period_only: list[dict[str, Any]] = []
+    for fact in facts:
+        reason = _ineligibility(fact, as_of=as_of, anchor=anchor, fiscal_year_begun=begun)
+        if reason is None:
+            eligible.append(fact)
+            continue
+        if reason in _PERIOD_REASONS:
+            period_only.append(fact)
+        withheld.append(
+            {
+                "field": fact.get("field"),
+                "period": fact.get("period"),
+                "reason": reason,
+                "document_title": fact.get("document_title"),
+                "document_date": fact.get("document_date"),
+                "fact_id": fact.get("fact_id"),
+            }
+        )
+    return eligible, withheld, begun, period_only
 
 
 # ── Slots ─────────────────────────────────────────────────────────────────── #
@@ -182,7 +508,7 @@ def _without_conflicts(
     for fact in facts:
         if fact.get("confidence") != "high" or parse_scope(fact.get("scope")).is_segment:
             continue
-        groups.setdefault((str(fact["field"]), str(fact.get("period") or "")), []).append(fact)
+        groups.setdefault((str(fact["field"]), _period_group(fact)), []).append(fact)
     conflicted: set[tuple[str, str]] = set()
     conflicts: list[dict[str, Any]] = []
     for key, group in groups.items():
@@ -191,7 +517,7 @@ def _without_conflicts(
             conflicts.append(
                 {
                     "field": key[0],
-                    "period": key[1] or None,
+                    "period": str(group[0].get("period") or "") or None,
                     "values": [
                         {
                             "numeric_value": f.get("numeric_value"),
@@ -209,10 +535,24 @@ def _without_conflicts(
     kept = [
         f
         for f in facts
-        if (str(f["field"]), str(f.get("period") or "")) not in conflicted
+        if (str(f["field"]), _period_group(f)) not in conflicted
         or f.get("confidence") != "high"
     ]
     return kept, conflicts
+
+
+def _period_group(fact: dict[str, Any]) -> str:
+    """The period a conflict compares within: like with like (ADR-090 d). The canonical
+    period — its granularity (year / half / quarter / split year) and its label — so
+    "2025" and "FY2025" are one period and "2026" never meets "Q3 2026". An unparsed
+    period stays its own raw text."""
+    from app.services.sources.financial_period import parse_period
+
+    raw = str(fact.get("period") or "")
+    period = parse_period(raw or None)
+    if period.is_unknown:
+        return raw
+    return f"{period.period_type}:{period.label()}"
 
 
 def _tagged_concept(fact: dict[str, Any]) -> str | None:
@@ -248,6 +588,12 @@ def _datapoint(fact: dict[str, Any], *, period_basis: str | None = None) -> dict
     from app.services.final_report_generator import _primary_fact_dp
 
     dp = _primary_fact_dp(fact)
+    # ADR-090 a — the slot holds the NUMBER as printed, never the sentence it was read
+    # from. Only an eligible fact reaches here, so it has one.
+    dp["value"] = slot_number(fact)
+    if fact.get("document_source_tier"):
+        # The document's own tier, not the V2 helper's constant.
+        dp["source_tier"] = fact.get("document_source_tier")
     dp["source"] = "issuer_document"
     dp["document_title"] = fact.get("document_title")
     dp["document_date"] = fact.get("document_date")
@@ -490,6 +836,7 @@ def _annual_state(
     core_disclosures: dict[str, Any],
     core_filings: dict[str, Any],
     now: datetime,
+    withheld_annual: int = 0,
 ) -> dict[str, Any]:
     from app.services.sources.financial_period import PERIOD_TYPE_ANNUAL, parse_period
     from app.services.sources.period_state import select_latest_annual
@@ -540,6 +887,24 @@ def _annual_state(
             "reason": (
                 "The report is in the research corpus, but no validated Group statement "
                 "figure was extracted from it."
+            ),
+        }
+
+    if withheld_annual:
+        # ADR-090 — annual figures WERE read, but the fiscal year they name could not be
+        # shown to have ended by their documents' dates: held, not shown. Never "not
+        # acquired".
+        return {
+            "state": STATE_ACQUIRED_NOT_EXTRACTED,
+            "period": None,
+            "label": "Annual figures held — not shown: their fiscal year had not ended",
+            "knowledge_state": STATE_ACQUIRED_NOT_EXTRACTED,
+            "document": None,
+            "reason": (
+                f"{withheld_annual} annual statement figure(s) name a fiscal year that "
+                "had not ended by their documents' dates (read on the issuer's fiscal "
+                "calendar where known, otherwise the calendar year); none is shown as "
+                "an annual figure."
             ),
         }
 
@@ -681,8 +1046,12 @@ def build_financial_statements_state(
     core_disclosures: dict[str, Any] | None = None,
     core_filings: dict[str, Any] | None = None,
     now: datetime | None = None,
+    fiscal_anchor: Any = None,
 ) -> dict[str, Any]:
-    """The statements view — slots, reporting periods, the A/B/C states. Pure."""
+    """The statements view — slots, reporting periods, the A/B/C states. Pure.
+
+    ``fiscal_anchor`` (an ADR-088 ``FiscalYearAnchor``) is the issuer's fiscal calendar
+    when known; without it an annual period is judged as the calendar year (ADR-090)."""
     from app.services.final_report_generator import (
         _current_period_facts_for,
         _high_confidence_facts_for,
@@ -693,7 +1062,21 @@ def build_financial_statements_state(
     now = now or datetime.now(timezone.utc)
     disclosures = core_disclosures or {}
     filings = core_filings or {}
-    usable, conflicts = _without_conflicts(facts)
+    # ADR-090 — only a number, from an issuer document, stating an actual for a period
+    # that had ended, fills a slot or enters a conflict.
+    eligible, withheld, fiscal_year_begun, period_only = _eligible(
+        facts, as_of=now.date(), anchor=fiscal_anchor
+    )
+    # A figure withheld ONLY because its period could not be shown to have ended still
+    # disagrees with an eligible figure for the same field and period: it can block that
+    # slot (never fill one). Withholding it must not hand the slot to the other side.
+    eligible_groups = {(str(f["field"]), _period_group(f)) for f in eligible}
+    blockers = [
+        f for f in period_only if (str(f["field"]), _period_group(f)) in eligible_groups
+    ]
+    usable, conflicts = _without_conflicts([*eligible, *blockers])
+    blocker_ids = {id(f) for f in blockers}
+    usable = [f for f in usable if id(f) not in blocker_ids]
     selected_annual = _high_confidence_facts_for(usable, ISSUER_STATEMENT_FIELDS)
     current = _current_period_facts_for(usable, ISSUER_STATEMENT_FIELDS)
 
@@ -714,7 +1097,10 @@ def build_financial_statements_state(
     return {
         "version": 1,
         "annual": _annual_state(
-            selected_annual, core_disclosures=disclosures, core_filings=filings, now=now
+            selected_annual, core_disclosures=disclosures, core_filings=filings, now=now,
+            withheld_annual=sum(
+                1 for w in withheld if w.get("reason") == WITHHELD_ANNUAL_PERIOD_NOT_ENDED
+            ),
         ),
         "current_period": _current_state(
             current, core_disclosures=disclosures, core_filings=filings
@@ -726,6 +1112,15 @@ def build_financial_statements_state(
         # estimated quarters of funding), kept apart from the platform's derivations.
         "issuer_stated": _issuer_stated(current_by_field),
         "conflicts": conflicts,
+        # ADR-090 — facts read but never shown as a statement figure, and why.
+        "withheld_counts": _counts(withheld),
+        "withheld": withheld[:MAX_WITHHELD_LISTED],
+        "fiscal_calendar": (
+            "issuer_sec_statements" if fiscal_anchor is not None
+            else "issuer_fiscal_labels" if fiscal_year_begun is not None
+            else "calendar_year"
+        ),
+        "fiscal_year_begun": fiscal_year_begun,
         "facts_read": len(facts),
         "documents_read": len({f.get("document_id") for f in facts if f.get("document_id")}),
         "provenance": "derived",
@@ -737,6 +1132,28 @@ def build_financial_statements_state(
             "converted, annualised or estimated, and no EBITDA is derived."
         ),
     }
+
+
+def _counts(withheld: list[dict[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for item in withheld:
+        reason = str(item.get("reason"))
+        out[reason] = out.get(reason, 0) + 1
+    return dict(sorted(out.items()))
+
+
+async def _load_fiscal_anchor(company: Any) -> Any:
+    """The issuer's fiscal-year anchor from its SEC statements (ADR-088's cached, bounded
+    reader), or ``None``. A seam: the test suite makes it inert, as it does every other
+    live SEC lookup. Never raises."""
+    from app.services import statement_kind
+
+    try:
+        return await statement_kind.load_fiscal_year_anchor(
+            getattr(company, "ticker", None), getattr(company, "exchange", None)
+        )
+    except Exception:  # noqa: BLE001 - no calendar means the calendar-year reading
+        return None
 
 
 async def financial_statements_for(
@@ -751,17 +1168,20 @@ async def financial_statements_for(
 
     The read runs in a SAVEPOINT, so a database error is rolled back to it instead of
     leaving the run's transaction aborted behind a swallowed exception (review M1)."""
+    anchor = await _load_fiscal_anchor(company)
     try:
         async with session.begin_nested():
             facts = await load_statement_facts(session, getattr(company, "id", None))
     except Exception as exc:  # noqa: BLE001 - a statements view must not end the run
         state = build_financial_statements_state(
-            [], core_disclosures=core_disclosures, core_filings=core_filings, now=now
+            [], core_disclosures=core_disclosures, core_filings=core_filings, now=now,
+            fiscal_anchor=anchor,
         )
         state["error"] = f"statement facts could not be read ({type(exc).__name__})"
         return state
     return build_financial_statements_state(
-        facts, core_disclosures=core_disclosures, core_filings=core_filings, now=now
+        facts, core_disclosures=core_disclosures, core_filings=core_filings, now=now,
+        fiscal_anchor=anchor,
     )
 
 
@@ -772,7 +1192,11 @@ __all__ = [
     "STATE_FACTS_EXTRACTED",
     "STATE_NOT_ACQUIRED",
     "STATE_NOT_REPORTED_BY_ISSUER",
+    "annual_has_ended",
     "build_financial_statements_state",
+    "eligible_statement_facts",
+    "slot_number",
+    "statement_slot_facts",
     "financial_statements_for",
     "load_statement_facts",
 ]

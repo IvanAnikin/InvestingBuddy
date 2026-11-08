@@ -8740,3 +8740,129 @@ unambiguously bind the same figure to different periods.
   field reader does not recognise) is NONCOMPARABLE rather than PARTIALLY_CLOSED (the
   LIN / LIN2 rows above). It never closes on another entity's figure.
 - Stored payloads predate ADR-084, so `EXTRACTION_FAILED` does not occur in the replay.
+
+---
+## ADR-090: A Statement Slot Holds an Ended Period's Number From the Issuer; a Count-Satisfied Question Still Re-Reads Its Held Filings
+
+**Date:** 2026-11-05 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** QA closure rerun on `e8726e4` (report HON3), batch H1. Defects: HON3-1
+(P0, statements view) and the ADR-084 re-read running for 1 question in 24 (P1).
+
+### What was wrong
+- **"Latest annual FY2026"** in November 2026, from a calendar-year issuer.
+  - The V2 text parser stores a fact's `value` as the matched phrase ("sales of $5.0
+    billion") and reads its period from a nearby bare year ("2026").
+  - The slot selectors (`_high_confidence_facts_for`) took any bare year as a fiscal
+    year, with no check that it had ended. The Q3 2026 release's quarter sales became
+    "Annual FY2026 Revenue 5 bn" (V2 `financial_snapshot.revenue_primary_filing`, which
+    the page shows) and the V3 `financial_statements_state.latest_annual`.
+  - `operating_profit_primary_filing` held the TEXT "EBIT target was also cut to
+    $4.35bn": a MarketScreener item. Web documents (`open_web`, T4/T5) reach
+    `load_statement_facts` through `company_documents_clause`; their facts were stamped
+    T1 by `_primary_fact_dp`. HON2's current-period slots held Aixtron's and Odysight's
+    H1 figures the same way.
+  - `conflicts[revenue@2026]` was keyed by the raw period string over every fact. It set
+    the Q3 quarter, the Q2 release's full-year guidance, a trade article and a Q1 10-Q
+    figure against each other.
+- **The re-read ran for 1 question in 24.** ADR-084's rung 2b runs only when the metric
+  contract is NOT satisfied. In HON3, 22 of 24 questions were satisfied by item COUNT at
+  the platform rung (narrative chunks), so no held document was re-read for them, and 21
+  absence gaps were written over a held 10-Q. `working_capital` stopped at
+  `role_cannot_read_corpus`: the valuation role holds no corpus tool. Budget was not the
+  cause: the DEEP run used 46 of 400 tool calls.
+- **The Q3 Ex.99 had `published_at` NULL.** The SEC filing-body leg used the filing date
+  only to refuse stale periods; it never set `artifact.published_at`, so
+  `ExtractedDocument.doc_date` and the corpus version stayed NULL.
+
+### Decision
+1. **A slot holds a number** (`issuer_financials.slot_number`). The slot value is the
+   figure token in the stored value text that equals the parsed `numeric_value`
+   ("4,994", "(1,953)", "3 484"; a printed nil "-" with value 0 is "0"). A value with no
+   such figure fills no slot (`not_a_number`).
+2. **Only the issuer's documents fill a slot.** A fact whose document tier is not T1
+   (`ExtractedDocument.source_tier`) is withheld (`not_an_issuer_document`). Facts with
+   no recorded tier (V2 primary facts) are unchanged.
+3. **A forward statement never fills a slot or enters a conflict.** A value or excerpt
+   with a forward cue (target, guidance, outlook, expects, anticipates, forecast,
+   projected, consensus) in its stored value text is withheld (`forward_statement`).
+4. **An annual period counts only once its fiscal year has ended**, by the document's
+   date and by the run date (`annual_has_ended`). The fiscal calendar is, in order:
+   - the issuer's SEC statements (`load_fiscal_year_anchor`, 7-day tolerance);
+   - the issuer's own fiscal labels: a held interim release whose title or URL names a
+     later fiscal year ("fy27-q1") shows the earlier year had ended;
+   - the issuer's own annual report or full-year results named for that year in its
+     title or its URL file name ("Annual Report 2025", "fy26-annual-report.pdf"),
+     excluding notices, presentations, outlooks;
+   - else the calendar year.
+   A year that has not ended is withheld (`annual_period_not_ended`); it is never
+   relabelled as a quarter. When annual figures are held but all withheld, the annual
+   state reads "Annual figures held — not shown: their fiscal year had not ended".
+   Interim periods keep the lenient ADR-088 `not_ended_by` check.
+5. **Conflicts compare like with like.** Facts are grouped by canonical period type and
+   label ("2025" and "FY2025" are one period; a year never meets a quarter). Only
+   eligible facts enter a conflict, but an issuer fact withheld only for its period
+   still blocks a disagreeing slot in its own group, so withholding one side never hands
+   the slot to the other.
+6. **The V2 snapshot uses the same filter** (`statement_slot_facts`) before its slot
+   selectors, with the fundamentals summary's fiscal year end as the anchor.
+7. **A count-satisfied question still re-reads** (`document_reread.uncarried_topics`).
+   A question's figure topics come from the lexicon plus question-prose cues
+   (`QUESTION_CUES`: leverage → debt, cash generation → OCF/FCF, margins, buybacks /
+   dividends, segments, geography, concentration, capex, EPS, acquisitions, guidance,
+   order intake). When the evidence gathered carries none of them, rung 2b runs with
+   `trigger = "topics_not_carried"`: at most `MAX_REREAD_QUERIES` deterministic queries,
+   `primary_documents_only`, no LLM, no web search. It is skipped
+   (`run_tool_budget_low`) when under 25% of the run's tool calls remain.
+   New topics: `capital_returns`, `earnings_per_share`, `acquisitions` (narrative).
+8. **The re-read is a ladder tool.** `valuation_context_analyst` gains
+   `search_company_corpus` as an acquisition tool (not an assignment tool), so the
+   re-read is no longer refused for it. `LADDER_CALLS_PER_QUESTION` 7 → 9 to cover the
+   two re-read queries.
+9. **An 8-K exhibit carries its filing's date.** The SEC leg sets
+   `artifact.published_at` from the filing date when the document has none. An existing
+   `ExtractedDocument` with NULL `doc_date` and an existing corpus version with NULL
+   `published_at` are backfilled on re-encounter (`stamp_filing_date`, NULL-only; never
+   overwritten). No migration.
+
+### Payload (additive)
+`v3_research.financial_statements_state` gains `withheld_counts` (reason → count),
+`withheld` (≤ 40 entries: field, period, reason, document title/date, fact id — never the value
+text), `fiscal_calendar` (`issuer_sec_statements` / `issuer_fiscal_labels` /
+`calendar_year`) and `fiscal_year_begun`. Slot `value` is now the number token.
+Acquisition-log re-read steps gain `trigger` and `why_topics`.
+
+### Replay (11 stored reports: CFR, CLLS5, CLLS6, HON2, HON3, JPM, JPM2, LIN2, LIN3, PYPL3, PYPL4; before = `origin/main` e8726e4, after = this branch, each at its report's creation date)
+- V3 statements view (facts rebuilt from the stored slots and conflict values): 90 → 86
+  slots; 4 removed, 5 values changed to their number, **0 added**.
+  - HON3: `latest_annual` FY2026 → **FY2025** (10-K figures); current period Q3 2026
+    unchanged; the "EBIT target … $4.35bn" slot removed (20 → 19 slots); the
+    `revenue@2026` 4-value conflict removed (the `cash_and_equivalents@2025` and
+    `revenue@2025-Q3` conflicts remain). Withheld: `annual_period_not_ended` 3 (the
+    Q3 Ex.99 quarter, the Q2 guidance, the Q1 10-Q copy), `not_an_issuer_document` 2.
+  - HON2: FY2026 → none (annual state: report acquired, figures not extracted); the
+    Aixtron and Odysight H1 slots and the EBIT-target slot removed (3 → 0); the
+    `revenue@2026` conflict removed.
+  - CFR: FY2026 / Q1 2027 unchanged (issuer fiscal labels); 7 slots, same 4 conflicts;
+    4 slot values now show the number ("22.4", "3 484", "20.0", "6.3") instead of the
+    sentence.
+  - LIN3: 5 slots unchanged; the Appendix 5B nil financing row shows "0" instead of "-".
+  - CLLS6 (12 slots, FY2025), JPM2 (21, FY2025 / Q3 2026), PYPL4 (22, FY2025 / Q3 2026):
+    unchanged. CLLS5, JPM, LIN2, PYPL3 hold no statement slots.
+- V2 snapshot: 32 issuer-document slots; 1 withheld (HON3 `revenue_primary_filing`
+  "sales of $5.0 billion", 2026); issuer-document annual year 2026 → 2025. 0 added.
+- Re-read eligibility (offline; evidence text is not stored): 261 questions, 232
+  count-satisfied at round 0; the re-read ran for 18 before (HON3 1, its
+  `reread_queries=1`); 144 count-satisfied figure questions never re-read are now
+  eligible (HON3 16). Role refusals: HON3 `working_capital` (valuation role) is gone;
+  JPM2 `rate_environment` (macro role, "official policy-rate and macro data") stays
+  refused — it asks for official statistics, not issuer figures.
+
+### Known limits
+- A non-SEC issuer with a non-calendar year and no fiscal-label or annual-report title
+  evidence has its newest annual figures withheld until 31 December (missing, not wrong).
+- The replay rebuilds facts from stored slots and conflicts. It cannot show a fact that
+  lost a slot to a now-withheld one.
+- Stored undated Ex.99 rows are dated only when the document is fetched again.
+- A narrative topic (acquisitions) counts as carried when its name appears.
+- CFR's stored scale errors ("8 257" read as billions) predate this change and are not
+  addressed here.

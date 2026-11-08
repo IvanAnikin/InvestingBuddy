@@ -949,8 +949,7 @@ async def live_sec_primary_document_extractor(
                     # cares about and a URL cannot be trusted to reveal.
                     access_class=ACCESS_PUBLIC_OFFICIAL,
                     # ADR-080: the EDGAR filing date, so the facts' default period never
-                    # takes a period that had not begun when the filing was made. Used
-                    # only to REFUSE a period; never stored as the document's date here.
+                    # takes a period that had not begun when the filing was made.
                     published_at=_iso_day(doc.filing_date),
                 )
             except Exception:  # noqa: BLE001 - extraction never breaks a run
@@ -972,6 +971,11 @@ async def live_sec_primary_document_extractor(
         artifact.title = artifact.title or f"{doc.form_type} {doc.accession_number}"
         artifact.doc_kind = doc_kind_for_form(doc.form_type, doc.item_codes)
         artifact.discovery_strategy = STRATEGY_SEC_ACCESSION
+        # ADR-090: the document's date is its filing's EDGAR filing date — for an 8-K
+        # exhibit (an Ex.99 results release) too, which has no date of its own. Never
+        # the period end and never the retrieval time; unknown stays None.
+        if artifact.published_at is None:
+            artifact.published_at = _iso_day(doc.filing_date)
         artifacts.append(artifact)
 
     log_event(

@@ -1770,3 +1770,26 @@ reader takes its counts and status lines from it.
   leaves the period unknown, and the claim is kept.
 - `scripts/qa_replay_gap_status.py <reports-dir> [--json out] [--compare before.json]`
   replays gap status and the enforcer over stored payloads. It makes no network call.
+
+## Statement slots and the count-satisfied re-read (ADR-090)
+
+- `issuer_financials.eligible_statement_facts` decides which facts may fill a statement
+  slot (V3 `financial_statements_state` and the V2 `financial_snapshot`) or enter a
+  conflict. A fact is withheld when its document is not an issuer (T1) document, its
+  value text holds no figure equal to its parsed number, its value is a forward
+  statement (target, guidance, outlook, expects, …), or its annual period's fiscal year
+  had not ended by the document date and the run date. The fiscal calendar is the SEC
+  anchor, else the issuer's own fiscal labels or annual-report title, else the calendar
+  year. Conflicts group facts by canonical period (a year never meets a quarter).
+- The investigator re-reads held primary documents (rung 2b, `primary_document_reread`)
+  also for a question its contract counts as satisfied, when the evidence carries none
+  of the figure topics the question asks (`document_reread.uncarried_topics`;
+  `trigger = "topics_not_carried"`, `why_topics`). Deterministic queries only, at most
+  `MAX_REREAD_QUERIES`, no LLM and no web search; skipped (`run_tool_budget_low`) when
+  under 25% of the run's tool calls remain.
+- A role may hold `search_company_corpus` as a ladder-only acquisition tool
+  (`RoleSpec.acquisition_tools`): `valuation_context_analyst` now does, so its re-read is
+  not refused. `LADDER_CALLS_PER_QUESTION` is 9.
+- The SEC filing-body leg dates an 8-K exhibit with its filing date
+  (`artifact.published_at`); an undated stored document or corpus version is
+  backfilled on re-encounter, never overwritten.

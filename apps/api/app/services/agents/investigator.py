@@ -2795,15 +2795,48 @@ class LLMInvestigator:
         # nothing (a 20-F / IFRS filer the us-gaap tools cannot read). Once per question:
         # a repeat round would run the same queries and read the same passages. With the
         # held-document inventory unknown (``None``) the rung does not exist at all.
+        #
+        # ADR-090 — also for a question its item COUNT satisfied whose evidence carries
+        # none of a topic it asks for ("how leveraged is it" with no debt figure in any
+        # item): the count said "enough", the figures were never read, and the writer then
+        # wrote an absence gap over a held 10-Q. Deterministic corpus queries only; the
+        # question's and the run's budgets still bind.
+        uncarried: tuple[str, ...] = ()
+        if current.satisfied and not follow_up and self.primary_documents is not None:
+            from app.services.agents.document_reread import uncarried_topics
+
+            uncarried = uncarried_topics(question, [
+                *context.prior_evidence,
+                *(ref for ref in (self._metric_ref(item) for item in evidence)
+                  if ref is not None),
+            ])
         if (
-            not current.satisfied
+            (not current.satisfied or uncarried)
+            and not follow_up
+            and used < budget
+            and self.primary_documents is not None
+        ):
+            if current.satisfied and self.max_tool_calls and (
+                budget - used < self.max_tool_calls * REREAD_LOW_BUDGET_FRACTION
+            ):
+                # A satisfied question never takes a starved run's last calls from the
+                # questions that have no evidence at all.
+                steps.append({
+                    "rung": "primary_document_reread", "round": round_index,
+                    "role": role_id, "trigger": "topics_not_carried",
+                    "why_topics": list(uncarried), "tool_calls": 0,
+                    "stopped": "run_tool_budget_low",
+                })
+                uncarried = ()
+        if (
+            (not current.satisfied or uncarried)
             and not follow_up
             and used < budget
             and self.primary_documents is not None
         ):
             reread, spent, step = await self._primary_reread(
                 role_id, role, question, budget - used, round_index, current, metrics,
-                known={item.citation_id for item in evidence},
+                known={item.citation_id for item in evidence}, uncarried=uncarried,
             )
             used += spent
             if fact_tools_empty:
@@ -2985,6 +3018,7 @@ class LLMInvestigator:
         metrics: "Sequence[str]",
         *,
         known: "set[str]",
+        uncarried: "Sequence[str]" = (),
     ) -> "tuple[list[_Evidence], int, dict[str, Any]]":
         """ADR-084 — targeted lexical searches of the subject's HELD PRIMARY documents.
 
@@ -3006,8 +3040,15 @@ class LLMInvestigator:
             "why": list(current.missing),
             "tool_calls": 0,
         }
+        if uncarried:
+            # ADR-090 — the count was met; these topics were carried by no item.
+            step["trigger"] = "topics_not_carried"
+            step["why_topics"] = list(uncarried)
         inventory = self.primary_documents
-        if not role.can_use(TOOL_SEARCH_COMPANY_CORPUS) or (
+        if not (
+            role.can_use(TOOL_SEARCH_COMPANY_CORPUS)
+            or role.can_acquire_with(TOOL_SEARCH_COMPANY_CORPUS)
+        ) or (
             self.available_tools is not None
             and TOOL_SEARCH_COMPANY_CORPUS not in self.available_tools
         ):
@@ -3021,7 +3062,9 @@ class LLMInvestigator:
         step["documents"] = [dr.document_name(d) for d in docs[:6]]
         topics = dr.question_topics(question)
         missing = [m for m in getattr(current, "metrics_missing", ()) or () if m in metrics]
-        wanted = missing or list(metrics)
+        wanted = missing or list(metrics) or [
+            t for t in uncarried if t in dr.TOPICS_BY_KEY and dr.TOPICS_BY_KEY[t].needs_figure
+        ]
         if not docs:
             step["stopped"] = "no_primary_document_held"
             return [], 0, step
@@ -3040,7 +3083,9 @@ class LLMInvestigator:
             ceiling = 1
             step["query_ceiling"] = "run_tool_budget_low"
         plan = dr.reread_plan(
-            question, missing_metrics=missing, fallback_query=fallback,
+            question,
+            missing_metrics=[*missing, *(t for t in uncarried if t not in missing)],
+            fallback_query=fallback,
             limit=min(ceiling, max(0, budget)),
         )
         step["queries"] = [q.query for q in plan]
