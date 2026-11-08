@@ -1777,18 +1777,21 @@ reader takes its counts and status lines from it.
   slot (V3 `financial_statements_state` and the V2 `financial_snapshot`) or enter a
   conflict. A fact is withheld when:
   - its document is not an issuer (T1) document, or is a PR-wire / company-source page
-    not shown to be the subject's own (title names the subject, or the subject's domain);
+    not shown to be the subject's own (title leads with the subject — a name word or a
+    ticker of 3+ letters — or the subject's domain);
   - its value text holds no figure equal to its parsed number (a nil "-" is 0; a scale
-    word that accounts for the number exactly is read);
+    word that accounts for the number on the fact's own scale exactly is read);
   - its own value text is a forward statement (case-sensitive cues; footnotes and
     bracketed asides ignored);
   - its annual period is not shown to have ended: by the document date and the run date
     when dated; when undated, only by a floor on the document's date (an interim period
-    it reports, an EDGAR file-name period date) or a held annual report for the year.
+    it reports, an EDGAR file-name period date) or a held annual report for the year —
+    never when the document's own latest period is an interim period of that year.
   The fiscal calendar is the SEC anchor (a January–March year end judged on its later
   reading), the issuer's own fiscal labels, its annual-report documents (10-K, 20-F,
-  Appendix 4E, annual report, final / full-year results: their named year, stated year
-  end, date, or two-column statement year), else the calendar year. Conflicts group facts
+  Appendix 4E, annual report, final / full-year results — never a semi-annual,
+  half-year, quarterly or interim name: their named year, stated year end agreeing with
+  the anchor, or a date after the year), else the calendar year. Conflicts group facts
   by canonical period (a year never meets a quarter).
 - V2 primary facts carry their document's date, title and tier
   (`PrimaryFactRef.document_*`).

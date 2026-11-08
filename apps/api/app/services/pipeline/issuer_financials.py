@@ -199,6 +199,14 @@ _FIGURE_TOKEN_RE = re.compile(
 )
 #: A scale word printed right after a figure ("US$1.2 billion", "€174.5m"), and how many
 #: of the next-smaller statement units it holds (a billion = 1,000 million).
+#: What a printed scale word multiplies by, and what a fact's own ``scale`` does.
+_SCALE_WORD_FACTORS = {
+    "billion": 1e9, "bn": 1e9, "million": 1e6, "mn": 1e6, "m": 1e6,
+    "thousand": 1e3, "k": 1e3,
+}
+_SCALE_FACTORS = {
+    "": 1.0, "units": 1.0, "unit": 1.0, "thousand": 1e3, "million": 1e6, "billion": 1e9,
+}
 _SCALE_WORD_RE = re.compile(
     r"[ \t ]{0,2}(billion|bn|million|mn|m|thousand|k)\b", re.IGNORECASE
 )
@@ -248,7 +256,9 @@ def slot_number(fact: dict[str, Any]) -> str | None:
     text holds no figure equal to its parsed ``numeric_value`` — a sentence, a label, a
     different number — fills no slot. A fact with no value text shows its parsed number;
     so does one whose printed figure carries a scale word that accounts for the parsed
-    number exactly ("US$1.2 billion" stored as 1,200 million → "1,200").
+    number ON THE FACT'S OWN SCALE exactly ("US$1.2 billion" stored as 1,200 million →
+    "1,200"; stored as 1,200 billion → refused). A printed figure whose scale word names
+    another scale than the fact's own is not that number; an unknown scale is refused.
     """
     import math
 
@@ -269,18 +279,25 @@ def slot_number(fact: dict[str, Any]) -> str | None:
         return "0"
     target = abs(number)
     tolerance = max(target, 1.0) * 1e-9
+    own_scale = fact.get("scale") or None
+    own_factor = _SCALE_FACTORS.get(str(own_scale or "").lower())
     clipped = text[:500]
     for match in _FIGURE_TOKEN_RE.finditer(clipped):
         readings = _figure_readings(match.group(0))
-        if any(abs(reading - target) <= tolerance for reading in readings):
-            return match.group(0).strip()
         scale = _SCALE_WORD_RE.match(clipped, match.end())
-        if scale is None:
-            continue
+        word_factor = (
+            _SCALE_WORD_FACTORS.get(scale.group(1).lower()) if scale is not None else None
+        )
+        if any(abs(reading - target) <= tolerance for reading in readings):
+            if word_factor is not None and own_scale is not None and own_factor != word_factor:
+                continue  # "€174.5m" is not 174.5 thousand
+            return match.group(0).strip()
+        if word_factor is None or own_factor is None:
+            continue  # an unknown scale is never reconciled
+        stated = target * own_factor
         for reading in readings:
-            for factor in (1e3, 1e6, 1e9):
-                if abs(reading * factor - target) <= tolerance * factor:
-                    return _number_text(number)
+            if abs(reading * word_factor - stated) <= max(stated, 1.0) * 1e-9:
+                return _number_text(number)
     return None
 
 
@@ -390,6 +407,15 @@ _NOT_ANNUAL_TITLE_RE = re.compile(
     r"|\bconference\s+call\b|\boutlook\b|\bguidance\b|\bresults\s+date\b|\binvitation\b",
     re.IGNORECASE,
 )
+#: A part-year document whose name carries an "annual" word ("Semi-Annual Report 2026",
+#: "Half-year 2026 update to the Annual Report", "Quarterly and Annual Report") is never
+#: the annual report (re-review P1-a).
+_PART_YEAR_TITLE_RE = re.compile(
+    r"\bsemi[\s-]?annual|\bhalf[\s-]?year|\b(?:semi|half|quarter(?:ly)?|interim)\b"
+    r"|\b(?:three|six|nine|3|6|9)[\s-]?months?\b"
+    r"|\b(?:h1|h2|q[1-4])\b",
+    re.IGNORECASE,
+)
 
 
 #: A two-digit fiscal label ("FY26") in an annual report's title or file name.
@@ -411,8 +437,11 @@ _MONTHS = {
     )
     for name in names
 }
-#: "for the year ended 30 June 2026", "fiscal year ended June 30, 2026".
+#: "for the year ended 30 June 2026", "fiscal year ended June 30, 2026" — never a
+#: "half-year ended" / "semi-year ended" period (re-review P1-a). Fixed-width
+#: lookbehinds: linear.
 _YEAR_ENDED_RE = re.compile(
+    r"(?<!half-)(?<!half )(?<!half )(?<!half–)(?<!semi-)(?<!semi )(?<!semi)"
     r"\byear[ \t ]{1,3}end(?:ed|ing)[ \t ]{1,3}(?:on[ \t ]{1,3})?"
     r"(?:(\d{1,2})(?:st|nd|rd|th)?[ \t ]{1,3}([A-Za-z]{3,9})\.?,?[ \t ]{1,3}"
     r"((?:19|20)\d{2})"
@@ -420,15 +449,6 @@ _YEAR_ENDED_RE = re.compile(
     r"((?:19|20)\d{2}))",
     re.IGNORECASE,
 )
-#: An annual report is due within six months of the year end in every venue read here
-#: (10-K 60–90 days, 20-F four months, ASX three to four, UK/EU four to six). One dated
-#: in the second half of a calendar year therefore reports a fiscal year that ended in
-#: that same calendar year.
-_LATEST_ANNUAL_REPORT_MONTH = 6
-#: How many fields must state both a year and the year before in one document for that
-#: year to be the document's own reporting year (a statement table's two columns).
-_COMPARATIVE_FIELDS = 3
-
 
 def _url_file_name(fact: dict[str, Any], *, words: bool = True) -> str:
     """The last path segment of the fact's source URL, as words ("fy26-annual-report.pdf"
@@ -445,7 +465,7 @@ def _url_file_name(fact: dict[str, Any], *, words: bool = True) -> str:
 
 def _is_annual_name(name: str) -> bool:
     return bool(name) and bool(_ANNUAL_TITLE_RE.search(name)) and not (
-        _NOT_ANNUAL_TITLE_RE.search(name)
+        _NOT_ANNUAL_TITLE_RE.search(name) or _PART_YEAR_TITLE_RE.search(name)
     )
 
 
@@ -551,20 +571,41 @@ def _host(url: Any) -> str:
         return ""
 
 
+#: A wire's or a page's leading label ("Press Release:", "GLOBE NEWSWIRE -"). Anchored
+#: and bounded: linear.
+_TITLE_LABEL_RE = re.compile(r"[^:,;]{0,60}?(?::|\s[-–|]\s)")
+#: Where a title's lead entity ends: its first comma, semicolon, bracket or dash aside.
+_LEAD_END_RE = re.compile(r"[,;(]|\s[-–|]\s")
+#: The shortest ticker read on its own: a one- or two-letter ticker ("ON", "GE") is a
+#: common word or initialism in a headline (re-review P3).
+_MIN_TITLE_TICKER = 3
+
+
 def _names_subject(title: Any, subject_name: str | None, subject_ticker: str | None) -> bool:
-    """Does a document title name the subject (a distinctive name word, or its ticker)?"""
+    """Does a document title lead with the subject — a distinctive name word among the
+    first two words of its lead entity, or its ticker opening it? A title that names the
+    subject only in passing ("X, a Honeywell supplier, reports …") does not (re-review
+    P3)."""
     from app.services.discovery.identity import name_tokens
     from app.services.entities.passage_subject import subject_aliases
 
     text = str(title or "")[:300]
     if not text:
         return False
+    leads = [text]
+    label = _TITLE_LABEL_RE.match(text)
+    if label is not None:
+        leads.append(text[label.end():])
     aliases = subject_aliases(subject_name)
-    if aliases and aliases & set(name_tokens(text)):
-        return True
     ticker = str(subject_ticker or "").strip()
-    if len(ticker) >= 2:
-        return re.search(rf"(?<![A-Za-z0-9]){re.escape(ticker)}(?![A-Za-z0-9])", text) is not None
+    for lead in leads:
+        entity = _LEAD_END_RE.split(lead, maxsplit=1)[0]
+        if aliases and aliases & set(name_tokens(entity)[:2]):
+            return True
+        if len(ticker) >= _MIN_TITLE_TICKER and re.match(
+            rf"[\s\"'“]{{0,3}}{re.escape(ticker)}(?![A-Za-z0-9])", entity
+        ):
+            return True
     return False
 
 
@@ -602,22 +643,47 @@ class _Calendar:
 
     def __init__(self) -> None:
         self.begun: int | None = None
-        self.reporting_year: dict[str, int] = {}
         self.held_annual_years: set[int] = set()
+        #: Per document, the latest year it states an interim period of: a document
+        #: whose own latest period is part of year N is a part-year report for N, and
+        #: its bare "N" figure a part-year figure (re-review P1-b). Earlier interim
+        #: years are its comparatives.
+        self.interim_year: dict[str, int] = {}
         #: Per document, the latest end of an interim period it reports: it cannot have
         #: been published before then, dated or not.
         self.document_floor: dict[str, date] = {}
 
 
+def _agrees_with_anchor(end: date, anchor: Any) -> bool:
+    """Is ``end`` the issuer's fiscal year end (when its calendar is known)? A stated
+    period end on another month and day is not the year end of an annual report."""
+    if anchor is None:
+        return True
+    from app.services.statement_kind import FISCAL_END_TOLERANCE
+
+    try:
+        known = [anchor.year_end(end.year + shift) for shift in (-1, 0, 1)]
+    except Exception:  # noqa: BLE001 - a malformed anchor judges nothing
+        return True
+    return any(abs(end - candidate) <= FISCAL_END_TOLERANCE for candidate in known)
+
+
 def _annual_document_verdict(
-    fact: dict[str, Any], year: int, *, as_of: date, calendar: _Calendar
+    fact: dict[str, Any], year: int, *, as_of: date, anchor: Any
 ) -> str | None:
     """The verdict on an annual period read from an annual-report document: ``"ok"``,
-    a withheld reason, or ``None`` when the document says nothing either way."""
+    a withheld reason, or ``None`` when the document says nothing either way.
+
+    Only the document's own words decide here — the year it names, or the year end it
+    states (agreeing with the fiscal anchor when one is known). A dated document of the
+    same calendar year as the period says nothing alone (re-review P1-a): the generic
+    check then asks whether the year has ended on the issuer's anchor."""
     named = _annual_document_year(fact)
     if named is not None:
         return "ok" if year <= named else WITHHELD_ANNUAL_PERIOD_NOT_ENDED
     end = _document_period_end(fact)
+    if end is not None and not _agrees_with_anchor(end, anchor):
+        end = None
     if end is not None:
         labels = {end.year}
         if end.month <= 3:
@@ -633,10 +699,6 @@ def _annual_document_verdict(
         return "ok"
     if year > published.year:
         return WITHHELD_ANNUAL_PERIOD_NOT_ENDED
-    if published.month > _LATEST_ANNUAL_REPORT_MONTH:
-        return "ok"
-    if calendar.reporting_year.get(str(fact.get("document_id") or "")) == year:
-        return "ok"
     return None
 
 
@@ -676,9 +738,7 @@ def _ineligibility(
         if calendar.begun is not None and period.year < calendar.begun:
             return None
         if _is_annual_report_fact(fact):
-            verdict = _annual_document_verdict(
-                fact, period.year, as_of=as_of, calendar=calendar
-            )
+            verdict = _annual_document_verdict(fact, period.year, as_of=as_of, anchor=anchor)
             if verdict == "ok":
                 return None
             if verdict is not None:
@@ -687,7 +747,11 @@ def _ineligibility(
             # Undated (review P1): never read as published today. The year is annual
             # only when the document itself reports a later interim period that
             # began after the year ended (a half-year report's prior year-end
-            # comparative), or an annual report the issuer published for it is held.
+            # comparative), or an annual report the issuer published for it is held —
+            # and never when the document itself reports part of that same year: its
+            # bare "N" figure is then a part-year figure (re-review P1-b).
+            if calendar.interim_year.get(str(fact.get("document_id") or "")) == period.year:
+                return WITHHELD_ANNUAL_PERIOD_UNDATED
             floor = max(
                 (d for d in (calendar.document_floor.get(str(fact.get("document_id") or "")),
                              _sec_file_period_date(fact)) if d is not None),
@@ -767,31 +831,6 @@ def _earliest_end(period: Any, anchor: Any) -> date | None:
     return end
 
 
-def _comparative_years(facts: list[dict[str, Any]]) -> dict[str, int]:
-    """Per document, the latest year at least ``_COMPARATIVE_FIELDS`` fields state beside
-    the year before — the document's own reporting year (a statement's two columns)."""
-    from app.services.sources.financial_period import PERIOD_TYPE_ANNUAL, parse_period
-
-    years: dict[str, dict[str, set[int]]] = {}
-    for fact in facts:
-        period = parse_period(fact.get("period"))
-        if period.period_type != PERIOD_TYPE_ANNUAL or not period.year:
-            continue
-        if slot_number(fact) is None or _forward_statement(fact.get("value")):
-            continue
-        doc = str(fact.get("document_id") or "")
-        years.setdefault(doc, {}).setdefault(str(fact.get("field")), set()).add(period.year)
-    out: dict[str, int] = {}
-    for doc, by_field in years.items():
-        candidates = {y for ys in by_field.values() for y in ys}
-        for year in sorted(candidates, reverse=True):
-            paired = sum(1 for ys in by_field.values() if year in ys and year - 1 in ys)
-            if paired >= _COMPARATIVE_FIELDS:
-                out[doc] = year
-                break
-    return out
-
-
 def _eligible(
     facts: list[dict[str, Any]],
     *,
@@ -806,7 +845,11 @@ def _eligible(
     from app.services.sources.financial_period import PERIOD_TYPE_ANNUAL, parse_period
 
     calendar = _Calendar()
-    calendar.reporting_year = _comparative_years(facts)
+    for fact in facts:
+        stated = parse_period(fact.get("period"))
+        doc = str(fact.get("document_id") or "")
+        if doc and stated.is_interim and stated.year:
+            calendar.interim_year[doc] = max(stated.year, calendar.interim_year.get(doc, 0))
     judge = dict(as_of=as_of, anchor=anchor, subject_name=subject_name,
                  subject_ticker=subject_ticker)
     # First the part-year facts: an eligible one in a document the issuer titled with

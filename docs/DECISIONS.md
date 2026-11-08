@@ -8778,15 +8778,23 @@ unambiguously bind the same figure to different periods.
 1. **A slot holds a number** (`issuer_financials.slot_number`). The slot value is the
    figure token in the stored value text that equals the parsed `numeric_value`
    ("4,994", "(1,953)", "3 484"). A printed nil ("-", "(-)", "Nil.") with value 0 is
-   "0". A figure followed by a scale word that accounts for the parsed number exactly
-   ("US$1.2 billion" stored as 1,200 million) shows the parsed number ("1,200"). Any
-   other value fills no slot (`not_a_number`).
+   "0". A figure followed by a scale word that accounts for the parsed number on the
+   fact's OWN scale exactly ("US$1.2 billion" stored as 1,200 million) shows the parsed
+   number ("1,200"); stored as 1,200 billion, or on an unknown scale, it is refused
+   (re-review P2). A figure whose scale word names another scale than the fact's own
+   ("€174.5m" stored as 174.5 thousand) is refused too. Any other value fills no slot
+   (`not_a_number`).
 2. **Only the subject's own issuer documents fill a slot.**
    - A fact whose document tier is not T1 (`ExtractedDocument.source_tier`; V2 primary
      facts now carry it too) is withheld (`not_an_issuer_document`).
    - A PR-wire release (globenewswire, businesswire, … — `T1_primary_company_source`
-     whoever issued it) counts only when its title names the subject (a distinctive
-     name word or the ticker); without a subject to judge by it is withheld. Another
+     whoever issued it) counts only when its title LEADS with the subject: a
+     distinctive name word among the first two words of the title's lead entity (after
+     a "Press Release:" / "GLOBE NEWSWIRE -" label, up to its first comma, semicolon,
+     bracket or dash aside), or a ticker of three or more letters opening it. "X, a
+     Honeywell supplier, reports …" names the subject only in passing and is withheld;
+     a one- or two-letter ticker ("ON") is never read on its own (re-review P3).
+     Without a subject to judge by a wire release is withheld. Another
      `T1_primary_company_source` page counts when it is served from the subject's own
      domain (`issuer_domain_matches`) or its title names the subject. Otherwise
      `not_the_subject`. Filing systems (SEC, exchanges, storage mechanisms) are filed
@@ -8805,7 +8813,11 @@ unambiguously bind the same figure to different periods.
      document reports an interim period that ends after that year (a floor on its
      date; an EDGAR inline-XBRL file name's period date, "hon-20260930.htm", is one
      too), or (b) an annual report the issuer published for that year is held.
-     Otherwise `annual_period_undated`.
+     Neither applies when the document's own latest period is an interim period of
+     that same year: it is then a part-year report, and its bare-year figure a
+     part-year figure (re-review P1-b: a held FY2026 10-K let an undated Q3 release's
+     "2026" operating profit, the quarter's 1,062, in as FY2026). Otherwise
+     `annual_period_undated`.
    - **The issuer's fiscal calendar** is, in order: the SEC anchor; the issuer's own
      fiscal labels ("fy27-q1" shows FY2026 ended); the annual-report evidence below;
      else the calendar year. A January–March anchor is named both ways in the wild
@@ -8813,20 +8825,24 @@ unambiguously bind the same figure to different periods.
      a year counts as ended only on the LATER reading (review P2).
    - **An annual report shows its own year ended** (review P2). "Form 10-K", "20-F",
      "40-F", "Appendix 4E", "Annual Report", "Final / Full-year / Annual / Preliminary
-     results" are annual-report documents (never a notice, presentation or outlook).
+     results" are annual-report documents (never a notice, presentation or outlook,
+     and never a part-year document whose name carries an "annual" word: "Semi-Annual
+     Report 2026", "Half-year … update to the Annual Report", "Quarterly and Annual
+     Report", interim, three/six/nine months, H1/H2, Q1–Q4 — re-review P1-a).
      Such a document's figure for year Y counts when:
      - its title or file name names Y or a later year ("Annual Report 2025",
        "fy26-annual-report.pdf");
      - its stated year end (recorded period end, "year ended 31 March 2026" in its
-       title or on its first page, or the file name's period date) is not after Y's
-       label and has passed;
-     - it is dated after Y's calendar year; or dated in Y's calendar year after June
-       (every venue read here requires the annual report within six months of the year
-       end, so a July–December annual report reports a year that ended in that calendar
-       year); or its statement columns name Y as the reporting year (at least three
-       fields stated for Y and Y-1 in the same document).
-     A calendar-year 10-K dated February 2026 therefore never makes a "2026" figure
-     annual.
+       title or on its first page — never "half-year ended" — or the file name's period
+       date) is not after Y's label, has passed, and agrees with the fiscal anchor's
+       year end when one is known;
+     - it is dated after Y's calendar year.
+     A document dated IN Y's calendar year says nothing alone (re-review P1-a): the
+     generic check then asks whether Y ended on the issuer's anchor by that date. The
+     earlier "dated after June" and "two statement columns" readings are removed — a
+     calendar-year "Annual report" with no year dated July 2026, or a "10-K/A" dated
+     August 2026 with no period date, would have made 2026 annual. A calendar-year 10-K
+     dated February 2026 never makes a "2026" figure annual.
    A year not shown to have ended is withheld (`annual_period_not_ended`), never
    relabelled as a quarter. When annual figures are held but all withheld, the annual
    state reads "Annual figures held — not shown: withheld as unverified or mislabelled
@@ -8908,17 +8924,31 @@ page text). Acquisition-log re-read steps gain `trigger` and `why_topics`.
   eligible (HON3 16). Role refusals: HON3 `working_capital` (valuation role) is gone;
   JPM2 `rate_environment` (macro role, "official policy-rate and macro data") stays
   refused — it asks for official statistics, not issuer figures.
+- Second re-review (part-year names, same-year dates, part-year documents' bare year,
+  scale agreement, lead-entity wire titles): replayed against the first re-review's
+  module (151a8b1) on the same 12 reports — 102 → 102 slots, 0 removed, 0 changed,
+  0 added; the V2, re-read and HON3 rebuilt-later replays are unchanged (HON3 stays
+  FY2025 on 2026-11-05, 2027-01-15 and 2027-03-01, with and without the December
+  anchor). The new rules close paths the stored reports do not exercise; each is pinned
+  by a regression test.
 
 ### Known limits
-- A non-SEC issuer with a non-calendar year whose newest annual report is dated in the
-  first half of a calendar year, names no year, states no year end and shows no
-  two-column table, has its newest annual figures withheld until 31 December (missing,
-  not wrong). A single-figure "Form 20-F" dated June with no period date is such a case.
+- A non-calendar-year issuer without a known anchor whose newest annual report names
+  no year and states no year end (title, first page, file name) has that year's
+  figures withheld until 31 December (missing, not wrong). A "Form 10-K" dated August
+  with no anchor and no period date, or a "Form 20-F" dated June, are such cases.
+- A combined "Fourth quarter and full year" results release is a part-year name and is
+  judged as any dated document (by its date and the anchor), not as an annual report.
+- A recorded first-page year end is trusted without an anchor; it is read only from
+  "year ended <date>" (never "half-year ended"), so a part-year document's period end
+  is not recorded as a year end.
 - An undated document's figures need a floor on its date or a held annual report for
   the year; without either they are withheld, including true ones. Stored undated rows
   are dated only when fetched again.
-- The subject test on wire and company-source titles is lexical (distinctive name words
-  or the ticker); a release whose title names only a brand is withheld.
+- The subject test on wire and company-source titles is lexical (a distinctive name
+  word leading the title, or a ticker of three or more letters opening it); a release
+  whose title names only a brand, or leads with a one- or two-letter ticker, is
+  withheld.
 - The replay rebuilds facts from stored slots and conflicts. It cannot show a fact that
   lost a slot to a now-withheld one, and stored slots carry no first-page year end.
 - A narrative topic (acquisitions) counts as carried when its name appears.

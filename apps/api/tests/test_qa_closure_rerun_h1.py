@@ -214,7 +214,7 @@ class TestSlotsHoldNumbers:
     )
     def test_a_forward_statement_fills_no_slot(self, value: str) -> None:
         fact = _fact("revenue", float(value.split("$")[1].rstrip("bnilo ")), "2025",
-                     value=value)
+                     value=value, scale="billion")
         state = build_financial_statements_state([fact], now=RUN)
         assert state["slots"] == {}
         assert state["withheld_counts"] == {WITHHELD_FORWARD_STATEMENT: 1}
@@ -494,23 +494,50 @@ class TestReviewP2AnnualReportsShowTheirYearEnded:
 
     NOW = datetime(2026, 11, 8, tzinfo=UTC)
 
+    JUNE = FiscalYearAnchor(2025, date(2025, 6, 30))
+    SEPTEMBER = FiscalYearAnchor(2025, date(2025, 9, 27))
+
+    @pytest.mark.parametrize(
+        ("title", "url", "date_", "anchor"),
+        [
+            ("Form 10-K", "https://www.sec.gov/x/10k.htm", "2026-08-01", JUNE),
+            ("10-K 0000320193-26-000100", "https://www.sec.gov/x/a.htm", "2026-11-01",
+             SEPTEMBER),
+            ("Form 20-F", "https://www.sec.gov/x/infy-20260331.htm", "2026-06-20", None),
+            ("Appendix 4E and Preliminary Final Report", "https://www.asx.com.au/a.pdf",
+             "2026-08-20", JUNE),
+            ("Final Results for the year ended 31 March 2026", "https://nsm.example/x.pdf",
+             "2026-05-20", None),
+            ("Annual results", "https://nsm.example/y.pdf", "2026-07-15", JUNE),
+            ("Annual Report 2026", "https://nsm.example/z.pdf", "2026-09-15", None),
+        ],
+    )
+    def test_the_annual_report_keeps_its_years_figures(self, title, url, date_, anchor) -> None:  # noqa: ANN001
+        facts = [_fact("revenue", 4994, "2026", title=title, url=url, date_=date_)]
+        state = build_financial_statements_state(facts, now=self.NOW, fiscal_anchor=anchor)
+        assert state["reporting_periods"]["latest_annual"] == "FY2026", state["withheld"]
+
     @pytest.mark.parametrize(
         ("title", "url", "date_"),
         [
-            ("Form 10-K", "https://www.sec.gov/x/10k.htm", "2026-08-01"),  # June FY
-            ("10-K 0000320193-26-000100", "https://www.sec.gov/x/a.htm", "2026-11-01"),
-            ("Form 20-F", "https://www.sec.gov/x/infy-20260331.htm", "2026-06-20"),  # March
+            ("Form 10-K", "https://www.sec.gov/x/10k.htm", "2026-08-01"),
+            ("10-K/A", "https://www.sec.gov/Archives/edgar/data/1/2/doc.htm", "2026-08-15"),
             ("Appendix 4E and Preliminary Final Report", "https://www.asx.com.au/a.pdf",
              "2026-08-20"),
-            ("Final Results for the year ended 31 March 2026", "https://nsm.example/x.pdf",
-             "2026-05-20"),
             ("Annual results", "https://nsm.example/y.pdf", "2026-07-15"),
+            ("Annual report", "https://ir.x.example/ar.pdf", "2026-07-15"),
         ],
     )
-    def test_the_annual_report_keeps_its_years_figures(self, title, url, date_) -> None:  # noqa: ANN001
-        facts = [_fact("revenue", 4994, "2026", title=title, url=url, date_=date_)]
-        state = build_financial_statements_state(facts, now=self.NOW)
-        assert state["reporting_periods"]["latest_annual"] == "FY2026", state["withheld"]
+    def test_a_same_year_date_alone_never_ends_the_year(self, title, url, date_) -> None:  # noqa: ANN001
+        """Re-review P1-a: an annual document dated in the year it would report, with no
+        year in its name, no stated year end and no anchor that ends the year by then,
+        does not make that year annual -- on a calendar-year anchor, nor without one."""
+        for anchor in (None, DEC):
+            facts = [_fact("revenue", 4994, "2026", title=title, url=url, date_=date_)]
+            state = build_financial_statements_state(facts, now=self.NOW,
+                                                     fiscal_anchor=anchor)
+            assert state["slots"] == {}
+            assert state["withheld_counts"] == {WITHHELD_ANNUAL_PERIOD_NOT_ENDED: 1}
 
     def test_the_first_pages_year_end_is_the_fiscal_year_end(self) -> None:
         fact = _fact("revenue", 4994, "2026", title="Final Results",
@@ -522,13 +549,16 @@ class TestReviewP2AnnualReportsShowTheirYearEnded:
         state = build_financial_statements_state([fact], now=self.NOW)
         assert state["reporting_periods"]["latest_annual"] == "FY2026"
 
-    def test_a_statement_tables_two_columns_name_the_reporting_year(self) -> None:
+    def test_two_statement_columns_do_not_end_the_year(self) -> None:
+        """Re-review P1-a: a "2026" column beside "2025" is not evidence that 2026 had
+        ended -- only the document's stated year end, its named year or the anchor are."""
         facts = [_fact(field, value, year, title="Final Results",
                        url="https://nsm.example/x.pdf", date_="2026-05-20", doc="fr")
                  for field in ("revenue", "operating_profit", "net_income")
                  for year, value in (("2026", 5000), ("2025", 4500))]
         state = build_financial_statements_state(facts, now=self.NOW)
-        assert state["reporting_periods"]["latest_annual"] == "FY2026"
+        assert state["reporting_periods"]["latest_annual"] == "FY2025"
+        assert state["withheld_counts"] == {WITHHELD_ANNUAL_PERIOD_NOT_ENDED: 3}
 
     def test_a_calendar_year_10k_never_makes_its_next_year_annual(self) -> None:
         """A 10-K dated February 2026 reports FY2025; a "2026" figure in it is forward."""
@@ -568,12 +598,25 @@ class TestReviewP3ForwardCuesAndNumbers:
         assert state["withheld_counts"] == {WITHHELD_FORWARD_STATEMENT: 1}
 
     @pytest.mark.parametrize(
-        ("value", "numeric", "expected"),
-        [("(-)", 0, "0"), ("Nil.", 0, "0"), ("US$1.2 billion", 1200, "1,200"),
-         ("€174.5m", 174_500, "174,500"), ("€2.1bn", 2.1e9, "2,100,000,000")],
+        ("value", "numeric", "scale", "expected"),
+        [("(-)", 0, None, "0"), ("Nil.", 0, None, "0"),
+         ("US$1.2 billion", 1200, "million", "1,200"),
+         ("€174.5m", 174_500, "thousand", "174,500"), ("€174.5m", 174.5, "million", "174.5"),
+         ("€2.1bn", 2.1e9, None, "2,100,000,000")],
     )
-    def test_nil_and_scale_words_read_as_numbers(self, value, numeric, expected) -> None:  # noqa: ANN001
-        assert slot_number({"value": value, "numeric_value": numeric}) == expected
+    def test_nil_and_scale_words_read_as_numbers(self, value, numeric, scale, expected) -> None:  # noqa: ANN001
+        fact = {"value": value, "numeric_value": numeric, "scale": scale}
+        assert slot_number(fact) == expected
+
+    @pytest.mark.parametrize(
+        ("value", "numeric", "scale"),
+        [("US$1.2 billion", 1200, "billion"), ("US$1.2 billion", 1200, None),
+         ("€174.5m", 174.5, "thousand"), ("€174.5m", 174_500, "million"),
+         ("US$1.2 billion", 1200, "lakh")],
+    )
+    def test_a_scale_word_must_agree_with_the_facts_own_scale(self, value, numeric, scale) -> None:  # noqa: ANN001
+        """Re-review P2: "US$1.2 billion" stored as 1,200 BILLION is 1.2 trillion."""
+        assert slot_number({"value": value, "numeric_value": numeric, "scale": scale}) is None
 
     @pytest.mark.parametrize(("value", "numeric"), [("US$1.2 billion", 1300),
                                                     ("(-)", 5), ("4 487 + 3", 4490)])
@@ -586,6 +629,150 @@ class TestReviewP3ForwardCuesAndNumbers:
         assert read("Fiscal year ended September 27, 2026") == date(2026, 9, 27)
         assert read("for the quarterly period ended September 30, 2026") is None
         assert read("year ended 31 Foo 2026") is None
+
+
+class TestReReviewPartYearDocuments:
+    """Re-review of 151a8b1 (r6): part-year documents read as annual reports."""
+
+    NOW = datetime(2026, 11, 8, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        ("title", "date_", "url"),
+        [
+            ("Semi-Annual Report 2026", "2026-08-28", "https://ir.x.example/sa-2026.pdf"),
+            ("Semi-annual financial report", "2026-09-10", "https://ir.x.example/rfs.pdf"),
+            ("Half-year 2026 update to the Annual Report", "2026-08-01",
+             "https://ir.x.example/h1.pdf"),
+            ("Quarterly and Annual Report", "2026-10-25", "https://ir.x.example/q3.pdf"),
+            ("Interim Annual Report 2026", "2026-08-01", "https://ir.x.example/i.pdf"),
+            ("Report", "2026-08-28", "https://ir.x.example/semi-annual-report-2026.pdf"),
+            ("Form 10-Q", "2026-10-25", "https://ir.x.example/q.pdf"),
+        ],
+    )
+    def test_a_part_year_document_never_ends_its_year(self, title, date_, url) -> None:  # noqa: ANN001
+        for anchor in (None, DEC):
+            fact = _fact("revenue", 4994, "2026", title=title, date_=date_, url=url)
+            assert fin._ineligibility(fact, as_of=self.NOW.date(), anchor=anchor) == (
+                WITHHELD_ANNUAL_PERIOD_NOT_ENDED)
+
+    def test_part_year_names_are_not_annual_names(self) -> None:
+        for name in ("Semi-Annual Report 2026", "Semiannual Report 2026",
+                     "Half Year Annual Financial Report", "Six months annual report 2026",
+                     "Q3 annual results"):
+            assert not fin._is_annual_name(name), name
+        for name in ("Annual Report 2026", "ON Semiconductor Annual Report 2025",
+                     "Form 10-K"):
+            assert fin._is_annual_name(name), name
+
+    def test_a_semi_annual_reports_bare_year_never_fills_the_annual_slot(self) -> None:
+        facts = [
+            _fact("revenue", 4994, "2026", title="Semi-Annual Report 2026",
+                  date_="2026-08-28", url="https://ir.x.example/sa.pdf", doc="sa"),
+            _fact("revenue", 4994, "H1 2026", title="Semi-Annual Report 2026",
+                  date_="2026-08-28", url="https://ir.x.example/sa.pdf", doc="sa"),
+        ]
+        state = build_financial_statements_state(facts, now=self.NOW, fiscal_anchor=DEC)
+        assert state["reporting_periods"].get("latest_annual") is None
+        assert "revenue_primary_filing" not in state["slots"]
+
+    def test_a_half_year_end_is_not_a_year_end(self) -> None:
+        read = fin.period_end_from_text
+        for text in ("for the half-year ended 30 June 2026", "Half year ended 30 June 2026",
+                     "for the half\u00a0year ended 30 June 2026",
+                     "semi-year ended June 30, 2026"):
+            assert read(text) is None, text
+        assert read("for the year ended 30 June 2026") == date(2026, 6, 30)
+        fact = _fact("revenue", 4994, "2026", title="Annual Financial Report",
+                     date_="2026-08-15", url="https://ir.x.example/x.pdf")
+        fact["document_title"] = "Annual Financial Report for the half-year ended 30 June 2026"
+        assert fin._ineligibility(fact, as_of=self.NOW.date(), anchor=None) == (
+            WITHHELD_ANNUAL_PERIOD_NOT_ENDED)
+
+    def test_a_recorded_year_end_off_the_anchor_is_ignored(self) -> None:
+        fact = _fact("revenue", 4994, "2026", title="Annual Financial Report",
+                     date_="2026-08-15", url="https://ir.x.example/x.pdf")
+        fact["document_period_end"] = "2026-06-30"
+        assert fin._ineligibility(fact, as_of=self.NOW.date(), anchor=DEC) == (
+            WITHHELD_ANNUAL_PERIOD_NOT_ENDED)
+        june = FiscalYearAnchor(2025, date(2025, 6, 30))
+        assert fin._ineligibility(fact, as_of=self.NOW.date(), anchor=june) is None
+
+
+class TestReReviewHeldAnnualReportAndPartYearDocument:
+    """Re-review P1-b: a held FY2026 10-K let an UNDATED Q3 release's bare "2026"
+    operating profit (the quarter's 1,062) in as FY2026."""
+
+    def _facts(self) -> list[dict[str, Any]]:
+        return [
+            _fact("revenue", 38100, "2026", title="10-K", date_="2027-02-12",
+                  url="https://www.sec.gov/Archives/edgar/data/773840/x/hon-20261231.htm",
+                  doc="k26"),
+            _fact("operating_profit", 1062, "2026", url=Q3_EX99,
+                  title="8-K 0000773840-26-000141", doc="ex99"),
+            _fact("revenue", 4994, "2026-Q3", url=Q3_EX99,
+                  title="8-K 0000773840-26-000141", doc="ex99"),
+        ]
+
+    @pytest.mark.parametrize("anchor", [None, DEC])
+    def test_the_part_year_documents_bare_year_stays_withheld(self, anchor) -> None:  # noqa: ANN001
+        state = build_financial_statements_state(
+            self._facts(), now=datetime(2027, 3, 1, tzinfo=UTC), fiscal_anchor=anchor)
+        assert state["reporting_periods"]["latest_annual"] == "FY2026"
+        assert state["slots"]["revenue_primary_filing"]["value"] == "38,100"
+        assert "operating_profit_primary_filing" not in state["slots"]
+        assert state["withheld_counts"] == {WITHHELD_ANNUAL_PERIOD_UNDATED: 1}
+
+    def test_a_half_year_reports_prior_year_comparative_still_counts(self) -> None:
+        facts = [
+            _fact("revenue", 9000, "2025", url=Q3_EX99, title="Half-year report", doc="h1"),
+            _fact("revenue", 4994, "H1 2026", url=Q3_EX99, title="Half-year report",
+                  doc="h1"),
+            _fact("revenue", 4500, "H1 2025", url=Q3_EX99, title="Half-year report",
+                  doc="h1"),
+        ]
+        state = build_financial_statements_state(facts, now=RUN, fiscal_anchor=DEC)
+        assert state["reporting_periods"]["latest_annual"] == "FY2025"
+
+
+class TestReReviewWireLeadEntity:
+    """Re-review P3: a wire title naming the subject only in passing, and short tickers."""
+
+    WIRE = "https://www.globenewswire.com/news-release/2026/08/13/x.html"
+
+    def _wire(self, title: str) -> dict[str, Any]:
+        return _fact("net_income", -9.5, "H1 2026", value="Net loss was 9.5", url=self.WIRE,
+                     title=title, date_="2026-08-13", tier="T1_primary_company_source")
+
+    @pytest.mark.parametrize(
+        "title",
+        ["Odysight.ai, a Honeywell supplier, reports H1 2026 results",
+         "Acme Corp Reports H1 2026 Results; Honeywell Contract Extended",
+         "Acme (Honeywell partner) reports H1 2026",
+         "Acme Corp and Honeywell sign a supply agreement"],
+    )
+    def test_a_passing_mention_is_not_the_subjects_release(self, title: str) -> None:
+        assert fin._ineligibility(self._wire(title), as_of=RUN.date(), anchor=None,
+                                  subject_name=HON, subject_ticker="HON") == (
+            WITHHELD_NOT_THE_SUBJECT)
+
+    @pytest.mark.parametrize(
+        "title",
+        ["Honeywell Reports Third Quarter 2026 Results",
+         "Press Release: Honeywell International Inc. Announces Q3 2026 Results",
+         "GLOBE NEWSWIRE - Honeywell Reports Q3", "HON: Third quarter 2026 results"],
+    )
+    def test_the_subject_leading_the_title_counts(self, title: str) -> None:
+        assert fin._ineligibility(self._wire(title), as_of=RUN.date(), anchor=None,
+                                  subject_name=HON, subject_ticker="HON") is None
+
+    def test_a_two_letter_ticker_never_names_the_subject(self) -> None:
+        fact = self._wire("ON THE MOVE: Acme Corp reports H1 2026 results")
+        assert fin._ineligibility(fact, as_of=RUN.date(), anchor=None,
+                                  subject_name="Ohm Nordic AB", subject_ticker="ON") == (
+            WITHHELD_NOT_THE_SUBJECT)
+        own = self._wire("ON Semiconductor Reports H1 2026 Results")
+        assert fin._ineligibility(own, as_of=RUN.date(), anchor=None,
+                                  subject_name="ON Semiconductor", subject_ticker="ON") is None
 
 
 # ── Defect 2: the re-read of held primary documents ────────────────────────── #
@@ -855,7 +1042,8 @@ def test_new_patterns_are_linear(text: str) -> None:
                 fin._FOOTNOTE_RE, fin._PARENTHETICAL_RE, fin._FILE_DATE_RE,
                 fin._YEAR_ENDED_RE,
                 fin._FIGURE_TOKEN_RE, fin._FORWARD_FACT_RE, fin._ANNUAL_TITLE_RE,
-                fin._NOT_ANNUAL_TITLE_RE, *(p for p, _t in dr._QUESTION_CUES)]
+                fin._NOT_ANNUAL_TITLE_RE, fin._PART_YEAR_TITLE_RE, fin._TITLE_LABEL_RE,
+                fin._LEAD_END_RE, *(p for p, _t in dr._QUESTION_CUES)]
     for key in ("capital_returns", "earnings_per_share", "acquisitions"):
         patterns.extend(dr._CARRIED[key])
     def best_of_three(run) -> float:  # noqa: ANN001
@@ -872,3 +1060,4 @@ def test_new_patterns_are_linear(text: str) -> None:
         assert best_of_three(lambda p=pattern: list(p.finditer(text))) < 0.2, pattern.pattern
     assert best_of_three(lambda: (slot_number({"value": text, "numeric_value": 1.0}),
                                   dr.topics_asked(text))) < 0.4
+    assert best_of_three(lambda: fin._names_subject(text, HON, "HON")) < 0.2
