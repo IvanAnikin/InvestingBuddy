@@ -980,8 +980,133 @@ def _is_forecast_period(period_key: str, published_at: date | None) -> bool:
     return not period_began_by(period_key, published_at, basis=BASIS_FISCAL_LABEL)
 
 
+#: ADR-091 — a bare year and the fiscal-year label of the same year ("2025", "FY2025").
+_BARE_OR_FY_YEAR_RE = re.compile(r"(?:FY)?(\d{4})", re.IGNORECASE)
+
+
+def _agreement_key(key: str, *, calendar_fiscal_year: bool | None) -> str:
+    """ADR-091 (PYPL4-5) — the key two cited periods are compared on.
+
+    The platform's own vocabulary reads a bare year as the fiscal year
+    (``research_fields.normalise_period``: "2025" → "FY2025"), and one filing's tags
+    arrive in both spellings (statement facts "FY2025", corpus chunks "2025"). So the two
+    agree, unless the issuer's fiscal year is KNOWN not to be the calendar year
+    (``calendar_fiscal_year=False``), when a bare year may be the calendar reading.
+    Every other key is compared as written."""
+    match = _BARE_OR_FY_YEAR_RE.fullmatch(key.strip())
+    if match is None or calendar_fiscal_year is False:
+        return key
+    return f"FY{match.group(1)}"
+
+
+def _utc_today() -> date:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).date()
+
+
+def _forward_of(period_key: str, reference: date) -> bool:
+    """ADR-091 (CLLS6-1) — does ``period_key`` certainly END after ``reference``?
+
+    Read at its EARLIEST possible end (a fiscal reading may end up to a year before the
+    calendar one), so only a period that had not ended under any reading is forward. A
+    key this cannot read is never forward."""
+    from app.services.ledger.canonical_state import period_bounds
+
+    text = str(period_key or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        try:
+            return date.fromisoformat(text) > reference
+        except ValueError:
+            return False
+    bounds = period_bounds(text)
+    if bounds is None:
+        return False
+    end = bounds[1]
+    try:
+        earliest = end.replace(year=end.year - 1)
+    except ValueError:  # 29 February
+        earliest = end.replace(year=end.year - 1, day=28)
+    return earliest > reference
+
+
+def _stated_over_forward(
+    period_key: str | None,
+    statement: str,
+    published_at: date | None,
+    as_of: date | None,
+) -> str | None:
+    """ADR-091 (CLLS6-1) — the statement's own ended reporting period, when the period it
+    inherited from its evidence is FORWARD of the source (or of the run date).
+
+    "H1 2026 operating cash used USD 29,694k …; cash USD 35,590k at 30 Jun 2026" cited a
+    6-K/A chunk tagged "2027-Q4" from its going-concern sentence ("fund its operations
+    into the fourth quarter 2027"). An inherited period that had not ended when the source
+    was published is not the period the statement reports; when the statement's own text
+    states exactly ONE ended, ADR-080-framed reporting period
+    (``document_period.statement_reporting_periods``), that period is used. Otherwise
+    ``None``: the inherited key stands (D2 only ever filled a missing key)."""
+    if not period_key:
+        return None
+    reference = published_at or as_of
+    if reference is None or not _forward_of(period_key, reference):
+        return None
+    from app.services.sources.document_period import statement_reporting_periods
+
+    periods = statement_reporting_periods(statement, as_of=reference)
+    if len(periods) != 1 or periods[0] == period_key:
+        return None
+    if _forward_of(periods[0], reference):
+        return None
+    return periods[0]
+
+
+_QUARTER_KEY_RE = re.compile(r"(\d{4})-Q([1-4])")
+
+
+def _fiscal_quarter_restated(
+    period_key: str | None,
+    statement: str,
+    published_at: date | None,
+    as_of: date | None,
+) -> str | None:
+    """ADR-091 (CFR2-8) — the statement's own FISCAL key for the quarter it inherited
+    under the calendar year.
+
+    A quarter's year is the year its fiscal year ends (ADR-065): "first quarter ended
+    30 June 2026" is 2027-Q1 for a March year end. A chunk tag "2026-Q1" for the same
+    quarter is the calendar reading. Narrow on purpose: the inherited key is a quarter,
+    the statement's text states exactly ONE quarter with the SAME ordinal, one year LATER.
+    Read at the source's date, then at the run date (a page dated before the quarter it
+    headlines cannot be read at its own date). Anything else: ``None``, the key stands."""
+    inherited = _QUARTER_KEY_RE.fullmatch(str(period_key or "").strip())
+    if inherited is None:
+        return None
+    from app.services.sources.document_period import statement_reporting_periods
+
+    for reference in dict.fromkeys(d for d in (published_at, as_of) if d is not None):
+        periods = statement_reporting_periods(statement, as_of=reference)
+        if len(periods) != 1:
+            continue
+        stated = _QUARTER_KEY_RE.fullmatch(periods[0])
+        if (
+            stated is not None
+            and stated.group(2) == inherited.group(2)
+            # Review: only calendar → fiscal (the fiscal year is the LATER one). A key
+            # already on the fiscal year never loses to a printed calendar label ("Q1
+            # 2026" against an inherited 2027-Q1).
+            and int(stated.group(1)) - int(inherited.group(1)) == 1
+        ):
+            return periods[0]
+        return None
+    return None
+
+
 def _inherited(
-    cited: "list[str]", evidence: "Sequence[_Evidence]"
+    cited: "list[str]",
+    evidence: "Sequence[_Evidence]",
+    *,
+    calendar_fiscal_year: bool | None = None,
 ) -> tuple[str | None, str | None, list[str]]:
     """The period and scope a finding inherits from the evidence it cites.
 
@@ -998,14 +1123,25 @@ def _inherited(
     evidence was published is a forecast, not the period the evidence reports, and it
     contributes nothing either. QA campaign CLLS5-1: a 6-K published 2026-10-28 held as
     "2028-H2" discarded the H1 2026 net-loss statement that cited it beside the H1 report.
+
+    ADR-091: "2025" and "FY2025" are one period (``_agreement_key``); the finding then
+    carries the fiscal label.
     """
     by_id = {item.citation_id: item for item in evidence}
-    periods: set[str] = {
+    raw_periods: set[str] = {
         key
         for c in cited
         if c in by_id
         and (key := by_id[c].period_key) is not None
         and not _is_forecast_period(key, by_id[c].published_at)
+    }
+    grouped: dict[str, set[str]] = {}
+    for key in raw_periods:
+        grouped.setdefault(
+            _agreement_key(key, calendar_fiscal_year=calendar_fiscal_year), set()
+        ).add(key)
+    periods: set[str] = {
+        next(iter(keys)) if len(keys) == 1 else agreed for agreed, keys in grouped.items()
     }
     scopes: set[str] = {
         key for c in cited if c in by_id and (key := by_id[c].scope_key) is not None
@@ -2283,6 +2419,12 @@ class InvestigatorDiagnostics:
     #: ADR-088. The same, with no forward cue: WITHHELD — recorded in the ledger with its
     #: reason (``verification_status='withdrawn'``), never shown as a result.
     statements_withheld_period_not_ended: int = 0
+    #: ADR-091. A statement whose inherited evidence period was FORWARD of its source
+    #: took the one ended reporting period its own text states (``text_stated``).
+    statements_forward_period_replaced: int = 0
+    #: ADR-091. A statement whose inherited quarter was the calendar reading of the
+    #: quarter its own text keys by fiscal year (ADR-065) took the fiscal key.
+    statements_fiscal_quarter_rekeyed: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -2324,6 +2466,10 @@ class InvestigatorDiagnostics:
         self.statements_withheld_period_not_ended += (
             other.statements_withheld_period_not_ended
         )
+        self.statements_forward_period_replaced += (
+            other.statements_forward_period_replaced
+        )
+        self.statements_fiscal_quarter_rekeyed += other.statements_fiscal_quarter_rekeyed
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -2358,6 +2504,10 @@ class InvestigatorDiagnostics:
             "statements_withheld_period_not_ended": (
                 self.statements_withheld_period_not_ended
             ),
+            "statements_forward_period_replaced": (
+                self.statements_forward_period_replaced
+            ),
+            "statements_fiscal_quarter_rekeyed": self.statements_fiscal_quarter_rekeyed,
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -3753,6 +3903,17 @@ class LLMInvestigator:
             logger.warning("investigator.passage_attribution_failed: %s", type(exc).__name__)
             return StatementAttribution(VERDICT_UNKNOWN)
 
+    def _calendar_fiscal_year(self) -> bool | None:
+        """ADR-091 — True / False when the issuer's fiscal calendar has ALREADY been read
+        (never read for this): does its year end in December? ``None`` when unknown."""
+        from app.services.statement_kind import FiscalYearAnchor
+
+        anchor = self._fiscal_anchor
+        if not isinstance(anchor, FiscalYearAnchor):
+            return None
+        end = anchor.period_end
+        return end.month == 12 or (end.month == 1 and end.day <= 7)
+
     async def _anchor(self) -> Any:
         """The issuer's fiscal calendar, read at most once per investigator. Never
         raises; ``None`` leaves fiscal periods to the lenient reading."""
@@ -4038,7 +4199,9 @@ class LLMInvestigator:
                 )
             except (TypeError, ValueError):
                 confidence = None
-            period_key, scope_key, conflicts = _inherited(real, evidence)
+            period_key, scope_key, conflicts = _inherited(
+                real, evidence, calendar_fiscal_year=self._calendar_fiscal_year()
+            )
             if conflicts:
                 # Evidence that does not agree on its own period or scope cannot support
                 # one statement about "the" period. Recorded as a conflict rather than
@@ -4089,6 +4252,25 @@ class LLMInvestigator:
                 self.diagnostics.statements_withheld_period_not_ended += 1
 
             period_basis: str | None = None
+            stated_period = _stated_over_forward(
+                period_key, statement, published_at,
+                self.as_of or _utc_today(),
+            )
+            if stated_period is not None:
+                # ADR-091 (CLLS6-1): an inherited period that had not ended when the
+                # source was published (a going-concern "into Q4 2027" tag on an H1
+                # report chunk) loses to the one ended period the statement states.
+                period_key, period_basis = stated_period, PERIOD_BASIS_TEXT_STATED
+                self.diagnostics.statements_forward_period_replaced += 1
+            fiscal_quarter = _fiscal_quarter_restated(
+                period_key, statement, published_at, self.as_of or _utc_today(),
+            )
+            if fiscal_quarter is not None:
+                # ADR-091 (CFR2-8): "first quarter ended 30 June 2026" is the issuer's
+                # 2027-Q1 (ADR-065); an inherited calendar-year tag of the same quarter
+                # loses to the statement's own fiscal reading.
+                period_key, period_basis = fiscal_quarter, PERIOD_BASIS_TEXT_STATED
+                self.diagnostics.statements_fiscal_quarter_rekeyed += 1
             if period_key is None:
                 # ADR-086 (PYPL2-5): a WEB finding whose evidence carries no period, but
                 # whose own text states exactly one reporting period (ADR-080 framing,

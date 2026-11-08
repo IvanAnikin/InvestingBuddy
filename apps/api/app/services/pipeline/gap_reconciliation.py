@@ -160,8 +160,31 @@ GAP_STATUSES: tuple[str, ...] = (
 #: partial answer): nothing places it in time, or it is a forecast.
 NONCOMPARABLE_REASONS: frozenset[str] = frozenset(
     {REASON_PERIOD_UNKNOWN, REASON_VALUE_DATE_UNKNOWN, REASON_FORWARD_LOOKING,
-     REASON_SUBJECT_UNCERTAIN}
+     REASON_SUBJECT_UNCERTAIN,
+     # ADR-091 (JPM2-D3, PYPL4-4): a segment, product-line or other sub-Group figure is
+     # not a partial answer to a Group gap; it is another quantity.
+     REASON_SCOPE_DIFFERS}
 )
+#: ADR-091 — reasons saying the finding's figure is for ANOTHER period than the gap's.
+PERIOD_DIFFERS_REASONS: frozenset[str] = frozenset(
+    {REASON_OLDER_PERIOD, REASON_OTHER_PERIOD, REASON_LATER_PERIOD}
+)
+#: ADR-091 — reasons saying the finding states a related but different metric.
+METRIC_DIFFERS_REASONS: frozenset[str] = frozenset(
+    {REASON_SUBTYPE_DIFFERS, REASON_QUALIFIER_DIFFERS}
+)
+
+
+def is_noncomparable(reasons: "Sequence[str]") -> bool:
+    """ADR-091 — is a finding's partial answer NOT COMPARABLE with the gap?
+
+    A non-comparable reason (``NONCOMPARABLE_REASONS``), or another period whose metric
+    also differs: an older figure stays a partial answer only when metric and scope
+    match."""
+    found = set(reasons)
+    if found & NONCOMPARABLE_REASONS:
+        return True
+    return bool(found & PERIOD_DIFFERS_REASONS and found & METRIC_DIFFERS_REASONS)
 
 #: ADR-086 — a finding that names ANOTHER entity as its subject ("Peer Co (a
 #: peer, not the company) reported …") never answers the subject's gap.
@@ -492,6 +515,17 @@ _NOT_AN_ABSENCE_OF_A_FIGURE = re.compile(
     r"not\s+(?:declin\w+|fall\w*|rise|grow\w*)|no\s+(?:decline|change|growth))\b",
     re.IGNORECASE,
 )
+#: ADR-091 — a CONTRAST is no denial either: "the Group reports a net cash position, not
+#: net debt" states the sign of one figure; it says nothing is absent. Pairing it against
+#: the net-cash finding it agrees with produced a phantom "net cash vs net debt" conflict.
+_CONTRAST_NOT_ABSENCE = re.compile(
+    r",\s{0,3}(?:and\s|but\s)?\s{0,3}not\s|\brather\s+than\b|\binstead\s+of\b", re.IGNORECASE
+)
+#: ADR-091 — a source label ("[web — not from a filing]") negates the SOURCE, not a figure.
+_SOURCE_LABEL_NEGATION = re.compile(
+    r"\bnot\s+(?:from|in)\s+(?:a|an|the)\s+(?:primary\s+)?(?:filing|source|document)s?\b",
+    re.IGNORECASE,
+)
 _YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)|\bfy\s?(\d{2})\b", re.IGNORECASE)
 
 
@@ -518,6 +552,65 @@ def _period_class(text: str, period_key: str | None = None) -> str | None:
     return None
 
 
+def _contrasts_two_fields(clause: str) -> bool:
+    """True for "<field A> …, not <field B>": one figure's sign or kind, not an absence.
+
+    The head must be affirmative and name a field, and the contrasted tail must name a
+    field too. A tail limited to a period class stays a denial: "revenue is reported
+    annually, not quarterly" (tail names no field) and "…, not quarterly revenue" (tail is
+    period-limited) both still deny quarterly revenue.
+    """
+    m = _CONTRAST_NOT_ABSENCE.search(clause)
+    if m is None:
+        return False
+    head_text, tail_text = clause[: m.start()], clause[m.end():]
+    if rf.is_negated(head_text.lower(), head_text):
+        return False
+    if _SUB_ANNUAL_RE.search(tail_text) or _ANNUAL_RE.search(tail_text):
+        return False
+    return bool(rf.fields_mentioned(head_text)) and bool(rf.fields_mentioned(tail_text))
+
+
+#: An amount in a contrast's head: the head states a figure (review P3).
+_HEAD_FIGURE_RE = re.compile(
+    r"(?:[$\u20ac\u00a3\u00a5]|\b(?:USD|EUR|GBP|AUD|CAD|CHF|JPY|INR|A\$|US\$))[ \t]?\d"
+    r"|\d[\d,.]{0,20}[ \t]?(?:m|bn|k|million|billion|thousand|%)(?![a-z])",
+    re.IGNORECASE,
+)
+
+
+def _denied_fields(clause: str) -> tuple[tuple[str, ...], str]:
+    """``(fields, period_text)``: the fields a negated clause denies, and the text whose
+    period class and years limit the denial.
+
+    Review P3: in "<head>, not <tail>" with an affirmative head naming a field ("the
+    report gives revenue, not EBITDA"), the head's field is STATED, not absent:
+
+    * a tail naming a field denies only the tail's fields;
+    * a tail naming only a period class denies the head's field for THAT class:
+      "revenue is reported annually, not quarterly" denies quarterly revenue, while
+      while a head stating a FIGURE ("Q3 revenue was $5.0bn — quarterly, not annual")
+      only describes that figure's period and denies nothing;
+    * a tail naming neither ("…, not EBITDA", a metric we do not track) denies nothing.
+    """
+    m = _CONTRAST_NOT_ABSENCE.search(clause)
+    if m is not None:
+        head_text = clause[: m.start()]
+        if not rf.is_negated(head_text.lower(), head_text) and rf.fields_mentioned(head_text):
+            tail_text = clause[m.end():]
+            tail_fields = rf.fields_mentioned(tail_text)
+            if tail_fields:
+                return tail_fields, tail_text
+            if _HEAD_FIGURE_RE.search(head_text):
+                # "Q3 revenue was USD 4,994m — quarterly, not annual" describes a stated
+                # figure's period; it denies nothing (HON2 replay).
+                return (), clause
+            if _SUB_ANNUAL_RE.search(tail_text) or _ANNUAL_RE.search(tail_text):
+                return rf.fields_mentioned(head_text), tail_text
+            return (), clause
+    return rf.fields_mentioned(clause), clause
+
+
 def contradicted_absences(findings: Sequence[FindingFacts]) -> list[TemporalDisagreement]:
     """Findings that DENY a field another finding of the same run STATES.
 
@@ -534,16 +627,18 @@ def contradicted_absences(findings: Sequence[FindingFacts]) -> list[TemporalDisa
     out: list[TemporalDisagreement] = []
     live = [f for f in findings if not f.withdrawn]
     for absent in live:
-        for clause in rf._raw_clauses(absent.statement):  # noqa: SLF001 - same module family
+        for raw_clause in rf._raw_clauses(absent.statement):  # noqa: SLF001 - same module family
+            clause = _SOURCE_LABEL_NEGATION.sub(" ", raw_clause)
             low = clause.lower()
             if not rf.is_negated(low, clause):
                 continue
-            if _NOT_AN_ABSENCE_OF_A_FIGURE.search(clause):
+            if _NOT_AN_ABSENCE_OF_A_FIGURE.search(clause) or _contrasts_two_fields(clause):
                 continue
-            denied = [k for k in rf.fields_mentioned(clause) if k in rf.FIELDS_BY_KEY]
+            denied_keys, period_text = _denied_fields(clause)
+            denied = [k for k in denied_keys if k in rf.FIELDS_BY_KEY]
             if not denied:
                 continue
-            wanted = _period_class(clause)
+            wanted = _period_class(period_text)
             denied_years = _years_of(clause)
             for field_key in denied:
                 for stated in live:
@@ -987,6 +1082,7 @@ january february march april may june july august september october november dec
 jan feb mar apr jun jul aug sep sept oct nov dec
 asia europe emea apac americas africa china japan india australia canada brazil mexico
 germany france latin america north south middle east west united kingdom states usa
+worldwide global overall company-wide
 """.split())
 #: Study, asset and document words a statement about the subject's own asset opens with
 #: ("The Foo DFS estimates …", "Ore Reserve …", "Nameplate capacity …").
@@ -1063,6 +1159,99 @@ def _subject_reasons(
         if all(len(t) <= 1 or t in _GENERIC_CAPITALISED or t in allowed for t in parts):
             continue
         return [REASON_SUBJECT_UNCERTAIN]
+    return []
+
+
+#: ADR-091 — a metric word a product line, business or segment name precedes
+#: ("Braintree revenue", "Payments revenue"). Literal alternatives only.
+_LINE_METRIC_RE = re.compile(r"\b(?:revenues?|sales|turnover|net[ \t]revenue)\b", re.IGNORECASE)
+#: Capitalised words before a metric that still name the whole company: the generic
+#: vocabulary (``_GENERIC_CAPITALISED``) plus these.
+_WHOLE_COMPANY_WORDS: frozenset[str] = frozenset(
+    "firmwide groupwide wide overall headline record organic comparable managed "
+    "recurring core one two three four five six nine twelve ifrs gaap non pro forma "
+    "preliminary unaudited audited worldwide global company total company-wide "
+    "total-company".split()
+)
+#: Review P1-4 — legal suffixes after the subject's name ("Cellectis S.A.", "Lynas Rare
+#: Earths Ltd") are skipped like a qualifier, so the name before them is read.
+_LEGAL_SUFFIX_TOKENS: frozenset[str] = frozenset(
+    "s.a. sa s.a ltd ltd. limited inc inc. incorporated plc corp corp. corporation co "
+    "co. ag se nv n.v. spa s.p.a. asa gmbh pty llc".split()
+)
+#: Requirements the product-line rule applies to: the revenue family.
+_REVENUE_FAMILY: frozenset[str] = frozenset({"metric:revenue"})
+#: How many tokens before the metric word are read for the line's name.
+_LINE_NAME_TOKENS = 3
+
+
+def _requirement_clause(statement: str, requirement: str) -> str | None:
+    """The first affirmative clause stating ``requirement``, in its ORIGINAL case."""
+    found = rf.FIELDS_BY_KEY.get(requirement)
+    if found is None:
+        return None
+    for raw in rf._raw_clauses(statement):  # noqa: SLF001 - same module family
+        low = raw.lower()
+        if rf.is_negated(low, raw) or requirement not in rf._stated_keys(low):  # noqa: SLF001
+            continue
+        if rf._satisfies(found.needs, raw):  # noqa: SLF001
+            return raw
+    return None
+
+
+def _sub_line_reasons(
+    finding: FindingFacts, subject: SubjectWords, scope: str | None,
+    requirement: str | None = None,
+) -> list[str]:
+    """ADR-091 (JPM2-D3, PYPL4-4) — an UNSCOPED finding that states a product line's,
+    business's or segment's figure is not the Group's.
+
+    "Braintree revenue up ~$1.1bn and Venmo up ~$230m", "FY2025: Payments revenue
+    $19.3bn, Lending $7.6bn, Markets & Securities Services $41.3bn": a capitalised name
+    directly before the revenue word that is neither generic, the subject's own name nor
+    whole-company wording. A segment gap, and a finding that carries a scope, are judged
+    by ``_scope_reasons``. Token scan, linear.
+
+    Review P1-4: only for a revenue-family requirement, and only over the clause that
+    carries the requirement's figure — a cash gap is never judged by a product-revenue
+    clause beside the cash figure. ``requirement=None`` (a direct call) reads the whole
+    statement."""
+    if finding.scope_key or (scope and scope.startswith("segment")):
+        return []
+    if requirement is not None and requirement not in _REVENUE_FAMILY:
+        return []
+    text = (finding.statement or "")[:600]
+    if requirement is not None:
+        text = _requirement_clause(text, requirement) or ""
+    if not text:
+        return []
+    from app.services.discovery.identity import _fold  # noqa: PLC2701
+
+    for match in _LINE_METRIC_RE.finditer(text):
+        before = text[max(0, match.start() - 80): match.start()].split()
+        tokens = before[-_LINE_NAME_TOKENS:]
+        # Skip "net" / "total" style qualifiers between the name and the metric.
+        while tokens and (
+            _fold(tokens[-1]).strip(",;:()") in _LEGAL_SUFFIX_TOKENS
+            or _fold(tokens[-1]).strip(",.;:()") in _GENERIC_CAPITALISED
+        ):
+            tokens = tokens[:-1]
+        if not tokens:
+            continue
+        word = tokens[-1].strip(",;:()\"'")
+        if not word or not word[0].isupper() or any(ch.isdigit() for ch in word):
+            continue
+        folded = _fold(word).rstrip("'’")
+        if folded.endswith(("'s", "’s")):
+            folded = folded[:-2]
+        parts = [t for t in re.split(r"[-&'’]+", folded) if t]
+        if all(
+            len(t) <= 1 or t in _GENERIC_CAPITALISED or t in _WHOLE_COMPANY_WORDS
+            or t in subject.own or t in subject.distinctive
+            for t in parts
+        ):
+            continue
+        return [REASON_SCOPE_DIFFERS]
     return []
 
 
@@ -1162,6 +1351,8 @@ def _assess(
     reasons.extend(_family_subtype_reasons(finding, requirement))
     reasons.extend(_forward_reasons(finding, requirement, gap_text))
     reasons.extend(_subject_reasons(finding, subject_aliases, gap_text))
+    if REASON_SCOPE_DIFFERS not in reasons:
+        reasons.extend(_sub_line_reasons(finding, subject_aliases, scope, requirement))
     reasons.extend(_balance_reasons(finding, requirement, today))
     reasons.extend(_period_reasons(finding, gap_period))
     reasons.extend(_recency_reasons(finding, gap_text, requirement, today))
@@ -1200,6 +1391,23 @@ def _fact_covers(
     if gap_period and rf.normalise_period(fact.period) != gap_period:
         return False
     return True
+
+
+def _newest_annual_year(facts: Sequence[FactFacts]) -> int | None:
+    """ADR-091 — the newest full year any validated statement fact is for."""
+    years = [
+        rank[0] for fact in facts
+        if (rank := rf.period_rank(fact.period)) is not None and rank[1] == 9
+    ]
+    return max(years) if years else None
+
+
+def _fact_is_stale(fact: FactFacts, newest_annual: int | None) -> bool:
+    """ADR-091 (PYPL4-4, JPM2-D3) — a statement fact for a year OLDER than the newest
+    full year the run holds facts for (a 2023 capex fact beside FY2025 statements) does
+    not answer a gap that names no period: the gap asks about the company now."""
+    rank = rf.period_rank(fact.period)
+    return bool(newest_annual and rank is not None and rank[0] < newest_annual)
 
 
 def reconcile(
@@ -1340,21 +1548,32 @@ def _reconcile_core(
             if not reasons:
                 full[requirement] = finding.finding_id
                 break
-            partial.setdefault(requirement, (finding.finding_id, reasons))
-            if not set(reasons) & NONCOMPARABLE_REASONS:
+            noncomparable = is_noncomparable(reasons)
+            if requirement not in partial or (
+                not noncomparable and requirement not in comparable
+            ):
+                # ADR-091: a comparable partial answer is the one shown; a
+                # non-comparable one only when nothing comparable speaks to it.
+                partial[requirement] = (finding.finding_id, reasons)
+            if not noncomparable:
                 comparable.add(requirement)
             if (
                 requirement in POINT_IN_TIME_FIELDS and reasons == [REASON_LATER_PERIOD]
                 and requirement not in later
             ):
                 later[requirement] = finding.finding_id
+    newest_annual = _newest_annual_year(facts)
     covering_facts = {
         req: fact for req in wanted for fact in facts
         if _fact_covers(fact, req, gap_project=gap_project, gap_period=gap_period, scope=scope)
+        and not (gap_period is None and _fact_is_stale(fact, newest_annual))
     }
     ordered_ids = list(dict.fromkeys(
         [full[r] for r in wanted if r in full]
-        + [partial[r][0] for r in wanted if r in partial and r not in full]
+        + [partial[r][0] for r in wanted if r in partial and r not in full
+           # ADR-091: a non-comparable finding is not shown as answering a gap that a
+           # comparable statement fact answers.
+           and not (r in covering_facts and r not in comparable)]
     ))
     all_full = len(full) == len(wanted)
     closable_text = source == "gap_text" and gap.gap_type in CLOSABLE_GAP_TYPES

@@ -370,6 +370,14 @@ function FindingItem({
             )}
             {statement.text}
           </p>
+          {finding.contextLabel && (
+            <p
+              className="mt-1 text-xs font-medium text-[color:var(--ib-ink-3)]"
+              data-testid="finding-not-a-comparable"
+            >
+              {finding.contextLabel}
+            </p>
+          )}
           {/* Temporal supersession: the newest statement of the same guidance is
               current; an older one is kept and says it was superseded, and by what. */}
           {finding.guidanceStatus === "prior" && (

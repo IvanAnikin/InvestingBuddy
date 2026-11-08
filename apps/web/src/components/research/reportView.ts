@@ -414,7 +414,11 @@ export function withIssuerStatements(
     periods: {
       ...periods,
       latestAnnual: useAnnual ? rp.latestAnnual : periods.latestAnnual,
-      latestInterim: useCurrent ? rp.latestInterim : periods.latestInterim,
+      // ADR-091: "Not in this report" never stands beside a held part-year period.
+      latestInterim:
+        (useCurrent ? rp.latestInterim : periods.latestInterim) ??
+        statements.canonicalLatestInterim ??
+        null,
       latestQuarter: useCurrent ? rp.latestQuarter : periods.latestQuarter,
       latestCurrent: useCurrent ? rp.latestCurrent : periods.latestCurrent,
     },

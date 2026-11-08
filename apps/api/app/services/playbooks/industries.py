@@ -380,7 +380,10 @@ BANK_NOT_MEANINGFUL = NotMeaningfulMetrics(
     # for a deposit-taker; `funding_and_deposits` asks how it is funded. Declared HERE,
     # not as that question's `replaces`, because the playbook also matches insurers and
     # payments companies, for which the base question is the right one.
-    questions=("cash_generation_and_funding",),
+    # ADR-091 (JPM2-D7): nor do the industrial templates — operating sites' output and
+    # unit cost, and a project pipeline of capacity, capex and construction. A bank's
+    # growth and its book are asked by this playbook's own questions.
+    questions=("cash_generation_and_funding", "operations_and_assets", "growth_pipeline"),
     # A bank is valued on its book and the return it earns on it (P/B with ROE).
     analysed_by=("book_value_per_share", "return_on_equity"),
     reader_note=(

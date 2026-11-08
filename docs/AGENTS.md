@@ -1808,3 +1808,69 @@ reader takes its counts and status lines from it.
   `published_at`: the EDGAR filing date, a venue's announcement date), so an 8-K exhibit
   carries its filing's date; an undated stored document or corpus version is
   backfilled on re-encounter, never overwritten.
+
+## Status lines, scope, applicability and fiscal calendars (ADR-091)
+
+- **Status lines.** `canonical_state.status` is every status line's one source: latest
+  interim, web searches (web stage + investigators), documents read, statement facts,
+  results releases read, and open/listed gaps. The enforcer records a payload field that
+  disagrees as `status_line_contradicts_canonical_state` (repaired where the page reads
+  it). It also rewrites the V2 "not sourced" fundamentals and channel lines, and
+  "N blocking research gaps", from the state.
+- **Investigator periods.** An inherited period that had not ended at the source's date
+  loses to the one ended period the statement's text states. An inherited quarter that
+  is the calendar reading of the statement's own fiscal quarter ("first quarter ended
+  30 June 2026" → `2027-Q1`) takes the fiscal key. "2025" and "FY2025" agree for a
+  calendar fiscal year.
+- **Gap comparability.** `scope_differs`, or another period with another metric, is
+  NONCOMPARABLE. An unscoped product-line or segment revenue figure ("Braintree
+  revenue …") is `scope_differs` for a Group gap.
+- **Claim scope.** An unscoped finding naming exactly one segment carries that segment
+  as its claim scope (`claim_checks.stated_segment`).
+- **Applicability.** The bank playbook skips the growth-pipeline and operations
+  questions. The Growth & Catalyst Analyst's focus names no permits or offtake.
+- **Commercial claims (ADR-088 gate).** The gate also reads makes / extracts /
+  processes / ships / manufactures / refines, "operates a producing …", and an owned
+  asset "… making X".
+- **Peer context.** With no comparable peer (ADR-089), the peer table is empty and an
+  explicitly-other-company figure in the competitive section is labelled "not a
+  comparable".
+- **Fiscal calendar.** `canonical_state.fiscal_year_end` takes the year end from the
+  SEC period of report, or from the issuer's own stated year end. The latest reporting
+  period is read on that calendar, and the issuer documents held include those parsed.
+- **Contradiction detector.** A two-field contrast ("net cash …, not net debt") or a
+  source label ("not from a filing") is no denial of a figure.
+- **Chair claim checks.** A chair sentence citing a finding the ledger does not hold is
+  withheld. So is one narrating a conflict between findings no recorded disagreement
+  pairs.
+- **Review round 1.**
+  - A conflict is narrated only when the conflict word governs findings, sources or
+    figures. Negations and legal disputes are not conflicts.
+  - A merely-mentioned segment never scopes a Group figure.
+  - A peer label needs another company to own the figure; the subject's own figure is
+    never labelled.
+  - Sub-line scope applies only to revenue gaps, and only to the clause holding the
+    figure.
+  - Half-year ends are not year ends, and fiscal quarter labels read "Q1 FY2027".
+  - Commercial claims exclude post-verb negation, pilot plants, non-product objects and
+    forward tails.
+- **Review round 2.**
+  - A negated or merely descriptive "differ" is no conflict; finding-id subjects,
+    possessives, "diverge", "contested" and "different … figures" are.
+  - A peer marker or possessive owns the first figure regardless of later pronouns.
+  - The fiscal interim label applies only to text-stated or fiscal keys.
+- **Review round 3 (conservative).**
+  - A chair conflict is withheld only for explicit finding-vs-finding wording; other
+    wordings are accepted misses.
+  - A peer label needs an attached explicit marker, or a named legal entity with the
+    subject absent from the statement.
+  - For a non-December year end, an inherited period key is ambiguous and never sets
+    the latest period.
+- **Review round 4.** A peer label needs an explicit marker attached to the entity that
+  opens the first figure's clause, with no break before the figure and no "versus"
+  comparison figure. A legal name alone never labels.
+- **Review round 5.**
+  - A peer label also needs: the subject named nowhere in the statement, no lead word
+    before the marked name, and a reporting verb right after the marker.
+  - "while" and "whereas" count as comparisons.
+

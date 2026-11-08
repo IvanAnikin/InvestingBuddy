@@ -99,35 +99,122 @@ def _month_end(year: int, month: int) -> date:
     return date(year, month + 1, 1) - timedelta(days=1)
 
 
-def period_bounds(key: Any) -> tuple[date, date] | None:
+def _fiscal_month(year: int, month: int) -> tuple[int, int]:
+    """``(year, month)`` of a month offset that may fall before January."""
+    while month <= 0:
+        month += 12
+        year -= 1
+    return year, month
+
+
+def period_bounds(key: Any, *, fiscal_year_end_month: int | None = None
+                  ) -> tuple[date, date] | None:
     """``(start, end)`` of a period key such as ``FY2025``, ``2026-Q3`` or ``H1 2026``.
 
-    Calendar approximations: a fiscal ``FY2026`` that ended in March is read as the
-    calendar year. Callers clamp the end to the document's publication date, which
+    Calendar approximations by default: a fiscal ``FY2026`` that ended in March is read
+    as the calendar year. Callers clamp the end to the document's publication date, which
     removes the over-estimate in the direction that matters.
+
+    ADR-091 — with ``fiscal_year_end_month`` (3 for a March year end) a key is read on
+    the issuer's fiscal calendar, the ADR-065 convention: ``FY2027`` / ``2027`` ends
+    March 2027, ``2027-Q1`` is the quarter to June 2026 and ``2027-H1`` the half to
+    September 2026. December (or ``None``) is the calendar reading.
     """
     text = str(key or "").strip()
+    m: int = 12
+    if fiscal_year_end_month is not None and 1 <= fiscal_year_end_month <= 11:
+        m = fiscal_year_end_month
     for pattern, kind in _PERIOD_PATTERNS:
         match = pattern.match(text)
         if not match:
             continue
         if kind == "year":
             year = int(match.group(1))
-            return date(year, 1, 1), date(year, 12, 31)
+            if m == 12:
+                return date(year, 1, 1), date(year, 12, 31)
+            start_year, start_month = _fiscal_month(year, m + 1 - 12)
+            return date(start_year, start_month, 1), _month_end(year, m)
         if kind in ("quarter", "quarter_rev"):
             year, q = (
                 (int(match.group(1)), int(match.group(2)))
                 if kind == "quarter"
                 else (int(match.group(2)), int(match.group(1)))
             )
-            return date(year, 3 * q - 2, 1), _month_end(year, 3 * q)
+            end_year, end_month = _fiscal_month(year, m - 3 * (4 - q))
+            start_year, start_month = _fiscal_month(end_year, end_month - 2)
+            return date(start_year, start_month, 1), _month_end(end_year, end_month)
         year, h = (
             (int(match.group(1)), int(match.group(2)))
             if kind == "half"
             else (int(match.group(2)), int(match.group(1)))
         )
-        return date(year, 6 * h - 5, 1), _month_end(year, 6 * h)
+        end_year, end_month = _fiscal_month(year, m - 6 * (2 - h))
+        start_year, start_month = _fiscal_month(end_year, end_month - 5)
+        return date(start_year, start_month, 1), _month_end(end_year, end_month)
     return None
+
+
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
+           "september", "october", "november", "december")
+_MONTH_ALT = "|".join(_MONTHS)
+#: "year ended 31 March 2026", "financial year ending March 31, 2025", "year to 31 March".
+_YEAR_END_STATED_RE = re.compile(
+    r"\byear[ \t]{1,3}(?:ended|ending|to)[ \t]{1,3}(?:on[ \t]{1,3})?"
+    rf"(?:(?:\d{{1,2}})(?:st|nd|rd|th)?[ \t]{{1,3}}({_MONTH_ALT})\b"
+    rf"|({_MONTH_ALT})[ \t]{{1,3}}\d{{1,2}}\b)",
+    re.IGNORECASE,
+)
+#: Mentions needed, and the share the most-named month must hold, before a fiscal year
+#: end is read from the issuer's own text: one stray "year ended 31 December" quoting a
+#: subsidiary must not re-key the issuer.
+#: A part-year period word right before "year ended": half-year, six / nine / three
+#: months, interim, year-to-date.
+_PART_YEAR_BEFORE_RE = re.compile(
+    r"(?:half|interim|six[- \t]months?|nine[- \t]months?|three[- \t]months?|"
+    r"(?:six|nine|three)[- \t]month|quarter|to[- \t]date)[- \t]{0,3}$",
+    re.IGNORECASE,
+)
+_FYE_MIN_MENTIONS = 2
+_FYE_MIN_SHARE = 0.75
+
+
+def fiscal_year_end(v3: Mapping[str, Any]) -> dict[str, Any] | None:
+    """ADR-091 — the issuer's fiscal year-end month, and on what basis, or ``None``.
+
+    1. The SEC annual filing's period of report (``core_filings.annual.period_end``).
+    2. Else the year end the issuer's OWN documents state ("for the year ended 31 March
+       2026") across the findings citing them: at least two mentions, and one month
+       named in three quarters of them. A non-US issuer has no SEC calendar; its annual
+       report states its year end. Otherwise ``None`` and every key keeps the calendar
+       reading."""
+    annual = _mapping(_mapping(v3.get("core_filings")).get("annual"))
+    end = as_date(annual.get("period_end"))
+    if end is not None and annual.get("state") == "ready":
+        # A 52/53-week year ending on day 1-7 belongs to the month before (ADR-065).
+        month = end.month if end.day > 7 else (end.month - 2) % 12 + 1
+        if month in (1, 2):
+            return None
+        return {"month": month, "basis": "sec_annual_period_of_report"}
+    counts: dict[int, int] = {}
+    for finding in _all_findings(v3):
+        if not _is_issuer(finding):
+            continue
+        text = str(finding.get("statement") or "")[:2000]
+        for match in _YEAR_END_STATED_RE.finditer(text):
+            if _PART_YEAR_BEFORE_RE.search(text[max(0, match.start() - 24): match.start()]):
+                continue  # "half-year ended 30 September" is no year end (review P2-1)
+            name = (match.group(1) or match.group(2) or "").lower()
+            if name in _MONTHS:
+                month = _MONTHS.index(name) + 1
+                counts[month] = counts.get(month, 0) + 1
+    total = sum(counts.values())
+    if total < _FYE_MIN_MENTIONS:
+        return None
+    month, n = max(counts.items(), key=lambda kv: kv[1])
+    if n / total < _FYE_MIN_SHARE or month in (1, 2):
+        # A January / February year end is named both ways (ADR-065): no basis.
+        return None
+    return {"month": month, "basis": "issuer_documents_stated", "mentions": n}
 
 
 def as_date(value: Any) -> date | None:
@@ -164,6 +251,10 @@ class LedgerTally:
     #: ADR-086 — EVERY disagreement id the ledger holds, resolved ones included: a
     #: chair sentence naming a resolved disagreement is not naming an unknown one.
     disagreement_ids: tuple[str, ...] | None = None
+    #: ADR-091 — the finding pair each disagreement rests on (``None`` on a payload
+    #: replay): a chair sentence narrating a conflict between findings no recorded
+    #: disagreement pairs is a phantom.
+    disagreement_pairs: tuple[tuple[str, str], ...] | None = None
     #: Only when the ids are not known (a payload replay).
     unresolved_count: int | None = None
 
@@ -211,9 +302,12 @@ async def tally_ledger(session: Any, run: Any) -> LedgerTally:
         by_status[key] = by_status.get(key, 0) + int(n or 0)
     disagreement_rows = (
         await session.execute(
-            select(ResearchDisagreement.id, ResearchDisagreement.resolution).where(
-                ResearchDisagreement.research_run_id == run.id
-            )
+            select(
+                ResearchDisagreement.id,
+                ResearchDisagreement.resolution,
+                ResearchDisagreement.finding_a_id,
+                ResearchDisagreement.finding_b_id,
+            ).where(ResearchDisagreement.research_run_id == run.id)
         )
     ).all()
     return LedgerTally(
@@ -224,9 +318,12 @@ async def tally_ledger(session: Any, run: Any) -> LedgerTally:
         gaps_by_status=by_status,
         disagreements=len(disagreement_rows),
         unresolved_disagreement_ids=tuple(
-            sorted(str(i) for i, res in disagreement_rows if res == ledger.UNRESOLVED)
+            sorted(str(row[0]) for row in disagreement_rows if row[1] == ledger.UNRESOLVED)
         ),
-        disagreement_ids=tuple(sorted(str(i) for i, _res in disagreement_rows)),
+        disagreement_ids=tuple(sorted(str(row[0]) for row in disagreement_rows)),
+        disagreement_pairs=tuple(sorted(
+            (str(row[2]).lower(), str(row[3]).lower()) for row in disagreement_rows
+        )),
     )
 
 
@@ -407,10 +504,22 @@ def _latest_period(
     which can only make a stale-period claim LESS likely to be flagged.
     """
     best: tuple[str | None, date | None, str | None] = (None, None, None)
+    # ADR-091 (CFR2-8): on the issuer's fiscal calendar when one is known — "Q1 2027"
+    # of a March year end ended June 2026, not March 2027. Re-review round 3 (r22): the
+    # fiscal reading applies only to a key known to be fiscal — statement facts, or a
+    # finding whose ``period_basis`` is text-stated / fiscal. For a non-December year end
+    # an inherited finding key ("runway into Q1 2027" tagged 2027-Q1) could be either
+    # calendar; it is ambiguous and is skipped. Missing beats wrong.
+    fye = fiscal_year_end(v3)
+    month = int(fye["month"]) if fye else None
+    non_calendar = month not in (None, 12)
 
-    def consider(key: Any, published: date | None, origin: str) -> None:
+    def consider(key: Any, published: date | None, origin: str,
+                 known_fiscal: bool = True) -> None:
         nonlocal best
-        bounds = period_bounds(key)
+        if non_calendar and not known_fiscal:
+            return
+        bounds = period_bounds(key, fiscal_year_end_month=month)
         if bounds is None:
             return
         end = bounds[1]
@@ -443,7 +552,8 @@ def _latest_period(
             origin = "verified_finding"
         else:
             continue
-        consider(finding.get("period_key"), as_date(finding.get("source_published_at")), origin)
+        consider(finding.get("period_key"), as_date(finding.get("source_published_at")), origin,
+                 known_fiscal=finding.get("period_basis") in _FISCAL_PERIOD_BASES)
     return best
 
 
@@ -759,6 +869,11 @@ def build_canonical_state(
         default=None,
     )
     period_key, period_end, period_origin = _latest_period(v3, today)
+    fye = fiscal_year_end(v3)
+    # ADR-091 (CFR2-8): the issuer documents the run HOLDS include the ones it parsed
+    # (``primary_document_coverage``): a non-SEC issuer's annual and interim reports
+    # reach the run through the corpus, not through core filings or a covered venue.
+    held_count = _read_documents(v3, len(issuer_docs))
 
     routing_chair = _mapping(_mapping(_mapping(v3.get("routing")).get("slots")).get("chair"))
     model_available = (
@@ -818,9 +933,16 @@ def build_canonical_state(
             "ids": (
                 list(tally.disagreement_ids) if tally.disagreement_ids is not None else None
             ),
+            "finding_pairs": (
+                [list(p) for p in tally.disagreement_pairs]
+                if tally.disagreement_pairs is not None else None
+            ),
         },
         "documents": {
-            "issuer_documents_held": len(issuer_docs),
+            "issuer_documents_held": held_count,
+            "issuer_documents_held_basis": (
+                "inventory" if held_count == len(issuer_docs) else "document_coverage"
+            ),
             "issuer_documents_cited": tally.primary_source > 0,
             "newest_issuer_document": newest.to_dict() if newest else None,
             "newest_cited_issuer_document": newest_cited.to_dict() if newest_cited else None,
@@ -829,6 +951,7 @@ def build_canonical_state(
             "latest_reporting_period": period_key,
             "latest_reporting_period_end": period_end.isoformat() if period_end else None,
             "latest_reporting_period_source": period_origin,
+            "fiscal_year_end": fye,
         },
         "current_period": current,
         "evidence": {
@@ -840,6 +963,138 @@ def build_canonical_state(
         },
         "chair": chair,
         "council": _council(v3, legacy, chair, tally.findings),
+        # ADR-091 — what every status line shows.
+        "status": status_lines(
+            v3, current=current, gaps_open=tally.gaps_open,
+            issuer_documents_held=held_count, today=today,
+        ),
+    }
+
+
+def _int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _period_label(key: Any, *, fiscal: bool = False) -> str | None:
+    """"2026-H1" → "H1 2026", "2026-Q3" → "Q3 2026"; a key on a non-calendar fiscal
+    year reads "Q1 FY2027" (ADR-065); other keys as written."""
+    text = str(key or "").strip()
+    match = re.fullmatch(r"(\d{4})-([HQ][1-4])", text, re.I)
+    if match:
+        year = f"FY{match.group(1)}" if fiscal else match.group(1)
+        return f"{match.group(2).upper()} {year}"
+    return text or None
+
+
+def _read_documents(v3: Mapping[str, Any], held: int) -> int:
+    """Primary documents the run READ (``primary_document_coverage``), one per document:
+    an undated entry with the same type and chunk count as a dated one is the same
+    document listed twice. Falls back to the issuer documents held."""
+    coverage = _mapping(v3.get("primary_document_coverage"))
+    docs = [
+        _mapping(d) for d in coverage.get("documents") or ()
+        if _mapping(d).get("extraction_status") == "extracted"
+    ]
+    if not docs:
+        return held
+    dated = {(d.get("document_type"), d.get("chunks")) for d in docs if d.get("published_at")}
+    count = sum(
+        1 for d in docs
+        if d.get("published_at") or (d.get("document_type"), d.get("chunks")) not in dated
+    )
+    return max(count, held)
+
+
+#: Re-review R-P7 — finding ``period_basis`` values that mean the key is the issuer's
+#: fiscal key (set from the statement's own words, ADR-086 / ADR-091).
+_FISCAL_PERIOD_BASES = frozenset({"text_stated", "fiscal"})
+
+
+def _latest_interim(v3: Mapping[str, Any], current: Mapping[str, Any],
+                    today: date) -> dict[str, Any] | None:
+    """The latest part-year period the run HOLDS, and on what basis: validated statement
+    facts first (a quarter is an interim period), else the newest ended part-year period
+    the issuer's own findings state when the current-period report is held but its
+    statement lines were not extracted."""
+    statements = _mapping(v3.get("financial_statements_state"))
+    periods = _mapping(statements.get("reporting_periods"))
+    label = periods.get("latest_interim") or periods.get("latest_current_period")
+    if label:
+        return {"label": str(label), "basis": "statement_facts"}
+    if not current.get("covered_by_issuer_findings"):
+        return None
+    best: tuple[date, str, bool] | None = None
+    # Review P2-2: on the issuer's fiscal calendar. Re-review R-P7 / round 3: only a key
+    # the statement's own words set (``period_basis`` text-stated or fiscal) is read and
+    # labelled on that calendar ("Q1 FY2027"). For a non-December year end an inherited
+    # key is ambiguous (calendar or fiscal?) and is skipped; a calendar-year issuer is
+    # read as before.
+    fye = fiscal_year_end(v3)
+    month = int(fye["month"]) if fye else None
+    for finding in _all_findings(v3):
+        key = str(finding.get("period_key") or "")
+        if not _is_issuer(finding) or not re.fullmatch(r"\d{4}-[HQ][1-4]", key, re.I):
+            continue
+        fiscal = (month not in (None, 12)
+                  and finding.get("period_basis") in _FISCAL_PERIOD_BASES)
+        if month not in (None, 12) and not fiscal:
+            continue
+        bounds = period_bounds(key, fiscal_year_end_month=month if fiscal else None)
+        if bounds is None or bounds[1] > today:
+            continue
+        if best is None or bounds[1] > best[0]:
+            best = (bounds[1], key, fiscal)
+    if best is None:
+        return None
+    return {
+        "label": f"{_period_label(best[1], fiscal=best[2])} — stated in "
+                 "issuer findings; statement lines "
+                 "not extracted",
+        "basis": "issuer_findings",
+    }
+
+
+def status_lines(
+    v3: Mapping[str, Any], *, current: Mapping[str, Any], gaps_open: int,
+    issuer_documents_held: int, today: date,
+) -> dict[str, Any]:
+    """ADR-091 — the values every report STATUS LINE shows, derived once from the
+    ledger state, the statements view and the document coverage. A reader that shows a
+    count or a sourced / not-sourced state reads it from here."""
+    consumption = _mapping(v3.get("consumption"))
+    stage = _mapping(consumption.get("web_stage"))
+    web_queries = _mapping(_mapping(v3.get("web_context")).get("queries"))
+    investigators = _int(consumption.get("web_search_calls"))
+    stage_calls = _int(stage.get("web_search_calls")) or _int(web_queries.get("executed"))
+    statements = _mapping(v3.get("financial_statements_state"))
+    slots = _mapping(statements.get("slots"))
+    tagged = sum(1 for s in slots.values() if _mapping(s).get("xbrl_concept"))
+    coverage = _mapping(v3.get("primary_document_coverage"))
+    releases = sum(
+        1 for d in coverage.get("documents") or ()
+        if _mapping(d).get("document_type") == "results_release"
+        and _mapping(d).get("extraction_status") == "extracted"
+    )
+    listed = len([g for g in v3.get("gaps") or () if isinstance(g, Mapping)])
+    return {
+        "latest_interim": _latest_interim(v3, current, today),
+        "web_searches": {
+            "total": investigators + stage_calls,
+            "web_stage": stage_calls,
+            "investigators": investigators,
+        },
+        "documents_read": _read_documents(v3, issuer_documents_held),
+        "statement_facts": {
+            "held": bool(slots),
+            "slots": len(slots),
+            "facts_read": _int(statements.get("facts_read")),
+            "sec_tagged_slots": tagged,
+        },
+        "results_releases_read": releases,
+        "gaps": {"open": gaps_open, "listed": min(listed, gaps_open) if gaps_open else listed},
     }
 
 

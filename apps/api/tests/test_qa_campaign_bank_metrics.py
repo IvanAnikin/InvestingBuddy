@@ -259,7 +259,10 @@ def test_a_broker_dealers_vendor_label_does_not_override_its_sic_code():
 def test_a_deposit_taking_bank_by_sic_resolves_to_not_meaningful(sic):
     found = _resolve_by_sic(sic)
     assert INDUSTRIAL <= found.calculations
-    assert found.questions == frozenset({"cash_generation_and_funding"})
+    # ADR-091 (JPM2-D7): the generic growth-pipeline and operations questions are not
+    # asked of a deposit-taker either.
+    assert found.questions == frozenset(
+        {"cash_generation_and_funding", "growth_pipeline", "operations_and_assets"})
     assert found.analysed_by == ("book_value_per_share", "return_on_equity")
     assert "deposit-taking bank" in found.reader_note
 
@@ -336,6 +339,7 @@ async def test_no_question_of_a_bank_plan_requires_an_industrial_calculation():
     # question stays: for a bank it is answered with the supplementary leverage ratio,
     # which is a capital fact, and it requires no calculation.
     assert "cash_generation_and_funding" not in keys
+    assert not keys & {"growth_pipeline", "operations_and_assets"}  # ADR-091
     assert {"funding_and_deposits", "capital_adequacy", "balance_sheet_risk"} <= keys
     by_key = {q.key: q for q in plan.questions}
     assert by_key["profitability"].required_calculations == ("net_margin",)
@@ -346,7 +350,8 @@ async def test_no_question_of_a_bank_plan_requires_an_industrial_calculation():
         "operating_margin",
         "gross_margin",
     ]
-    assert record["not_meaningful_questions"] == ["cash_generation_and_funding"]
+    assert sorted(record["not_meaningful_questions"]) == [
+        "cash_generation_and_funding", "growth_pipeline", "operations_and_assets"]
     assert not any("not meaningful" in reason for _, reason in plan.unassignable)
 
 

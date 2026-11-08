@@ -791,6 +791,12 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
     if inputs.peer_selection:
         # Only when a peer set ran, so every other report is byte-identical.
         competitive["peer_selection"] = dict(inputs.peer_selection)
+        if inputs.peer_selection.get("status") == "unavailable":
+            # ADR-091 (LIN3): no comparable company was found, so no other company's
+            # figures may stand in this section as peer data. They stay, labelled as
+            # context that is NOT a comparable; no peer table row is shown.
+            competitive["peer_table"] = []
+            label_noncomparable_peer_figures(competitive, inputs.subject)
     if inputs.not_meaningful_note:
         # Only when declared, so every other report is byte-identical.
         for key in ("financial_capacity", "competitive_position"):
@@ -1354,11 +1360,173 @@ PEER_COMPARISON_NO_CANDIDATE_NOTE = (
 )
 
 
+#: ADR-091 — the label a non-comparable company's figure carries in the competitive
+#: section when the peer comparison is unavailable.
+NOT_A_COMPARABLE_LABEL = (
+    "Context only — not a comparable company: no peer comparison is available for this "
+    "company, so this figure is not a peer benchmark."
+)
+#: A QUANTITY: a currency-led number, or a number with a percent, scale or unit. A bare
+#: year ("in 2025") or a form name ("20-F") is not a figure.
+_FIGURE_RE = re.compile(
+    r"(?:[$€£¥]|\b(?:US\$|A\$|USD|EUR|GBP|AUD|CAD|CHF|JPY)[ \t]?)\d"
+    r"|\d[\d,]{0,15}(?:\.\d{1,4})?[ \t]?(?:%|bn\b|billion\b|mn?\b|million\b|k\b|kt\b|"
+    r"mt\b|t\b|/t\b|tn\b|trillion\b|x\b|tpa\b|oz\b|koz\b|boe\b)",
+    re.IGNORECASE,
+)
+#: Explicit wording that the statement is about ANOTHER company: exactly "(a peer, not
+#: the company)", "(a peer)", "(a competitor)" or "(a rival)" — parenthesised, nothing
+#: else inside ("(a competitor to MP)", "(a peer of Iluka)" and "(a rival's buyers)"
+#: are not markers). Re-review round 3.
+_NOT_THE_COMPANY_RE = re.compile(
+    r"\([ \t]{0,2}an?[ \t]{1,3}(?:peer|competitor|rival)"
+    r"(?:[ \t]{0,2},[ \t]{0,3}not[ \t]{1,3}the[ \t]{1,3}company)?[ \t]{0,2}\)",
+    re.IGNORECASE,
+)
+#: Round 3: the marker attached to the clause's OWNER — a capitalised name that opens
+#: the clause, then the marker: "Iluka Resources (a peer, not the company) reported …".
+_MARKED_OWNER_RE = re.compile(
+    r"^[ \t]{0,3}(?P<name>[A-Z][\w&.'’-]{0,30}(?:[ \t]{1,2}[A-Z&][\w&.'’-]{0,30}){0,5})"
+    r"[ \t]{0,2}(?P<marker>\([^()]{1,40}\))")
+#: The subject owning a figure: "the company", "the group", "its", "our", "we".
+_SUBJECT_PRONOUN_RE = re.compile(
+    r"\b(?:the[ \t]{1,3}company|the[ \t]{1,3}group|its|our|we)\b", re.IGNORECASE)
+_WORD_RE = re.compile(r"[\w'’-]{1,40}")
+
+
+def _names_subject(text: str, subject_tokens: frozenset[str]) -> bool:
+    """The subject's name or ticker, or "the company / its / our / we", in ``text``."""
+    from app.services.discovery.identity import _fold  # noqa: PLC2701
+
+    unmarked = _NOT_THE_COMPANY_RE.sub(" ", text)
+    if _SUBJECT_PRONOUN_RE.search(unmarked):
+        return True
+    return any(_fold(w).strip("'’") in subject_tokens for w in _WORD_RE.findall(unmarked))
+
+
+#: Round 4 — a clause opening with one of these words is not owned by the name that
+#: follows: a comparison ("Unlike Iluka (a peer), AISC was …") or a role relative to the
+#: subject ("Supplier X (a peer) bought 5,000t from Mt Weld").
+_NOT_AN_OWNER_WORDS = frozenset({
+    "unlike", "like", "versus", "vs", "compared", "relative", "ahead", "against", "as",
+    "beside", "besides", "than", "following", "behind", "despite", "with", "while",
+    "supplier", "suppliers", "customer", "customers", "client", "clients", "partner",
+    "partners", "buyer", "buyers", "offtaker", "offtakers", "distributor",
+    "distributors", "shareholder", "shareholders", "lender", "lenders",
+    # Round 5: prepositions and adverbs never open (or sit inside) an owner's name.
+    "to", "of", "from", "for", "by", "at", "in", "on", "into", "over", "under", "after",
+    "before", "alongside", "among", "amid", "around", "near", "beyond", "similar",
+    "similarly", "also", "meanwhile", "however", "likewise", "unlike", "whereas",
+    "and", "or", "but", "the", "a", "an",
+})
+#: Round 5 — the only words that may follow the marker: a reporting verb whose subject
+#: is the marked entity ("Iluka (a peer) reported revenue of …"). A noun ("output",
+#: "AISC"), a conjunction ("and Mt Weld"), or a relational verb ("bought", "supplied",
+#: "cut", "trails") detaches the figure from the marked entity.
+_OWNER_VERBS = frozenset({
+    "reported", "reports", "produced", "produces", "posted", "posts", "had", "has",
+    "was", "were", "is", "sold", "sells", "recorded", "records", "generated",
+    "generates", "delivered", "achieved", "realised", "realized", "earned", "booked",
+    "mined", "held", "holds",
+})
+_FIRST_WORD_RE = re.compile(r"[ \t]{0,3}([A-Za-z]{1,20})\b")
+#: Round 4 — any punctuation break between the marker and the figure detaches the
+#: marked entity from the figure ("X (a peer), AISC was …", "X (a peer): …").
+_DETACHED_RE = re.compile(r"[,;:()\u2013\u2014]|\.(?:[ \t]|$)|[ \t]-[ \t]")
+#: Round 4 — a comparison word after the first figure; a figure after it mixes the
+#: peer's figure with another's ("… A$1,100/t versus A$900/t at Mt Weld").
+_COMPARISON_AFTER_RE = re.compile(
+    r"\b(?:versus|vs\.?|compared[ \t]{1,3}(?:with|to)|against|relative[ \t]{1,3}to|"
+    r"while|whereas)\b",
+    re.IGNORECASE,
+)
+
+
+def _figure_owned_by_another(statement: str, subject_tokens: frozenset[str]) -> bool:
+    """ADR-091 (review P1-3, re-review rounds 2–4) — is the statement's FIRST figure
+    owned by another company? MAXIMALLY CONSERVATIVE: a missed label is acceptable, a
+    false one is not. The only form that labels:
+
+    the clause holding the first figure OPENS with a named entity carrying exactly
+    "(a peer, not the company)", "(a peer)", "(a competitor)" or "(a rival)", and
+
+    * the subject is named nowhere in the statement;
+    * the name has no lead word: no -ing word, preposition, adverb, comparison or role
+      word ("Outpacing", "Similar To", "Unlike", "Ahead of", "Supplier", …);
+    * the word right after the marker is a reporting verb ("reported", "produced",
+      "sold", …) — not a noun ("output", "AISC"), a conjunction or a relational verb
+      ("bought", "supplied");
+    * no punctuation break sits between the marker and the figure;
+    * no second figure follows a comparison word ("versus", "compared with", "against",
+      "relative to", "while", "whereas") — such a finding mixes the peer's figure with
+      the subject's.
+
+    A legally-suffixed name alone, or a peer possessive ("peers' A$1,100/t"), never
+    labels."""
+    figure = _FIGURE_RE.search(statement)
+    if figure is None:
+        return False
+    # Round 5 (P2-a): the subject named ANYWHERE — name, ticker, "the company", its /
+    # our / we — means the finding may be about it: never label. An asset name ("Mt
+    # Weld") is not recognised as the subject (accepted miss, ADR-091).
+    if _names_subject(statement, subject_tokens):
+        return False
+    head = statement[: figure.start()]
+    head = head[head.rfind(";") + 1:]
+    owner = _MARKED_OWNER_RE.match(head)
+    if owner is None or not _NOT_THE_COMPANY_RE.fullmatch(owner.group("marker")):
+        return False
+    # Round 5 (P2-b): the name opens the clause with no lead word — no -ing word,
+    # preposition, adverb, comparison or role word anywhere in it.
+    tokens = [t.strip(".'’").lower() for t in owner.group("name").split()]
+    if tokens[0].endswith("ing") or any(t in _NOT_AN_OWNER_WORDS for t in tokens):
+        return False
+    between = head[owner.end():]
+    if _DETACHED_RE.search(between):
+        return False
+    verb = _FIRST_WORD_RE.match(between)
+    if verb is None or verb.group(1).lower() not in _OWNER_VERBS:
+        return False
+    tail = statement[figure.end():]
+    for comparison in _COMPARISON_AFTER_RE.finditer(tail):
+        if _FIGURE_RE.search(tail, comparison.end()):
+            return False
+    return True
+
+
+def label_noncomparable_peer_figures(
+    section: dict[str, Any], subject: Mapping[str, Any] | None
+) -> int:
+    """ADR-091 — mark each finding in ``section`` whose figure is owned by ANOTHER
+    company (``_figure_owned_by_another``) with ``context_only`` and ``context_label``.
+    Returns how many were marked. Pure; findings are never dropped. Deliberately narrow:
+    missing is fine; wrong is not."""
+    from app.services.pipeline import gap_reconciliation as gr
+
+    words = gr.subject_words((subject or {}).get("name"), (subject or {}).get("ticker"))
+    tokens = frozenset(words.distinctive)
+    marked = 0
+    for finding in section.get("findings") or ():
+        if not isinstance(finding, dict):
+            continue
+        statement = str(finding.get("statement") or "")[:1000]
+        if not _figure_owned_by_another(statement, tokens):
+            continue
+        finding["context_only"] = True
+        finding["context_label"] = NOT_A_COMPARABLE_LABEL
+        marked += 1
+    if marked:
+        section["context_findings_labelled"] = marked
+    return marked
+
+
 def _nonnegative_int(value: Any) -> int:
     try:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
 #: Excluded candidates recorded in the report's technical record, at most.
 MAX_PEER_EXCLUSIONS_SHOWN = 12
 

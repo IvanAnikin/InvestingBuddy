@@ -16,9 +16,15 @@ findings were lost):
 * it applies only when the stage is positively shown — no stage, no gate;
 * the claim must be ABOUT the subject: a name, its ticker, "the company/group", "it" or
   "which" in the same clause before the verb, with no customer, peer or partner between;
-* the verbs are present tense and few: mines, produces, sells, is producing / mining /
-  selling, is in commercial production, generates / earns / derives revenue from.
-  "Generates revenue from interest" is true of a developer and is not a claim.
+* the verbs are present tense and few: mines, produces, sells, makes, extracts,
+  processes, ships, manufactures, refines; is producing / mining / selling / making /
+  extracting / processing / shipping / manufacturing / refining; is in commercial
+  production; operates a producing mine / plant / asset; generates / earns / derives
+  revenue from. "Generates revenue from interest" is true of a developer and is not a
+  claim;
+* ADR-091 — an owned or operated asset with a present participle ("owns the X plant
+  making MREC") is a claim too. A possessive or a forward word between the subject and
+  the verb ("its planned plant will make …", "the customer's plant") is not.
 
 Every pattern is linear: bounded repetitions only, no nested unbounded quantifiers.
 """
@@ -39,13 +45,33 @@ MAX_SCAN_CHARS = 4_000
 _I = re.IGNORECASE
 
 _CLAIM_RE = re.compile(
-    r"\b(?:mines|produces|sells"
-    r"|is\s+(?:currently\s+|now\s+|already\s+)?(?:producing|mining|selling)"
+    r"\b(?:mines|produces|sells|makes|extracts|processes|ships|manufactures|refines"
+    r"|is\s+(?:currently\s+|now\s+|already\s+)?(?:producing|mining|selling|making|"
+    r"extracting|processing|shipping|manufacturing|refining)"
     r"|(?:is|are)\s+(?:currently\s+|now\s+)?in\s+commercial\s+production"
+    r"|operates\s+(?:a|an|the|its)\s+(?:\w+\s+){0,2}?producing\s+"
+    r"(?:mines?|plants?|assets?|operations?|facilit(?:y|ies)|refiner(?:y|ies))"
     r"|(?:generates|earns|derives)\s+(?:\w+\s+){0,3}?revenues?\s+(?:from|through|by)"
     r")\b",
     _I,
 )
+#: ADR-091 (LIN3) — "owns the X hydromet plant in Kazakhstan making MREC": a present
+#: participle whose subject is an asset the company owns or operates. The participle
+#: counts only right after such an asset noun (within a few words), and the company must
+#: own / operate it in the same clause. Literal alternatives, bounded gaps.
+_ASSET_PARTICIPLE_RE = re.compile(
+    r"\b(?:plant|plants|refinery|refineries|facility|facilities|mine|mines|mill|mills|"
+    r"smelter|smelters|operation|operations|site|sites)\b(?:[ \t]+[\w,'’-]+){0,4}?"
+    r"[ \t]+(?P<verb>making|producing|processing|extracting|refining|manufacturing|"
+    r"which[ \t]+(?:makes|produces|processes|refines|manufactures)|"
+    r"that[ \t]+(?:makes|produces|processes|refines|manufactures))\b",
+    _I,
+)
+#: Review P2-4: "has" is not ownership of an operating asset ("has finalised the design
+#: for the plant", "has a pilot plant").
+_OWNS_ASSET_RE = re.compile(r"\b(?:owns|operates|runs|controls)\b", _I)
+#: A participle claim may reach this far back for the subject (the asset phrase is long).
+_ASSET_WINDOW = 160
 _PRONOUN_RE = re.compile(
     r"\b(?:the\s+(?:company|group|issuer|firm)|it|which)\b", _I
 )
@@ -72,10 +98,37 @@ _NON_PRODUCT_OBJECT_RE = re.compile(
     r"\s{1,3}(?:[\w'’-]+\s{1,3}){0,3}?(?:shares?|stakes?|interests?|assets?|securities|notes"
     r"|bonds?|debentures?|warrants?|stock|equity|options?|portfolios?|holdings?"
     r"|reports?|propert(?:y|ies)|subsidiar(?:y|ies)|business(?:es)?|divisions?"
-    r"|operations?|units?\s+of\s+(?:its|the)\s+(?:business|group))\b",
+    r"|operations?|units?\s+of\s+(?:its|the)\s+(?:business|group)"
+    # ADR-091 review P2-4: "makes progress", "extracts value", "makes payments", "makes
+    # a final investment decision", "ships samples", "makes an application".
+    r"|progress|value|payments?|decisions?|samples?|investments?|applications?"
+    r"|announcements?|submissions?|filings?|commitments?|appointments?|changes?"
+    r"|improvements?|efforts?|steps?|headway)\b",
     _I,
 )
-_OBJECT_VERBS = ("mines", "produces", "sells", "selling", "producing", "mining")
+#: ADR-091 review P2-4 — a negation right after the verb: "processes no ore yet".
+_POST_VERB_NEGATION_RE = re.compile(r"\s{1,3}(?:no|none|nothing|not|neither)\b", _I)
+#: A forward condition after the claim, in the same clause: "producing 4,440tpa once
+#: commissioned", "when complete", "at full capacity".
+_FORWARD_TAIL_RE = re.compile(
+    r"\b(?:once|when|upon|after[ \t]{1,3}(?:commissioning|completion|construction)|"
+    r"at[ \t]{1,3}full[ \t]{1,3}(?:capacity|production)|on[ \t]{1,3}completion|"
+    r"from[ \t]{1,3}(?:first|commercial)[ \t]{1,3}production|"
+    r"will|would|expected|planned|targeted|is[ \t]{1,3}due)\b",
+    _I,
+)
+#: A pilot or demonstration asset is not a commercial operation.
+_PILOT_ASSET_RE = re.compile(
+    r"\b(?:pilot|demonstration|demo|test|trial|bench[- ]scale|laboratory|lab)"
+    r"(?:[ \t]{1,3}[\w-]{1,30}){0,2}[ \t]{0,3}$",
+    _I,
+)
+_TAIL_CHARS = 90
+_OBJECT_VERBS = (
+    "mines", "produces", "sells", "selling", "producing", "mining", "makes", "making",
+    "extracts", "extracting", "processes", "processing", "ships", "shipping",
+    "manufactures", "manufacturing", "refines", "refining",
+)
 
 #: An issuer statement of actual production or sales: the verb, then a figure.
 _BACKING_RE = re.compile(
@@ -86,7 +139,8 @@ _BACKING_RE = re.compile(
 )
 _DIGIT_RE = re.compile(r"\d")
 _FORWARD_RE = re.compile(
-    r"\b(?:will|would|expect\w*|plan\w*|target\w*|forecast\w*|intend\w*|anticipat\w*|"
+    # "plan\w*" without "plant": the asset noun is not a forward word (ADR-091).
+    r"\b(?:will|would|expect\w*|plan(?!ts?\b)\w*|target\w*|forecast\w*|intend\w*|anticipat\w*|"
     r"guidance|scheduled|proposed|potential|first\s+production|once|upon|projected)\b",
     _I,
 )
@@ -125,6 +179,50 @@ def _get(item: Any, key: str) -> Any:
     return item.get(key) if isinstance(item, Mapping) else getattr(item, key, None)
 
 
+def _clause_tail(body: str, end: int) -> str:
+    """The rest of the claim's clause after ``end`` (bounded)."""
+    tail = body[end: end + _TAIL_CHARS]
+    cut = _CLAUSE_CUT_RE.search(tail)
+    return tail[: cut.start()] if cut else tail
+
+
+def _undone_by_tail(body: str, end: int) -> bool:
+    """ADR-091 review P2-4 — "processes no ore", "producing … once commissioned"."""
+    if _POST_VERB_NEGATION_RE.match(body, end):
+        return True
+    return _FORWARD_TAIL_RE.search(_clause_tail(body, end)) is not None
+
+
+def _asset_participle_claim(body: str, subject_re: re.Pattern[str]) -> bool:
+    """ADR-091 — "<subject> owns the X plant … making MREC": the company's own asset
+    produces something, in the present tense."""
+    for match in _ASSET_PARTICIPLE_RE.finditer(body):
+        window = body[max(0, match.start() - _ASSET_WINDOW): match.start()]
+        cuts = [m.end() for m in _CLAUSE_CUT_RE.finditer(window)]
+        if cuts:
+            window = window[cuts[-1]:]
+        last = None
+        for ref in subject_re.finditer(window):
+            last = ref
+        if last is None:
+            continue
+        between = window[last.end():]
+        if not _OWNS_ASSET_RE.search(between):
+            continue
+        if _BETWEEN_PARTY_RE.search(between) or _NEGATION_RE.search(between):
+            continue
+        if _FORWARD_RE.search(body[last.start(): match.end()]):
+            continue  # "will own the plant producing …", "a planned plant making …"
+        if _NON_PRODUCT_OBJECT_RE.match(body, match.end()):
+            continue
+        if _PILOT_ASSET_RE.search(body[max(0, match.start() - 60): match.start()]):
+            continue  # a pilot or demonstration plant is not a commercial operation
+        if _undone_by_tail(body, match.end()):
+            continue
+        return True
+    return False
+
+
 def claims_commercial_operation(
     text: str | None, subject: Mapping[str, Any] | None = None
 ) -> bool:
@@ -133,6 +231,8 @@ def claims_commercial_operation(
     if not body:
         return False
     subject_re = _subject_re(subject)
+    if _asset_participle_claim(body, subject_re):
+        return True
     for match in _CLAIM_RE.finditer(body):
         window = body[max(0, match.start() - _WINDOW): match.start()]
         cuts = [m.end() for m in _CLAUSE_CUT_RE.finditer(window)]
@@ -145,6 +245,11 @@ def claims_commercial_operation(
             continue
         between = window[last.end():]
         if _BETWEEN_PARTY_RE.search(between) or _NEGATION_RE.search(between):
+            continue
+        if between.lstrip().startswith(("'s", "’s")) or _FORWARD_RE.search(between):
+            # "the company's processes", "it plans and ships …" is not "it ships";
+            # ADR-091: a possessive is a noun phrase, and a forward word between the
+            # subject and the verb ("which will ship") is not the present tense.
             continue
         if match.group(0).lower().endswith(_OBJECT_VERBS) and _NON_PRODUCT_OBJECT_RE.match(
             body, match.end()
@@ -159,6 +264,8 @@ def claims_commercial_operation(
             # "generates revenue from interest on its cash", "collaboration revenue from
             # partnerships": true of a developer or a clinical-stage company, and not a
             # commercial operation.
+            continue
+        if _undone_by_tail(body, match.end()):
             continue
         return True
     return False
