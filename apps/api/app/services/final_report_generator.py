@@ -1831,6 +1831,31 @@ def _build_data_availability_summary(
     }
 
 
+def _statement_slot_facts(
+    facts: list[dict[str, Any]] | None, company_snapshot: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """ADR-090 — the primary facts a canonical snapshot slot may take, judged at the
+    report's date on the issuer's fiscal calendar when its SEC annual statements give
+    one (``fundamentals_summary``), else on the calendar year."""
+    from app.services.pipeline.issuer_financials import statement_slot_facts
+    from app.services.statement_kind import anchor_from_normalised
+
+    summary = (company_snapshot or {}).get("fundamentals_summary") or {}
+    anchor = None
+    if isinstance(summary, dict) and (summary.get("period_basis") or "annual") == "annual":
+        anchor = anchor_from_normalised(
+            summary.get("fiscal_year"), summary.get("reporting_period_end")
+        )
+    identity = (company_snapshot or {}).get("company_identity") or {}
+    if not isinstance(identity, dict):
+        identity = {}
+    return statement_slot_facts(
+        facts, as_of=datetime.now(timezone.utc).date(), anchor=anchor,
+        subject_name=identity.get("legal_name") or identity.get("name"),
+        subject_ticker=identity.get("ticker"),
+    )
+
+
 def _build_financial_snapshot(
     company_snapshot: dict[str, Any] | None,
     fundamentals_data: dict[str, Any] | None,
@@ -1849,6 +1874,10 @@ def _build_financial_snapshot(
         "type": "financial_snapshot",
         "human_review_required": True,
     }
+    # ADR-090 — a canonical slot takes only a NUMBER, stated as an actual, for a period
+    # that had ended: never "EBIT target was also cut to $4.35bn", and never a bare
+    # "2026" read from a Q3 release as the fiscal year 2026 while that year is running.
+    slot_facts = _statement_slot_facts(primary_facts, company_snapshot)
 
     if company_snapshot:
         section["source_tier"] = company_snapshot.get("source_tier", "T6_model_estimate")
@@ -1904,7 +1933,7 @@ def _build_financial_snapshot(
         # different questions; the section has separate slots for exactly that reason,
         # and one must not displace the other.
         _annual_from_filing = _high_confidence_facts_for(
-            primary_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
+            slot_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
         )
         _sec_supplies_the_annual_layer = (
             "sec_edgar_xbrl" in canonical.channels and not _annual_from_filing
@@ -2072,7 +2101,7 @@ def _build_financial_snapshot(
     # source_url + T1 tier + provenance + needs_human_review. With no matching
     # high-confidence fact this loop is a no-op and the section is unchanged.
     selected_annual = _high_confidence_facts_for(
-        primary_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
+        slot_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
     )
     for field, fact in selected_annual:
         dp = _primary_fact_dp(fact)
@@ -2090,7 +2119,7 @@ def _build_financial_snapshot(
         # slot still shows what it can stand behind, and a reader is told, on
         # the datapoint itself, that a newer period exists and where to see it.
         newer = _newer_period_for(
-            field, fact, list(primary_facts or []) + list(historical_facts or [])
+            field, fact, slot_facts + _statement_slot_facts(historical_facts, company_snapshot)
         )
         if newer is not None:
             dp["newer_period_available"] = newer
@@ -2115,7 +2144,7 @@ def _build_financial_snapshot(
         if isinstance(f, dict)
     ]
     current_period = _current_period_facts_for(
-        list(primary_facts or []) + _sec_quarter_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
+        slot_facts + _sec_quarter_facts, _PRIMARY_FINANCIAL_FACT_FIELDS
     )
     # QA campaign 2026-11 — a filing newer than the annual bundle restates earlier
     # periods (a spin-off, a discontinued operation, a share split). The annual figures

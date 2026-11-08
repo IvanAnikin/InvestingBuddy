@@ -96,6 +96,14 @@ def _no_live_fiscal_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(investigator, "_load_fiscal_anchor", _unknown)
 
+    # ADR-090 — the statements view's read of the same calendar.
+    from app.services.pipeline import issuer_financials
+
+    async def _no_anchor(company: object) -> None:
+        return None
+
+    monkeypatch.setattr(issuer_financials, "_load_fiscal_anchor", _no_anchor)
+
 
 @pytest.fixture(autouse=True)
 def _no_live_sec_sibling_lookup(monkeypatch: pytest.MonkeyPatch) -> None:

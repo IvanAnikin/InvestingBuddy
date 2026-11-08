@@ -81,6 +81,7 @@ from app.services.sources.evidence import (
     EvidenceItem,
     PrimaryFactRef,
     build_evidence_item,
+    iso_day,
 )
 from app.services.sources.extracted_fact_validator import (
     VALIDATION_EXCERPT_ONLY,
@@ -1306,6 +1307,8 @@ class CompanyIrConnector(SourceConnector):
                         page_number=fact.page_number,
                         confidence=fact.confidence,
                         needs_human_review=fact.needs_human_review,
+                        document_title=doc_title,
+                        document_source_tier=T1_PRIMARY_FILING,
                     ),
                 )
             )
@@ -1860,6 +1863,9 @@ class CompanyIrConnector(SourceConnector):
                         page_number=fact.page_number,
                         confidence=conf_bucket,
                         needs_human_review=fact.needs_human_review,
+                        document_date=iso_day(getattr(artifact, "published_at", None)),
+                        document_title=doc_title,
+                        document_source_tier=T1_PRIMARY_FILING,
                     ),
                 )
             )

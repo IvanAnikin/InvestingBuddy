@@ -230,6 +230,25 @@ TOPICS: tuple[ReadTopic, ...] = (
         (r"\bbacklog\b", r"\brevenue\s+recognition\b"),
         ("backlog", "rpo", "remaining_performance_obligations"),
     ),
+    # ADR-090 — what an issuer returned to shareholders, and per-share earnings.
+    ReadTopic(
+        "capital_returns", "share repurchases and dividends",
+        (r"\b(?:share|stock)\s+repurchases?\b", r"\bbuy[\s-]?backs?\b",
+         r"\brepurchases?\s+of\s+(?:common\s+|ordinary\s+)?(?:stock|shares)\b",
+         r"\bdividends?\s+(?:paid|declared|per\s+(?:common\s+)?share)\b"),
+        "share repurchases buyback dividends paid declared per share",
+        (r"\bequity\b", r"\bliquidity\b", r"\bcapital\s+resources\b",
+         r"\bshareholder\s+returns?\b"),
+        ("share_repurchases", "buybacks", "dividends_paid", "capital_returns"),
+    ),
+    ReadTopic(
+        "earnings_per_share", "earnings per share",
+        (r"\b(?:diluted\s+|basic\s+)?earnings\s+per\s+(?:common\s+|ordinary\s+)?share\b",
+         r"\b(?:diluted\s+|adjusted\s+)?eps\b"),
+        "earnings per share diluted basic EPS",
+        (r"\bearnings\s+per\s+share\b", r"\bresults\s+of\s+operations\b"),
+        ("eps", "earnings_per_share", "diluted_eps"),
+    ),
     ReadTopic(
         "share_count", "shares outstanding",
         (r"\bshares\s+(?:of\s+common\s+stock\s+)?outstanding\b",
@@ -312,6 +331,17 @@ TOPICS: tuple[ReadTopic, ...] = (
         "guidance outlook full year expects forecast",
         (r"\boutlook\b", r"\bguidance\b"),
         ("guidance", "outlook"), needs_figure=False,
+    ),
+    # ADR-090 — a pending or completed acquisition, divestiture or spin-off: its terms
+    # and its expected or actual closing date live in the filing's notes.
+    ReadTopic(
+        "acquisitions", "acquisitions, divestitures and spin-offs",
+        (r"\bacquisitions?\b", r"\bdivestitures?\b", r"\bspin[\s-]?offs?\b",
+         r"\bbusiness\s+combinations?\b", r"\bpending\s+(?:transaction|sale|merger)\b"),
+        "acquisition closing completed divestiture spin-off business combination",
+        (r"\bacquisitions?\b", r"\bbusiness\s+combinations?\b", r"\bdivestitures?\b",
+         r"\bdiscontinued\s+operations\b"),
+        ("acquisitions", "m_and_a"), needs_figure=False,
     ),
     # ── Bank KPIs ──────────────────────────────────────────────────────────────
     ReadTopic(
@@ -468,8 +498,9 @@ def topics_for_metrics(metrics: Iterable[str]) -> tuple[str, ...]:
 
 
 def topics_named(text: str | None) -> tuple[str, ...]:
-    """Topic keys whose names occur in ``text`` (a question's prose, a section title)."""
-    low = _normal(text)
+    """Topic keys whose names occur in ``text`` (a question's prose, a section title).
+    Bounded: a question or a title is short, so only its first 4,000 characters count."""
+    low = _normal(str(text or "")[:4000])
     return tuple(t.key for t in TOPICS if any(p.search(low) for p in _COMPILED[t.key]))
 
 
@@ -516,15 +547,65 @@ def required_metrics(question: Any) -> tuple[str, ...]:
     return tuple(t for t in out if TOPICS_BY_KEY[t].needs_figure)
 
 
+#: ADR-090 — how a QUESTION asks for a topic in words a document would not use for it:
+#: "how leveraged is it" asks for debt, "what are the reported margins" for operating and
+#: gross margin, "dividends, buybacks" for capital returns. Read on a question's prose and
+#: intents only, never on evidence (``metrics_carried`` keeps the lexicon's own
+#: mentions). Reviewed list; every pattern is bounded and linear.
+QUESTION_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (r"\bleverag\w{0,4}\b|\bindebtedness\b|\bcovenants?\b|\brefinanc\w{0,5}\b|\bdebt\b",
+     ("total_debt", "net_debt")),
+    (r"\bmargins?\b", ("operating_margin", "gross_margin")),
+    (r"\bbuy[\s-]?backs?\b|\brepurchas\w{0,4}\b|\bdividends?\b|\bpayouts?\b",
+     ("capital_returns",)),
+    (r"\bsegments?\b", ("segment",)),
+    (r"\bgeograph\w{0,5}\b|\bcountr(?:y|ies)\b|\bregions?\b", ("geography",)),
+    (r"\bconcentrat\w{0,5}\b", ("customer_concentration",)),
+    (r"\bcash\s+(?:flows?|generation|conversion)\b|\bgenerates?\s+(?:cash|after)\b"
+     r"|\bfree\s+cash\b|\bworking\s+capital\b",
+     ("operating_cash_flow", "free_cash_flow")),
+    (r"\bcapital\s+(?:spending|spend|expenditures?)\b|\bcapex\b", ("capex",)),
+    (r"\bearnings\b", ("earnings_per_share",)),
+    (r"\bacquisitions?\b|\bdivest\w{0,6}\b|\bspin[\s-]?offs?\b", ("acquisitions",)),
+    (r"\bheadline\s+figures?\b|\bmost\s+recent(?:ly)?\s+reported\b", ("revenue",)),
+    (r"\bguidance\b|\boutlook\b|\bnext\s+\d{1,2}\b", ("guidance",)),
+    (r"\bcontract\s+awards?\b|\border\s+(?:intake|book)\b", ("backlog",)),
+)
+_QUESTION_CUES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = tuple(
+    (re.compile(pattern), topics) for pattern, topics in QUESTION_CUES
+)
+
+
+def topics_asked(text: str | None) -> tuple[str, ...]:
+    """Topic keys a question's prose NAMES (the lexicon) or ASKS FOR (``QUESTION_CUES``)."""
+    out = list(topics_named(text))
+    low = _normal(str(text or "")[:4000])[:2000]
+    for pattern, topics in _QUESTION_CUES:
+        if pattern.search(low):
+            out.extend(t for t in topics if t in TOPICS_BY_KEY and t not in out)
+    return tuple(out)
+
+
 def question_topics(question: Any) -> tuple[str, ...]:
     """Everything the re-read looks for on behalf of a question: its required metrics
-    first, then the topics its prose and its search intents name."""
+    first, then the topics its prose and its search intents name or ask for."""
     out = list(required_metrics(question))
     for text in (getattr(question, "text", ""), *(getattr(question, "search_intents", ()) or ())):
-        for topic in topics_named(text):
+        for topic in topics_asked(text):
             if topic not in out:
                 out.append(topic)
     return tuple(out)
+
+
+def uncarried_topics(question: Any, refs: Iterable[Any]) -> tuple[str, ...]:
+    """ADR-090 — the question's topics that NONE of its evidence carries (a metric named
+    beside a figure; a narrative topic named), in the question's order. A question
+    satisfied by count can still lack every figure it asked for: these are what a
+    re-read of the held primary documents looks for before any absence is written."""
+    carried: set[str] = set()
+    for ref in refs:
+        carried |= set(getattr(ref, "metrics", ()) or ())
+    return tuple(t for t in question_topics(question) if t not in carried)
 
 
 # ── What evidence text carries ─────────────────────────────────────────────── #

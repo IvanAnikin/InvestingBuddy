@@ -316,6 +316,12 @@ VALUATION_CONTEXT_ANALYST = RoleSpec(
             TOOL_GET_SEC_STATEMENTS,
         }
     ),
+    # ADR-090 — a ladder-only read of the subject's HELD primary documents (the ADR-084
+    # re-read rung), so a question this role owns ("working capital and cash
+    # conversion") is not written up as absent while the 10-Q holding it sits unread.
+    # A ladder tool never assigns questions (``tools`` does), and the corpus is
+    # platform-internal: no new source class, no external spend.
+    acquisition_tools=frozenset({TOOL_SEARCH_COMPANY_CORPUS}),
 )
 
 EXTERNAL_RESEARCH_ANALYST = RoleSpec(

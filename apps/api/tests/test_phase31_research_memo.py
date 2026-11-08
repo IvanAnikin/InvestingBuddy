@@ -160,6 +160,8 @@ def _primary_facts() -> list[dict[str, Any]]:
             "excerpt_id": "exc_1",
             "confidence": "high",
             "source_url": "https://www.richemont.com/ar-2024.pdf?api_token=SECRET123",
+            # ADR-090 review P1: an annual figure comes from a dated document.
+            "document_date": "2024-06-15", "document_title": "Annual Report 2024",
         },
         {
             "field": "net_income",
@@ -173,6 +175,7 @@ def _primary_facts() -> list[dict[str, Any]]:
             "excerpt_id": "exc_2",
             "confidence": "high",
             "source_url": "https://www.richemont.com/ar-2024.pdf",
+            "document_date": "2024-06-15", "document_title": "Annual Report 2024",
         },
         {
             "field": "reporting_currency",

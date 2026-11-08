@@ -1770,3 +1770,41 @@ reader takes its counts and status lines from it.
   leaves the period unknown, and the claim is kept.
 - `scripts/qa_replay_gap_status.py <reports-dir> [--json out] [--compare before.json]`
   replays gap status and the enforcer over stored payloads. It makes no network call.
+
+## Statement slots and the count-satisfied re-read (ADR-090)
+
+- `issuer_financials.eligible_statement_facts` decides which facts may fill a statement
+  slot (V3 `financial_statements_state` and the V2 `financial_snapshot`) or enter a
+  conflict. A fact is withheld when:
+  - its document is not an issuer (T1) document, or is a PR-wire / company-source page
+    not shown to be the subject's own (title leads with the subject — a name word or a
+    ticker of 3+ letters — or the subject's domain);
+  - its value text holds no figure equal to its parsed number (a nil "-" is 0; a scale
+    word that accounts for the number on the fact's own scale exactly is read);
+  - its own value text is a forward statement (case-sensitive cues; footnotes and
+    bracketed asides ignored);
+  - its annual period is not shown to have ended: by the document date and the run date
+    when dated; when undated, only by a floor on the document's date (an interim period
+    it reports, an EDGAR file-name period date) or a held annual report for the year —
+    never when the document's own latest period is an interim period of that year.
+  The fiscal calendar is the SEC anchor (a January–March year end judged on its later
+  reading), the issuer's own fiscal labels, its annual-report documents (10-K, 20-F,
+  Appendix 4E, annual report, final / full-year results — never a semi-annual,
+  half-year, quarterly or interim name: their named year, stated year end agreeing with
+  the anchor, or a date after the year), else the calendar year. Conflicts group facts
+  by canonical period (a year never meets a quarter).
+- V2 primary facts carry their document's date, title and tier
+  (`PrimaryFactRef.document_*`).
+- The investigator re-reads held primary documents (rung 2b, `primary_document_reread`)
+  also for a question its contract counts as satisfied, for the figure topics the
+  question asks that its evidence does not carry (`document_reread.uncarried_topics`;
+  `trigger = "topics_not_carried"`, `why_topics`). Deterministic queries only, at most
+  `MAX_REREAD_QUERIES`, no LLM and no web search; skipped (`run_tool_budget_low`) when
+  under 25% of the run's tool calls remain.
+- A role may hold `search_company_corpus` as a ladder-only acquisition tool
+  (`RoleSpec.acquisition_tools`): `valuation_context_analyst` now does, so its re-read is
+  not refused. `LADDER_CALLS_PER_QUESTION` is 9.
+- A fetched document is dated with the date its caller knows (`_artifact_from_fetch`
+  `published_at`: the EDGAR filing date, a venue's announcement date), so an 8-K exhibit
+  carries its filing's date; an undated stored document or corpus version is
+  backfilled on re-encounter, never overwritten.

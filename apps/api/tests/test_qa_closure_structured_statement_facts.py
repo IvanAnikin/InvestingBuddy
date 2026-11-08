@@ -696,6 +696,9 @@ class TestStatementsView:
         artifact = await live_fetchers._artifact_from_fetch(
             fetched, title="6-K/A 0001193125-26-389336", original_language=None,
             issuer_context=None, cfg=cfg, fetch_ms=1,
+            # ADR-090: the SEC leg dates every filing document with its filing date;
+            # an undated one's bare-year comparative is never read as annual.
+            published_at=date(2026, 10, 30),
         )
         await persist_primary_document_artifacts(
             session, artifacts=[artifact], company_id=company.id, agent_run_id=None,

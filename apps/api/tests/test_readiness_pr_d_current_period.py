@@ -344,6 +344,8 @@ def _fact(field: str, value: float, period: str, **over) -> dict:
         "scale": "million",
         "confidence": "high",
         "source_url": "https://issuer.test/doc.pdf",
+        # ADR-090 review P1: a bare-year figure is annual only from a dated document.
+        "document_date": "2026-08-06",
     }
     base.update(over)
     return base

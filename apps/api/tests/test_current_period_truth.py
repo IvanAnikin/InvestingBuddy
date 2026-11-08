@@ -496,12 +496,16 @@ def _fact(field: str, value: float, period: str, **kw) -> dict:
 
 
 def test_annual_and_interim_coexist_in_separate_slots() -> None:
-    """Required tests 1 and 2."""
+    """Required tests 1 and 2.
+
+    ADR-090 review P1: a bare-year figure is annual only from a dated document (or one
+    shown to post-date the year): the documents here carry their publication date.
+    """
     facts = [
-        _fact("revenue", 32549, "2025"),
-        _fact("revenue", 14328, "H1 2026"),
-        _fact("operating_profit", 7783, "2025"),
-        _fact("operating_profit", 2951, "Q2 2026"),
+        _fact("revenue", 32549, "2025", document_date="2026-02-26"),
+        _fact("revenue", 14328, "H1 2026", document_date="2026-08-06"),
+        _fact("operating_profit", 7783, "2025", document_date="2026-02-26"),
+        _fact("operating_profit", 2951, "Q2 2026", document_date="2026-08-06"),
     ]
     section = _build_financial_snapshot(None, None, primary_facts=facts)
     assert section["revenue_primary_filing"]["value"] == "32549"
@@ -513,10 +517,17 @@ def test_annual_and_interim_coexist_in_separate_slots() -> None:
 
 
 def test_a_quarter_can_never_overwrite_annual_revenue() -> None:
-    """Required test 3 — the exact Richemont shape."""
+    """Required test 3 — the exact Richemont shape.
+
+    ADR-090: a bare "2026" is FY2026 only once that fiscal year has ended. The issuer's
+    own "fy27-q1" release (as in the live Richemont URL) is what shows its March fiscal
+    year 2026 had ended; without that evidence the calendar year decides, and in 2026
+    the annual figure would be withheld rather than shown.
+    """
     facts = [
         _fact("revenue", 22.4, "2026", currency="EUR", scale="billion"),
-        _fact("revenue", 6.3, "2027-Q1", currency="EUR", scale="billion"),
+        _fact("revenue", 6.3, "2027-Q1", currency="EUR", scale="billion",
+              source_url="https://issuer.test/media/x/fy27-q1-sales-en.pdf"),
     ]
     selected = dict(_high_confidence_facts_for(facts, _PRIMARY_FINANCIAL_FACT_FIELDS))
     assert selected["revenue"]["numeric_value"] == 22.4

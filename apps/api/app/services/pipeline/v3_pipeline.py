@@ -1377,9 +1377,12 @@ async def reconcile_step(session: Any, run: Any, *, company: Any, outcome: Any) 
 
 #: Findings read into the report. The ledger may hold more; the report says how many.
 MAX_REPORT_FINDINGS = 200
-#: Tool calls the acquisition ladder may add per question: two corpus intents, one
-#: search, up to four verifications.
-LADDER_CALLS_PER_QUESTION = 7
+#: Tool calls the acquisition ladder may add per question: two corpus intents, two
+#: re-read queries of the held primary documents (ADR-084; ADR-090 runs them for every
+#: question whose evidence carries none of the figures it asks for), one search, up to
+#: four verifications. Corpus calls are internal lexical reads; external spend is still
+#: bounded by the run's search budget alone.
+LADDER_CALLS_PER_QUESTION = 9
 
 
 async def _professional_report(

@@ -74,6 +74,7 @@ from app.services.sources.evidence import (
     EvidenceItem,
     PrimaryFactRef,
     build_evidence_item,
+    iso_day,
 )
 from app.services.sources.extracted_fact_validator import (
     VALIDATION_VALIDATED,
@@ -425,6 +426,9 @@ def sec_artifacts_to_evidence(
                         page_number=fact.page_number,
                         confidence=conf_bucket,
                         needs_human_review=fact.needs_human_review,
+                        document_date=iso_day(getattr(artifact, "published_at", None)),
+                        document_title=doc_title,
+                        document_source_tier=content_tier,
                     ),
                 )
             )
@@ -828,6 +832,9 @@ async def _ingest_regulated_storage_document(
                     page_number=fact.page_number,
                     excerpt_id=fact.table_location,
                     source_url=artifact.source_url,
+                    document_date=iso_day(getattr(artifact, "published_at", None)),
+                    document_title=doc_title,
+                    document_source_tier=T1_PRIMARY_FILING,
                     confidence=conf_bucket,
                 ),
             )

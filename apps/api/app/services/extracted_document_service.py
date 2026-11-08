@@ -313,6 +313,12 @@ async def _get_or_create_document(
         # would mean the row's identity had changed underneath us.
         if blob_path and not existing.blob_path:
             existing.blob_path = blob_path
+        # ADR-090 — backfill only: a document first stored undated (an 8-K exhibit read
+        # before its filing date was carried) takes the official date this artifact now
+        # states. A date already recorded is never overwritten.
+        published = getattr(artifact, "published_at", None)
+        if published is not None and existing.doc_date is None:
+            existing.doc_date = published
         # Pre-merge review finding (Problem B follow-up) — this write path is
         # ONLY ever reached with an artifact whose ``status == 'extracted'``
         # (the caller already skips anything else), meaning it was JUST
