@@ -3546,7 +3546,8 @@ Additive keys under `source_summary_json.v3_research`:
 Additive keys under `source_summary_json.v3_research.financial_statements_state`:
 
 - `withheld_counts`: reason → count. Reasons: `not_an_issuer_document`,
-  `not_a_number`, `forward_statement`, `annual_period_not_ended`, `period_not_ended`.
+  `not_the_subject`, `not_a_number`, `forward_statement`, `annual_period_not_ended`,
+  `annual_period_undated`, `period_not_ended`.
 - `withheld`: at most 40 entries (field, period, reason, document title / date, fact id). It never
   carries the fact's value text.
 - `fiscal_calendar`: `issuer_sec_statements`, `issuer_fiscal_labels` or
@@ -3554,10 +3555,12 @@ Additive keys under `source_summary_json.v3_research.financial_statements_state`
   had begun, or null.
 - `slots[*].value` is the as-printed number ("4,994"), never a sentence. A slot may
   carry `source_tier`.
-- The annual state may read "Annual figures held — not shown: their fiscal year had not
-  ended" (`report_acquired_facts_not_extracted`).
-- The V2 `financial_snapshot` uses the same filter: a bare-year figure of a fiscal year
-  that had not ended no longer fills `*_primary_filing`.
+- The annual state may read "Annual figures held — not shown: withheld as unverified or
+  mislabelled annual figures" (`report_acquired_facts_not_extracted`).
+- The V2 `financial_snapshot` uses the same filter: a bare-year figure not shown to be a
+  completed fiscal year (undated, or dated before the year ended) no longer fills
+  `*_primary_filing`. V2 `primary_facts` entries may carry `document_date`,
+  `document_title` and `document_source_tier`.
 - `question_graph[*].acquisition_log` `primary_document_reread` steps gain `trigger`
   (`"topics_not_carried"` for a count-satisfied question) and `why_topics`, and may stop
   with `run_tool_budget_low`.

@@ -187,7 +187,9 @@ class TestExplorationAssetIsNotSpend:
             return {"field": field, "numeric_value": value, "unit": "currency_amount",
                     "currency": "AUD", "scale": "thousand", "period": "2025",
                     "scope": "group", "confidence": "high", "document_id": "ar",
-                    "excerpt_id": table, "fact_id": field}
+                    "excerpt_id": table, "fact_id": field,
+                    # ADR-090 review P1: an annual figure comes from a dated document.
+                    "document_title": "Annual Report 2025", "document_date": "2025-09-30"}
 
         facts = [fact("cash_and_equivalents", 9470, "bs"),
                  fact("operating_cash_flow", -2980, "cf"),

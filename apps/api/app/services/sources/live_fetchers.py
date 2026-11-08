@@ -625,6 +625,11 @@ async def _artifact_from_fetch(
             source_url=artifact.source_url,
         )
     artifact.period_policy = period_policy
+    if published_at is not None and artifact.published_at is None:
+        # ADR-090: the publication date the caller knows (an EDGAR filing date, a venue's
+        # announcement date) dates the document itself, so a bare-year figure in it is
+        # judged against when it was published — never against the run date.
+        artifact.published_at = published_at
     return artifact
 
 

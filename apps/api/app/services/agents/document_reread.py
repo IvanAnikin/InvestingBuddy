@@ -498,8 +498,9 @@ def topics_for_metrics(metrics: Iterable[str]) -> tuple[str, ...]:
 
 
 def topics_named(text: str | None) -> tuple[str, ...]:
-    """Topic keys whose names occur in ``text`` (a question's prose, a section title)."""
-    low = _normal(text)
+    """Topic keys whose names occur in ``text`` (a question's prose, a section title).
+    Bounded: a question or a title is short, so only its first 4,000 characters count."""
+    low = _normal(str(text or "")[:4000])
     return tuple(t.key for t in TOPICS if any(p.search(low) for p in _COMPILED[t.key]))
 
 
@@ -578,7 +579,7 @@ _QUESTION_CUES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = tuple(
 def topics_asked(text: str | None) -> tuple[str, ...]:
     """Topic keys a question's prose NAMES (the lexicon) or ASKS FOR (``QUESTION_CUES``)."""
     out = list(topics_named(text))
-    low = _normal(text)[:2000]
+    low = _normal(str(text or "")[:4000])[:2000]
     for pattern, topics in _QUESTION_CUES:
         if pattern.search(low):
             out.extend(t for t in topics if t in TOPICS_BY_KEY and t not in out)

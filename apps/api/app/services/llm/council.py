@@ -222,6 +222,11 @@ def _structured_facts(
         url = getattr(it, "url", None)
         if url:
             data["source_url"] = url
+        # ADR-090 review P1 — the document's date, title and tier travel with the fact
+        # (they are None on an item built before they were recorded).
+        if not data.get("document_source_tier"):
+            tier = getattr(it, "content_source_tier", None) or getattr(it, "content_tier", None)
+            data["document_source_tier"] = tier if isinstance(tier, str) else None
         out.append(data)
     return out
 

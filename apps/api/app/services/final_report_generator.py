@@ -1846,8 +1846,13 @@ def _statement_slot_facts(
         anchor = anchor_from_normalised(
             summary.get("fiscal_year"), summary.get("reporting_period_end")
         )
+    identity = (company_snapshot or {}).get("company_identity") or {}
+    if not isinstance(identity, dict):
+        identity = {}
     return statement_slot_facts(
-        facts, as_of=datetime.now(timezone.utc).date(), anchor=anchor
+        facts, as_of=datetime.now(timezone.utc).date(), anchor=anchor,
+        subject_name=identity.get("legal_name") or identity.get("name"),
+        subject_ticker=identity.get("ticker"),
     )
 
 

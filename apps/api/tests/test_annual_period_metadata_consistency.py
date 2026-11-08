@@ -140,6 +140,8 @@ class TestItDoesNotInventAnAnnualPeriod:
                 "confidence": "high",
                 "source_url": "https://www.sec.gov/x/10k.htm",
                 "source_tier": "T1_primary_filing",
+                # ADR-090 review P1: an annual figure comes from a dated document.
+                "document_date": "2026-02-20",
             }
         ]
         section = _build_financial_snapshot(

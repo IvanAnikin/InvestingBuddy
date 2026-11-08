@@ -117,6 +117,8 @@ def _fact(field: str, value: str, **over: Any) -> dict[str, Any]:
         "page_number": 4,
         "confidence": "high",
         "needs_human_review": True,
+        # ADR-090 review P1: a bare-year figure is annual only from a dated document.
+        "document_date": "2025-03-15",
     }
     base.update(over)
     return base
@@ -381,6 +383,11 @@ def test_6_primary_facts_never_carry_excerpt_body_or_document_text():
         "page_number",
         "confidence",
         "needs_human_review",
+        # ADR-090 review P1: the fact's DOCUMENT metadata (date / title / tier) — never
+        # its text.
+        "document_date",
+        "document_title",
+        "document_source_tier",
     }
     for f in facts:
         assert set(f.keys()) <= allowed_keys

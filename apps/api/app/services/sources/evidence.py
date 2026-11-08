@@ -76,6 +76,14 @@ class EvidenceSource(BaseModel):
 PRIMARY_FACT_VALUE_MAX = 160
 
 
+def iso_day(value: Any) -> str | None:
+    """A date / datetime / ISO string as its ISO day ("2026-10-22"), or ``None``."""
+    if value is None:
+        return None
+    text = value.isoformat() if hasattr(value, "isoformat") else str(value)
+    return text[:10] or None
+
+
 class PrimaryFactRef(BaseModel):
     """A bounded, structured reference to one parsed primary fact — Phase 29B.3.
 
@@ -107,6 +115,12 @@ class PrimaryFactRef(BaseModel):
     page_number: int | None = None
     confidence: str = "medium"  # low | medium | high
     needs_human_review: bool = True
+    # ADR-090 review P1 — the fact's DOCUMENT: its publication date (ISO day), title and
+    # content tier, so the V2 snapshot judges a bare-year period against the date the
+    # document was published, never the run date. ``None`` when not known.
+    document_date: str | None = None
+    document_title: str | None = None
+    document_source_tier: str | None = None
 
     @field_validator("source_url")
     @classmethod

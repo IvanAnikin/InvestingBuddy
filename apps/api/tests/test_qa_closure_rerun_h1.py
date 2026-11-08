@@ -49,9 +49,11 @@ from app.services.final_report_generator import _build_financial_snapshot
 from app.services.pipeline import issuer_financials as fin
 from app.services.pipeline.issuer_financials import (
     WITHHELD_ANNUAL_PERIOD_NOT_ENDED,
+    WITHHELD_ANNUAL_PERIOD_UNDATED,
     WITHHELD_FORWARD_STATEMENT,
     WITHHELD_NOT_A_NUMBER,
     WITHHELD_NOT_AN_ISSUER_DOCUMENT,
+    WITHHELD_NOT_THE_SUBJECT,
     annual_has_ended,
     build_financial_statements_state,
     slot_number,
@@ -150,8 +152,9 @@ class TestHon3Statements:
         assert not any(c["period"] == "2026" for c in state["conflicts"])
         reasons = state["withheld_counts"]
         assert reasons[WITHHELD_NOT_AN_ISSUER_DOCUMENT] == 2
-        assert reasons[WITHHELD_ANNUAL_PERIOD_NOT_ENDED] == 2
-        assert reasons[WITHHELD_FORWARD_STATEMENT] == 1
+        assert reasons[WITHHELD_ANNUAL_PERIOD_NOT_ENDED] == 1  # the dated Q3 release
+        assert reasons[WITHHELD_ANNUAL_PERIOD_UNDATED] == 1  # the undated Q1 10-Q copy
+        assert reasons[WITHHELD_FORWARD_STATEMENT] == 1  # the Q2 full-year guidance
         assert state["fiscal_calendar"] == "calendar_year"
         # The record names the field, period and reason — never the fact's text.
         assert all("value" not in w for w in state["withheld"])
@@ -165,7 +168,7 @@ class TestHon3Statements:
 
     def test_after_the_year_ends_the_bare_year_is_annual_again(self) -> None:
         """FY2026's own 10-K figures, filed in February 2027, are annual."""
-        facts = [_fact("revenue", 38000, "2026", url=TEN_K,
+        facts = [_fact("revenue", 38000, "2026", url=TEN_K.replace("20251231", "20261231"),
                        title="10-K 0000773840-27-000010", date_="2027-02-16")]
         state = build_financial_statements_state(facts, now=datetime(2027, 2, 20, tzinfo=UTC))
         assert state["reporting_periods"]["latest_annual"] == "FY2026"
@@ -249,7 +252,8 @@ class TestFiscalCalendar:
         state = build_financial_statements_state(facts, now=datetime(2026, 11, 1, tzinfo=UTC))
         assert state["slots"] == {}
         assert state["annual"]["state"] == fin.STATE_ACQUIRED_NOT_EXTRACTED
-        assert "had not ended" in state["annual"]["reason"]
+        assert "unverified or mislabelled" in state["annual"]["label"]
+        assert "part-year" in state["annual"]["reason"]
 
     @pytest.mark.parametrize(
         ("url", "title", "latest"),
@@ -326,6 +330,262 @@ class TestV2Snapshot:
         assert section["revenue_current_period"]["numeric_value"] == 4994.0
         assert section["reporting_periods"]["latest_annual"] is None
         assert section["reporting_periods"]["latest_current_period"] == "Q3 2026"
+
+
+# ── ADR-090 review (rv_h1 r1–r5): one test per repro ───────────────────────── #
+
+HON = "Honeywell International Inc."
+DEC = FiscalYearAnchor(2025, date(2025, 12, 31))
+
+
+def _q3_release_undated() -> dict[str, Any]:
+    return _fact("revenue", 5.0, "2026", value="sales of $5.0 billion", url=Q3_EX99,
+                 title="8-K 0000773840-26-000141", date_=None, scale="billion", doc="ex99")
+
+
+class TestReviewP1UndatedFactsFailClosed:
+    """r1/r2: the HON3 defect came back after 31 December — an undated Q3 release's
+    "2026" was judged against the RUN date."""
+
+    @pytest.mark.parametrize("anchor", [None, DEC])
+    def test_an_undated_bare_year_stays_withheld_after_the_year_end(self, anchor) -> None:  # noqa: ANN001
+        facts = [_q3_release_undated(), _fact("revenue", 37442, "2025")]
+        state = build_financial_statements_state(
+            facts, now=datetime(2027, 1, 15, tzinfo=UTC), fiscal_anchor=anchor)
+        assert state["reporting_periods"]["latest_annual"] == "FY2025"
+        assert state["slots"]["revenue_primary_filing"]["numeric_value"] == 37442
+        assert state["withheld_counts"] == {WITHHELD_ANNUAL_PERIOD_UNDATED: 1}
+
+    def test_an_undated_figure_counts_once_the_years_annual_report_is_held(self) -> None:
+        """Another document — the issuer's FY2026 10-K — shows the year ended."""
+        ten_k_2026 = TEN_K.replace("20251231", "20261231")
+        facts = [
+            _fact("revenue", 38100, "2026", url=ten_k_2026, title="10-K 0000773840-27-000010",
+                  doc="k26"),
+            _fact("revenue", 38100, "2026", url=Q1_10Q, title="Results", doc="undated"),
+        ]
+        state = build_financial_statements_state(facts, now=datetime(2027, 3, 1, tzinfo=UTC))
+        assert state["reporting_periods"]["latest_annual"] == "FY2026"
+        assert state["withheld_counts"] == {}
+
+    def test_an_undated_half_year_reports_comparative_is_annual(self) -> None:
+        """An H1 2026 report cannot predate the end of H1 2026: on a calendar fiscal year
+        its FY2025 year-end figure is annual, dated or not. (Without the calendar, the
+        earliest H1 2026 end is mid-2025 and the figure stays withheld.)"""
+        facts = [_fact("cash_and_equivalents", 9470, "2025", url=Q1_10Q, title="Half-year",
+                       doc="h1"),
+                 _fact("cash_and_equivalents", 8100, "H1 2026", url=Q1_10Q, title="Half-year",
+                       doc="h1")]
+        state = build_financial_statements_state(facts, now=RUN, fiscal_anchor=DEC)
+        assert state["slots"]["cash_and_equivalents_primary_filing"]["numeric_value"] == 9470
+        state = build_financial_statements_state(facts, now=RUN)
+        assert state["withheld_counts"] == {WITHHELD_ANNUAL_PERIOD_UNDATED: 1}
+
+    def test_an_edgar_file_names_period_date_floors_an_undated_10q(self) -> None:
+        """HON3's undated 10-Q ("hon-20260930.htm") was filed after 30 September 2026,
+        so its 31 December 2025 balance-sheet comparative is an ended year's figure."""
+        facts = [_fact("cash_and_equivalents", 12273, "2025", url=TEN_Q,
+                       title="10-Q 0000773840-26-000143", doc="q")]
+        state = build_financial_statements_state(facts, now=RUN)
+        assert state["slots"]["cash_and_equivalents_primary_filing"]["numeric_value"] == 12273
+        off_edgar = [dict(facts[0], source_url="https://investor.honeywell.com/hon-20260930.htm")]
+        state = build_financial_statements_state(off_edgar, now=RUN)
+        assert state["withheld_counts"] == {WITHHELD_ANNUAL_PERIOD_UNDATED: 1}
+
+    def test_v2_primary_facts_carry_their_documents_date_title_and_tier(self) -> None:
+        from app.services.llm.council import _structured_facts
+        from app.services.sources.evidence import PrimaryFactRef
+
+        ref = PrimaryFactRef(field="revenue", value="sales of $5.0 billion",
+                             numeric_value=5.0, period="2026", confidence="high",
+                             document_date="2026-10-22",
+                             document_title="8-K 0000773840-26-000141")
+        item = SimpleNamespace(source_type="company_ir_financial_fact", primary_fact=ref,
+                               url=Q3_EX99, content_source_tier="T1_primary_filing")
+        [fact] = _structured_facts([item], confidences=frozenset({"high"}))
+        assert fact["document_date"] == "2026-10-22"
+        assert fact["document_title"] == "8-K 0000773840-26-000141"
+        assert fact["document_source_tier"] == "T1_primary_filing"
+
+    def test_the_v2_snapshot_never_reads_an_undated_bare_year_as_annual(self) -> None:
+        facts = [{"field": "revenue", "value": "sales of $5.0 billion", "numeric_value": 5.0,
+                  "unit": "currency_amount", "currency": "USD", "scale": "billion",
+                  "period": "2026", "confidence": "high", "source_url": Q3_EX99}]
+        section = _build_financial_snapshot(None, None, primary_facts=facts)
+        assert "revenue_primary_filing" not in section
+
+    async def test_a_fetched_document_is_dated_with_the_date_its_caller_knows(self) -> None:
+        from app.core.config import Settings
+        from app.services.sources import live_fetchers
+        from app.services.sources.document_fetcher import DocumentFetchResult
+
+        fetched = DocumentFetchResult(
+            requested_url=Q3_EX99, final_url=Q3_EX99, status_code=200,
+            content_type="text/html", document_type="html",
+            content=b"<html><body><p>Third quarter 2026 results.</p></body></html>",
+        )
+        artifact = await live_fetchers._artifact_from_fetch(
+            fetched, title="8-K 0000773840-26-000141", original_language=None,
+            issuer_context=None, cfg=Settings(), fetch_ms=1,
+            published_at=date(2026, 10, 22),
+        )
+        assert artifact.published_at == date(2026, 10, 22)
+
+
+class TestReviewP2StrictEarlyYearEnds:
+    """r1: a January–March year end was judged on its lenient (earlier) reading."""
+
+    TARGET = FiscalYearAnchor(2025, date(2026, 1, 31))  # FY2025 ends 31 Jan 2026
+    WALMART = FiscalYearAnchor(2026, date(2026, 1, 31))  # FY2026 ends 31 Jan 2026
+
+    def test_a_start_year_labelled_year_has_not_ended_at_its_q3(self) -> None:
+        assert not annual_has_ended(2026, date(2026, 11, 19), self.TARGET)
+        assert not annual_has_ended(2025, date(2025, 11, 19), self.TARGET)
+        assert not annual_has_ended(2027, date(2026, 11, 19), self.WALMART)
+
+    def test_it_ends_once_both_readings_have(self) -> None:
+        assert annual_has_ended(2025, date(2026, 2, 10), self.TARGET)
+        assert not annual_has_ended(2025, date(2026, 2, 5), self.TARGET)
+
+    def test_other_year_ends_are_unchanged(self) -> None:
+        june = FiscalYearAnchor(2025, date(2025, 6, 30))
+        assert annual_has_ended(2026, date(2026, 7, 8), june)
+        assert not annual_has_ended(2025, date(2025, 12, 31))
+
+
+class TestReviewP2WiresAreNotTheSubjectsOwn:
+    """r5: a PR-wire release is T1_primary_company_source whoever issued it."""
+
+    WIRE = "https://www.globenewswire.com/news-release/2026/08/13/odysight-ai-reports-h1.html"
+
+    def _wire_fact(self, title: str, url: str = WIRE) -> dict[str, Any]:
+        return _fact("net_income", -9.5, "H1 2026", value="Net loss was 9.5", url=url,
+                     title=title, date_="2026-08-13", tier="T1_primary_company_source")
+
+    def test_another_issuers_wire_release_is_withheld(self) -> None:
+        state = build_financial_statements_state(
+            [self._wire_fact("Odysight.ai Reports H1 2026 Results")], now=RUN,
+            subject_name=HON, subject_ticker="HON")
+        assert state["slots"] == {}
+        assert state["withheld_counts"] == {WITHHELD_NOT_THE_SUBJECT: 1}
+
+    def test_the_subjects_own_wire_release_counts(self) -> None:
+        state = build_financial_statements_state(
+            [self._wire_fact("Honeywell Reports Second Quarter 2026 Results")], now=RUN,
+            subject_name=HON, subject_ticker="HON")
+        assert "net_income_current_period" in state["slots"]
+
+    def test_without_a_subject_a_wire_release_is_withheld(self) -> None:
+        state = build_financial_statements_state(
+            [self._wire_fact("Honeywell Reports Second Quarter 2026 Results")], now=RUN)
+        assert state["withheld_counts"] == {WITHHELD_NOT_THE_SUBJECT: 1}
+
+    def test_a_company_source_off_the_subjects_domain_must_name_it(self) -> None:
+        own = self._wire_fact("Q2 2026 results", url="https://investor.honeywell.com/q2.pdf")
+        other = self._wire_fact("Q2 2026 results", url="https://www.odysight.ai/press/h1")
+        state = build_financial_statements_state([own], now=RUN, subject_name=HON)
+        assert "net_income_current_period" in state["slots"]
+        state = build_financial_statements_state([other], now=RUN, subject_name=HON)
+        assert state["withheld_counts"] == {WITHHELD_NOT_THE_SUBJECT: 1}
+
+
+class TestReviewP2AnnualReportsShowTheirYearEnded:
+    """r1: annual reports of non-calendar issuers were withheld with no anchor."""
+
+    NOW = datetime(2026, 11, 8, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        ("title", "url", "date_"),
+        [
+            ("Form 10-K", "https://www.sec.gov/x/10k.htm", "2026-08-01"),  # June FY
+            ("10-K 0000320193-26-000100", "https://www.sec.gov/x/a.htm", "2026-11-01"),
+            ("Form 20-F", "https://www.sec.gov/x/infy-20260331.htm", "2026-06-20"),  # March
+            ("Appendix 4E and Preliminary Final Report", "https://www.asx.com.au/a.pdf",
+             "2026-08-20"),
+            ("Final Results for the year ended 31 March 2026", "https://nsm.example/x.pdf",
+             "2026-05-20"),
+            ("Annual results", "https://nsm.example/y.pdf", "2026-07-15"),
+        ],
+    )
+    def test_the_annual_report_keeps_its_years_figures(self, title, url, date_) -> None:  # noqa: ANN001
+        facts = [_fact("revenue", 4994, "2026", title=title, url=url, date_=date_)]
+        state = build_financial_statements_state(facts, now=self.NOW)
+        assert state["reporting_periods"]["latest_annual"] == "FY2026", state["withheld"]
+
+    def test_the_first_pages_year_end_is_the_fiscal_year_end(self) -> None:
+        fact = _fact("revenue", 4994, "2026", title="Final Results",
+                     url="https://nsm.example/x.pdf", date_="2026-05-20")
+        assert build_financial_statements_state([fact], now=self.NOW)["slots"] == {}
+        fact["document_period_end"] = fin.period_end_from_text(
+            "Preliminary results for the year ended 31 March 2026")
+        fact["document_period_end"] = fact["document_period_end"].isoformat()
+        state = build_financial_statements_state([fact], now=self.NOW)
+        assert state["reporting_periods"]["latest_annual"] == "FY2026"
+
+    def test_a_statement_tables_two_columns_name_the_reporting_year(self) -> None:
+        facts = [_fact(field, value, year, title="Final Results",
+                       url="https://nsm.example/x.pdf", date_="2026-05-20", doc="fr")
+                 for field in ("revenue", "operating_profit", "net_income")
+                 for year, value in (("2026", 5000), ("2025", 4500))]
+        state = build_financial_statements_state(facts, now=self.NOW)
+        assert state["reporting_periods"]["latest_annual"] == "FY2026"
+
+    def test_a_calendar_year_10k_never_makes_its_next_year_annual(self) -> None:
+        """A 10-K dated February 2026 reports FY2025; a "2026" figure in it is forward."""
+        facts = [_fact("capital_expenditure", 1200, "2026", title="Form 10-K",
+                       url="https://www.sec.gov/x/10k.htm", date_="2026-02-13", doc="k"),
+                 *[_fact(field, value, year, title="Form 10-K", doc="k",
+                         url="https://www.sec.gov/x/10k.htm", date_="2026-02-13")
+                   for field in ("revenue", "operating_profit", "net_income")
+                   for year, value in (("2025", 5000), ("2024", 4500))]]
+        state = build_financial_statements_state(facts, now=self.NOW)
+        assert state["reporting_periods"]["latest_annual"] == "FY2025"
+        assert "capital_expenditure_primary_filing" not in state["slots"]
+
+    def test_the_sec_file_names_period_of_report_dates_an_undated_10k(self) -> None:
+        facts = [_fact("revenue", 37442, "2025"), _fact("revenue", 36662, "2024")]
+        assert all(f["document_date"] is None for f in facts)
+        state = build_financial_statements_state(facts, now=RUN)
+        assert state["reporting_periods"]["latest_annual"] == "FY2025"
+
+
+class TestReviewP3ForwardCuesAndNumbers:
+    @pytest.mark.parametrize(
+        "value",
+        ["Sales to Target 4,994", "Revenue 4,994 (see Outlook)",
+         "4,994 (1) Includes amounts expected to be reclassified", "4,994*expected"],
+    )
+    def test_a_name_heading_or_footnote_is_not_a_forward_cue(self, value: str) -> None:
+        state = build_financial_statements_state([_fact("revenue", 4994, "2025", value=value)],
+                                                 now=RUN)
+        assert state["slots"]["revenue_primary_filing"]["value"] == "4,994"
+
+    @pytest.mark.parametrize("value", ["Guidance revenue of $19.8 billion",
+                                       "Expected revenue of $19.8 billion"])
+    def test_a_capitalised_cue_still_withholds(self, value: str) -> None:
+        state = build_financial_statements_state(
+            [_fact("revenue", 19.8, "2025", value=value, scale="billion")], now=RUN)
+        assert state["withheld_counts"] == {WITHHELD_FORWARD_STATEMENT: 1}
+
+    @pytest.mark.parametrize(
+        ("value", "numeric", "expected"),
+        [("(-)", 0, "0"), ("Nil.", 0, "0"), ("US$1.2 billion", 1200, "1,200"),
+         ("€174.5m", 174_500, "174,500"), ("€2.1bn", 2.1e9, "2,100,000,000")],
+    )
+    def test_nil_and_scale_words_read_as_numbers(self, value, numeric, expected) -> None:  # noqa: ANN001
+        assert slot_number({"value": value, "numeric_value": numeric}) == expected
+
+    @pytest.mark.parametrize(("value", "numeric"), [("US$1.2 billion", 1300),
+                                                    ("(-)", 5), ("4 487 + 3", 4490)])
+    def test_a_different_number_is_still_refused(self, value, numeric) -> None:  # noqa: ANN001
+        assert slot_number({"value": value, "numeric_value": numeric}) is None
+
+    def test_period_end_from_text(self) -> None:
+        read = fin.period_end_from_text
+        assert read("for the year ended 30 June 2026") == date(2026, 6, 30)
+        assert read("Fiscal year ended September 27, 2026") == date(2026, 9, 27)
+        assert read("for the quarterly period ended September 30, 2026") is None
+        assert read("year ended 31 Foo 2026") is None
 
 
 # ── Defect 2: the re-read of held primary documents ────────────────────────── #
@@ -591,7 +851,9 @@ _ADVERSARIAL = (" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000
 
 @pytest.mark.parametrize("text", _ADVERSARIAL, ids=lambda t: repr(t[:4]))
 def test_new_patterns_are_linear(text: str) -> None:
-    patterns = [fin._SHORT_FY_RE, fin._NAME_SEPARATORS_RE,
+    patterns = [fin._SHORT_FY_RE, fin._NAME_SEPARATORS_RE, fin._SCALE_WORD_RE,
+                fin._FOOTNOTE_RE, fin._PARENTHETICAL_RE, fin._FILE_DATE_RE,
+                fin._YEAR_ENDED_RE,
                 fin._FIGURE_TOKEN_RE, fin._FORWARD_FACT_RE, fin._ANNUAL_TITLE_RE,
                 fin._NOT_ANNUAL_TITLE_RE, *(p for p, _t in dr._QUESTION_CUES)]
     for key in ("capital_returns", "earnings_per_share", "acquisitions"):

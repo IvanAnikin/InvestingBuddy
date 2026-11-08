@@ -496,12 +496,16 @@ def _fact(field: str, value: float, period: str, **kw) -> dict:
 
 
 def test_annual_and_interim_coexist_in_separate_slots() -> None:
-    """Required tests 1 and 2."""
+    """Required tests 1 and 2.
+
+    ADR-090 review P1: a bare-year figure is annual only from a dated document (or one
+    shown to post-date the year): the documents here carry their publication date.
+    """
     facts = [
-        _fact("revenue", 32549, "2025"),
-        _fact("revenue", 14328, "H1 2026"),
-        _fact("operating_profit", 7783, "2025"),
-        _fact("operating_profit", 2951, "Q2 2026"),
+        _fact("revenue", 32549, "2025", document_date="2026-02-26"),
+        _fact("revenue", 14328, "H1 2026", document_date="2026-08-06"),
+        _fact("operating_profit", 7783, "2025", document_date="2026-02-26"),
+        _fact("operating_profit", 2951, "Q2 2026", document_date="2026-08-06"),
     ]
     section = _build_financial_snapshot(None, None, primary_facts=facts)
     assert section["revenue_primary_filing"]["value"] == "32549"
