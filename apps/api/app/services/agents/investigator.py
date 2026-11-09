@@ -1102,6 +1102,46 @@ def _fiscal_quarter_restated(
     return None
 
 
+def _ytd_rekey(
+    period_key: str | None, statement: str, cited: "list[str]",
+    evidence: "Sequence[_Evidence]",
+) -> Any:
+    """ADR-093 — the year-to-date key a quarter-keyed statement takes from its own words
+    or its cited texts (``period_duration.rekey_for_duration``), or ``None``."""
+    if not period_key:
+        return None
+    from app.services.ledger.period_duration import rekey_for_duration
+
+    by_id = {item.citation_id: item for item in evidence}
+    texts = [by_id[c].text for c in cited if c in by_id and by_id[c].text]
+    return rekey_for_duration(period_key, statement, texts)
+
+
+def _segment_scope(
+    statement: str, cited: "list[str]", evidence: "Sequence[_Evidence]", hierarchy: Any,
+) -> Any:
+    """ADR-093 — the reportable segment an unscoped statement belongs to
+    (``segment_hierarchy.scope_finding``): the business lines it names, else the one
+    segment section of a held filing every cited chunk lies in — when one of its
+    figures is stated there."""
+    from app.services.corpus.retrieval import chunk_id_from_evidence_id
+    from app.services.ledger import claim_checks
+    from app.services.ledger.segment_hierarchy import scope_finding
+
+    by_id = {item.citation_id: item for item in evidence}
+    items = [by_id[c] for c in cited if c in by_id]
+    sectioned = [(hierarchy.section_of(chunk_id_from_evidence_id(item.citation_id)),
+                  item.text or "") for item in items]
+    amounts = [f for f in claim_checks.figures(statement, 8) if f.kind == "amt"]
+    figure_found = any(
+        claim_checks.same_figure(fig, found)
+        for _section, text in sectioned
+        for found in claim_checks.figures(text)
+        for fig in amounts
+    )
+    return scope_finding(statement, hierarchy, cited=sectioned, figure_found=figure_found)
+
+
 def _inherited(
     cited: "list[str]",
     evidence: "Sequence[_Evidence]",
@@ -2425,6 +2465,12 @@ class InvestigatorDiagnostics:
     #: ADR-091. A statement whose inherited quarter was the calendar reading of the
     #: quarter its own text keys by fiscal year (ADR-065) took the fiscal key.
     statements_fiscal_quarter_rekeyed: int = 0
+    #: ADR-093. A statement whose inherited quarter key was replaced by the year-to-date
+    #: key its own words, or every figure's source column / section, state ("2026-9M").
+    statements_ytd_rekeyed: int = 0
+    #: ADR-093. An unscoped statement scoped to ONE reportable segment by the issuer's
+    #: segment hierarchy: the business lines it names, or its source's segment section.
+    statements_scoped_to_segment: int = 0
     #: V3.16.1b. A first attempt hit the output ceiling and a shorter one was asked for.
     #: Counted even when the retry succeeds, because the strain is worth seeing before it
     #: becomes a failure.
@@ -2470,6 +2516,8 @@ class InvestigatorDiagnostics:
             other.statements_forward_period_replaced
         )
         self.statements_fiscal_quarter_rekeyed += other.statements_fiscal_quarter_rekeyed
+        self.statements_ytd_rekeyed += other.statements_ytd_rekeyed
+        self.statements_scoped_to_segment += other.statements_scoped_to_segment
         self.responses_retried_after_truncation += (
             other.responses_retried_after_truncation
         )
@@ -2508,6 +2556,8 @@ class InvestigatorDiagnostics:
                 self.statements_forward_period_replaced
             ),
             "statements_fiscal_quarter_rekeyed": self.statements_fiscal_quarter_rekeyed,
+            "statements_ytd_rekeyed": self.statements_ytd_rekeyed,
+            "statements_scoped_to_segment": self.statements_scoped_to_segment,
             "responses_retried_after_truncation": (
                 self.responses_retried_after_truncation
             ),
@@ -2612,6 +2662,10 @@ class LLMInvestigator:
     #: ADR-088 — platform-set context lines (metrics with no reading for this company,
     #: a pre-commercial stage). Empty (the default) leaves the prompt exactly as it was.
     company_notes: tuple[str, ...] = ()
+    #: ADR-093 — the issuer's reportable segments, the business lines under them and the
+    #: segment section of each held-filing chunk (``segment_hierarchy.SegmentHierarchy``).
+    #: ``None`` = unknown: no finding is scoped by it.
+    segment_hierarchy: Any = None
     #: Lazily-read issuer fiscal calendar for the period invariant; ``False`` = not read
     #: yet (``None`` is a real answer: unknown, so fiscal periods are judged leniently).
     _fiscal_anchor: Any = field(default=False, repr=False)
@@ -4271,6 +4325,26 @@ class LLMInvestigator:
                 # loses to the statement's own fiscal reading.
                 period_key, period_basis = fiscal_quarter, PERIOD_BASIS_TEXT_STATED
                 self.diagnostics.statements_fiscal_quarter_rekeyed += 1
+            ytd = _ytd_rekey(period_key, statement, real, evidence)
+            if ytd is not None:
+                # ADR-093 (JPM3 F4): nine-month figures of a 10-Q inherited the filing's
+                # quarter key; the statement's own words, or every figure's source column
+                # or section, state the year-to-date duration.
+                period_key, period_basis, statement = ytd.period_key, ytd.basis, ytd.statement
+                self.diagnostics.statements_ytd_rekeyed += 1
+            scope_type: str | None = None
+            if scope_key is None and self.segment_hierarchy:
+                segment_scope = _segment_scope(statement, real, evidence,
+                                               self.segment_hierarchy)
+                if segment_scope is not None:
+                    # ADR-093 (JPM3 F4/F18/F19): business lines of ONE reportable segment,
+                    # or a figure read from ONE segment's section of a held filing, are
+                    # that segment's — never the company's.
+                    from app.services.ledger.segment_hierarchy import labelled
+
+                    scope_key, scope_type = segment_scope.scope_key, segment_scope.scope_type
+                    statement = labelled(statement, segment_scope)
+                    self.diagnostics.statements_scoped_to_segment += 1
             if period_key is None:
                 # ADR-086 (PYPL2-5): a WEB finding whose evidence carries no period, but
                 # whose own text states exactly one reporting period (ADR-080 framing,
@@ -4294,6 +4368,7 @@ class LLMInvestigator:
                     period_key=period_key,
                     period_basis=period_basis,
                     scope_key=scope_key,
+                    scope_type=scope_type,
                     source_published_at=published_at,
                     statement_kind=kind.kind,
                     statement_kind_basis=kind.basis_detail,

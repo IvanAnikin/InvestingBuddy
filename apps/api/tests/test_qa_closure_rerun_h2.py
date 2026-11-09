@@ -18,7 +18,10 @@ from app.services.agents import investigator as inv
 from app.services.director import roles
 from app.services.ledger import canonical_state as cs
 from app.services.ledger import claim_checks as cc
+from app.services.ledger import claim_period as cp
+from app.services.ledger import period_duration as pdur
 from app.services.ledger import report_invariants as ri
+from app.services.ledger import segment_hierarchy as sh
 from app.services.ledger import store as ledger
 from app.services.ledger.canonical_state import LedgerTally, build_canonical_state
 from app.services.pipeline import gap_reconciliation as gr
@@ -1107,6 +1110,13 @@ PATTERNS = [
     cs._PART_YEAR_BEFORE_RE, cc._SEGMENT_CLAUSE_RE, gr._HEAD_FIGURE_RE,
     ccl._NON_PRODUCT_OBJECT_RE, ccl._POST_VERB_NEGATION_RE, ccl._FORWARD_TAIL_RE,
     ccl._PILOT_ASSET_RE, ri._NEGATION_IN_SPAN_RE, ri._NEGATION_AFTER_RE,
+    # ADR-093: segment hierarchy, period duration, hierarchy claim checks.
+    sh._LIST_CUE_RE, sh._LIST_LEAD_RE, sh._LIST_END_RE, sh._ACRONYM_RE, sh._NAME_WORD_RE,
+    sh._HEADING_CHARS_RE, sh._LINE_REVENUE_RE, sh._FIRM_WORDS_RE, sh._MENTION_BEFORE_RE,
+    sh._PAST_STRUCTURE_RE, sh._FIGURE_RE, pdur._YTD_WORDS_RE, pdur._QUARTER_WORDS_RE,
+    pdur._MARKER_LINE_RE, pdur._HEADER_DURATION_RE, pdur._CELL_RE, pdur._SENTENCE_END_RE,
+    cp._KEY_YTD_RE, cp._YTD_LABEL_RE, cc._DRIVER_BEFORE_RE, cc._DRIVER_AFTER_RE,
+    cc._AS_SEGMENT_AFTER_RE, cc._REVENUE_WORDS_RE, cc._METRIC_WORD_RE,
 ]
 DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000]
 

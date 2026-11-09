@@ -9606,3 +9606,102 @@ Replay after the review:
   sentence as scope. It is unchanged from base and does not reach a slot in the replay,
   because the statement row 5,293 is held for that year. However, it can still make a
   conflict.
+
+## ADR-093: A Figure Knows Its Segment and Its Duration
+
+**Status:** Accepted (branch `fix/qa-closure-segment-hierarchy-duration`)
+**Date:** 2026-11-09
+
+### What was wrong (JPM3)
+
+- **P0, synthesis.** "JPMorgan Chase's revenue is primarily driven by its Markets
+  segment". Markets is a business line of the Commercial & Investment Bank (CIB), one
+  of three reportable segments. The sentence lives in
+  `professional_research.sections[0].sentences`, which were only checked as
+  `record`, with no claim checks (`report_invariants._walk_report`). Nothing in the
+  platform knew that Markets belongs to CIB.
+- **F4, duration.** "Q3 FY2026 segment revenue: Payments $16.0bn, … Markets $34.0bn"
+  is the 10-Q's *Year-to-date results* table. The finding inherited the chunk's
+  `2026-Q3` key (`investigator._inherited`), and nothing read the table's duration.
+- **F18/F19, scope.** "total nonperforming assets $5,496m / $5,555m" come from the
+  CIB *Selected metrics* tables of the 10-Q and 10-K. SEC HTML chunks carry no section
+  name, and the statement says "total", so `claim_checks.stated_segment` (ADR-091)
+  correctly declined to scope it. Both NPAs then read as the firm's.
+
+### Decision
+
+1. **Hierarchy** (`ledger/segment_hierarchy.py`, `pipeline/segment_scope.py`). The
+   hierarchy is company → reportable segment → business line → metric. It is built from:
+   - the issuer's own segment list (majority vote over its list sentences, skipping
+     past-structure lists, failing closed on ties);
+   - the SEC XBRL segment members;
+   - upper-case segment headings in the held periodic filings.
+
+   Under a heading, "<Name> revenue was …" names a business line. Corpus chunks are
+   mapped to the segment heading they sit under; any coverage gap or inner heading
+   leaves a chunk unmapped. The hierarchy is stored in `v3_research.segment_hierarchy`.
+   No issuer is named in app code.
+2. **Finding scope.** The investigator scopes an unscoped finding to a segment when
+   either:
+   - its statement names one owner segment or that segment's business lines before
+     the first figure;
+   - every cited passage lies in one segment's section and holds the figure.
+
+   It records `scope_key: segment:<name>` and `scope_type` (`segment` /
+   `business_line`), and labels the statement.
+3. **Duration** (`ledger/period_duration.py`). An inherited Q2/Q3 key becomes
+   `YYYY-H1` / `YYYY-9M` in two cases:
+   - the statement states six or nine months;
+   - every occurrence of every amount in the cited passages sits under a
+     year-to-date marker line, sentence or two-column table header.
+
+   In the second case the quarter label in the statement is rewritten. Instants and
+   three-month figures are untouched. `claim_period` reads `9M 2026` and `2026-9M`.
+4. **Claims.** Council, chair, synthesis and red team are checked:
+   - `business_line_presented_as_main_revenue_driver` (withheld) when the issuer
+     reports two or more segments;
+   - `business_line_presented_as_segment` (repaired to "<line> business (part of the X
+     segment)");
+   - `claim_scope_differs_from_cited_source` for a metric that every figure-bearing
+     source states for one segment only, where the claim does not name the segment.
+     An uncited sentence is checked over the ledger only when the hierarchy is known.
+
+   `professional_research` sentences and leads are now checked as `synthesis`. A
+   sentence copying its finding verbatim skips the figure checks.
+
+### Replay (18 stored reports, base `3203fc3` vs branch)
+
+The investigator was simulated from the evaluators' filing text (stated in
+`~/.ib-closure/H3b/replay.py`). Only findings sourced from issuer filings get a
+simulated passage.
+
+- **No change:** HON2, HON3, LIN2–4, CLLS5–7, PYPL3, JPM, CFR, CFR2, CFR3.
+- **Re-keyed `2026-Q3` → `2026-9M`** (each statement states nine months): HON4
+  working capital; PYPL4 Braintree/Venmo; PYPL5 acquisitions; JPM2 net income; JPM3
+  NII.
+- **JPM3:**
+  - F4 → `2026-9M`, labelled "business lines of the Commercial & Investment Bank
+    segment … 9M 2026 (year to date)".
+  - F18/F19 → `segment:commercial & investment bank`, labelled.
+  - The P0 sentence and the business-model lead ("Markets is the largest revenue
+    segment") are withheld as main-driver claims.
+  - The chair's "rising nonperforming assets" and synthesis sentence 4 are withheld
+    for scope.
+- **JPM2:** the NPA findings are scoped to CIB. The chair and synthesis NPA sentences
+  are withheld for scope.
+- No other sentence was withheld or rewritten.
+
+### Known limits
+
+- The red-team (legacy) claims carry no excerpts in the payload. Only the two
+  hierarchy rules apply there, so the legacy "$93m Corporate" claim is not
+  re-checked.
+- Business lines are found only via "<Name> revenue was …" under a segment heading.
+  JPM's CCB lines are not detected.
+- Chunk sections need the platform's HTML text to keep heading lines. A filing without
+  upper-case segment headings gives no source-section scope.
+- `canonical_state` does not read a `-9M` key as a latest reporting period. A 9M
+  finding never sets "latest interim".
+- A YTD figure whose statement does not state its duration, and whose amount also
+  appears under a quarterly header, keeps its quarter key. This fails open on the
+  label, not on the number.

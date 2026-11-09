@@ -47,13 +47,18 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from app.services.ledger import claim_period as cp
+from app.services.ledger import segment_hierarchy as sh
 
 RULE_CLAIM_PERIOD = "claim_period_differs_from_cited_source"
 RULE_CLAIM_SCOPE = "claim_scope_differs_from_cited_source"
 RULE_DERIVED_AS_REPORTED = "derived_ratio_presented_as_reported"
+#: ADR-093 — a business line called a (reportable) segment, or the main revenue driver.
+RULE_LINE_AS_SEGMENT = "business_line_presented_as_segment"
+RULE_LINE_AS_MAIN_DRIVER = "business_line_presented_as_main_revenue_driver"
 
 CLAIM_RULES: tuple[str, ...] = (
     RULE_CLAIM_PERIOD, RULE_CLAIM_SCOPE, RULE_DERIVED_AS_REPORTED,
+    RULE_LINE_AS_SEGMENT, RULE_LINE_AS_MAIN_DRIVER,
 )
 
 #: A claim longer than this is not checked (kept as written).
@@ -510,10 +515,20 @@ def _spelled_out(claim: str, name: str) -> bool:
     return "".join(w[0] for w in words if w) == name
 
 
-def _names_scope(claim: str, name: str) -> bool:
+def _names_scope(claim: str, name: str, hierarchy: sh.SegmentHierarchy | None = None) -> bool:
     """The claim names the segment: one of its words, or (review P3) a short upper-case
     acronym — "AWM" for "asset & wealth management". An acronym that is not obviously
-    something else is taken as the segment's: the check cannot tell, so it keeps."""
+    something else is taken as the segment's: the check cannot tell, so it keeps.
+
+    ADR-093: when the issuer's hierarchy knows the segment, the claim names it only by
+    its name, its acronym or one of its business lines ("Example Holdings Bank" does not
+    name the "Commercial Bank" segment)."""
+    segment = hierarchy.segment(name) if hierarchy else None
+    if hierarchy and segment is None:
+        line = hierarchy.line(name)
+        segment = hierarchy.segment(line.segment) if line else None
+    if hierarchy and segment is not None:
+        return segment.name in sh.names_in(claim, hierarchy, owned_only=False).owners
     claim_low = claim.lower()
     if any(len(w) >= 4 and w in claim_low for w in name.split()) or name in claim_low:
         return True
@@ -548,21 +563,200 @@ def _derived_ratio(clause: str, figs: Sequence[_Figure],
     return None
 
 
-def check_claim(text: str | None, sources: Sequence[ClaimSource]) -> ClaimVerdict | None:
+def check_claim(
+    text: str | None,
+    sources: Sequence[ClaimSource],
+    hierarchy: sh.SegmentHierarchy | None = None,
+) -> ClaimVerdict | None:
     """The first way ``text`` misstates what it cites, or ``None``. Pure; never
-    raises."""
+    raises. ``hierarchy`` (ADR-093): the issuer's segments and business lines — a claim
+    is then also held to them (``check_hierarchy``, the metric scope rule)."""
     claim = str(text or "")
-    if not claim.strip() or not sources or len(claim) > MAX_CLAIM_CHARS:
+    if not claim.strip() or len(claim) > MAX_CLAIM_CHARS:
         return None
     try:
-        return _check(claim, sources)
+        verdict = check_hierarchy(claim, hierarchy)
+        if verdict is not None or not sources:
+            return verdict
+        return _check(claim, sources, hierarchy) or metric_scope(claim, sources, hierarchy)
     except (TypeError, ValueError, IndexError):  # pragma: no cover - defensive
         return None
 
 
-def _check(claim: str, sources: Sequence[ClaimSource]) -> ClaimVerdict | None:
+# ── ADR-093: the segment hierarchy ─────────────────────────────────────────── #
+
+#: "primarily driven by (its)", "mainly generated from", "led by" — right before a name.
+_DRIVER_BEFORE_RE = re.compile(
+    r"\b(?:(?:primarily|mainly|mostly|largely|chiefly|predominantly|principally)[ \t]{1,3}"
+    r"(?:driven|generated|led|derived|earned|produced)|(?:driven|generated|derived)"
+    r"[ \t]{1,3}(?:primarily|mainly|mostly|largely|chiefly|predominantly|principally))"
+    r"[ \t]{1,3}(?:by|from)(?:[ \t]{1,3}(?:its|the|their|our))?[ \t]{0,3}$"
+    r"|\b(?:main|largest|biggest|primary|principal|leading|dominant|key)[ \t]{1,3}"
+    r"(?:revenue[ \t]{1,3}|earnings[ \t]{1,3}|profit[ \t]{1,3})?(?:driver|source|contributor|"
+    r"segment|business|engine)[ \t]{1,3}(?:is|was|remains|being)(?:[ \t]{1,3}(?:its|the))?"
+    r"[ \t]{0,3}$",
+    re.IGNORECASE,
+)
+#: "<name> (segment) is the largest / main / dominant …" — right after a name.
+_DRIVER_AFTER_RE = re.compile(
+    r"^[ \t]{0,3}(?:(?:segment|division|business)[ \t]{1,3})?(?:is|was|remains)[ \t]{1,3}"
+    r"(?:the|its|their)[ \t]{1,3}(?:single[ \t]{1,3})?(?:largest|main|biggest|primary|"
+    r"principal|leading|dominant|key)\b",
+    re.IGNORECASE,
+)
+#: "<business line> segment" / "division" / "reportable segment" right after a name.
+_AS_SEGMENT_AFTER_RE = re.compile(
+    r"^[ \t]{1,3}(?:reportable[ \t]{1,3}|operating[ \t]{1,3})?(?:segment|division)\b(?!s)",
+    re.IGNORECASE,
+)
+_REVENUE_WORDS_RE = re.compile(
+    r"\b(?:revenues?|sales|income|earnings|turnover|profits?)\b", re.IGNORECASE)
+
+
+def check_hierarchy(claim: str, hierarchy: sh.SegmentHierarchy | None) -> ClaimVerdict | None:
+    """ADR-093 — a claim held to the issuer's own segment hierarchy.
+
+    * **Main driver.** A claim naming a BUSINESS LINE as the main source / driver of
+      revenue ("revenue is primarily driven by its Markets segment", "Markets is the
+      largest revenue segment") is withheld when the issuer reports more than one
+      reportable segment: a line of one segment is not the company's main driver unless
+      a source compares it with the other segments, and none of the platform's checks can
+      show that. A reportable segment named as the driver is not checked.
+    * **Line as segment.** A business line called a "segment" / "division" is rewritten:
+      "Markets segment" → "Markets business (part of the Commercial & Investment Bank
+      segment)"."""
+    if not hierarchy or not hierarchy.business_lines:
+        return None
+    named = sh.names_in(claim, hierarchy, owned_only=False)
+    line_spans = [(s, e, kind[5:], seg) for s, e, kind, seg in named.spans
+                  if kind.startswith("line:")]
+    if not line_spans:
+        return None
+    if len(hierarchy.segments) > 1 and _REVENUE_WORDS_RE.search(claim):
+        for start, end, line, seg in line_spans:
+            if (_DRIVER_BEFORE_RE.search(claim[max(0, start - 80):start])
+                    or _DRIVER_AFTER_RE.search(claim[end:end + 60])):
+                return ClaimVerdict(
+                    RULE_LINE_AS_MAIN_DRIVER,
+                    f"it names {line}, a business line of the {seg} segment, as the main "
+                    f"revenue driver; the issuer reports {len(hierarchy.segments)} "
+                    "reportable segments and no cited source compares them",
+                )
+    for start, end, line, seg in reversed(line_spans):
+        after = _AS_SEGMENT_AFTER_RE.search(claim[end:end + 40])
+        if after is None:
+            continue
+        repaired = (claim[:end] + f" business (part of the {seg} segment)"
+                    + claim[end + after.end():])
+        return ClaimVerdict(
+            RULE_LINE_AS_SEGMENT,
+            f"it calls {line} a segment; {line} is a business line of the {seg} segment",
+            replacement=repaired,
+        )
+    return None
+
+
+#: Words that never make a metric phrase.
+_METRIC_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "the", "and", "or", "of", "in", "on", "at", "to", "for", "from", "by",
+    "with", "as", "is", "was", "were", "are", "be", "been", "its", "their", "our", "this",
+    "that", "these", "those", "it", "than", "vs", "versus", "compared", "while", "but",
+    "year", "years", "quarter", "quarters", "period", "periods", "prior", "previous",
+    "fiscal", "month", "months", "total", "reported", "company", "group", "firm",
+    "show", "shows", "showed", "indicate", "indicates", "indicating", "modest", "slight",
+    "significant", "rising", "falling", "rose", "fell", "increase", "increased",
+    "decrease", "decreased", "decline", "declined", "reduction", "growth", "grew",
+    "higher", "lower", "up", "down", "over", "earlier", "ago", "same", "recent", "latest",
+    "current", "also", "alongside", "both", "which", "has", "had", "have", "not", "no",
+    "remain", "remains", "remained", "strong", "weak", "stable", "solid", "some",
+})
+_METRIC_WORD_RE = re.compile(r"[A-Za-z][A-Za-z-]{1,30}|[^A-Za-z \t]")
+
+
+def _metric_bigrams(text: str) -> dict[str, int]:
+    """Adjacent content-word pairs ("nonperforming assets", "credit losses") and where
+    they end. A capitalised pair inside a sentence is a name, not a metric."""
+    out: dict[str, int] = {}
+    previous: tuple[str, bool] | None = None
+    for m in _METRIC_WORD_RE.finditer(text[:MAX_SOURCE_CHARS]):
+        token = m.group(0)
+        if not token[:1].isalpha():
+            previous = None
+            continue
+        low = token.lower()
+        if low in _METRIC_STOPWORDS:
+            previous = None
+            continue
+        capital = token[:1].isupper() and m.start() > 0 and text[m.start() - 2:m.start()] != ". "
+        if previous is not None and not (previous[1] and capital):
+            out.setdefault(f"{previous[0]} {low}", m.end())
+        previous = (low, capital)
+    return out
+
+
+def metric_scope(
+    claim: str, sources: Sequence[ClaimSource], hierarchy: sh.SegmentHierarchy | None,
+    *, limit: int = MAX_SOURCES,
+) -> ClaimVerdict | None:
+    """ADR-093 — a metric a claim states WITHOUT a figure ("a modest reduction in
+    nonperforming assets"), when every cited source that states a figure for that metric
+    is scoped to ONE segment, and the claim does not name it: the segment's metric is
+    presented as the company's. Withheld."""
+    claim_pairs = _metric_bigrams(claim)
+    if not claim_pairs:
+        return None
+    for pair in claim_pairs:
+        holders: list[ClaimSource] = []
+        for source in list(sources)[:limit]:
+            text = source.text[:MAX_SOURCE_CHARS]
+            if pair in _metric_bigrams(text) and figures(text, 1):
+                holders.append(source)
+        if not holders:
+            continue
+        names = {_segment_name(s.scope) for s in holders}
+        if len(names) != 1 or None in names:
+            continue
+        name = next(iter(names))
+        assert name is not None
+        if _names_scope(claim, name, hierarchy):
+            continue
+        return ClaimVerdict(
+            RULE_CLAIM_SCOPE,
+            f"it states {pair} without its scope: every cited source states it for the "
+            f"{name} segment only",
+            source_ids=tuple(s.source_id for s in holders),
+        )
+    return None
+
+
+_WS_RE = re.compile(r"\s+")
+
+
+def _verbatim(claim: str, sources: Sequence[ClaimSource]) -> bool:
+    """ADR-093 — the claim IS a cited source's own text (an editor sentence copying its
+    finding): it cannot misstate what it cites. A finding whose stored key disagrees
+    with its own words is the finding's defect, not the claim's."""
+    wanted = _WS_RE.sub(" ", claim).strip().rstrip(".").lower()
+    if len(wanted) < 20:
+        return False
+    for source in sources:
+        text = _WS_RE.sub(" ", source.text).strip().rstrip(".").lower()
+        if len(text) < 20:
+            continue
+        shorter, longer = (wanted, text) if len(wanted) <= len(text) else (text, wanted)
+        # One contains the other, and the extra is at most a short lead-in ("Business
+        # model: …") or tail: never a second claim.
+        if shorter in longer and len(shorter) >= 0.8 * len(longer):
+            return True
+    return False
+
+
+def _check(claim: str, sources: Sequence[ClaimSource],
+           hierarchy: sh.SegmentHierarchy | None = None) -> ClaimVerdict | None:
     if not figures(claim, 1):
         return None  # nothing to check: no source is read
+    if _verbatim(claim, sources):
+        return None
     indexed = [(source, _source_index(source)) for source in list(sources)[:MAX_SOURCES]]
     mentions = cp.mentions(claim)
     stated = [p for p in mentions if not p.is_forward]
@@ -627,7 +821,7 @@ def _check(claim: str, sources: Sequence[ClaimSource]) -> ClaimVerdict | None:
             if len(names) == 1 and None not in names:
                 name = next(iter(names))
                 assert name is not None
-                if not _names_scope(claim, name):
+                if not _names_scope(claim, name, hierarchy):
                     return ClaimVerdict(
                         RULE_CLAIM_SCOPE,
                         f"it states {fig.text} without its scope: the cited source states "
@@ -722,8 +916,12 @@ def stated_segment(statement: str | None) -> str | None:
     return f"segment:{next(iter(names))}"
 
 
-def source_of_finding(finding: dict[str, object]) -> ClaimSource | None:
-    """A payload finding (``v3_research.findings[*]``) as a claim source."""
+def source_of_finding(
+    finding: dict[str, object], hierarchy: sh.SegmentHierarchy | None = None,
+) -> ClaimSource | None:
+    """A payload finding (``v3_research.findings[*]``) as a claim source. ADR-093: an
+    unscoped finding naming business lines of one segment (``hierarchy``) carries that
+    segment as its claim scope."""
     fid = str(finding.get("finding_id") or "")
     if not fid:
         return None
@@ -732,11 +930,13 @@ def source_of_finding(finding: dict[str, object]) -> ClaimSource | None:
              if isinstance(raw_kinds, (list, tuple, set, frozenset)) else set())
     statement = str(finding.get("statement") or "")
     derived = bool(kinds) and kinds <= DERIVED_SOURCE_KINDS
+    named = sh.scope_finding(statement, hierarchy) if hierarchy else None
     return ClaimSource(
         source_id=fid,
         text=statement,
         period=str(finding.get("period_key") or "") or None,
-        scope=str(finding.get("scope_key") or "") or stated_segment(statement),
+        scope=(str(finding.get("scope_key") or "") or stated_segment(statement)
+               or (named.scope_key if named else None)),
         derived=derived,
         ratio_keys=ratio_keys_of(statement) if derived else frozenset(),
     )
@@ -785,9 +985,12 @@ __all__ = [
     "RULE_CLAIM_PERIOD",
     "RULE_CLAIM_SCOPE",
     "RULE_DERIVED_AS_REPORTED",
+    "RULE_LINE_AS_MAIN_DRIVER",
+    "RULE_LINE_AS_SEGMENT",
     "ClaimSource",
     "ClaimVerdict",
     "check_claim",
+    "check_hierarchy",
     "cited_ids",
     "figures",
     "ratio_keys_of",

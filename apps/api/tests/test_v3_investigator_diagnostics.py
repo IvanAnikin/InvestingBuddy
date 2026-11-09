@@ -495,6 +495,10 @@ class TestDiagnosticsCarryNoSensitiveContent:
             # calendar-keyed quarter rekeyed on the fiscal year. Counts.
             "statements_forward_period_replaced",
             "statements_fiscal_quarter_rekeyed",
+            # ADR-093 — an inherited quarter key re-keyed to its year-to-date key, and
+            # a statement scoped to a reportable segment. Counts.
+            "statements_ytd_rekeyed",
+            "statements_scoped_to_segment",
         }
         assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
 

@@ -3637,6 +3637,37 @@ Additive keys under `source_summary_json.v3_research`:
   rather than a prose sentence's (`excerpt=X12`).
 - No other payload key changes. The rules apply from extraction pipeline version 24.
 
+## ADR-093 — segment hierarchy and period duration (no new endpoint)
+
+Additive keys under `source_summary_json.v3_research`. No migration is needed: the
+existing `findings.scope_type` and `findings.period_type` columns are used.
+
+- `segment_hierarchy` (present only when one was found):
+  - `reportable_segments`: `[{name, acronym?}]`;
+  - `business_lines`: `[{name, segment}]`;
+  - `basis`: a list of `issuer_segment_list` | `xbrl_segment_axis` |
+    `segment_sections`;
+  - `sectioned_chunks`: the number of corpus chunks mapped to a segment.
+- `findings[*].scope_type`: `segment` | `business_line`, emitted only when set. A
+  segment-scoped finding has `scope_key: "segment:<lower-case segment name>"`, and its
+  statement opens with "[X segment, not the whole company]" or "[business lines of the
+  X segment]".
+- `findings[*].period_basis` gains `statement_duration` and `source_duration`, both
+  emitted only when set.
+- New `period_key` values for year-to-date figures: `YYYY-9M` (nine months, shown as
+  "9M 2026 (year to date)") and `YYYY-H1` for six months. `canonical_state` does not
+  treat a `-9M` key as a latest reporting period.
+- New `state_invariants` rules:
+  - `business_line_presented_as_main_revenue_driver` (withheld);
+  - `business_line_presented_as_segment` (repaired).
+
+  `claim_scope_differs_from_cited_source` now also covers a metric that every cited
+  source states for one segment only.
+- New site `synthesis`: `professional_research` sentences and section leads are
+  claim-checked.
+- Investigator diagnostics gain `statements_ytd_rekeyed` and
+  `statements_scoped_to_segment`.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

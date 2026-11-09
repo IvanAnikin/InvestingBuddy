@@ -71,6 +71,13 @@ MAX_GAPS = 60
 MAX_DISAGREEMENTS = 40
 
 
+#: ``period_type`` values that say how a finding's period was set (ADR-086 / ADR-093).
+_PERIOD_BASES: frozenset[str] = frozenset(
+    {"text_stated", "statement_duration", "source_duration"})
+#: ``scope_type`` values the segment hierarchy writes (ADR-093).
+_SCOPE_TYPES: frozenset[str] = frozenset({"segment", "business_line"})
+
+
 @dataclass(frozen=True)
 class FindingRef:
     """One finding, as the Council sees it. **Its id is the citable handle.**"""
@@ -104,6 +111,9 @@ class FindingRef:
     #: ADR-086 — ``"text_stated"`` when ``period_key`` was read from the statement's
     #: own words (a web finding) rather than inherited from its evidence.
     period_basis: str | None = None
+    #: ADR-093 — ``segment`` / ``business_line`` when the issuer's segment hierarchy
+    #: scoped the finding (the ``scope_type`` column).
+    scope_type: str | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> "FindingRef":
@@ -134,8 +144,13 @@ class FindingRef:
             statement_kind=getattr(row, "statement_kind", None),
 
             period_basis=(
-                "text_stated"
-                if getattr(row, "period_type", None) == "text_stated"
+                getattr(row, "period_type", None)
+                if getattr(row, "period_type", None) in _PERIOD_BASES
+                else None
+            ),
+            scope_type=(
+                getattr(row, "scope_type", None)
+                if getattr(row, "scope_type", None) in _SCOPE_TYPES
                 else None
             ),
         )
@@ -175,6 +190,8 @@ class FindingRef:
 
             # Only when set, so the pinned key set of an evidence-dated finding holds.
             **({"period_basis": self.period_basis} if self.period_basis else {}),
+            # ADR-093 — only when the segment hierarchy scoped it.
+            **({"scope_type": self.scope_type} if self.scope_type else {}),
         }
 
 
