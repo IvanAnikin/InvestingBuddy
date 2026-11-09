@@ -2145,3 +2145,83 @@ The platform acquires the right primary documents and does not read them, then w
 - Status NOT_REPRODUCED marks defects absent on a rerun with no targeted fix (PYPL-5, PYPL2-5, ANTO-4, CLLS-12, CLLS4-4, LIN-1, LIN-6). They are not counted as fixed. CLLS-11 was NOT_REPRODUCED on day 2 and regressed on CLLS5 (CLLS5-3); it is open again. CLLS-3 is counted as fixed live because #311 removed its cause (no filings) and the chair declined, but the guard that would stop the same sentence elsewhere does not exist.
 - HON-after's stored issuer-document state labels the annual 'FY2026' and the current period 'H1 2026', and withholds a revenue conflict built from an aerospace trade article, a Q1 10-Q figure and the Q2 release under one '2026' key. It fails closed (no value shown) but is a period-label defect on a US filer.
 - The day-2 Cellectis and Lindian evaluations number findings differently from report.json (LIN2 uses investor-page labels F1..F53). Finding numbers in this report follow each evaluation.
+
+---
+
+## RESEARCH INTEGRITY CLOSURE — IN PROGRESS
+
+Follow-on phase opened 2026-11-03. Goal: close the generic P0/P1 integrity defects above and rerun HON, LIN, Cellectis,
+PYPL, JPM and CFR. **Acceptance bar** (not yet met):
+- P0 = 0 and material P1 = 0 across all six.
+- No false "not found" gap where the answer is in an acquired primary document.
+- No wrong-company finding, no fabricated conflict, no search-count contradiction and no period-duration mismatch.
+- At least 7/10 overall usefulness for ordinary operating companies.
+
+### Corrective PRs (merged and deployed)
+
+| PR | ADR | Change |
+|---|---|---|
+| #319 | 081 | One central outbound identity; no personal contact in any User-Agent |
+| #320 | 083 | A passage's subject decides whose fact it is |
+| #321 | 084 | Re-read held primary documents before searching the web or writing an absence gap; metric-bearing contracts |
+| #322 | 082 | Ledger canonical state |
+| #323 | 080 | Temporal semantics (forward dates are not period tags) |
+| #324 | 085 | SEC iXBRL / IFRS facts |
+| #325 | 089 | Peer similarity |
+| #326 | 087 | ASX Appendix 5B; period supersession |
+| #327 | 088 | Statement kind, business stage, customer funds, source kind (migration 045) |
+| #328 | 086 | One gap-status vocabulary; council/chair claims held to what they cite |
+| #329 | 090 | Statement slots hold only an ended period's issuer number; count-satisfied questions still re-read |
+| #330 | 091 | Status lines from the canonical state; scope, fiscal calendar, phantom conflicts |
+
+Deployed API/Web: `3203fc3`.
+
+### Representative reruns
+
+Scores are overall usefulness on a 0–10 scale, with P0/P1 counts, scored by independent evaluators against primary sources.
+
+| Company | Baseline | Round 2 (`e8726e4`) | Round 3 (`3203fc3`) | P0 / P1 (round 3) | False gaps (r2 → r3) | Wrong-company items (r2 → r3) |
+|---|---|---|---|---|---|---|
+| HON | 6 (HON2 f0be3c4f) | 4 (HON3 bcf24af9) | 4 (HON4 16434358) | 0 / 7 | 21 → 21 | 7 → 3 |
+| LIN | 4 (LIN2 6d4f1c43) | 5 (LIN3 2fc0e25f) | 5 (LIN4 171fff21) | 0 / 5 | 16 → 27* | 0 → 3 |
+| Cellectis | 3 (CLLS5 36d046bc) | 4 (CLLS6 80124d06) | 4 (CLLS7 0fd3d358) | 0 / 3 | 13 → 20 | 0 → 4 |
+| PYPL | 3 (PYPL3 3992aa1d) | 4 (PYPL4 52c72e76) | 4 (PYPL5 5d73309b) | 0 / 4 | 18 → 14 | 0 → 1 |
+| JPM | 3 (JPM 30828043) | 4 (JPM2 f5d3705a) | 4 (JPM3 732c044d) | 1 / 3 | ~21 → 19 | 0 → 0 |
+| CFR | 4 (CFR f722d620) | 4 (CFR2 911b46f7) | 5 (CFR3 584ba2e9) | 1 / 6 | 17 → 22 | 0 → 0 |
+
+\* The round-3 count for LIN is stricter; by the same rules LIN3 had about 22.
+
+The baseline HON score of 6 comes from a different evaluator with a different rubric, so the drop to 4 is not like-for-like.
+
+### Open P0
+
+| Report | Defect | Status |
+|---|---|---|
+| CFR3 | Statement slots show current assets 1,907 and current liabilities 3,086, which are component rows. The totals are 28,934 and 9,341. | In progress: ADR-092, statement-line selector |
+| JPM3 | The synthesis calls Markets (a CIB business line) the main revenue "segment" and says it declined. CIB rose 14%, and CCB is larger. | In progress: ADR-093, segment hierarchy + duration |
+
+### Open P1 (generic)
+
+- **False "not found" gaps (14–27 per report).** The re-read runs (23–29 queries per report), but:
+  - some gap questions never enter it (JPM CET1);
+  - most queries miss table facts;
+  - gaps are not reconciled with the re-read;
+  - the LIN annual reports were parsed only to page 40.
+- **Search status.** Two producers report search counts, and planned searches are counted as executed. CFR3 ran 0 searches but showed 41.
+- **Chair conflicts.** The chair narrates conflicts between findings that agree: 6 in HON4, 18 in CLLS7.
+- **Stale periods.** FY2025 facts partially close FY2026 gaps (PYPL, HON).
+- **Segment and duration.** Segment figures are stated as Firm, and nine-month figures are labelled Q3 (JPM).
+- **Corporate action.** HON is still described with its pre-spin-off (June 2026) perimeter.
+- **Liquidity.** The Cellectis runway ignores US$144.8M of term deposits.
+- **Wrong-company items.** They persist in "current developments": HONA under HON, plus unrelated items for LIN, CLLS and PYPL.
+
+### Status
+
+| State | Items |
+|---|---|
+| Fixed and live-confirmed | Latest annual FY2025 for HON; Q1 FY2027 fiscal keys for CFR; CLLS H1 2026 period; no other-company statement slots; document counts; cited findings exist; LIN Appendix 5B; PYPL "2025" = "FY2025"; customer funds kept separate |
+| Fixed, not live-confirmed | none |
+| P2/P3 deferred | Recorded per report in the evaluations; tracked in this section as batches land |
+
+This section is updated as each batch is merged and confirmed live. "RESEARCH INTEGRITY CLOSURE COMPLETE" is written only when
+the acceptance bar is met.

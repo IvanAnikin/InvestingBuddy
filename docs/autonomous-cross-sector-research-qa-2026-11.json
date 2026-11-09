@@ -12038,5 +12038,191 @@
     "Status NOT_REPRODUCED marks defects absent on a rerun with no targeted fix (PYPL-5, PYPL2-5, ANTO-4, CLLS-12, CLLS4-4, LIN-1, LIN-6). They are not counted as fixed. CLLS-11 was NOT_REPRODUCED on day 2 and regressed on CLLS5 (CLLS5-3); it is open again. CLLS-3 is counted as fixed live because #311 removed its cause (no filings) and the chair declined, but the guard that would stop the same sentence elsewhere does not exist.",
     "HON-after's stored issuer-document state labels the annual 'FY2026' and the current period 'H1 2026', and withholds a revenue conflict built from an aerospace trade article, a Q1 10-Q figure and the Q2 release under one '2026' key. It fails closed (no value shown) but is a period-label defect on a US filer.",
     "The day-2 Cellectis and Lindian evaluations number findings differently from report.json (LIN2 uses investor-page labels F1..F53). Finding numbers in this report follow each evaluation."
-  ]
+  ],
+  "research_integrity_closure": {
+    "status": "IN_PROGRESS",
+    "opened": "2026-11-03",
+    "updated": "2026-11-09",
+    "acceptance_bar": [
+      "P0=0 across six",
+      "material P1=0",
+      "no false not-found gap where answer is in an acquired primary document",
+      "no wrong-company finding",
+      "no fabricated conflict",
+      "no search-count contradiction",
+      "no period-duration mismatch",
+      ">=7/10 for ordinary operating companies"
+    ],
+    "prs": [
+      {
+        "pr": 319,
+        "adr": "081"
+      },
+      {
+        "pr": 320,
+        "adr": "083"
+      },
+      {
+        "pr": 321,
+        "adr": "084"
+      },
+      {
+        "pr": 322,
+        "adr": "082"
+      },
+      {
+        "pr": 323,
+        "adr": "080"
+      },
+      {
+        "pr": 324,
+        "adr": "085"
+      },
+      {
+        "pr": 325,
+        "adr": "089"
+      },
+      {
+        "pr": 326,
+        "adr": "087"
+      },
+      {
+        "pr": 327,
+        "adr": "088"
+      },
+      {
+        "pr": 328,
+        "adr": "086"
+      },
+      {
+        "pr": 329,
+        "adr": "090"
+      },
+      {
+        "pr": 330,
+        "adr": "091"
+      }
+    ],
+    "deployed_sha": "3203fc3",
+    "reruns": {
+      "HON": {
+        "round2": {
+          "report": "bcf24af9",
+          "overall": 4
+        },
+        "round3": {
+          "report": "16434358",
+          "overall": 4,
+          "P0": 0,
+          "P1": 7,
+          "false_gaps": 21,
+          "wrong_company": 3
+        }
+      },
+      "LIN": {
+        "round2": {
+          "report": "2fc0e25f",
+          "overall": 5
+        },
+        "round3": {
+          "report": "171fff21",
+          "overall": 5,
+          "P0": 0,
+          "P1": 5,
+          "false_gaps": 27,
+          "wrong_company": 3
+        }
+      },
+      "CLLS": {
+        "round2": {
+          "report": "80124d06",
+          "overall": 4
+        },
+        "round3": {
+          "report": "0fd3d358",
+          "overall": 4,
+          "P0": 0,
+          "P1": 3,
+          "false_gaps": 20,
+          "wrong_company": 4
+        }
+      },
+      "PYPL": {
+        "round2": {
+          "report": "52c72e76",
+          "overall": 4
+        },
+        "round3": {
+          "report": "5d73309b",
+          "overall": 4,
+          "P0": 0,
+          "P1": 4,
+          "false_gaps": 14,
+          "wrong_company": 1
+        }
+      },
+      "JPM": {
+        "round2": {
+          "report": "f5d3705a",
+          "overall": 4
+        },
+        "round3": {
+          "report": "732c044d",
+          "overall": 4,
+          "P0": 1,
+          "P1": 3,
+          "false_gaps": 19,
+          "wrong_company": 0
+        }
+      },
+      "CFR": {
+        "round2": {
+          "report": "911b46f7",
+          "overall": 4
+        },
+        "round3": {
+          "report": "584ba2e9",
+          "overall": 5,
+          "P0": 1,
+          "P1": 6,
+          "false_gaps": 22,
+          "wrong_company": 0
+        }
+      }
+    },
+    "open_p0": [
+      {
+        "report": "CFR3",
+        "defect": "current assets/liabilities slots take component rows (1,907/3,086 vs 28,934/9,341)",
+        "fix": "ADR-092 in progress"
+      },
+      {
+        "report": "JPM3",
+        "defect": "synthesis treats Markets business line as main revenue segment, says it declined",
+        "fix": "ADR-093 in progress"
+      }
+    ],
+    "open_p1_generic": [
+      "false not-found gaps 14-27/report",
+      "two search-status producers; planned counted as executed",
+      "chair fabricated conflicts (HON4 6, CLLS7 18)",
+      "stale FY2025 facts partially close FY2026 gaps",
+      "segment-as-Firm and 9M labelled Q3 (JPM)",
+      "HON pre-spin-off perimeter",
+      "CLLS runway excludes term deposits",
+      "wrong-company items in current developments"
+    ],
+    "fixed_live_confirmed": [
+      "HON latest annual FY2025",
+      "CFR Q1 FY2027 fiscal keys",
+      "CLLS H1 2026 period",
+      "no other-company statement slots",
+      "document counts",
+      "cited findings exist",
+      "LIN Appendix 5B",
+      "PYPL 2025=FY2025",
+      "customer funds separate"
+    ],
+    "fixed_not_live_confirmed": []
+  }
 }
