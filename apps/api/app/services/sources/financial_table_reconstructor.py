@@ -81,10 +81,7 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
-from app.services.sources.statement_line_selector import (
-    is_section_total_heading,
-    verified_section_total,
-)
+from app.services.sources.statement_line_selector import SectionTotalScanner
 
 # --------------------------------------------------------------------------- #
 # Bounds (§ performance: never an unbounded scan of a 169-page document)
@@ -993,37 +990,35 @@ def reconstruct_financial_tables(
 
 
 class _OpenSection:
-    """A section heading seen inside a region and the labelled rows printed under it."""
+    """A section heading seen inside a region: where its row goes if it is filled."""
 
-    __slots__ = ("heading", "top", "insert_at", "lines")
+    __slots__ = ("heading", "top", "insert_at")
 
     def __init__(self, heading: str, top: float, insert_at: int) -> None:
         self.heading = heading
         self.top = top
         self.insert_at = insert_at
-        self.lines: list[TableRow] = []
 
 
-def _close_section(
-    section: _OpenSection, cells: list[TableCell], width: int, out_rows: list[TableRow]
+def _by_column(row_cells: Sequence[TableCell], width: int) -> list[str]:
+    texts = {c.column_index: c.text for c in row_cells}
+    return [texts.get(i, "") for i in range(width)]
+
+
+def _fill_sections(
+    settled: list[tuple[object, object]], out_rows: list[TableRow]
 ) -> None:
-    """ADR-092 — give a balance-sheet section heading ("Current assets") its
-    unlabelled subtotal when the section's lines reconcile to it."""
-    if not is_section_total_heading(section.heading):
-        return
-
-    def by_column(row_cells: Sequence[TableCell]) -> list[str]:
-        texts = {c.column_index: c.text for c in row_cells}
-        return [texts.get(i, "") for i in range(width)]
-
-    if not verified_section_total([by_column(r.cells) for r in section.lines],
-                                  by_column(cells)):
-        return
-    out_rows.insert(
-        section.insert_at,
-        TableRow(label=section.heading, row_y=round(section.top, 2), cells=list(cells),
-                 section_total=True),
-    )
+    """ADR-092 — give a balance-sheet section heading ("Current assets") the unlabelled
+    subtotal its lines reconcile to (``SectionTotalScanner``), at the heading's place."""
+    for key, payload in settled:
+        if not isinstance(key, _OpenSection) or not isinstance(payload, list):
+            continue
+        cells = list(payload)
+        out_rows.insert(
+            key.insert_at,
+            TableRow(label=key.heading, row_y=round(key.top, 2), cells=cells,
+                     section_total=True),
+        )
 
 
 def _walk_region(
@@ -1090,7 +1085,8 @@ def _walk_region(
     heading_candidates: list[str] = []
     pending_label: str | None = None
     pending_top = 0.0
-    section: _OpenSection | None = None
+    sections = SectionTotalScanner()
+    width = len(group.tokens)
     value_zone_scales: set[str] = set()
     value_zone_currencies: set[str] = set()
     units_row_scales: set[str] = set()  # a "€m €m" row under the periods
@@ -1155,35 +1151,36 @@ def _walk_region(
 
         if ambiguous:
             pending_label = None
-            section = None
+            sections.abandon()
             continue
         if not label:
             # ADR-092 — an UNLABELLED value row closes the open section. When the
             # section's own lines add up to it, it is the section heading's figure
             # ("Current assets" … 28 934), placed where the heading is printed.
-            if section is not None:
-                _close_section(section, cells, len(group.tokens), out_rows)
-            section = None
+            sections.unlabelled(_by_column(cells, width), list(cells))
             pending_label = None
             continue
         if _looks_like_continuation(label) and pending_label:
             label = f"{pending_label} {label}"
         elif pending_label is not None:
-            # A label-only line NOT continued by this row is a section heading.
-            section = _OpenSection(pending_label, pending_top, len(out_rows))
+            # A label-only line NOT continued by this row is a section heading: the
+            # section before it is settled first, so its row lands above this one.
+            _fill_sections(sections.settle(), out_rows)
+            sections.open(_OpenSection(pending_label, pending_top, len(out_rows)),
+                          pending_label)
         pending_label = None
         if len(label) > MAX_LABEL_CHARS:
-            section = None
+            sections.abandon()
             continue
 
         out_rows.append(
             TableRow(label=label, row_y=round(top, 2), cells=cells)
         )
-        if section is not None:
-            section.lines.append(out_rows[-1])
+        sections.line(label, _by_column(cells, width))
         row_tops.append(top - previous_top)
         previous_top = top
 
+    _fill_sections(sections.settle(), out_rows)
     if not out_rows:
         return None
 

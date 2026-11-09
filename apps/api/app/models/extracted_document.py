@@ -149,6 +149,11 @@ class ExtractedFact(Base):
     page_number: Mapped[int | None] = mapped_column(sa.Integer)
     # Locator for the source table/cell (e.g. "page=12;table=2;row=4;col=1").
     table_location: Mapped[str | None] = mapped_column(sa.String(200))
+    # ADR-092 review (migration 046) — where the figure was read: 0 the Group's primary
+    # statement table, 1 another table, 2 prose; NULL when not judged (inline XBRL, or
+    # written before 046). Only a 0 (or an inline XBRL tag) sets a disagreeing prose
+    # read aside in the statements view.
+    line_rank: Mapped[int | None] = mapped_column(sa.SmallInteger)
     extraction_method: Mapped[str] = mapped_column(sa.String(50), nullable=False)
     confidence: Mapped[float] = mapped_column(sa.Float, nullable=False)
     # 'validated' | 'excerpt_only' | 'rejected'.
@@ -194,5 +199,9 @@ class ExtractedFact(Base):
         ),
         sa.Index(
             "ix_extracted_facts_document_scope", "extracted_document_id", "scope_key"
+        ),
+        sa.CheckConstraint(
+            "line_rank IS NULL OR line_rank IN (0, 1, 2)",
+            name="ck_extracted_facts_line_rank",
         ),
     )

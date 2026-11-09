@@ -523,8 +523,9 @@ class TestStatementOutranksProse:
 NOW = datetime(2026, 11, 9, tzinfo=timezone.utc)
 
 
-def _sfact(value, *, excerpt, scale="million", scope=None, document="adhoc"):
+def _sfact(value, *, excerpt, scale="million", scope=None, document="adhoc", rank=None):
     return {
+        "line_rank": rank,
         "field": "operating_profit", "value": str(value), "numeric_value": value,
         "unit": "currency_amount", "currency": "EUR", "scale": scale, "period": "2025",
         "scope": scope, "confidence": "high",
@@ -538,7 +539,7 @@ def _sfact(value, *, excerpt, scale="million", scope=None, document="adhoc"):
 class TestSlotConflicts:
     def test_unknown_scope_prose_does_not_withhold_the_statement_figure(self):
         state = build_financial_statements_state([
-            _sfact(4492.0, excerpt="p1:m0"),
+            _sfact(4492.0, excerpt="p1:m0", rank=sel.LINE_RANK_STATEMENT),
             _sfact(4.5, excerpt="X2", scale="billion", scope="group", document="ar"),
             _sfact(107.0, excerpt="X8", document="ar2"),
         ], now=NOW)
@@ -550,8 +551,8 @@ class TestSlotConflicts:
 
     def test_two_tables_that_disagree_remain_a_conflict(self):
         state = build_financial_statements_state([
-            _sfact(4492.0, excerpt="p1:m0"),
-            _sfact(4100.0, excerpt="p36:m0", document="ar"),
+            _sfact(4492.0, excerpt="p1:m0", rank=sel.LINE_RANK_STATEMENT),
+            _sfact(4100.0, excerpt="p36:m0", document="ar", rank=sel.LINE_RANK_STATEMENT),
             _sfact(107.0, excerpt="X8", document="ar2"),
         ], now=NOW)
         assert [c["field"] for c in state["conflicts"]] == ["operating_profit"]
@@ -560,7 +561,7 @@ class TestSlotConflicts:
 
     def test_group_scoped_prose_that_disagrees_remains_a_conflict(self):
         state = build_financial_statements_state([
-            _sfact(4492.0, excerpt="p1:m0"),
+            _sfact(4492.0, excerpt="p1:m0", rank=sel.LINE_RANK_STATEMENT),
             _sfact(3.9, excerpt="X2", scale="billion", scope="group", document="ar"),
         ], now=NOW)
         assert [c["field"] for c in state["conflicts"]] == ["operating_profit"]
@@ -572,6 +573,293 @@ class TestSlotConflicts:
         assert sel.line_rank("ixbrl:us-gaap:OperatingIncomeLoss@c1") == sel.LINE_RANK_TABLE
         assert sel.line_rank("X12") == sel.LINE_RANK_PROSE
         assert sel.line_rank(None) == sel.LINE_RANK_PROSE
+
+
+# ── ADR-092 review ───────────────────────────────────────────────────────── #
+
+#: IFRS 5: the disposal group is printed AFTER the first subtotal, then a second
+#: unlabelled subtotal includes it.
+HFS_BALANCE_SHEET = [
+    ["€ million", "2026", "2025"],
+    ["Non-current assets", "", ""],
+    ["Property, plant and equipment", "1 000", "900"],
+    ["Other non-current assets", "700", "600"],
+    ["", "1 700", "1 500"],
+    ["Current assets", "", ""],
+    ["Inventories", "900", "800"],
+    ["Trade receivables", "300", "250"],
+    ["Cash", "100", "90"],
+    ["", "1 300", "1 140"],
+    ["Assets of disposal group held for sale", "2 000", "–"],
+    ["", "3 300", "1 140"],
+    ["Total assets", "5 000", "2 640"],
+    ["Equity and liabilities", "", ""],
+    ["Share capital", "500", "500"],
+    ["Retained earnings", "1 000", "800"],
+    ["Total equity", "1 500", "1 300"],
+    ["Current liabilities", "", ""],
+    ["Trade payables", "600", "540"],
+    ["Borrowings", "400", "300"],
+    ["", "1 000", "840"],
+    ["Liabilities directly associated with assets held for sale", "2 500", "–"],
+    ["", "3 500", "840"],
+    ["Total liabilities", "3 500", "1 340"],
+    ["Total equity and liabilities", "5 000", "2 640"],
+]
+
+
+def _row(grid, label):
+    return {row[0]: row for row in grid}[label]
+
+
+class TestReviewHeldForSale:
+    def test_the_later_subtotal_including_held_for_sale_is_the_total(self):
+        grid, _filled = sel.section_totals_in_grid(HFS_BALANCE_SHEET)
+        assert _row(grid, "Current assets")[1:] == ["3 300", "1 140"]
+        assert _row(grid, "Current liabilities")[1:] == ["3 500", "840"]
+        assert _row(grid, "Non-current assets")[1:] == ["1 700", "1 500"]
+
+    def test_the_validator_reads_the_including_total_and_total_assets_stands(self):
+        facts = _facts(_table(HFS_BALANCE_SHEET))
+        assert _validated_value(facts, pfp.FIELD_CURRENT_ASSETS, "2026") == 3300
+        assert _validated_value(facts, pfp.FIELD_CURRENT_LIABILITIES, "2026") == 3500
+        # 1 700 + 3 300 = 5 000: the subtotal check no longer demotes total assets.
+        assert _validated_value(facts, pfp.FIELD_TOTAL_ASSETS, "2026") == 5000
+        assert all(f.value_numeric not in (1300, 1000) for f in facts.values()
+                   if f.label in (pfp.FIELD_CURRENT_ASSETS, pfp.FIELD_CURRENT_LIABILITIES))
+
+    def test_a_later_subtotal_that_does_not_add_up_refuses_the_section(self):
+        rows = [list(r) for r in HFS_BALANCE_SHEET]
+        rows[11] = ["", "3 200", "1 140"]
+        grid, _filled = sel.section_totals_in_grid(rows)
+        assert _row(grid, "Current assets")[1:] == ["", ""]
+        facts = _facts(_table(rows))
+        assert (pfp.FIELD_CURRENT_ASSETS, "2026") not in facts
+
+    def test_a_held_for_sale_line_with_no_later_subtotal_refuses_the_section(self):
+        rows = [list(r) for r in HFS_BALANCE_SHEET]
+        del rows[11]  # no subtotal including the disposal group
+        grid, _filled = sel.section_totals_in_grid(rows)
+        assert _row(grid, "Current assets")[1:] == ["", ""]
+
+    def test_the_reconstructor_takes_the_later_subtotal(self):
+        tables = _rebuild([
+            ("Current assets", []),
+            ("Inventories", ["900", "800"]),
+            ("Trade receivables", ["300", "250"]),
+            ("Cash", ["100", "90"]),
+            ("", ["1 300", "1 140"]),
+            ("Assets of disposal group held for sale", ["2 000", "–"]),
+            ("", ["3 300", "1 140"]),
+            ("Total assets", ["5 000", "2 640"]),
+        ])
+        rows = {r.label: r for r in tables[0].rows}
+        assert [c.text for c in rows["Current assets"].cells] == ["3 300", "1 140"]
+        labels = [r.label for r in tables[0].rows]
+        assert labels.index("Current assets") < labels.index("Inventories")
+
+    def test_the_reconstructor_refuses_a_later_subtotal_that_does_not_add_up(self):
+        tables = _rebuild([
+            ("Current assets", []),
+            ("Inventories", ["900", "800"]),
+            ("Trade receivables", ["300", "250"]),
+            ("", ["1 200", "1 050"]),
+            ("Assets of disposal group held for sale", ["2 000", "–"]),
+            ("", ["9 999", "1 050"]),
+            ("Total assets", ["5 000", "2 640"]),
+        ])
+        assert "Current assets" not in [r.label for r in tables[0].rows]
+
+
+class TestReviewLabelForms:
+    ACCEPTED = [
+        (sel.FIELD_CASH, "Cash and cash equivalents at the end of the reporting period"),
+        (sel.FIELD_CASH, "Cash and cash equivalents at year end"),
+        (sel.FIELD_CASH, "Cash and cash equivalents at year-end"),
+        (sel.FIELD_CASH, "Closing cash and cash equivalents"),
+        (sel.FIELD_CASH, "Cash and cash equivalents – end of year"),
+        (sel.FIELD_CASH, "Cash and cash equivalents - end of period"),
+        (sel.FIELD_CASH, "Cash and cash equivalents at 31.12.2025"),
+        (sel.FIELD_CASH, "Cash and cash equivalents at the close of the period"),
+        (sel.FIELD_CASH, "4.6 Cash and cash equivalents at end of period"),
+        (sel.FIELD_CASH, "4.6  Cash and cash equivalents at end of period"),
+        (sel.FIELD_CASH, "Cash and cash equivalents (item 4.6)"),
+        (sel.FIELD_CASH, "Cash and cash equivalents 16 (iii)"),
+        (sel.FIELD_CURRENT_LIABILITIES, "Total current liabilities 21,22"),
+        (sel.FIELD_CURRENT_LIABILITIES, "Total current liabilities 21-22"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (note 5(a))"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (Notes 5, 6)"),
+        (sel.FIELD_CURRENT_ASSETS, "Current assets, total"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (restated)"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (re-presented)"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (unaudited)"),
+        (sel.FIELD_TOTAL_ASSETS, "Total assets (audited)"),
+    ]
+    REFUSED = [
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (restricted)"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (parent company)"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (segment)"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (excl. HFS)"),
+        (sel.FIELD_CURRENT_ASSETS, "Total current assets (pro forma)"),
+        (sel.FIELD_CASH, "Cash and cash equivalents (restricted)"),
+        (sel.FIELD_OPERATING_PROFIT, "Adjusted operating profit"),
+        (sel.FIELD_OPERATING_PROFIT, "Underlying operating profit"),
+        (sel.FIELD_OPERATING_PROFIT, "Operating profit (non-GAAP)"),
+        (sel.FIELD_OPERATING_PROFIT, "Pro forma operating profit"),
+        (sel.FIELD_OPERATING_PROFIT, "Operating profit before exceptional items"),
+        (sel.FIELD_OPERATING_PROFIT, "Operating profit after share of associates"),
+        (sel.FIELD_OPERATING_PROFIT, "Operating profit before share of associates"),
+    ]
+
+    def test_accepted_forms(self):
+        refused = [label for field, label in self.ACCEPTED
+                   if not sel.line_qualifies(field, label)]
+        assert refused == []
+
+    def test_refused_forms(self):
+        accepted = [label for field, label in self.REFUSED
+                    if sel.line_qualifies(field, label)]
+        assert accepted == []
+
+    def test_the_validator_matches_the_accepted_cash_forms(self):
+        for _field, label in self.ACCEPTED[:12]:
+            assert _match_label(label) == pfp.FIELD_CASH, label
+
+
+def _wide_table(rows, *, location="p20:t0", scope=None, context=()):
+    return ExtractedTable(table_location=location, table_index=0, page_number=20,
+                          rows=rows, row_count=len(rows),
+                          col_count=max(len(r) for r in rows),
+                          extraction_method="native_pdf", scope=scope,
+                          context_headings=list(context))
+
+
+def _ranks(facts, label):
+    return {f.line_rank for (lab, _p), f in facts.items() if lab == label}
+
+
+FIVE_YEAR_RECORD = [
+    ["€ million", "2026", "2025", "2024", "2023", "2022"],
+    ["Revenue", "22 420", "21 399", "20 616", "19 953", "19 181"],
+    ["Cost of sales", "(7 982)", "(7 080)", "(6 900)", "(6 600)", "(6 400)"],
+    ["Operating profit", "4 492", "4 467", "4 800", "5 000", "3 400"],
+    ["Profit before taxation", "4 350", "4 489", "4 700", "4 900", "3 300"],
+    ["Profit for the year", "3 484", "2 750", "3 000", "3 100", "2 000"],
+    ["Total assets", "42 623", "41 006", "40 000", "39 000", "38 000"],
+    ["Total equity", "22 000", "21 000", "20 000", "19 000", "18 000"],
+    ["Employees", "38 000", "37 000", "36 000", "35 000", "34 000"],
+]
+
+
+class TestReviewPrimaryStatementRank:
+    def test_marker_and_period_rules(self):
+        assert sel.may_be_primary_statement(["€ million", "2026", "2025"],
+                                            ["Consolidated balance sheet"])
+        assert not sel.may_be_primary_statement(FIVE_YEAR_RECORD[0])
+        for heading in ("Parent company balance sheet", "Company-only statements",
+                        "Five-year record", "Financial highlights", "Key figures",
+                        "Segment information", "Adjusted results", "10-year summary"):
+            assert not sel.may_be_primary_statement(["", "2026", "2025"], [heading]), heading
+
+    def test_the_group_balance_sheet_is_the_statement(self):
+        facts = _facts(_table(IFRS_BALANCE_SHEET))
+        assert _ranks(facts, pfp.FIELD_TOTAL_ASSETS) == {sel.LINE_RANK_STATEMENT}
+
+    def test_a_five_year_record_is_not_the_statement(self):
+        facts = _facts(_wide_table(FIVE_YEAR_RECORD))
+        assert _ranks(facts, pfp.FIELD_OPERATING_PROFIT) == {sel.LINE_RANK_TABLE}
+
+    def test_a_parent_company_balance_sheet_is_not_the_statement(self):
+        facts = _facts(_wide_table(IFRS_BALANCE_SHEET,
+                                   context=["Parent company balance sheet"]))
+        assert _ranks(facts, pfp.FIELD_TOTAL_ASSETS) == {sel.LINE_RANK_TABLE}
+
+    def test_a_segment_table_is_not_the_statement(self):
+        facts = _facts(_wide_table(IFRS_BALANCE_SHEET, scope="Jewellery Maisons"))
+        assert sel.LINE_RANK_STATEMENT not in _ranks(facts, pfp.FIELD_TOTAL_ASSETS)
+
+    def test_a_table_whose_identity_fails_is_not_the_statement(self):
+        rows = [list(r) for r in IFRS_BALANCE_SHEET]
+        rows[16] = ["Total equity", "99 999", "11 612"]
+        facts = _facts(_table(rows))
+        ranks = {f.line_rank for f in facts.values()}
+        assert sel.LINE_RANK_STATEMENT not in ranks
+
+    def test_a_shaped_table_without_statement_rank_sets_nothing_aside(self):
+        other = _cand(5100.0, rank=sel.LINE_RANK_TABLE, location="p3:m0")
+        prose = _cand(4492.0, rank=sel.LINE_RANK_PROSE, location="X4")
+        fact = _resolve_group(("operating_profit", "2026", None), [other, prose], CFG)
+        assert not any("set aside" in n for n in fact.validation_notes)
+
+
+class TestReviewSlotRank:
+    def test_a_highlights_table_does_not_silence_prose(self):
+        state = build_financial_statements_state([
+            _sfact(5100.0, excerpt="p2:m0", rank=sel.LINE_RANK_TABLE),
+            _sfact(4492.0, excerpt="X8", document="ar2"),
+        ], now=NOW)
+        assert [c["field"] for c in state["conflicts"]] == ["operating_profit"]
+        slot = state["slots"].get("operating_profit_primary_filing")
+        assert slot is None or slot["numeric_value"] != 5100.0
+        assert WITHHELD_PROSE_DISAGREES_WITH_STATEMENT not in [
+            w["reason"] for w in state["withheld"]]
+
+    def test_a_parent_company_table_does_not_silence_prose(self):
+        state = build_financial_statements_state([
+            _sfact(310.0, excerpt="p88:m0", rank=sel.LINE_RANK_TABLE, document="ar"),
+            _sfact(4492.0, excerpt="X8", document="ar2"),
+        ], now=NOW)
+        assert [c["field"] for c in state["conflicts"]] == ["operating_profit"]
+
+    def test_a_table_persisted_before_the_rank_sets_nothing_aside(self):
+        state = build_financial_statements_state([
+            _sfact(4492.0, excerpt="p1:m0"),
+            _sfact(107.0, excerpt="X8", document="ar2"),
+        ], now=NOW)
+        assert [c["field"] for c in state["conflicts"]] == ["operating_profit"]
+
+    def test_an_inline_xbrl_tag_sets_disagreeing_prose_aside(self):
+        state = build_financial_statements_state([
+            _sfact(4492.0, excerpt="ixbrl:ifrs-full:ProfitLossFromOperatingActivities@c1"),
+            _sfact(107.0, excerpt="X8", document="ar2"),
+        ], now=NOW)
+        assert state["conflicts"] == []
+        assert state["slots"]["operating_profit_primary_filing"]["numeric_value"] == 4492.0
+
+    def test_a_period_only_blocker_is_never_the_statement_side(self):
+        from app.services.pipeline.issuer_financials import _prose_set_aside
+
+        statement = _sfact(4492.0, excerpt="p1:m0", rank=sel.LINE_RANK_STATEMENT)
+        prose = _sfact(107.0, excerpt="X8", document="ar2")
+        assert _prose_set_aside([statement, prose]) == [prose]
+        assert _prose_set_aside([statement, prose], {id(statement)}) == []
+
+
+class TestReviewPersistedRank:
+    def test_the_rank_is_carried_on_the_validated_fact(self):
+        facts = _facts(_table(INCOME_STATEMENT))
+        assert facts[(pfp.FIELD_OPERATING_PROFIT, "2026")].line_rank == (
+            sel.LINE_RANK_STATEMENT)
+
+    def test_only_a_known_rank_is_persisted(self):
+        from app.services.extracted_document_service import _line_rank
+
+        assert [_line_rank(v) for v in (0, 1, 2, 3, -1, None, "0")] == [
+            0, 1, 2, None, None, None, None]
+
+    def test_the_model_and_migration_carry_the_column(self):
+        import importlib.util
+        from pathlib import Path
+
+        from app.models.extracted_document import ExtractedFact
+
+        assert "line_rank" in ExtractedFact.__table__.columns
+        path = (Path(__file__).resolve().parents[1] / "alembic" / "versions"
+                / "046_add_extracted_fact_line_rank.py")
+        spec = importlib.util.spec_from_file_location("m046", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert (module.revision, module.down_revision) == ("046", "045")
 
 
 # ── Every new pattern is linear ──────────────────────────────────────────── #
@@ -589,6 +877,18 @@ def test_new_patterns_are_linear_on_their_worst_cases():
         (sel._PLAIN_NUMBER_RE, "1 000" * 2000 + "x"),
         (sel._PLAIN_NUMBER_RE, "1" * 6000 + "."),
         (sel._TABLE_LOCATOR_RE, "ixbrl:" + "x" * 6000),
+        (sel._TRAILING_QUALIFIER_RE, " 1," * 3000 + "x"),
+        (sel._TRAILING_QUALIFIER_RE, "(note " + "1-" * 3000),
+        (sel._TRAILING_QUALIFIER_RE, ", total" * 2000 + "x"),
+        (sel._LEADING_ITEM_RE, "1." * 3000),
+        (sel._CLOSING_BALANCE_RE, " - at the close of" * 1000 + "x"),
+        (sel._CLOSING_BALANCE_RE, " at 1.1." * 2000),
+        (sel._CLOSING_PREFIX_RE, "closing " * 2000),
+        (sel._OPERATING_PROFIT_COMPONENT_RE, "before the " * 2000),
+        (sel._HELD_FOR_SALE_RE, "held for " * 2000),
+        (sel._NOT_PRIMARY_STATEMENT_RE, "five year " * 2000),
+        (sel._NOT_PRIMARY_STATEMENT_RE, "parent " * 2000),
+        (sel._YEAR_RE, "2" * 6000),
     ]
     for pattern, text in cases:
         started = time.perf_counter()

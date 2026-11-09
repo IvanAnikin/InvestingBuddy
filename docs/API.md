@@ -3622,8 +3622,14 @@ Additive keys under `source_summary_json.v3_research`:
 
 - `financial_statements_state.withheld_counts` / `withheld[*].reason` gain
   `prose_disagrees_with_statement_table`: a prose read of unknown scope that states a
-  different number than the issuer's statement tables (which agree among themselves)
-  for the same field and period. It fills no slot and enters no `conflicts` entry.
+  different number than the Group's primary-statement reads for the same field and
+  period, when those agree among themselves. It fills no slot and enters no `conflicts`
+  entry. A primary-statement read is a fact whose persisted `line_rank` is 0 (the
+  validator judged its table the Group's primary statement), or an inline XBRL tag
+  (`excerpt=ixbrl:…`). Any other table can only conflict with prose, never silence it:
+  a highlights or KPI box, a parent-company, segment or multi-year table, or a fact
+  persisted before migration 046. A figure withheld only because its period has not
+  ended is never on the statement side.
 - `slots.total_current_assets_*` / `total_current_liabilities_*` / `total_assets_*` /
   `total_liabilities_*` / `cash_and_equivalents_*` hold the statement's total line or
   are absent; never a component row. `slots[*].fact_provenance` names the cited row's

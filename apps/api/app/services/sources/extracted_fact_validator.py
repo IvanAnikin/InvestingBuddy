@@ -119,6 +119,7 @@ from app.services.sources.statement_line_selector import (
     LINE_RANK_TABLE,
     is_statement_shaped,
     line_qualifies,
+    may_be_primary_statement,
     section_totals_in_grid,
 )
 
@@ -604,6 +605,10 @@ class ValidatedFact(BaseModel):
     period: str | None = None
     page_number: int | None = None
     table_location: str | None = None
+    # ADR-092 review — where the figure was read (``statement_line_selector``): 0 the
+    # Group's primary statement, 1 another table, 2 prose; ``None`` when not judged
+    # (an inline XBRL tag, a fact persisted before ADR-092).
+    line_rank: int | None = None
     extraction_method: str
     confidence: float
     validation_status: str
@@ -1371,17 +1376,35 @@ def _candidates_from_table(
     candidates = _combine_current_and_non_current_borrowings(
         candidates, borrowings_rows, table)
     candidates = _resolve_secondary_revenue(candidates)
-    # ADR-092 — rank the table's reads: a table with the shape of a primary statement
-    # outranks any other table, and every table outranks prose.
-    value_rows = sum(1 for row in table.rows[1:] if row and _numeric_cells(row))
-    rank = (LINE_RANK_STATEMENT
-            if is_statement_shaped(value_rows, len({c.label for c in candidates}))
-            else LINE_RANK_TABLE)
-    for cand in candidates:
-        cand.line_rank = rank
     _apply_subtotal_check(candidates)
     _apply_balance_sheet_check(candidates)
+    # ADR-092 — rank the table's reads: the Group's primary statement outranks any
+    # other table, and every table outranks prose (statement_line_selector).
+    rank = LINE_RANK_STATEMENT if _is_primary_statement(table, candidates) else LINE_RANK_TABLE
+    for cand in candidates:
+        cand.line_rank = rank
     return candidates
+
+
+def _is_primary_statement(table: ExtractedTable, candidates: list[_Candidate]) -> bool:
+    """ADR-092 review — the Group's primary statement, not merely its shape.
+
+    * Statement-shaped: at least 8 value rows reading at least 2 statement lines.
+    * Group or unknown scope: never a segment's or a business unit's table.
+    * At most three period columns and no parent-company, segment, multi-year,
+      highlights or adjusted marker in its header row or the headings over it
+      (``may_be_primary_statement``).
+    * No total in it failed its own check (a subtotal or the balance-sheet identity).
+    """
+    value_rows = sum(1 for row in table.rows[1:] if row and _numeric_cells(row))
+    if not is_statement_shaped(value_rows, len({c.label for c in candidates})):
+        return False
+    if (table.scope or "group").strip().lower() != "group":
+        return False
+    header = table.rows[0] if table.rows else []
+    if not may_be_primary_statement(header, table.context_headings):
+        return False
+    return not any("did not reconcile" in note for c in candidates for note in c.notes)
 
 
 def _is_bracketed(cell: str) -> bool:
@@ -2079,6 +2102,7 @@ def _resolve_candidates(
                 period=period,
                 page_number=rep.page_number,
                 table_location=rep.table_location,
+                line_rank=rep.line_rank,
                 extraction_method=primary_method,
                 confidence=round(min(c.base_confidence for c in group), 4),
                 validation_status=VALIDATION_REJECTED,
@@ -2135,6 +2159,7 @@ def _resolve_candidates(
         period=period,
         page_number=best.page_number,
         table_location=best.table_location,
+        line_rank=best.line_rank,
         extraction_method=primary_method,
         confidence=conf,
         validation_status=status,
@@ -2196,6 +2221,7 @@ def _excerpt_only_fact(
         period=rep.period,
         page_number=rep.page_number,
         table_location=rep.table_location,
+        line_rank=rep.line_rank,
         extraction_method=methods[0] if methods else rep.method,
         confidence=round(rep.base_confidence, 4),
         validation_status=VALIDATION_EXCERPT_ONLY,
