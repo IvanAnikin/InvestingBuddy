@@ -3667,6 +3667,7 @@ Additive keys under `source_summary_json.v3_research`:
     now holds only located evidence topics.
   - New `why` values: `not_every_query_ran` and `gap_queue_time_budget_spent`.
   - `PERIOD_MISMATCH` wording now covers an unconfirmed period.
+  - Follow-up: `counts.gaps_failed` no longer includes `NOT_RUN` gaps.
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 

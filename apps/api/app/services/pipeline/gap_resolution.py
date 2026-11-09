@@ -385,6 +385,26 @@ def _gap_scope(text: str) -> str | None:
 # ── Classification (pure) ───────────────────────────────────────────────────── #
 
 
+#: How far around a carried metric its period must be stated (review A).
+_PERIOD_REACH = 60
+#: A year stated AS A PERIOD: after "FY"/"CY", a half or quarter, a month (a balance or
+#: period-end date), or a period word ("year ended", "as at", "half", "quarter") within a
+#: few characters. Bounded: one lazy gap of at most 20 characters, no nesting.
+_PERIOD_YEAR_RE = re.compile(
+    r"(?:\b(?:fy|cy)[ \t'-]?|\b[hq][1-4][ \t]{1,3}(?:fy)?|"
+    r"\b(?:january|february|march|april|may|june|july|august|september|october|"
+    r"november|december)[ \t,]{1,3}(?:\d{1,2}(?:st|nd|rd|th)?,?[ \t]{1,3})?|"
+    r"\b(?:ended|ending|as[ \t]at|as[ \t]of|year|half|quarter|period)\b[^.;\n\d]{0,20}?"
+    r"(?:\d{1,2}[ \t]\w{3,9}[ \t,]{1,3})?)((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+
+
+def stated_period_years(text: str) -> frozenset[int]:
+    """Years ``text`` states AS A PERIOD (review A); a bare year is not one."""
+    return frozenset(int(m.group(1)) for m in _PERIOD_YEAR_RE.finditer(text[:4000]))
+
+
 def _hit_year_ok(
     hit: Mapping[str, Any], period: str | None, topics: Sequence[str] = ()
 ) -> bool | None:
@@ -396,11 +416,12 @@ def _hit_year_ok(
     have = rf.period_rank(str(hit.get("period_key") or "") or None)
     if have is not None:
         return have[0] == wanted[0]
-    # ADR-094 review — an undated chunk counts for the period only when the year is
-    # stated BESIDE the carried metric, not anywhere in the passage.
-    year = str(wanted[0])
-    windows = dr.carried_windows(str(hit.get("text") or "")[:8000], topics or ())
-    return any(year in w for w in windows)
+    # ADR-094 review — an undated chunk counts for the period only when a PERIOD naming
+    # the year ("FY2025", "30 June 2025", "year ended … 2025") is stated beside the
+    # carried metric. A bare year ("the lease expires in 2025") is no period.
+    windows = dr.carried_windows(str(hit.get("text") or "")[:8000], topics or (),
+                                 reach=_PERIOD_REACH)
+    return any(wanted[0] in stated_period_years(w) for w in windows)
 
 
 def _segment_scoped(hit: Mapping[str, Any]) -> bool:
@@ -569,8 +590,11 @@ def counts_of(resolutions: Sequence[GapResolution], *, queries_run: int) -> dict
             1 for r in reread if r.result in located and r.evidence
         ),
         # Re-read and nothing located.
+        # Re-read, nothing located, and a result was reached: a NOT_RUN gap (a search
+        # that could not complete) is counted under gaps_not_run only, never twice.
         "gaps_failed": sum(
-            1 for r in reread if r.source_classes_searched and not r.evidence
+            1 for r in reread
+            if r.source_classes_searched and not r.evidence and r.result != RESULT_NOT_RUN
         ),
         "gaps_not_run": by_result.get(RESULT_NOT_RUN, 0),
         "gaps_not_required": sum(1 for r in resolutions if r.route == ROUTE_NOT_REQUIRED),

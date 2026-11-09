@@ -9611,13 +9611,24 @@ differently. H4 is version 25, after batch H3a's 24.
     with no figure, or all capitals. Narrative lines such as "segment revenue grew 12%",
     "1. we reduced debt by $40m" or "Commitments to our customers" are not headings.
 - **Version 25.**
-- **Verification limit.** The real-PostgreSQL SAVEPOINT test
-  (`test_a_database_error_in_a_reread_query_leaves_the_session_usable`) is gated on
-  `V3_TEST_POSTGRES_URL`. No migrated PostgreSQL was reachable locally, so it has not
-  run here.
+- **PostgreSQL SAVEPOINT test.** `test_a_database_error_in_a_reread_query_leaves_the_session_usable`
+  runs in CI, where `api-ci.yml` sets `V3_TEST_POSTGRES_URL` to a migrated database.
+  Locally it skips when no migrated PostgreSQL is reachable.
 - **Replay after review.** The offline replay is unchanged for false gaps: HON4 7/11, LIN4
   6/12, CLLS7 9/14, PYPL5 10/13, JPM3 9/14 and CFR3 4/15 are located or honestly worded,
   and no planned query was skipped. Of the 10 matched gaps the evaluator calls genuinely
   undisclosed, 5 remain EXTRACTION_FAILED (located on the topic, not the ask) and are
   worded as unchecked, 1 is NOT_FOUND_AFTER_SEARCH, and the rest are NOT_RUN or a
   mismatch.
+
+### Re-review follow-ups
+- `gaps_failed` excludes `NOT_RUN`, so no gap is counted twice.
+- `current_inventory` returns `None` when the truncated-document query fails. It never
+  returns a partial inventory.
+- A located passage counts for a period only when a PERIOD naming the year is stated
+  within about 60 characters of the carried metric (`stated_period_years`): "FY2025",
+  "30 June 2025", "December 31, 2025", "year ended … 2025". A bare year is not
+  enough: "Capital commitments 1,200 … The lease expires in 2025" does not take FY2025.
+- The chair absence rule needs the located period to match the denied one in year AND
+  kind. An H1 2026 location does not withhold "FY2026 full-year revenue is not
+  disclosed".

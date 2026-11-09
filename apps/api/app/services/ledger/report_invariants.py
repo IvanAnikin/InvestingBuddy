@@ -1121,7 +1121,9 @@ def _rule_absence_located(sentence: str, state: Mapping[str, Any]) -> _Hit | Non
         if not isinstance(entry, Mapping) or not isinstance(entry.get("topic"), str):
             continue
         have = rf.period_rank(entry.get("period")) if entry.get("period") else None
-        if wanted is None or have is None or have[0] == wanted[0]:
+        # Same year AND same kind of period (review B): an H1 2026 location does not
+        # answer "FY2026 full-year revenue is not disclosed".
+        if wanted is None or have is None or have == wanted:
             usable.add(str(entry["topic"]))
     for claim in absence_claims(sentence, strict=True):
         if set(claim) <= usable:

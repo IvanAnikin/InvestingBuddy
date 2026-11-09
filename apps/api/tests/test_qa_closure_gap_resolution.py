@@ -995,3 +995,52 @@ def test_the_review_patterns_are_linear(name: str) -> None:
         "absence_claims_strict": lambda s: ri.absence_claims(s, strict=True),
     }[name]
     _assert_scales_linearly(fn, name)
+
+
+# ── ADR-094 re-review follow-ups ───────────────────────────────────────────── #
+
+
+class TestFollowUps:
+    def test_a_not_run_gap_is_never_also_counted_failed(self) -> None:
+        resolutions, queries = _resolve(
+            [_gap("No total debt or net debt figure in evidence.")], [TEN_Q],
+            _raising_after_first([]))
+        counts = gres.counts_of(resolutions, queries_run=queries)
+        assert counts["gaps_not_run"] == 1 and counts["gaps_failed"] == 0
+
+    async def test_a_failed_truncated_query_fails_the_inventory(self, monkeypatch) -> None:  # noqa: ANN001
+        from app.services.pipeline import document_coverage
+
+        async def held(session, company_id, *, limit=60, truncated_only=False):  # noqa: ANN001, ANN202
+            return None if truncated_only else [dict(TEN_Q, version_id="v1")]
+
+        monkeypatch.setattr(document_coverage, "held_primary_documents", held)
+        assert await document_coverage.current_inventory(object(), "c") is None
+
+    @pytest.mark.parametrize("text,years", [
+        ("FY2025", {2025}), ("30 June 2025", {2025}), ("year ended 30 June 2025", {2025}),
+        ("as at 31 December 2026", {2026}), ("H1 2026", {2026}),
+        ("the lease expires in 2025", set()), ("2025 annual", set()),
+    ])
+    def test_a_period_is_stated_not_a_bare_year(self, text: str, years: set) -> None:
+        assert gres.stated_period_years(text) == years
+
+    def test_a_bare_year_near_the_metric_is_no_period(self) -> None:
+        hit = {"text": "Capital commitments 1,200 contracted but not provided for. The "
+                       "lease expires in 2025 and is renewable."}
+        assert gres._hit_year_ok(hit, "FY2025", ("commitments",)) is False
+        stated = {"text": "Capital commitments at 30 June 2025: 1,200."}
+        assert gres._hit_year_ok(stated, "FY2025", ("commitments",)) is True
+
+    def test_an_interim_location_never_answers_a_full_year_denial(self) -> None:
+        state = {"gap_resolution": {"located": [{"topic": "revenue", "period": "2026-H1"}]}}
+        text = "FY2026 full-year revenue is not disclosed."
+        assert ri._rule_absence_located(text, state) is None
+        full = {"gap_resolution": {"located": [{"topic": "revenue", "period": "FY2026"}]}}
+        assert ri._rule_absence_located(text, full) is not None
+
+
+def test_the_period_year_pattern_is_linear() -> None:
+    from tests.test_qa_closure_ledger_state import _assert_scales_linearly
+
+    _assert_scales_linearly(gres.stated_period_years, "stated_period_years")

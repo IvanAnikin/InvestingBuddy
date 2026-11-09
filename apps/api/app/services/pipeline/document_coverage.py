@@ -180,8 +180,12 @@ async def current_inventory(
         return None
     truncated = await held_primary_documents(
         session, company_id, limit=limit, truncated_only=True)
+    if truncated is None:
+        # Never a partial inventory: without the truncated documents an absence could be
+        # stated over a document whose pages were never parsed.
+        return None
     seen = {d.get("version_id") for d in inventory}
-    for doc in truncated or ():
+    for doc in truncated:
         if doc.get("version_id") not in seen:
             inventory.append(doc)
             seen.add(doc.get("version_id"))
