@@ -11,6 +11,7 @@ from datetime import date
 
 import pytest
 
+from app.services.agents import document_reread as dr
 from app.services.ledger import report_invariants as ri
 from app.services.ledger import store as ledger
 from app.services.ledger.canonical_state import build_canonical_state, gap_resolution_state
@@ -132,7 +133,7 @@ class TestResults:
         gap = _gap("No total debt or borrowings figure is in evidence.")
         (res,), _ = _resolve([gap], [AR_TRUNCATED], _search(default=[]))
         assert res.result == gres.RESULT_DOCUMENT_NOT_PARSED
-        assert res.unparsed_documents == ["annual report · 2026-09-24, pages 41–59"]
+        assert res.unparsed_documents == ["annual report · 2026-09-24, 40 of 59 pages parsed"]
 
     def test_another_period_only_is_period_mismatch(self) -> None:
         gap = _gap("No FY2026 revenue figure is provided.")
@@ -420,3 +421,228 @@ class TestPersistedQueue:
             assert "Do not call this undisclosed" in prompt
         finally:
             await agen.aclose()
+
+
+# ── ADR-094 §7: alias table and table-row lookup ───────────────────────────── #
+
+
+class TestAliasesAndTableRows:
+    @pytest.mark.parametrize("gap,topic", [
+        ("No ownership percentage for the main project is stated in the evidence.",
+         "ownership_interest"),
+        ("Remaining stage 1 capital commitments and their funding schedule are not in "
+         "evidence.", "commitments"),
+        ("No share count after Q2 2024 appears in evidence.", "share_count"),
+        ("No evidence of undrawn facilities, debt covenants or scheduled maturities.",
+         "total_debt"),
+        ("No going-concern or liquidity-runway disclosure.", "going_concern"),
+        ("No stated dividend policy.", "dividend_policy"),
+        ("No quantified manufacturing capacity (site count, square metres).",
+         "production_capacity"),
+        ("Board composition, independence and related-party terms not disclosed.",
+         "governance"),
+        ("No substantial shareholder register.", "major_shareholders"),
+        ("No evidence splits deposits by product type.", "deposits"),
+        ("No store count.", "store_network"),
+        ("Partner-linked milestones or contracts (collaboration terms) not described.",
+         "collaborations"),
+        ("No specific designation, clinical hold or approval is disclosed.",
+         "regulatory_status"),
+        ("Net operating/investing/financing cash totals were not populated.",
+         "investing_financing_cash"),
+        ("What are the reported capital ratios?", "cet1"),
+        ("No total payment volume or take rate for the quarter.", "operating_kpis"),
+    ])
+    def test_a_round_three_gap_wording_names_a_searchable_topic(self, gap: str,
+                                                                topic: str) -> None:
+        assert topic in dr.topics_asked(gap)
+
+    def test_a_table_row_carries_its_topic(self) -> None:
+        table = "18. Commitments\n Capital commitments 20,494,622 4,100,000\n"
+        assert "commitments" in dr.table_rows_carried(table)
+        assert "commitments" in dr.metrics_carried(table, ["commitments"])
+        debt = "Note 12\n Loans and borrowings 20,000 —\n"
+        assert dr.table_rows_carried(debt) >= {"total_debt"}
+
+    def test_prose_naming_a_row_label_carries_nothing_by_row(self) -> None:
+        prose = "The group repaid borrowings during the year and paid 20,000 in fees."
+        assert "total_debt" not in dr.table_rows_carried(prose)
+        assert "commitments" not in dr.table_rows_carried(
+            "Management discussed commitments to the community in 2026.")
+
+    def test_a_topic_with_rows_runs_a_row_label_query(self) -> None:
+        queries = dr.topic_queries("commitments")
+        assert len(queries) == 2 and "capital commitments" in queries[1]
+        assert dr.topic_queries("cet1") == (dr.TOPICS_BY_KEY["cet1"].query,)
+        assert len(gres.reread_queries(["commitments"])) == 2
+
+    def test_the_gap_queue_finds_a_commitments_note(self) -> None:
+        gap = _gap("Remaining capital commitments and their funding schedule are not in "
+                   "evidence.")
+        hits = [{"evidence_id": "ev:n18", "text": "18. Exploration Project Expenditure "
+                 "Commitments\n Capital commitments 20,494,622 4,100,000\n",
+                 "document_type": "annual_report", "page_start": 46}]
+        plan = gres.plan_gap(gap)
+        assert plan.route == gres.ROUTE_REREAD and "commitments" in plan.topics
+        res = gres.classify(plan, gap, hits=hits, searched=True, inventory=[TEN_Q])
+        assert res.result == gres.RESULT_EXTRACTION_FAILED
+        assert res.evidence[0]["page"] == 46
+
+    def test_the_lexicon_names_no_issuer(self) -> None:
+        from app.services.sources import primary_document_extractor as pde
+
+        vocabulary = " ".join([
+            *(" ".join((*t.mentions, t.query, *t.sections, *t.rows)) for t in dr.TOPICS),
+            *(p for p, _t in dr.QUESTION_CUES), *pde._NOTE_HEADING_KEYWORDS,
+            gres._NON_ISSUER_RE.pattern,
+        ]).lower()
+        for name in ("lindian", "richemont", "jpmorgan", "paypal", "cellectis", "honeywell",
+                     "iluka", "kangankunde"):
+            assert name not in vocabulary, name
+
+
+# ── ADR-094 §8: section-aware page budget, truncation recorded ─────────────── #
+
+
+def _settings(**kw):  # noqa: ANN003, ANN202
+    from app.core.config import Settings
+
+    return Settings(**kw)
+
+
+from tests.test_qa_closure_document_completeness import db_session  # noqa: E402, F401
+
+
+class TestSectionAwarePages:
+    def test_an_outline_less_report_reads_its_note_pages(self) -> None:
+        from app.services.sources.primary_document_extractor import extract_pdf
+        from tests.helpers.pdf_fixtures import make_pdf
+
+        pages = [f"Page {i} directors report discussion of the year." for i in range(1, 7)]
+        pages[4] = "18. Exploration Project Expenditure Commitments 20,494,622"
+        result = extract_pdf(make_pdf(pages), cfg=_settings(
+            primary_document_max_pdf_pages=2, primary_document_max_supplemental_pdf_pages=5))
+        read = {e.page_number for e in result.excerpts}
+        assert 5 in read and not read & {3, 4, 6}
+        assert result.page_count == 6 and result.pages_extracted == 3
+        assert result.skipped_page_ranges == ["3–4", "6"]
+        assert result.truncated is True
+        assert any("opens a note or statement section" in w for w in result.warnings)
+
+    def test_a_short_document_records_nothing_skipped(self) -> None:
+        from app.services.sources.primary_document_extractor import extract_pdf
+        from tests.helpers.pdf_fixtures import make_pdf
+
+        result = extract_pdf(make_pdf(["Group revenue was 1,000.", "Cash was 200."]),
+                             cfg=_settings())
+        assert result.pages_extracted == 2 and result.skipped_page_ranges == []
+
+    @pytest.mark.parametrize("line,expected", [
+        ("18.  Exploration Project Expenditure Commitments", True),
+        ("(b) Interest Rate Risk", True),
+        ("Segment information", True),
+        ("Note 12 Loans and borrowings", True),
+        ("Debt and equity markets remained open across the whole year", False),
+        ("Borrowings rose as the group drew down its facility.", False),
+        ("The company discussed its strategy", False),
+    ])
+    def test_a_note_heading_is_a_short_line_opening_a_section(self, line: str,
+                                                              expected: bool) -> None:
+        from app.services.sources.primary_document_extractor import _page_has_note_heading
+
+        assert _page_has_note_heading(line) is expected
+
+    def test_page_ranges(self) -> None:
+        from app.services.sources.primary_document_extractor import page_ranges
+
+        assert page_ranges([47, 41, 42, 43]) == ["41–43", "47"]
+        assert page_ranges([]) == []
+
+    def test_the_coverage_audit_shows_truncation(self) -> None:
+        from app.services.pipeline import document_coverage
+
+        audit = document_coverage.build_coverage(inventory=[AR_TRUNCATED], questions=[])
+        doc = audit["documents"][0]
+        assert doc["truncated"] is True and doc["pages_total"] == 59
+        assert audit["documents_truncated"] == 1
+
+    async def test_the_inventory_carries_the_active_parse_page_accounting(
+        self, db_session  # noqa: ANN001, F811
+    ) -> None:
+        import uuid
+        from datetime import UTC, datetime
+
+        from app.models.company import Company
+        from app.models.research_chunk import ResearchDocumentChunk
+        from app.models.research_derivation import ResearchDocumentDerivation
+        from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+        from app.services.pipeline import document_coverage
+
+        subject = uuid.uuid4()
+        db_session.add(Company(id=subject, name="Example Resources Ltd", ticker="EXR",
+                               exchange="ASX", status="new"))
+        await db_session.flush()
+        doc = ResearchDocument(id=uuid.uuid4(), company_id=subject, document_key="ar",
+                               document_type="annual_report", title="Annual Report")
+        db_session.add(doc)
+        await db_session.flush()
+        version = ResearchDocumentVersion(
+            id=uuid.uuid4(), research_document_id=doc.id, content_hash="ab" * 32,
+            canonical_url="https://www.asx.com.au/a.pdf", transport="test",
+            source_tier="T1_primary_filing", access_class="public_official",
+            extraction_status="extracted", is_current=True,
+            published_at=date(2026, 9, 24), retrieved_at=datetime.now(UTC),
+        )
+        db_session.add(version)
+        await db_session.flush()
+        db_session.add(ResearchDocumentDerivation(
+            id=uuid.uuid4(), research_document_version_id=version.id, pipeline_version=24,
+            extraction_method="native_pdf", status="partial", is_active=True,
+            pages_persisted=47, page_count=59, truncated=True,
+        ))
+        db_session.add(ResearchDocumentChunk(
+            id=uuid.uuid4(), chunk_id="ar-0", derivation_id=uuid.uuid4(),
+            research_document_version_id=version.id, company_id=subject, kind="prose",
+            ordinal=0, text="x", char_start=0, char_end=1, page_end=40, section_path="s",
+            source_tier="T1_primary_filing", indexed_at=datetime.now(UTC),
+        ))
+        await db_session.flush()
+        inventory = await document_coverage.held_primary_documents(db_session, subject)
+        assert inventory is not None and len(inventory) == 1
+        held = inventory[0]
+        assert (held["pages_total"], held["pages_parsed"], held["truncated"]) == (59, 47, True)
+        assert gres.truncated_documents(inventory) == [
+            f"{dr.document_name(held)}, 47 of 59 pages parsed"]
+
+
+_LINEAR_CARRIED = ("commitments", "major_shareholders", "governance", "going_concern",
+                   "dividend_policy", "properties", "store_network", "regulatory_status",
+                   "collaborations", "rate_sensitivity", "investing_financing_cash",
+                   "total_debt", "operating_kpis", "share_count")
+
+
+@pytest.mark.parametrize("pattern", [
+    "note_heading", "table_rows",
+    *[f"row:{k}" for k in sorted(dr._ROWS) if dr._ROWS[k]],
+    *[f"carried:{k}" for k in _LINEAR_CARRIED],
+])
+def test_the_section_and_row_patterns_are_linear(pattern: str) -> None:
+    from app.services.sources import primary_document_extractor as pde
+    from tests.test_qa_closure_ledger_state import _assert_scales_linearly
+
+    if pattern == "note_heading":
+        _assert_scales_linearly(pde._page_has_note_heading, "note_heading")
+        compiled = [pde._NOTE_HEADING_RE]
+    elif pattern == "table_rows":
+        _assert_scales_linearly(dr.table_rows_carried, "table_rows_carried")
+        compiled = []
+    elif pattern.startswith("row:"):
+        compiled = list(dr._ROWS[pattern[4:]])
+    else:
+        compiled = list(dr._CARRIED[pattern.split(":", 1)[1]])
+    for regex in compiled:
+        def run(text: str, regex=regex) -> None:  # noqa: ANN001
+            for _ in regex.finditer(text):
+                pass
+
+        _assert_scales_linearly(run, regex.pattern[:30])

@@ -99,7 +99,8 @@ RESULT_WORDS: dict[str, str] = {
         "research cannot say it is absent."
     ),
     RESULT_EXTRACTION_FAILED: (
-        "Held but not yet read into a finding: {document} has a passage on {topic}."
+        "Not established either way: {document} has a passage naming {topic} beside a "
+        "figure that no finding has read; whether it answers this gap is unchecked."
     ),
     RESULT_SCOPE_MISMATCH: (
         "Only another scope's figures were found (e.g. a segment's); the scope asked for "
@@ -365,7 +366,7 @@ def truncated_documents(inventory: Iterable[Mapping[str, Any]] | None) -> list[s
         if doc.get("truncated") or (total and parsed and parsed < total):
             name = dr.document_name(doc)
             if total and parsed and parsed < total:
-                name = f"{name}, pages {parsed + 1}–{total}"
+                name = f"{name}, {parsed} of {total} pages parsed"
             if name not in out:
                 out.append(name)
     return out

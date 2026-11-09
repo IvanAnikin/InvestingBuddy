@@ -1841,6 +1841,22 @@ reader takes its counts and status lines from it.
   differ has an unknown period. "Partially addressed" is shown only for PARTIALLY_CLOSED.
 - **Chair absence claims.** "X is not disclosed / no X split" is withheld
   (`absence_stated_while_found`) when a cited finding carries X or the queue located X.
+- **Aliases and table rows (§7).** The re-read lexicon gains commitments, investing and
+  financing cash flows, major shareholders, board and related parties, going concern,
+  dividend policy, sites and facilities, store network, regulatory designations,
+  collaborations and rate sensitivity, plus IFRS/ASX debt wordings ("loans and
+  borrowings", "loan facility", "undrawn") and payments KPIs (TPV, take rate). A topic's
+  ROW LABELS ("capital commitments", "borrowings") carry it only at the start of a line
+  holding a figure — a statement-table row — never in prose, and run as their own
+  lexical query in the gap queue.
+- **Section-aware page budget (§8).** When a long PDF's outline does not fill the
+  supplemental budget, pages beyond the leading window whose own text opens a note or
+  statement section (a short heading line: borrowings, commitments, segment, related
+  parties, shareholder information …) are read, in document order, within the same cap.
+  The parse records `pages_extracted` and `skipped_page_ranges`; the inventory carries
+  the active parse's `pages_total` / `pages_parsed` / `truncated`, and a gap searched
+  over a truncated document is DOCUMENT_NOT_PARSED, never "not found". Extraction
+  pipeline version 24 re-reads held disclosures once.
 
 ## Status lines, scope, applicability and fiscal calendars (ADR-091)
 

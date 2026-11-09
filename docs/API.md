@@ -3645,6 +3645,16 @@ Additive keys under `source_summary_json.v3_research`:
   - another metric sub-type alone is NONCOMPARABLE;
   - new non-comparable reason `value_stale`: the gap names no period and the finding or
     fact is older than the newest year held for the metric.
+- Part 2 (§7/§8):
+  - `primary_document_coverage.documents[*]` gains `pages_total`, `pages_parsed_count`
+    and `truncated`; the audit gains `documents_truncated`.
+  - A truncated held document is named in a gap's `unparsed_documents` as
+    "<document>, N of M pages parsed".
+  - New re-read topic keys may appear in `topics` / `topic_labels`: `commitments`,
+    `investing_financing_cash`, `major_shareholders`, `governance`, `going_concern`,
+    `dividend_policy`, `properties`, `store_network`, `regulatory_status`,
+    `collaborations`, `rate_sensitivity`.
+  - Extraction pipeline version 24.
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 

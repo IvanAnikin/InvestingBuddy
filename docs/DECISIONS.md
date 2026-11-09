@@ -9440,8 +9440,9 @@ platform held, although each run made 23–29 re-read queries.
   `SOURCE_BLOCKED`, `NOT_RUN`. Only `NOT_FOUND_AFTER_SEARCH` may be worded "not found in
   the available evidence"; every other result has its own wording (`RESULT_WORDS`). A
   passage the re-read locates (the topic named beside a figure, not boilerplate, a
-  compatible period and scope) makes the gap `EXTRACTION_FAILED` — "held but not yet read
-  into a finding: <document> has a passage on <topic>". It never becomes a finding: no
+  compatible period and scope) makes the gap `EXTRACTION_FAILED` — "not established
+  either way: <document> has a passage naming <topic> beside a figure that no finding has
+  read; whether it answers this gap is unchecked". It never becomes a finding: no
   model read it and no figure was checked. Evidence is recorded by platform-derived
   document name, evidence id and page, never by passage text.
 - **Persisted and consumed.** Each resolution is stored in
@@ -9475,13 +9476,14 @@ platform held, although each run made 23–29 re-read queries.
 
 ### Replay (offline; stored payloads + downloaded primary sources)
 Evaluator false gaps (excluding ISSUER_NOT_DISCLOSED) that the page worded as absent,
-before → after (the rest are located, honestly NOT_RUN, or unmatched):
+before → after (the rest are located, honestly NOT_RUN, or unmatched). The harness
+windows a flattened HTML document into ~1,400-character chunks like the corpus chunker:
 
 | Report | before: worded absent | after: located / honest | after: still "not found" |
 |---|---|---|---|
 | HON4 | 7 of 11 | 6 | 0 |
 | LIN4 | 9 of 12 | 3 | 0 |
-| CLLS7 | 10 of 14 | 2 | 3 |
+| CLLS7 | 10 of 14 | 5 | 0 |
 | PYPL5 | 12 of 13 | 9 | 0 |
 | JPM3 | 12 of 14 | 8 | 1 |
 | CFR3 | 8 of 15 | 4 | 0 |
@@ -9498,3 +9500,70 @@ are gone.
   (`no_searchable_topic_in_gap`), worded as not searched — never as absent.
 - `EXTRACTION_FAILED` says a held passage names the topic with a figure; it does not
   prove the passage answers the gap's exact period and scope when the chunk is undated.
+
+### Part 2 — retrieval and truncation (§7/§8)
+**Root causes.**
+- *Held tables missed.* The re-read ran the question's 1–2 prose topic queries, and the
+  lexicon had no word for what many gaps asked: commitments, investing/financing cash,
+  shareholders, board and related parties, going concern, dividend policy, sites, stores,
+  designations, collaborations, rate sensitivity. Nor did it have the row labels a
+  statement table prints ("Loans and borrowings", "Capital commitments", "Number of
+  shares"). JPM3 recorded 34 PARSED_NO_MATCH and 22 TABLE_UNREAD out of 78 document ×
+  question outcomes.
+- *LIN stops at page 40.* `primary_document_extractor.extract_pdf` reads the first
+  `primary_document_max_pdf_pages` (40) pages. Its supplemental pass
+  (`_select_statement_pages`) reads only PDF outline/bookmark titles. The LIN annual
+  report has 59 pages and no outline, so notes 18 (exploration commitments), 21 (related
+  parties) and 28 (commitments and contingencies: A$20.5m capital commitments and the
+  US$20m facility) were never parsed. The inventory reported `pages = max(page_end) = 40`
+  and no page total, so the truncation was invisible.
+
+**Decision.**
+- *§7 alias table.* Eleven topics were added, and the debt, KPI, capacity and legal
+  aliases were widened. Question cues were added for the round-3 gap wordings, such as
+  "capital ratios" → CET1. A topic's `rows` are table-row labels. They carry the topic
+  only at the start of a line that holds a figure (`table_rows_carried`). A corpus table
+  chunk is rendered one row per line, so this is a row lookup. They also run as a second
+  lexical query in the gap queue. The investigator's own re-read plan is unchanged; it
+  gains the aliases and the row lookup through `metrics_carried` and `rank_hits`.
+- *§8 section-aware budget.* When the outline leaves the supplemental budget unfilled,
+  the extractor reads pages beyond the leading window whose own text opens a note or
+  statement section, in document order and within the same cap. A section opening is a
+  short heading line, numbered or not. The scan is a pypdf text pass over at most 160
+  pages, inside the extraction deadline. The parse records `pages_extracted` and
+  `skipped_page_ranges`. The inventory adds the active derivation's `page_count` /
+  `pages_persisted` / `truncated` (no migration needed). The coverage audit shows
+  truncation. A gap searched over a truncated document is `DOCUMENT_NOT_PARSED` and
+  names "N of M pages parsed". Extraction pipeline version 24 makes the held-disclosure
+  re-read open such a report again once.
+
+**Replay (offline lexical index over the downloaded sources; LIN with the branch's page
+selection).** Evaluator false gaps that were located or honestly worded, out of the
+total:
+
+| Report | commit 1 | commit 2 | still "not found" (commit 2) |
+|---|---|---|---|
+| HON4 | 6/11 | 7/11 | 0 |
+| LIN4 | 3/12 | 6/12 | 0 |
+| CLLS7 | 5/14 | 9/14 | 0 |
+| PYPL5 | 9/13 | 10/13 | 0 |
+| JPM3 | 8/14 | 9/14 | 1 (contract awards / backlog) |
+| CFR3 | 4/15 | 4/15 | 0 |
+
+LIN's heading pass selects pages 41, 46, 47, 48, 50, 56 and 57: the capital-risk,
+commitments, related-party, financial-risk, commitments-and-contingencies and
+shareholder pages.
+
+**Limits (part 2).** Lexical aliases remain a reviewed list: a gap worded outside it is
+`NOT_RUN`. The heading pass is bounded by the supplemental cap (12). A report with more
+note sections than that still skips some, and records which. The V2 excerpt-replay path
+(`EXTRACTION_TEXT_LAYER_MIN_VERSION`) does not advance. The version bump re-reads every
+held disclosure once, within the existing acquisition budgets. Campaign batch H3a may
+also bump the pipeline version; the two must be merged to one number.
+- *Precision (replay over the evaluator's genuinely undisclosed gaps).* 5 of the 10 that
+  matched a payload gap are `EXTRACTION_FAILED`, because the documents hold the TOPIC but
+  not the specific ask. Examples: a debt figure but no covenant terms, a resource
+  statement but no reserve for that project. So the wording claims only that a passage
+  naming the topic with a figure is held and unchecked, never that the answer exists. The
+  chair absence rule can then withhold a true "not disclosed" sentence on that topic.
+  That is a withheld claim, not a wrong one.

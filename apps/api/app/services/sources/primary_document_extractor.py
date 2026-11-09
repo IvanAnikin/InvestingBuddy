@@ -36,7 +36,7 @@ import hashlib
 import re
 import time
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from html.parser import HTMLParser
 
 from pydantic import BaseModel, Field
@@ -262,6 +262,11 @@ class PrimaryDocumentExtraction(BaseModel):
     requires_translation: bool = False
     extracted_char_count: int = 0
     truncated: bool = False
+    # ADR-094 §8 — how much of a paginated document was opened, and which page ranges
+    # were not ("41–45", "52"), so "searched, not found" is never claimed over pages the
+    # parse skipped. ``None`` for HTML / when the caller chose the pages.
+    pages_extracted: int | None = None
+    skipped_page_ranges: list[str] = Field(default_factory=list)
     excerpts: list[PrimaryDocumentExcerpt] = Field(default_factory=list)
     tables: list[ExtractedTable] = Field(default_factory=list)
     # V3.1 Slice 1.3 — the FULL heading-tagged text of every page the extractor
@@ -695,6 +700,117 @@ def _select_statement_pages(
     except Exception:  # noqa: BLE001 - outline access can raise on odd PDFs
         return []
     return candidates[:max_pages]
+
+
+#: ADR-094 §8 — note and section headings a long report's back half holds: borrowings,
+#: commitments, segment, related-party and shareholder notes. Generic accounting / ASX /
+#: SEC vocabulary; never an issuer's term. Matched at the START of a short line, after
+#: optional note numbering ("18.", "(b)", "3.1"), so a passing mention is no heading.
+_NOTE_HEADING_KEYWORDS: tuple[str, ...] = (
+    "borrowings", "loans and borrowings", "interest-bearing", "interest bearing",
+    "financial liabilities", "debt", "commitments", "contingen", "segment",
+    "operating segments", "cash flow", "financial instruments", "financial risk",
+    "interest rate risk", "liquidity risk", "capital risk", "capital management",
+    "related part", "events after", "subsequent events", "events occurring after",
+    "going concern", "shareholder information", "substantial shareholders",
+    "top twenty", "top 20", "controlled entities", "interests in subsidiaries",
+    "consolidated entity disclosure", "properties", "legal proceedings",
+)
+_NOTE_HEADING_RE = re.compile(
+    r"^[ \t]{0,6}(?:(?:\d{1,2}(?:\.\d{1,2})?\.?|\([a-z0-9]{1,3}\)|note[ \t]{1,3}\d{1,2}\.?)"
+    r"[ \t]{1,6})?([a-z][a-z' -]{2,60})",
+    re.MULTILINE,
+)
+#: Pages a heading scan may open beyond the leading window (pypdf text only: cheap).
+_MAX_HEADING_SCAN_PAGES = 160
+#: A heading line is short.
+_MAX_HEADING_LINE_CHARS = 90
+
+
+def _page_has_note_heading(text: str) -> bool:
+    keywords = _NOTE_HEADING_KEYWORDS + tuple(
+        kw for _stype, kws in _STATEMENT_HEADING_KEYWORDS for kw in kws
+    )
+    for line in text.lower().splitlines():
+        if len(line) > _MAX_HEADING_LINE_CHARS:
+            continue
+        match = _NOTE_HEADING_RE.match(line)
+        if not match:
+            continue
+        title = match.group(1).strip()
+        numbered = match.start(1) > len(line) - len(line.lstrip()) and line.lstrip()[:1] in (
+            "(", "n", *"0123456789")
+        # A NUMBERED note heading may name its subject anywhere ("18. Exploration
+        # Project Expenditure Commitments"); an unnumbered line must open with it.
+        if numbered and any(k in title for k in keywords):
+            return True
+        # An unnumbered heading is short and is not a sentence.
+        if len(title) <= 50 and not line.rstrip().endswith(".") and title.startswith(keywords):
+            return True
+    return False
+
+
+def _select_note_pages(
+    raw: bytes,
+    *,
+    total_pages: int,
+    exclude: set[int],
+    max_pages: int,
+    deadline: float | None = None,
+) -> list[int]:
+    """ADR-094 §8 — the section-aware fallback when a long PDF's outline does not fill
+    the supplemental budget (an ASX annual report often has no outline at all): pages
+    beyond the leading window whose own text opens a note or statement section
+    (borrowings, commitments, segment, related parties …), in document order.
+
+    A cheap pypdf text pass over at most ``_MAX_HEADING_SCAN_PAGES`` pages, inside the
+    extraction deadline. Never raises; any failure yields no candidates — never a
+    guessed page.
+    """
+    if max_pages <= 0 or total_pages <= 0:
+        return []
+    try:
+        import io
+
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw))
+        pages = reader.pages
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[int] = []
+    scanned = 0
+    for page_no in range(1, total_pages + 1):
+        if page_no in exclude:
+            continue
+        if scanned >= _MAX_HEADING_SCAN_PAGES or len(out) >= max_pages:
+            break
+        if deadline is not None and time.monotonic() > deadline:
+            break
+        scanned += 1
+        try:
+            text = pages[page_no - 1].extract_text() or ""
+        except Exception:  # noqa: BLE001 - one odd page skips itself
+            continue
+        if _page_has_note_heading(text[:20000]):
+            out.append(page_no)
+    return out[:max_pages]
+
+
+def page_ranges(pages: Iterable[int]) -> list[str]:
+    """``[41, 42, 43, 47]`` → ``["41–43", "47"]``."""
+    out: list[str] = []
+    run: list[int] = []
+    for page in sorted(set(pages)):
+        if run and page == run[-1] + 1:
+            run.append(page)
+            continue
+        if run:
+            out.append(f"{run[0]}–{run[-1]}" if len(run) > 1 else str(run[0]))
+        run = [page]
+    if run:
+        out.append(f"{run[0]}–{run[-1]}" if len(run) > 1 else str(run[0]))
+    return out
 
 
 def _confidence_from_relevance(relevance: int) -> float:
@@ -1576,11 +1692,14 @@ def extract_pdf(
     # ``running_scope``/``heading_stack`` below, for exactly the same reason —
     # a distant supplemental page must never inherit an unrelated section.
     running_page_title: tuple[str, float, float] | None = None
+    #: ADR-094 §8 — every page this parse opened (window, outline and note passes).
+    opened_pages: set[int] = set()
 
     def _extract_one_page(page: object, page_no: int) -> None:
         """Extract text blocks + tables from ONE page; mutates the closures."""
         nonlocal total_chars, running_scope, last_processed_page_no
         nonlocal running_page_title
+        opened_pages.add(page_no)
         # Reset any inherited scope BEFORE processing this page's own content
         # when this page is not the immediate successor of the last page
         # actually processed — a non-contiguous jump (e.g. the leading
@@ -1832,6 +1951,23 @@ def extract_pdf(
                         f"the first {n} whose bookmark/outline title matched a "
                         "financial-statement heading."
                     )
+                # ADR-094 §8 — what the outline did not fill, the pages' own note
+                # headings do (an outline-less annual report's notes 18–28).
+                room = max_supplemental_pages - len(supplemental)
+                if room > 0:
+                    by_heading = _select_note_pages(
+                        raw,
+                        total_pages=page_count,
+                        exclude=set(range(1, n + 1)) | set(supplemental),
+                        max_pages=room,
+                        deadline=deadline,
+                    )
+                    if by_heading:
+                        result.warnings.append(
+                            f"Read {len(by_heading)} additional page(s) beyond the "
+                            f"first {n} whose own text opens a note or statement section."
+                        )
+                    supplemental = sorted(set(supplemental) | set(by_heading))
                 for page_no in supplemental:
                     if time.monotonic() > deadline:
                         result.truncated = True
@@ -1853,6 +1989,15 @@ def extract_pdf(
             _PDF_FAILURE_GAP.get(result.failure_code, _PDF_FAILURE_GAP_DEFAULT)
         )
         return result
+
+    if pages is None and result.page_count:
+        # ADR-094 §8 — record what was NOT opened, so a reader can say "pages 41–45 of
+        # this report were not parsed" instead of "not found".
+        result.pages_extracted = len(opened_pages)
+        skipped = set(range(1, int(result.page_count) + 1)) - opened_pages
+        result.skipped_page_ranges = page_ranges(skipped)[:24]
+        if skipped:
+            result.truncated = True
 
     if capture_blocks:
         _capture_blocks(result, page_blocks, max_block_chars=_corpus_max_page_chars(cfg))
