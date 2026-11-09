@@ -1874,3 +1874,31 @@ reader takes its counts and status lines from it.
     before the marked name, and a reporting verb right after the marker.
   - "while" and "whereas" count as comparisons.
 
+
+## Statement-line selector (ADR-092)
+
+`services/sources/statement_line_selector.py` decides which printed row is a statement
+line. Three rules, used by the table reconstructor, the fact validator and the V3
+statements view (`issuer_financials`):
+
+- **A component is not its total.** Current assets, current liabilities, non-current
+  assets, total assets, total liabilities and cash and cash equivalents are read only
+  from a row whose whole label is the line, after removing a note reference or a
+  trailing parenthetical. For cash, a closing-balance date may follow. "Trade
+  receivables and other current assets", "Restricted cash and cash equivalents" and
+  "Exchange gains on cash and cash equivalents" are no longer those lines. Operating
+  profit refuses "other operating …", "share of …", non-operating and segment rows.
+- **A section heading carries its unlabelled subtotal** (current assets, current
+  liabilities, non-current assets only). It does so when the section's lines sum to it
+  in every column it prints, within half a printed unit per line. Otherwise nothing is
+  read. The reconstructor places the row at the heading
+  (`TableRow.section_total`, `ExtractedTable.section_total_rows`). For ruled and HTML
+  grids, the validator fills the heading row. The fact says so in its validation notes.
+- **A primary statement table outranks prose.** A table with at least 8 value rows and
+  2 distinct statement lines is statement-shaped. Inside a document, a prose read that
+  disagrees with that table's agreeing rows is set aside, with a note. Among agreeing
+  reads, the table row is cited. In the statements view, a prose read
+  (`excerpt=X…`) of unknown scope that disagrees with agreeing table reads is withheld
+  as `prose_disagrees_with_statement_table` and makes no conflict. Two disagreeing
+  tables, or a disagreeing Group-scoped sentence, remain a conflict.
+- Extraction pipeline version 24.

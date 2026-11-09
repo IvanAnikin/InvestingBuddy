@@ -9392,3 +9392,155 @@ These guards tighten the round-4 rule:
 - **Fiscal calendar:** for a non-December issuer whose findings carry only inherited
   keys, there may be no latest period or interim at all. The status line then shows
   none rather than a guess.
+
+## ADR-092: A Statement Line Is Its Whole Label, a Section's Unlabelled Subtotal Is Its Total When It Adds Up, and the Primary Statement Outranks Prose
+
+**Date:** 2026-11-09 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** Research Integrity Closure batch H3a. P0 in the live Richemont report
+`584ba2e9` (CFR3), with two P1s in the same report.
+
+### What was wrong
+1. **A component was read as its total (P0).** `financial_statements_state` showed
+   current assets 1,907 and current liabilities 3,086, citing page 14 of the FY26 results
+   release. Those are the rows "Trade receivables and other current assets" and "Trade
+   payables and other current liabilities". The balance sheet's totals are 28,934 and
+   9,341. Three generic causes:
+   - `extracted_fact_validator._LABEL_PATTERNS` matched a row label by SUBSTRING. Any
+     label containing "current assets" was current assets. The same held for
+     "Exchange gains/(losses) on cash and cash equivalents" (read as cash), "Other
+     non-current assets" (read as the non-current total) and "Total liabilities,
+     redeemable noncontrolling interest and shareowners' equity" (read as total
+     liabilities: the HON 10-K's 73,681).
+   - A European balance sheet prints a section heading ("Current assets"), its lines,
+     and then an UNLABELLED subtotal. The table reconstructor dropped both the
+     heading (a label-only line) and the subtotal (a value row with no label). The real
+     total could never be read, and the component row was the only candidate left.
+   - With the wrong current assets, total assets failed its own subtotal check
+     (current + non-current) and was demoted, so CFR3 showed no total assets at all.
+2. **A prose read withheld the Group's operating profit (P1).** CFR3's `conflicts`
+   held operating_profit 2026 = {4.5bn, 4,492m, 107m, 4.5bn, 4.5bn}, and the slot fell
+   back to FY2025's 4,467. 4.5bn and 4,492m agree (`_agree` is within 1% on a common
+   scale). The 107m is the Specialist Watchmakers' segment result, spliced by a
+   two-column page into an unscoped sentence about "the operating result" in the second
+   annual-report PDF. Inside that document the same prose read also demoted the income
+   statement's 4,492 to excerpt-only ("conflicting magnitudes from the same method").
+   Under a loaded host the extraction budget can stop before the income statement page,
+   leaving the 107m as the document's only reading. The replay reproduced both.
+3. **Regional total 21,399 (P1, not fixed here).** Finding F33 stated the regional sales
+   total from the prior-year column. It is an investigator finding
+   (`agents/investigator.py`), owned by the parallel batch H3b. It does not go through
+   statement-line selection.
+
+### Decision
+`services/sources/statement_line_selector.py` (pure, deterministic) holds three rules.
+They are applied by the table reconstructor, the fact validator and the V3 statements
+view:
+
+1. **A component is not its total.** Total concepts are read only from a row whose
+   WHOLE label is an alias (`TOTAL_LINE_ALIASES`):
+   - current assets / total current assets;
+   - current liabilities / total current liabilities;
+   - non-current assets / total non-current assets;
+   - total assets;
+   - total liabilities;
+   - cash and cash equivalents / total cash and cash equivalents / cash at bank and in
+     hand / on deposit.
+   A trailing note reference, footnote mark, colon or short parenthetical is removed
+   first. For cash, a closing-balance tail ("at the end of the year", "at 31 December
+   2025") is also allowed. Operating profit keeps its open wording but refuses "other
+   operating …", "share of …", non-operating, "operating income and expenses" and
+   segment rows. Borrowings were already whole-cell. `_match_label` applies
+   `line_qualifies` to every label it matches.
+2. **A balance-sheet section heading carries its unlabelled subtotal when the section
+   adds up.**
+   - Only current assets, current liabilities and non-current assets
+     (`SECTION_TOTAL_FIELDS`) qualify. A segment note's "Operating result" heading over
+     its segments sums to the segments' 5,048, not the Group's 4,492, and is never
+     filled.
+   - The subtotal is read when the section's labelled lines sum to it in every column
+     the subtotal prints. A nil cell counts as zero. The tolerance is half a printed
+     unit per line. Any unreadable cell, or a single line, refuses it.
+   - The reconstructor inserts the row at the heading's position
+     (`TableRow.section_total`, `ExtractedTable.section_total_rows`), so "Current
+     liabilities" still sits between the two "Borrowings" rows for the current +
+     non-current sum. For a ruled or HTML grid, `section_totals_in_grid` fills the
+     heading row's empty cells.
+   - The fact's validation notes say it was read this way. If the section does not add
+     up, nothing is read: missing, never a component.
+3. **The primary statement table outranks other reads.**
+   - A table with at least 8 value rows reading at least 2 distinct statement lines is
+     statement-shaped (`LINE_RANK_STATEMENT`). Other tables are `LINE_RANK_TABLE`, prose
+     is `LINE_RANK_PROSE`.
+   - Inside one document (`_resolve_group`): when the statement table's rows agree, a
+     read from prose or another table that cannot state the same figure is set aside,
+     with a note. A row whose units are unknown "could agree" only at a
+     power-of-a-thousand scale.
+   - Among agreeing reads, the statement row is cited (`_best_candidate` ranks
+     `line_rank` second).
+   - In the statements view (`issuer_financials._prose_set_aside`): a prose read
+     (`excerpt=X…`) of UNKNOWN scope that disagrees with the group's agreeing
+     table/XBRL reads is withheld as `prose_disagrees_with_statement_table` and makes no
+     conflict. Two disagreeing tables, or an explicitly Group-scoped sentence that
+     disagrees, remain a conflict: no side is picked between two reads of one rank.
+4. Extraction pipeline version **24**. Every held disclosure is re-read once, and a held
+   document with table-derived facts is fully re-extracted on reuse.
+
+### Replay (stored payloads + held source documents; `~/.ib-closure/H3a/`)
+- **CFR3, end to end.** The four documents CFR3 read run through extractor → validator
+  → statements view at the report's date, base `3203fc3` against the branch. The second
+  annual report is read to page 30, as the live run's budget cut it; the income
+  statement is on page 36. The base reproduces the live payload. On the branch:
+  - `total_current_assets` 1,907 → **28,934**.
+  - `total_current_liabilities` 3,086 → **9,341**.
+  - `operating_profit` 4,467 (FY2025, because FY2026 was conflicted) → **4,492
+    (FY2026)**. The conflict {4,492m, 4.5bn, 4,492m, 4.5bn, 107m} is gone, and the 107m
+    is withheld as `prose_disagrees_with_statement_table`.
+  - `total_assets` absent → **42,623**.
+  - `cash_and_equivalents` absent → **4,273**, the cash-flow statement's closing
+    balance on page 16 (prior year 5,293). The base matched a small row on the same
+    page instead (42 / (5)), which stayed excerpt-only, so no slot was filled.
+  - Every other slot is unchanged. When the second annual report is read in full,
+    the branch result is the same. The base then reads operating profit as 4,492, but
+    current assets and current liabilities are still 1,907 / 3,086.
+- **18 stored payloads, slot level: no slot changes** (0 changed, 0 added, 0
+  removed). The stored facts carry no row labels and the conflict values carry no
+  locator, so rules 1–3 cannot act on them; they act at extraction. Every slot of HON4,
+  JPM3, PYPL5 and CLLS7 comes from an inline-XBRL tag. Those are unchanged.
+- **Held documents of the other five companies (validated statement facts, base →
+  branch; document period left unknown, so interim documents are judged as if
+  undated):**
+  - The HON 10-K's validated total_liabilities 2024 = 73,681 is gone. It was the
+    "Total liabilities, redeemable noncontrolling interest and shareowners' equity" row
+    (= total assets), mis-periodised.
+  - The Cellectis 20-F's related-party table ("Total current assets 6,053 / 12,786")
+    is not validated. The balance sheet's own row has no unit in its HTML grid, so
+    nothing is.
+  - The CFR interim report's cash reads move from the small row (52 / (59),
+    excerpt-only) to the closing balance 3,229 / 3,116 (validated).
+  - Two interim documents have a validated figure demoted to excerpt-only:
+    - Cellectis H1 6-K, cash 61,533 "2025". In live, an interim document's bare-year
+      figure is already refused (`_refuse_annual_authority_of_interim_document`), and
+      the slot comes from the 20-F tag.
+    - The CFR interim report, operating profit −52 / −42, a segment's figure.
+  - The PayPal 10-Q's nine-month operating cash flow 4,709 becomes validated as "2026".
+    Only the replay's unknown document period allows that. In live the 10-Q is an
+    interim document, and the figure is refused as a 2026 annual.
+  - Every other change is an excerpt-only fact, or a citation that moves from prose to
+    the statement row with the same value.
+
+### Known limits
+- Rule 2 needs the section's lines to reconcile exactly to the printed subtotal. A
+  layout that loses one line (a value the reconstructor could not place) withholds the
+  total rather than guessing.
+- A US filing's HTML grid whose period header row is offset from its value cells still
+  maps values to the wrong year (HON 10-K). Inline XBRL tags cover those fields and
+  periods in a live SEC run (`merge_with_text_facts`). This batch does not change
+  period mapping.
+- An explicitly Group-scoped prose sentence that disagrees with the statement remains a
+  conflict.
+- The regional-total P1 (prior-year column in an investigator finding) is H3b's.
+- Unchanged by this batch: the CFR annual report's page-40 note "209" (the comparative
+  year's held-for-sale cash) is still validated as a 2025 cash figure, with its
+  sentence as scope. It is unchanged from base and does not reach a slot in the replay,
+  because the statement row 5,293 is held for that year. However, it can still make a
+  conflict.

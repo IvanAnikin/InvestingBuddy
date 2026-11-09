@@ -81,6 +81,11 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
+from app.services.sources.statement_line_selector import (
+    is_section_total_heading,
+    verified_section_total,
+)
+
 # --------------------------------------------------------------------------- #
 # Bounds (§ performance: never an unbounded scan of a 169-page document)
 # --------------------------------------------------------------------------- #
@@ -245,6 +250,10 @@ class TableRow(BaseModel):
     label: str
     row_y: float
     cells: list[TableCell] = Field(default_factory=list)
+    # ADR-092 — True when this row is a section heading ("Current assets") carrying the
+    # UNLABELLED subtotal printed under its lines, which those lines were verified to
+    # sum to (``statement_line_selector.verified_section_total``).
+    section_total: bool = False
 
 
 class TableRejection(BaseModel):
@@ -983,6 +992,40 @@ def reconstruct_financial_tables(
     return tables
 
 
+class _OpenSection:
+    """A section heading seen inside a region and the labelled rows printed under it."""
+
+    __slots__ = ("heading", "top", "insert_at", "lines")
+
+    def __init__(self, heading: str, top: float, insert_at: int) -> None:
+        self.heading = heading
+        self.top = top
+        self.insert_at = insert_at
+        self.lines: list[TableRow] = []
+
+
+def _close_section(
+    section: _OpenSection, cells: list[TableCell], width: int, out_rows: list[TableRow]
+) -> None:
+    """ADR-092 — give a balance-sheet section heading ("Current assets") its
+    unlabelled subtotal when the section's lines reconcile to it."""
+    if not is_section_total_heading(section.heading):
+        return
+
+    def by_column(row_cells: Sequence[TableCell]) -> list[str]:
+        texts = {c.column_index: c.text for c in row_cells}
+        return [texts.get(i, "") for i in range(width)]
+
+    if not verified_section_total([by_column(r.cells) for r in section.lines],
+                                  by_column(cells)):
+        return
+    out_rows.insert(
+        section.insert_at,
+        TableRow(label=section.heading, row_y=round(section.top, 2), cells=list(cells),
+                 section_total=True),
+    )
+
+
 def _walk_region(
     *,
     rows: list[list[Mapping[str, object]]],
@@ -1046,6 +1089,8 @@ def _walk_region(
     out_rows: list[TableRow] = []
     heading_candidates: list[str] = []
     pending_label: str | None = None
+    pending_top = 0.0
+    section: _OpenSection | None = None
     value_zone_scales: set[str] = set()
     value_zone_currencies: set[str] = set()
     units_row_scales: set[str] = set()  # a "€m €m" row under the periods
@@ -1103,25 +1148,39 @@ def _walk_region(
             # seen) or the first half of a wrapped metric name.
             if label and len(label) <= MAX_LABEL_CHARS:
                 pending_label = label
+                pending_top = top
                 if len(heading_candidates) < MAX_HEADING_CANDIDATES:
                     heading_candidates.append(label)
             continue
 
         if ambiguous:
             pending_label = None
+            section = None
             continue
         if not label:
+            # ADR-092 — an UNLABELLED value row closes the open section. When the
+            # section's own lines add up to it, it is the section heading's figure
+            # ("Current assets" … 28 934), placed where the heading is printed.
+            if section is not None:
+                _close_section(section, cells, len(group.tokens), out_rows)
+            section = None
             pending_label = None
             continue
         if _looks_like_continuation(label) and pending_label:
             label = f"{pending_label} {label}"
+        elif pending_label is not None:
+            # A label-only line NOT continued by this row is a section heading.
+            section = _OpenSection(pending_label, pending_top, len(out_rows))
         pending_label = None
         if len(label) > MAX_LABEL_CHARS:
+            section = None
             continue
 
         out_rows.append(
             TableRow(label=label, row_y=round(top, 2), cells=cells)
         )
+        if section is not None:
+            section.lines.append(out_rows[-1])
         row_tops.append(top - previous_top)
         previous_top = top
 

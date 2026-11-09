@@ -729,6 +729,26 @@ were already on.
   `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
 
+#### Extraction pipeline version 24 — statement-line selector (Research Integrity Closure H3a, ADR-092)
+
+Version 24 changes which statement row is read as a total. A total line (current assets,
+current liabilities, total assets, total liabilities, cash and cash equivalents) is read
+only from a row whose whole label is that line. A balance-sheet section heading carries
+its unlabelled subtotal when the section's own lines sum to it. A prose read that
+contradicts the document's primary statement table is set aside. A version-23 row may
+hold a component as a total (Richemont: current assets 1 907, which is "Trade receivables
+and other current assets"). Re-read cost and paths are the same as version 23: every
+held disclosure is re-read once on its company's next run, within
+`V3_DISCLOSURE_CORE_BUDGET_SECONDS`; a held document with table-derived facts is fully
+re-extracted on reuse.
+
+- No migration and no new setting. No new host is contacted.
+- Rolling back to 23 is safe: version-24 rows are ordinary validated facts. A document
+  read at 24 is not re-read by an older pipeline, so after a rollback its corrected
+  totals stay until the version moves again.
+- A parallel batch that also bumps the version must take the next number (25) and keep
+  this entry.
+
 #### Extraction pipeline version 23 — Appendix 5B / 4C items (Research Integrity Closure E2, ADR-087)
 
 Version 23 adds the ASX quarterly cash flow report reader. A held Appendix 5B or 4C PDF
