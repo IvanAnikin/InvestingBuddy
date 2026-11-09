@@ -9392,3 +9392,109 @@ These guards tighten the round-4 rule:
 - **Fiscal calendar:** for a non-December issuer whose findings carry only inherited
   keys, there may be no latest period or interim at all. The status line then shows
   none rather than a guess.
+
+## ADR-094: A Gap Carries the Resolution State Research Derived for It
+
+**Date:** 2026-11-09 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** research integrity closure batch H4. Every round-3 report (HON4, LIN4,
+CLLS7, PYPL5, JPM3, CFR3) listed 14–27 false "not found" gaps over documents the
+platform held, although each run made 23–29 re-read queries.
+
+### Root causes (verified on the stored payloads and the downloaded primary sources)
+1. **A gap never entered a re-read of its own.** The ADR-084/090 re-read is chosen from
+   the QUESTION's topics, before the model answers; the gap is written afterwards and
+   nothing reads it again. JPM3 `capital_adequacy` never re-read at all: its evidence
+   "carried" CET1 (the metric named beside a figure) through a SUBSIDIARY's CET1 of 20.0%
+   (2024), so the count and metric contracts were met, ADR-090's `uncarried_topics` was
+   empty, and the answer wrote "No reported FY2025 CET1 ratio for the Firm" over a held
+   10-Q stating 14.0% (`agents/investigator.py`, `_acquire`, the `uncarried` block).
+2. **Reconciliation knew a dozen fields.** `research_fields` covers capex, capacity,
+   milestones, offtake, cash, runway, NPV/IRR, OCF, revenue, net debt and resources.
+   Every other gap (CET1, LCR, litigation, buybacks, segments …) was `field_unknown` →
+   `OPEN` → shown as "Not acquired by the platform".
+3. **Bogus partial closes.** A gap whose words named no field took its QUESTION's fields
+   (`field_inferred_from_question`): "no customer concentration" under a revenue
+   question was "partially addressed" by FY2025 revenue (HON4-6, PYPL5). Another period
+   (`older_period` / `other_period` / `later_period`) and another capex sub-type
+   (`field_subtype_differs`) stayed PARTIALLY_CLOSED; ADR-091 made them non-comparable
+   only in combination.
+4. **The stale-period hole.** ADR-091's `_fact_is_stale` judged validated FACTS only, and
+   only against the newest ANNUAL fact year. A FINDING for an older period was never
+   judged stale when the gap named no period, and for a gap naming FY2026 an FY2025
+   finding was a comparable `older_period` partial answer (PYPL5-4, HON4).
+   A finding whose stored key and own words name different years (LIN4-D3: "year to
+   30 June 2025" stored as 2026) closed six revenue gaps.
+5. **The page and chair could not tell "searched, not there" from "never searched".**
+
+### Decision
+- **Gap queue (`pipeline/gap_resolution.py`, step 7c, after reconciliation and before
+  the Chair).** Every ledger gap is routed once: (A) `mapped_existing` (reconciled
+  CLOSED / SUPERSEDED / PARTIALLY_CLOSED), (B) `reread` — its OWN words name a topic of
+  the reviewed lexicon (`document_reread.topics_asked`), so the held primary documents
+  are searched (lexical corpus search, `disclosures_only`, no web, no model), or (C)
+  `not_required` with a closed reason (not an absence, source blocked, needs a
+  non-issuer source, no searchable topic, no primary document held, budget spent, search
+  failed). Bounds: 3 queries per gap, 80 distinct queries per run (shared), top 30 hits.
+- **Results (spec §5):** `FOUND`, `PARTIALLY_FOUND`, `NOT_FOUND_AFTER_SEARCH`,
+  `DOCUMENT_NOT_PARSED`, `EXTRACTION_FAILED`, `SCOPE_MISMATCH`, `PERIOD_MISMATCH`,
+  `SOURCE_BLOCKED`, `NOT_RUN`. Only `NOT_FOUND_AFTER_SEARCH` may be worded "not found in
+  the available evidence"; every other result has its own wording (`RESULT_WORDS`). A
+  passage the re-read locates (the topic named beside a figure, not boilerplate, a
+  compatible period and scope) makes the gap `EXTRACTION_FAILED` — "held but not yet read
+  into a finding: <document> has a passage on <topic>". It never becomes a finding: no
+  model read it and no figure was checked. Evidence is recorded by platform-derived
+  document name, evidence id and page, never by passage text.
+- **Persisted and consumed.** Each resolution is stored in
+  `research_gaps.reconciliation_json.resolution`; the council input (`GapRef`), the
+  chair prompt ("RESEARCH STATE …: do not call this undisclosed"), the professional
+  report's platform gaps and the page read it. The record and its counts
+  (`gaps_created`, `gaps_mapped_existing`, `gaps_reread`, `gaps_found`, `gaps_failed`,
+  `gaps_not_run`, `gaps_not_required`, `by_result`, `reread_queries`) are
+  `v3_research.gap_resolution`; the canonical state carries the counts and the topics
+  located (`canonical_state.gap_resolution`), and the admin panel shows them.
+- **Required metrics are always re-read once.** A playbook question's required metrics
+  join the ADR-090 re-read even when its evidence "carries" them (the JPM3 fix).
+- **Reconciliation (extends ADR-086/091, no parallel path).**
+  - A field inferred from the question never closes, not even partly: the gap stays open
+    and goes to the queue.
+  - Another period than the gap names is `NONCOMPARABLE` unless the gap asks for history
+    (trend, series, across periods); another metric sub-type or qualifier is
+    `NONCOMPARABLE` on its own.
+  - A gap naming no period: a finding or validated fact for a year older than the newest
+    year ANY live primary finding or validated fact of the metric is for is stale
+    (`value_stale`, non-comparable). A finding whose stored and stated years differ has
+    an unknown period for every period-bound metric.
+  - The page says "Partially addressed" only for `PARTIALLY_CLOSED`, never for
+    `NONCOMPARABLE`.
+- **Chair absence claims.** A chair sentence saying a topic is "not disclosed / not
+  reported / no … split / lacks a … breakdown" is withheld (rule
+  `absence_stated_while_found`) when a finding it cites carries that topic (CFR3: "no
+  segment split beyond Jewellery Maisons" citing segment findings) or the gap queue
+  located it in a held document. The topic is read in the cue's own clause only, and
+  "no evidence of …" (a claim about the company) is not a disclosure-absence cue.
+
+### Replay (offline; stored payloads + downloaded primary sources)
+Evaluator false gaps (excluding ISSUER_NOT_DISCLOSED) that the page worded as absent,
+before → after (the rest are located, honestly NOT_RUN, or unmatched):
+
+| Report | before: worded absent | after: located / honest | after: still "not found" |
+|---|---|---|---|
+| HON4 | 7 of 11 | 6 | 0 |
+| LIN4 | 9 of 12 | 3 | 0 |
+| CLLS7 | 10 of 14 | 2 | 3 |
+| PYPL5 | 12 of 13 | 9 | 0 |
+| JPM3 | 12 of 14 | 8 | 1 |
+| CFR3 | 8 of 15 | 4 | 0 |
+
+Partial closes from a question-inferred field (HON4 13, LIN4 6, CLLS7 6, PYPL5 8, JPM3 6,
+CFR3 9) and from another period or sub-type alone (HON4 7, CLLS7 8, PYPL5 10, JPM3 2)
+are gone.
+
+### Limits
+- The queue reads the ledger's gaps (investigator and unsupported-statement gaps).
+  Chair and synthesis prose are covered by the absence rule; V2 `missing_information`
+  keeps its ADR-086 labels.
+- A topic is matched lexically; a gap whose words name no lexicon topic is `NOT_RUN`
+  (`no_searchable_topic_in_gap`), worded as not searched — never as absent.
+- `EXTRACTION_FAILED` says a held passage names the topic with a figure; it does not
+  prove the passage answers the gap's exact period and scope when the chunk is undated.

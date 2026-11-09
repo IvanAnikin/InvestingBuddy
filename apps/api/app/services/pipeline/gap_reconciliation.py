@@ -163,7 +163,11 @@ NONCOMPARABLE_REASONS: frozenset[str] = frozenset(
      REASON_SUBJECT_UNCERTAIN,
      # ADR-091 (JPM2-D3, PYPL4-4): a segment, product-line or other sub-Group figure is
      # not a partial answer to a Group gap; it is another quantity.
-     REASON_SCOPE_DIFFERS}
+     REASON_SCOPE_DIFFERS,
+     # ADR-094 (PYPL5-4, HON4-6): a stale value — a balance more than a year old, or a
+     # figure for a period older than the newest one the run holds for the same metric
+     # — never partly answers a gap about the company now.
+     REASON_VALUE_STALE}
 )
 #: ADR-091 — reasons saying the finding's figure is for ANOTHER period than the gap's.
 PERIOD_DIFFERS_REASONS: frozenset[str] = frozenset(
@@ -174,17 +178,35 @@ METRIC_DIFFERS_REASONS: frozenset[str] = frozenset(
     {REASON_SUBTYPE_DIFFERS, REASON_QUALIFIER_DIFFERS}
 )
 
+#: ADR-094 — a gap that asks for HISTORY (a trend, a series, the periods compared), so a
+#: figure for another period than the one it names is still part of its answer. Bounded
+#: and linear: alternation of literal words only.
+_HISTORY_ASKED_RE = re.compile(
+    r"\b(?:history|historical|trend|trends|trajectory|over[ \t]{1,3}time|"
+    r"across[ \t]{1,3}(?:the[ \t]{1,3})?(?:disclosed[ \t]{1,3})?(?:periods|years|quarters)|"
+    r"multi-?year|year-on-year|series)\b",
+    re.IGNORECASE,
+)
 
-def is_noncomparable(reasons: "Sequence[str]") -> bool:
-    """ADR-091 — is a finding's partial answer NOT COMPARABLE with the gap?
 
-    A non-comparable reason (``NONCOMPARABLE_REASONS``), or another period whose metric
-    also differs: an older figure stays a partial answer only when metric and scope
-    match."""
+def asks_for_history(text: str | None) -> bool:
+    """ADR-094 — the gap asks for a series, not one period's value."""
+    return _HISTORY_ASKED_RE.search((text or "")[:2000]) is not None
+
+
+def is_noncomparable(reasons: "Sequence[str]", *, history_asked: bool = False) -> bool:
+    """Is a finding's partial answer NOT COMPARABLE with the gap?
+
+    ADR-091: a non-comparable reason (``NONCOMPARABLE_REASONS``). ADR-094 (spec §10):
+    also a related but DIFFERENT metric (another capex sub-type, another qualifier), and
+    a figure for ANOTHER period than the one the gap names — FY2025 revenue does not
+    partly answer "no FY2026 revenue" — unless the gap itself asks for history."""
     found = set(reasons)
     if found & NONCOMPARABLE_REASONS:
         return True
-    return bool(found & PERIOD_DIFFERS_REASONS and found & METRIC_DIFFERS_REASONS)
+    if found & METRIC_DIFFERS_REASONS:
+        return True
+    return bool(found & PERIOD_DIFFERS_REASONS) and not history_asked
 
 #: ADR-086 — a finding that names ANOTHER entity as its subject ("Peer Co (a
 #: peer, not the company) reported …") never answers the subject's gap.
@@ -344,6 +366,15 @@ class FindingFacts:
     @property
     def effective_period(self) -> str | None:
         return rf.normalise_period(self.period_key) or self.stated_period
+
+    @property
+    def period_conflict(self) -> bool:
+        """ADR-094 (LIN4-D3) — the stored period key and the period the statement's own
+        words name are in DIFFERENT years ("year to 30 June 2025" stored as 2026): which
+        one the figure is for is unknown, so it closes nothing period-bound."""
+        stored = rf.period_rank(self.period_key)
+        stated = rf.period_rank(self.stated_period)
+        return bool(stored and stated and stored[0] != stated[0])
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1329,8 +1360,13 @@ def _assess(
     scope: str | None,
     as_of: date | None = None,
     subject_aliases: SubjectWords = NO_SUBJECT,
+    newest_year: int | None = None,
 ) -> list[str] | None:
-    """``[]`` when the finding fully answers, reasons when partly, ``None`` when not."""
+    """``[]`` when the finding fully answers, reasons when partly, ``None`` when not.
+
+    ``newest_year`` (ADR-094) — the newest year the run holds ANY figure of this metric
+    for; a gap naming no period asks about the company now, so an older figure is stale.
+    """
     if finding.is_non_actual and _asks_for_reported_value(requirement):
         # ADR-088: guidance, a forecast, a target or an estimate is not the reported
         # value a history field asks for (a guidance-type field is answered by guidance).
@@ -1355,6 +1391,7 @@ def _assess(
         reasons.extend(_sub_line_reasons(finding, subject_aliases, scope, requirement))
     reasons.extend(_balance_reasons(finding, requirement, today))
     reasons.extend(_period_reasons(finding, gap_period))
+    reasons.extend(_currency_of_period_reasons(finding, requirement, gap_period, newest_year))
     reasons.extend(_recency_reasons(finding, gap_text, requirement, today))
     reasons.extend(_qualifier_reasons(finding, requirement, gap_text))
     if not finding.is_primary:
@@ -1363,6 +1400,48 @@ def _assess(
         # Never a closing finding, whatever source kinds it cites (review H3).
         reasons.append(REASON_WEB_CONTEXT_ONLY)
     return reasons
+
+
+def _currency_of_period_reasons(
+    finding: FindingFacts, requirement: str, gap_period: str | None, newest_year: int | None
+) -> list[str]:
+    """ADR-094 (spec §10) — a stale period never closes a current gap.
+
+    * a finding whose stored period and own words name different years: its period is
+      unknown, whatever the gap asks (LIN4-D3);
+    * a gap naming no period asks about the company NOW: a figure for a year older than
+      the newest year the run holds this metric for is stale (PYPL5-4, HON4) — the hole
+      ADR-091's ``_fact_is_stale`` left open, since it judged validated facts only.
+    Period-bound metrics only; a guidance or estimate field is judged by supersession."""
+    if requirement not in PERIOD_BOUND_FIELDS:
+        return []
+    if finding.period_conflict:
+        return [REASON_PERIOD_UNKNOWN]
+    if gap_period or newest_year is None:
+        return []
+    rank = rf.period_rank(finding.effective_period)
+    if rank is not None and rank[0] < newest_year:
+        return [REASON_VALUE_STALE]
+    return []
+
+
+def _newest_year(
+    requirement: str, findings: Sequence[FindingFacts], facts: Sequence[FactFacts]
+) -> int | None:
+    """ADR-094 — the newest year any live primary finding or validated fact of this
+    metric is for (an interim year counts: H1 2026 is newer than FY2025)."""
+    years: list[int] = []
+    for finding in findings:
+        if (
+            requirement in finding.fields and finding.is_primary
+            and not finding.is_non_actual and not finding.period_conflict
+            and (rank := rf.period_rank(finding.effective_period)) is not None
+        ):
+            years.append(rank[0])
+    for fact in facts:
+        if fact.field_key == requirement and (rank := rf.period_rank(fact.period)) is not None:
+            years.append(rank[0])
+    return max(years) if years else None
 
 
 def _asks_for_reported_value(requirement: str) -> bool:
@@ -1528,6 +1607,13 @@ def _reconcile_core(
     if not wanted:
         return GapVerdict(gap.gap_id, ledger.RECONCILED_STILL_OPEN,
                           reasons=[REASON_FIELD_UNKNOWN])
+    if source != "gap_text":
+        # ADR-094 (HON4-6, PYPL5): a field INFERRED from the question is not what the gap
+        # asks for — "no customer concentration" under a revenue question is not partly
+        # answered by revenue. Such a gap stays open and goes to the re-read queue
+        # (``gap_resolution``), which reads it by its own words.
+        return GapVerdict(gap.gap_id, ledger.RECONCILED_STILL_OPEN, fields=fields,
+                          field_source=source, reasons=[REASON_FIELD_INFERRED])
 
     gap_project = rf.project_key(text)
     gap_period = rf.requested_period(text)
@@ -1538,17 +1624,19 @@ def _reconcile_core(
     #: undated or forward-looking figure), and balances a LATER balance supersedes.
     comparable: set[str] = set()
     later: dict[str, str] = {}
+    history = asks_for_history(text)
+    newest = {req: _newest_year(req, findings, facts) for req in wanted}
     for requirement in wanted:
         for finding in findings:
             reasons = _assess(finding, requirement, gap_text=text, gap_project=gap_project,
                               gap_period=gap_period, scope=scope, as_of=as_of,
-                              subject_aliases=aliases)
+                              subject_aliases=aliases, newest_year=newest[requirement])
             if reasons is None:
                 continue
             if not reasons:
                 full[requirement] = finding.finding_id
                 break
-            noncomparable = is_noncomparable(reasons)
+            noncomparable = is_noncomparable(reasons, history_asked=history)
             if requirement not in partial or (
                 not noncomparable and requirement not in comparable
             ):
@@ -1566,7 +1654,11 @@ def _reconcile_core(
     covering_facts = {
         req: fact for req in wanted for fact in facts
         if _fact_covers(fact, req, gap_project=gap_project, gap_period=gap_period, scope=scope)
-        and not (gap_period is None and _fact_is_stale(fact, newest_annual))
+        and not (gap_period is None and (
+            _fact_is_stale(fact, newest_annual)
+            # ADR-094: and older than the newest year ANY figure of the metric is for.
+            or _fact_is_stale(fact, newest.get(req))
+        ))
     }
     ordered_ids = list(dict.fromkeys(
         [full[r] for r in wanted if r in full]

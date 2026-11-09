@@ -3618,6 +3618,34 @@ Additive keys under `source_summary_json.v3_research`:
     `null`.
   - `scope_differs` from a product line applies only to revenue gaps.
 
+## ADR-094 — gap queue and resolution state (no new endpoint)
+
+Additive keys under `source_summary_json.v3_research`:
+
+- `gap_resolution` (only when the queue ran): `{version, counts, gaps, note}`.
+  - `counts`: `gaps_created`, `gaps_mapped_existing`, `gaps_reread`,
+    `gaps_not_required`, `gaps_found`, `gaps_failed`, `gaps_not_run`, `by_result`,
+    `reread_queries`, `reread_query_cap`.
+  - `gaps[*]`: `{gap_id, question_key, producer, route, result, why, words,
+    may_say_not_found, topics, topic_labels, period_constraint, scope_constraint,
+    source_classes_searched, queries, documents_searched, unparsed_documents,
+    finding_ids, evidence}`. `evidence` rows carry
+    the document name, evidence id, page, table and topics only — never passage text.
+- `gaps[*]` handed to the council gain `resolution_result` and `resolution_words` when
+  the gap was resolved.
+- `professional_research` platform evidence gaps gain `resolution {result, route, why,
+  words, may_say_not_found, found_in, documents_searched}`. `partially_addressed_by` is
+  set only when the gap is PARTIALLY_CLOSED (or carries no gap status).
+- `canonical_state.gap_resolution`: `{counts, topics_located}` or `null`.
+- New `state_invariants` rule: `absence_stated_while_found`.
+- Changed meaning (`gap_reconciliation`):
+  - a field inferred from the question leaves the gap STILL_OPEN with
+    `field_inferred_from_question` and no finding ids (was PARTIALLY_CLOSED);
+  - another period alone is NONCOMPARABLE unless the gap asks for history;
+  - another metric sub-type alone is NONCOMPARABLE;
+  - new non-comparable reason `value_stale`: the gap names no period and the finding or
+    fact is older than the newest year held for the metric.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

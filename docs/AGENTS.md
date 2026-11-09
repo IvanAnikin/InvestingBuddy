@@ -1809,6 +1809,39 @@ reader takes its counts and status lines from it.
   carries its filing's date; an undated stored document or corpus version is
   backfilled on re-encounter, never overwritten.
 
+## Gap queue and resolution state (ADR-094)
+
+- **Step 7c, after reconciliation and before the Chair.** `pipeline/gap_resolution.py`
+  routes every ledger gap once:
+  - `mapped_existing`: reconciled CLOSED / SUPERSEDED / PARTIALLY_CLOSED;
+  - `reread`: the gap's own words name a reviewed topic (`document_reread.topics_asked`),
+    so the held primary documents are searched lexically (`disclosures_only`; no web, no
+    model);
+  - `not_required`: with a closed reason (not an absence, source blocked, needs a
+    non-issuer source, no searchable topic, no primary document held, corpus search
+    unavailable, budget spent, search failed).
+  Bounds: 3 queries per gap, 80 distinct queries per run, top 30 hits, 3 evidence rows.
+- **Result vocabulary.** FOUND, PARTIALLY_FOUND, NOT_FOUND_AFTER_SEARCH,
+  DOCUMENT_NOT_PARSED, EXTRACTION_FAILED, SCOPE_MISMATCH, PERIOD_MISMATCH,
+  SOURCE_BLOCKED, NOT_RUN. Only NOT_FOUND_AFTER_SEARCH may be worded "not found in the
+  available evidence". A located passage (topic named beside a figure, not boilerplate,
+  compatible period and scope) is EXTRACTION_FAILED — held but not read into a finding.
+  It never becomes a finding.
+- **Consumers.** The resolution is stored in `research_gaps.reconciliation_json.resolution`;
+  the council `GapRef`, the chair prompt ("RESEARCH STATE …: do not call this
+  undisclosed"), the professional report's platform gaps, the canonical state and the
+  admin panel ("Gaps re-read") read it.
+- **Required metrics.** A playbook question's required metrics are always re-read once,
+  even when its evidence already names them beside a figure (a subsidiary's ratio no
+  longer satisfies the Group's).
+- **Reconciliation.** A field inferred from the question never closes. Another period is
+  NONCOMPARABLE unless the gap asks for history; another metric sub-type is
+  NONCOMPARABLE alone. With no period in the gap, a finding or fact older than the
+  metric's newest held year is `value_stale`. A finding whose stored and stated years
+  differ has an unknown period. "Partially addressed" is shown only for PARTIALLY_CLOSED.
+- **Chair absence claims.** "X is not disclosed / no X split" is withheld
+  (`absence_stated_while_found`) when a cited finding carries X or the queue located X.
+
 ## Status lines, scope, applicability and fiscal calendars (ADR-091)
 
 - **Status lines.** `canonical_state.status` is every status line's one source: latest

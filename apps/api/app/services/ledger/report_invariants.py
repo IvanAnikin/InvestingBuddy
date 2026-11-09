@@ -86,6 +86,9 @@ RULE_CITED_FINDING_UNKNOWN = "chair_cited_finding_not_in_ledger"
 #: ADR-091 — a chair sentence narrating a disagreement / conflict / contradiction
 #: between cited findings that no recorded disagreement pairs.
 RULE_PHANTOM_CONFLICT = "conflict_narrated_between_unpaired_findings"
+#: ADR-094 — a chair sentence saying a metric or topic is not disclosed / missing while
+#: a finding it cites states it, or the gap queue located it in a held document.
+RULE_ABSENCE_CONTRADICTED = "absence_stated_while_found"
 
 RULES: tuple[str, ...] = (
     RULE_FINDING_COUNT,
@@ -108,6 +111,7 @@ RULES: tuple[str, ...] = (
     RULE_STATUS_LINE,
     RULE_CITED_FINDING_UNKNOWN,
     RULE_PHANTOM_CONFLICT,
+    RULE_ABSENCE_CONTRADICTED,
 )
 
 #: Where a text sits. The chair is checked for everything; other texts are checked for
@@ -1046,6 +1050,65 @@ def _rule_blocking_gaps(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     )
 
 
+#: ADR-094 — a DISCLOSURE-absence claim: "not disclosed", "no segment split", "lacks a
+#: breakdown". Deliberately not "no evidence of …" — "no evidence of deposit outflows" is
+#: a statement about the company, not about what was disclosed. Bounded alternation.
+_DISCLOSURE_ABSENCE_RE = re.compile(
+    r"\b(?:not[ \t]{1,3}(?:separately[ \t]{1,3})?(?:disclosed|reported|provided|"
+    r"broken[ \t]{1,3}out|quantified|given)|undisclosed|"
+    r"(?:does|did|do)[ \t]{1,3}not[ \t]{1,3}(?:disclose|report|provide|break[ \t]{1,3}out)|"
+    r"no[ \t]{1,3}(?:disclosed[ \t]{1,3})?(?:disclosure|breakdown|split|data|figures?)"
+    r"[ \t]{1,3}(?:on|of|for|by|beyond)|"
+    r"no[ \t]{1,3}\w{3,20}[ \t]{1,3}(?:split|breakdown)|"
+    r"lacks?[ \t]{1,3}(?:an?[ \t]{1,3}|any[ \t]{1,3})?(?:\w{3,20}[ \t]{1,3})?"
+    r"(?:disclosure|breakdown|split|figures?|data))\b",
+    re.IGNORECASE,
+)
+#: Where one clause ends: punctuation, or a conjunction that starts another claim.
+_CLAUSE_SPLIT_RE = re.compile(r"[;,:.()]|\b(?:and|but|while|whereas|although)\b",
+                              re.IGNORECASE)
+#: How far around an absence cue the denied topic must be named.
+_ABSENCE_WINDOW_BEFORE = 80
+_ABSENCE_WINDOW_AFTER = 120
+
+
+def absence_topics(sentence: str) -> tuple[str, ...]:
+    """ADR-094 — the lexicon topics a sentence says are NOT disclosed (``()`` when it
+    makes no disclosure-absence claim). Read in a bounded window around each cue."""
+    from app.services.agents.document_reread import topics_asked
+
+    out: list[str] = []
+    text = sentence[:MAX_SENTENCE_CHARS]
+    for match in _DISCLOSURE_ABSENCE_RE.finditer(text):
+        # The cue's own CLAUSE only: "revenue rose 5%, capex was not disclosed" denies
+        # capex, not revenue. A miss is better than withholding a true sentence.
+        before = text[max(0, match.start() - _ABSENCE_WINDOW_BEFORE): match.start()]
+        before = _CLAUSE_SPLIT_RE.split(before)[-1]
+        after = _CLAUSE_SPLIT_RE.split(text[match.end(): match.end() + _ABSENCE_WINDOW_AFTER])[0]
+        window = f"{before} {match.group(0)} {after}"
+        for topic in topics_asked(window):
+            if topic not in out:
+                out.append(topic)
+    return tuple(out)
+
+
+def _rule_absence_located(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """ADR-094 — "X is not disclosed" while the gap queue located X in a held primary
+    document (or a finding answered its gap): the claim is false as worded."""
+    located = _g(state, "gap_resolution", "topics_located")
+    if not isinstance(located, list) or not located:
+        return None
+    denied = absence_topics(sentence)
+    hit = [t for t in denied if t in set(located)]
+    if not hit:
+        return None
+    from app.services.agents.document_reread import label_of
+
+    return _Hit(RULE_ABSENCE_CONTRADICTED,
+                f"it says {label_of(hit[0])} is not disclosed, but the research located it "
+                "in the company's held documents")
+
+
 _RECORD_RULES = (
     _rule_blocking_gaps,
     _rule_no_issuer_doc,
@@ -1060,6 +1123,7 @@ _CHAIR_RULES = (
     _rule_fallback_reason,
     *_RECORD_RULES,
     _rule_unbacked_disagreement,
+    _rule_absence_located,
 )
 
 
@@ -1134,6 +1198,26 @@ class _Enforcer:
         return _Hit(RULE_PHANTOM_CONFLICT,
                     "it narrates a conflict between findings no recorded disagreement pairs")
 
+    @staticmethod
+    def _absence_cited(
+        sentence: str, found: "list[claim_checks.ClaimSource]"
+    ) -> _Hit | None:
+        """ADR-094 (CFR3) — "no segment split beyond X" while citing findings that state
+        segment figures: the sentence denies what it cites."""
+        denied = absence_topics(sentence)
+        if not denied:
+            return None
+        from app.services.agents.document_reread import label_of, metrics_carried
+
+        for source in found:
+            carried = metrics_carried(source.text or "", denied)
+            if carried:
+                topic = next(t for t in denied if t in carried)
+                return _Hit(RULE_ABSENCE_CONTRADICTED,
+                            f"it says {label_of(topic)} is not disclosed while the finding "
+                            "it cites states it")
+        return None
+
     def _claim(self, sentence: str, cited: tuple[str, ...]) -> _Hit | None:
         """ADR-086 — a chair claim checked against the findings it cites."""
         ids = [i for i in dict.fromkeys([*cited, *claim_checks.cited_ids(sentence)]) if i]
@@ -1145,6 +1229,9 @@ class _Enforcer:
         found = [self.sources[i] for i in ids if i in self.sources]
         if not found:
             return None
+        hit = self._absence_cited(sentence, found)
+        if hit is not None:
+            return hit
         verdict = claim_checks.check_claim(sentence, found)
         if verdict is None:
             return None

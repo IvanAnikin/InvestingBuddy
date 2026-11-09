@@ -207,9 +207,15 @@ class TestComparability:
                             period_key="FY2025")
         assert gr._sub_line_reasons(headline, words, None) == []
 
-    def test_an_older_period_of_the_same_metric_and_scope_stays_partial(self) -> None:
+    def test_an_older_period_of_the_same_metric_and_scope_is_noncomparable(self) -> None:
+        # ADR-094 (spec §10): FY2024 revenue does not partly answer "no FY2025 revenue".
         older = _finding("f1", "Revenue was US$40m for FY2024.", period_key="FY2024")
         verdict = _one(_gap("FY2025 revenue was not acquired"), [older])
+        assert verdict.gap_status == gr.GAP_STATUS_NONCOMPARABLE
+
+    def test_an_older_period_still_answers_a_gap_asking_for_history(self) -> None:
+        older = _finding("f1", "Revenue was US$40m for FY2024.", period_key="FY2024")
+        verdict = _one(_gap("No FY2025 revenue to complete the multi-year trend"), [older])
         assert verdict.gap_status == gr.GAP_STATUS_PARTIALLY_CLOSED
 
 
@@ -1031,8 +1037,11 @@ class TestReviewCoveringFacts:
     def test_a_comparable_partial_answer_is_preferred(self) -> None:
         other_scope = _finding("f1", "Wealth revenue was US$5bn", period_key="FY2025",
                                scope_key="segment:wealth")
-        older = _finding("f2", "Revenue was US$40m for FY2024.", period_key="FY2024")
-        verdict = _one(_gap("FY2025 revenue was not acquired"), [other_scope, older])
+        # ADR-094: an older period is no longer comparable; a third-party figure for the
+        # same period, metric and scope is.
+        third_party = _finding("f2", "Revenue was US$40m for FY2025.", period_key="FY2025",
+                               source_kinds=("secondary_web",))
+        verdict = _one(_gap("FY2025 revenue was not acquired"), [other_scope, third_party])
         assert verdict.gap_status == gr.GAP_STATUS_PARTIALLY_CLOSED
         assert verdict.finding_ids[:1] == ["f2"]
 

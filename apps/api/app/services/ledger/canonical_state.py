@@ -922,6 +922,8 @@ def build_canonical_state(
             "council_saw": council_block.get("council_finding_count"),
         },
         "gaps": {"open": tally.gaps_open, "by_status": dict(tally.gaps_by_status)},
+        # ADR-094 — the gap queue: routes, results and what the re-read located.
+        "gap_resolution": gap_resolution_state(v3),
         "disagreements": {
             "total": tally.disagreements,
             "unresolved": tally.unresolved,
@@ -968,6 +970,37 @@ def build_canonical_state(
             v3, current=current, gaps_open=tally.gaps_open,
             issuer_documents_held=held_count, today=today,
         ),
+    }
+
+
+#: ADR-094 — results whose topics the research LOCATED (a finding answered the gap, or
+#: the re-read found a passage in a held primary document).
+_LOCATED_RESULTS = frozenset({"FOUND", "EXTRACTION_FAILED"})
+
+
+def gap_resolution_state(v3: Mapping[str, Any]) -> dict[str, Any] | None:
+    """ADR-094 — the gap queue's counts (spec §6) and the topics it located, from
+    ``v3_research.gap_resolution``. ``None`` when the queue did not run."""
+    record = _mapping(v3.get("gap_resolution"))
+    if not record:
+        return None
+    located: list[str] = []
+    for gap in record.get("gaps") or ():
+        gap = _mapping(gap)
+        if gap.get("result") not in _LOCATED_RESULTS:
+            continue
+        topics: list[Any] = []
+        for item in gap.get("evidence") or ():
+            topics.extend(_mapping(item).get("topics") or ())
+        if gap.get("result") == "FOUND":
+            topics.extend(gap.get("topics") or ())
+        for topic in topics:
+            if isinstance(topic, str) and topic not in located:
+                located.append(topic)
+    counts = _mapping(record.get("counts"))
+    return {
+        "counts": {k: v for k, v in counts.items() if isinstance(v, (int, dict))},
+        "topics_located": located[:60],
     }
 
 

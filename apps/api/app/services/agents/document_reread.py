@@ -196,8 +196,8 @@ TOPICS: tuple[ReadTopic, ...] = (
     ),
     ReadTopic(
         "segment", "segment revenue and profit",
-        (r"\breportable\s+segments?\b", r"\bsegment\s+(?:revenues?|results|information|"
-         r"profit|operating\s+income)\b", r"\boperating\s+segments?\b",
+        (r"\breportable\s+segments?\b", r"\bsegment\s+(?:revenues?|sales|results|information|"
+         r"profit|operating\s+income|net\s+(?:revenues?|sales))\b", r"\boperating\s+segments?\b",
          r"\bsegment\s+revenue\s+mix\b"),
         "segment information reportable segments revenue operating income",
         (r"\bsegment",),
@@ -826,6 +826,13 @@ def reread_plan(
     return plan
 
 
+def topic_queries(topic_key: str) -> tuple[str, ...]:
+    """ADR-094 — the lexical queries that find one topic in a held document: its
+    section/table terms. Raw: the caller reduces them with ``keyword_query``."""
+    found = TOPICS_BY_KEY.get(topic_key)
+    return (found.query,) if found else ()
+
+
 # ── Extraction status per (held document × question) ──────────────────────── #
 
 
@@ -935,6 +942,7 @@ __all__ = [
     "required_metrics",
     "reread_plan",
     "section_matches",
+    "topic_queries",
     "topics_for_metrics",
     "topics_named",
 ]

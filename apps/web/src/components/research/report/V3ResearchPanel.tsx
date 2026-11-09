@@ -236,6 +236,19 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
               : undefined
           }
         />
+        {v3.canonicalState?.gapQueue && (
+          // ADR-094 — how every gap was routed: mapped to a finding, re-read in the held
+          // documents (located / not located), or not run.
+          <Stat
+            label="Gaps re-read"
+            value={n(v3.canonicalState.gapQueue.reread)}
+            hint={`${n(v3.canonicalState.gapQueue.created)} gaps · ${n(
+              v3.canonicalState.gapQueue.mappedExisting,
+            )} mapped · ${n(v3.canonicalState.gapQueue.found)} located · ${n(
+              v3.canonicalState.gapQueue.failed,
+            )} not located · ${n(v3.canonicalState.gapQueue.notRun)} not run`}
+          />
+        )}
         <Stat label="Rounds" value={n(v3.rounds)} hint={`${n(v3.tasksRun)} tasks`} />
         <Stat
           label="Tool calls"
