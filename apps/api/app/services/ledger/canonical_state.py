@@ -975,7 +975,7 @@ def build_canonical_state(
 
 #: ADR-094 — results whose topics the research LOCATED (a finding answered the gap, or
 #: the re-read found a passage in a held primary document).
-_LOCATED_RESULTS = frozenset({"FOUND", "EXTRACTION_FAILED"})
+_LOCATED_RESULTS = frozenset({"EXTRACTION_FAILED"})
 
 
 def gap_resolution_state(v3: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -984,23 +984,30 @@ def gap_resolution_state(v3: Mapping[str, Any]) -> dict[str, Any] | None:
     record = _mapping(v3.get("gap_resolution"))
     if not record:
         return None
+    # ADR-094 review — only what a located passage CARRIES (its evidence topics), with
+    # the period it was located for; never the topics a gap's words merely named.
     located: list[str] = []
+    entries: list[dict[str, Any]] = []
     for gap in record.get("gaps") or ():
         gap = _mapping(gap)
         if gap.get("result") not in _LOCATED_RESULTS:
             continue
-        topics: list[Any] = []
         for item in gap.get("evidence") or ():
-            topics.extend(_mapping(item).get("topics") or ())
-        if gap.get("result") == "FOUND":
-            topics.extend(gap.get("topics") or ())
-        for topic in topics:
-            if isinstance(topic, str) and topic not in located:
-                located.append(topic)
+            item = _mapping(item)
+            period = item.get("period") if isinstance(item.get("period"), str) else None
+            for topic in item.get("topics") or ():
+                if not isinstance(topic, str):
+                    continue
+                if topic not in located:
+                    located.append(topic)
+                entry = {"topic": topic, "period": period}
+                if entry not in entries and len(entries) < 60:
+                    entries.append(entry)
     counts = _mapping(record.get("counts"))
     return {
         "counts": {k: v for k, v in counts.items() if isinstance(v, (int, dict))},
         "topics_located": located[:60],
+        "located": entries,
     }
 
 

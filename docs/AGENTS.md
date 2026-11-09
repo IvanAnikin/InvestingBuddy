@@ -1856,7 +1856,17 @@ reader takes its counts and status lines from it.
   The parse records `pages_extracted` and `skipped_page_ranges`; the inventory carries
   the active parse's `pages_total` / `pages_parsed` / `truncated`, and a gap searched
   over a truncated document is DOCUMENT_NOT_PARSED, never "not found". Extraction
-  pipeline version 24 re-reads held disclosures once.
+  pipeline version 25 refetches and re-extracts every held disclosure on its next run.
+- **Review round 1.**
+  - An absence needs a complete search: every planned query ran and every topic got its
+    own query. Otherwise the result is NOT_RUN with the reason.
+  - Step 7c reads the inventory again, including truncated documents beyond the window,
+    and has a 90 s budget.
+  - Located passages must carry the metric with the year beside it, and table rows must
+    be cells.
+  - The chair absence rule reads only named topics, needs all of them, and needs a
+    matching period.
+  - "Answered" and "located, unverified" are counted apart.
 
 ## Status lines, scope, applicability and fiscal calendars (ADR-091)
 

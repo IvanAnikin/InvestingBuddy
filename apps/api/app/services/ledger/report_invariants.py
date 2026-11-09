@@ -1072,12 +1072,18 @@ _ABSENCE_WINDOW_BEFORE = 80
 _ABSENCE_WINDOW_AFTER = 120
 
 
-def absence_topics(sentence: str) -> tuple[str, ...]:
-    """ADR-094 — the lexicon topics a sentence says are NOT disclosed (``()`` when it
-    makes no disclosure-absence claim). Read in a bounded window around each cue."""
-    from app.services.agents.document_reread import topics_asked
+def absence_claims(sentence: str, *, strict: bool = False) -> list[tuple[str, ...]]:
+    """ADR-094 — what a sentence says is NOT disclosed: one tuple of lexicon topics per
+    absence cue, read in the cue's own clause. ``strict``: only topics the clause NAMES
+    by the lexicon's own mentions ("dividend policy", "segment revenue"), never a broad
+    question cue ("board" → governance, "segment margins" → segment + margins).
 
-    out: list[str] = []
+    A tuple is the denied thing as a whole: "segment margins are not disclosed" denies
+    segment × margin, and only a source carrying EVERY topic of it contradicts it."""
+    from app.services.agents.document_reread import topics_asked, topics_named
+
+    read = topics_named if strict else topics_asked
+    out: list[tuple[str, ...]] = []
     text = sentence[:MAX_SENTENCE_CHARS]
     for match in _DISCLOSURE_ABSENCE_RE.finditer(text):
         # The cue's own CLAUSE only: "revenue rose 5%, capex was not disclosed" denies
@@ -1085,28 +1091,46 @@ def absence_topics(sentence: str) -> tuple[str, ...]:
         before = text[max(0, match.start() - _ABSENCE_WINDOW_BEFORE): match.start()]
         before = _CLAUSE_SPLIT_RE.split(before)[-1]
         after = _CLAUSE_SPLIT_RE.split(text[match.end(): match.end() + _ABSENCE_WINDOW_AFTER])[0]
-        window = f"{before} {match.group(0)} {after}"
-        for topic in topics_asked(window):
-            if topic not in out:
-                out.append(topic)
+        topics = tuple(read(f"{before} {match.group(0)} {after}"))
+        if topics and topics not in out:
+            out.append(topics)
+    return out
+
+
+def absence_topics(sentence: str) -> tuple[str, ...]:
+    """Every topic any absence cue of the sentence denies (``()``: no absence claim)."""
+    out: list[str] = []
+    for claim in absence_claims(sentence):
+        out.extend(t for t in claim if t not in out)
     return tuple(out)
 
 
 def _rule_absence_located(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
     """ADR-094 — "X is not disclosed" while the gap queue located X in a held primary
-    document (or a finding answered its gap): the claim is false as worded."""
-    located = _g(state, "gap_resolution", "topics_located")
+    document. Strict (review): X must be NAMED by the lexicon, located for the period the
+    sentence speaks of (or for an unknown one), and every topic of the denied thing must
+    be located."""
+    located = _g(state, "gap_resolution", "located")
     if not isinstance(located, list) or not located:
         return None
-    denied = absence_topics(sentence)
-    hit = [t for t in denied if t in set(located)]
-    if not hit:
-        return None
-    from app.services.agents.document_reread import label_of
+    from app.services import research_fields as rf
 
-    return _Hit(RULE_ABSENCE_CONTRADICTED,
-                f"it says {label_of(hit[0])} is not disclosed, but the research located it "
-                "in the company's held documents")
+    wanted = rf.period_rank(rf.requested_period(sentence[:MAX_SENTENCE_CHARS]))
+    usable: set[str] = set()
+    for entry in located:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("topic"), str):
+            continue
+        have = rf.period_rank(entry.get("period")) if entry.get("period") else None
+        if wanted is None or have is None or have[0] == wanted[0]:
+            usable.add(str(entry["topic"]))
+    for claim in absence_claims(sentence, strict=True):
+        if set(claim) <= usable:
+            from app.services.agents.document_reread import label_of
+
+            return _Hit(RULE_ABSENCE_CONTRADICTED,
+                        f"it says {label_of(claim[0])} is not disclosed, but the research "
+                        "located it in the company's held documents")
+    return None
 
 
 _RECORD_RULES = (
@@ -1204,18 +1228,19 @@ class _Enforcer:
     ) -> _Hit | None:
         """ADR-094 (CFR3) — "no segment split beyond X" while citing findings that state
         segment figures: the sentence denies what it cites."""
-        denied = absence_topics(sentence)
-        if not denied:
+        claims = absence_claims(sentence)
+        if not claims:
             return None
         from app.services.agents.document_reread import label_of, metrics_carried
 
-        for source in found:
-            carried = metrics_carried(source.text or "", denied)
-            if carried:
-                topic = next(t for t in denied if t in carried)
-                return _Hit(RULE_ABSENCE_CONTRADICTED,
-                            f"it says {label_of(topic)} is not disclosed while the finding "
-                            "it cites states it")
+        for claim in claims:
+            for source in found:
+                # Every topic of the denied thing: a finding stating segment REVENUE does
+                # not contradict "segment margins are not disclosed".
+                if set(claim) <= metrics_carried(source.text or "", claim):
+                    return _Hit(RULE_ABSENCE_CONTRADICTED,
+                                f"it says {label_of(claim[0])} is not disclosed while the "
+                                "finding it cites states it")
         return None
 
     def _claim(self, sentence: str, cited: tuple[str, ...]) -> _Hit | None:

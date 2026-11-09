@@ -622,12 +622,32 @@ def table_rows_carried(text: str | None, topics: Iterable[str] | None = None) ->
         for pattern in _ROWS[key]:
             for match in pattern.finditer(low):
                 rest = low[match.end(): match.end() + _ROW_LINE_CHARS].split("\n", 1)[0]
-                if _has_figure(rest):
+                if _is_row_tail(rest):
                     out.add(key)
                     break
             if key in out:
                 break
     return frozenset(out)
+
+
+#: What may sit between a row label and its cells besides figures: cell separators,
+#: a note reference, a currency or scale word. Anything else is prose ("commitments to
+#: our customers and communities 2026") and the line is no table row.
+_ROW_TAIL_TOKEN_RE = re.compile(r"[a-z]{1,12}")
+_ROW_TAIL_WORDS: frozenset[str] = frozenset({
+    "note", "notes", "ref", "us", "a", "au", "eur", "usd", "gbp", "chf", "m", "bn", "k",
+    "million", "millions", "billion", "thousand", "thousands", "nil", "total", "current",
+    "non", "and", "of", "the", "group", "company", "consolidated",
+})
+
+
+def _is_row_tail(rest: str) -> bool:
+    """ADR-094 review — the rest of a row's line is CELLS: at least one figure, and no
+    word outside the short list a statement row prints beside its numbers."""
+    if not _has_figure(rest):
+        return False
+    words = _ROW_TAIL_TOKEN_RE.findall(_FIGURE_RE.sub(" ", rest))
+    return sum(1 for w in words if w not in _ROW_TAIL_WORDS) == 0
 
 
 #: An XBRL concept name ("ResearchAndDevelopmentExpense", "LongTermDebt"): read as words.
@@ -863,6 +883,31 @@ def metrics_carried(text: str | None, topics: Iterable[str] | None = None) -> fr
             if key in out:
                 break
     return frozenset(out) | table_rows_carried(text, keys)
+
+
+def carried_windows(
+    text: str | None, topics: Iterable[str], *, reach: int = 160, limit: int = 12
+) -> list[str]:
+    """ADR-094 review — the text AROUND each place a topic is carried (its mention with
+    a figure, or its table row): where a period must be stated for a located passage to
+    count for that period. Bounded: ``limit`` windows of ``2 × reach`` characters."""
+    low = _clean_for_figures(text)
+    out: list[str] = []
+    for key in topics:
+        if key not in TOPICS_BY_KEY:
+            continue
+        for pattern in (*_CARRIED[key], *_ROWS.get(key, ())):
+            for match in pattern.finditer(low):
+                window = low[max(0, match.start() - reach): match.end() + reach]
+                if TOPICS_BY_KEY[key].needs_figure and not _has_figure(
+                        low[match.end(): match.end() + _FIGURE_AFTER_CHARS]
+                        ) and not _has_figure(
+                        low[max(0, match.start() - _FIGURE_BEFORE_CHARS): match.start()]):
+                    continue
+                out.append(window)
+                if len(out) >= limit:
+                    return out
+    return out
 
 
 #: Where a TYPED record (a fact, a statement line, a calculation) names its metric...
@@ -1141,6 +1186,8 @@ __all__ = [
     "reread_plan",
     "section_matches",
     "topic_queries",
+    "carried_windows",
+    "table_rows_carried",
     "topics_for_metrics",
     "topics_named",
 ]

@@ -1165,8 +1165,7 @@ async def _run(
     #     model), or recorded as not needing one; each gets its result BEFORE the Chair
     #     reads the gaps and the report words them.
     await gap_resolution_step(
-        session, run, company=company, outcome=outcome, inventory=primary_inventory,
-        backend=search_backend, cfg=cfg,
+        session, run, company=company, outcome=outcome, backend=search_backend, cfg=cfg,
     )
 
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
@@ -1392,18 +1391,22 @@ async def reconcile_step(session: Any, run: Any, *, company: Any, outcome: Any) 
 
 
 async def gap_resolution_step(
-    session: Any, run: Any, *, company: Any, outcome: Any, inventory: Any, backend: Any,
-    cfg: Any,
+    session: Any, run: Any, *, company: Any, outcome: Any, backend: Any, cfg: Any,
 ) -> None:
     """Step 7c (ADR-094). Never raises; in a SAVEPOINT. A failure costs the resolution
     only: the gaps then carry their reconciliation verdict and no result."""
-    from app.services.pipeline import gap_resolution
+    from app.services.pipeline import document_coverage, gap_resolution
 
     try:
+        # ADR-094 review — the inventory is read AGAIN here: the one computed before the
+        # investigator misses every document acquired during the run (and a first-run
+        # company had none). ``None`` (lookup failed) leaves every re-read NOT_RUN.
+        company_id = getattr(company, "id", None)
+        current = await document_coverage.current_inventory(session, company_id)
         async with session.begin_nested():
             outcome.gap_resolution = await gap_resolution.resolve_run(
-                session, run, company_id=getattr(company, "id", None),
-                inventory=inventory, backend=backend, cfg=cfg,
+                session, run, company_id=company_id,
+                inventory=current, backend=backend, cfg=cfg,
             )
     except Exception as exc:  # noqa: BLE001 - the queue must not end the run
         outcome.degraded.append(

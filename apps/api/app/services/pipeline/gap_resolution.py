@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -87,6 +88,12 @@ ABSENCE_RESULTS: frozenset[str] = frozenset({RESULT_NOT_FOUND_AFTER_SEARCH})
 
 #: How each result is worded wherever a gap is shown (page, chair input, report). A
 #: ``{document}`` / ``{topic}`` placeholder is filled from platform-derived fields only.
+#: ADR-094 review — a NARRATIVE topic (legal proceedings, guidance …) is located by being
+#: named, so its wording claims no figure.
+EXTRACTION_FAILED_NARRATIVE_WORDS = (
+    "Not established either way: {document} has a passage naming {topic} that no finding "
+    "has read; whether it answers this gap is unchecked."
+)
 RESULT_WORDS: dict[str, str] = {
     RESULT_FOUND: "Answered by a finding in this report.",
     RESULT_PARTIALLY_FOUND: "Partly answered by a finding in this report.",
@@ -107,8 +114,8 @@ RESULT_WORDS: dict[str, str] = {
         "is not established."
     ),
     RESULT_PERIOD_MISMATCH: (
-        "Only another period's figures were found; the period asked for is not "
-        "established."
+        "Only figures for another or an unconfirmed period were found; the period asked "
+        "for is not established."
     ),
     RESULT_SOURCE_BLOCKED: "The source could not be reached; not established.",
     RESULT_NOT_RUN: "Not searched for in the held primary documents ({why}); not established.",
@@ -129,6 +136,11 @@ WHY_NO_DOCUMENT = "no_primary_document_held"
 WHY_NO_CORPUS = "corpus_search_unavailable"
 WHY_BUDGET = "reread_query_budget_spent"
 WHY_SEARCH_FAILED = "search_failed"
+#: ADR-094 review — some of the gap's planned queries did not run (the per-gap or the
+#: run's query cap), so not every topic it names was searched.
+WHY_INCOMPLETE = "not_every_query_ran"
+#: The queue's own wall-clock budget was spent before this gap was searched.
+WHY_DEADLINE = "gap_queue_time_budget_spent"
 WHY_WORDS: dict[str, str] = {
     WHY_NOT_ABSENCE: "it is not about a missing figure",
     WHY_SOURCE_BLOCKED: "the source could not be reached",
@@ -138,6 +150,8 @@ WHY_WORDS: dict[str, str] = {
     WHY_NO_CORPUS: "the document search was unavailable",
     WHY_BUDGET: "the run's re-read budget was spent",
     WHY_SEARCH_FAILED: "the document search failed",
+    WHY_INCOMPLETE: "not every search it needed could run",
+    WHY_DEADLINE: "the run's time budget for re-reads was spent",
 }
 
 #: Gap types that say something is ABSENT (the only ones re-read).
@@ -155,6 +169,9 @@ MAX_RUN_QUERIES = 80
 TOP_K = 30
 MAX_EVIDENCE_PER_GAP = 3
 MAX_RECORDED = 120
+#: ADR-094 review — the whole queue's wall-clock budget (step 7c). A gap not reached in
+#: time is NOT_RUN (``WHY_DEADLINE``), never "not found".
+MAX_QUEUE_SECONDS = 90.0
 
 #: What only a NON-issuer source answers: a peer's figures, a market size, a third
 #: party's view, a transcript, a policy rate. Bounded; literal alternation only.
@@ -219,6 +236,12 @@ class GapResolution:
     finding_ids: tuple[str, ...] = ()
     #: Held documents whose parse is known to be truncated (``pages_total`` > parsed).
     unparsed_documents: list[str] = field(default_factory=list)
+    #: ADR-094 review — this gap's query accounting: planned, run (or answered from the
+    #: shared cache), failed, skipped by a cap or the deadline.
+    queries_planned: int = 0
+    queries_succeeded: int = 0
+    queries_failed: int = 0
+    queries_skipped: int = 0
 
     @property
     def words(self) -> str:
@@ -242,6 +265,10 @@ class GapResolution:
             "evidence": list(self.evidence)[:MAX_EVIDENCE_PER_GAP],
             "finding_ids": list(self.finding_ids)[:4],
             "unparsed_documents": list(self.unparsed_documents)[:4],
+            "queries_planned": self.queries_planned,
+            "queries_succeeded": self.queries_succeeded,
+            "queries_failed": self.queries_failed,
+            "queries_skipped": self.queries_skipped,
             "words": self.words,
             "may_say_not_found": self.result in ABSENCE_RESULTS,
         }
@@ -253,8 +280,11 @@ def render_words(res: "GapResolution | Mapping[str, Any]") -> str:
     get = res.get if isinstance(res, Mapping) else (lambda k, d=None: getattr(res, k, d))
     result = str(get("result") or RESULT_NOT_RUN)
     topics = list(get("topics") or ())
-    topic = " / ".join(dr.label_of(t) for t in topics[:2]) or "it"
     evidence = list(get("evidence") or ())
+    if result == RESULT_EXTRACTION_FAILED and evidence and isinstance(evidence[0], Mapping):
+        # What the located passage CARRIES — not every topic the gap's words named.
+        topics = [t for t in evidence[0].get("topics") or () if isinstance(t, str)] or topics
+    topic = " / ".join(dr.label_of(t) for t in topics[:2]) or "it"
     unparsed = list(get("unparsed_documents") or ())
     document = (
         str(evidence[0].get("document")) if evidence and isinstance(evidence[0], Mapping)
@@ -262,6 +292,10 @@ def render_words(res: "GapResolution | Mapping[str, Any]") -> str:
     )
     why = WHY_WORDS.get(str(get("why") or ""), "no re-read was run")
     template = RESULT_WORDS.get(result, RESULT_WORDS[RESULT_NOT_RUN])
+    if result == RESULT_EXTRACTION_FAILED and topics and all(
+        not getattr(dr.TOPICS_BY_KEY.get(t), "needs_figure", True) for t in topics[:2]
+    ):
+        template = EXTRACTION_FAILED_NARRATIVE_WORDS
     return template.format(topic=topic, document=document, why=why)
 
 
@@ -312,17 +346,34 @@ def reread_queries(topics: Sequence[str], limit: int = MAX_QUERIES_PER_GAP) -> l
     from app.services.corpus.query_terms import keyword_query
 
     out: list[str] = []
-    for topic in topics:
-        found = dr.TOPICS_BY_KEY.get(topic)
-        if found is None:
-            continue
-        for raw in dr.topic_queries(topic):
+    # Every topic's own query first, so a cap never leaves a topic unsearched while a
+    # row-label query of another runs; the row-label queries only with room left.
+    passes = [[raw for raw in dr.topic_queries(t)[:1]] for t in topics
+              if t in dr.TOPICS_BY_KEY]
+    passes += [[raw for raw in dr.topic_queries(t)[1:]] for t in topics
+               if t in dr.TOPICS_BY_KEY]
+    for raws in passes:
+        for raw in raws:
             query = keyword_query(raw) or raw
             if query and query not in out:
                 out.append(query)
             if len(out) >= limit:
                 return out
     return out
+
+
+def topics_searched(topics: Sequence[str], queries: Sequence[str]) -> bool:
+    """Whether every topic got its own query among ``queries`` (the ones that RAN)."""
+    from app.services.corpus.query_terms import keyword_query
+
+    ran = set(queries)
+    for topic in topics:
+        if topic not in dr.TOPICS_BY_KEY:
+            continue
+        raw = dr.topic_queries(topic)[0]
+        if (keyword_query(raw) or raw) not in ran:
+            return False
+    return True
 
 
 def _gap_scope(text: str) -> str | None:
@@ -334,19 +385,22 @@ def _gap_scope(text: str) -> str | None:
 # ── Classification (pure) ───────────────────────────────────────────────────── #
 
 
-def _hit_year_ok(hit: Mapping[str, Any], period: str | None) -> bool | None:
+def _hit_year_ok(
+    hit: Mapping[str, Any], period: str | None, topics: Sequence[str] = ()
+) -> bool | None:
     """``True`` when a hit is (or may be) for the gap's period, ``False`` when it is for
     a different one, ``None`` when the gap names no period."""
     wanted = rf.period_rank(period)
     if wanted is None:
         return None
     have = rf.period_rank(str(hit.get("period_key") or "") or None)
-    text = str(hit.get("text") or "")[:4000]
-    if str(wanted[0]) in text:
-        return True
-    if have is None:
-        return True  # an undated chunk may hold the period; "held, not read" stands
-    return have[0] == wanted[0]
+    if have is not None:
+        return have[0] == wanted[0]
+    # ADR-094 review — an undated chunk counts for the period only when the year is
+    # stated BESIDE the carried metric, not anywhere in the passage.
+    year = str(wanted[0])
+    windows = dr.carried_windows(str(hit.get("text") or "")[:8000], topics or ())
+    return any(year in w for w in windows)
 
 
 def _segment_scoped(hit: Mapping[str, Any]) -> bool:
@@ -380,8 +434,13 @@ def classify(
     searched: bool,
     inventory: Sequence[Mapping[str, Any]] | None,
     why_not_run: str | None = None,
+    complete: bool = True,
+    why_incomplete: str | None = None,
 ) -> GapResolution:
-    """One gap's result. Pure."""
+    """One gap's result. Pure.
+
+    ``complete``: every planned query ran without error and every topic got its own
+    query. Only a complete search may end NOT_FOUND_AFTER_SEARCH."""
     res = GapResolution(
         gap_id=gap.gap_id, question_key=gap.question_key, route=plan.route,
         result=RESULT_NOT_RUN, topics=plan.topics, period=plan.period, scope=plan.scope,
@@ -405,6 +464,10 @@ def classify(
     res.unparsed_documents = truncated_documents(docs)
     if not searched:
         res.why = why_not_run or WHY_NO_CORPUS
+        mismatch = _mismatch_from_reconciliation(gap)
+        if mismatch:
+            res.result = mismatch
+            return res
         if res.why == WHY_NO_DOCUMENT and docs:
             # Held, but nothing of it is indexed: the document was not parsed.
             res.result = RESULT_DOCUMENT_NOT_PARSED
@@ -417,10 +480,12 @@ def classify(
         and dr.metrics_carried(str(h.get("text") or ""), plan.topics)
     ]
     if carrying:
-        in_period = [h for h in carrying if _hit_year_ok(h, plan.period) is not False]
+        in_period = [h for h in carrying
+                     if _hit_year_ok(h, plan.period, plan.topics) is not False]
         group_ok = [h for h in in_period if not (plan.scope == "group" and _segment_scoped(h))]
         best = group_ok or in_period or carrying
-        res.evidence = [_evidence_of(h, plan.topics) for h in best[:MAX_EVIDENCE_PER_GAP]]
+        res.evidence = [_evidence_of(h, plan.topics, plan.period)
+                        for h in best[:MAX_EVIDENCE_PER_GAP]]
         if group_ok:
             res.result = RESULT_EXTRACTION_FAILED
         elif in_period:
@@ -428,12 +493,23 @@ def classify(
         else:
             res.result = RESULT_PERIOD_MISMATCH
         return res
+    mismatch = _mismatch_from_reconciliation(gap)
+    if mismatch:
+        # A finding speaks to the metric for another period or scope: that is what the
+        # gap says, whether or not part of a document went unparsed.
+        res.result = mismatch
+        return res
+    if not complete:
+        # ADR-094 review — part of the search did not run: an absence cannot be stated.
+        res.result = RESULT_NOT_RUN
+        res.why = why_incomplete or WHY_INCOMPLETE
+        return res
     if res.unparsed_documents:
         # Searched, not found — but part of a held document was never parsed, so its
         # absence cannot be stated (spec §8).
         res.result = RESULT_DOCUMENT_NOT_PARSED
         return res
-    res.result = _mismatch_from_reconciliation(gap) or RESULT_NOT_FOUND_AFTER_SEARCH
+    res.result = RESULT_NOT_FOUND_AFTER_SEARCH
     return res
 
 
@@ -450,10 +526,16 @@ def _mismatch_from_reconciliation(gap: GapInput) -> str | None:
     return RESULT_PERIOD_MISMATCH
 
 
-def _evidence_of(hit: Mapping[str, Any], topics: Sequence[str]) -> dict[str, Any]:
+def _evidence_of(
+    hit: Mapping[str, Any], topics: Sequence[str], period: str | None = None
+) -> dict[str, Any]:
     """Platform-derived fields only: never the passage text (untrusted, and not a
-    verified figure)."""
+    verified figure). ``period``: the chunk's own period key, else the gap's period when
+    the passage states its year beside the metric, else ``None`` (unknown)."""
+    own = str(hit.get("period_key") or "") or None
+    confirmed = period if (own is None and _hit_year_ok(hit, period, topics)) else None
     return {
+        "period": own or confirmed,
         "document": dr.document_name({
             "form": hit.get("form"), "document_type": hit.get("document_type"),
             "published_at": hit.get("published_at"),
@@ -478,12 +560,13 @@ def counts_of(resolutions: Sequence[GapResolution], *, queries_run: int) -> dict
         "gaps_created": len(resolutions),
         "gaps_mapped_existing": sum(1 for r in resolutions if r.route == ROUTE_MAPPED_EXISTING),
         "gaps_reread": sum(1 for r in reread if r.source_classes_searched),
-        # Located by the re-read in a held document (not yet a finding), or answered by
-        # a finding (mapped).
+        # ANSWERED by a finding of this report (mapped). Never a re-read passage.
         "gaps_found": sum(
-            1 for r in resolutions
-            if r.result in {RESULT_FOUND, RESULT_PARTIALLY_FOUND}
-            or (r.route == ROUTE_REREAD and r.result in located and r.evidence)
+            1 for r in resolutions if r.result in {RESULT_FOUND, RESULT_PARTIALLY_FOUND}
+        ),
+        # A held passage the re-read located that no finding has read: unverified.
+        "gaps_located_unverified": sum(
+            1 for r in reread if r.result in located and r.evidence
         ),
         # Re-read and nothing located.
         "gaps_failed": sum(
@@ -494,6 +577,11 @@ def counts_of(resolutions: Sequence[GapResolution], *, queries_run: int) -> dict
         "by_result": dict(sorted(by_result.items())),
         "reread_queries": queries_run,
         "reread_query_cap": MAX_RUN_QUERIES,
+        # ADR-094 review — the re-read's query accounting (per gap, summed).
+        "queries_planned": sum(r.queries_planned for r in reread),
+        "queries_succeeded": sum(r.queries_succeeded for r in reread),
+        "queries_failed": sum(r.queries_failed for r in reread),
+        "queries_skipped": sum(r.queries_skipped for r in reread),
     }
 
 
@@ -523,9 +611,11 @@ async def resolve_gaps(
     inventory: Sequence[Mapping[str, Any]] | None,
     search: Any,
     max_run_queries: int = MAX_RUN_QUERIES,
+    deadline: float | None = None,
 ) -> tuple[list[GapResolution], int]:
     """Plan, search and classify every gap. ``search(query) -> list[dict] | None`` is
-    awaited once per DISTINCT query (``None``: the search failed). Never raises."""
+    awaited once per DISTINCT query (``None``: the search failed). ``deadline`` is a
+    ``time.monotonic()`` instant: a gap not searched by then is NOT_RUN. Never raises."""
     docs = [d for d in inventory or () if isinstance(d, Mapping)]
     indexed = any(int(d.get("indexed_chunks") or 0) for d in docs)
     cache: dict[str, list[dict[str, Any]] | None] = {}
@@ -545,11 +635,18 @@ async def resolve_gaps(
                                 why_not_run=WHY_NO_DOCUMENT))
             continue
         hits: list[dict[str, Any]] = []
-        ran = 0
+        succeeded: list[str] = []
         failed = 0
+        skipped = 0
+        timed_out = False
         for query in plan.queries:
             if query not in cache:
+                if deadline is not None and time.monotonic() > deadline:
+                    skipped += 1
+                    timed_out = True
+                    continue
                 if queries_run >= max_run_queries:
+                    skipped += 1
                     continue
                 queries_run += 1
                 try:
@@ -560,15 +657,27 @@ async def resolve_gaps(
             if result is None:
                 failed += 1
                 continue
-            ran += 1
+            succeeded.append(query)
             hits.extend(result)
-        if not ran:
-            why = WHY_SEARCH_FAILED if failed else WHY_BUDGET
-            out.append(classify(plan, gap, hits=(), searched=False, inventory=docs,
-                                why_not_run=why))
-            continue
-        ranked = [dict(h) for h in dr.rank_hits(hits, plan.topics, plan.topics)]
-        out.append(classify(plan, gap, hits=ranked, searched=True, inventory=docs))
+        # Complete only when every planned query ran without error AND every topic the
+        # gap names got its own query (the per-gap cap can cut a third topic).
+        complete = (not failed and not skipped
+                    and topics_searched(plan.topics, succeeded))
+        why_incomplete = (WHY_SEARCH_FAILED if failed else
+                          WHY_DEADLINE if timed_out else
+                          WHY_BUDGET if skipped else WHY_INCOMPLETE)
+        if not succeeded:
+            res = classify(plan, gap, hits=(), searched=False, inventory=docs,
+                           why_not_run=why_incomplete)
+        else:
+            ranked = [dict(h) for h in dr.rank_hits(hits, plan.topics, plan.topics)]
+            res = classify(plan, gap, hits=ranked, searched=True, inventory=docs,
+                           complete=complete, why_incomplete=why_incomplete)
+        res.queries_planned = len(plan.queries)
+        res.queries_succeeded = len(succeeded)
+        res.queries_failed = failed
+        res.queries_skipped = skipped
+        out.append(res)
     return out, queries_run
 
 
@@ -597,6 +706,7 @@ async def resolve_run(
         search = _corpus_search(session, backend=backend, cfg=cfg, company_id=company_id)
     resolutions, queries_run = await resolve_gaps(
         [gap_input_of(r) for r in rows], inventory=inventory, search=search,
+        deadline=time.monotonic() + MAX_QUEUE_SECONDS,
     )
     by_id = {str(r.id): r for r in rows}
     for res in resolutions:
@@ -674,5 +784,6 @@ __all__ = [
     "resolve_gaps",
     "resolve_run",
     "reread_queries",
+    "topics_searched",
     "truncated_documents",
 ]

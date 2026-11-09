@@ -9534,8 +9534,8 @@ are gone.
   `skipped_page_ranges`. The inventory adds the active derivation's `page_count` /
   `pages_persisted` / `truncated` (no migration needed). The coverage audit shows
   truncation. A gap searched over a truncated document is `DOCUMENT_NOT_PARSED` and
-  names "N of M pages parsed". Extraction pipeline version 24 makes the held-disclosure
-  re-read open such a report again once.
+  names "N of M pages parsed". Extraction pipeline version 25 makes the held-disclosure
+  re-read open such a report again (version 24 is batch H3a's, which merges first).
 
 **Replay (offline lexical index over the downloaded sources; LIN with the branch's page
 selection).** Evaluator false gaps that were located or honestly worded, out of the
@@ -9557,9 +9557,12 @@ shareholder pages.
 **Limits (part 2).** Lexical aliases remain a reviewed list: a gap worded outside it is
 `NOT_RUN`. The heading pass is bounded by the supplemental cap (12). A report with more
 note sections than that still skips some, and records which. The V2 excerpt-replay path
-(`EXTRACTION_TEXT_LAYER_MIN_VERSION`) does not advance. The version bump re-reads every
-held disclosure once, within the existing acquisition budgets. Campaign batch H3a may
-also bump the pipeline version; the two must be merged to one number.
+(`EXTRACTION_TEXT_LAYER_MIN_VERSION`) does not advance. The version bump is not cheap.
+Production keeps no raw bytes, so `_read_by_an_older_pipeline` REFETCHES and
+RE-EXTRACTS every held disclosure an older pipeline derived, of any kind and for any
+issuer, on its company's next run. This happens within `V3_DISCLOSURE_CORE_BUDGET_SECONDS`
+and the existing acquisition budgets. Only PDFs longer than the leading window can read
+differently. H4 is version 25, after batch H3a's 24.
 - *Precision (replay over the evaluator's genuinely undisclosed gaps).* 5 of the 10 that
   matched a payload gap are `EXTRACTION_FAILED`, because the documents hold the TOPIC but
   not the specific ask. Examples: a debt figure but no covenant terms, a resource
@@ -9567,3 +9570,54 @@ also bump the pipeline version; the two must be merged to one number.
   naming the topic with a figure is held and unchecked, never that the answer exists. The
   chair absence rule can then withhold a true "not disclosed" sentence on that topic.
   That is a withheld claim, not a wrong one.
+
+### Review round 1 (NO-GO → fixes)
+- **An absence needs a complete search.** `NOT_FOUND_AFTER_SEARCH` is allowed only when
+  every planned query ran without error and every topic the gap names got its own query.
+  Each topic's own query is planned before any row-label query. A failed, budget-skipped,
+  deadline-skipped or cap-cut query makes the gap `NOT_RUN`, with `search_failed`,
+  `reread_query_budget_spent`, `gap_queue_time_budget_spent` or `not_every_query_ran`.
+  Each gap records `queries_planned` / `queries_succeeded` / `queries_failed` /
+  `queries_skipped`, and the counts sum them.
+- **Step 7c reads the inventory as it is now.** It no longer uses the one taken before the
+  investigator, so documents acquired mid-run count and a first-run company is searched.
+  `document_coverage.current_inventory` adds every truncated held document that the
+  60-document window would hide. If the lookup fails, every re-read is `NOT_RUN`.
+- **Queue time budget.** Step 7c has a 90-second budget (`MAX_QUEUE_SECONDS`).
+- **Located is held to the metric.**
+  - An undated passage counts for the gap's period only when the year is stated beside
+    the carried metric (`carried_windows`). Otherwise the result is `PERIOD_MISMATCH`,
+    worded "another or an unconfirmed period".
+  - A table row carries only when the rest of its line is cells: figures, separators and
+    a short list of unit or note words.
+  - `canonical_state.gap_resolution.topics_located` holds only located evidence topics,
+    never a FOUND gap's words. `located[]` carries the period each was located for.
+  - `absence_stated_while_found` reads only topics the clause NAMES, needs EVERY topic
+    of the denied thing ("segment margins" = segment × margin), and needs a located
+    period that matches or is unknown. "The board has not disclosed a dividend policy"
+    is no longer withheld for governance, and "segment margins are not disclosed" is
+    not withheld by a cited segment-revenue finding.
+- **Counts.** `gaps_found` counts only gaps a finding answers. A re-read passage is
+  `gaps_located_unverified`, shown on the report page as "located, unverified".
+- **A mismatch comes first.** A NONCOMPARABLE gap is `PERIOD_MISMATCH` /
+  `SCOPE_MISMATCH` before `DOCUMENT_NOT_PARSED`.
+- **Wording.** A located gap names what the passage carries, and a narrative topic's
+  wording claims no figure.
+- **Page selection.**
+  - The outline pages that version 23 read are extracted first.
+  - The heading scan then runs on at most a quarter of the time left. It scans the
+    report's back half first and stops at the cap.
+  - A heading must have a heading SHAPE in the original case: numbered and title-case
+    with no figure, or all capitals. Narrative lines such as "segment revenue grew 12%",
+    "1. we reduced debt by $40m" or "Commitments to our customers" are not headings.
+- **Version 25.**
+- **Verification limit.** The real-PostgreSQL SAVEPOINT test
+  (`test_a_database_error_in_a_reread_query_leaves_the_session_usable`) is gated on
+  `V3_TEST_POSTGRES_URL`. No migrated PostgreSQL was reachable locally, so it has not
+  run here.
+- **Replay after review.** The offline replay is unchanged for false gaps: HON4 7/11, LIN4
+  6/12, CLLS7 9/14, PYPL5 10/13, JPM3 9/14 and CFR3 4/15 are located or honestly worded,
+  and no planned query was skipped. Of the 10 matched gaps the evaluator calls genuinely
+  undisclosed, 5 remain EXTRACTION_FAILED (located on the topic, not the ask) and are
+  worded as unchecked, 1 is NOT_FOUND_AFTER_SEARCH, and the rest are NOT_RUN or a
+  mismatch.

@@ -151,7 +151,8 @@ export type V3CanonicalState = {
   documentsRead: number | null;
   /** ADR-091 — how many of the open gaps the payload lists. */
   gapsListed: number | null;
-  /** ADR-094 — the gap queue's counts (admin surface). Null on older reports. */
+  /** ADR-094 — the gap queue's counts, shown on the report page's research panel.
+   *  Null on older reports. */
   gapQueue: V3GapQueueCounts | null;
 };
 
@@ -160,7 +161,10 @@ export type V3GapQueueCounts = {
   created: number | null;
   mappedExisting: number | null;
   reread: number | null;
+  /** Answered by a finding of the report. Never a re-read passage. */
   found: number | null;
+  /** A held passage the re-read located that no finding has read (unverified). */
+  locatedUnverified: number | null;
   failed: number | null;
   notRun: number | null;
   rereadQueries: number | null;
@@ -1274,6 +1278,7 @@ function readGapQueue(v: unknown): V3GapQueueCounts | null {
     mappedExisting: num(c.gaps_mapped_existing),
     reread: num(c.gaps_reread),
     found: num(c.gaps_found),
+    locatedUnverified: num(c.gaps_located_unverified),
     failed: num(c.gaps_failed),
     notRun: num(c.gaps_not_run),
     rereadQueries: num(c.reread_queries),

@@ -237,14 +237,17 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
           }
         />
         {v3.canonicalState?.gapQueue && (
-          // ADR-094 — how every gap was routed: mapped to a finding, re-read in the held
-          // documents (located / not located), or not run.
+          // ADR-094 — how every gap was routed: answered by a finding, re-read in the
+          // held documents (a passage located but unverified / nothing located), or not
+          // run. A located passage is never counted as answered.
           <Stat
             label="Gaps re-read"
             value={n(v3.canonicalState.gapQueue.reread)}
             hint={`${n(v3.canonicalState.gapQueue.created)} gaps · ${n(
               v3.canonicalState.gapQueue.mappedExisting,
-            )} mapped · ${n(v3.canonicalState.gapQueue.found)} located · ${n(
+            )} mapped · ${n(v3.canonicalState.gapQueue.found)} answered · ${n(
+              v3.canonicalState.gapQueue.locatedUnverified,
+            )} located, unverified · ${n(
               v3.canonicalState.gapQueue.failed,
             )} not located · ${n(v3.canonicalState.gapQueue.notRun)} not run`}
           />

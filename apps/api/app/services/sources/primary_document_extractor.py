@@ -38,6 +38,7 @@ import time
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from html.parser import HTMLParser
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -716,36 +717,63 @@ _NOTE_HEADING_KEYWORDS: tuple[str, ...] = (
     "top twenty", "top 20", "controlled entities", "interests in subsidiaries",
     "consolidated entity disclosure", "properties", "legal proceedings",
 )
+#: ADR-094 review — a NUMBERED note heading in the original case: "18. Exploration
+#: Project Expenditure Commitments", "Note 12 Loans and borrowings", "(b) Interest Rate
+#: Risk", "3.1 Shareholder Information". The title is matched separately for its shape.
 _NOTE_HEADING_RE = re.compile(
-    r"^[ \t]{0,6}(?:(?:\d{1,2}(?:\.\d{1,2})?\.?|\([a-z0-9]{1,3}\)|note[ \t]{1,3}\d{1,2}\.?)"
-    r"[ \t]{1,6})?([a-z][a-z' -]{2,60})",
-    re.MULTILINE,
+    r"^[ \t]{0,6}(?:(?:Note|NOTE)[ \t]{1,3}\d{1,2}[.:]?|\d{1,2}(?:\.\d{1,2})?\.?|"
+    r"\([a-z0-9]{1,3}\))[ \t]{1,6}(\S.{2,70})$"
 )
+_TITLE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’-]{0,30}")
 #: Pages a heading scan may open beyond the leading window (pypdf text only: cheap).
 _MAX_HEADING_SCAN_PAGES = 160
 #: A heading line is short.
 _MAX_HEADING_LINE_CHARS = 90
+#: Share of the remaining extraction time the heading scan may spend (review): the
+#: outline pages version 23 read are extracted FIRST and never starved by it.
+_HEADING_SCAN_TIME_SHARE = 0.25
+
+
+def _title_shaped(title: str) -> bool:
+    """A heading title: no figure, not a sentence, starts upper-case, and at least half
+    of its long words are capitalised ("Loans and borrowings", "Interest Rate Risk")."""
+    title = title.strip()
+    if not title or not title[0].isupper() or title.endswith((".", ";", ",")):
+        return False
+    if any(ch.isdigit() for ch in title) or "$" in title or "%" in title:
+        return False
+    words = [w for w in _TITLE_WORD_RE.findall(title) if len(w) > 3]
+    if not words:
+        return False
+    return sum(1 for w in words if w[0].isupper()) * 2 >= len(words)
+
+
+def _all_caps_heading(line: str) -> bool:
+    letters = [ch for ch in line if ch.isalpha()]
+    return (
+        len(letters) >= 4 and all(ch.isupper() for ch in letters)
+        and not any(ch.isdigit() for ch in line) and len(line.strip()) <= 60
+    )
 
 
 def _page_has_note_heading(text: str) -> bool:
+    """ADR-094 §8 — the page opens a note or statement section: a short line in a
+    heading SHAPE (numbered + title-case with no figure, or all capitals) that names one
+    of the section keywords. A narrative line ("segment revenue grew 12% …",
+    "1. we reduced debt by $40m …", "Commitments to our customers …") is no heading."""
     keywords = _NOTE_HEADING_KEYWORDS + tuple(
         kw for _stype, kws in _STATEMENT_HEADING_KEYWORDS for kw in kws
     )
-    for line in text.lower().splitlines():
-        if len(line) > _MAX_HEADING_LINE_CHARS:
+    for line in text.splitlines():
+        if len(line) > _MAX_HEADING_LINE_CHARS or not line.strip():
             continue
         match = _NOTE_HEADING_RE.match(line)
-        if not match:
+        if match is not None:
+            title = match.group(1)
+            if _title_shaped(title) and any(k in title.lower() for k in keywords):
+                return True
             continue
-        title = match.group(1).strip()
-        numbered = match.start(1) > len(line) - len(line.lstrip()) and line.lstrip()[:1] in (
-            "(", "n", *"0123456789")
-        # A NUMBERED note heading may name its subject anywhere ("18. Exploration
-        # Project Expenditure Commitments"); an unnumbered line must open with it.
-        if numbered and any(k in title for k in keywords):
-            return True
-        # An unnumbered heading is short and is not a sentence.
-        if len(title) <= 50 and not line.rstrip().endswith(".") and title.startswith(keywords):
+        if _all_caps_heading(line) and any(k in line.lower() for k in keywords):
             return True
     return False
 
@@ -780,7 +808,10 @@ def _select_note_pages(
         return []
     out: list[int] = []
     scanned = 0
-    for page_no in range(1, total_pages + 1):
+    # The notes live in a report's back half: scan it first, then the rest.
+    middle = total_pages // 2 + 1
+    order = [*range(middle, total_pages + 1), *range(1, middle)]
+    for page_no in order:
         if page_no in exclude:
             continue
         if scanned >= _MAX_HEADING_SCAN_PAGES or len(out) >= max_pages:
@@ -794,7 +825,7 @@ def _select_note_pages(
             continue
         if _page_has_note_heading(text[:20000]):
             out.append(page_no)
-    return out[:max_pages]
+    return sorted(out[:max_pages])
 
 
 def page_ranges(pages: Iterable[int]) -> list[str]:
@@ -1694,6 +1725,23 @@ def extract_pdf(
     running_page_title: tuple[str, float, float] | None = None
     #: ADR-094 §8 — every page this parse opened (window, outline and note passes).
     opened_pages: set[int] = set()
+    open_pdf: list[Any] = []  # the open pdfplumber document, set inside the ``with``
+
+    def _extract_supplemental(page_numbers: Sequence[int]) -> bool:
+        """Extract targeted pages beyond the window, in order. ``False`` when the time
+        or character budget stopped it."""
+        for page_no in page_numbers:
+            if time.monotonic() > deadline:
+                result.truncated = True
+                result.warnings.append(
+                    "Extraction time budget exceeded during the "
+                    "supplemental page pass; partial extraction only."
+                )
+                return False
+            if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
+                return False
+            _extract_one_page(open_pdf[0].pages[page_no - 1], page_no)
+        return True
 
     def _extract_one_page(page: object, page_no: int) -> None:
         """Extract text blocks + tables from ONE page; mutates the closures."""
@@ -1900,6 +1948,7 @@ def extract_pdf(
         with pdfplumber.open(io.BytesIO(raw)) as pdf:
             page_count = len(pdf.pages)
             result.page_count = page_count
+            open_pdf.append(pdf)
             if pages is not None:
                 for page_no in sorted({int(p) for p in pages if 1 <= int(p) <= page_count}):
                     if time.monotonic() > deadline:
@@ -1951,34 +2000,28 @@ def extract_pdf(
                         f"the first {n} whose bookmark/outline title matched a "
                         "financial-statement heading."
                     )
+                # The outline's pages FIRST (what version 23 read), so the heading scan
+                # below can never starve them of the deadline.
+                outline_done = _extract_supplemental(supplemental)
                 # ADR-094 §8 — what the outline did not fill, the pages' own note
-                # headings do (an outline-less annual report's notes 18–28).
+                # headings do (an outline-less annual report's notes 18–28), on at most
+                # a quarter of the time left.
                 room = max_supplemental_pages - len(supplemental)
-                if room > 0:
+                now = time.monotonic()
+                if outline_done and room > 0 and now < deadline:
                     by_heading = _select_note_pages(
                         raw,
                         total_pages=page_count,
                         exclude=set(range(1, n + 1)) | set(supplemental),
                         max_pages=room,
-                        deadline=deadline,
+                        deadline=now + (deadline - now) * _HEADING_SCAN_TIME_SHARE,
                     )
                     if by_heading:
                         result.warnings.append(
                             f"Read {len(by_heading)} additional page(s) beyond the "
                             f"first {n} whose own text opens a note or statement section."
                         )
-                    supplemental = sorted(set(supplemental) | set(by_heading))
-                for page_no in supplemental:
-                    if time.monotonic() > deadline:
-                        result.truncated = True
-                        result.warnings.append(
-                            "Extraction time budget exceeded during the "
-                            "supplemental page pass; partial extraction only."
-                        )
-                        break
-                    if total_chars >= _MAX_TOTAL_EXTRACTED_CHARS:
-                        break
-                    _extract_one_page(pdf.pages[page_no - 1], page_no)
+                    _extract_supplemental(by_heading)
     except Exception as exc:  # noqa: BLE001 - malformed/encrypted must not raise
         result.error_type = type(exc).__name__
         result.failure_code = classify_pdf_failure(raw, exc)

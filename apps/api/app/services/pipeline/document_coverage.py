@@ -47,7 +47,8 @@ _READY_SLOT_STATES = frozenset({"ready", "acquired", "reused"})
 
 
 async def held_primary_documents(
-    session: Any, company_id: uuid.UUID | None, *, limit: int = MAX_INVENTORY
+    session: Any, company_id: uuid.UUID | None, *, limit: int = MAX_INVENTORY,
+    truncated_only: bool = False,
 ) -> list[dict[str, Any]] | None:
     """The subject's held primary documents (current versions), newest first.
 
@@ -124,6 +125,7 @@ async def held_primary_documents(
             V.is_current.is_(True),
             or_(D.company_id == company_id, V.id.in_(owned_versions)),
             version_is_disclosure,
+            *((_active(Der.truncated).is_(True),) if truncated_only else ()),
         )
         .group_by(
             V.id, V.title, D.title, D.document_type, V.canonical_url, V.published_at,
@@ -164,6 +166,26 @@ async def held_primary_documents(
         if len(out) >= limit:
             break
     return out
+
+
+async def current_inventory(
+    session: Any, company_id: uuid.UUID | None, *, limit: int = MAX_INVENTORY
+) -> list[dict[str, Any]] | None:
+    """ADR-094 review — the held primary documents NOW (documents acquired during the run
+    included), plus every truncated one the ``MAX_INVENTORY`` newest-first window would
+    hide: a truncated parse beyond it must still stop an absence claim. ``None`` when the
+    lookup fails."""
+    inventory = await held_primary_documents(session, company_id, limit=limit)
+    if inventory is None:
+        return None
+    truncated = await held_primary_documents(
+        session, company_id, limit=limit, truncated_only=True)
+    seen = {d.get("version_id") for d in inventory}
+    for doc in truncated or ():
+        if doc.get("version_id") not in seen:
+            inventory.append(doc)
+            seen.add(doc.get("version_id"))
+    return inventory
 
 
 def _slot_failures(

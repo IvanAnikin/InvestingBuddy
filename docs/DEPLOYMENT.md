@@ -729,6 +729,24 @@ were already on.
   `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
 
+#### Extraction pipeline version 25 — note pages of long PDFs (Research Integrity Closure H4, ADR-094)
+
+Version 25 reads an outline-less long PDF's note and statement pages beyond the first
+40, within the supplemental cap. It also records the pages it skipped. Version 24 is
+batch H3a's, which merges first.
+
+**Cost.** Production keeps no raw bytes. So `_read_by_an_older_pipeline` REFETCHES and
+RE-EXTRACTS every held disclosure an older pipeline derived, of any kind and for any
+issuer, on its company's next run, within `V3_DISCLOSURE_CORE_BUDGET_SECONDS`. Expect
+the first run of each company after the deploy to spend that budget on refetching.
+Only PDFs longer than the leading window read differently.
+
+- No migration and no new setting. The heading scan uses pypdf (already a dependency)
+  and at most a quarter of the remaining extraction time.
+- No new host is contacted.
+- Rolling back to 24 or 23 is safe. A document read at 25 is not re-read by an older
+  pipeline, and older code ignores `pages_extracted` / `skipped_page_ranges`.
+
 #### Extraction pipeline version 23 — Appendix 5B / 4C items (Research Integrity Closure E2, ADR-087)
 
 Version 23 adds the ASX quarterly cash flow report reader. A held Appendix 5B or 4C PDF

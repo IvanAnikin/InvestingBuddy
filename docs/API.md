@@ -3654,7 +3654,19 @@ Additive keys under `source_summary_json.v3_research`:
     `investing_financing_cash`, `major_shareholders`, `governance`, `going_concern`,
     `dividend_policy`, `properties`, `store_network`, `regulatory_status`,
     `collaborations`, `rate_sensitivity`.
-  - Extraction pipeline version 24.
+  - Extraction pipeline version 25.
+- Review round 1:
+  - `gap_resolution.gaps[*]` gains `queries_planned`, `queries_succeeded`,
+    `queries_failed` and `queries_skipped`.
+  - `gap_resolution.counts` gains `gaps_located_unverified`, `queries_planned`,
+    `queries_succeeded`, `queries_failed` and `queries_skipped`. `gaps_found` now counts
+    only gaps a finding answers.
+  - `gaps[*].evidence[*]` gains `period`, the period the passage was located for (or
+    `null`).
+  - `canonical_state.gap_resolution` gains `located: [{topic, period}]`. `topics_located`
+    now holds only located evidence topics.
+  - New `why` values: `not_every_query_ran` and `gap_queue_time_budget_spent`.
+  - `PERIOD_MISMATCH` wording now covers an unconfirmed period.
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 

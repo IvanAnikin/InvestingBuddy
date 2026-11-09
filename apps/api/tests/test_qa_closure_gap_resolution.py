@@ -201,8 +201,11 @@ class TestResults:
         assert counts["gaps_created"] == 4
         assert counts["gaps_mapped_existing"] == 1
         assert counts["gaps_reread"] == 2
-        assert counts["gaps_found"] == 2  # one located, one mapped
+        # Answered (mapped) and located-unverified are counted apart (review).
+        assert counts["gaps_found"] == 1
+        assert counts["gaps_located_unverified"] == 1
         assert counts["gaps_failed"] == 1
+        assert counts["queries_planned"] == 2 and counts["queries_failed"] == 0
         assert counts["gaps_not_required"] == 1
 
 
@@ -519,7 +522,7 @@ class TestSectionAwarePages:
         from tests.helpers.pdf_fixtures import make_pdf
 
         pages = [f"Page {i} directors report discussion of the year." for i in range(1, 7)]
-        pages[4] = "18. Exploration Project Expenditure Commitments 20,494,622"
+        pages[4] = "18. Exploration Project Expenditure Commitments"
         result = extract_pdf(make_pdf(pages), cfg=_settings(
             primary_document_max_pdf_pages=2, primary_document_max_supplemental_pdf_pages=5))
         read = {e.page_number for e in result.excerpts}
@@ -540,7 +543,12 @@ class TestSectionAwarePages:
     @pytest.mark.parametrize("line,expected", [
         ("18.  Exploration Project Expenditure Commitments", True),
         ("(b) Interest Rate Risk", True),
-        ("Segment information", True),
+        ("SEGMENT INFORMATION", True),
+        ("Segment information", False),
+        ("segment revenue grew 12% compared with the prior", False),
+        ("Commitments to our customers and communities", False),
+        ("1. we reduced debt by $40m during the year", False),
+        ("2. Debt was reduced by 40 million", False),
         ("Note 12 Loans and borrowings", True),
         ("Debt and equity markets remained open across the whole year", False),
         ("Borrowings rose as the group drew down its facility.", False),
@@ -596,7 +604,7 @@ class TestSectionAwarePages:
         db_session.add(version)
         await db_session.flush()
         db_session.add(ResearchDocumentDerivation(
-            id=uuid.uuid4(), research_document_version_id=version.id, pipeline_version=24,
+            id=uuid.uuid4(), research_document_version_id=version.id, pipeline_version=25,
             extraction_method="native_pdf", status="partial", is_active=True,
             pages_persisted=47, page_count=59, truncated=True,
         ))
@@ -646,3 +654,344 @@ def test_the_section_and_row_patterns_are_linear(pattern: str) -> None:
                 pass
 
         _assert_scales_linearly(run, regex.pattern[:30])
+
+
+# ── ADR-094 review: an absence needs a COMPLETE search ─────────────────────── #
+
+
+def _raising_after_first(first: list):  # noqa: ANN202
+    calls: list[str] = []
+
+    async def search(query: str):  # noqa: ANN202
+        calls.append(query)
+        if len(calls) == 1:
+            return list(first)
+        raise RuntimeError("database went away")
+
+    search.calls = calls  # type: ignore[attr-defined]
+    return search
+
+
+class TestCompleteSearch:
+    DEBT = "No total debt or net debt figure in evidence."
+
+    def test_failed_queries_never_end_not_found(self) -> None:
+        search = _raising_after_first([])
+        [res], _q = _resolve([_gap(self.DEBT)], [TEN_Q], search)
+        assert len(search.calls) == 3
+        assert res.result == gres.RESULT_NOT_RUN and res.why == gres.WHY_SEARCH_FAILED
+        assert (res.queries_planned, res.queries_succeeded, res.queries_failed) == (3, 1, 2)
+        assert not res.to_dict()["may_say_not_found"]
+
+    def test_a_run_cap_that_skips_a_query_never_ends_not_found(self) -> None:
+        [res], queries = _resolve([_gap(self.DEBT)], [TEN_Q], _search(), max_run_queries=1)
+        assert queries == 1
+        assert res.result == gres.RESULT_NOT_RUN and res.why == gres.WHY_BUDGET
+        assert res.queries_skipped == 2
+
+    def test_a_topic_cut_by_the_per_gap_cap_never_ends_not_found(self) -> None:
+        gap = _gap("No CET1, LCR, NIM or SLR figure in evidence.")
+        plan = gres.plan_gap(gap)
+        assert len(plan.topics) > gres.MAX_QUERIES_PER_GAP
+        [res], _q = _resolve([gap], [TEN_Q], _search())
+        assert res.result == gres.RESULT_NOT_RUN and res.why == gres.WHY_INCOMPLETE
+
+    def test_every_topic_gets_its_own_query_before_any_row_query(self) -> None:
+        queries = gres.reread_queries(["commitments", "total_debt", "share_count"])
+        assert len(queries) == 3
+        assert gres.topics_searched(["commitments", "total_debt", "share_count"], queries)
+
+    def test_a_complete_search_still_ends_not_found(self) -> None:
+        [res], _q = _resolve([_gap(self.DEBT)], [TEN_Q], _search())
+        assert res.result == gres.RESULT_NOT_FOUND_AFTER_SEARCH
+        assert res.queries_failed == 0 and res.queries_skipped == 0
+
+    def test_a_spent_deadline_is_not_run(self) -> None:
+        import time
+
+        [res], queries = _resolve([_gap(self.DEBT)], [TEN_Q], _search(),
+                                  deadline=time.monotonic() - 1)
+        assert queries == 0
+        assert res.result == gres.RESULT_NOT_RUN and res.why == gres.WHY_DEADLINE
+
+    def test_the_counts_carry_the_query_accounting(self) -> None:
+        resolutions, queries = _resolve([_gap(self.DEBT)], [TEN_Q], _raising_after_first([]))
+        counts = gres.counts_of(resolutions, queries_run=queries)
+        assert (counts["queries_planned"], counts["queries_succeeded"],
+                counts["queries_failed"], counts["queries_skipped"]) == (3, 1, 2, 0)
+
+    def test_a_noncomparable_gap_is_a_mismatch_before_an_unparsed_document(self) -> None:
+        gap = _gap(self.DEBT, gap_status="NONCOMPARABLE",
+                   reasons=(gr.REASON_OLDER_PERIOD,))
+        [res], _q = _resolve([gap], [AR_TRUNCATED], _search())
+        assert res.result == gres.RESULT_PERIOD_MISMATCH
+
+
+# ── ADR-094 review: located is held to the metric's own period and shape ───── #
+
+
+class TestLocatedIsStrict:
+    def test_a_year_elsewhere_in_the_passage_is_no_period(self) -> None:
+        hit = {"text": "Our 2026 strategy update. " + "x " * 200
+               + "Total debt was 4,100 at year end, following the reorganisation."}
+        assert gres._hit_year_ok(hit, "FY2026", ("total_debt",)) is False
+        near = {"text": "Total debt was 4,100 at 31 December 2026."}
+        assert gres._hit_year_ok(near, "FY2026", ("total_debt",)) is True
+
+    def test_a_located_passage_of_an_unconfirmed_period_is_a_period_mismatch(self) -> None:
+        gap = _gap("No FY2026 total debt figure in evidence.")
+        hit = _hit("Total debt was 4,100 at year end.", published_at=None)
+        [res], _q = _resolve([gap], [TEN_Q], _search(default=[hit]))
+        assert res.result == gres.RESULT_PERIOD_MISMATCH
+
+    def test_a_prose_line_is_no_table_row(self) -> None:
+        assert not dr.table_rows_carried(
+            "Commitments to our customers and communities 2026 and beyond 4")
+        assert not dr.table_rows_carried("Borrowings rose to 20,000 after the drawdown")
+        assert dr.table_rows_carried("Borrowings | 20,000 | 15,000") >= {"total_debt"}
+        assert dr.table_rows_carried("Borrowings (note 18) 20,000 15,000") >= {"total_debt"}
+
+    def test_the_canonical_state_locates_only_evidence_topics(self) -> None:
+        v3 = {"gap_resolution": {"counts": {}, "gaps": [
+            {"result": "FOUND", "topics": ["governance"]},
+            {"result": "EXTRACTION_FAILED", "topics": ["total_debt", "net_debt"],
+             "evidence": [{"topics": ["total_debt"], "period": "2026"}]},
+        ]}}
+        state = gap_resolution_state(v3)
+        assert state["topics_located"] == ["total_debt"]
+        assert state["located"] == [{"topic": "total_debt", "period": "2026"}]
+
+    @staticmethod
+    def _state(*located: tuple[str, str | None]) -> dict:
+        return {"gap_resolution": {"topics_located": [t for t, _p in located],
+                                   "located": [{"topic": t, "period": p}
+                                               for t, p in located]}}
+
+    def test_a_broad_cue_never_withholds(self) -> None:
+        board = "The board has not disclosed a dividend policy."
+        assert ri._rule_absence_located(board, self._state(("governance", None))) is None
+        margins = ("Segment revenue is reported for each division, but segment margins "
+                   "are not disclosed.")
+        assert ri._rule_absence_located(margins, self._state(("segment", None))) is None
+
+    def test_a_named_located_topic_withholds(self) -> None:
+        board = "The board has not disclosed a dividend policy."
+        hit = ri._rule_absence_located(board, self._state(("dividend_policy", None)))
+        assert hit is not None and hit.rule == ri.RULE_ABSENCE_CONTRADICTED
+
+    def test_another_period_never_withholds(self) -> None:
+        text = "FY2026 capital commitments are not disclosed."
+        assert ri._rule_absence_located(text, self._state(("commitments", "2024"))) is None
+        assert ri._rule_absence_located(text, self._state(("commitments", "2026"))) is not None
+
+    def test_a_cited_segment_revenue_does_not_contradict_segment_margins(self) -> None:
+        from app.services.ledger import claim_checks
+
+        source = claim_checks.ClaimSource(
+            source_id="f1", text="Segment revenue was 4,000 for the Jewellery division.")
+        margins = "Segment revenue is reported, but segment margins are not disclosed."
+        assert ri._Enforcer._absence_cited(margins, [source]) is None
+        split = "There is no segment split beyond the Jewellery division."
+        assert ri._Enforcer._absence_cited(split, [source]) is not None
+
+
+class TestWording:
+    def test_located_wording_names_what_the_passage_carries(self) -> None:
+        res = gres.GapResolution(
+            gap_id="g", question_key=None, route=gres.ROUTE_REREAD,
+            result=gres.RESULT_EXTRACTION_FAILED, topics=("total_debt", "net_debt"),
+            evidence=[{"document": "10-Q · 2026-11-03", "topics": ["net_debt"]}])
+        assert "net debt" in res.words and "total debt" not in res.words
+
+    def test_a_narrative_topic_claims_no_figure(self) -> None:
+        res = gres.GapResolution(
+            gap_id="g", question_key=None, route=gres.ROUTE_REREAD,
+            result=gres.RESULT_EXTRACTION_FAILED, topics=("legal",),
+            evidence=[{"document": "10-Q · 2026-11-03", "topics": ["legal"]}])
+        assert "figure" not in res.words
+
+
+# ── ADR-094 review: step 7c reads the inventory as it is NOW ───────────────── #
+
+
+class TestStepInventory:
+    async def test_the_step_rereads_the_inventory(self, monkeypatch) -> None:  # noqa: ANN001
+        from types import SimpleNamespace
+
+        from app.services.pipeline import document_coverage, v3_pipeline
+
+        seen: dict = {}
+
+        async def current(session, company_id, **kw):  # noqa: ANN001, ANN003, ANN202
+            return [AR_TRUNCATED]
+
+        async def resolve_run(session, run, *, company_id, inventory, backend, cfg):  # noqa: ANN001, ANN202
+            seen["inventory"] = inventory
+            return {"counts": {}}
+
+        class _Nested:
+            async def __aenter__(self):  # noqa: ANN204
+                return self
+
+            async def __aexit__(self, *a):  # noqa: ANN002, ANN204
+                return False
+
+        session = SimpleNamespace(begin_nested=lambda: _Nested())
+        monkeypatch.setattr(document_coverage, "current_inventory", current)
+        monkeypatch.setattr(gres, "resolve_run", resolve_run)
+        outcome = SimpleNamespace(gap_resolution=None, degraded=[])
+        await v3_pipeline.gap_resolution_step(
+            session, SimpleNamespace(id="r"), company=SimpleNamespace(id="c"),
+            outcome=outcome, backend=object(), cfg=None)
+        assert seen["inventory"] == [AR_TRUNCATED]
+
+    async def test_a_truncated_document_beyond_the_window_is_listed(
+        self, db_session  # noqa: ANN001, F811
+    ) -> None:
+        import uuid
+        from datetime import UTC, datetime
+
+        from app.models.company import Company
+        from app.models.research_derivation import ResearchDocumentDerivation
+        from app.models.research_document import ResearchDocument, ResearchDocumentVersion
+        from app.services.pipeline import document_coverage
+
+        subject = uuid.uuid4()
+        db_session.add(Company(id=subject, name="Example Resources Ltd", ticker="EXR",
+                               exchange="ASX", status="new"))
+        await db_session.flush()
+        for key, published, truncated in (("new", date(2026, 10, 1), False),
+                                          ("old", date(2025, 9, 1), True)):
+            doc = ResearchDocument(id=uuid.uuid4(), company_id=subject, document_key=key,
+                                   document_type="annual_report", title=key)
+            db_session.add(doc)
+            await db_session.flush()
+            version = ResearchDocumentVersion(
+                id=uuid.uuid4(), research_document_id=doc.id, content_hash=key * 16,
+                canonical_url=f"https://www.asx.com.au/{key}.pdf", transport="test",
+                source_tier="T1_primary_filing", access_class="public_official",
+                extraction_status="extracted", is_current=True, published_at=published,
+                retrieved_at=datetime.now(UTC),
+            )
+            db_session.add(version)
+            await db_session.flush()
+            db_session.add(ResearchDocumentDerivation(
+                id=uuid.uuid4(), research_document_version_id=version.id,
+                pipeline_version=25, extraction_method="native_pdf", status="partial",
+                is_active=True, pages_persisted=40, page_count=59 if truncated else 40,
+                truncated=truncated,
+            ))
+        await db_session.flush()
+        window = await document_coverage.held_primary_documents(db_session, subject, limit=1)
+        assert [d["title"] for d in window or []] == ["new"]
+        merged = await document_coverage.current_inventory(db_session, subject, limit=1)
+        assert {d["title"] for d in merged or []} == {"new", "old"}
+        assert gres.truncated_documents(merged)
+
+
+# ── ADR-094 review: outline pages first, the heading scan on a sub-budget ──── #
+
+
+class TestOutlineFirst:
+    def test_outline_pages_are_read_and_the_scan_gets_a_quarter(self, monkeypatch) -> None:  # noqa: ANN001
+        import time
+
+        from app.services.sources import primary_document_extractor as pde
+        from tests.helpers.pdf_fixtures import make_pdf_with_outline
+
+        pages = ["Cover filler page text." for _ in range(3)] + [
+            "Consolidated Income Statement\nGroup revenue 1,000 million euros in 2026.",
+            "Filler page.", "Filler page again."]
+        raw = make_pdf_with_outline(pages, bookmarks={4: "Consolidated Income Statement"})
+        seen: dict = {}
+
+        def scan(raw, *, total_pages, exclude, max_pages, deadline=None):  # noqa: ANN001, ANN202
+            seen["budget"] = (deadline or 0) - time.monotonic()
+            seen["exclude"] = set(exclude)
+            return [6]
+
+        monkeypatch.setattr(pde, "_select_note_pages", scan)
+        cfg = _settings(primary_document_max_pdf_pages=3,
+                        primary_document_max_supplemental_pdf_pages=5,
+                        primary_document_extraction_timeout_seconds=40)
+        result = pde.extract_pdf(raw, cfg=cfg)
+        assert 4 in seen["exclude"]
+        assert seen["budget"] <= 40 * pde._HEADING_SCAN_TIME_SHARE + 0.5
+        assert result.pages_extracted == 5 and result.skipped_page_ranges == ["5"]
+
+
+# ── ADR-094 review: a real database error inside the per-query SAVEPOINT ───── #
+
+
+import os  # noqa: E402
+
+_PG_URL = os.environ.get("V3_TEST_POSTGRES_URL", "")
+
+
+@pytest.mark.skipif(not _PG_URL, reason="set V3_TEST_POSTGRES_URL to a PostgreSQL at head")
+async def test_a_database_error_in_a_reread_query_leaves_the_session_usable(
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    import uuid
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.services.corpus import retrieval
+
+    async def broken(session, **kw):  # noqa: ANN001, ANN003, ANN202
+        await session.execute(text("SELECT 1/0"))  # a real error, raised by the server
+
+    monkeypatch.setattr(retrieval, "search_corpus", broken)
+    engine = create_async_engine(_PG_URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with maker() as session:
+            try:
+                search = gres._corpus_search(session, backend=object(), cfg=None,
+                                             company_id=uuid.uuid4())
+                assert await search("total debt borrowings") is None
+                # The SAVEPOINT rolled back: the outer transaction still works, and the
+                # gap rows stay readable.
+                assert (await session.execute(text("SELECT 1"))).scalar() == 1
+                await session.execute(text("SELECT count(*) FROM research_gaps"))
+            finally:
+                await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+# ── ADR-094 review: the remaining patterns are linear ──────────────────────── #
+
+
+@pytest.mark.parametrize("name", [
+    "clause_split", "disclosure_absence", "question_cues", "note_heading_re",
+    "title_word", "row_tail_token", "carried_windows", "page_has_note_heading",
+    "absence_claims_strict",
+])
+def test_the_review_patterns_are_linear(name: str) -> None:
+    from app.services.sources import primary_document_extractor as pde
+    from tests.test_qa_closure_ledger_state import _assert_scales_linearly
+
+    def scan(pattern):  # noqa: ANN001, ANN202
+        def run(text: str) -> None:
+            pattern.search(text)
+            for _ in pattern.finditer(text):
+                pass
+        return run
+
+    if name == "question_cues":
+        for pattern, _topics in dr._QUESTION_CUES:
+            _assert_scales_linearly(scan(pattern), pattern.pattern[:30])
+        return
+    fn = {
+        "clause_split": scan(ri._CLAUSE_SPLIT_RE),
+        "disclosure_absence": scan(ri._DISCLOSURE_ABSENCE_RE),
+        "note_heading_re": lambda s: [pde._NOTE_HEADING_RE.match(x) for x in s.splitlines()],
+        "title_word": scan(pde._TITLE_WORD_RE),
+        "row_tail_token": scan(dr._ROW_TAIL_TOKEN_RE),
+        "carried_windows": lambda s: dr.carried_windows(s, ("total_debt", "commitments")),
+        "page_has_note_heading": pde._page_has_note_heading,
+        "absence_claims_strict": lambda s: ri.absence_claims(s, strict=True),
+    }[name]
+    _assert_scales_linearly(fn, name)

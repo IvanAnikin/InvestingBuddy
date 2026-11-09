@@ -377,17 +377,20 @@ from __future__ import annotations
 # whose row an older pipeline derived (any kind, any issuer) once, within the existing
 # acquisition budgets; only the 5B/4C readings change. Raw-text extraction is
 # unchanged, so ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
-# Version 24 (QA campaign 2026-11, ADR-094 §8): a long PDF whose outline does not fill
+# Version 24 belongs to campaign batch H3a, which merges first.
+# Version 25 (QA campaign 2026-11, ADR-094 §8): a long PDF whose outline does not fill
 # the supplemental page budget (an ASX annual report often has none) also reads the
 # pages beyond the leading window whose own text opens a note or statement section
 # (borrowings, commitments, segment, related parties, shareholders …), and records the
-# pages it did not open (``pages_extracted`` / ``skipped_page_ranges``). A version-23 row
-# of such a report never opened its notes 18–28; the held-disclosure re-read
-# (``_read_by_an_older_pipeline``) reads it again once. Only PDFs longer than the leading
-# window can change. ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance: the V2
-# excerpt replay path keeps its readings (a known limit, ADR-094).
+# pages it did not open (``pages_extracted`` / ``skipped_page_ranges``). A version-23 or
+# 24 row of such a report never opened its notes. The bump is not PDF-specific: the
+# held-disclosure re-read (``_read_by_an_older_pipeline``) REFETCHES and RE-EXTRACTS
+# every held disclosure an older pipeline derived, of any kind, on its next touch,
+# within the existing acquisition budgets; only long PDFs can read differently.
+# ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance: the V2 excerpt replay path
+# keeps its readings (a known limit, ADR-094).
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 24
+CURRENT_EXTRACTION_PIPELINE_VERSION = 25
 
 #: ADR-085 — the first version whose SEC filing-body extraction reads inline XBRL. A held
 #: SEC filing document stamped below it has never had its tagged statements read.
