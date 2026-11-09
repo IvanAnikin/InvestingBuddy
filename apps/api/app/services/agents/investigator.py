@@ -1104,7 +1104,7 @@ def _fiscal_quarter_restated(
 
 def _ytd_rekey(
     period_key: str | None, statement: str, cited: "list[str]",
-    evidence: "Sequence[_Evidence]",
+    evidence: "Sequence[_Evidence]", *, calendar_fiscal_year: bool | None = None,
 ) -> Any:
     """ADR-093 — the year-to-date key a quarter-keyed statement takes from its own words
     or its cited texts (``period_duration.rekey_for_duration``), or ``None``."""
@@ -1114,7 +1114,8 @@ def _ytd_rekey(
 
     by_id = {item.citation_id: item for item in evidence}
     texts = [by_id[c].text for c in cited if c in by_id and by_id[c].text]
-    return rekey_for_duration(period_key, statement, texts)
+    return rekey_for_duration(period_key, statement, texts,
+                              calendar_fiscal_year=calendar_fiscal_year)
 
 
 def _segment_scope(
@@ -4325,7 +4326,17 @@ class LLMInvestigator:
                 # loses to the statement's own fiscal reading.
                 period_key, period_basis = fiscal_quarter, PERIOD_BASIS_TEXT_STATED
                 self.diagnostics.statements_fiscal_quarter_rekeyed += 1
-            ytd = _ytd_rekey(period_key, statement, real, evidence)
+            ytd = _ytd_rekey(period_key, statement, real, evidence,
+                             calendar_fiscal_year=self._calendar_fiscal_year())
+            if (ytd is None and self._fiscal_anchor is False
+                    and str(period_key or "")[4:] in ("-Q2", "-Q3")
+                    and _ytd_rekey(period_key, statement, real, evidence,
+                                   calendar_fiscal_year=True) is not None):
+                # Review P3-7: a year to date of unstated length is read only on a known
+                # calendar fiscal year; read the issuer's calendar (once, cached) first.
+                await self._anchor()
+                ytd = _ytd_rekey(period_key, statement, real, evidence,
+                                 calendar_fiscal_year=self._calendar_fiscal_year())
             if ytd is not None:
                 # ADR-093 (JPM3 F4): nine-month figures of a 10-Q inherited the filing's
                 # quarter key; the statement's own words, or every figure's source column

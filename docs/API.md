@@ -3655,8 +3655,10 @@ existing `findings.scope_type` and `findings.period_type` columns are used.
 - `findings[*].period_basis` gains `statement_duration` and `source_duration`, both
   emitted only when set.
 - New `period_key` values for year-to-date figures: `YYYY-9M` (nine months, shown as
-  "9M 2026 (year to date)") and `YYYY-H1` for six months. `canonical_state` does not
-  treat a `-9M` key as a latest reporting period.
+  "9M 2026 (year to date)") and `YYYY-H1` for six months. They are only produced from a
+  calendar quarter key, never from an `FY`-prefixed one. `canonical_state` does not
+  treat a `-9M` key as a latest reporting period. Gap reconciliation treats `-9M` as
+  sub-annual, and `research_fields` treats it as a financial period of its own.
 - New `state_invariants` rules:
   - `business_line_presented_as_main_revenue_driver` (withheld);
   - `business_line_presented_as_segment` (repaired).

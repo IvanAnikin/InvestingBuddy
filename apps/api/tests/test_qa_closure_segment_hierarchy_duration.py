@@ -9,6 +9,7 @@ appear in tests only). No network.
 
 from __future__ import annotations
 
+import gc
 import time
 import uuid
 from types import SimpleNamespace
@@ -263,14 +264,22 @@ class TestScopeFinding:
         h = _hierarchy()
         statement = "Q3 2026: total nonperforming assets $5,496m vs $5,792m (-5%)."
         cib = "Commercial & Investment Bank"
-        scope = sh.scope_finding(statement, h, cited=[(cib, "x")], figure_found=True)
+        passage = ("(d) Capital allocated to CIB was increased.\nSelected metrics\n"
+                   "Total nonperforming assets 5,496 5,792 (5)")
+        scope = sh.scope_finding(statement, h, cited=[(cib, passage)], figure_found=True)
         assert scope is not None and scope.basis == sh.BASIS_SOURCE_SECTION
         assert scope.label == f"[{cib} segment, not the whole company]"
         # No figure found there, two sections, an unsectioned passage: nothing.
-        assert sh.scope_finding(statement, h, cited=[(cib, "x")]) is None
-        assert sh.scope_finding(statement, h, cited=[(cib, "x"), (None, "y")],
+        assert sh.scope_finding(statement, h, cited=[(cib, passage)]) is None
+        assert sh.scope_finding(statement, h, cited=[(cib, passage), (None, "y")],
                                 figure_found=True) is None
-        assert sh.scope_finding("Firm NPAs $5,496m", h, cited=[(cib, "x")],
+        assert sh.scope_finding("Firm NPAs $5,496m", h, cited=[(cib, passage)],
+                                figure_found=True) is None
+        # Review P1-2: a passage that never names the segment or its lines, and one with
+        # consolidated / balance-sheet wording, scope nothing.
+        assert sh.scope_finding(statement, h, cited=[(cib, "Total 5,496 5,792")],
+                                figure_found=True) is None
+        assert sh.scope_finding(statement, h, cited=[(cib, passage + "\nConsolidated")],
                                 figure_found=True) is None
 
 
@@ -310,12 +319,16 @@ class TestDuration:
             "2026-Q3", "Q3 2026 NII $27,036M; nine-month $77,913M.", []) is None
 
     def test_nine_month_prose_labelled_q3_is_rekeyed_and_relabelled(self) -> None:
-        rk = pd.rekey_for_duration(
-            "FY2026-Q3", "Q3 FY2026 segment revenue: Payments $16.0bn, Lending $6.4bn, "
-            "Markets $34.0bn.", [QUARTER_AND_YTD])
+        statement = ("Q3 FY2026 segment revenue: Payments $16.0bn, Lending $6.4bn, "
+                     "Markets $34.0bn.")
+        rk = pd.rekey_for_duration("2026-Q3", statement, [QUARTER_AND_YTD],
+                                   calendar_fiscal_year=True)
         assert rk is not None
-        assert rk.period_key == "FY2026-9M" and rk.basis == pd.BASIS_SOURCE
-        assert rk.statement.startswith("9M FY2026 (year to date) segment revenue")
+        assert rk.period_key == "2026-9M" and rk.basis == pd.BASIS_SOURCE
+        assert rk.statement.startswith("9M 2026 (year to date) segment revenue")
+        # Review: a fiscal-prefixed quarter key is never rekeyed.
+        assert pd.rekey_for_duration("FY2026-Q3", statement, [QUARTER_AND_YTD],
+                                     calendar_fiscal_year=True) is None
 
     def test_quarter_figures_stay(self) -> None:
         assert pd.rekey_for_duration(
@@ -549,15 +562,19 @@ class TestInvestigator:
     def test_ytd_rekey_helper(self) -> None:
         ev = [_evidence("ev:c:1", QUARTER_AND_YTD)]
         rk = inv._ytd_rekey("2026-Q3", "Q3 2026: Payments $16.0bn, Markets $34.0bn",
-                            ["ev:c:1"], ev)
+                            ["ev:c:1"], ev, calendar_fiscal_year=True)
         assert rk is not None and rk.period_key == "2026-9M"
+        # Review P3-7: "Year-to-date results" (no length) off a known calendar year: kept.
+        assert inv._ytd_rekey("2026-Q3", "Q3 2026: Payments $16.0bn, Markets $34.0bn",
+                              ["ev:c:1"], ev) is None
         assert inv._ytd_rekey(None, "x", ["ev:c:1"], ev) is None
 
     def test_segment_scope_from_the_cited_chunk_section(self) -> None:
         h = _hierarchy()
         h = sh.SegmentHierarchy(h.segments, h.business_lines, h.basis,
                                 {"c:npa": "Commercial & Investment Bank"})
-        ev = [_evidence("ev:c:npa", "Total nonperforming assets $ 5,496 $ 5,792 (5)")]
+        ev = [_evidence("ev:c:npa", "CIB selected metrics\n"
+                                    "Total nonperforming assets $ 5,496 $ 5,792 (5)")]
         scope = inv._segment_scope("Q3 2026: total nonperforming assets $5,496m",
                                    ["ev:c:npa"], ev, h)
         assert scope is not None and scope.scope_key == "segment:commercial & investment bank"
@@ -619,6 +636,158 @@ class TestPipelineLoader:
         assert outcome.to_dict()["segment_hierarchy"]["reportable_segments"]
 
 
+# ── Review round 1 (NO-GO): the reviewer's probes, as negative tests ─────── #
+
+
+AEROSPACE_DOC = (
+    "SEGMENT RESULTS\nAEROSPACE TECHNOLOGIES\nAerospace Technologies sales were $4.0 billion.\n"
+    "Commercial Aviation revenue was $2.5 billion.\n"
+    "Liquidity and Capital Resources\nCash and cash equivalents were $10.6 billion at "
+    "September 30, 2026. Total debt was $25.0 billion.\n"
+)
+AEROSPACE = (sh.Segment("Aerospace Technologies"), sh.Segment("Industrial Automation"))
+
+
+class TestReviewNegatives:
+    # P1-1 — a "verbatim" copy that adds a period is checked like any claim.
+    def test_verbatim_with_a_period_lead_is_checked(self) -> None:
+        source = cc.ClaimSource("f1", "Net income was $14.4 billion, up 12% from the prior "
+                                "year.", "FY2025", None)
+        claim = "In Q3 2026, net income was $14.4 billion, up 12% from the prior year."
+        verdict = cc.check_claim(claim, [source])
+        assert verdict is not None and verdict.rule == cc.RULE_CLAIM_PERIOD
+        assert cc._verbatim(claim, [source]) is False
+        # Only a short label ending in a colon passes; a label naming a segment does not.
+        assert cc._verbatim("Profitability: Net income was $14.4 billion, up 12% from the "
+                            "prior year.", [source]) is True
+        assert cc._verbatim("CIB: Net income was $14.4 billion, up 12% from the prior "
+                            "year.", [source], _hierarchy()) is False
+        assert cc._verbatim("Net income was $14.4 billion, up 12% from the prior year, "
+                            "in Q3 2026.", [source]) is False
+        # A claim that drops part of its source is not a copy.
+        assert cc._verbatim("Net income was $14.4 billion", [source]) is False
+
+    # P1-2 — a Title-case MD&A heading closes a segment section.
+    def test_title_case_heading_closes_the_section(self) -> None:
+        sections = sh.segment_sections(AEROSPACE_DOC, AEROSPACE)
+        assert len(sections) == 1
+        start, end, name = sections[0]
+        assert name == "Aerospace Technologies"
+        assert "Liquidity" not in AEROSPACE_DOC[start:end]
+        cut = AEROSPACE_DOC.index("Liquidity")
+        chunks = [("c1", 0, AEROSPACE_DOC[:cut]), ("c2", cut, AEROSPACE_DOC[cut:])]
+        assert "c2" not in sh.chunk_sections_of(chunks, AEROSPACE)
+
+    def test_section_length_is_capped(self) -> None:
+        doc = "AEROSPACE TECHNOLOGIES\n" + ("filler text line\n" * 4000)
+        (start, end, _name), = sh.segment_sections(doc, AEROSPACE)
+        assert end - start == sh.MAX_SECTION_SPAN
+        far = [("c0", 0, doc[:30]), ("c1", 30, doc[30:])]
+        assert "c1" not in sh.chunk_sections_of(far, AEROSPACE)
+
+    def test_firm_cash_on_a_segment_page_is_not_scoped(self) -> None:
+        h = sh.SegmentHierarchy(AEROSPACE)
+        statement = "Cash and cash equivalents were $10.6 billion at September 30, 2026."
+        cited = [("Aerospace Technologies", "Aerospace Technologies: " + statement)]
+        assert sh.scope_finding(statement, h, cited=cited, figure_found=True) is None
+
+    # P1-3 — generic segment names and case.
+    def test_generic_segment_never_scopes_by_name(self) -> None:
+        segments = sh.reportable_segments_from_text(
+            "The Group has three reportable segments: Jewellery Maisons, Specialist "
+            "Watchmakers and Other. ")
+        h = sh.SegmentHierarchy(segments)
+        assert sh.is_generic_segment("Other") and sh.is_generic_segment("Corporate & Other")
+        assert not sh.is_generic_segment("Specialist Watchmakers")
+        for statement in ("Other operating expenses rose to EUR 412m in FY2026.",
+                          "Other comprehensive income was EUR 120m.",
+                          "Revenue from other sources reached EUR 1.2bn.",
+                          "Specialist Watchmakers sales fell 13% to EUR 3.4bn, versus "
+                          "company sales up 4%."):
+            assert sh.scope_finding(statement, h) is None, statement
+        scope = sh.scope_finding("Specialist Watchmakers sales fell 13% to EUR 3.4bn.", h)
+        assert scope is not None and scope.segment == "Specialist Watchmakers"
+
+    def test_segment_names_match_case_as_written(self) -> None:
+        h = sh.SegmentHierarchy((sh.Segment("Americas"), sh.Segment("Engineering")))
+        assert sh.scope_finding("engineering costs for the new plant were $250m.", h) is None
+        assert sh.names_in("engineering costs", h).segments == ()
+
+    def test_every_figure_clause_must_name_the_segment(self) -> None:
+        h = _hierarchy()
+        assert sh.scope_finding("Payments $16.0bn; total revenue $45.0bn", h) is None
+        assert sh.scope_finding("Payments revenue $16.0bn, versus $45.0bn for the firm",
+                                h) is None
+
+    # P2-4 — bare duration words are not a reporting period; a balance is never rekeyed.
+    @pytest.mark.parametrize("statement", [
+        "Cash of $120.5 million is sufficient to fund operations for nine months.",
+        "The stock is up 30% year to date; net debt was $2.1 billion.",
+        "Inventory of $1.2 billion equals six months of supply.",
+        "Patients had a 40% response rate at nine months; cash was $300 million.",
+        "Revenue was $1.2 billion, a nine months high.",
+    ])
+    def test_bare_duration_words_do_not_rekey(self, statement: str) -> None:
+        for key in ("2026-Q3", "2026-Q2"):
+            assert pd.rekey_for_duration(key, statement, [], calendar_fiscal_year=True) is None
+
+    @pytest.mark.parametrize("statement,key", [
+        ("Revenue for the first nine months of 2026 was $3.4 billion.", "2026-9M"),
+        ("9M 2026 revenue was $3.4 billion.", "2026-9M"),
+        ("Nine months to Sept 30 2026: revenue $3.4 billion.", "2026-9M"),
+        ("Nine-month 2026 net interest income was $77.9 billion.", "2026-9M"),
+    ])
+    def test_explicit_ytd_forms_rekey(self, statement: str, key: str) -> None:
+        rk = pd.rekey_for_duration("2026-Q3", statement, [])
+        assert rk is not None and rk.period_key == key
+
+    def test_first_half_and_ytd_metric(self) -> None:
+        rk = pd.rekey_for_duration("2026-Q2", "First half revenue was $2.0 billion.", [])
+        assert rk is not None and rk.period_key == "2026-H1"
+        ytd = "Year-to-date revenue was $2.0 billion."
+        assert pd.rekey_for_duration("2026-Q2", ytd, [], calendar_fiscal_year=True) is not None
+        # P3-7: a year to date of unstated length needs a known calendar fiscal year.
+        assert pd.rekey_for_duration("2026-Q2", ytd, []) is None
+        assert pd.rekey_for_duration("2026-Q2", ytd, [], calendar_fiscal_year=False) is None
+
+    def test_balance_sheet_column_is_never_rekeyed(self) -> None:
+        source = ("CONSOLIDATED STATEMENTS OF INCOME\n Three months ended September 30, "
+                  "  Nine months ended September 30,\nRevenue 5,620 5,100 16,020 15,000\n\n"
+                  "CONSOLIDATED BALANCE SHEETS\n   September 30, 2026   December 31, 2025\n"
+                  "Total debt 24,100 25,300\n")
+        for statement in ("Total debt was $25.3 billion at December 31, 2025.",
+                          "Total debt was $24.1 billion at September 30, 2026.",
+                          "Nine months ended September 30, 2026: cash of $3.0 billion."):
+            assert pd.rekey_for_duration("2026-Q3", statement, [source],
+                                         calendar_fiscal_year=True) is None
+
+    def test_fiscal_prefixed_quarter_is_never_rekeyed(self) -> None:
+        assert pd.rekey_for_duration("FY2026-Q3", "Nine months ended 31 March 2026: revenue "
+                                     "$3.4 billion.", []) is None
+
+    # P2-5 — consumers read the nine-month key as its own sub-annual period.
+    def test_consumers_read_the_nine_month_key(self) -> None:
+        from app.services import research_fields as rf
+        from app.services.pipeline import gap_reconciliation as gr
+
+        assert gr._period_class("", "2026-9M") == "sub_annual"
+        assert gr._period_class("", "FY2026-9M") == "sub_annual"
+        assert rf.normalise_period("2026-9M") == "2026-9M"
+        assert rf.normalise_period("FY2026-9M") == "FY2026-9M"
+        assert rf.is_financial_period("2026-9M")
+        assert rf.period_rank("2026-9M") == (2026, 7)
+        assert rf.period_rank("2026-9M") != rf.period_rank("FY2026")
+
+    # P2-6 — a region is never a business line.
+    def test_regions_are_not_business_lines(self) -> None:
+        doc = ("INDUSTRIAL AUTOMATION\nEurope revenue increased 4% to $1.1 billion.\n"
+               "North America revenue was $2.0 billion.\nU.S. revenue was $1.0 billion.\n"
+               "Sensing revenue was $0.5 billion.\nINTERNATIONAL\nFoo\n")
+        lines = sh.business_lines_in_sections(doc, sh.segment_sections(doc, AEROSPACE),
+                                              AEROSPACE)
+        assert [b.name for b in lines] == ["Sensing"]
+
+
 # ── Linear time ───────────────────────────────────────────────────────────── #
 
 PATTERNS = [
@@ -628,6 +797,11 @@ PATTERNS = [
     pd._MARKER_LINE_RE, pd._HEADER_DURATION_RE, pd._CELL_RE, pd._SENTENCE_END_RE,
     cp._KEY_YTD_RE, cp._YTD_LABEL_RE, cc._DRIVER_BEFORE_RE, cc._DRIVER_AFTER_RE,
     cc._AS_SEGMENT_AFTER_RE, cc._REVENUE_WORDS_RE, cc._METRIC_WORD_RE,
+    # Review P3-8: every remaining pattern of the change.
+    sh._KEY_SEP_RE, sh._CAMEL_RE, sh._TITLE_HEADING_RE, sh._CLAUSE_RE, sh._FIRMWIDE_ITEM_RE,
+    sh._LEADING_JOINER_RE, sh._BLANKS_RE, sh._ITEM_SPLIT_RE, sh._OXFORD_RE, sh._AND_RE,
+    pd._QUARTER_KEY_RE, pd._STATEMENT_YTD_RE, pd._INSTANT_RE, cc._WS_RE, cc._LABEL_LEAD_RE,
+    cc._TAIL_PUNCT_RE, segment_scope._PERIODIC_RE,
 ]
 DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000,
               "Aa " * 3000, "& " * 4000, "1," * 4000, "9M " * 3000,
@@ -636,10 +810,17 @@ DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000,
 
 @pytest.mark.parametrize("pattern", PATTERNS, ids=lambda p: p.pattern[:30])
 def test_patterns_are_linear(pattern) -> None:  # noqa: ANN001
-    for text in DEGENERATE:
-        started = time.perf_counter()
-        list(pattern.finditer(text))
-        assert time.perf_counter() - started < 0.2
+    # A pattern matching thousands of times allocates thousands of match objects; a
+    # collector pass over the whole suite's heap is not the pattern's time.
+    gc.disable()
+    try:
+        for text in DEGENERATE:
+            started = time.perf_counter()
+            for _m in pattern.finditer(text):
+                pass
+            assert time.perf_counter() - started < 0.2
+    finally:
+        gc.enable()
 
 
 def test_helpers_are_fast_on_degenerate_text() -> None:

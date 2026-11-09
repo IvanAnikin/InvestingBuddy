@@ -12,9 +12,12 @@ THE RULE (fail closed)
 A finding whose inherited key is a quarter (``2026-Q3``) is rekeyed to the year-to-date
 period of the same fiscal year (``2026-9M``; six months → ``2026-H1``) only when:
 
-* **its own words** state a year-to-date duration ("nine months", "nine-month", "9M",
-  "year to date", "six months") of exactly the quarter's cumulative length and state no
-  quarter or three-month duration; or
+* **its own words** state a year-to-date REPORTING duration in an explicit form ("nine
+  months ended / to …", "first nine months of", "nine-month 2026", "9M 2026", "six
+  months ended", "first half", "year-to-date revenue", "YTD sales") of exactly the
+  quarter's cumulative length, and state no quarter or three-month duration. A bare
+  "nine months" / "year to date" / "six months" is not a reporting period ("cash to
+  fund nine months", "up 30% year to date", "six months of supply"); or
 * **its sources** state every one of its amounts ONLY in a year-to-date context of that
   length. The context of one occurrence is read from, in order:
   - the table column: a row with an even number of numeric cells under a header naming
@@ -30,8 +33,14 @@ period of the same fiscal year (``2026-9M``; six months → ``2026-H1``) only wh
 Then a quarter label the statement itself writes for that quarter ("Q3 FY2026") is
 rewritten to the year-to-date label ("9M FY2026 (year to date)").
 
-Never guessed: anything else keeps the inherited key. A balance at a date (an instant)
-is never rekeyed — it has no duration.
+Never guessed: anything else keeps the inherited key.
+
+* A balance at a date (an instant) is never rekeyed — it has no duration. A statement
+  naming a balance (cash, debt, inventory, backlog, deposits, assets …) or a date it is
+  stated "at" / "as of" keeps its key (``_INSTANT_RE``).
+* Only a calendar key is rekeyed (``2026-Q3``; never ``FY2026-Q3``), and a year to date
+  of unstated length ("year-to-date revenue") only when the issuer's fiscal year is
+  known to be the calendar year.
 """
 
 from __future__ import annotations
@@ -57,6 +66,39 @@ _QUARTER_KEY_RE = re.compile(r"^(?P<fy>FY)?(?P<y>\d{4})-Q(?P<q>[1-4])$")
 _YTD_WORDS_RE = re.compile(
     r"\b(?:(?P<n>six|nine|6|9)[- \t]{1,2}months?|(?P<m>6|9)M|year[- \t]to[- \t]date|ytd|"
     r"first[ \t]{1,3}(?P<f>six|nine)[ \t]{1,3}months)\b",
+    re.IGNORECASE,
+)
+#: ADR-093 review: the explicit forms of a year-to-date REPORTING period a statement may
+#: state. ``n``/``f``/``h``: the length (six / nine; ``h``: a half); ``t``: length unstated.
+_YTD_METRIC = (
+    r"(?:revenues?|sales|net[ \t]{1,3}sales|results|net[ \t]{1,3}income|net[ \t]{1,3}interest"
+    r"[ \t]{1,3}income|earnings|income|profit|ebitda|operating[ \t]{1,3}(?:income|profit|"
+    r"cash[ \t]{1,3}flows?)|free[ \t]{1,3}cash[ \t]{1,3}flows?|cash[ \t]{1,3}flows?|orders|"
+    r"bookings|expenses|costs|capex|capital[ \t]{1,3}expenditures?)"
+)
+_STATEMENT_YTD_RE = re.compile(
+    r"\b(?:(?P<n>six|nine|6|9)[- \t]{1,2}months?[ \t]{1,3}(?:ended|ending|to|through|of)\b"
+    r"|(?P<n2>six|nine|6|9)[- \t]{1,2}month[ \t]{1,3}(?:period|(?:19|20)\d{2})\b"
+    r"|first[ \t]{1,3}(?P<f>six|nine)[ \t]{1,3}months\b"
+    r"|(?P<m>6|9)M[ \t]{0,1}(?:FY[ \t]{0,1})?(?:19|20)?\d{2}\b"
+    r"|(?P<h>first[ \t]{1,3}half|H1[ \t]{0,1}(?:FY[ \t]{0,1})?(?:19|20)?\d{2}\b|half[- \t]year"
+    r"[ \t]{1,3}(?:ended|results|to))"
+    r"|(?P<t>year[- \t]to[- \t]date|ytd)[ \t]{1,3}" + _YTD_METRIC + r"\b)",
+    re.IGNORECASE,
+)
+#: ADR-093 review: a balance (an instant) — never rekeyed to a duration.
+_INSTANT_RE = re.compile(
+    r"\b(?:as[ \t]{1,3}(?:of|at)\b|at[ \t]{1,3}(?:the[ \t]{1,3}end[ \t]{1,3}of\b|"
+    r"(?:quarter|period|year|half)[- \t]end\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|"
+    r"nov|dec)[a-z]{0,6}\.?[ \t]{1,3}\d|\d{1,2}[ \t]{1,3}(?:jan|feb|mar|apr|may|jun|jul|aug|"
+    r"sep|oct|nov|dec)|(?:19|20)\d{2}-\d{2})"
+    r"|cash(?:[ \t]{1,3}and[ \t]{1,3}(?:cash[ \t]{1,3}equivalents|investments|"
+    r"marketable[ \t]{1,3}securities))?(?:[ \t]{1,3}balances?)?[ \t]{1,3}(?:of|was|were|"
+    r"stood|totall?ed|held|is|are|on[ \t]{1,3}hand)\b|held[ \t]{1,3}cash"
+    r"|(?:total|net|long-term|short-term)[ \t]{1,3}(?:debt|borrowings)|inventor(?:y|ies)"
+    r"|backlog|total[ \t]{1,3}(?:assets|liabilities|equity|deposits|loans)|deposits[ \t]{1,3}"
+    r"(?:of|were|was)|book[ \t]{1,3}value|shares[ \t]{1,3}outstanding|nonperforming|"
+    r"nonaccrual|headcount|employees|liquidity[ \t]{1,3}(?:of|was)|runway)",
     re.IGNORECASE,
 )
 #: A quarter (three-month) duration a text names.
@@ -114,18 +156,27 @@ def _ytd_months(text: str) -> set[int | None]:
 
 
 def statement_months(statement: str) -> int | None:
-    """The one year-to-date length a statement states, when it states no quarter.
-    ``None``: none, two, or a quarter beside it."""
+    """The one year-to-date length a statement states in an explicit reporting form,
+    when it states no quarter. ``None``: none, two, or a quarter beside it; ``0``:
+    "year-to-date revenue" (length from the key)."""
     text = str(statement or "")[:cp.MAX_TEXT_CHARS]
-    lengths = _ytd_months(text)
-    if not lengths:
+    lengths: set[int] = set()
+    for m in _STATEMENT_YTD_RE.finditer(text):
+        if m.group("h"):
+            lengths.add(6)
+        elif m.group("t"):
+            lengths.add(0)
+        else:
+            raw = (m.group("n") or m.group("n2") or m.group("f") or m.group("m") or "").lower()
+            lengths.add(_LENGTHS.get(raw, -1))
+    if not lengths or -1 in lengths:
         return None
     if _QUARTER_WORDS_RE.search(text):
         return None
-    known = {n for n in lengths if n is not None}
+    known = {n for n in lengths if n}
     if len(known) > 1:
         return None
-    return next(iter(known)) if known else 0  # 0: "year to date", length from the key
+    return next(iter(known)) if known else 0
 
 
 def _line_bounds(text: str, pos: int) -> tuple[int, int]:
@@ -263,21 +314,28 @@ def _relabel(statement: str, year: int, quarter: int, label: str) -> str:
 
 
 def rekey_for_duration(
-    period_key: str | None, statement: str, cited_texts: Sequence[str],
+    period_key: str | None, statement: str, cited_texts: Sequence[str], *,
+    calendar_fiscal_year: bool | None = None,
 ) -> DurationRekey | None:
-    """ADR-093 — the year-to-date key a quarter-keyed finding takes, or ``None``."""
+    """ADR-093 — the year-to-date key a quarter-keyed finding takes, or ``None``.
+
+    ``calendar_fiscal_year``: whether the issuer's fiscal year is the calendar year
+    (``None``: unknown). A year to date of unstated length is read only when it is."""
     m = _QUARTER_KEY_RE.match(str(period_key or "").strip())
-    if m is None:
-        return None
-    year, quarter, fiscal = int(m.group("y")), int(m.group("q")), bool(m.group("fy"))
+    if m is None or m.group("fy"):
+        return None  # review P2: a fiscal-prefixed quarter is never rekeyed
+    year, quarter = int(m.group("y")), int(m.group("q"))
     months = 3 * quarter
-    key = ytd_key(year, months, fiscal=fiscal)
+    key = ytd_key(year, months)
     if key is None:
         return None
     text = str(statement or "")
+    if _INSTANT_RE.search(text[:cp.MAX_TEXT_CHARS]):
+        return None  # a balance at a date has no duration
+    unstated_ok = calendar_fiscal_year is True
     own = statement_months(text)
     if own is not None:
-        if own not in (0, months):
+        if own not in (0, months) or (own == 0 and not unstated_ok):
             return None
         return DurationRekey(key, BASIS_STATEMENT, text)
     if _ytd_months(text):
@@ -294,10 +352,12 @@ def rekey_for_duration(
             continue  # a figure no cited text states: it votes for nothing
         if any(d is None or d not in (0, months) for d in durations):
             return None
+        if 0 in durations and not unstated_ok:
+            return None  # review P3: "Year-to-date results" off a calendar year
         found_any = True
     if not found_any:
         return None
-    label = f"{'9M' if months == 9 else 'H1'} {'FY' if fiscal else ''}{year}"
+    label = f"{'9M' if months == 9 else 'H1'} {year}"
     label = label + (" (year to date)" if months == 9 else "")
     return DurationRekey(key, BASIS_SOURCE, _relabel(text, year, quarter, label))
 

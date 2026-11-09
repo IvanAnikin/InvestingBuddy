@@ -19,7 +19,11 @@ THE HIERARCHY, DERIVED FROM THE ISSUER'S OWN DOCUMENTS (never from a model)
   ``inline_xbrl_facts``. They confirm the list, or stand in for it when no sentence was
   read.
 * **Segment sections** — an upper-case heading line naming one reportable segment opens
-  that segment's section of the filing; the next upper-case heading line closes it.
+  that segment's section of the filing. The next upper-case heading line closes it, and
+  so does a Title-case MD&A heading from a closed list ("Liquidity and Capital
+  Resources", "Cash Flows", "Item 7 …"); a section never runs past
+  ``MAX_SECTION_SPAN`` characters. (Not every Title-case line can close it: a segment
+  page's table rows — "Investment Banking", "Commercial Banking" — are Title-case.)
 * **Business lines** — inside one segment's section, a capitalised name that the section
   states a revenue for ("Payments revenue was $5.6 billion") and that is not itself a
   reportable segment is a business line OF THAT SEGMENT. A name found under two segments
@@ -50,6 +54,9 @@ MAX_SEGMENTS = 12
 MAX_BUSINESS_LINES = 60
 #: Characters of a segment section read for business lines.
 MAX_SECTION_CHARS = 250_000
+#: ADR-093 review: the longest a segment section may run (an MD&A segment page is
+#: 12-25k characters in the filings read). Past it, the section is closed.
+MAX_SECTION_SPAN = 40_000
 
 BASIS_SEGMENT_LIST = "issuer_segment_list"
 BASIS_XBRL = "xbrl_segment_axis"
@@ -85,6 +92,26 @@ _NAME_WORD_RE = re.compile(r"[A-Za-z][\w'’.-]{0,40}|&")
 _NAME_JOINERS = frozenset({"and", "&", "of", "for", "the", "in"})
 #: An upper-case heading line: letters, spaces and a few joiners only.
 _HEADING_CHARS_RE = re.compile(r"^[A-Z0-9&,'’ .()/-]{4,80}$")
+#: ADR-093 review: Title-case MD&A headings that end a segment's section — a closed
+#: list, case as written. A heading not in it does not close the section (accepted miss;
+#: the section length cap still bounds it).
+_TITLE_HEADING_RE = re.compile(
+    r"^(?:Item[ \t]{1,3}\d{1,2}[A-C]?\b[^\n]{0,70}|Note[ \t]{1,3}\d{1,2}\b[^\n]{0,70}"
+    r"|Management[’']s[ \t]{1,3}Discussion[^\n]{0,70}"
+    r"|(?:Consolidated[ \t]{1,3})?(?:Results[ \t]{1,3}of[ \t]{1,3}Operations"
+    r"|Balance[ \t]{1,3}Sheets?(?:[ \t]{1,3}Analysis)?|Cash[ \t]{1,3}Flows?(?:[ \t]{1,3}Analysis)?"
+    r"|Financial[ \t]{1,3}(?:Condition|Position|Statements))"
+    r"|Liquidity(?:[ \t]{1,3}and[ \t]{1,3}Capital[ \t]{1,3}Resources"
+    r"|[ \t]{1,3}Risk(?:[ \t]{1,3}Management)?)?"
+    r"|Capital[ \t]{1,3}(?:Resources|Risk(?:[ \t]{1,3}Management)?|Management)"
+    r"|Critical[ \t]{1,3}Accounting[ \t]{1,3}(?:Estimates|Policies)"
+    r"|(?:Credit|Market|Operational|Country)[ \t]{1,3}Risk(?:[ \t]{1,3}Management)?"
+    r"|Risk[ \t]{1,3}(?:Management|Factors)|Off-Balance[ \t]{1,3}Sheet[ \t]{1,3}Arrangements"
+    r"|Contractual[ \t]{1,3}Obligations|Forward-Looking[ \t]{1,3}Statements"
+    r"|Recent[ \t]{1,3}Accounting[ \t]{1,3}(?:Pronouncements|Standards|Developments)"
+    r"|Corporate|Outlook|Legal[ \t]{1,3}Proceedings|Controls[ \t]{1,3}and[ \t]{1,3}Procedures"
+    r"|Supplementary[ \t]{1,3}Information)[ \t]{0,3}$"
+)
 #: "<Name> revenue was / were / of / increased …" inside a segment's section.
 _LINE_REVENUE_RE = re.compile(
     r"(?<![\w&])(?P<name>[A-Z][\w'’-]{1,30}(?:[ \t]{1,3}(?:&[ \t]{1,3})?[A-Z][\w'’-]{1,30}){0,3})"
@@ -101,10 +128,24 @@ _NOT_A_LINE_FIRST_WORDS: frozenset[str] = frozenset({
     "company", "business", "and", "in", "for", "of", "as", "first", "second", "third",
     "fourth", "full", "year", "nine", "six", "three",
 })
+#: ADR-093 review: a region or country is a geography, never a business line
+#: ("Europe revenue increased 4%"). Any word of the name in this set excludes it.
+_GEOGRAPHY_WORDS: frozenset[str] = frozenset({
+    "europe", "european", "emea", "americas", "america", "american", "north", "south",
+    "east", "west", "latin", "asia", "asian", "apac", "pacific", "africa", "african",
+    "middle", "international", "domestic", "global", "worldwide", "overseas", "foreign",
+    "u.s", "u.s.", "us", "usa", "united", "states", "kingdom", "uk", "canada", "canadian",
+    "mexico", "brazil", "argentina", "chile", "peru", "china", "chinese", "japan",
+    "japanese", "india", "korea", "australia", "australian", "zealand", "germany",
+    "german", "france", "french", "italy", "spain", "switzerland", "swiss", "netherlands",
+    "nordic", "nordics", "scandinavia", "russia", "singapore", "hong", "kong", "taiwan",
+    "region", "regions", "regional", "emerging", "anz", "gcc",
+})
 #: Whole-company wording in a statement: the figure is said of the company.
 _FIRM_WORDS_RE = re.compile(
     r"(?<!not )(?<!non-)\b(?:group|firm|firm-?wide|group-?wide|consolidated|company-?wide|"
-    r"total[ \t]{1,3}company|whole[ \t]{1,3}company|overall)\b",
+    r"total[ \t]{1,3}company|whole[ \t]{1,3}company|overall|"
+    r"company[ \t]{1,3}(?:sales|revenues?|net[ \t]{1,3}sales|earnings|profit|total))\b",
     re.IGNORECASE,
 )
 #: A name only MENTIONED beside a figure: "excluding Markets", "ex-Markets", "other than
@@ -118,6 +159,14 @@ _MENTION_BEFORE_RE = re.compile(
     r"|\bex-[ \t]{0,1})$",
     re.IGNORECASE,
 )
+#: ADR-093 review: a segment named only by generic words ("Other", "Corporate", "All
+#: Other", "Corporate & Other", "Eliminations") never scopes a statement by its name:
+#: "Other operating expenses" are not the Other segment's.
+_GENERIC_SEGMENT_WORDS: frozenset[str] = frozenset({
+    "other", "others", "all", "corporate", "eliminations", "elimination", "unallocated",
+    "reconciling", "items", "intersegment", "inter-segment", "center", "centre",
+    "adjustments", "activities", "businesses", "head", "office", "central", "functions",
+})
 _KEY_SEP_RE = re.compile(r"[^a-z0-9]+")
 _KEY_DROP = frozenset({"the", "and", "segment", "segments", "reportable", "business",
                        "member", "operating"})
@@ -129,6 +178,12 @@ def name_key(name: str | None) -> str:
     ("Consumer & Community Banking" == "ConsumerCommunityBanking" member words)."""
     text = _KEY_SEP_RE.sub(" ", str(name or "").lower().replace("&", " and "))
     return " ".join(w for w in text.split() if w not in _KEY_DROP)
+
+
+def is_generic_segment(name: str | None) -> bool:
+    """A segment named only by generic words ("Other", "Corporate & Other")."""
+    words = name_key(name).split()
+    return bool(words) and all(w in _GENERIC_SEGMENT_WORDS for w in words)
 
 
 @dataclass(frozen=True)
@@ -224,21 +279,28 @@ class SegmentHierarchy:
 # ── The issuer's segment list ───────────────────────────────────────────────── #
 
 
+_LEADING_JOINER_RE = re.compile(r"^(?:and|&)[ \t]{1,3}", re.IGNORECASE)
+_BLANKS_RE = re.compile(r"[ \t]+")
+_ITEM_SPLIT_RE = re.compile(r",|;")
+_OXFORD_RE = re.compile(r"^(?:and|&)[ \t]", re.IGNORECASE)
+_AND_RE = re.compile(r"[ \t]and[ \t]")
+
+
 def _clean_name(raw: str) -> str | None:
     """A capitalised name of at most eight words, every word but a joiner capitalised."""
     text = raw.strip().strip("\"“”'‘’").strip()
-    text = re.sub(r"^(?:and|&)[ \t]{1,3}", "", text, flags=re.IGNORECASE).strip()
+    text = _LEADING_JOINER_RE.sub("", text).strip()
     words = _NAME_WORD_RE.findall(text)
     if not words or len(words) > 8 or not text[:1].isupper():
         return None
-    if " ".join(words).replace(" ", "") != re.sub(r"[ \t]+", "", text):
+    if " ".join(words).replace(" ", "") != _BLANKS_RE.sub("", text):
         return None  # other characters (digits, brackets) inside: not a clean name
     for word in words:
         if word.lower() in _NAME_JOINERS:
             continue
         if not word[:1].isupper():
             return None
-    return re.sub(r"[ \t]+", " ", text)
+    return _BLANKS_RE.sub(" ", text)
 
 
 def _items(list_text: str, count: int | None) -> list[Segment]:
@@ -254,20 +316,18 @@ def _items(list_text: str, count: int | None) -> list[Segment]:
         last = m.end()
     plain.append(list_text[last:])
     text = "".join(plain)
-    parts = [p for p in (x.strip() for x in re.split(r",|;", text)) if p]
+    parts = [p for p in (x.strip() for x in _ITEM_SPLIT_RE.split(text)) if p]
     if not parts:
         return []
-    oxford = len(parts) > 1 and re.match(r"^(?:and|&)[ \t]", parts[-1], re.IGNORECASE)
+    oxford = len(parts) > 1 and _OXFORD_RE.match(parts[-1])
     tail = parts[-1]
-    splits = [m.start() for m in re.finditer(r"[ \t](?:and|&)[ \t]", tail)]
-    if not oxford and re.search(r"[ \t]and[ \t]", tail):
-        and_splits = [m.start() for m in re.finditer(r"[ \t]and[ \t]", tail)]
+    if not oxford and _AND_RE.search(tail):
+        and_splits = [m.start() for m in _AND_RE.finditer(tail)]
         if count is not None and len(parts) == count - 1 and len(and_splits) == 1:
             at = and_splits[0]
             parts = parts[:-1] + [tail[:at], tail[at + 5:]]
         elif count is None or len(parts) != count:
             return []
-    del splits
     names: list[Segment] = []
     for part in parts:
         acronym = None
@@ -381,22 +441,39 @@ def _is_heading(line: str) -> bool:
     return letters >= 4 and stripped == stripped.upper()
 
 
+def _closes(line: str) -> bool:
+    """An upper-case heading line, or a listed Title-case MD&A heading."""
+    stripped = line.strip()
+    return _is_heading(line) or (len(stripped) <= 90
+                                 and bool(_TITLE_HEADING_RE.match(stripped)))
+
+
+def _headings(source: str, keys: Mapping[str, str]) -> list[tuple[int, str | None]]:
+    """``(offset, segment or None)`` of every line that opens or closes a section. Only
+    an upper-case heading line opens one."""
+    out: list[tuple[int, str | None]] = []
+    for offset, line in _lines(source):
+        if _closes(line):
+            lead = len(line) - len(line.lstrip())
+            out.append((offset + lead,
+                        keys.get(name_key(line)) if _is_heading(line) else None))
+    return out
+
+
 def segment_sections(text: str | None, segments: Sequence[Segment]
                      ) -> list[tuple[int, int, str]]:
     """``(start, end, segment name)`` for every section an upper-case heading line naming
-    one reportable segment opens; it runs to the next upper-case heading line."""
+    one reportable segment opens; it runs to the next closing heading line, and never
+    past ``MAX_SECTION_SPAN`` characters."""
     source = str(text or "")[:MAX_DOCUMENT_CHARS]
     keys = {name_key(s.name): s.name for s in segments}
-    headings: list[tuple[int, str | None]] = []
-    for offset, line in _lines(source):
-        if _is_heading(line):
-            headings.append((offset, keys.get(name_key(line))))
+    headings = _headings(source, keys)
     out: list[tuple[int, int, str]] = []
     for i, (offset, name) in enumerate(headings):
         if name is None:
             continue
         end = headings[i + 1][0] if i + 1 < len(headings) else len(source)
-        out.append((offset, end, name))
+        out.append((offset, min(end, offset + MAX_SECTION_SPAN), name))
     return out
 
 
@@ -412,10 +489,14 @@ def business_lines_in_sections(
     for start, end, seg in sections:
         body = source[start:min(end, start + MAX_SECTION_CHARS)]
         for m in _LINE_REVENUE_RE.finditer(body):
-            name = re.sub(r"[ \t]+", " ", m.group("name").strip())
+            name = _BLANKS_RE.sub(" ", m.group("name").strip())
             first = name.split(" ", 1)[0].lower()
             key = name_key(name)
-            if (first in _NOT_A_LINE_FIRST_WORDS or not key or key in segment_keys
+            geographic = any(w.lower() in _GEOGRAPHY_WORDS
+                             or w.lower().rstrip(".") in _GEOGRAPHY_WORDS
+                             for w in name.split())
+            if (first in _NOT_A_LINE_FIRST_WORDS or geographic or not key
+                    or key in segment_keys
                     or name in acronyms or name.split(" ", 1)[0] in acronyms):
                 continue
             entry = found.setdefault(key, (name, set()))
@@ -503,11 +584,7 @@ def chunk_sections_of(
             parts.append(text[length - start:])
             length = end
     document = "".join(parts)[:MAX_DOCUMENT_CHARS]
-    events: list[tuple[int, str | None]] = []
-    for offset, line in _lines(document):
-        if _is_heading(line):
-            lead = len(line) - len(line.lstrip())
-            events.append((offset + lead, keys.get(name_key(line))))
+    events = _headings(document, keys)
     positions = [e[0] for e in events]
     out: dict[str, str] = {}
     for start, end, chunk_id, _text in ordered:
@@ -520,6 +597,8 @@ def chunk_sections_of(
             continue  # another heading inside: the chunk is not wholly in one section
         if current is None or any(opened_at < g <= start for g in gaps):
             continue
+        if end > opened_at + MAX_SECTION_SPAN:
+            continue  # past the longest a segment section may run
         out[chunk_id] = current
     return out
 
@@ -539,8 +618,9 @@ def _name_patterns(
         return r"[ \t]{1,3}".join(parts)
 
     for name, acronym in segments:
-        out.append((len(name), re.compile(r"(?<![\w&])" + words_pattern(name) + r"(?![\w])",
-                                          re.IGNORECASE), "segment", name))
+        # Case as written (review P1): "Other" the segment, never "other income".
+        out.append((len(name), re.compile(r"(?<![\w&])" + words_pattern(name) + r"(?![\w])"),
+                    "segment", name))
         if acronym:
             out.append((len(acronym), re.compile(r"(?<![\w&])" + re.escape(acronym)
                                                  + r"(?![\w])"), "segment", name))
@@ -568,16 +648,20 @@ class NamedScope:
 
 
 def names_in(text: str | None, hierarchy: SegmentHierarchy | None, *,
-             owned_only: bool = True) -> NamedScope:
+             owned_only: bool = True, generic: bool = True,
+             limit: int = MAX_STATEMENT_CHARS) -> NamedScope:
     """The segments and business lines ``text`` names (longest name first, no overlap).
     ``owned_only``: a name only mentioned ("excluding Markets", "driven by Payments") is
-    not read; a claim check reads every name (``owned_only=False``)."""
-    source = str(text or "")[:MAX_STATEMENT_CHARS]
+    not read; a claim check reads every name (``owned_only=False``). ``generic=False``:
+    a generic segment ("Other", "Corporate") and its lines are not read (scoping)."""
+    source = str(text or "")[:max(0, min(limit, MAX_PASSAGE_CHARS))]
     if not hierarchy or not source.strip():
         return NamedScope(firm_wording=bool(_FIRM_WORDS_RE.search(source)))
+    kept = tuple(s for s in hierarchy.segments if generic or not is_generic_segment(s.name))
     patterns = _name_patterns(
-        tuple((s.name, s.acronym) for s in hierarchy.segments),
-        tuple((b.name, b.segment) for b in hierarchy.business_lines),
+        tuple((s.name, s.acronym) for s in kept),
+        tuple((b.name, b.segment) for b in hierarchy.business_lines
+              if generic or not is_generic_segment(b.segment)),
     )
     taken: list[tuple[int, int, str, str]] = []
     blocked: list[tuple[int, int]] = []
@@ -624,6 +708,46 @@ BASIS_STATEMENT_NAMES = "statement_names"
 BASIS_SOURCE_SECTION = "source_section"
 
 
+#: A cited passage read for the source-section route.
+MAX_PASSAGE_CHARS = 6000
+#: Where one figure's clause ends: a semicolon, a sentence end, a new line, or a
+#: contrast ("…, versus company sales up 4%", "…, while Group revenue …").
+_CLAUSE_RE = re.compile(
+    r";|\.(?:[ \t]|$)|\n|,?[ \t]{1,3}(?:versus|vs\.?|while|whereas|against|compared[ \t]{1,3}"
+    r"(?:with|to))\b"
+)
+#: ADR-093 review: consolidated / balance-sheet wording — a figure said of the whole
+#: company even when it sits on a segment page.
+_FIRMWIDE_ITEM_RE = re.compile(
+    r"\b(?:consolidated|firm-?wide|company-?wide|group-?wide|total[ \t]{1,3}company|"
+    r"cash[ \t]{1,3}and[ \t]{1,3}cash[ \t]{1,3}equivalents|balance[ \t]{1,3}sheets?|"
+    r"(?:total|long-term|short-term|net)[ \t]{1,3}(?:debt|borrowings)|"
+    r"liquidity[ \t]{1,3}and[ \t]{1,3}capital[ \t]{1,3}resources|shares[ \t]{1,3}outstanding|"
+    r"earnings[ \t]{1,3}per[ \t]{1,3}share|share[ \t]{1,3}repurchases?|"
+    r"dividends?[ \t]{1,3}(?:paid|declared)|"
+    r"effective[ \t]{1,3}tax[ \t]{1,3}rate)\b",
+    re.IGNORECASE,
+)
+
+
+def _every_figure_named(text: str, named: NamedScope) -> bool:
+    """Every clause holding a figure names a segment or line before its first figure."""
+    if not named.spans:
+        return False
+    starts = [s for s, _e, _k, _g in named.spans]
+    clause_start = 0
+    any_figure = False
+    bounds = [m.start() for m in _CLAUSE_RE.finditer(text)] + [len(text)]
+    for bound in bounds:
+        first = _FIGURE_RE.search(text, clause_start, bound)
+        if first is not None:
+            any_figure = True
+            if not any(clause_start <= s < first.start() for s in starts):
+                return False
+        clause_start = bound
+    return any_figure
+
+
 def segment_scope_key(segment: str) -> str:
     return f"segment:{segment.strip().lower()}"
 
@@ -645,18 +769,25 @@ def scope_finding(
        its figures is stated there (``figure_found``), and it has no whole-company
        wording → that segment.
 
-    A statement that does not name its segment gets a label naming it."""
+    A statement that does not name its segment gets a label naming it.
+
+    Review (ADR-093): a generic segment name ("Other", "Corporate") never scopes by name;
+    every clause stating a figure must name the segment (or its line) before that
+    figure; and the source-section route needs the cited passage itself to name the
+    segment or one of its lines, with no firm-wide or balance-sheet wording in the
+    statement or the passage."""
     if not hierarchy:
         return None
-    named = names_in(statement, hierarchy)
+    text = str(statement or "")[:MAX_STATEMENT_CHARS]
+    named = names_in(text, hierarchy, generic=False)
     owners = named.owners
     if named.firm_wording:
         return None
     if len(owners) == 1:
-        first = _FIGURE_RE.search(str(statement or "")[:MAX_STATEMENT_CHARS])
-        if first is None or not named.spans or named.spans[0][0] > first.start():
-            # A figure before any segment or line name is the company's ("Total backlog
-            # $38.3bn …; Segment A $9,255m").
+        if not _every_figure_named(text, named):
+            # A figure in a clause naming no segment or line is the company's ("Total
+            # backlog $38.3bn; Segment A $9,255m"; "Segment A sales $3.4bn, versus
+            # company sales up 4%").
             return None
         seg = owners[0]
         only_lines = seg not in named.segments
@@ -673,6 +804,15 @@ def scope_finding(
         return None
     section = next(iter(sections))
     assert section is not None
+    if is_generic_segment(section) or _FIRMWIDE_ITEM_RE.search(text):
+        return None
+    for _section, passage in cited:
+        passage = str(passage or "")[:MAX_PASSAGE_CHARS]
+        if _FIRMWIDE_ITEM_RE.search(passage):
+            return None  # consolidated / balance-sheet wording: not a segment page
+        if section not in names_in(passage, hierarchy, owned_only=False,
+                                   limit=MAX_PASSAGE_CHARS).owners:
+            return None  # the passage itself never names the segment or its lines
     return FindingScope(segment_scope_key(section), SCOPE_TYPE_SEGMENT, section, (),
                         f"[{section} segment, not the whole company]", BASIS_SOURCE_SECTION)
 

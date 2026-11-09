@@ -8,6 +8,7 @@ linear-time check of every new pattern. No network; no issuer names in app code.
 
 from __future__ import annotations
 
+import gc
 import time
 from datetime import date
 
@@ -1117,16 +1118,27 @@ PATTERNS = [
     pdur._MARKER_LINE_RE, pdur._HEADER_DURATION_RE, pdur._CELL_RE, pdur._SENTENCE_END_RE,
     cp._KEY_YTD_RE, cp._YTD_LABEL_RE, cc._DRIVER_BEFORE_RE, cc._DRIVER_AFTER_RE,
     cc._AS_SEGMENT_AFTER_RE, cc._REVENUE_WORDS_RE, cc._METRIC_WORD_RE,
+    sh._KEY_SEP_RE, sh._CAMEL_RE, sh._TITLE_HEADING_RE, sh._CLAUSE_RE, sh._FIRMWIDE_ITEM_RE,
+    sh._LEADING_JOINER_RE, sh._BLANKS_RE, sh._ITEM_SPLIT_RE, sh._OXFORD_RE, sh._AND_RE,
+    pdur._QUARTER_KEY_RE, pdur._STATEMENT_YTD_RE, pdur._INSTANT_RE, cc._WS_RE,
+    cc._LABEL_LEAD_RE, cc._TAIL_PUNCT_RE,
 ]
 DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000]
 
 
 @pytest.mark.parametrize("pattern", PATTERNS, ids=lambda p: p.pattern[:30])
 def test_new_patterns_are_linear(pattern) -> None:  # noqa: ANN001
-    for text in DEGENERATE:
-        start = time.perf_counter()
-        list(pattern.finditer(text))
-        assert time.perf_counter() - start < 0.2
+    # ADR-093: thousands of match objects can trigger a collector pass over the whole
+    # suite's heap; that is not the pattern's time.
+    gc.disable()
+    try:
+        for text in DEGENERATE:
+            start = time.perf_counter()
+            for _m in pattern.finditer(text):
+                pass
+            assert time.perf_counter() - start < 0.2
+    finally:
+        gc.enable()
 
 
 def test_new_helpers_are_fast_on_degenerate_text() -> None:

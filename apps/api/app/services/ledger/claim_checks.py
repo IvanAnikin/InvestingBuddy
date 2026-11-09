@@ -732,22 +732,43 @@ def metric_scope(
 _WS_RE = re.compile(r"\s+")
 
 
-def _verbatim(claim: str, sources: Sequence[ClaimSource]) -> bool:
+#: ADR-093 review: the only lead a verbatim copy may add — a short label ending in a
+#: colon ("Business model: "). Letters, spaces and & / - only: no digit, no period.
+_LABEL_LEAD_RE = re.compile(r"^[a-z][a-z &/-]{0,40}:[ \t]?$")
+_TAIL_PUNCT_RE = re.compile(r"^[ \t.;,)\]]{0,4}$")
+
+
+def _verbatim(claim: str, sources: Sequence[ClaimSource],
+              hierarchy: sh.SegmentHierarchy | None = None) -> bool:
     """ADR-093 — the claim IS a cited source's own text (an editor sentence copying its
-    finding): it cannot misstate what it cites. A finding whose stored key disagrees
-    with its own words is the finding's defect, not the claim's."""
-    wanted = _WS_RE.sub(" ", claim).strip().rstrip(".").lower()
+    finding): it cannot misstate what it cites.
+
+    Review P1: the claim must hold the WHOLE source text, and what it adds may only be a
+    short label ending in a colon before it and punctuation after it. A label naming a
+    period, a figure or a segment / business line is not a label, and a claim that
+    drops part of its source (a period, a scope label) is checked as any other."""
+    as_written = _WS_RE.sub(" ", claim[:MAX_CLAIM_CHARS]).strip().rstrip(".")
+    wanted = as_written.lower()
     if len(wanted) < 20:
         return False
     for source in sources:
-        text = _WS_RE.sub(" ", source.text).strip().rstrip(".").lower()
+        text = _WS_RE.sub(" ", source.text[:MAX_SOURCE_CHARS]).strip().rstrip(".").lower()
         if len(text) < 20:
             continue
-        shorter, longer = (wanted, text) if len(wanted) <= len(text) else (text, wanted)
-        # One contains the other, and the extra is at most a short lead-in ("Business
-        # model: …") or tail: never a second claim.
-        if shorter in longer and len(shorter) >= 0.8 * len(longer):
-            return True
+        at = wanted.find(text)
+        if at < 0:
+            continue
+        lead, tail = wanted[:at], wanted[at + len(text):]
+        if lead and not _LABEL_LEAD_RE.match(lead):
+            continue
+        if not _TAIL_PUNCT_RE.match(tail):
+            continue
+        if lead and (cp.mentions(lead, classify=False)
+                     or (hierarchy is not None
+                         and sh.names_in(as_written[:at], hierarchy,
+                                         owned_only=False).owners)):
+            continue
+        return True
     return False
 
 
@@ -755,7 +776,7 @@ def _check(claim: str, sources: Sequence[ClaimSource],
            hierarchy: sh.SegmentHierarchy | None = None) -> ClaimVerdict | None:
     if not figures(claim, 1):
         return None  # nothing to check: no source is read
-    if _verbatim(claim, sources):
+    if _verbatim(claim, sources, hierarchy):
         return None
     indexed = [(source, _source_index(source)) for source in list(sources)[:MAX_SOURCES]]
     mentions = cp.mentions(claim)
