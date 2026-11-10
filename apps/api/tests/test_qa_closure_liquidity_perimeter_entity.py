@@ -8,6 +8,7 @@ findings about other companies under four subjects. No network.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -362,16 +363,42 @@ class TestPerimeter:
         assert out["findings"][1]["statement"].startswith(
             "[before the 3 Mar 2025 change of perimeter] Total debt")
 
-    @pytest.mark.parametrize("statement", [
-        "Total debt fell from $34.6 billion at March 31, 2026 to $16.6 billion at September "
-        "30, 2026, reflecting the Aerospace spin-off.",
-        "Total debt fell from $34.6 billion at March 31, 2026 to $16.6 billion at September "
-        "30, 2026 after repayments funded with the sale proceeds.",
+    @pytest.mark.parametrize("cause", [
+        "reflecting the Aerospace spin-off",
+        "due to the separation",
+        "following the Aerospace transaction",  # the event's own business name
     ])
-    def test_a_change_named_as_the_cause_is_kept(self, statement: str) -> None:
-        text, record = self._one(statement)
-        assert text == statement
-        assert record["actions"] == []
+    def test_a_change_named_as_the_cause_is_kept_with_its_earlier_figure_dated(
+        self, cause: str,
+    ) -> None:
+        text, record = self._one(
+            "Total debt fell from $34.6 billion at March 31, 2026 to $16.6 billion at "
+            f"September 30, 2026, {cause}.")
+        assert text == (
+            "Total debt fell from $34.6 billion at March 31, 2026 [before the 29 Jun 2026 "
+            f"separation] to $16.6 billion at September 30, 2026, {cause}.")
+        assert record["actions"][0]["action"] == pm.ACTION_LABELLED_FIGURE
+
+    @pytest.mark.parametrize("tail", [
+        # Review N1: none of these is the change of perimeter.
+        "with the sale of bonds",
+        "after the sale of a building",
+        "using proceeds from the notes offering",
+        "after repayments funded with the sale proceeds",
+    ])
+    def test_review_n1_a_sale_or_proceeds_is_not_the_cause(self, tail: str) -> None:
+        text, record = self._one(
+            "Total debt fell from $34.6 billion at March 31, 2026 to $16.6 billion at "
+            f"September 30, 2026, {tail}.")
+        assert text.startswith("[Withheld at report assembly:")
+        assert record["actions"][0]["action"] == pm.ACTION_WITHHELD
+
+    def test_the_business_a_change_separated_is_read(self) -> None:
+        assert pm._business_of("The Aerospace Spin-Off completed June 29, 2026.") == (
+            "Aerospace")
+        assert pm._business_of("On March 3, 2025, the Company completed the sale of its "
+                               "Fluids business.") == "Fluids"
+        assert pm._business_of("The spin-off was completed on 1 October 2018.") is None
 
     def test_no_change_no_edit(self) -> None:
         payload = _industrial()
@@ -588,51 +615,116 @@ async def _run(findings: list[tuple[str, list[str]]], evidence: list[Any], *,
     return inv, found
 
 
+class _Listing:
+    def __init__(self, name: str, ticker: str, cik: str) -> None:
+        self.name, self.ticker, self.cik = name, ticker, cik
+
+
+DIRECTORY = [
+    _Listing("REGENXBIO Inc.", "RGNX", "1590877"),
+    _Listing("Odysight.ai Inc.", "ODYS", "1426506"),
+    _Listing("Stage Stores Inc.", "SSI", "6885"),
+    _Listing("Revenue Partners Corp", "RVP", "1"),
+    _Listing("Vexgene SA", "VXG", "2"),
+]
+
+
+async def _run_with_directory(monkeypatch, findings, evidence, *, directory=DIRECTORY,  # noqa: ANN001
+                              domain: str = "risks") -> tuple[Any, list[Any]]:
+    from app.services.agents import investigator as inv_mod
+
+    async def _directory() -> list[Any]:
+        return list(directory)
+
+    monkeypatch.setattr(inv_mod, "_load_sec_directory", _directory)
+    return await _run(findings, evidence, domain=domain)
+
+
 class TestInvestigatorFailsClosed:
-    async def test_an_implicit_subject_on_another_companys_page_is_not_attributed(
-        self,
+    async def test_another_registrant_named_by_the_statement_is_dropped(
+        self, monkeypatch,  # noqa: ANN001
     ) -> None:
         evidence = [
-            _web("ev:c:hold", "The FDA placed two of the company's gene therapies on "
-                 "clinical hold after a trial patient developed a brain tumor.",
-                 title="FDA halts two gene therapy trials"),
+            _web("ev:c:hold", "The FDA placed two gene therapies on clinical hold after a "
+                 "trial patient developed a brain tumor.", title="FDA halts two trials"),
             _web("ev:c:own", "Vexgene reported cash of EUR 61.5 million at year end.",
                  title="Vexgene full-year results"),
         ]
-        inv, findings = await _run([
-            ("FDA placed two gene therapies on clinical hold after a trial patient "
-             "developed a brain tumor.", ["ev:c:hold"]),
+        inv, findings = await _run_with_directory(monkeypatch, [
+            ("FDA placed two Regenxbio gene therapies on clinical hold after a trial "
+             "patient developed a brain tumor.", ["ev:c:hold"]),
             ("Cash was EUR 61.5 million at year end.", ["ev:c:own"]),
         ], evidence)
         assert [f.statement for f in findings] == ["Cash was EUR 61.5 million at year end."]
         assert inv.diagnostics.statements_subject_unresolved == 1
+        assert inv.diagnostics.statements_subject_unresolved_shadow == 0
 
-    async def test_a_page_titled_with_the_subject_lends_it_its_subject(self) -> None:
-        evidence = [_web("ev:c:t", "The company placed its lead programme on hold.",
+    async def test_another_registrant_opening_the_cited_passage_is_dropped(
+        self, monkeypatch,  # noqa: ANN001
+    ) -> None:
+        evidence = [_web("ev:c:p", "REGENXBIO said the FDA placed two of its gene therapies "
+                         "on clinical hold.", title="Gene therapy holds")]
+        inv, findings = await _run_with_directory(monkeypatch, [
+            ("Two gene therapies were placed on clinical hold.", ["ev:c:p"])], evidence)
+        assert findings == []
+        assert inv.diagnostics.statements_subject_unresolved == 1
+
+    async def test_no_other_entity_named_is_kept_in_shadow(self, monkeypatch) -> None:  # noqa: ANN001
+        # The re-review: about 25 of 33 replay candidates were the subject's own
+        # statements that simply never name it. Missing the name alone never drops.
+        evidence = [_web("ev:c:o", "Revenue rose 12% in the third quarter at Stage 1.",
+                         title="Payments firms report Q3")]
+        statement = "Revenue rose 12% in Q3 at Stage 1."
+        inv, findings = await _run_with_directory(
+            monkeypatch, [(statement, ["ev:c:o"])], evidence, domain="financial_performance")
+        assert [f.statement for f in findings] == [statement]
+        assert inv.diagnostics.statements_subject_unresolved == 0
+        assert inv.diagnostics.statements_subject_unresolved_shadow == 1
+        (record,) = inv.diagnostics.subject_unresolved_shadow
+        assert record["question_key"] == "material_risks"
+        assert record["evidence_ids"] == ["ev:c:o"]
+        assert len(record["statement_sha256"]) == 16
+        assert statement not in json.dumps(inv.diagnostics.to_dict())  # never the text
+
+    async def test_without_the_directory_nothing_is_dropped(self, monkeypatch) -> None:  # noqa: ANN001
+        evidence = [_web("ev:c:hold", "The FDA placed two gene therapies on hold.")]
+        inv, findings = await _run_with_directory(monkeypatch, [
+            ("FDA placed two Regenxbio gene therapies on clinical hold.", ["ev:c:hold"])],
+            evidence, directory=[])
+        assert len(findings) == 1
+        assert inv.diagnostics.statements_subject_unresolved_shadow == 1
+
+    async def test_a_page_titled_with_the_subject_lends_it_its_subject(
+        self, monkeypatch,  # noqa: ANN001
+    ) -> None:
+        evidence = [_web("ev:c:t", "Regenxbio placed its lead programme on hold.",
                          title="Vexgene pauses lead programme")]
-        inv, findings = await _run(
-            [("The lead programme was placed on hold.", ["ev:c:t"])], evidence)
+        inv, findings = await _run_with_directory(
+            monkeypatch, [("The lead programme was placed on hold.", ["ev:c:t"])], evidence)
         assert len(findings) == 1
         assert inv.diagnostics.statements_subject_unresolved == 0
+        assert inv.diagnostics.statements_subject_unresolved_shadow == 0
 
     async def test_review_p1_a_page_titled_with_the_subject_keeps_an_unnamed_statement(
-        self,
+        self, monkeypatch,  # noqa: ANN001
     ) -> None:
-        # Review P1: the excerpt never names the subject, the TITLE does. Before the fix
-        # the title never reached the rule (it is not in the prompt copy) and this dropped.
+        # Review P1: the excerpt never names the subject, the TITLE does; the title is not
+        # in the prompt copy, so the rule reads ``_Evidence.title``.
         evidence = [_web("ev:c:q3", "Revenue rose 12% in the third quarter, driven by "
-                         "checkout volume.", title="Vexgene Q3 revenue rises 12% as "
-                         "checkout recovers")]
+                         "checkout volume, Regenxbio said.", title="Vexgene Q3 revenue "
+                         "rises 12% as checkout recovers")]
         assert evidence[0].title.startswith("Vexgene Q3")
-        inv, findings = await _run([("Revenue rose 12% in Q3.", ["ev:c:q3"])], evidence,
-                                   domain="financial_performance")
+        inv, findings = await _run_with_directory(
+            monkeypatch, [("Revenue rose 12% in Q3.", ["ev:c:q3"])], evidence,
+            domain="financial_performance")
         assert len(findings) == 1
         assert inv.diagnostics.statements_subject_unresolved == 0
+        assert inv.diagnostics.statements_subject_unresolved_shadow == 0
 
-    async def test_an_industry_question_is_exempt(self) -> None:
-        evidence = [_web("ev:c:i", "Gene therapy markets grew 30% in 2025.")]
-        _inv, findings = await _run(
-            [("Gene therapy markets grew 30% in 2025.", ["ev:c:i"])], evidence,
+    async def test_an_industry_question_is_exempt(self, monkeypatch) -> None:  # noqa: ANN001
+        evidence = [_web("ev:c:i", "Regenxbio said gene therapy markets grew 30% in 2025.")]
+        _inv, findings = await _run_with_directory(
+            monkeypatch, [("Gene therapy markets grew 30% in 2025.", ["ev:c:i"])], evidence,
             domain="industry_economics")
         assert len(findings) == 1
 
@@ -645,49 +737,52 @@ class TestInvestigatorFailsClosed:
         assert findings == []
         assert inv.diagnostics.statements_declared_other_company == 1
 
-    @pytest.mark.parametrize("statement", [
-        "Autodesk reported revenue growth of 12%.",
-        "The company's supplier Broadcom reported revenue growth of 12%.",
-    ])
-    async def test_a_named_or_company_subject_is_not_implicit(self, statement: str) -> None:
-        evidence = [_web("ev:c:n", "Revenue growth of 12%.", title="Software peers")]
-        inv, findings = await _run([(statement, ["ev:c:n"])], evidence)
+    async def test_a_company_framed_statement_is_left_to_adr_066(self, monkeypatch) -> None:  # noqa: ANN001
+        evidence = [_web("ev:c:n", "Regenxbio grew revenue 12%.", title="Peers")]
+        inv, findings = await _run_with_directory(monkeypatch, [
+            ("The company's partner Regenxbio grew revenue 12%.", ["ev:c:n"])], evidence)
+        assert len(findings) == 1
         assert inv.diagnostics.statements_subject_unresolved == 0
 
-    @pytest.mark.parametrize(("statement", "named"), [
-        ("Revenue rose 12% in Q3.", False),
-        ("Net debt fell to $2bn.", False),
-        ("Management expects margins to expand.", False),
-        ("Two trials were halted.", False),
-        ("FDA placed two gene therapies on clinical hold.", False),
-        ("Autodesk reported FY2026 revenue of $6.13bn.", True),
-        ("Kestrel32 FY24 revenue US$8,296m.", True),
-        ("Regenxbio's two gene therapies were placed on hold.", True),
-    ])
-    def test_a_common_opening_word_is_not_a_name(self, statement: str, named: bool) -> None:
-        from app.services.agents.investigator import _opens_with_a_name
-
-        assert _opens_with_a_name(statement) is named
-
-    async def test_an_unnamed_statement_on_an_unnamed_page_is_dropped(self) -> None:
-        # The r1 narrowing read "Revenue" as a name and so judged nothing: pinned here.
-        evidence = [_web("ev:c:o", "Revenue rose 12% in the third quarter.",
-                         title="Payments firms report Q3")]
-        inv, findings = await _run([("Revenue rose 12% in Q3.", ["ev:c:o"])], evidence,
-                                   domain="financial_performance")
-        assert findings == []
-        assert inv.diagnostics.statements_subject_unresolved == 1
-
-    async def test_a_filing_is_left_to_the_registrant_guard(self) -> None:
+    async def test_a_filing_is_left_to_the_registrant_guard(self, monkeypatch) -> None:  # noqa: ANN001
         # Another registrant's filing reached by corpus search is a third-party filing
         # (ADR-079), not open-web prose: rule 2 never drops it.
         from dataclasses import replace
 
-        item = replace(_web("ev:c:f", "Revenue rose on subscription growth."),
+        item = replace(_web("ev:c:f", "Regenxbio revenue rose on subscription growth."),
                        edgar_registrant="other")
-        inv, findings = await _run(
-            [("Revenue rose on subscription growth.", ["ev:c:f"])], [item])
+        inv, findings = await _run_with_directory(monkeypatch, [
+            ("Regenxbio revenue rose on subscription growth.", ["ev:c:f"])], [item])
         assert inv.diagnostics.statements_subject_unresolved == 0
+
+
+class TestOtherEntityNames:
+    NAMES = sm.SubjectNames.of("Altavia International Inc.", ("ALT",), ("altavia aerospace",))
+
+    def _index(self) -> Any:
+        return sm.RegistrantIndex.of(DIRECTORY, self.NAMES)
+
+    @pytest.mark.parametrize(("text", "other"), [
+        ("FDA placed two Regenxbio gene therapies on hold.", "regenxbio"),
+        ("REGENXBIO halts two trials", "regenxbio"),
+        ("Odysight.ai said it received a purchase order.", "odysight"),
+        ("Altavia Aerospace selected for a contract.", "a separately registered namesake"),
+        # A capitalised common word, a lowercase mention, a one-word match of a two-word
+        # registrant ("Stage" of "Stage Stores"), and the subject itself: no one else.
+        ("Revenue rose 12% in Q3.", None),
+        ("Placement proceeds fund Stage 1 at the site.", None),
+        ("the regenxbio programme was paused.", None),
+        ("Altavia won a contract.", None),
+        ("Altavia and Altavia Aerospace signed.", None),
+    ])
+    def test_another_entity_is_named_positively(self, text: str, other: str | None) -> None:
+        assert sm.names_other_entity(text, self.NAMES, self._index()) == other
+
+    def test_a_subject_brand_is_never_another_entity(self) -> None:
+        names = sm.SubjectNames.of("Alphabet Inc.", ("GOOGL",))
+        index = sm.RegistrantIndex.of([_Listing("Waymo Holdings Inc.", "WAY", "9")], names)
+        assert sm.names_other_entity("Waymo Holdings expanded to two cities.", names,
+                                     index) is None
 
 
 # ── Linear time ───────────────────────────────────────────────────────────── #
@@ -696,7 +791,8 @@ class TestInvestigatorFailsClosed:
 PATTERNS = [
     pm._EVENT_RE, pm._SEPARATION_RE, pm._COMPLETED_RE, pm._NOT_YET_RE, pm._BACKLOG_RE,
     pm._RPO_RE, pm._CHANGE_RE, pm._COMPARABLE_RE, pm._OWN_LABEL_RE, sm._DECLARED_OTHER_RE,
-    pm._SPIN_RE, pm._PERIOD_END_LEAD_RE, pm._CAUSE_RE,
+    pm._SPIN_RE, pm._PERIOD_END_LEAD_RE, pm._CAUSE_LEAD_RE, pm._CAUSE_EVENT_RE,
+    pm._BUSINESS_RE, sm._CAPITALISED_RE,
 ]
 DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000,
               "Aa " * 4000, "[before the " * 2000, "Ab, a " * 2000,

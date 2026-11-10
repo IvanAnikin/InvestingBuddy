@@ -448,10 +448,10 @@ def test_every_pattern_is_linear(module) -> None:  # noqa: ANN001
     assert len(patterns) >= 10
     for pattern in patterns:
         for text in _ADVERSARIAL:
-            started = time.perf_counter()
+            started = time.process_time()
             pattern.search(text)
             list(pattern.finditer(text))
-            assert time.perf_counter() - started < 0.2, pattern.pattern
+            assert time.process_time() - started < 0.2, pattern.pattern
 
 
 @pytest.mark.parametrize("text", _ADVERSARIAL)

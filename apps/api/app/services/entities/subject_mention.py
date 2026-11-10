@@ -24,16 +24,14 @@ THE RULES
    name (``RelatedRegistrant``, ADR-066). Fail closed: a title that names no one is not
    the subject's.
 2. A FINDING about the subject's own business (not an industry, peer or market
-   question) that rests only on documents that are not the subject's — no cited passage
-   owned by the subject (its filing, its verified site, a typed platform record) — is
-   the subject's only when the statement, a cited passage or a cited document's title
-   NAMES the subject. Only an IMPLICIT statement is judged: one that opens with no named
-   entity ("Revenue rose …", "FDA placed …", "Two trials …") and does not refer to "the
-   company / the group / the issuer" (that wording, and an opening name such as
-   "Autodesk reported …", are left to ADR-066 / ADR-083). It inherits the subject of its
-   DOCUMENT; when that document neither is the subject's nor names it, the subject is
-   unknown and the finding is not attributed (fail closed). Filings are never judged here
-   (ADR-079 places them by registrant).
+   question) that rests only on open-web documents that are not the subject's, and that
+   neither it, a cited passage nor a cited document's title NAMES the subject, has an
+   unknown subject. It is DROPPED only on POSITIVE evidence that it is someone else's:
+   the statement, or a cited passage's opening, names another entity — a separately
+   registered namesake (ADR-066) or an SEC registrant (``RegistrantIndex``), never a
+   brand of the subject. Otherwise it is KEPT and only counted (shadow): a missing name
+   alone is not evidence. "The company / the group / the issuer" wording is left to
+   ADR-066 / ADR-083, and filings to ADR-079 (placed by registrant).
 3. A statement whose writer declares its opening entity another company ("<Name>, a
    separate company …", "<Name>, an unrelated company …") is that company's, wherever
    the subject is named later in the sentence.
@@ -114,14 +112,6 @@ roughly sales same second segment seven several shares short since some still su
 than that their there these third this those three through total trading twelve under
 underlying unlike until while with within without year years
 """.split())
-
-
-def is_common_opener(word: str | None) -> bool:
-    """The (folded) word is a common sentence opener, not a name."""
-    from app.services.discovery.identity import _fold  # noqa: PLC2701
-
-    folded = re.sub(r"[^a-z0-9-]", "", _fold(word or ""))
-    return folded in COMMON_OPENERS
 
 
 def _words(text: str) -> list[str]:
@@ -257,6 +247,83 @@ def declared_other_company(statement: str | None, names: SubjectNames) -> str | 
     return name[:60]
 
 
+_MONTH_WORDS = frozenset(
+    "january february march april june july august september october november december"
+    .split()
+)
+#: A registrant's distinctive first name word is read only when it is at least this long.
+_MIN_REGISTRANT_WORD = 5
+#: Capitalised words of a text (a name, an acronym, "REGENXBIO"), never a lowercase one.
+_CAPITALISED_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z][A-Za-z0-9&]{0,40}")
+
+
+@dataclass(frozen=True)
+class RegistrantIndex:
+    """Other companies the platform can NAME: the SEC ticker directory's registrants, by
+    their distinctive first name word (a one-word name: "REGENXBIO Inc.") or their first
+    two words ("Odysight.ai Inc." → "odysight ai"). Built from platform data only; empty
+    when the directory is unreadable (then nothing is ever "another company")."""
+
+    single: frozenset[str] = frozenset()
+    pairs: frozenset[tuple[str, str]] = frozenset()
+
+    @classmethod
+    def of(cls, listings: Iterable[object], names: SubjectNames) -> RegistrantIndex:
+        from app.services.discovery.identity import (  # noqa: PLC2701
+            _GENERIC_TOKENS,
+            name_tokens,
+        )
+
+        single: set[str] = set()
+        pairs: set[tuple[str, str]] = set()
+        for row in listings:
+            words = name_tokens(str(getattr(row, "name", "") or ""))
+            if not words:
+                continue
+            first = words[0]
+            if (len(first) < _MIN_REGISTRANT_WORD or first in _GENERIC_TOKENS
+                    or first in COMMON_OPENERS or first in _MONTH_WORDS
+                    or first in names.aliases or not first.isalnum()):
+                continue
+            if len(words) == 1:
+                single.add(first)
+            else:
+                pairs.add((first, words[1]))
+        return cls(single=frozenset(single), pairs=frozenset(pairs))
+
+
+def names_other_entity(
+    text: str | None, names: SubjectNames, registrants: RegistrantIndex
+) -> str | None:
+    """The other company a text NAMES, or None: a separately registered namesake of the
+    subject ("<Name> Aerospace", ADR-066), or an SEC registrant written with a capital —
+    by its one distinctive name word, or its first two words — that is neither the
+    subject nor a brand of it. A capitalised common word ("Revenue", "March") never is."""
+    if not text:
+        return None
+    cut = text[:MAX_TEXT_CHARS]
+    if names_only_related_registrant(cut, names):
+        return "a separately registered namesake"
+    if not registrants.single and not registrants.pairs:
+        return None
+    from app.services.discovery.identity import _fold  # noqa: PLC2701
+    from app.services.web_research.trust import BRAND_ALIASES
+
+    capitalised = {_fold(m.group(0)) for m in _CAPITALISED_RE.finditer(cut)}
+    words = _words(cut)
+    for i, word in enumerate(words):
+        if word in names.aliases or BRAND_ALIASES.get(word) in names.aliases:
+            continue
+        if word not in capitalised:
+            continue
+        if word in registrants.single:
+            return word
+        nxt = words[i + 1] if i + 1 < len(words) else ""
+        if (word, nxt) in registrants.pairs:
+            return f"{word} {nxt}"
+    return None
+
+
 def implicit_subject_unresolved(
     statement: str,
     passages: Sequence[tuple[str, bool]],
@@ -284,7 +351,8 @@ __all__ = [
     "declared_other_company",
     "filter_current_developments",
     "implicit_subject_unresolved",
-    "is_common_opener",
+    "RegistrantIndex",
     "names_only_related_registrant",
+    "names_other_entity",
     "names_subject",
 ]

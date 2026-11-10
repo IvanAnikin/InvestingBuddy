@@ -10114,9 +10114,15 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
    - A text that sets a pre-change or boundary level against a post-change one as a
      change (fell, declined, rose, halved, from … to …, versus, vs., compared, against)
      is withheld. It is kept unchanged when it says the comparison is comparable,
-     organic, continuing operations or restated, or when it names the change as the
-     cause ("reflecting the Aerospace spin-off", "due to the separation", "funded with
-     the sale proceeds").
+     organic, continuing operations or restated.
+   - A text that names the change itself as the cause is kept, and its pre-change figure
+     is still dated in place (`labelled_pre_change_figure`). It needs a cause lead
+     (reflecting, due to, as a result of, because of, following, owing to, attributable
+     to, driven by, resulting from) followed within one clause by spin-off, split-off,
+     separation, demerger or discontinued, or by the business the change separated
+     ("following the Aerospace transaction"). "with / after / using …", a sale ("the
+     sale of bonds", "of a building") or "proceeds" is no such cause, so those texts are
+     withheld.
    - A text that states a pre-change level and a post-change level side by side, with no
      comparison word, has its pre-change figure labelled in place: "Total debt was $34.6
      billion at March 31, 2026 [before the 29 Jun 2026 separation]; it was $16.6 billion
@@ -10144,21 +10150,31 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
      directory). Applied in `v3_pipeline._subject_current_developments` right after the
      web stage, so `web_context` and V2 `web_catalyst_evidence` both use the filtered
      list. Withheld items are kept in `web_context.catalyst_evidence_withheld`.
-   - Rule 2: the investigator handles a statement left `unknown` by ADR-083 in a
-     subject-business domain (not industry or peer) that rests only on open-web prose
-     (company-corpus or fetched web items; never a filing, which ADR-079 judges by its
-     registrant). The statement must also be implicit: it does not say "the company /
-     the group / the issuer", and it does not open with a named entity
-     (`investigator._opens_with_a_name`). A named entity is an ADR-066 `_opening_names`
-     name whose first word passes ADR-066's own filter (four letters or more, not a
-     generic business word) and is not in `subject_mention.COMMON_OPENERS`. So
-     "Autodesk reported …" is not implicit, while "Revenue rose …", "Net debt …",
-     "Two trials …" and "FDA placed …" are. Such a statement is dropped when no cited
-     document is the subject's, and neither the statement nor any cited passage or
-     cited document TITLE names the subject. The title is the tool record's own `title`,
-     carried as `_Evidence.title` and set in `_evidence_of`. Neither prompt copy
-     (`_WEB_CORPUS_EVIDENCE_KEYS` / `_EXTERNAL_EVIDENCE_KEYS`) includes it. Dropped
-     statements are counted as `statements_subject_unresolved`.
+   - Rule 2 (positive evidence only): the investigator handles a statement left
+     `unknown` by ADR-083 in a subject-business domain (not industry or peer). It must
+     rest only on open-web prose (company-corpus or fetched web items; never a filing,
+     which ADR-079 judges by its registrant), and must not say "the company / the group
+     / the issuer". It is DROPPED only when all of these hold:
+     1. neither the statement, nor any cited passage, nor any cited document TITLE names
+        the subject, and no cited item is the subject's. The title is the tool record's
+        own `title`, carried as `_Evidence.title` and set in `_evidence_of`; neither
+        prompt copy (`_WEB_CORPUS_EVIDENCE_KEYS` / `_EXTERNAL_EVIDENCE_KEYS`) carries it.
+     2. the statement, or a cited passage's opening (its first 240 characters and its
+        title), NAMES ANOTHER ENTITY (`subject_mention.names_other_entity`): either a
+        separately registered namesake of the subject (ADR-066 `related_registrants`,
+        "Honeywell Aerospace"), or an SEC registrant in the platform's ticker directory
+        (`RegistrantIndex`). A registrant matches by its one distinctive name word
+        ("REGENXBIO Inc.") or its first two words, written with a capital. The word must
+        be five letters or more, and must not be a generic business word, a
+        `COMMON_OPENERS` word or a month.
+     3. that entity is not the subject or a brand of it (`trust.BRAND_ALIASES`).
+
+     Dropped statements are counted as `statements_subject_unresolved`. A statement that
+     meets condition 1 but names no other entity is KEPT. It is counted as
+     `statements_subject_unresolved_shadow` and recorded in `subject_unresolved_shadow`
+     as `{question_key, evidence_ids, statement_sha256}` (a draft reference; the finding
+     id is assigned only when the ledger stores it; never the text). With the SEC
+     directory unreadable, nothing is "another entity", so rule 2 only shadows.
    - Rule 3: an opening entity the writer itself calls another company ("<Name>, a
      separate company …") is that company's, in any non-peer domain. It is counted as
      `statements_declared_other_company`.
@@ -10192,11 +10208,22 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
     brand. Script: `replay_rule1.py`.
   - CLLS7 F9 (Calyxt) is withheld by rule 3. F48 (Regenxbio) meets rule 2 unless its
     page names Cellectis, which cannot be checked offline.
-  - Rule-2 candidates (offline upper bounds: the replay cannot see the cited page,
-    title or source type) are 33 across the 18 reports under the corrected implicit
-    test, against 46 by statement wording alone. Per report: HON2 1, HON3 2, LIN2 3,
-    LIN4 1, CLLS5 2, CLLS6 2, CLLS7 1, PYPL3 4, JPM 5, JPM2 4, JPM3 2, CFR 4, CFR2 1,
-    CFR3 1; the rest 0.
+  - Rule 2, final form (`replay_r4.py`, with the SEC `company_tickers_exchange`
+    directory; statements only, since passages and titles are not stored):
+    - 4 dropped:
+      - CLLS6 Regenxbio clinical hold;
+      - CLLS7 Regenxbio clinical hold;
+      - HON3 "Odysight.ai … purchase order from Honeywell Aerospace's APU Division";
+      - HON2 "Honeywell Aerospace plans a $500m … Tempe, Arizona plant", the separately
+        registered post-spin company's.
+    - 41 kept in shadow. These are all the subject-business statements that never name
+      the subject: JPM NII and deposits, LIN2 Kangankunde, PYPL3 volumes, CLLS R&D, CFR
+      Montblanc, HON2 "Aerospace Technologies" segment sales and the rest.
+    - Per report (dropped / shadow): HON2 1/1, HON3 1/2, LIN2 0/6, LIN3 0/1, LIN4 0/2,
+      CLLS5 0/3, CLLS6 1/1, CLLS7 1/1, PYPL3 0/5, JPM 0/6, JPM2 0/4, JPM3 0/3, CFR 0/4,
+      CFR2 0/1, CFR3 0/1; HON4, PYPL4 and PYPL5 have none.
+    - Of the re-review's 33 classified candidates: the 3 other-company items are
+      caught, and 0 of the subject's own are lost.
 
 ### Known limits
 - Liquidity components come from inline XBRL only. A UK or ASX PDF's "short-term
@@ -10225,17 +10252,19 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
     (cupssy.com; Montblanc is a Richemont brand).
 - Rule 2 cannot be replayed exactly on stored payloads, because passages are not
   persisted. Candidates are listed for manual review in the hand-back.
-- Rule 2's opening-name test is a closed word list. A common word missing from
-  `COMMON_OPENERS` is read as a name, and rule 2 then abstains (the ADR-083 status
-  quo). A company whose name is a listed word ("Total", "Next") is read as a common
-  word, and rule 2 still applies: its statement is kept only when the statement, a
-  passage or a title names the subject.
+- Rule 2 drops only for an entity the SEC directory (or ADR-066's namesake list)
+  holds. Another company that is not an SEC registrant (a European or ASX peer, a
+  private company) is not recognised, and its statement is only shadowed.
+- A one-word registrant whose name is also a capitalised word in ordinary prose could
+  be read as "another entity". Words of five letters or more, generic business words,
+  `COMMON_OPENERS` and months are excluded, but the index is otherwise the whole
+  directory.
 - Perimeter:
   - a fall across a divestiture that does not name the sale or its proceeds as the
     cause is still withheld;
   - "against" also counts as a comparison word, so "debt of X at <pre> against cash
     of Y at <post>" is withheld.
-- The review r2 regression: r1 used bare `_opening_names` to decide "named", and that
-  reads any capitalised first word ("Revenue", "Net", "Management") as a name, so rule
-  2 judged almost nothing. Fixed and pinned (`test_a_common_opening_word_is_not_a_name`,
-  `test_an_unnamed_statement_on_an_unnamed_page_is_dropped`).
+- History: r1 exempted "named openings" with bare `_opening_names`, which treats any
+  capitalised first word as a name, so rule 2 judged almost nothing. r3 dropped on a
+  missing subject name alone, which would have dropped about 25 of the subject's own
+  statements. The final rule needs positive evidence of another entity (above).

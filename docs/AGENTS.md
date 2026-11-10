@@ -2080,11 +2080,12 @@ statements view (`issuer_financials`):
     or have a title that names the subject (a listed brand counts), other than inside a
     separately registered namesake's name. Applied by
     `v3_pipeline._subject_current_developments`.
-  - Rule 2: an `unknown` (ADR-083) statement resting only on open-web prose that neither
-    is the subject's nor names it — in statement, passage or document title — is
-    dropped. Industry and peer domains, filings, statements opening with a named entity
-    (not a `COMMON_OPENERS` word), and "the company" statements are exempt. The cited
-    document's title is read from `_Evidence.title`.
+  - Rule 2: an `unknown` (ADR-083) statement resting only on open-web prose that is not
+    the subject's and never names it (in statement, passage or document title,
+    `_Evidence.title`) is dropped only when it, or a cited passage's opening, names
+    ANOTHER entity: a namesake registrant or an SEC registrant (`names_other_entity`),
+    never a subject brand. Otherwise it is kept and counted in shadow. Industry and peer
+    domains, filings and "the company" statements are exempt.
   - Rule 3: "<Name>, a separate company …" is that company's.
   - The investigator (`_implicit_subject_verdict`) counts drops as
     `statements_subject_unresolved` / `statements_declared_other_company`.

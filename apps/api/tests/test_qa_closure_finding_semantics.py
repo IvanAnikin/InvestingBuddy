@@ -1300,9 +1300,9 @@ class TestLinearPatterns:
     @pytest.mark.parametrize("text", ADVERSARIAL, ids=["spaces", "newlines", "A-", "a,", "a."])
     def test_every_new_pattern_is_linear(self, text: str) -> None:
         for pattern in _patterns():
-            started = time.perf_counter()
+            started = time.process_time()
             list(pattern.finditer(text))
-            assert time.perf_counter() - started < 0.2, pattern.pattern[:60]
+            assert time.process_time() - started < 0.2, pattern.pattern[:60]
 
     @pytest.mark.parametrize("text", ADVERSARIAL, ids=["spaces", "newlines", "A-", "a,", "a."])
     def test_every_new_function_is_bounded(self, text: str) -> None:

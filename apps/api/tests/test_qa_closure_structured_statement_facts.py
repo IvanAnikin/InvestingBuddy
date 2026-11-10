@@ -879,9 +879,9 @@ def _q1_doc(body: str, extra_contexts: list[str] | None = None, hidden: str = ""
 def _timed_parse(data: bytes) -> tuple[float, object]:
     import time
 
-    started = time.perf_counter()
+    started = time.process_time()
     document = parse_inline_xbrl(data)
-    return time.perf_counter() - started, document
+    return time.process_time() - started, document
 
 
 def _peak_mb(data: bytes) -> float:

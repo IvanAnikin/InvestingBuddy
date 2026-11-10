@@ -41,8 +41,10 @@ A text that sets a level against another as a change ("fell from …", "down 50%
 "halved", "rose to …", "versus", "compared with") where one side is PRE-CHANGE or
 BOUNDARY and the other POST-CHANGE is WITHHELD: that difference is the perimeter, not
 deleveraging or a lost order. It is kept when the text says the comparison is on a
-comparable basis ("on a comparable basis", "excluding", "continuing operations"), or
-names the change as the cause ("reflecting the spin-off", "with the sale proceeds").
+comparable basis ("on a comparable basis", "excluding", "continuing operations"). A
+text that names the change itself as the cause ("reflecting the spin-off", "due to the
+separation", "following the Aerospace transaction") is kept, with its pre-change figure
+labelled; "with / after / using the sale of …" or "… proceeds" is no such cause.
 A text that states levels from both sides WITHOUT setting them against each other has
 its pre-change figure labelled (after that figure's own date), never the whole text.
 
@@ -158,15 +160,29 @@ _CHANGE_RE = re.compile(
     r"|against)\b|\bvs\b\.?",
     re.I,
 )
-#: The text names the change as the CAUSE of the difference: it is the issuer's (or the
-#: writer's) explanation, not a perimeter effect passed off as the business.
-_CAUSE_RE = re.compile(
+#: A CAUSE lead: the words that make what follows the explanation of a difference.
+#: Never "with", "after" or "using" ("… with the sale of bonds" explains nothing).
+_CAUSE_LEAD_RE = re.compile(
     r"\b(?:reflect(?:s|ed|ing)?|due\s{1,3}to|as\s{1,3}a\s{1,3}result\s{1,3}of|because\s{1,3}of"
-    r"|following|owing\s{1,3}to|attributable\s{1,3}to|driven\s{1,3}by|resulting\s{1,3}from"
-    r"|after|with|using)\b[^.;]{0,80}?\b(?:spin[- ]?offs?|spun[- ]off|split[- ]off|separation"
-    r"|de-?merger|divestitures?|disposals?|sale|proceeds|discontinued)\b",
+    r"|following|owing\s{1,3}to|attributable\s{1,3}to|driven\s{1,3}by|resulting\s{1,3}from)\b",
     re.I,
 )
+#: The change itself, as a cause names it. Never a bare "sale" or "proceeds": a sale of
+#: bonds or of a building is not a change of perimeter.
+_CAUSE_EVENT_RE = re.compile(
+    r"\b(?:spin[- ]?offs?|spun[- ]off|split[- ]off|separation|de-?merger|discontinued)\b",
+    re.I,
+)
+#: How far after a cause lead the change must be named (one clause).
+_CAUSE_WINDOW = 80
+#: The BUSINESS a change separated: "the Aerospace Spin-Off", "Separation of Solstice",
+#: "the sale of its Fluids business". A capitalised word, case-sensitive.
+_BUSINESS_RE = re.compile(
+    r"\b(?P<a>[A-Z][A-Za-z&]{2,30})\s{1,3}(?:[Ss]pin[- ]?[Oo]ffs?|[Ss]eparation|[Dd]emerger)\b"
+    r"|\b(?:[Ss]eparation|[Ss]pin[- ]?[Oo]ff|[Dd]emerger|sale|disposal|divestiture)\s{1,3}of"
+    r"\s{1,3}(?:the\s{1,3}|its\s{1,3})?(?P<b>[A-Z][A-Za-z&]{2,30})\b"
+)
+_NOT_A_BUSINESS = frozenset({"The", "Its", "This", "That", "Our", "Their", "Company", "Group"})
 #: The text itself says the comparison is like for like.
 _COMPARABLE_RE = re.compile(
     r"\b(?:comparable\s{1,3}basis|like[- ]for[- ]like|continuing\s{1,3}operations"
@@ -250,6 +266,7 @@ def change_events(
             day = days[0]
             what = ("separation" if _SPIN_RE.search(sentence) or _SEPARATION_RE.search(sentence)
                     else "change of perimeter")
+            business = _business_of(sentence)
             events.setdefault(day, {
                 "date": day.isoformat(),
                 "low": day,
@@ -257,6 +274,7 @@ def change_events(
                 "source": SOURCE_FINDING,
                 "finding_id": finding.get("finding_id"),
                 "kind": what,
+                "business": business,
                 "label": f"[before the {_fmt(day)} {what}]",
                 "label_part": f"[in part before the {_fmt(day)} {what}]",
             })
@@ -295,6 +313,29 @@ def change_events(
             ),
         })
     return [events[k] for k in sorted(events)]
+
+
+def _business_of(sentence: str) -> str | None:
+    """The business the change separated, as the issuer's sentence names it, or None."""
+    for m in _BUSINESS_RE.finditer(sentence):
+        name = m.group("a") or m.group("b")
+        if name and name not in _NOT_A_BUSINESS:
+            return name
+    return None
+
+
+def _names_the_change_as_cause(body: str, event: Mapping[str, Any]) -> bool:
+    """A cause lead ("reflecting", "due to", "following" …) followed, within one clause,
+    by the change itself (spin-off, separation, demerger, discontinued) or the business it
+    separated ("reflecting the Aerospace transaction")."""
+    business = event.get("business")
+    for m in _CAUSE_LEAD_RE.finditer(body):
+        window = re.split(r"[.;]", body[m.end(): m.end() + _CAUSE_WINDOW], maxsplit=1)[0]
+        if _CAUSE_EVENT_RE.search(window):
+            return True
+        if business and re.search(rf"\b{re.escape(str(business))}\b", window):
+            return True
+    return False
 
 
 def _date_end(text: str, start: int) -> int:
@@ -397,8 +438,12 @@ class _Guard:
             classes = [c for c in found if c is not None]
         crosses = CLASS_POST in classes and (CLASS_PRE in classes or CLASS_BOUNDARY in classes)
         if crosses:
-            if _COMPARABLE_RE.search(body) or _CAUSE_RE.search(body):
-                return None  # like for like, or the change itself is named as the cause
+            if _COMPARABLE_RE.search(body):
+                return None  # like for like
+            if _names_the_change_as_cause(body, self.event):
+                # The text explains the difference by the change itself: kept, but its
+                # pre-change figure is still dated where it stands.
+                return ACTION_LABELLED_FIGURE if CLASS_PRE in classes else None
             if _CHANGE_RE.search(body):
                 return ACTION_WITHHELD
             # Both perimeters stated side by side, not as a change: the pre-change figure

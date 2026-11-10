@@ -34,6 +34,7 @@ error does the same. The run is never lost to a provider.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import itertools
 import json
@@ -597,6 +598,11 @@ def _render_untrusted(value: Any) -> Any:
 #: never reach the corpus at all. The class and origin say where the text came from.
 #: ADR-096 — a document title is kept to this many characters for the subject rules.
 _EVIDENCE_TITLE_CHARS = 300
+#: ADR-096 — shadow (kept) rule-2 statements recorded per run, at most.
+_MAX_SHADOW_RECORDS = 50
+#: ADR-096 — how much of a cited passage is its OPENING (the part whose named entity is
+#: the document's subject).
+_PASSAGE_OPENING_CHARS = 240
 
 _WEB_CORPUS_EVIDENCE_KEYS: tuple[str, ...] = (
     "evidence_id",
@@ -1634,20 +1640,6 @@ def _opening_names(text: str) -> list[list[str]]:
     return [words for words in out if words]
 
 
-def _opens_with_a_name(text: str) -> bool:
-    """ADR-096 — the statement OPENS with a named entity: an ``_opening_names`` name whose
-    first word passes ADR-066's own filter (four letters or more, not a generic business
-    word) and is not a common sentence opener ("Revenue", "Net", "Management", "Two")."""
-    from app.services.discovery.identity import _GENERIC_TOKENS, _fold  # noqa: PLC2701
-    from app.services.entities.subject_mention import is_common_opener
-
-    for words in _opening_names(text):
-        first = re.sub(r"[^a-z0-9]", "", _fold(words[0]))
-        if len(first) >= 4 and first not in _GENERIC_TOKENS and not is_common_opener(words[0]):
-            return True
-    return False
-
-
 def publisher_is_named_company(origin_key: str | None, words: "Sequence[str]") -> int:
     """How many of the name's words the publisher's registrable domain stands for
     (0: it is not the named company's own domain): south32.net ↔ South32,
@@ -2484,10 +2476,18 @@ class InvestigatorDiagnostics:
     #: is another named entity's (an offtaker, a former subsidiary, a peer row), though
     #: the writer left the subject implicit. Dropped.
     statements_about_implicit_other_entity: int = 0
-    #: ADR-096. A statement about the subject's own business whose subject is implicit
-    #: (or another company's), cited only from documents that are not the subject's and
-    #: that never name it: its subject cannot be the research subject's. Dropped.
+    #: ADR-096. A statement about the subject's own business that never names the
+    #: subject, cited only from open-web documents that are not the subject's and never
+    #: name it, and that NAMES ANOTHER ENTITY (a separately registered namesake, or an
+    #: SEC registrant) in its own text or its cited passage's opening. Dropped.
     statements_subject_unresolved: int = 0
+    #: ADR-096. The same, but naming no other entity: its subject is merely unknown.
+    #: KEPT (shadow): counted, and recorded in ``subject_unresolved_shadow``.
+    statements_subject_unresolved_shadow: int = 0
+    #: ADR-096. The shadow statements, as drafts (a finding's id is assigned only when
+    #: the ledger stores it): question key, cited evidence ids and a digest of the
+    #: statement (never its text). At most ``_MAX_SHADOW_RECORDS``.
+    subject_unresolved_shadow: list[dict[str, Any]] = field(default_factory=list)
     #: ADR-096. A statement whose writer calls its opening entity another company
     #: ("<Name>, a separate company …"). Dropped.
     statements_declared_other_company: int = 0
@@ -2548,6 +2548,10 @@ class InvestigatorDiagnostics:
             other.statements_about_implicit_other_entity
         )
         self.statements_subject_unresolved += other.statements_subject_unresolved
+        self.statements_subject_unresolved_shadow += other.statements_subject_unresolved_shadow
+        self.subject_unresolved_shadow = [
+            *self.subject_unresolved_shadow, *other.subject_unresolved_shadow
+        ][:_MAX_SHADOW_RECORDS]
         self.statements_declared_other_company += other.statements_declared_other_company
         self.statements_scoped_to_entity += other.statements_scoped_to_entity
         self.statements_reclassified_period_not_ended += (
@@ -2590,6 +2594,8 @@ class InvestigatorDiagnostics:
                 self.statements_about_implicit_other_entity
             ),
             "statements_subject_unresolved": self.statements_subject_unresolved,
+            "statements_subject_unresolved_shadow": self.statements_subject_unresolved_shadow,
+            "subject_unresolved_shadow": [dict(r) for r in self.subject_unresolved_shadow],
             "statements_declared_other_company": self.statements_declared_other_company,
             "statements_scoped_to_entity": self.statements_scoped_to_entity,
             "statements_reclassified_period_not_ended": (
@@ -2681,6 +2687,9 @@ class LLMInvestigator:
     _other_names: "dict[str, str] | None" = field(default=None, repr=False)
     #: Lazily-loaded ``related_registrants`` for the name-sharing-registrant guard.
     _related: "tuple[RelatedRegistrant, ...] | None" = field(default=None, repr=False)
+    #: ADR-096 — ``(SubjectNames, RegistrantIndex)`` for the implicit-subject rules, built
+    #: once from the SEC directory (empty index when it cannot be read).
+    _implicit_context: Any = field(default=None, repr=False)
     #: registrant CIK → does it report separately? Remembered, failures included, so one
     #: write-up never asks the regulator about the same registrant twice (review round 2).
     _separate: "dict[str, bool]" = field(default_factory=dict, repr=False)
@@ -4009,6 +4018,26 @@ class LLMInvestigator:
             logger.warning("investigator.passage_attribution_failed: %s", type(exc).__name__)
             return StatementAttribution(VERDICT_UNKNOWN)
 
+    async def _implicit_subject_context(self) -> Any:
+        """ADR-096 — the subject's names (with its separately registered namesakes) and
+        the index of other SEC registrants, once per investigator. Never raises: without
+        the directory nothing is "another company", and rule 2 only shadows."""
+        if self._implicit_context is None:
+            from app.services.entities.subject_mention import RegistrantIndex, SubjectNames
+
+            phrases = tuple(r.phrase for r in await self._related_registrants())
+            names = SubjectNames.of(self.company_name, (self.ticker,), phrases)
+            try:
+                listings = list(await _load_sec_directory())
+            except Exception:  # noqa: BLE001 - an unreadable directory names no one
+                listings = []
+            try:
+                index = RegistrantIndex.of(listings, names)
+            except Exception:  # noqa: BLE001
+                index = RegistrantIndex()
+            self._implicit_context = (names, index)
+        return self._implicit_context
+
     def _implicit_subject_verdict(
         self,
         statement: str,
@@ -4016,26 +4045,36 @@ class LLMInvestigator:
         domain: str | None,
         *,
         unresolved: bool,
+        context: Any = None,
     ) -> str | None:
-        """ADR-096 — ``"declared"`` / ``"unresolved"`` when the statement is not the
-        subject's (``entities.subject_mention`` rules 2 and 3), else None. Never raises:
-        a guard that cannot read keeps the statement."""
+        """ADR-096 — rules 2 and 3 (``entities.subject_mention``).
+
+        ``"declared"``: the writer calls its opening entity another company (dropped).
+        ``"unresolved"``: the statement never names the subject, nothing cited is the
+        subject's or names it, and the statement — or a cited passage's opening or title
+        — NAMES ANOTHER ENTITY (a separately registered namesake, an SEC registrant):
+        positive evidence the subject is someone else's (dropped).
+        ``"shadow"``: the same, naming no other entity: kept, and only counted.
+        None otherwise. Never raises: a guard that cannot read keeps the statement."""
         from app.services.entities.passage_subject import OWNER_SUBJECT, _json_string
         from app.services.entities.subject_mention import (
+            RegistrantIndex,
             SubjectNames,
             declared_other_company,
             implicit_subject_unresolved,
+            names_other_entity,
         )
 
         try:
-            names = SubjectNames.of(self.company_name, (self.ticker,))
+            names, registrants = context or (
+                SubjectNames.of(self.company_name, (self.ticker,)), RegistrantIndex())
             if declared_other_company(statement, names) is not None:
                 return "declared"
             if not unresolved or domain in _IMPLICIT_SUBJECT_EXEMPT_DOMAINS:
                 return None
-            if _SUBJECT_PHRASE_RE.search(statement) or _opens_with_a_name(statement):
-                # A statement that names its own subject ("Autodesk reported …", a peer)
-                # or refers to "the company" is not IMPLICIT: ADR-066/083 decide it.
+            if _SUBJECT_PHRASE_RE.search(statement):
+                # "The company's supplier …": the writer ties it to the subject; ADR-066 /
+                # ADR-083 decide it.
                 return None
             if not cited_items or any(
                 item.kind not in _IMPLICIT_SUBJECT_PROSE_TOOLS
@@ -4053,6 +4092,7 @@ class LLMInvestigator:
                 # registrant, ADR-079) are left to the guards above.
                 return None
             passages = []
+            openings: list[str] = []
             for item in cited_items:
                 passage = _attribution_passage(item, self.company_id, self.company_name)
                 # The DOCUMENT's own title counts: a page titled with the subject's name
@@ -4060,8 +4100,17 @@ class LLMInvestigator:
                 title = item.title or _json_string(item.text or "", "title") or ""
                 text = " ".join(p for p in (title, passage.heading, passage.text) if p)
                 passages.append((text, passage.owner == OWNER_SUBJECT))
-            if implicit_subject_unresolved(statement, passages, names):
+                openings.append(" ".join(
+                    p for p in (title, (passage.text or "")[:_PASSAGE_OPENING_CHARS]) if p))
+            if not implicit_subject_unresolved(statement, passages, names):
+                return None
+            # Positive evidence only: another entity the statement, or what it cites,
+            # NAMES. A statement that merely never names the subject is kept (shadow).
+            if names_other_entity(statement, names, registrants) or any(
+                names_other_entity(opening, names, registrants) for opening in openings
+            ):
                 return "unresolved"
+            return "shadow"
         except Exception as exc:  # noqa: BLE001 - a guard that cannot read keeps it
             logger.warning("investigator.implicit_subject_failed: %s", type(exc).__name__)
         return None
@@ -4349,7 +4398,20 @@ class LLMInvestigator:
                 implicit = self._implicit_subject_verdict(
                     statement, cited_items, question.domain,
                     unresolved=attribution.verdict == VERDICT_UNKNOWN,
+                    context=await self._implicit_subject_context(),
                 )
+                if implicit == "shadow":
+                    # ADR-096: its subject is unknown, but nothing names anyone else: kept,
+                    # counted, and recorded (no text) for review.
+                    self.diagnostics.statements_subject_unresolved_shadow += 1
+                    if len(self.diagnostics.subject_unresolved_shadow) < _MAX_SHADOW_RECORDS:
+                        self.diagnostics.subject_unresolved_shadow.append({
+                            "question_key": question.key,
+                            "evidence_ids": [str(i) for i in real][:10],
+                            "statement_sha256": hashlib.sha256(
+                                statement.encode("utf-8")).hexdigest()[:16],
+                        })
+                    implicit = None
                 if implicit is not None:
                     # ADR-096: a statement whose subject cannot be the research subject's
                     # — the writer named another company as it, or nothing cited is the
