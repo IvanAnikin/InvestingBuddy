@@ -470,9 +470,22 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
               value={n(v3.canonicalState?.webSearchesTotal ?? consumption.webSearchCalls)}
               hint={
                 v3.canonicalState?.webSearchesTotal != null
-                  ? `${n(v3.canonicalState.webStageSearches)} web stage · ${n(
-                      v3.canonicalState.investigatorSearches,
-                    )} by investigators`
+                  ? [
+                      `${n(v3.canonicalState.webStageSearches)} web stage · ${n(
+                        v3.canonicalState.investigatorSearches,
+                      )} by investigators`,
+                      // ADR-095 — what the executed searches returned.
+                      v3.canonicalState.webSearchesSucceeded != null
+                        ? `${n(v3.canonicalState.webSearchesSucceeded)} returned results · ${n(
+                            v3.canonicalState.webSearchesFailed,
+                          )} failed`
+                        : null,
+                      v3.canonicalState.webSearchesOutcomeUnknown
+                        ? `${n(v3.canonicalState.webSearchesOutcomeUnknown)} outcome not recorded`
+                        : null,
+                    ]
+                      .filter((s): s is string => s !== null)
+                      .join(" · ")
                   : undefined
               }
             />

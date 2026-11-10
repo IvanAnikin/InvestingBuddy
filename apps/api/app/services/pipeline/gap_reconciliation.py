@@ -893,6 +893,269 @@ def _capped_pairs(
                 raised += 1
 
 
+# ── ADR-095. Deterministic conflicts ──────────────────────────────────────── #
+
+#: Why a pair of findings is a conflict: two statements of the same metric for the same
+#: reporting period, scope and project whose values differ beyond rounding.
+CONFLICT_SAME_PERIOD_VALUES = "same_period_values_differ"
+
+#: A year-to-date duration in a statement's own words, and a three-month one. A quarter
+#: key whose statement names a year to date (or the reverse) is a figure whose duration
+#: is unsettled (ADR-093): it is never set against another figure.
+_YTD_WORDS_RE = re.compile(
+    r"\b(?:nine|six)[- \t]months?\b|\b(?:9|6)M\b|\byear[- \t]to[- \t]date\b|\bYTD\b"
+    r"|\bfirst[ \t]half\b|\bhalf[- \t]year\b",
+    re.IGNORECASE,
+)
+_QUARTER_WORDS_RE = re.compile(
+    r"\bthree[- \t]months?\b|\bquarter(?:ly)?\b|\bQ[1-4]\b", re.IGNORECASE)
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: What may sit between a metric's words and ITS amount: a short parenthesis, a colon
+#: and one linking verb ("revenue was $5.0bn", "revenue: $5.0bn", "revenue of $5.0bn").
+#: Anything else ("operating cash flow / net income), against net income of 57,048")
+#: means the amount belongs to another quantity.
+_METRIC_LINK_RE = re.compile(
+    r"[ \t:,]{0,3}(?:\([^()]{0,30}\)[ \t]{0,3})?"
+    r"(?:(?:was|were|is|of|at|totall?ed|reached|amounted[ \t]{1,3}to|stood[ \t]{1,3}at"
+    r"|(?:rose|fell|grew|increased|decreased|declined)[ \t]{1,3}to)[ \t]{1,3})?"
+    # A sign before the amount ("was -147,782"); the amount's magnitude is compared.
+    r"[-−]?"
+)
+_METRIC_WINDOW = 60
+#: Two amounts a power of a thousand apart are one figure read at two scales ("33172.0
+#: USD m" parsed without its "m"), never a conflict.
+_SCALE_RATIOS = (1e3, 1e6, 1e9)
+
+
+def _metric_amount(clause: str, field_key: str) -> tuple[str, float, float] | None:
+    """The one amount a clause states FOR ``field_key``: the first amount right after a
+    mention of the metric, linked to it by nothing but a short parenthesis, a colon or
+    one linking verb. ``None`` when no mention has one, or mentions state different
+    amounts."""
+    found: set[tuple[str, float, float]] = set()
+    for pattern in rf._COMPILED.get(field_key, ()):  # noqa: SLF001 - same module family
+        for mention in pattern.finditer(clause[:2000]):
+            window = clause[mention.end(): mention.end() + _METRIC_WINDOW]
+            first = None
+            for money in (rf.MONEY_RE, rf.MONEY_SUFFIX_RE):
+                hit = money.search(window)
+                if hit is not None and (first is None or hit.start() < first.start()):
+                    first = hit
+            if first is None or not _METRIC_LINK_RE.fullmatch(window[: first.start()]):
+                continue
+            values = rf.money_values(window[first.start(): first.end()])
+            if len(values) == 1:
+                found.add(values[0])
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _scale_ambiguous(a: _Value, b: _Value) -> bool:
+    va, vb = abs(a.items[0][1]), abs(b.items[0][1])
+    low, high = min(va, vb), max(va, vb)
+    if low <= 0:
+        return True
+    ratio = high / low
+    return any(abs(ratio / r - 1.0) < ROUNDED_SAME_TOLERANCE for r in _SCALE_RATIOS)
+
+
+@dataclass(frozen=True)
+class Conflict:
+    """Two findings of the run that state different values for the same metric, the
+    same reporting period, the same scope and the same project. Computed from the
+    ledger alone; the Chair may narrate only these (ADR-095)."""
+
+    finding_a_id: str
+    finding_b_id: str
+    metric: str
+    period: str | None
+    scope: str | None
+    project: str | None
+    value_a: str
+    value_b: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "finding_a_id": self.finding_a_id,
+            "finding_b_id": self.finding_b_id,
+            "metric": self.metric,
+            "metric_label": rf.label_of(self.metric),
+            "period": self.period,
+            "scope": self.scope,
+            "project": self.project,
+            "value_a": self.value_a,
+            "value_b": self.value_b,
+            "reason": self.reason,
+        }
+
+    def to_temporal(self) -> TemporalDisagreement:
+        return TemporalDisagreement(self.finding_a_id, self.finding_b_id, self.metric,
+                                    self.reason)
+
+
+def _value_text(value: _Value | None) -> str:
+    if value is None:
+        return "?"
+    if value.kind == "money":
+        return "; ".join(f"{str(c).upper()} {v:,.0f}" for c, v, _t in value.items)
+    return "; ".join(str(i) for i in value.items)
+
+
+def _period_compatible(finding: FindingFacts, period: str) -> bool:
+    """The period a finding is keyed to is the one its own words state: the same key, a
+    balance date that is the key's end, or no stated period and no duration word of
+    another kind."""
+    stated = finding.stated_period
+    if stated and stated != period:
+        if not _ISO_DATE_RE.match(stated):
+            return False
+        from app.services.ledger.canonical_state import period_bounds
+
+        bounds = period_bounds(period)
+        if bounds is None or bounds[1].isoformat() != stated:
+            return False
+    text = finding.statement[:2000]
+    is_quarter = bool(re.search(r"-Q[1-4]$", period))
+    is_ytd = bool(re.search(r"-(?:H[12]|\d{1,2}M)$", period))
+    if is_quarter and _YTD_WORDS_RE.search(text):
+        return False
+    if is_ytd and _QUARTER_WORDS_RE.search(text):
+        return False
+    return True
+
+
+def _reported_value_conflicts(findings: Sequence[FindingFacts]) -> list[Conflict]:
+    """Reported figures (not guidance): one money amount per stating clause, the same
+    metric, the same financial reporting period (ADR-093 durations included), the same
+    NAMED scope and project, the same statement kind, and values that differ beyond
+    rounding (``compare_values``). Fail-closed by construction: a finding about another
+    entity, with an unsettled period or duration, with no scope, or stating two amounts
+    in the clause is never paired."""
+    groups: dict[tuple[str, ...], list[tuple[FindingFacts, _Value]]] = {}
+    for finding in findings:
+        if finding.withdrawn or finding.superseded_by or finding.is_other_entity:
+            continue
+        if finding.period_conflict or not finding.scope_key:
+            continue
+        period = rf.normalise_period(finding.period_key)
+        if not period or not rf.is_financial_period(period):
+            continue
+        if not _period_compatible(finding, period):
+            continue
+        for field_key in finding.fields:
+            if field_key in rf.SUPERSEDABLE_FIELDS or field_key.startswith("milestone:"):
+                continue
+            clause = _single_field_clause(finding, field_key)
+            if clause is None:
+                continue
+            # One amount in the clause, and it is the metric's own.
+            if len(rf.money_values(clause)) != 1:
+                continue
+            amount = _metric_amount(clause, field_key)
+            if amount is None:
+                continue
+            money = (amount,)
+            key = (
+                field_key,
+                finding.scope_key.casefold(),
+                finding.project or "",
+                period,
+                "|".join(sorted(rf.value_qualifiers(clause, field_key))),
+                "non_actual" if finding.is_non_actual else "actual",
+            )
+            groups.setdefault(key, []).append((finding, _Value("money", money)))
+    out: list[Conflict] = []
+    for (field_key, _scope, project, period, _q, _kind), members in groups.items():
+        raised = 0
+        for i, (a, va) in enumerate(members):
+            for b, vb in members[i + 1:]:
+                if raised >= MAX_DISAGREEMENTS_PER_GROUP:
+                    break
+                if (a.finding_id == b.finding_id or compare_values(va, vb) != DIFFERENT
+                        or _scale_ambiguous(va, vb)):
+                    continue
+                out.append(Conflict(
+                    a.finding_id, b.finding_id, field_key, period, a.scope_key,
+                    project or None, _value_text(va), _value_text(vb),
+                    CONFLICT_SAME_PERIOD_VALUES,
+                ))
+                raised += 1
+    return out
+
+
+def _guidance_conflicts(findings: Sequence[FindingFacts]) -> list[Conflict]:
+    """Guidance (``SUPERSEDABLE_FIELDS``) whose statements for the same field, scope,
+    project, period and qualifiers differ and that ``supersede`` could not order in
+    time. A pair whose values are not comparable (two currencies) is no conflict."""
+    by_id = {f.finding_id: f for f in findings}
+    _supersessions, unordered = supersede(findings)
+    out: list[Conflict] = []
+    for item in unordered:
+        a, b = by_id.get(item.finding_a_id), by_id.get(item.finding_b_id)
+        if a is None or b is None or a.is_other_entity or b.is_other_entity:
+            continue
+        clause_a = _single_field_clause(a, item.field_key)
+        clause_b = _single_field_clause(b, item.field_key)
+        if clause_a is None or clause_b is None:
+            continue
+        va = _value(item.field_key, clause_a, a.published_at)
+        vb = _value(item.field_key, clause_b, b.published_at)
+        if va is None or vb is None or compare_values(va, vb) != DIFFERENT:
+            continue
+        period = rf.normalise_period(a.period_key) or None
+        out.append(Conflict(
+            a.finding_id, b.finding_id, item.field_key, period, a.scope_key, a.project,
+            _value_text(va), _value_text(vb), item.reason,
+        ))
+    return out
+
+
+def deterministic_conflicts(findings: Sequence[FindingFacts]) -> list[Conflict]:
+    """ADR-095 — the run's conflicts, computed from the ledger's findings ONLY.
+
+    ONE mechanism: same entity (neither finding says it is about another), same metric,
+    compatible period, same scope and project, values incompatible beyond rounding. A
+    finding that DENIES a figure another states (``contradicted_absences``) is no value
+    conflict and is not listed; nor is a Red Team objection to one finding."""
+    seen: set[frozenset[str]] = set()
+    out: list[Conflict] = []
+    for conflict in [*_guidance_conflicts(findings), *_reported_value_conflicts(findings)]:
+        pair = frozenset((conflict.finding_a_id, conflict.finding_b_id))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        out.append(conflict)
+    return out[:MAX_DISAGREEMENTS]
+
+
+def finding_facts_from_payload(finding: Mapping[str, Any]) -> FindingFacts | None:
+    """A payload finding (``v3_research.findings[]``) as reconciliation reads it — the
+    replay and the report-assembly check use the same detector as the run."""
+    from types import SimpleNamespace
+
+    if not isinstance(finding, Mapping) or not finding.get("finding_id"):
+        return None
+    published = finding.get("source_published_at")
+    try:
+        published_at = date.fromisoformat(str(published)[:10]) if published else None
+    except ValueError:
+        published_at = None
+    row = SimpleNamespace(
+        id=str(finding.get("finding_id")).lower(),
+        statement=str(finding.get("statement") or ""),
+        claim_key=finding.get("claim_key"),
+        question_key=finding.get("question_key"),
+        scope_key=finding.get("scope_key"),
+        period_key=finding.get("period_key"),
+        source_kinds_json=list(finding.get("source_kinds") or ()),
+        source_published_at=published_at,
+        verification_status=finding.get("verification_status"),
+        superseded_by_finding_id=finding.get("superseded_by_finding_id"),
+        statement_kind=finding.get("statement_kind"),
+    )
+    return FindingFacts.from_row(row)
+
+
 # ── 18. Gap reconciliation ──────────────────────────────────────────────────── #
 
 
@@ -1955,9 +2218,16 @@ async def reconcile_run(
 
     # 19 — supersession first, so closure prefers current guidance.
     row_facts = [FindingFacts.from_row(r) for r in finding_rows]
-    supersessions, temporal = supersede(row_facts)
-    # A finding that denies what another states is a disagreement too (never silently kept).
-    temporal = [*temporal, *contradicted_absences(row_facts)][:MAX_DISAGREEMENTS]
+    supersessions, _unordered = supersede(row_facts)
+    # ADR-095 — the run's conflicts: ONE deterministic mechanism over the ledger. A
+    # finding that denies a figure another states is recorded as such
+    # (``absences_contradicted``), never as a disagreement between findings: the two
+    # agree on the figure, and the chair narrated 6-18 phantom "unresolved
+    # disagreements" from such pairs.
+    conflicts = deterministic_conflicts(row_facts)
+    absences = contradicted_absences(row_facts)
+    temporal = [c.to_temporal() for c in conflicts]
+    conflict_ids: dict[frozenset[str], str] = {}
     # The column holds ONE pointer: the LATEST newer finding. The per-field map in the
     # returned record (``supersessions``) is authoritative — a finding can be prior
     # guidance for one field and current for another.
@@ -1976,26 +2246,23 @@ async def reconcile_run(
         )).all()
     }
     recorded_disagreements = 0
-    for d in temporal:
-        pair = frozenset((d.finding_a_id, d.finding_b_id))
+    for c in conflicts:
+        pair = frozenset((c.finding_a_id, c.finding_b_id))
         if pair in existing_pairs:
             continue
         existing_pairs.add(pair)
-        await ledger.record_disagreement(
-            session, run, finding_a=by_id[d.finding_a_id], finding_b=by_id[d.finding_b_id],
+        row = await ledger.record_disagreement(
+            session, run, finding_a=by_id[c.finding_a_id], finding_b=by_id[c.finding_b_id],
             nature="value",
             description=(
-                f"One finding says {rf.label_of(d.field_key)} is absent from the evidence; "
-                f"another finding in this run states it. Both cannot stand; neither is "
-                f"treated as settled."
-                if d.reason == CONTRADICTED_ABSENCE
-                else (
-                    f"Two statements of {rf.label_of(d.field_key)} for the same scope and "
-                    f"project differ and are not ordered in time "
-                    f"({d.reason.replace('_', ' ')}). Neither is treated as current."
-                )
+                f"Two findings state {rf.label_of(c.metric)}"
+                + (f" for {c.period}" if c.period else "")
+                + (f" ({c.scope})" if c.scope else "")
+                + f" differently: {c.value_a} vs {c.value_b} "
+                f"({c.reason.replace('_', ' ')}). Neither is treated as settled."
             ),
         )
+        conflict_ids[pair] = str(row.id)
         recorded_disagreements += 1
 
     findings = [FindingFacts.from_row(r) for r in finding_rows]
@@ -2064,6 +2331,16 @@ async def reconcile_run(
         "supersessions": [s.to_dict() for s in supersessions][:60],
         "temporal_disagreements": [d.to_dict() for d in temporal][:60],
         "temporal_disagreements_recorded": recorded_disagreements,
+        # ADR-095 — the deterministic conflict list the Chair may narrate, each with the
+        # ledger disagreement id it was recorded under.
+        "conflicts": [
+            {**c.to_dict(),
+             "disagreement_id": conflict_ids.get(
+                 frozenset((c.finding_a_id, c.finding_b_id)))}
+            for c in conflicts
+        ],
+        # A finding that denies what another states: a wrong absence, not a conflict.
+        "absences_contradicted": [d.to_dict() for d in absences][:60],
         # What attach_to_report labels the V2 report's own gap statements against.
         "closing_findings": [f.to_dict() for f in closers][:MAX_CLOSING_FINDINGS],
         "note": (

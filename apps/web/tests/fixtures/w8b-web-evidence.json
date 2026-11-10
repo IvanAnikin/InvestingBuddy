@@ -149,6 +149,8 @@
       "label": "Web search incomplete (14 of 20 searches ran)",
       "searches_run": 14,
       "searches_planned": 20,
+      "searches_succeeded": 14,
+      "searches_failed": 0,
       "documents_stored": 9,
       "source_classes": {
         "aggregator": 1,

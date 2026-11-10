@@ -78,6 +78,9 @@ class TestStatusLines:
     def _v3(self) -> dict:
         return {
             "consumption": {"web_search_calls": 1, "web_stage": {"web_search_calls": 33}},
+            # ADR-095: the stage's searches are read from its own query record.
+            "web_context": {"provider": "tavily", "queries": {
+                "planned": 33, "executed": 33, "failed": 0, "not_issued": 0}},
             "financial_statements_state": {
                 "reporting_periods": {"latest_annual": "FY2025", "latest_interim": None,
                                       "latest_quarter": "Q3 2026",
@@ -102,7 +105,10 @@ class TestStatusLines:
     def test_status_block_is_derived_once(self) -> None:
         state = build_canonical_state(self._v3(), tally=_tally(gaps_open=55), as_of=AS_OF)
         status = state["status"]
-        assert status["web_searches"] == {"total": 34, "web_stage": 33, "investigators": 1}
+        assert status["web_searches"] == {
+            "total": 34, "web_stage": 33, "investigators": 1,
+            # ADR-095 — what the executed searches returned.
+            "planned": 34, "succeeded": 33, "failed": 0, "outcome_unknown": 1}
         # The undated duplicate of the dated annual report is one document.
         assert status["documents_read"] == 3
         assert status["latest_interim"] == {"label": "Q3 2026", "basis": "statement_facts"}
@@ -140,6 +146,7 @@ class TestStatusLines:
     def test_a_line_that_agrees_is_left_alone(self) -> None:
         v3 = self._v3()
         v3["consumption"] = {"web_search_calls": 0}
+        v3.pop("web_context")  # no web stage ran: the run made 0 searches
         v3["loop"] = {"gaps_open": 55}
         v3["financial_statements_state"]["reporting_periods"]["latest_interim"] = "Q3 2026"
         state = build_canonical_state(v3, tally=_tally(gaps_open=55), as_of=AS_OF)
@@ -478,6 +485,10 @@ class TestPhantomConflict:
     def _state(self, v3: dict, pairs: tuple) -> dict:
         tally = _tally(disagreements=len(pairs), unresolved_disagreement_ids=("d1",),
                        disagreement_ids=("d1",), disagreement_pairs=pairs)
+        # ADR-095: the pairs a chair may narrate are the run's computed conflicts.
+        v3["gap_reconciliation"] = {"conflicts": [
+            {"finding_a_id": a, "finding_b_id": b, "disagreement_id": f"d{i + 1}"}
+            for i, (a, b) in enumerate(pairs)]}
         return build_canonical_state(v3, tally=tally, as_of=AS_OF)
 
     def test_a_conflict_no_recorded_disagreement_pairs_is_withheld(self) -> None:
@@ -1132,6 +1143,9 @@ PATTERNS = [
     pdur._QUARTER_KEY_RE, pdur._STATEMENT_YTD_RE, pdur._INSTANT_RE, cc._WS_RE,
     cc._LABEL_LEAD_RE, cc._TAIL_PUNCT_RE, pdur._FORWARD_BEFORE_RE, pdur._YEAR_RE,
     pdur._SHORT_YEAR_RE, cc._LABEL_PERIOD_RE,
+    # ADR-095: deterministic conflicts.
+    gr._YTD_WORDS_RE, gr._QUARTER_WORDS_RE, gr._ISO_DATE_RE, gr._METRIC_LINK_RE,
+    ri._CONFLICT_COUNT_RE,
 ]
 DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000]
 

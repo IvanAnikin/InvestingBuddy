@@ -2293,6 +2293,18 @@ def _enforce_research_state(
     out["state_invariants"] = invariants.InvariantResult(
         v3=out, llm_council=None, violations=violations
     ).to_dict()
+    try:
+        # ADR-095 — what the report still says that cannot be true together with the
+        # one ledger view, recorded for the audit (the enforcer above repaired or
+        # withheld what it could).
+        from app.services.ledger.ledger_invariants import impossible_combinations
+
+        out["state_invariants"]["impossible_combinations"] = impossible_combinations(
+            out, state,
+            repaired_paths=[v.path for v in violations if v.action == "repaired"],
+        )
+    except Exception:  # noqa: BLE001 - an audit record never costs the report
+        pass
     if legacy is not None:
         out["legacy_council"] = invariants.legacy_council_block(state)
         # The V2 block is rewritten ONLY when one of its sentences was withheld; a
