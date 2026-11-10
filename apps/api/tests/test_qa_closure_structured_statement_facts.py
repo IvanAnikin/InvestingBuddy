@@ -1402,6 +1402,17 @@ class TestLabelsAndReuse:
         assert _requires_full_reextraction(
             SimpleNamespace(pipeline_version=25, excerpts_json=doc.excerpts_json,
                             canonical_url=url), [tagged]) is True
+        # ...but a document the reader already read and found NO tags in (an exhibit, a
+        # PDF, a filing without iXBRL) has nothing more to give: never re-fetched.
+        exhibit = ("https://www.sec.gov/Archives/edgar/data/1633917/000163391726000123/"
+                   "ex99-1.htm")
+        for version in (22, 25):
+            assert _requires_full_reextraction(
+                SimpleNamespace(pipeline_version=version, excerpts_json=doc.excerpts_json,
+                                canonical_url=exhibit), [prose]) is False
+            assert _requires_full_reextraction(
+                SimpleNamespace(pipeline_version=version, excerpts_json=doc.excerpts_json,
+                                canonical_url=exhibit), []) is False
         assert _requires_full_reextraction(
             SimpleNamespace(pipeline_version=20, excerpts_json=doc.excerpts_json,
                             canonical_url="https://issuer.example/r.htm"), [prose]) is False

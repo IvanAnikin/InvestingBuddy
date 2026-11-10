@@ -10072,28 +10072,57 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
      runway record carries `liquidity`, `liquidity_basis`, `liquidity_state` and
      `liquidity_components_used`. `financial_statements_state.liquidity` carries the
      view per basis.
+   - The `get_calculated_metrics` tool's `cash_runway_quarters` (the one the biotech
+     playbook requires) takes the same route (`agent_tools/calculations._runway_liquidity`).
+     It reads the issuer's active, validated component facts for the cash fact's period at
+     Group scope. Two differing values for one component are never chosen between: the
+     runway stays on cash, labelled cash only. The item carries `label`, `liquidity`,
+     `liquidity_basis`, `liquidity_state` and `liquidity_components_used`, and the
+     component fact ids join `input_fact_ids`.
    - Extraction pipeline version 26 (ADR-094 took 25). `INLINE_XBRL_MIN_PIPELINE_VERSION`
-     moves to 26, and
-     `_tags_never_read` now treats an SEC filing tagged under an older concept map as
-     unread, so held filings are re-read once.
+     moves to 26. `_tags_never_read` re-reads, once, only:
+     - an SEC Archives document stamped before the reader (`INLINE_XBRL_READER_VERSION`,
+       22) with no tagged fact (ADR-085's rule, unchanged);
+     - an SEC Archives filing body stamped 22–25 that HOLDS at least one inline-XBRL fact
+       (an iXBRL 10-K / 10-Q / 20-F / 40-F / 6-K body read under the older concept map).
+
+     An exhibit, a PDF or a filing without iXBRL that the reader already read is never
+     re-fetched. Expected scope: one bounded re-fetch per held iXBRL filing body
+     extracted at v22–v25, on its next touch by the filing bridge, within the existing
+     acquisition budgets. Nothing is re-fetched by a migration or in bulk.
 2. **Change of perimeter** (`ledger/perimeter.py`, run after period supersession in
    `v3_pipeline`).
    - Only the issuer's own filings trigger it:
      - a finding resting only on `issuer_filing` / `issuer_ir`, stating a completed
        spin-off, split-off, demerger, "separation of <Name>", "<Name> Separation" or a
-       move to discontinued operations, with exactly one date on or before the source's
-       date. Planned, expected or conditional wording never counts.
+       move to discontinued operations. The sentence must give exactly one event date on
+       or before the source's date. The event date must sit within 60 characters of the
+       completion verb ("completed June 29, 2026", "On March 3, 2025, … completed"), and
+       a period's end is never one ("the quarter ended March 31, 2025"). Planned,
+       expected or conditional wording never counts.
      - V2's SEC `basis_changes` `perimeter_recast`. Here the restated quarter is the old
        perimeter. So is the latest annual period, but only when it ended at least a
        quarter before the restating 10-Q was filed.
    - A debt, cash, equity or backlog level (backlog, order book, RPO) is classed by its
      as-of (ADR-087's reading):
-     - **pre-change** (before the change): labelled "[before the 29 Jun 2026 separation]";
+     - **pre-change** (before the change): labelled "[before the 29 Jun 2026
+       separation]" for a spin-off / split-off / demerger / separation, or "[before the
+       3 Mar 2025 change of perimeter]" when the event is a sale moved to discontinued
+       operations (an ordinary divestiture is not a "separation");
      - **boundary** (up to the end of the quarter the change happened in): never labelled;
      - **post-change**: never labelled.
    - A text that sets a pre-change or boundary level against a post-change one as a
-     change (fell, declined, rose, halved, from … to …) is withheld, unless it says the
-     comparison is comparable, organic, continuing operations or restated.
+     change (fell, declined, rose, halved, from … to …, versus, vs., compared, against)
+     is withheld. It is kept unchanged when it says the comparison is comparable,
+     organic, continuing operations or restated, or when it names the change as the
+     cause ("reflecting the Aerospace spin-off", "due to the separation", "funded with
+     the sale proceeds").
+   - A text that states a pre-change level and a post-change level side by side, with no
+     comparison word, has its pre-change figure labelled in place: "Total debt was $34.6
+     billion at March 31, 2026 [before the 29 Jun 2026 separation]; it was $16.6 billion
+     at September 30, 2026." When the figure's date cannot be located (a period key
+     only), the text is prefixed "[in part before the … separation]". The action is
+     `labelled_pre_change_figure`, and a finding carries `perimeter: "mixed"`.
    - Texts read: findings, professional-report leads and sentences (via F-labels), chair
      key points (via `finding_id`) and the chair synthesis. A synthesis sentence that
      cites no id is matched by amount: every amount it prints must be a subject
@@ -10118,12 +10147,18 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
    - Rule 2: the investigator handles a statement left `unknown` by ADR-083 in a
      subject-business domain (not industry or peer) that rests only on open-web prose
      (company-corpus or fetched web items; never a filing, which ADR-079 judges by its
-     registrant). The statement must also be implicit: it does not open with a named
-     entity (ADR-066 `_opening_names`, so "Autodesk reported …" is not implicit, though
-     an acronym such as "FDA placed …" still is) and it does not say "the company / the
-     group / the issuer". Such a statement is dropped when no cited document is the
-     subject's, and neither the statement nor any cited passage or document title names
-     the subject. It is counted as `statements_subject_unresolved`.
+     registrant). The statement must also be implicit: it does not say "the company /
+     the group / the issuer", and it does not open with a named entity
+     (`investigator._opens_with_a_name`). A named entity is an ADR-066 `_opening_names`
+     name whose first word passes ADR-066's own filter (four letters or more, not a
+     generic business word) and is not in `subject_mention.COMMON_OPENERS`. So
+     "Autodesk reported …" is not implicit, while "Revenue rose …", "Net debt …",
+     "Two trials …" and "FDA placed …" are. Such a statement is dropped when no cited
+     document is the subject's, and neither the statement nor any cited passage or
+     cited document TITLE names the subject. The title is the tool record's own `title`,
+     carried as `_Evidence.title` and set in `_evidence_of`. Neither prompt copy
+     (`_WEB_CORPUS_EVIDENCE_KEYS` / `_EXTERNAL_EVIDENCE_KEYS`) includes it. Dropped
+     statements are counted as `statements_subject_unresolved`.
    - Rule 3: an opening entity the writer itself calls another company ("<Name>, a
      separate company …") is that company's, in any non-peer domain. It is counted as
      `statements_declared_other_company`.
@@ -10144,6 +10179,10 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
   - HON3: 9 texts labelled.
   - HON2 (SEC restatement only, mislabelled FY2026 annual): 0 edits.
   - The other 15 reports: no change detected, 0 edits. No text was withheld.
+  - The review r2 corrections (date adjacency, "change of perimeter" wording, versus,
+    side-by-side labelling, stated cause) change nothing on HON3/HON4: the same 29 Jun
+    2026 event, the same 9 and 7 labels, no withhold and no figure label. Script:
+    `replay_r3.py`.
 - **Entity.**
   - Current developments: HON4 3→0, LIN4 3→0, CLLS7 2→0, PYPL5 1→0 of the evaluated
     items.
@@ -10153,6 +10192,11 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
     brand. Script: `replay_rule1.py`.
   - CLLS7 F9 (Calyxt) is withheld by rule 3. F48 (Regenxbio) meets rule 2 unless its
     page names Cellectis, which cannot be checked offline.
+  - Rule-2 candidates (offline upper bounds: the replay cannot see the cited page,
+    title or source type) are 33 across the 18 reports under the corrected implicit
+    test, against 46 by statement wording alone. Per report: HON2 1, HON3 2, LIN2 3,
+    LIN4 1, CLLS5 2, CLLS6 2, CLLS7 1, PYPL3 4, JPM 5, JPM2 4, JPM3 2, CFR 4, CFR2 1,
+    CFR3 1; the rest 0.
 
 ### Known limits
 - Liquidity components come from inline XBRL only. A UK or ASX PDF's "short-term
@@ -10181,3 +10225,17 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
     (cupssy.com; Montblanc is a Richemont brand).
 - Rule 2 cannot be replayed exactly on stored payloads, because passages are not
   persisted. Candidates are listed for manual review in the hand-back.
+- Rule 2's opening-name test is a closed word list. A common word missing from
+  `COMMON_OPENERS` is read as a name, and rule 2 then abstains (the ADR-083 status
+  quo). A company whose name is a listed word ("Total", "Next") is read as a common
+  word, and rule 2 still applies: its statement is kept only when the statement, a
+  passage or a title names the subject.
+- Perimeter:
+  - a fall across a divestiture that does not name the sale or its proceeds as the
+    cause is still withheld;
+  - "against" also counts as a comparison word, so "debt of X at <pre> against cash
+    of Y at <post>" is withheld.
+- The review r2 regression: r1 used bare `_opening_names` to decide "named", and that
+  reads any capitalised first word ("Revenue", "Net", "Management") as a name, so rule
+  2 judged almost nothing. Fixed and pinned (`test_a_common_opening_word_is_not_a_name`,
+  `test_an_unnamed_statement_on_an_unnamed_page_is_dropped`).

@@ -29,17 +29,26 @@ book / remaining performance obligations — whose as-of is known (ADR-087's rea
 period key, else a balance-date phrase, else the source date):
 
 * as-of before the change → PRE-CHANGE. The text is labelled "[before the <date>
-  separation]" (a true date: it never says what the level is now);
+  separation]" for a spin-off / split-off / demerger / separation, else "[before the
+  <date> change of perimeter]" (a disposal moved to discontinued operations) — a true
+  date: it never says what the level is now;
 * as-of at or after the change but no later than the end of the quarter it happened in →
   BOUNDARY: the platform cannot tell which perimeter a balance at that date covers. Never
   labelled;
 * later → POST-CHANGE. Never labelled.
 
 A text that sets a level against another as a change ("fell from …", "down 50%",
-"halved", "rose to …") where one side is PRE-CHANGE or BOUNDARY and the other POST-CHANGE
-is WITHHELD: that difference is the perimeter, not deleveraging or a lost order. A
-comparison the issuer's own document states is kept when the text says it is on a
-comparable basis ("on a comparable basis", "excluding", "continuing operations").
+"halved", "rose to …", "versus", "compared with") where one side is PRE-CHANGE or
+BOUNDARY and the other POST-CHANGE is WITHHELD: that difference is the perimeter, not
+deleveraging or a lost order. It is kept when the text says the comparison is on a
+comparable basis ("on a comparable basis", "excluding", "continuing operations"), or
+names the change as the cause ("reflecting the spin-off", "with the sale proceeds").
+A text that states levels from both sides WITHOUT setting them against each other has
+its pre-change figure labelled (after that figure's own date), never the whole text.
+
+The event's date is the date ADJACENT to its completion verb ("completed June 29,
+2026", "On March 3, 2025, … completed"), never a period end ("for the quarter ended
+March 31, 2025").
 
 WHAT IS READ
 ============
@@ -61,7 +70,12 @@ from typing import Any
 
 from app.services.ledger.canonical_state import as_date, period_bounds
 from app.services.ledger.period_supersession import (
+    _BALANCE_DATE_LEAD_RE,
+    _DMY_RE,
     _HEX_ID_RE,
+    _ISO_RE,
+    _MDY_RE,
+    _MONTH_YEAR_RE,
     _SENTENCE_RE,
     MAX_TEXT_CHARS,
     _about_other_entity,
@@ -88,6 +102,7 @@ CLASS_BOUNDARY = "boundary"
 CLASS_POST = "post_change"
 
 ACTION_LABELLED = "labelled_pre_change"
+ACTION_LABELLED_FIGURE = "labelled_pre_change_figure"
 ACTION_WITHHELD = "withheld_cross_perimeter_comparison"
 
 SOURCE_FINDING = "issuer_finding"
@@ -102,6 +117,17 @@ _EVENT_RE = re.compile(
     r"|\bdiscontinued\s{1,3}operations?\b",
     re.I,
 )
+#: The words that make the event a SEPARATION (else it is a change of perimeter: a sale
+#: presented as discontinued operations).
+_SPIN_RE = re.compile(
+    r"\b(?:spin[- ]?offs?|spun[- ]off|split[- ]off|de-?merger|demerged)\b", re.I
+)
+#: A date that is a PERIOD's end, not an event's: "the quarter ended March 31, 2025".
+_PERIOD_END_LEAD_RE = re.compile(
+    r"\b(?:ended|ending|quarter|year|period|months|weeks|half)\s{1,3}(?:on\s{1,3})?$", re.I
+)
+#: How far (characters) the event's date may sit from its completion verb.
+_EVENT_DATE_WINDOW = 60
 _SEPARATION_RE = re.compile(
     r"\b[Ss]eparation\s{1,3}of\s{1,3}(?:the\s{1,3}|its\s{1,3})?[A-Z]"
     r"|\b[A-Z][a-z]{2,30}\s{1,3}Separation\b"
@@ -128,7 +154,17 @@ _RPO_RE = re.compile(r"\bRPO\b")
 _CHANGE_RE = re.compile(
     r"\b(?:fell|falls?|falling|declin\w{1,4}|decreas\w{1,4}|dropp?\w{0,3}|drops?"
     r"|reduc\w{1,5}|lower(?:ed)?|rose|rises?|rising|increas\w{1,4}|grew|grows?|growth"
-    r"|halved|doubled|down|up|deleverag\w{1,4}|cut|shr[aiu]nk\w{0,3}|from)\b",
+    r"|halved|doubled|down|up|deleverag\w{1,4}|cut|shr[aiu]nk\w{0,3}|from|versus|compared"
+    r"|against)\b|\bvs\b\.?",
+    re.I,
+)
+#: The text names the change as the CAUSE of the difference: it is the issuer's (or the
+#: writer's) explanation, not a perimeter effect passed off as the business.
+_CAUSE_RE = re.compile(
+    r"\b(?:reflect(?:s|ed|ing)?|due\s{1,3}to|as\s{1,3}a\s{1,3}result\s{1,3}of|because\s{1,3}of"
+    r"|following|owing\s{1,3}to|attributable\s{1,3}to|driven\s{1,3}by|resulting\s{1,3}from"
+    r"|after|with|using)\b[^.;]{0,80}?\b(?:spin[- ]?offs?|spun[- ]off|split[- ]off|separation"
+    r"|de-?merger|divestitures?|disposals?|sale|proceeds|discontinued)\b",
     re.I,
 )
 #: The text itself says the comparison is like for like.
@@ -208,17 +244,21 @@ def change_events(
                 continue
             if not _COMPLETED_RE.search(sentence) or _NOT_YET_RE.search(sentence):
                 continue
-            days = [d for _start, d in _dated_spans(sentence) if d <= ceiling]
+            days = _event_dates(sentence, ceiling)
             if len(set(days)) != 1:
                 continue  # no date, or two: which one is the change is not certain
             day = days[0]
+            what = ("separation" if _SPIN_RE.search(sentence) or _SEPARATION_RE.search(sentence)
+                    else "change of perimeter")
             events.setdefault(day, {
                 "date": day.isoformat(),
                 "low": day,
                 "high": day,
                 "source": SOURCE_FINDING,
                 "finding_id": finding.get("finding_id"),
-                "label": f"[before the {_fmt(day)} separation]",
+                "kind": what,
+                "label": f"[before the {_fmt(day)} {what}]",
+                "label_part": f"[in part before the {_fmt(day)} {what}]",
             })
     for change in basis_changes or ():
         if not isinstance(change, Mapping) or change.get("kind") != "perimeter_recast":
@@ -244,12 +284,45 @@ def change_events(
             "high": max(low, filed - timedelta(days=92)),
             "source": SOURCE_SEC_RECAST,
             "restating_filed": filed.isoformat(),
+            "kind": "change of perimeter",
             "label": (
                 f"[before a change of perimeter: the issuer's 10-Q filed "
                 f"{filed.isoformat()} restates earlier periods]"
             ),
+            "label_part": (
+                f"[in part before a change of perimeter: the issuer's 10-Q filed "
+                f"{filed.isoformat()} restates earlier periods]"
+            ),
         })
     return [events[k] for k in sorted(events)]
+
+
+def _date_end(text: str, start: int) -> int:
+    """Where the date printed at ``start`` ends (the longest date pattern there)."""
+    end = start
+    for regex in (_DMY_RE, _MDY_RE, _ISO_RE, _MONTH_YEAR_RE):
+        m = regex.match(text, start)
+        if m:
+            end = max(end, m.end())
+    return end
+
+
+def _event_dates(sentence: str, ceiling: date) -> list[date]:
+    """The dates a completed-change sentence gives its EVENT: a date no later than the
+    source, within ``_EVENT_DATE_WINDOW`` characters of a completion verb, and not a
+    period's end ("the quarter ended March 31, 2025")."""
+    verbs = [(m.start(), m.end()) for m in _COMPLETED_RE.finditer(sentence)]
+    out: list[date] = []
+    for start, day in _dated_spans(sentence):
+        if day > ceiling:
+            continue
+        if _PERIOD_END_LEAD_RE.search(sentence[max(0, start - 24): start]):
+            continue
+        end = _date_end(sentence, start)
+        if any(v_start - end <= _EVENT_DATE_WINDOW and start - v_end <= _EVENT_DATE_WINDOW
+               for v_start, v_end in verbs):
+            out.append(day)
+    return out
 
 
 def _latest_annual_end(v3: Mapping[str, Any]) -> date | None:
@@ -323,8 +396,14 @@ class _Guard:
                 return None  # a level the platform cannot date: no label is certain
             classes = [c for c in found if c is not None]
         crosses = CLASS_POST in classes and (CLASS_PRE in classes or CLASS_BOUNDARY in classes)
-        if crosses and _CHANGE_RE.search(body) and not _COMPARABLE_RE.search(body):
-            return ACTION_WITHHELD
+        if crosses:
+            if _COMPARABLE_RE.search(body) or _CAUSE_RE.search(body):
+                return None  # like for like, or the change itself is named as the cause
+            if _CHANGE_RE.search(body):
+                return ACTION_WITHHELD
+            # Both perimeters stated side by side, not as a change: the pre-change figure
+            # is labelled where it stands.
+            return ACTION_LABELLED_FIGURE if CLASS_PRE in classes else None
         if classes and all(c == CLASS_PRE for c in classes) and _printed_amounts(body):
             return ACTION_LABELLED
         return None
@@ -350,11 +429,38 @@ def _labelled(text: str, label: str) -> str:
     return f"{lead}{label} {text.lstrip()}"
 
 
+def _label_pre_figures(text: str, event: Mapping[str, Any], today: date) -> str | None:
+    """Insert the event label after every PRE-change balance date the text prints ("at
+    March 31, 2026 [before the 29 Jun 2026 separation]"); None when none is found."""
+    inserts: list[int] = []
+    for start, day in _dated_spans(text):
+        if day > today or classify(day, event) != CLASS_PRE:
+            continue
+        if not _BALANCE_DATE_LEAD_RE.search(text[max(0, start - 30): start]):
+            continue
+        inserts.append(_date_end(text, start))
+    if not inserts:
+        return None
+    out = text
+    for end in sorted(set(inserts), reverse=True):
+        out = f"{out[:end]} {event['label']}{out[end:]}"
+    return out
+
+
+def _labelled_figure(text: str, event: Mapping[str, Any], today: date, *,
+                     finding: bool = False) -> str:
+    inline = _label_pre_figures(text, event, today)
+    if inline is not None:
+        return inline
+    label = str(event.get("label_part") or event["label"])
+    return _with_label(text, label) if finding else _labelled(text, label)
+
+
 def _notice(event: Mapping[str, Any]) -> str:
     from app.services.ledger.report_invariants import withheld_notice
 
-    when = f"the {_fmt(event['low'])} separation" if event.get("date") else (
-        "a change of perimeter the issuer's filings restate")
+    when = f"the {_fmt(event['low'])} {event.get('kind') or 'separation'}" if event.get(
+        "date") else "a change of perimeter the issuer's filings restate"
     return withheld_notice(
         f"it compares levels from before and after {when} as a change; the difference "
         "is the perimeter, not the business"
@@ -382,7 +488,9 @@ def apply_perimeter_guard(
             "operations stated in the issuer's own filings (or an SEC restatement of an "
             "earlier quarter) changes the perimeter. A debt, cash, equity or backlog level "
             "from before it is labelled with that date; a text setting a level from before "
-            "it against one after it as a change is withheld."
+            "it against one after it as a change is withheld unless it is on a comparable "
+            "basis or names the change as the cause; a text stating both side by side has "
+            "its earlier figure labelled."
         ),
     }
     if not events:
@@ -406,6 +514,9 @@ def apply_perimeter_guard(
                 verdict = guard.verdict(sentence, cited)
             if verdict == ACTION_LABELLED:
                 sentence = _labelled(sentence, event["label"])
+                changed = True
+            elif verdict == ACTION_LABELLED_FIGURE:
+                sentence = _labelled_figure(sentence, event, today)
                 changed = True
             elif verdict == ACTION_WITHHELD:
                 sentence = _notice(event)
@@ -481,6 +592,11 @@ def apply_perimeter_guard(
                                                event["label"])
             finding["perimeter"] = CLASS_PRE
             finding["perimeter_label"] = event["label"]
+        elif verdict == ACTION_LABELLED_FIGURE:
+            finding["statement"] = _labelled_figure(
+                str(finding.get("statement") or ""), event, today, finding=True)
+            finding["perimeter"] = "mixed"
+            finding["perimeter_label"] = event["label"]
         elif verdict == ACTION_WITHHELD:
             finding["statement"] = _notice(event)
             finding["perimeter"] = "withheld"
@@ -491,6 +607,7 @@ def apply_perimeter_guard(
 
 __all__ = [
     "ACTION_LABELLED",
+    "ACTION_LABELLED_FIGURE",
     "ACTION_WITHHELD",
     "CLASS_BOUNDARY",
     "CLASS_POST",

@@ -3746,14 +3746,20 @@ Additive keys under `source_summary_json.v3_research`:
 
   `inputs.cash.label` is `available_liquidity` when components were added. `label` names
   the basis whenever it is not plain cash.
+- The `get_calculated_metrics` tool's `cash_runway_quarters` item carries the same
+  `label`, `liquidity`, `liquidity_basis`, `liquidity_state` and
+  `liquidity_components_used`. Component fact ids are added to `input_fact_ids`.
 - `v3_research.perimeter` (`version: 1`):
   - `changes[]`: `{date | null, low, high, source: issuer_finding | sec_restatement,
     finding_id? | restating_filed?, label}`;
-  - `actions[]`: `{action: labelled_pre_change | withheld_cross_perimeter_comparison,
-    path}`;
+  - `actions[]`: `{action: labelled_pre_change | labelled_pre_change_figure |
+    withheld_cross_perimeter_comparison, path}`;
+  - each change also carries `kind` (`separation` | `change of perimeter`) and
+    `label_part`;
   - `note`.
 
-  Labelled findings carry `perimeter: "pre_change"` and `perimeter_label`. Withheld ones
+  Labelled findings carry `perimeter: "pre_change"` (or `"mixed"` when only the earlier
+  of two figures is labelled) and `perimeter_label`. Withheld ones
   carry `perimeter_withheld: true`, and their statement is a "[Withheld at report
   assembly: …]" notice.
 - `v3_research.web_context.catalyst_evidence` holds only items that are the verified

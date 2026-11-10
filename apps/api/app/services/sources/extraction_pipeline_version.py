@@ -417,6 +417,12 @@ CURRENT_EXTRACTION_PIPELINE_VERSION = 26
 #: ``CURRENT_EXTRACTION_PIPELINE_VERSION`` by a version that lacked the reader.
 INLINE_XBRL_MIN_PIPELINE_VERSION = 26
 
+#: ADR-085 — the version that SHIPPED the inline-XBRL reader. A held SEC filing stamped
+#: at or after it, below ``INLINE_XBRL_MIN_PIPELINE_VERSION``, had its tags read under an
+#: older concept map: it is re-read only when it actually carries tags (an iXBRL filing
+#: body), never an exhibit or a PDF that had none (ADR-096).
+INLINE_XBRL_READER_VERSION = 22
+
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
 # THE CURRENT gutter-detection thresholds, THE CURRENT excerpt-ranking/
@@ -434,4 +440,5 @@ __all__ = [
     "CURRENT_EXTRACTION_PIPELINE_VERSION",
     "EXTRACTION_TEXT_LAYER_MIN_VERSION",
     "INLINE_XBRL_MIN_PIPELINE_VERSION",
+    "INLINE_XBRL_READER_VERSION",
 ]

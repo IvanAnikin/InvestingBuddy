@@ -216,6 +216,9 @@ class _Evidence:
     edgar_registrant: str | None = None
     #: The registrant CIK the URL names (digits, no leading zeros), when it names one.
     edgar_cik: str | None = None
+    #: ADR-096 — the document's own title as the tool returned it (raw, capped), for the
+    #: implicit-subject rule. Never shown to a model: the prompt copy whitelists its keys.
+    title: str | None = None
 
 
 def _corpus_arguments(
@@ -592,6 +595,9 @@ def _render_untrusted(value: Any) -> Any:
 #: the citation label built from it and the URL are left out: a title is text the page
 #: author chose and can carry instructions, and the search provider's snippet and title
 #: never reach the corpus at all. The class and origin say where the text came from.
+#: ADR-096 — a document title is kept to this many characters for the subject rules.
+_EVIDENCE_TITLE_CHARS = 300
+
 _WEB_CORPUS_EVIDENCE_KEYS: tuple[str, ...] = (
     "evidence_id",
     "text",
@@ -745,6 +751,10 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
     trust = _trust_fields(tool, item)
     # Read BEFORE rendering: the platform's own URL field, not a rendered copy.
     url = _clean(item.get("canonical_url") or item.get("fetched_url") or item.get("url"))
+    # ADR-096 — the document's own title, read from the RAW record: neither prompt copy
+    # (``_WEB_CORPUS_EVIDENCE_KEYS`` / ``_EXTERNAL_EVIDENCE_KEYS``) carries it.
+    raw_title = _clean(item.get("title"))
+    title = raw_title[:_EVIDENCE_TITLE_CHARS] if raw_title else None
     # ADR-084 — the metrics the record carries, read from its RAW fields: the prompt
     # copy below is JSON-escaped (a newline becomes ``\n``) and cut (review H1).
     metrics = _raw_metrics(tool, item)
@@ -825,6 +835,7 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
         ref=ref,
         published_at=_published_at_of(item),
         url=url,
+        title=title,
         **trust,
     )
 
@@ -1621,6 +1632,20 @@ def _opening_names(text: str) -> list[list[str]]:
     if lead:
         out.append(_at(text[lead.end():]))
     return [words for words in out if words]
+
+
+def _opens_with_a_name(text: str) -> bool:
+    """ADR-096 — the statement OPENS with a named entity: an ``_opening_names`` name whose
+    first word passes ADR-066's own filter (four letters or more, not a generic business
+    word) and is not a common sentence opener ("Revenue", "Net", "Management", "Two")."""
+    from app.services.discovery.identity import _GENERIC_TOKENS, _fold  # noqa: PLC2701
+    from app.services.entities.subject_mention import is_common_opener
+
+    for words in _opening_names(text):
+        first = re.sub(r"[^a-z0-9]", "", _fold(words[0]))
+        if len(first) >= 4 and first not in _GENERIC_TOKENS and not is_common_opener(words[0]):
+            return True
+    return False
 
 
 def publisher_is_named_company(origin_key: str | None, words: "Sequence[str]") -> int:
@@ -4008,7 +4033,7 @@ class LLMInvestigator:
                 return "declared"
             if not unresolved or domain in _IMPLICIT_SUBJECT_EXEMPT_DOMAINS:
                 return None
-            if _opening_names(statement) or _SUBJECT_PHRASE_RE.search(statement):
+            if _SUBJECT_PHRASE_RE.search(statement) or _opens_with_a_name(statement):
                 # A statement that names its own subject ("Autodesk reported …", a peer)
                 # or refers to "the company" is not IMPLICIT: ADR-066/083 decide it.
                 return None
@@ -4032,7 +4057,7 @@ class LLMInvestigator:
                 passage = _attribution_passage(item, self.company_id, self.company_name)
                 # The DOCUMENT's own title counts: a page titled with the subject's name
                 # is about the subject, whatever its excerpt repeats.
-                title = _json_string(item.text or "", "title") or ""
+                title = item.title or _json_string(item.text or "", "title") or ""
                 text = " ".join(p for p in (title, passage.heading, passage.text) if p)
                 passages.append((text, passage.owner == OWNER_SUBJECT))
             if implicit_subject_unresolved(statement, passages, names):

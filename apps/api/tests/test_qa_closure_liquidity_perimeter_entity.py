@@ -8,7 +8,6 @@ findings about other companies under four subjects. No network.
 
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -312,6 +311,68 @@ class TestPerimeter:
         out, _ = pm.apply_perimeter_guard(_industrial(synthesis=text), as_of=NOW)
         assert out["chair"]["synthesis"] == text
 
+    # Review r2 (items 2-4).
+
+    @staticmethod
+    def _one(statement: str) -> tuple[str, dict[str, Any]]:
+        payload = {"findings": [
+            _finding(SPIN, "The Aerospace Spin-Off completed June 29, 2026.",
+                     published="2026-10-30"),
+            _finding("b1" + "0" * 30, statement, published="2026-10-30"),
+        ]}
+        out, record = pm.apply_perimeter_guard(payload, as_of=NOW)
+        return out["findings"][1]["statement"], record
+
+    @pytest.mark.parametrize("word", ["versus", "vs.", "compared with", "against"])
+    def test_review_p1_a_versus_comparison_across_the_change_is_withheld(self, word) -> None:  # noqa: ANN001
+        text, record = self._one(f"Total debt was $34.6 billion at March 31, 2026 {word} "
+                                 "$16.6 billion at September 30, 2026.")
+        assert text.startswith("[Withheld at report assembly:")
+        assert record["actions"][0]["action"] == pm.ACTION_WITHHELD
+
+    def test_review_p1_both_perimeters_side_by_side_label_the_earlier_figure(self) -> None:
+        text, record = self._one("Total debt was $34.6 billion at March 31, 2026; it was "
+                                 "$16.6 billion at September 30, 2026.")
+        assert text == ("Total debt was $34.6 billion at March 31, 2026 [before the 29 Jun "
+                        "2026 separation]; it was $16.6 billion at September 30, 2026.")
+        assert record["actions"][0]["action"] == pm.ACTION_LABELLED_FIGURE
+
+    def test_a_period_end_is_never_the_events_date(self) -> None:
+        payload = {"findings": [_finding(SPIN, (
+            "For the quarter ended March 31, 2025, the Fluids business was presented as "
+            "discontinued operations, effective as of that date."), published="2025-05-01")]}
+        assert pm.change_events(payload, as_of=NOW.date()) == []
+
+    def test_the_date_must_sit_by_the_completion_verb(self) -> None:
+        payload = {"findings": [_finding(SPIN, (
+            "On March 3, 2025, the Company completed the sale of its Fluids business, which "
+            "is presented as discontinued operations."), published="2025-05-01")]}
+        (event,) = pm.change_events(payload, as_of=NOW.date())
+        assert event["date"] == "2025-03-03"
+
+    def test_a_divestiture_is_a_change_of_perimeter_not_a_separation(self) -> None:
+        payload = {"findings": [
+            _finding(SPIN, "On March 3, 2025, the Company completed the sale of its Fluids "
+                     "business, which is presented as discontinued operations.",
+                     published="2025-05-01"),
+            _finding(DEBT, "Total debt was $5.2 billion at December 31, 2024.",
+                     published="2025-02-10"),
+        ]}
+        out, _ = pm.apply_perimeter_guard(payload, as_of=NOW)
+        assert out["findings"][1]["statement"].startswith(
+            "[before the 3 Mar 2025 change of perimeter] Total debt")
+
+    @pytest.mark.parametrize("statement", [
+        "Total debt fell from $34.6 billion at March 31, 2026 to $16.6 billion at September "
+        "30, 2026, reflecting the Aerospace spin-off.",
+        "Total debt fell from $34.6 billion at March 31, 2026 to $16.6 billion at September "
+        "30, 2026 after repayments funded with the sale proceeds.",
+    ])
+    def test_a_change_named_as_the_cause_is_kept(self, statement: str) -> None:
+        text, record = self._one(statement)
+        assert text == statement
+        assert record["actions"] == []
+
     def test_no_change_no_edit(self) -> None:
         payload = _industrial()
         payload["findings"] = payload["findings"][1:]
@@ -486,14 +547,20 @@ COMPANY_ID = uuid.uuid4()
 
 
 def _web(cid: str, text: str, *, title: str | None = None) -> Any:
-    from app.services.agents.investigator import _Evidence
+    """A web corpus hit as the corpus tool returns it, through the investigator's own
+    ``_evidence_of`` (the path production takes): the title is NOT in the prompt copy."""
+    from app.services.agents import investigator as inv
 
-    body: dict[str, Any] = {"evidence_id": cid, "text": text}
-    if title:
-        body["title"] = title
-    return _Evidence(citation_id=cid, kind="search_company_corpus", text=json.dumps(body),
-                     web=True, origin_key="news.example", source_class="unknown_web",
-                     period_key=None, scope_key=None)
+    item: dict[str, Any] = {
+        "evidence_id": cid, "text": text, "title": title,
+        "canonical_url": f"https://news.example.com/{cid.rsplit(':', 1)[-1]}",
+        "source_class": "unknown_web", "origin_key": "news.example.com",
+        "company_id": None, "source_tier": "web", "web": True,
+    }
+    ev = inv._evidence_of(inv.TOOL_SEARCH_COMPANY_CORPUS, item, untrusted=True)
+    assert ev is not None and ev.web
+    assert '"title"' not in ev.text  # the guard reads the field, not the prompt copy
+    return ev
 
 
 class _Client:
@@ -548,6 +615,20 @@ class TestInvestigatorFailsClosed:
         assert len(findings) == 1
         assert inv.diagnostics.statements_subject_unresolved == 0
 
+    async def test_review_p1_a_page_titled_with_the_subject_keeps_an_unnamed_statement(
+        self,
+    ) -> None:
+        # Review P1: the excerpt never names the subject, the TITLE does. Before the fix
+        # the title never reached the rule (it is not in the prompt copy) and this dropped.
+        evidence = [_web("ev:c:q3", "Revenue rose 12% in the third quarter, driven by "
+                         "checkout volume.", title="Vexgene Q3 revenue rises 12% as "
+                         "checkout recovers")]
+        assert evidence[0].title.startswith("Vexgene Q3")
+        inv, findings = await _run([("Revenue rose 12% in Q3.", ["ev:c:q3"])], evidence,
+                                   domain="financial_performance")
+        assert len(findings) == 1
+        assert inv.diagnostics.statements_subject_unresolved == 0
+
     async def test_an_industry_question_is_exempt(self) -> None:
         evidence = [_web("ev:c:i", "Gene therapy markets grew 30% in 2025.")]
         _inv, findings = await _run(
@@ -573,6 +654,30 @@ class TestInvestigatorFailsClosed:
         inv, findings = await _run([(statement, ["ev:c:n"])], evidence)
         assert inv.diagnostics.statements_subject_unresolved == 0
 
+    @pytest.mark.parametrize(("statement", "named"), [
+        ("Revenue rose 12% in Q3.", False),
+        ("Net debt fell to $2bn.", False),
+        ("Management expects margins to expand.", False),
+        ("Two trials were halted.", False),
+        ("FDA placed two gene therapies on clinical hold.", False),
+        ("Autodesk reported FY2026 revenue of $6.13bn.", True),
+        ("Kestrel32 FY24 revenue US$8,296m.", True),
+        ("Regenxbio's two gene therapies were placed on hold.", True),
+    ])
+    def test_a_common_opening_word_is_not_a_name(self, statement: str, named: bool) -> None:
+        from app.services.agents.investigator import _opens_with_a_name
+
+        assert _opens_with_a_name(statement) is named
+
+    async def test_an_unnamed_statement_on_an_unnamed_page_is_dropped(self) -> None:
+        # The r1 narrowing read "Revenue" as a name and so judged nothing: pinned here.
+        evidence = [_web("ev:c:o", "Revenue rose 12% in the third quarter.",
+                         title="Payments firms report Q3")]
+        inv, findings = await _run([("Revenue rose 12% in Q3.", ["ev:c:o"])], evidence,
+                                   domain="financial_performance")
+        assert findings == []
+        assert inv.diagnostics.statements_subject_unresolved == 1
+
     async def test_a_filing_is_left_to_the_registrant_guard(self) -> None:
         # Another registrant's filing reached by corpus search is a third-party filing
         # (ADR-079), not open-web prose: rule 2 never drops it.
@@ -591,25 +696,94 @@ class TestInvestigatorFailsClosed:
 PATTERNS = [
     pm._EVENT_RE, pm._SEPARATION_RE, pm._COMPLETED_RE, pm._NOT_YET_RE, pm._BACKLOG_RE,
     pm._RPO_RE, pm._CHANGE_RE, pm._COMPARABLE_RE, pm._OWN_LABEL_RE, sm._DECLARED_OTHER_RE,
+    pm._SPIN_RE, pm._PERIOD_END_LEAD_RE, pm._CAUSE_RE,
 ]
 DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000,
-              "Aa " * 4000, "[before the " * 2000, "Ab, a " * 2000]
+              "Aa " * 4000, "[before the " * 2000, "Ab, a " * 2000,
+              "with " * 2000, "reflecting a " * 1000, "quarter ended " * 1000]
 
 
 @pytest.mark.parametrize("pattern", PATTERNS, ids=lambda p: p.pattern[:30])
 def test_new_patterns_are_linear(pattern) -> None:  # noqa: ANN001
+    # CPU time, not wall time: a loaded machine must not turn a linear pattern red.
     for text in DEGENERATE:
-        start = time.perf_counter()
+        start = time.process_time()
         list(pattern.finditer(text))
-        assert time.perf_counter() - start < 0.2
+        assert time.process_time() - start < 0.2
 
 
 def test_the_guards_are_fast_on_degenerate_text() -> None:
     names = sm.SubjectNames.of("Vexgene SA", ("VXG",), ("vexgene bio",))
-    start = time.perf_counter()
+    start = time.process_time()
     for text in DEGENERATE:
         sm.names_subject(text, names)
         sm.declared_other_company(text, names)
         sm.current_development_verdict(text, names)
         pm.apply_perimeter_guard(_industrial(synthesis=text[:5000]), as_of=NOW)
-    assert time.perf_counter() - start < 5.0
+    assert time.process_time() - start < 5.0
+
+
+# ── Review r2 item 5: the get_calculated_metrics runway carries its basis ─────── #
+
+from tests.test_v3_calculation_engine import (  # noqa: E402
+    _cfg as _calc_cfg,
+)
+from tests.test_v3_calculation_engine import (  # noqa: E402
+    _company_and_document as _calc_company_and_document,
+)
+from tests.test_v3_calculation_engine import (  # noqa: E402
+    _fact as _calc_fact,
+)
+from tests.test_v3_calculation_engine import (  # noqa: E402
+    _session as _calc_session,
+)
+from tests.test_v3_calculation_engine import session  # noqa: E402, F401 - the fixture
+
+
+async def _runway_payload(session, extra: list[tuple[str, str, str]]) -> dict[str, Any]:  # noqa: ANN001, F811
+    from app.services.agent_tools.contracts import TOOL_GET_CALCULATED_METRICS
+    from app.services.agent_tools.facts import SCOPE_GROUP
+
+    company, document = await _calc_company_and_document(session)
+    session.add(_calc_fact(document, "cash_and_equivalents", "61.5"))
+    session.add(_calc_fact(document, "operating_cash_flow", "-39.4"))
+    session.add(_calc_fact(document, "capital_expenditure", "2.4"))
+    for label, value, period in extra:
+        session.add(_calc_fact(document, label, value, period=period))
+    await session.commit()
+    result = await _calc_session(session, _calc_cfg()).call(
+        TOOL_GET_CALCULATED_METRICS,
+        {"company_id": str(company.id), "metrics": ["cash_runway_quarters"],
+         "scope": SCOPE_GROUP, "period_key": "2025"},
+    )
+    assert result.ok is True
+    return result.payload or {}
+
+
+class TestTheRunwayToolReadsLiquidity:
+    async def test_deposits_for_the_same_date_lengthen_the_runway(self, session) -> None:  # noqa: ANN001, F811
+        payload = await _runway_payload(session, [
+            ("short_term_deposits", "144.8", "2025"), ("restricted_cash", "2.0", "2025")])
+        (item,) = payload["items"]
+        assert item["liquidity_state"] == "complete"
+        assert item["liquidity_components_used"] == ["cash_and_equivalents",
+                                                     "short_term_deposits"]
+        assert item["label"].startswith(
+            "Cash runway (cash and cash equivalents + short-term deposits;")
+        assert item["value"] == pytest.approx((61.5 + 144.8) / ((39.4 + 2.4) / 4), rel=1e-6)
+        assert len(item["input_fact_ids"]) == 4  # cash, OCF, capex and the deposits
+
+    async def test_a_component_for_another_date_labels_the_runway_cash_only(
+        self, session,  # noqa: ANN001, F811
+    ) -> None:
+        payload = await _runway_payload(session, [("short_term_deposits", "131.1", "H1 2026")])
+        (item,) = payload["items"]
+        assert item["liquidity_state"] == "cash_only_incomplete"
+        assert "cash only, excludes short-term deposits" in item["label"]
+        assert item["value"] == pytest.approx(61.5 / ((39.4 + 2.4) / 4), rel=1e-6)
+
+    async def test_cash_alone_says_its_basis(self, session) -> None:  # noqa: ANN001, F811
+        payload = await _runway_payload(session, [])
+        (item,) = payload["items"]
+        assert item["liquidity_basis"] == "cash and cash equivalents"
+        assert item["liquidity_components_used"] == ["cash_and_equivalents"]

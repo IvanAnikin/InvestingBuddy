@@ -26,10 +26,14 @@ THE RULES
 2. A FINDING about the subject's own business (not an industry, peer or market
    question) that rests only on documents that are not the subject's — no cited passage
    owned by the subject (its filing, its verified site, a typed platform record) — is
-   the subject's only when the statement or a cited passage NAMES the subject. A
-   statement with an implicit subject ("The company …", "It …", a table with no name)
-   inherits the subject of its DOCUMENT; when that document neither is the subject's nor
-   names it, the subject is unknown and the finding is not attributed (fail closed).
+   the subject's only when the statement, a cited passage or a cited document's title
+   NAMES the subject. Only an IMPLICIT statement is judged: one that opens with no named
+   entity ("Revenue rose …", "FDA placed …", "Two trials …") and does not refer to "the
+   company / the group / the issuer" (that wording, and an opening name such as
+   "Autodesk reported …", are left to ADR-066 / ADR-083). It inherits the subject of its
+   DOCUMENT; when that document neither is the subject's nor names it, the subject is
+   unknown and the finding is not attributed (fail closed). Filings are never judged here
+   (ADR-079 places them by registrant).
 3. A statement whose writer declares its opening entity another company ("<Name>, a
    separate company …", "<Name>, an unrelated company …") is that company's, wherever
    the subject is named later in the sentence.
@@ -90,6 +94,34 @@ class SubjectNames:
             tickers=tuple(sorted({t.strip() for t in tickers if t and len(t.strip()) >= 2})),
             related_phrases=tuple(sorted({p.strip().lower() for p in related_phrases if p})),
         )
+
+
+#: Words a statement commonly OPENS with that are not a company's name: a capitalised
+#: first word in this list is not "a named subject" (rule 2 still applies). Closed and
+#: deliberately plain; a common word missing from it only makes rule 2 abstain (the
+#: ADR-083 status quo), never drops a statement.
+COMMON_OPENERS: frozenset[str] = frozenset("""
+about above according across after again against along also although among amid analysts
+annual another around because before below between both business but capital capex cash
+clinical company consolidated cost costs current customers debt demand despite during each
+earlier earnings ebit ebitda either equity even every expenses fiscal following for free
+from full further gross group growth guidance half higher however income including
+inventory investors its last later leverage like liquidity long lower management margin
+margins market markets more most much near neither net new next nine none operating orders
+other over overall pipeline pre-tax pretax prices pricing prior production profit
+profitability quarterly recent regulators remaining reported results revenue revenues
+roughly sales same second segment seven several shares short since some still such
+than that their there these third this those three through total trading twelve under
+underlying unlike until while with within without year years
+""".split())
+
+
+def is_common_opener(word: str | None) -> bool:
+    """The (folded) word is a common sentence opener, not a name."""
+    from app.services.discovery.identity import _fold  # noqa: PLC2701
+
+    folded = re.sub(r"[^a-z0-9-]", "", _fold(word or ""))
+    return folded in COMMON_OPENERS
 
 
 def _words(text: str) -> list[str]:
@@ -248,9 +280,11 @@ __all__ = [
     "REASON_TITLE_NAMES_NOT_SUBJECT",
     "SubjectNames",
     "current_development_verdict",
+    "COMMON_OPENERS",
     "declared_other_company",
     "filter_current_developments",
     "implicit_subject_unresolved",
+    "is_common_opener",
     "names_only_related_registrant",
     "names_subject",
 ]
