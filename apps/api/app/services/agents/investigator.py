@@ -1235,6 +1235,15 @@ _SCHEMA_LINE = (
 
 #: Questions whose job is to describe OTHER companies: a competitor's facts are the answer.
 _PEER_DOMAINS: frozenset[str] = frozenset({"competitive_position"})
+#: ADR-096 — domains whose statements are about an industry or market, not the subject:
+#: the implicit-subject rule (``subject_mention`` rule 2) does not apply to them.
+_IMPLICIT_SUBJECT_EXEMPT_DOMAINS: frozenset[str] = frozenset(
+    {"competitive_position", "industry_economics"}
+)
+#: ADR-096 — the tools whose items are prose from a document held for the subject.
+_IMPLICIT_SUBJECT_PROSE_TOOLS: frozenset[str] = frozenset(
+    {TOOL_SEARCH_COMPANY_CORPUS, TOOL_FETCH_PUBLIC_SOURCE}
+)
 _SECOND_LEVEL = frozenset({"co", "com", "org", "net", "gov", "edu", "ac"})
 
 
@@ -2409,6 +2418,13 @@ class InvestigatorDiagnostics:
     #: is another named entity's (an offtaker, a former subsidiary, a peer row), though
     #: the writer left the subject implicit. Dropped.
     statements_about_implicit_other_entity: int = 0
+    #: ADR-096. A statement about the subject's own business whose subject is implicit
+    #: (or another company's), cited only from documents that are not the subject's and
+    #: that never name it: its subject cannot be the research subject's. Dropped.
+    statements_subject_unresolved: int = 0
+    #: ADR-096. A statement whose writer calls its opening entity another company
+    #: ("<Name>, a separate company …"). Dropped.
+    statements_declared_other_company: int = 0
     #: ADR-083. A statement kept, but scoped to the subsidiary, joint venture or
     #: mine/segment heading its passage belongs to, so it never reads as the Group's.
     statements_scoped_to_entity: int = 0
@@ -2459,6 +2475,8 @@ class InvestigatorDiagnostics:
         self.statements_about_implicit_other_entity += (
             other.statements_about_implicit_other_entity
         )
+        self.statements_subject_unresolved += other.statements_subject_unresolved
+        self.statements_declared_other_company += other.statements_declared_other_company
         self.statements_scoped_to_entity += other.statements_scoped_to_entity
         self.statements_reclassified_period_not_ended += (
             other.statements_reclassified_period_not_ended
@@ -2497,6 +2515,8 @@ class InvestigatorDiagnostics:
             "statements_about_implicit_other_entity": (
                 self.statements_about_implicit_other_entity
             ),
+            "statements_subject_unresolved": self.statements_subject_unresolved,
+            "statements_declared_other_company": self.statements_declared_other_company,
             "statements_scoped_to_entity": self.statements_scoped_to_entity,
             "statements_reclassified_period_not_ended": (
                 self.statements_reclassified_period_not_ended
@@ -3903,6 +3923,63 @@ class LLMInvestigator:
             logger.warning("investigator.passage_attribution_failed: %s", type(exc).__name__)
             return StatementAttribution(VERDICT_UNKNOWN)
 
+    def _implicit_subject_verdict(
+        self,
+        statement: str,
+        cited_items: "Sequence[_Evidence]",
+        domain: str | None,
+        *,
+        unresolved: bool,
+    ) -> str | None:
+        """ADR-096 — ``"declared"`` / ``"unresolved"`` when the statement is not the
+        subject's (``entities.subject_mention`` rules 2 and 3), else None. Never raises:
+        a guard that cannot read keeps the statement."""
+        from app.services.entities.passage_subject import OWNER_SUBJECT, _json_string
+        from app.services.entities.subject_mention import (
+            SubjectNames,
+            declared_other_company,
+            implicit_subject_unresolved,
+        )
+
+        try:
+            names = SubjectNames.of(self.company_name, (self.ticker,))
+            if declared_other_company(statement, names) is not None:
+                return "declared"
+            if not unresolved or domain in _IMPLICIT_SUBJECT_EXEMPT_DOMAINS:
+                return None
+            if _opening_names(statement) or _SUBJECT_PHRASE_RE.search(statement):
+                # A statement that names its own subject ("Autodesk reported …", a peer)
+                # or refers to "the company" is not IMPLICIT: ADR-066/083 decide it.
+                return None
+            if not cited_items or any(
+                item.kind not in _IMPLICIT_SUBJECT_PROSE_TOOLS
+                or not item.web
+                or item.edgar_registrant is not None
+                or (
+                    item.ref is not None
+                    and item.ref.source_kind in (ISSUER_FILING, THIRD_PARTY_FILING)
+                )
+                for item in cited_items
+            ):
+                # Only open-web prose (a non-issuer source) held for the subject has a
+                # document subject that may be someone else's; platform documents, typed
+                # records, the theme (industry) corpus and any FILING (judged by its
+                # registrant, ADR-079) are left to the guards above.
+                return None
+            passages = []
+            for item in cited_items:
+                passage = _attribution_passage(item, self.company_id, self.company_name)
+                # The DOCUMENT's own title counts: a page titled with the subject's name
+                # is about the subject, whatever its excerpt repeats.
+                title = _json_string(item.text or "", "title") or ""
+                text = " ".join(p for p in (title, passage.heading, passage.text) if p)
+                passages.append((text, passage.owner == OWNER_SUBJECT))
+            if implicit_subject_unresolved(statement, passages, names):
+                return "unresolved"
+        except Exception as exc:  # noqa: BLE001 - a guard that cannot read keeps it
+            logger.warning("investigator.implicit_subject_failed: %s", type(exc).__name__)
+        return None
+
     def _calendar_fiscal_year(self) -> bool | None:
         """ADR-091 — True / False when the issuer's fiscal calendar has ALREADY been read
         (never read for this): does its year end in December? ``None`` when unknown."""
@@ -4183,6 +4260,20 @@ class LLMInvestigator:
                     # venture's or a mine's fact: kept, at that scope, so no Group-level
                     # consumer reads it as the Group's.
                     entity_scope = attribution.scope_key
+                implicit = self._implicit_subject_verdict(
+                    statement, cited_items, question.domain,
+                    unresolved=attribution.verdict == VERDICT_UNKNOWN,
+                )
+                if implicit is not None:
+                    # ADR-096: a statement whose subject cannot be the research subject's
+                    # — the writer named another company as it, or nothing cited is the
+                    # subject's or names it (an implicit "The company" on a page about
+                    # someone else). Fail closed: not attributed.
+                    if implicit == "declared":
+                        self.diagnostics.statements_declared_other_company += 1
+                    else:
+                        self.diagnostics.statements_subject_unresolved += 1
+                    continue
                 about_subject = attribution.verdict == VERDICT_SUBJECT or (
                     attribution.verdict == VERDICT_UNKNOWN
                     and statement_opens_with_subject(

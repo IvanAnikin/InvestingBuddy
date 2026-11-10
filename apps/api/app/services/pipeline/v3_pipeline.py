@@ -672,7 +672,7 @@ async def _run(
         )
         web = await ensure_web_context(session, company, web_ctx, cfg=cfg)
         if web.ran:
-            outcome.web_context = web.summary
+            outcome.web_context = await _subject_current_developments(web.summary, company)
             web_units = web.units
             if web.summary.get("label") and web.state != "web_search_disabled":
                 outcome.degraded.append(str(web.summary["label"]))
@@ -2233,6 +2233,21 @@ def _enforce_research_state(
         out = {**labelled, "period_supersession": supersession}
     except Exception:  # noqa: BLE001 - labels are additive; they never cost the report
         pass
+    try:
+        # ADR-096 — a completed spin-off / separation in the issuer's own filings (or an
+        # SEC restatement since the annual report): a debt, cash, equity or backlog level
+        # from before it is labelled with that date; a comparison across it is withheld.
+        from app.services.ledger.perimeter import apply_perimeter_guard
+
+        snapshot = (content or {}).get("financial_snapshot") if isinstance(content, dict) else None
+        guarded, perimeter = apply_perimeter_guard(
+            out, as_of=getattr(report, "created_at", None),
+            basis_changes=(snapshot or {}).get("basis_changes")
+            if isinstance(snapshot, dict) else None,
+        )
+        out = {**guarded, "perimeter": perimeter}
+    except Exception:  # noqa: BLE001 - labels are additive; they never cost the report
+        pass
     out["canonical_state"] = state
     out["state_invariants"] = invariants.InvariantResult(
         v3=out, llm_council=None, violations=violations
@@ -2260,6 +2275,48 @@ def _write_v2_report_content(report: Any, content: dict[str, Any]) -> None:
         markdown[:head] + "\n" + json.dumps(content, indent=2, default=str) + "\n"
         + markdown[end:]
     )
+
+
+async def _subject_current_developments(summary: Any, company: Any) -> Any:
+    """ADR-096 — a current-development document stands under the subject only when its
+    own title names the subject (not only a separately registered namesake that carries
+    its name). The rest are withheld and counted. Never raises: on any failure the
+    summary is returned as the stage wrote it."""
+    if not isinstance(summary, dict) or not summary.get("catalyst_evidence"):
+        return summary
+    try:
+        from app.services.entities.subject_mention import (
+            SubjectNames,
+            filter_current_developments,
+        )
+
+        name = getattr(company, "name", None) or getattr(company, "company_name", None)
+        ticker = getattr(company, "ticker", None)
+        phrases: tuple[str, ...] = ()
+        try:
+            from app.services.agents import investigator as inv
+            from app.services.exchange_registry import is_sec_eligible
+
+            if ticker and is_sec_eligible(getattr(company, "exchange", None)):
+                phrases = tuple(
+                    r.phrase for r in inv.related_registrants(
+                        await inv._load_sec_directory(), ticker, name)
+                )
+        except Exception:  # noqa: BLE001 - without the directory, names alone decide
+            phrases = ()
+        kept, withheld = filter_current_developments(
+            list(summary.get("catalyst_evidence") or ()),
+            SubjectNames.of(name, (ticker,), phrases),
+        )
+        if not withheld:
+            return summary
+        return {
+            **summary,
+            "catalyst_evidence": kept,
+            "catalyst_evidence_withheld": withheld,
+        }
+    except Exception:  # noqa: BLE001 - the filter is additive; it never costs the stage
+        return summary
 
 
 def _attach_web_catalysts(report: Any, web_context: Any) -> None:

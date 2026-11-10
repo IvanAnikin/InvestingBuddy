@@ -541,6 +541,8 @@ export type DerivedMetric = {
   periodKey: string | null;
   refusalDetail: string | null;
   interpretation: string | null;
+  /** ADR-096 — which liquidity components the runway used, or what it excludes. */
+  liquidityNote: string | null;
 };
 
 export type V3FinancialStatements = {
@@ -1289,6 +1291,7 @@ function readStatementsPayload(
           periodKey: str(d.period_key),
           refusalDetail: str(d.detail),
           interpretation: str(d.interpretation),
+          liquidityNote: isRecord(d.liquidity) ? str(d.liquidity.note) : null,
         };
       })
       .filter((d): d is DerivedMetric => d !== null),

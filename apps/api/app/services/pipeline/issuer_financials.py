@@ -1105,16 +1105,26 @@ def _datapoint(fact: dict[str, Any], *, period_basis: str | None = None) -> dict
 
 
 def _derived_runway(
-    annual: dict[str, dict[str, Any]], current: dict[str, dict[str, Any]]
+    annual: dict[str, dict[str, Any]],
+    current: dict[str, dict[str, Any]],
+    held_fields: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """``cash_runway_quarters`` over each slot set that holds all three inputs.
 
     The engine refuses mixed periods, scopes and currencies, and a period that burned
     no cash; a refusal is recorded too, because "runway could not be computed from these
     figures" is a finding a reader should see rather than an absence.
+
+    ADR-096 — the cash a runway lasts is AVAILABLE LIQUIDITY (``calculations.liquidity``):
+    cash plus the short-term deposits and investments the issuer reports for the same
+    date, currency and scope, each cited. When a component is known to exist (any held
+    fact of that line, or an unexplained current-financial-assets aggregate) but has no
+    value for that date, the runway is computed over cash alone and LABELLED "cash only,
+    excludes …" — never silently cash-only. Every record carries its components.
     """
     from decimal import Decimal, InvalidOperation
 
+    from app.services.calculations import liquidity as liq
     from app.services.calculations.definitions import CASH_RUNWAY_QUARTERS
     from app.services.calculations.engine import calculate
     from app.services.calculations.quantities import Quantity
@@ -1216,6 +1226,26 @@ def _derived_runway(
             )
             included.append(extra)
         inputs["capital_expenditure"] = capex
+        # ADR-096 — the cash a runway lasts: available liquidity, or cash LABELLED as
+        # cash only when a component is known and missing for this date.
+        liquidity = liq.build_liquidity(slots, held_fields=held_fields)
+        available = liquidity.get("available_liquidity")
+        components_used = [
+            c for c in liquidity.get("components") or ()
+            if c.get("role") in (liq.ROLE_ANCHOR, liq.ROLE_INCLUDED)
+        ]
+        if available and len(components_used) > 1:
+            cash_q = inputs["cash"]
+            inputs["cash"] = Quantity(
+                value=Decimal(str(available["numeric_value"])),
+                unit=cash_q.unit, currency=cash_q.currency, scale=cash_q.scale,
+                period=cash_q.period, scope=cash_q.scope, fact_id=cash_q.fact_id,
+                label="available_liquidity",
+            )
+        basis_text = liq.basis_label(liquidity)
+        label = CASH_RUNWAY_QUARTERS.label
+        if liquidity.get("state") == liq.STATE_CASH_ONLY_INCOMPLETE or len(components_used) > 1:
+            label = f"Cash runway ({basis_text}; quarter-equivalents, derived)"
         outcome = calculate(CASH_RUNWAY_QUARTERS, inputs)
         record = outcome.to_dict()
         if refusal:
@@ -1223,7 +1253,11 @@ def _derived_runway(
                            "refusal_reason": "burn_not_statable", "detail": refusal})
         record.update(
             {
-                "label": CASH_RUNWAY_QUARTERS.label,
+                "liquidity": liquidity,
+                "liquidity_basis": basis_text,
+                "liquidity_state": liquidity.get("state"),
+                "liquidity_components_used": [str(c.get("component")) for c in components_used],
+                "label": label,
                 "basis": basis,
                 "provenance": "derived",
                 "interpretation": CASH_RUNWAY_QUARTERS.interpretation,
@@ -1239,6 +1273,20 @@ def _derived_runway(
         )
         out.append(record)
     return out
+
+
+def _liquidity(
+    slots: dict[str, dict[str, Any]], held_fields: frozenset[str]
+) -> dict[str, Any] | None:
+    """ADR-096 — the liquidity view of one slot set, or None when it has no cash. Never
+    raises: an additive record never costs the statements view."""
+    from app.services.calculations import liquidity as liq
+
+    try:
+        view = liq.build_liquidity(slots, held_fields=held_fields)
+    except Exception:  # noqa: BLE001
+        return None
+    return None if view.get("state") == liq.STATE_NO_CASH else view
 
 
 def _issuer_stated(current: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1598,6 +1646,9 @@ def build_financial_statements_state(
     selected_annual = _high_confidence_facts_for(usable, ISSUER_STATEMENT_FIELDS)
     current = _current_period_facts_for(usable, ISSUER_STATEMENT_FIELDS)
 
+    # ADR-096 — every statement line the issuer's eligible facts hold, for any period:
+    # a liquidity component "known to exist".
+    held_fields = frozenset(str(f.get("field")) for f in usable if f.get("field"))
     slots: dict[str, dict[str, Any]] = {}
     annual_by_field: dict[str, dict[str, Any]] = {}
     current_by_field: dict[str, dict[str, Any]] = {}
@@ -1625,7 +1676,12 @@ def build_financial_statements_state(
         ),
         "reporting_periods": periods.as_labels(),
         "slots": slots,
-        "derived": _derived_runway(annual_by_field, current_by_field),
+        "derived": _derived_runway(annual_by_field, current_by_field, held_fields),
+        # ADR-096 — liquidity and its components per basis, each cited.
+        "liquidity": {
+            "annual": _liquidity(annual_by_field, held_fields),
+            "current_period": _liquidity(current_by_field, held_fields),
+        },
         # ADR-087 — figures the issuer states as its own metric (an Appendix 5B's
         # estimated quarters of funding), kept apart from the platform's derivations.
         "issuer_stated": _issuer_stated(current_by_field),

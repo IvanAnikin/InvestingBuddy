@@ -9606,3 +9606,146 @@ Replay after the review:
   sentence as scope. It is unchanged from base and does not reach a slot in the replay,
   because the statement row 5,293 is held for that year. However, it can still make a
   conflict.
+
+
+## ADR-096: Liquidity Is Its Components; a Level From Before a Change of Perimeter Is Not Today's; an Unnamed Subject Inherits Its Document's
+
+**Date:** 2026-11-10 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** Research Integrity Closure batch H6 (spec §11–§13), from the round-3
+evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL5
+(`5d73309b`).
+
+### What was wrong
+1. **A runway was silently cash-only (CLLS7-1, P1).** The derived runway read "5.9
+   quarter-equivalents · 2025" = 61,533 / ((39,401 + 2,360) / 4). The same 20-F tags
+   USD 144.8m of `ifrs-full:ShorttermDepositsNotClassifiedAsCashEquivalents`, and the
+   issuer's own liquidity is "cash, cash equivalents, fixed-term deposits and restricted
+   cash". Root cause: `xbrl_statement_concepts.STATEMENT_CONCEPTS` mapped no liquidity
+   component except cash, so no deposit fact existed. `issuer_financials._derived_runway`
+   used the `cash_and_equivalents` slot alone and nothing said so.
+2. **Pre-spin-off levels presented as current (HON4-1, P1).** The chair wrote "Total debt
+   stood at $34.6 billion … leveraged balance sheet" and "Backlog as of March 31, 2026 was
+   $38.3bn … revenue visibility". Both are the pre-separation company; the Q3 2026 10-Q
+   shows about 16.6bn and 18.8bn. The run held the issuer's own statement "the Aerospace
+   Spin-Off completed June 29, 2026" (finding F40) and V2's SEC `basis_changes`
+   (`perimeter_recast`), but nothing in V3 read either. ADR-087's period supersession
+   cannot see it: those figures carry their own dates, and the dates are not stale.
+3. **Other companies' items under the subject (HON4 3, LIN4 3, CLLS7 4, PYPL5 1).**
+   - `web_context.catalyst_evidence` ("Current developments") never met a subject test.
+     It listed a carmaker's factory, another miner's drilling update, an investor
+     conference, a pharma quote page, a market report naming another gene-therapy
+     company, a prediction-market review, and three headlines about Honeywell Aerospace,
+     a separately registered company that carries the subject's name.
+   - CLLS7 F48 "FDA placed two Regenxbio gene therapies on clinical hold …" (one
+     quality-media page) and F9 "Calyxt, a separate company referenced in Cellectis
+     filings, …". ADR-083 returns `unknown` for both, and `unknown` was kept.
+
+### Decision
+1. **Liquidity components** (`calculations/liquidity.py`, pure).
+   - New statement fields, read only from inline XBRL tags:
+     - `short_term_deposits` (`ifrs-full:ShorttermDepositsNotClassifiedAsCashEquivalents`);
+     - `short_term_investments` (`us-gaap:ShortTermInvestments`,
+       `MarketableSecuritiesCurrent`, `AvailableForSaleSecuritiesDebtSecuritiesCurrent`);
+     - `restricted_cash` (`us-gaap:RestrictedCashCurrent`,
+       `ifrs-full:CurrentRestrictedCashAndCashEquivalents`);
+     - `current_financial_assets` (`ifrs-full:CurrentFinancialAssets`, an aggregate,
+       never summed).
+   - Available liquidity = cash + deposits + short-term investments. Each must be for the
+     same period, in the same currency, at Group scope. Each is cited by fact id, value,
+     date and document. Restricted cash is shown and never included.
+   - Fail closed. A component is "known" when the issuer's eligible facts hold that line
+     for any period, or when an unexplained `current_financial_assets` aggregate is
+     reported. If a known component has no same-date value, the state is
+     `cash_only_incomplete` and no total is computed.
+   - `cash_runway_quarters` runs over available liquidity. When the state is incomplete,
+     it runs over cash and its label says "cash only, excludes <component>". Every
+     runway record carries `liquidity`, `liquidity_basis`, `liquidity_state` and
+     `liquidity_components_used`. `financial_statements_state.liquidity` carries the
+     view per basis.
+   - Extraction pipeline version 25. `INLINE_XBRL_MIN_PIPELINE_VERSION` moves to 25, and
+     `_tags_never_read` now treats an SEC filing tagged under an older concept map as
+     unread, so held filings are re-read once.
+2. **Change of perimeter** (`ledger/perimeter.py`, run after period supersession in
+   `v3_pipeline`).
+   - Only the issuer's own filings trigger it:
+     - a finding resting only on `issuer_filing` / `issuer_ir`, stating a completed
+       spin-off, split-off, demerger, "separation of <Name>", "<Name> Separation" or a
+       move to discontinued operations, with exactly one date on or before the source's
+       date. Planned, expected or conditional wording never counts.
+     - V2's SEC `basis_changes` `perimeter_recast`. Here the restated quarter is the old
+       perimeter. So is the latest annual period, but only when it ended at least a
+       quarter before the restating 10-Q was filed.
+   - A debt, cash, equity or backlog level (backlog, order book, RPO) is classed by its
+     as-of (ADR-087's reading):
+     - **pre-change** (before the change): labelled "[before the 29 Jun 2026 separation]";
+     - **boundary** (up to the end of the quarter the change happened in): never labelled;
+     - **post-change**: never labelled.
+   - A text that sets a pre-change or boundary level against a post-change one as a
+     change (fell, declined, rose, halved, from … to …) is withheld, unless it says the
+     comparison is comparable, organic, continuing operations or restated.
+   - Texts read: findings, professional-report leads and sentences (via F-labels), chair
+     key points (via `finding_id`) and the chair synthesis. A synthesis sentence that
+     cites no id is matched by amount: every amount it prints must be a subject
+     finding's amount at the printed precision. Industry and peer findings are never
+     labelled. The record is `v3_research.perimeter`.
+3. **Implicit-subject firewall** (`entities/subject_mention.py`).
+   - Rule 1: a current-development document stays only when its title names the subject
+     (ticker, a distinctive name word, a brand, or the name in initials or run together,
+     such as "J.P. Morgan" or "JPMorganChase"). The name may not appear only inside a
+     separately registered namesake's name (ADR-066 `related_registrants`, from the SEC
+     directory). Applied in `v3_pipeline._subject_current_developments` right after the
+     web stage, so `web_context` and V2 `web_catalyst_evidence` both use the filtered
+     list. Withheld items are kept in `web_context.catalyst_evidence_withheld`.
+   - Rule 2: the investigator handles a statement left `unknown` by ADR-083 in a
+     subject-business domain (not industry or peer) that rests only on open-web prose
+     (company-corpus or fetched web items; never a filing, which ADR-079 judges by its
+     registrant). The statement must also be implicit: it does not open with a named
+     entity (ADR-066 `_opening_names`, so "Autodesk reported …" is not implicit, though
+     an acronym such as "FDA placed …" still is) and it does not say "the company / the
+     group / the issuer". Such a statement is dropped when no cited document is the
+     subject's, and neither the statement nor any cited passage or document title names
+     the subject. It is counted as `statements_subject_unresolved`.
+   - Rule 3: an opening entity the writer itself calls another company ("<Name>, a
+     separate company …") is that company's, in any non-peer domain. It is counted as
+     `statements_declared_other_company`.
+
+### Replay (18 stored reports; scripts and outputs in `~/.ib-closure/H6/`)
+- **Runway.**
+  - CLLS7 rebuilt from the held 20-F's inline XBRL: 5.89 cash-only becomes **19.76**
+    (cash 61,533k + deposits 144.8m; restricted 2.0m excluded). The label reads "Cash
+    runway (cash and cash equivalents + short-term deposits; …)".
+  - The stored payloads hold no liquidity facts (extracted under v24), so their runway
+    records are unchanged until the v25 re-read.
+  - No other report computes a runway: HON is period-mismatched, PYPL is not a cash
+    burn, JPM is a bank.
+- **Perimeter.**
+  - HON4: 7 texts labelled pre-change (two FY2025 debt findings, two 31 Mar 2026
+    backlog findings, the synthesis debt sentence, and key points debt and backlog).
+    The 30 Jun 2026 RPO (boundary) and the 30 Sep 2026 figures are untouched.
+  - HON3: 9 texts labelled.
+  - HON2 (SEC restatement only, mislabelled FY2026 annual): 0 edits.
+  - The other 15 reports: no change detected, 0 edits. No text was withheld.
+- **Entity.**
+  - Current developments: HON4 3→0, LIN4 3→0, CLLS7 2→0, PYPL5 1→0 of the evaluated
+    items.
+  - CLLS7 F9 (Calyxt) is withheld by rule 3. F48 (Regenxbio) meets rule 2 unless its
+    page names Cellectis, which cannot be checked offline.
+
+### Known limits
+- Liquidity components come from inline XBRL only. A UK or ASX PDF's "short-term
+  deposits" line, or an issuer's extension total (`clls:CurrentFinancialAssetsAndCash…`),
+  is not read.
+- Restricted cash is never available liquidity, even when the issuer says it is.
+- The CLLS H1 2026 6-K exhibit held by the evaluator carries no iXBRL header, so the
+  current-period runway (cash 35,590k + deposits 131.1m) was not replayed.
+- Stale-runway preference (a newer interim over the annual) is not changed here.
+- Perimeter:
+  - only the latest change governs;
+  - a level at the first period end after the change is never labelled;
+  - flows (FY revenue of the old perimeter) remain V2's `basis_change_note`;
+  - stale SIC or playbook after a spin-off (HON4-11) is not addressed.
+- Rule 1 is title-only. A correct item whose title omits the subject's name is withheld,
+  for example "Australian miner snaps up rare earth project", or a brand not in
+  `BRAND_ALIASES` such as Montblanc for Richemont or Honey for PayPal.
+- Rule 2 cannot be replayed exactly on stored payloads, because passages are not
+  persisted. Candidates are listed for manual review in the hand-back.

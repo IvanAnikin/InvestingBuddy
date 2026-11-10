@@ -335,6 +335,14 @@ export default function KeyFinancials({
                       quarter-equivalents
                     </span>
                     {metric.periodKey ? ` · ${metric.periodKey}` : ""}
+                    {metric.liquidityNote && (
+                      <span
+                        className="block text-[11px] text-[color:var(--ib-ink-3)]"
+                        data-testid="derived-liquidity-note"
+                      >
+                        {metric.liquidityNote}
+                      </span>
+                    )}
                     <span className="block text-[11px] text-[color:var(--ib-ink-3)]">
                       {metric.interpretation}
                     </span>
