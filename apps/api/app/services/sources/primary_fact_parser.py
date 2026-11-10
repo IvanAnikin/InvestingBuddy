@@ -108,6 +108,20 @@ FIELD_BORROWINGS = "borrowings"
 #: Issued / share capital / contributed equity.
 FIELD_ISSUED_CAPITAL = "issued_capital"
 
+# ADR-096 — the components of liquidity BESIDE cash and cash equivalents, read ONLY from
+# the issuer's inline-XBRL tags (never from prose). Each is its own balance-sheet line;
+# none is ever added to ``cash_and_equivalents`` (the slot keeps the issuer's line). The
+# liquidity model (``calculations.liquidity``) sums the ones the issuer presents.
+#: Deposits with banks not classified as cash equivalents (term / fixed-term deposits).
+FIELD_SHORT_TERM_DEPOSITS = "short_term_deposits"
+#: Current marketable securities / short-term investments.
+FIELD_SHORT_TERM_INVESTMENTS = "short_term_investments"
+#: Restricted cash (current). Never part of available liquidity.
+FIELD_RESTRICTED_CASH = "restricted_cash"
+#: IFRS "current financial assets": an AGGREGATE that can hold deposits, restricted cash
+#: and derivatives. Never summed; it only shows that a non-cash component exists.
+FIELD_CURRENT_FINANCIAL_ASSETS = "current_financial_assets"
+
 # ADR-085 — a deposit-taking bank's own statement lines, read ONLY from the issuer's
 # inline-XBRL tags (never from prose). Names match the banking playbook's metric keys.
 # Nothing industrial is ever derived from them: no free cash flow, no EBITDA, no runway.
@@ -174,6 +188,10 @@ STATEMENT_DETAIL_FIELDS: frozenset[str] = frozenset(
         FIELD_BORROWINGS,
         FIELD_ISSUED_CAPITAL,
         FIELD_ISSUER_ESTIMATED_QUARTERS_OF_FUNDING,
+        FIELD_SHORT_TERM_DEPOSITS,
+        FIELD_SHORT_TERM_INVESTMENTS,
+        FIELD_RESTRICTED_CASH,
+        FIELD_CURRENT_FINANCIAL_ASSETS,
     }
 )
 
@@ -1505,6 +1523,10 @@ __all__ = [
     "FIELD_DEVELOPMENT_EXPENDITURE",
     "FIELD_BORROWINGS",
     "FIELD_ISSUED_CAPITAL",
+    "FIELD_SHORT_TERM_DEPOSITS",
+    "FIELD_SHORT_TERM_INVESTMENTS",
+    "FIELD_RESTRICTED_CASH",
+    "FIELD_CURRENT_FINANCIAL_ASSETS",
     "FIELD_ISSUER_ESTIMATED_QUARTERS_OF_FUNDING",
     "FINANCIAL_STATEMENT_FIELDS",
     "STATEMENT_DETAIL_FIELDS",

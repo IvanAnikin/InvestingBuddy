@@ -400,14 +400,28 @@ from __future__ import annotations
 # within the existing acquisition budgets; only long PDFs can read differently.
 # ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance: the V2 excerpt replay path
 # keeps its readings (a known limit, ADR-094).
+# Version 26 (Research Integrity Closure H6, ADR-096): an SEC Archives filing body's
+# inline XBRL also yields the LIQUIDITY components beside cash — short-term deposits not
+# classified as cash equivalents, short-term investments / current marketable securities,
+# current restricted cash and the IFRS current-financial-assets aggregate. A version-25
+# SEC row was read without them, so a derived cash runway over it was cash-only; such a
+# held filing is re-read once (``INLINE_XBRL_MIN_PIPELINE_VERSION`` moves with this
+# version). Raw-text extraction is unchanged, so ``EXTRACTION_TEXT_LAYER_MIN_VERSION``
+# does not advance.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 25
+CURRENT_EXTRACTION_PIPELINE_VERSION = 26
 
 #: ADR-085 — the first version whose SEC filing-body extraction reads inline XBRL. A held
 #: SEC filing document stamped below it has never had its tagged statements read.
 #: It moves with the version that ships the iXBRL reader and must never trail
 #: ``CURRENT_EXTRACTION_PIPELINE_VERSION`` by a version that lacked the reader.
-INLINE_XBRL_MIN_PIPELINE_VERSION = 22
+INLINE_XBRL_MIN_PIPELINE_VERSION = 26
+
+#: ADR-085 — the version that SHIPPED the inline-XBRL reader. A held SEC filing stamped
+#: at or after it, below ``INLINE_XBRL_MIN_PIPELINE_VERSION``, had its tags read under an
+#: older concept map: it is re-read only when it actually carries tags (an iXBRL filing
+#: body), never an exhibit or a PDF that had none (ADR-096).
+INLINE_XBRL_READER_VERSION = 22
 
 # The pipeline version at/after which persisted ``excerpts_json`` text is
 # guaranteed to have been produced by column-aware page extraction UNDER
@@ -426,4 +440,5 @@ __all__ = [
     "CURRENT_EXTRACTION_PIPELINE_VERSION",
     "EXTRACTION_TEXT_LAYER_MIN_VERSION",
     "INLINE_XBRL_MIN_PIPELINE_VERSION",
+    "INLINE_XBRL_READER_VERSION",
 ]

@@ -670,12 +670,26 @@ class TestTheV3161aRecordSurvivesTheRetry:
         )
         inv, _findings, gaps, _answered = await _write_up(client)
 
+        # ADR-096 — the only non-count fields: the two shadow lists of DRAFT REFERENCES
+        # (question key, evidence ids, a 16-character statement digest). Their shape is
+        # pinned, so model text can never ride in them.
+        digest_lists = {"subject_unresolved_shadow", "other_registrant_shadow"}
+        inv.diagnostics.subject_unresolved_shadow.append(
+            {"question_key": "q", "evidence_ids": [EVIDENCE_ID], "statement_sha256": "0" * 16})
         for key, value in inv.diagnostics.to_dict().items():
             if key == "finish_reasons":
                 assert set(value) <= set(_KNOWN_FINISH_REASONS) | {"other"}
                 assert all(isinstance(v, int) for v in value.values())
+            elif key in digest_lists:
+                assert isinstance(value, list), f"{key} is not a list"
+                for ref in value:
+                    assert set(ref) == {"question_key", "evidence_ids", "statement_sha256"}
+                    assert isinstance(ref["question_key"], str)
+                    assert all(isinstance(i, str) for i in ref["evidence_ids"])
+                    assert re.fullmatch(r"[0-9a-f]{16}", ref["statement_sha256"])
             else:
                 assert isinstance(value, int), f"{key} is not a count"
+        assert digest_lists <= set(inv.diagnostics.to_dict())
 
         # And the gap a reader sees quotes the provider's reason, never the evidence.
         assert "mRNA-1283" not in gaps[0].description

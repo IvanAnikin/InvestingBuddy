@@ -487,6 +487,18 @@ class TestDiagnosticsCarryNoSensitiveContent:
             # statements scoped to a subsidiary / JV / mine heading. Counts.
             "statements_about_implicit_other_entity",
             "statements_scoped_to_entity",
+            # ADR-096 — an implicit subject on a page that is not the subject's and
+            # never names it, and an opening entity the writer calls another company.
+            "statements_subject_unresolved",
+            "statements_declared_other_company",
+            # ADR-096 review — the unresolved statements KEPT (no other entity named):
+            # a count, and their draft references (no text, see below).
+            "statements_subject_unresolved_shadow",
+            "subject_unresolved_shadow",
+            # ... and those that may name another SEC registrant: shadow only, never
+            # dropped (final review). A count and draft references.
+            "statements_other_registrant_shadow",
+            "other_registrant_shadow",
             # QA closure (ADR-088) — statements whose period had not ended: relabelled
             # forward, or withheld. Counts.
             "statements_reclassified_period_not_ended",
@@ -500,7 +512,15 @@ class TestDiagnosticsCarryNoSensitiveContent:
             "statements_ytd_rekeyed",
             "statements_scoped_to_segment",
         }
-        assert all(isinstance(v, int) for k, v in out.items() if k != "finish_reasons")
+        assert all(isinstance(v, int) for k, v in out.items()
+                   if k not in {"finish_reasons", "subject_unresolved_shadow",
+                                "other_registrant_shadow"})
+        # The one list: draft references only — question key, evidence ids and a
+        # 16-character statement digest. Never a statement, prompt or completion.
+        d.subject_unresolved_shadow.append(
+            {"question_key": "q", "evidence_ids": ["ev:1"], "statement_sha256": "0" * 16})
+        (ref,) = d.to_dict()["subject_unresolved_shadow"]
+        assert set(ref) == {"question_key", "evidence_ids", "statement_sha256"}
 
     def test_merge_accumulates_across_workers(self) -> None:
         """A fresh investigator is built per task, so merging is what makes run-level

@@ -30,6 +30,9 @@ WHAT IS DELIBERATELY ABSENT
 * Debt totals. Debt concepts overlap (ADR-067), so no single tag is "total debt". IFRS
   ``Borrowings`` is mapped to the ``borrowings`` line, never to ``total_debt``.
 * An IFRS concept with no faithful US-GAAP counterpart is not forced onto one.
+* A "liquidity" total. ADR-096: cash, short-term deposits, short-term investments and
+  restricted cash are each their own field; ``calculations.liquidity`` sums only the
+  ones the issuer presents, and an issuer's extension total is never read.
 * Per-share figures in the statements view: it has no per-share field. The normalizer
   reads EPS from its own aliases.
 * A CET1 ratio. No ``us-gaap`` concept for it is tagged by the banks sampled (JPM, BAC,
@@ -132,6 +135,15 @@ STATEMENT_CONCEPTS: tuple[StatementConcept, ...] = (
        spend=True),
     _c("us-gaap:CashAndCashEquivalentsAtCarryingValue", "cash_and_equivalents",
        "cash_and_equivalents", "Cash and cash equivalents", 1, N),
+    # ADR-096 — liquidity components beside cash (``calculations.liquidity``).
+    _c("us-gaap:ShortTermInvestments", "short_term_investments", None,
+       "Short-term investments", 1, N),
+    _c("us-gaap:MarketableSecuritiesCurrent", "short_term_investments", None,
+       "Marketable securities, current", 2, N),
+    _c("us-gaap:AvailableForSaleSecuritiesDebtSecuritiesCurrent", "short_term_investments",
+       None, "Available-for-sale debt securities, current", 3, N),
+    _c("us-gaap:RestrictedCashCurrent", "restricted_cash", None, "Restricted cash, current",
+       1, N),
     _c("us-gaap:Assets", "total_assets", "total_assets", "Total assets", 1, N),
     _c("us-gaap:Liabilities", "total_liabilities", "total_liabilities",
        "Total liabilities", 1, N),
@@ -191,6 +203,14 @@ STATEMENT_CONCEPTS: tuple[StatementConcept, ...] = (
        "Administrative expense", 1, F, spend=True),
     _c("ifrs-full:CashAndCashEquivalents", "cash_and_equivalents", "cash_and_equivalents",
        "Cash and cash equivalents", 1, N),
+    # ADR-096 — liquidity components beside cash (``calculations.liquidity``).
+    _c("ifrs-full:ShorttermDepositsNotClassifiedAsCashEquivalents", "short_term_deposits",
+       None, "Short-term deposits, not classified as cash equivalents", 1, N),
+    _c("ifrs-full:CurrentRestrictedCashAndCashEquivalents", "restricted_cash", None,
+       "Current restricted cash and cash equivalents", 1, N),
+    # An aggregate (deposits, restricted cash, derivatives…): never summed.
+    _c("ifrs-full:CurrentFinancialAssets", "current_financial_assets", None,
+       "Current financial assets", 1, N),
     _c("ifrs-full:Assets", "total_assets", "total_assets", "Total assets", 1, N),
     _c("ifrs-full:Liabilities", "total_liabilities", "total_liabilities",
        "Total liabilities", 1, N),

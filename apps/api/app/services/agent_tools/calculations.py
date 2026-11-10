@@ -42,6 +42,7 @@ from app.services.agent_tools.facts import (
     Population,
 )
 from app.services.calculations.definitions import (
+    CASH_RUNWAY_QUARTERS,
     DEFINITIONS,
     PERIOD_TWO_OF_ONE_TYPE,
     SCOPE_SEGMENT_OVER_GROUP,
@@ -255,6 +256,73 @@ def _bind(
     return inputs, None, ""
 
 
+def _row_slot(row: ExtractedFact) -> dict[str, Any]:
+    """An extracted fact in the slot shape ``calculations.liquidity`` reads."""
+    return {
+        "numeric_value": row.value_numeric,
+        "currency": row.currency,
+        "scale": row.scale,
+        "period": row.period,
+        "scope": "Group" if row.scope_type == SCOPE_TYPE_GROUP else (
+            row.scope_name or row.scope_type),
+        "fact_id": str(row.id),
+    }
+
+
+def _runway_liquidity(
+    inputs: dict[str, Quantity], rows: list[ExtractedFact]
+) -> tuple[dict[str, Quantity], dict[str, Any]] | None:
+    """ADR-096 — the cash a runway lasts is AVAILABLE LIQUIDITY: cash plus the issuer's
+    short-term deposits and investments for the cash's own period, currency and Group
+    scope (``calculations.liquidity``). Returns ``(inputs, fields)`` — the inputs with
+    cash replaced by available liquidity when components were added, and the record
+    fields that say which basis was used. A component held for another period, or two
+    differing values for one, leaves the runway on cash and LABELLED cash only. None
+    when the bound cash fact cannot be found (nothing is changed)."""
+    from app.services.calculations import liquidity as liq
+
+    cash_q = inputs.get("cash")
+    cash_row = next((r for r in rows if cash_q is not None and str(r.id) == cash_q.fact_id),
+                    None)
+    if cash_q is None or cash_row is None:
+        return None
+    period = parse_period(cash_row.period).key
+    components = (*liq.AVAILABLE_COMPONENTS, *liq.EXCLUDED_COMPONENTS,
+                  *liq.AGGREGATE_COMPONENTS)
+    held = {r.label for r in rows if r.label in components}
+    slots: dict[str, dict[str, Any]] = {liq.FIELD_CASH: _row_slot(cash_row)}
+    for field_name in components:
+        same = [r for r in rows
+                if r.label == field_name and r.scope_type == SCOPE_TYPE_GROUP
+                and (parse_period(r.period).key or "") == (period or "")]
+        if len({str(r.value_numeric) for r in same}) == 1:
+            slots[field_name] = _row_slot(same[0])
+        # Two differing values: no slot; the field is still HELD, so the view is
+        # "cash only, excludes …" — the platform never chooses between them.
+    view = liq.build_liquidity(slots, held_fields=frozenset(held))
+    used = [c for c in view.get("components") or ()
+            if c.get("role") in (liq.ROLE_ANCHOR, liq.ROLE_INCLUDED)]
+    available = view.get("available_liquidity")
+    out = dict(inputs)
+    if available and len(used) > 1:
+        out["cash"] = Quantity(
+            value=Decimal(str(available["numeric_value"])),
+            unit=cash_q.unit, currency=cash_q.currency, scale=cash_q.scale,
+            period=cash_q.period, scope=cash_q.scope, fact_id=cash_q.fact_id,
+            label="available_liquidity",
+        )
+    basis = liq.basis_label(view)
+    label = f"Cash runway ({basis}; quarter-equivalents, derived)"
+    return out, {
+        "label": label,
+        "liquidity": view,
+        "liquidity_basis": basis,
+        "liquidity_state": view.get("state"),
+        "liquidity_components_used": [str(c.get("component")) for c in used],
+        "liquidity_fact_ids": [str(c.get("fact_id")) for c in used[1:] if c.get("fact_id")],
+    }
+
+
 async def _get_calculated_metrics(
     context: "ToolContext", arguments: dict[str, Any]
 ) -> dict[str, Any]:
@@ -287,6 +355,11 @@ async def _get_calculated_metrics(
         definition_for(key) for key in arguments["metrics"] if key not in excluded
     ]
     labels = {label for d in definitions for spec in d.inputs for label in spec.labels}
+    if any(d.key == CASH_RUNWAY_QUARTERS.key for d in definitions):
+        from app.services.calculations import liquidity as liq
+
+        # ADR-096 — the liquidity components beside cash, for the runway's basis.
+        labels |= set(liq.LIQUIDITY_FIELDS)
     rows = (
         await _candidate_facts(
             context.session, company_id=arguments["company_id"], labels=labels
@@ -299,6 +372,7 @@ async def _get_calculated_metrics(
     refused: list[dict[str, Any]] = []
     for definition in definitions:
         inputs, reason, detail = _bind(definition, rows, arguments)
+        extra: dict[str, Any] = {}
         if reason is not None:
             outcome = CalculationOutcome(
                 definition_key=definition.key,
@@ -311,11 +385,25 @@ async def _get_calculated_metrics(
                 formula=definition.formula,
             )
         else:
+            if definition.key == CASH_RUNWAY_QUARTERS.key:
+                routed = _runway_liquidity(inputs, rows)
+                if routed is not None:
+                    inputs, extra = routed
             outcome = calculate(definition, inputs)
+            component_ids = list(extra.pop("liquidity_fact_ids", None) or ())
+            if component_ids:
+                # Every fact the value rests on is attributed, components included.
+                outcome.input_fact_ids = [
+                    *outcome.input_fact_ids,
+                    *(i for i in component_ids if i not in outcome.input_fact_ids),
+                ]
 
         if arguments["persist"]:
             await _persist(context, outcome, arguments)
-        (computed if outcome.computed else refused).append(outcome.to_dict())
+        entry = outcome.to_dict()
+        if reason is None and extra:
+            entry.update(extra)
+        (computed if outcome.computed else refused).append(entry)
 
     population.returned = len(computed)
     for entry in refused:

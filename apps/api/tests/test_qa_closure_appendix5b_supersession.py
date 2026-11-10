@@ -448,10 +448,10 @@ def test_every_pattern_is_linear(module) -> None:  # noqa: ANN001
     assert len(patterns) >= 10
     for pattern in patterns:
         for text in _ADVERSARIAL:
-            started = time.perf_counter()
+            started = time.process_time()
             pattern.search(text)
             list(pattern.finditer(text))
-            assert time.perf_counter() - started < 0.2, pattern.pattern
+            assert time.process_time() - started < 0.2, pattern.pattern
 
 
 @pytest.mark.parametrize("text", _ADVERSARIAL)
@@ -546,7 +546,7 @@ def test_an_older_pipeline_reading_is_re_read() -> None:
         CURRENT_EXTRACTION_PIPELINE_VERSION,
     )
 
-    assert CURRENT_EXTRACTION_PIPELINE_VERSION >= 24
+    assert CURRENT_EXTRACTION_PIPELINE_VERSION >= 26
 
     class _Session:
         def __init__(self, version: int) -> None:
@@ -559,6 +559,8 @@ def test_an_older_pipeline_reading_is_re_read() -> None:
     # ADR-092 (version 24) re-reads a version-23 row once more; ADR-094 (25) a 24 row.
     assert asyncio.run(_read_by_an_older_pipeline(_Session(23), uuid.uuid4())) is True
     assert asyncio.run(_read_by_an_older_pipeline(_Session(24), uuid.uuid4())) is True
+    # ADR-096 (26) re-reads a 25 row.
+    assert asyncio.run(_read_by_an_older_pipeline(_Session(25), uuid.uuid4())) is True
     assert asyncio.run(_read_by_an_older_pipeline(
         _Session(CURRENT_EXTRACTION_PIPELINE_VERSION), uuid.uuid4())) is False
 

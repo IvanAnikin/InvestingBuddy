@@ -2053,3 +2053,40 @@ statements view (`issuer_financials`):
   - `professional_research` sentences and section leads that cite findings by label
     are now checked as `synthesis`. The legacy red team gets the two hierarchy rules
     only.
+
+## Liquidity, perimeter and implicit subjects (ADR-096)
+
+- `app/services/calculations/liquidity.py` holds `build_liquidity(slots, held_fields=…)`.
+  - Available liquidity = cash + short-term deposits + short-term investments, each for
+    the cash's date, currency and Group scope, and each cited.
+  - Restricted cash is shown and never added. IFRS current financial assets is an
+    aggregate and never summed.
+  - A component held for another date (or an unexplained aggregate) gives
+    `cash_only_incomplete`.
+  - `issuer_financials._derived_runway` and the `get_calculated_metrics` tool run the
+    runway over available liquidity, or label it "cash only, excludes …".
+- `app/services/ledger/perimeter.py` holds `apply_perimeter_guard(v3, as_of=…,
+  basis_changes=…)`.
+  - It runs after period supersession.
+  - Trigger: a completed, dated spin-off / separation / demerger / discontinued
+    operations stated by an issuer-only finding, or an SEC `perimeter_recast`.
+  - Labels debt, cash, equity and backlog levels from before the change "[before the
+    <date> separation]", or "… change of perimeter]" for a divestiture.
+  - Withholds a text comparing levels across it as a change (including "versus"),
+    unless it is like for like or names the change as the cause.
+  - Labels only the earlier figure when both are stated side by side.
+- `app/services/entities/subject_mention.py` holds three rules.
+  - Rule 1: a current-development item must be the verified issuer's own (its origin)
+    or have a title that names the subject (a listed brand counts), other than inside a
+    separately registered namesake's name. Applied by
+    `v3_pipeline._subject_current_developments`.
+  - Rule 2: an `unknown` (ADR-083) statement resting only on open-web prose that is not
+    the subject's and never names it (in statement, passage or document title,
+    `_Evidence.title`) is dropped only when the statement itself names a separately
+    registered namesake of the subject. A possible SEC-registrant name
+    (`names_other_registrant`) is counted in `statements_other_registrant_shadow` and
+    never drops; otherwise the statement is counted in shadow. Industry and peer
+    domains, filings and "the company" statements are exempt.
+  - Rule 3: "<Name>, a separate company …" is that company's.
+  - The investigator (`_implicit_subject_verdict`) counts drops as
+    `statements_subject_unresolved` / `statements_declared_other_company`.

@@ -899,11 +899,11 @@ def _requires_full_reextraction(
         garbled, not just under-interpreted; re-deriving facts from that
         same stale text under current-code semantics would silently keep
         serving the old, potentially-mislabeled values.
-      * (ADR-085 review) an SEC Archives filing stamped before
-        ``INLINE_XBRL_MIN_PIPELINE_VERSION`` whose active facts include no tagged
-        (inline-XBRL) fact: its tags live only in the bytes, so an excerpts-only
-        replay would restamp it current without ever reading them — and the bridge
-        would then never re-read it either.
+      * (ADR-085 review; ADR-096) an SEC Archives filing stamped before
+        ``INLINE_XBRL_MIN_PIPELINE_VERSION``: its tags (or the ones the current concept
+        map added) live only in the bytes, so an excerpts-only replay would restamp it
+        current without ever reading them — and the bridge would then never re-read it
+        either.
     """
     if _has_unreconstructable_table_facts(facts, doc.excerpts_json):
         return True
@@ -913,23 +913,37 @@ def _requires_full_reextraction(
 
 
 def _tags_never_read(doc: ExtractedDocument, facts: "Sequence[ExtractedFact]") -> bool:
-    """A pre-reader SEC Archives filing with no tagged fact (see above). Pure."""
+    """An SEC Archives filing whose tags (or some of them) were never read. Pure.
+
+    * stamped before the reader shipped (``INLINE_XBRL_READER_VERSION``) with no tagged
+      fact: its tags were never read (ADR-085);
+    * stamped from the reader's version up to ``INLINE_XBRL_MIN_PIPELINE_VERSION`` WITH
+      a tagged fact: an iXBRL filing body read under an older concept map — the concepts
+      the current map added (ADR-096's liquidity components) live only in its bytes. A
+      document of that age with NO tagged fact (an exhibit, a PDF, a filing without
+      iXBRL) was already read by the reader and has nothing more to give: never re-read.
+    """
     from app.services.sources.extraction_pipeline_version import (
         INLINE_XBRL_MIN_PIPELINE_VERSION,
+        INLINE_XBRL_READER_VERSION,
     )
     from app.services.sources.inline_xbrl_facts import (
         EXTRACTION_METHOD_INLINE_XBRL,
         is_sec_archive_url,
     )
 
-    if (doc.pipeline_version or 0) >= INLINE_XBRL_MIN_PIPELINE_VERSION:
+    version = doc.pipeline_version or 0
+    if version >= INLINE_XBRL_MIN_PIPELINE_VERSION:
         return False
     if not is_sec_archive_url(getattr(doc, "canonical_url", None)):
         return False
-    return not any(
+    tagged = any(
         getattr(fact, "extraction_method", None) == EXTRACTION_METHOD_INLINE_XBRL
         for fact in facts
     )
+    if version < INLINE_XBRL_READER_VERSION:
+        return not tagged
+    return tagged
 
 
 async def _deactivate_active_facts(session: AsyncSession, document_id: uuid.UUID) -> None:

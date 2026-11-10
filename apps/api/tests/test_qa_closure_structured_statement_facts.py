@@ -879,9 +879,9 @@ def _q1_doc(body: str, extra_contexts: list[str] | None = None, hidden: str = ""
 def _timed_parse(data: bytes) -> tuple[float, object]:
     import time
 
-    started = time.perf_counter()
+    started = time.process_time()
     document = parse_inline_xbrl(data)
-    return time.perf_counter() - started, document
+    return time.process_time() - started, document
 
 
 def _peak_mb(data: bytes) -> float:
@@ -1388,9 +1388,31 @@ class TestLabelsAndReuse:
         assert _requires_full_reextraction(doc, []) is True
         assert _requires_full_reextraction(doc, [prose]) is True
         # Read at the reader's version, or not an SEC filing: excerpts-only reuse is fine.
+        from app.services.sources.extraction_pipeline_version import (
+            INLINE_XBRL_MIN_PIPELINE_VERSION,
+        )
+
         assert _requires_full_reextraction(
-            SimpleNamespace(pipeline_version=22, excerpts_json=doc.excerpts_json,
-                            canonical_url=url), [prose]) is False
+            SimpleNamespace(pipeline_version=INLINE_XBRL_MIN_PIPELINE_VERSION,
+                            excerpts_json=doc.excerpts_json, canonical_url=url),
+            [prose]) is False
+        # ADR-096 — tags read under an OLDER concept map (version 22..25) are re-read:
+        # the liquidity components live only in the bytes.
+        tagged = SimpleNamespace(table_location="ixbrl:x", extraction_method="inline_xbrl")
+        assert _requires_full_reextraction(
+            SimpleNamespace(pipeline_version=25, excerpts_json=doc.excerpts_json,
+                            canonical_url=url), [tagged]) is True
+        # ...but a document the reader already read and found NO tags in (an exhibit, a
+        # PDF, a filing without iXBRL) has nothing more to give: never re-fetched.
+        exhibit = ("https://www.sec.gov/Archives/edgar/data/1633917/000163391726000123/"
+                   "ex99-1.htm")
+        for version in (22, 25):
+            assert _requires_full_reextraction(
+                SimpleNamespace(pipeline_version=version, excerpts_json=doc.excerpts_json,
+                                canonical_url=exhibit), [prose]) is False
+            assert _requires_full_reextraction(
+                SimpleNamespace(pipeline_version=version, excerpts_json=doc.excerpts_json,
+                                canonical_url=exhibit), []) is False
         assert _requires_full_reextraction(
             SimpleNamespace(pipeline_version=20, excerpts_json=doc.excerpts_json,
                             canonical_url="https://issuer.example/r.htm"), [prose]) is False
@@ -1404,7 +1426,7 @@ class TestLabelsAndReuse:
             INLINE_XBRL_MIN_PIPELINE_VERSION,
         )
 
-        assert INLINE_XBRL_MIN_PIPELINE_VERSION == 22
+        assert INLINE_XBRL_MIN_PIPELINE_VERSION == 26
         assert CURRENT_EXTRACTION_PIPELINE_VERSION >= INLINE_XBRL_MIN_PIPELINE_VERSION
 
 

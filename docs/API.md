@@ -3721,6 +3721,63 @@ Additive keys under `source_summary_json.v3_research`:
   - `PERIOD_MISMATCH` wording now covers an unconfirmed period.
   - Follow-up: `counts.gaps_failed` no longer includes `NOT_RUN` gaps.
 
+## ADR-096 — liquidity components, perimeter guard, implicit-subject firewall (no new endpoint)
+
+- `financial_statements_state.slots` may hold `short_term_deposits_*`,
+  `short_term_investments_*`, `restricted_cash_*` and `current_financial_assets_*`. Each
+  is the issuer's own inline-XBRL line, from extraction pipeline version 26.
+- `financial_statements_state.liquidity`: `{annual, current_period}`, each `null` or:
+  - `state`: `complete` | `cash_only_incomplete`;
+  - `period`, `currency`, `scope`;
+  - `components[]`, each with:
+    - `component` and `label`;
+    - `role`: `anchor` | `included` | `excluded_restricted` | `reported_aggregate` |
+      `missing_for_date`;
+    - the value and its source: `value`, `numeric_value`, `scale`, `period`, `fact_id`,
+      `document_title`, `document_date`, `source_url`, `xbrl_concept`;
+  - `available_liquidity`: `{numeric_value, scale, currency, period, includes[],
+    input_fact_ids[]}` or `null`;
+  - `excludes[]` and `note`.
+- `financial_statements_state.derived[*]` (cash runway) gains:
+  - `liquidity` (the view above);
+  - `liquidity_basis`, e.g. "cash and cash equivalents + short-term deposits" or "cash
+    only, excludes short-term deposits";
+  - `liquidity_state` and `liquidity_components_used[]`.
+
+  `inputs.cash.label` is `available_liquidity` when components were added. `label` names
+  the basis whenever it is not plain cash.
+- The `get_calculated_metrics` tool's `cash_runway_quarters` item carries the same
+  `label`, `liquidity`, `liquidity_basis`, `liquidity_state` and
+  `liquidity_components_used`. Component fact ids are added to `input_fact_ids`.
+- `v3_research.perimeter` (`version: 1`):
+  - `changes[]`: `{date | null, low, high, source: issuer_finding | sec_restatement,
+    finding_id? | restating_filed?, label}`;
+  - `actions[]`: `{action: labelled_pre_change | labelled_pre_change_figure |
+    withheld_cross_perimeter_comparison, path}`;
+  - each change also carries `kind` (`separation` | `change of perimeter`) and
+    `label_part`;
+  - `note`.
+
+  Labelled findings carry `perimeter: "pre_change"` (or `"mixed"` when only the earlier
+  of two figures is labelled) and `perimeter_label`. Withheld ones
+  carry `perimeter_withheld: true`, and their statement is a "[Withheld at report
+  assembly: …]" notice.
+- `v3_research.web_context.catalyst_evidence` holds only items that are the verified
+  issuer's own (`origin_key` = `issuer:<company id>`) or whose title names the subject. The rest are in `catalyst_evidence_withheld[]` as `{title, domain, reason:
+  title_does_not_name_the_subject | title_about_a_separately_registered_namesake}`. V2
+  `news_catalyst_discovery.web_catalyst_evidence` is built from the filtered list.
+- The investigator's diagnostics gain:
+  - `statements_subject_unresolved` (dropped: the statement names a separately
+    registered namesake of the subject);
+  - `statements_other_registrant_shadow` and `other_registrant_shadow[]` (kept: another
+    SEC registrant may be named);
+  - `statements_subject_unresolved_shadow` and `subject_unresolved_shadow[]` (kept: no
+    one else named);
+  - `statements_declared_other_company`.
+
+  Each `*_shadow[]` list holds `{question_key, evidence_ids, statement_sha256}`, at
+  most 50 entries, never the text.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:
