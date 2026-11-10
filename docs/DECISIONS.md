@@ -10119,7 +10119,9 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
      is still dated in place (`labelled_pre_change_figure`). It needs a cause lead
      (reflecting, due to, as a result of, because of, following, owing to, attributable
      to, driven by, resulting from) followed within one clause by spin-off, split-off,
-     separation, demerger or discontinued, or by the business the change separated
+     separation, demerger or "discontinued operations" (never a bare "discontinued":
+     "discontinued product lines" is no change of perimeter), or by the business the
+     change separated
      ("following the Aerospace transaction"). "with / after / using …", a sale ("the
      sale of bonds", "of a building") or "proceeds" is no such cause, so those texts are
      withheld.
@@ -10159,22 +10161,31 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
         the subject, and no cited item is the subject's. The title is the tool record's
         own `title`, carried as `_Evidence.title` and set in `_evidence_of`; neither
         prompt copy (`_WEB_CORPUS_EVIDENCE_KEYS` / `_EXTERNAL_EVIDENCE_KEYS`) carries it.
-     2. the statement, or a cited passage's opening (its first 240 characters and its
-        title), NAMES ANOTHER ENTITY (`subject_mention.names_other_entity`): either a
-        separately registered namesake of the subject (ADR-066 `related_registrants`,
-        "Honeywell Aerospace"), or an SEC registrant in the platform's ticker directory
-        (`RegistrantIndex`). A registrant matches by its one distinctive name word
-        ("REGENXBIO Inc.") or its first two words, written with a capital. The word must
-        be five letters or more, and must not be a generic business word, a
-        `COMMON_OPENERS` word or a month.
-     3. that entity is not the subject or a brand of it (`trust.BRAND_ALIASES`).
+     2. the STATEMENT itself names a separately registered namesake of the subject
+        (ADR-066 `related_registrants`, via `names_only_related_registrant`), e.g.
+        "Honeywell Aerospace plans a plant" under Honeywell International.
 
      Dropped statements are counted as `statements_subject_unresolved`. A statement that
-     meets condition 1 but names no other entity is KEPT. It is counted as
-     `statements_subject_unresolved_shadow` and recorded in `subject_unresolved_shadow`
-     as `{question_key, evidence_ids, statement_sha256}` (a draft reference; the finding
-     id is assigned only when the ledger stores it; never the text). With the SEC
-     directory unreadable, nothing is "another entity", so rule 2 only shadows.
+     meets condition 1 is otherwise KEPT, in one of two shadow counts, each recorded as
+     `{question_key, evidence_ids, statement_sha256}` (a draft reference; the finding id
+     is assigned only when the ledger stores it; never the text):
+     - `statements_other_registrant_shadow` / `other_registrant_shadow`: the statement or
+       a cited passage's opening (first 240 characters and title) may name another SEC
+       registrant (`subject_mention.names_other_registrant` over `RegistrantIndex`). A
+       registrant matches by its one distinctive name word ("REGENXBIO Inc.") or its
+       first two words, written with a capital. The word must be five letters or more,
+       not a generic business word, not a `COMMON_OPENERS` word, not a month, and not
+       the subject or a brand of it.
+     - `statements_subject_unresolved_shadow` / `subject_unresolved_shadow`: no one else
+       is named.
+
+     The registrant path never drops. The final review found that one-word registrant
+     names are ordinary words or named sources, customers and partners: "according to
+     Gartner", "per Morningstar", "live at Target", "Apple Pay competition", "funded by
+     AstraZeneca", "Target net leverage", "Block trades", "Shell company costs",
+     "Southern Africa revenue". Each is pinned as a no-drop test. A cited passage's
+     opening never decides a drop. FUTURE WORK: turning the registrant path into a drop
+     needs a precision replay over persisted passages.
    - Rule 3: an opening entity the writer itself calls another company ("<Name>, a
      separate company …") is that company's, in any non-peer domain. It is counted as
      `statements_declared_other_company`.
@@ -10208,22 +10219,25 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
     brand. Script: `replay_rule1.py`.
   - CLLS7 F9 (Calyxt) is withheld by rule 3. F48 (Regenxbio) meets rule 2 unless its
     page names Cellectis, which cannot be checked offline.
-  - Rule 2, final form (`replay_r4.py`, with the SEC `company_tickers_exchange`
-    directory; statements only, since passages and titles are not stored):
-    - 4 dropped:
-      - CLLS6 Regenxbio clinical hold;
-      - CLLS7 Regenxbio clinical hold;
-      - HON3 "Odysight.ai … purchase order from Honeywell Aerospace's APU Division";
-      - HON2 "Honeywell Aerospace plans a $500m … Tempe, Arizona plant", the separately
-        registered post-spin company's.
-    - 41 kept in shadow. These are all the subject-business statements that never name
-      the subject: JPM NII and deposits, LIN2 Kangankunde, PYPL3 volumes, CLLS R&D, CFR
-      Montblanc, HON2 "Aerospace Technologies" segment sales and the rest.
-    - Per report (dropped / shadow): HON2 1/1, HON3 1/2, LIN2 0/6, LIN3 0/1, LIN4 0/2,
-      CLLS5 0/3, CLLS6 1/1, CLLS7 1/1, PYPL3 0/5, JPM 0/6, JPM2 0/4, JPM3 0/3, CFR 0/4,
-      CFR2 0/1, CFR3 0/1; HON4, PYPL4 and PYPL5 have none.
-    - Of the re-review's 33 classified candidates: the 3 other-company items are
-      caught, and 0 of the subject's own are lost.
+  - Rules 2 and 3, final form (`replay_r4.py`, output `replay_r5.txt`, with the SEC
+    `company_tickers_exchange` directory; statements only, since passages and titles are
+    not stored):
+    - 3 dropped:
+      - HON2 "Honeywell Aerospace plans a $500m … Tempe, Arizona plant" (namesake;
+        confirmed correct);
+      - HON3 "Odysight.ai … purchase order from Honeywell Aerospace's APU Division"
+        (namesake);
+      - CLLS7 Calyxt (rule 3, declared other company).
+    - 2 kept in registrant shadow: the CLLS6 and CLLS7 Regenxbio clinical hold.
+    - 41 kept in shadow: every subject-business statement that never names the subject
+      (JPM NII and deposits, LIN2 Kangankunde, PYPL3 volumes, CLLS R&D, CFR Montblanc,
+      HON2 "Aerospace Technologies" segment sales and the rest).
+    - Per report (rule-3 dropped / namesake dropped / registrant shadow / shadow): HON2
+      0/1/0/1, HON3 0/1/0/2, CLLS6 0/0/1/1, CLLS7 1/0/1/1, LIN2 0/0/0/6, LIN3 0/0/0/1,
+      LIN4 0/0/0/2, CLLS5 0/0/0/3, PYPL3 0/0/0/5, JPM 0/0/0/6, JPM2 0/0/0/4,
+      JPM3 0/0/0/3, CFR 0/0/0/4, CFR2 0/0/0/1, CFR3 0/0/0/1; HON4, PYPL4 and PYPL5 have
+      none.
+    - 0 of the subject's own statements are lost.
 
 ### Known limits
 - Liquidity components come from inline XBRL only. A UK or ASX PDF's "short-term
@@ -10252,13 +10266,10 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
     (cupssy.com; Montblanc is a Richemont brand).
 - Rule 2 cannot be replayed exactly on stored payloads, because passages are not
   persisted. Candidates are listed for manual review in the hand-back.
-- Rule 2 drops only for an entity the SEC directory (or ADR-066's namesake list)
-  holds. Another company that is not an SEC registrant (a European or ASX peer, a
-  private company) is not recognised, and its statement is only shadowed.
-- A one-word registrant whose name is also a capitalised word in ordinary prose could
-  be read as "another entity". Words of five letters or more, generic business words,
-  `COMMON_OPENERS` and months are excluded, but the index is otherwise the whole
-  directory.
+- Rule 2 drops only for a separately registered namesake that the statement itself
+  names. Another company's statement (Regenxbio's clinical hold under Cellectis) is kept
+  and counted in registrant shadow, as is any other company that is not an SEC
+  registrant (a European or ASX peer, a private company).
 - Perimeter:
   - a fall across a divestiture that does not name the sale or its proceeds as the
     cause is still withheld;
@@ -10267,4 +10278,6 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
 - History: r1 exempted "named openings" with bare `_opening_names`, which treats any
   capitalised first word as a name, so rule 2 judged almost nothing. r3 dropped on a
   missing subject name alone, which would have dropped about 25 of the subject's own
-  statements. The final rule needs positive evidence of another entity (above).
+  statements. r4 dropped on any SEC-registrant name, which matched ordinary words and
+  named sources. The final rule drops only on a namesake the statement names; the
+  registrant path is shadow only.

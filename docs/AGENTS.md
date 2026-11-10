@@ -2082,9 +2082,10 @@ statements view (`issuer_financials`):
     `v3_pipeline._subject_current_developments`.
   - Rule 2: an `unknown` (ADR-083) statement resting only on open-web prose that is not
     the subject's and never names it (in statement, passage or document title,
-    `_Evidence.title`) is dropped only when it, or a cited passage's opening, names
-    ANOTHER entity: a namesake registrant or an SEC registrant (`names_other_entity`),
-    never a subject brand. Otherwise it is kept and counted in shadow. Industry and peer
+    `_Evidence.title`) is dropped only when the statement itself names a separately
+    registered namesake of the subject. A possible SEC-registrant name
+    (`names_other_registrant`) is counted in `statements_other_registrant_shadow` and
+    never drops; otherwise the statement is counted in shadow. Industry and peer
     domains, filings and "the company" statements are exempt.
   - Rule 3: "<Name>, a separate company …" is that company's.
   - The investigator (`_implicit_subject_verdict`) counts drops as

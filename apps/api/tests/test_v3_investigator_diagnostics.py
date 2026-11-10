@@ -495,6 +495,10 @@ class TestDiagnosticsCarryNoSensitiveContent:
             # a count, and their draft references (no text, see below).
             "statements_subject_unresolved_shadow",
             "subject_unresolved_shadow",
+            # ... and those that may name another SEC registrant: shadow only, never
+            # dropped (final review). A count and draft references.
+            "statements_other_registrant_shadow",
+            "other_registrant_shadow",
             # QA closure (ADR-088) — statements whose period had not ended: relabelled
             # forward, or withheld. Counts.
             "statements_reclassified_period_not_ended",
@@ -509,7 +513,8 @@ class TestDiagnosticsCarryNoSensitiveContent:
             "statements_scoped_to_segment",
         }
         assert all(isinstance(v, int) for k, v in out.items()
-                   if k not in {"finish_reasons", "subject_unresolved_shadow"})
+                   if k not in {"finish_reasons", "subject_unresolved_shadow",
+                                "other_registrant_shadow"})
         # The one list: draft references only — question key, evidence ids and a
         # 16-character statement digest. Never a statement, prompt or completion.
         d.subject_unresolved_shadow.append(

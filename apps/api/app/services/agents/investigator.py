@@ -2478,9 +2478,14 @@ class InvestigatorDiagnostics:
     statements_about_implicit_other_entity: int = 0
     #: ADR-096. A statement about the subject's own business that never names the
     #: subject, cited only from open-web documents that are not the subject's and never
-    #: name it, and that NAMES ANOTHER ENTITY (a separately registered namesake, or an
-    #: SEC registrant) in its own text or its cited passage's opening. Dropped.
+    #: name it, and whose own text NAMES a separately registered namesake of the subject
+    #: ("<Name> Aerospace …"). Dropped.
     statements_subject_unresolved: int = 0
+    #: ADR-096. The same, naming (in its text or a cited passage's opening) what may be
+    #: another SEC registrant: KEPT (shadow) — a one-word registrant name is too often an
+    #: ordinary word or a named source. Counted and recorded in ``other_registrant_shadow``.
+    statements_other_registrant_shadow: int = 0
+    other_registrant_shadow: list[dict[str, Any]] = field(default_factory=list)
     #: ADR-096. The same, but naming no other entity: its subject is merely unknown.
     #: KEPT (shadow): counted, and recorded in ``subject_unresolved_shadow``.
     statements_subject_unresolved_shadow: int = 0
@@ -2549,6 +2554,10 @@ class InvestigatorDiagnostics:
         )
         self.statements_subject_unresolved += other.statements_subject_unresolved
         self.statements_subject_unresolved_shadow += other.statements_subject_unresolved_shadow
+        self.statements_other_registrant_shadow += other.statements_other_registrant_shadow
+        self.other_registrant_shadow = [
+            *self.other_registrant_shadow, *other.other_registrant_shadow
+        ][:_MAX_SHADOW_RECORDS]
         self.subject_unresolved_shadow = [
             *self.subject_unresolved_shadow, *other.subject_unresolved_shadow
         ][:_MAX_SHADOW_RECORDS]
@@ -2596,6 +2605,8 @@ class InvestigatorDiagnostics:
             "statements_subject_unresolved": self.statements_subject_unresolved,
             "statements_subject_unresolved_shadow": self.statements_subject_unresolved_shadow,
             "subject_unresolved_shadow": [dict(r) for r in self.subject_unresolved_shadow],
+            "statements_other_registrant_shadow": self.statements_other_registrant_shadow,
+            "other_registrant_shadow": [dict(r) for r in self.other_registrant_shadow],
             "statements_declared_other_company": self.statements_declared_other_company,
             "statements_scoped_to_entity": self.statements_scoped_to_entity,
             "statements_reclassified_period_not_ended": (
@@ -4051,10 +4062,11 @@ class LLMInvestigator:
 
         ``"declared"``: the writer calls its opening entity another company (dropped).
         ``"unresolved"``: the statement never names the subject, nothing cited is the
-        subject's or names it, and the statement — or a cited passage's opening or title
-        — NAMES ANOTHER ENTITY (a separately registered namesake, an SEC registrant):
-        positive evidence the subject is someone else's (dropped).
-        ``"shadow"``: the same, naming no other entity: kept, and only counted.
+        subject's or names it, and the STATEMENT names a separately registered namesake
+        of the subject (ADR-066): positive evidence it is someone else's (dropped).
+        ``"registrant_shadow"``: the same, but what is named (in the statement or a cited
+        passage's opening) may be another SEC registrant: kept, and only counted.
+        ``"shadow"``: the same, naming no one else: kept, and only counted.
         None otherwise. Never raises: a guard that cannot read keeps the statement."""
         from app.services.entities.passage_subject import OWNER_SUBJECT, _json_string
         from app.services.entities.subject_mention import (
@@ -4062,7 +4074,8 @@ class LLMInvestigator:
             SubjectNames,
             declared_other_company,
             implicit_subject_unresolved,
-            names_other_entity,
+            names_only_related_registrant,
+            names_other_registrant,
         )
 
         try:
@@ -4104,12 +4117,15 @@ class LLMInvestigator:
                     p for p in (title, (passage.text or "")[:_PASSAGE_OPENING_CHARS]) if p))
             if not implicit_subject_unresolved(statement, passages, names):
                 return None
-            # Positive evidence only: another entity the statement, or what it cites,
-            # NAMES. A statement that merely never names the subject is kept (shadow).
-            if names_other_entity(statement, names, registrants) or any(
-                names_other_entity(opening, names, registrants) for opening in openings
-            ):
+            # Dropped only on the statement's OWN naming of a separately registered
+            # namesake. An SEC registrant name is shadow evidence only (ADR-096 review):
+            # "according to Gartner", "live at Target" name someone, not the subject.
+            if names_only_related_registrant(statement, names):
                 return "unresolved"
+            if names_other_registrant(statement, names, registrants) or any(
+                names_other_registrant(opening, names, registrants) for opening in openings
+            ):
+                return "registrant_shadow"
             return "shadow"
         except Exception as exc:  # noqa: BLE001 - a guard that cannot read keeps it
             logger.warning("investigator.implicit_subject_failed: %s", type(exc).__name__)
@@ -4400,17 +4416,23 @@ class LLMInvestigator:
                     unresolved=attribution.verdict == VERDICT_UNKNOWN,
                     context=await self._implicit_subject_context(),
                 )
-                if implicit == "shadow":
-                    # ADR-096: its subject is unknown, but nothing names anyone else: kept,
-                    # counted, and recorded (no text) for review.
-                    self.diagnostics.statements_subject_unresolved_shadow += 1
-                    if len(self.diagnostics.subject_unresolved_shadow) < _MAX_SHADOW_RECORDS:
-                        self.diagnostics.subject_unresolved_shadow.append({
-                            "question_key": question.key,
-                            "evidence_ids": [str(i) for i in real][:10],
-                            "statement_sha256": hashlib.sha256(
-                                statement.encode("utf-8")).hexdigest()[:16],
-                        })
+                if implicit in ("shadow", "registrant_shadow"):
+                    # ADR-096: its subject is unknown; kept, counted, and recorded (no
+                    # text) for review — never dropped on a registrant name.
+                    shadow_ref = {
+                        "question_key": question.key,
+                        "evidence_ids": [str(i) for i in real][:10],
+                        "statement_sha256": hashlib.sha256(
+                            statement.encode("utf-8")).hexdigest()[:16],
+                    }
+                    if implicit == "registrant_shadow":
+                        self.diagnostics.statements_other_registrant_shadow += 1
+                        shadow_list = self.diagnostics.other_registrant_shadow
+                    else:
+                        self.diagnostics.statements_subject_unresolved_shadow += 1
+                        shadow_list = self.diagnostics.subject_unresolved_shadow
+                    if len(shadow_list) < _MAX_SHADOW_RECORDS:
+                        shadow_list.append(shadow_ref)
                     implicit = None
                 if implicit is not None:
                     # ADR-096: a statement whose subject cannot be the research subject's

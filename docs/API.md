@@ -3766,11 +3766,17 @@ Additive keys under `source_summary_json.v3_research`:
   issuer's own (`origin_key` = `issuer:<company id>`) or whose title names the subject. The rest are in `catalyst_evidence_withheld[]` as `{title, domain, reason:
   title_does_not_name_the_subject | title_about_a_separately_registered_namesake}`. V2
   `news_catalyst_discovery.web_catalyst_evidence` is built from the filtered list.
-- The investigator's diagnostics gain `statements_subject_unresolved` (dropped: another
-  entity named), `statements_subject_unresolved_shadow` (kept: subject unknown, no
-  other entity named), `subject_unresolved_shadow[]` (`{question_key, evidence_ids,
-  statement_sha256}`, at most 50; never the text) and
-  `statements_declared_other_company`.
+- The investigator's diagnostics gain:
+  - `statements_subject_unresolved` (dropped: the statement names a separately
+    registered namesake of the subject);
+  - `statements_other_registrant_shadow` and `other_registrant_shadow[]` (kept: another
+    SEC registrant may be named);
+  - `statements_subject_unresolved_shadow` and `subject_unresolved_shadow[]` (kept: no
+    one else named);
+  - `statements_declared_other_company`.
+
+  Each `*_shadow[]` list holds `{question_key, evidence_ids, statement_sha256}`, at
+  most 50 entries, never the text.
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 

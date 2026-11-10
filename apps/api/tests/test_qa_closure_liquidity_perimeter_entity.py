@@ -393,6 +393,19 @@ class TestPerimeter:
         assert text.startswith("[Withheld at report assembly:")
         assert record["actions"][0]["action"] == pm.ACTION_WITHHELD
 
+    def test_discontinued_product_lines_are_not_the_change(self) -> None:
+        # Final review: "discontinued" alone is no change of perimeter; only
+        # "discontinued operations" is.
+        text, record = self._one(
+            "Total debt fell from $34.6 billion at March 31, 2026 to $16.6 billion at "
+            "September 30, 2026, following weaker orders and discontinued product lines.")
+        assert text.startswith("[Withheld at report assembly:")
+        assert record["actions"][0]["action"] == pm.ACTION_WITHHELD
+        text, record = self._one(
+            "Total debt fell from $34.6 billion at March 31, 2026 to $16.6 billion at "
+            "September 30, 2026, reflecting discontinued operations.")
+        assert record["actions"][0]["action"] == pm.ACTION_LABELLED_FIGURE
+
     def test_the_business_a_change_separated_is_read(self) -> None:
         assert pm._business_of("The Aerospace Spin-Off completed June 29, 2026.") == (
             "Aerospace")
@@ -602,12 +615,13 @@ class _Client:
 
 
 async def _run(findings: list[tuple[str, list[str]]], evidence: list[Any], *,
-               domain: str = "risks") -> tuple[Any, list[Any]]:
+               domain: str = "risks", exchange: str = "EPA") -> tuple[Any, list[Any]]:
     from app.services.agents.investigator import LLMInvestigator
     from app.services.director.planner import PlannedQuestion
 
     inv = LLMInvestigator(session=object(), company_id=COMPANY_ID, ticker="VXG",
-                          exchange="EPA", client=_Client(findings), company_name="Vexgene SA")
+                          exchange=exchange, client=_Client(findings),
+                          company_name="Vexgene SA")
     question = PlannedQuestion(
         key="material_risks", text="What are the material risks?", origin="playbook",
         required_tools=frozenset({"search_company_corpus"}), domain=domain)
@@ -626,48 +640,91 @@ DIRECTORY = [
     _Listing("Stage Stores Inc.", "SSI", "6885"),
     _Listing("Revenue Partners Corp", "RVP", "1"),
     _Listing("Vexgene SA", "VXG", "2"),
+    # A separately registered namesake of the subject (ADR-066).
+    _Listing("Vexgene Aerospace Inc.", "VXA", "3"),
+    # The final review's one-word registrants that are also ordinary words or sources.
+    *(_Listing(n, t, str(100 + i)) for i, (n, t) in enumerate([
+        ("Gartner Inc", "IT"), ("Morningstar Inc", "MORN"), ("Target Corp", "TGT"),
+        ("Apple Inc.", "AAPL"), ("AstraZeneca PLC", "AZN"), ("Block, Inc.", "XYZ"),
+        ("Shell plc", "SHEL"), ("Southern Co", "SO"), ("Walmart Inc.", "WMT"),
+        ("Linde plc", "LIN"), ("Corning Inc", "GLW"), ("Oracle Corp", "ORCL"),
+    ])),
 ]
 
 
 async def _run_with_directory(monkeypatch, findings, evidence, *, directory=DIRECTORY,  # noqa: ANN001
-                              domain: str = "risks") -> tuple[Any, list[Any]]:
+                              domain: str = "risks", exchange: str = "EPA",
+                              ) -> tuple[Any, list[Any]]:
     from app.services.agents import investigator as inv_mod
 
     async def _directory() -> list[Any]:
         return list(directory)
 
     monkeypatch.setattr(inv_mod, "_load_sec_directory", _directory)
-    return await _run(findings, evidence, domain=domain)
+    return await _run(findings, evidence, domain=domain, exchange=exchange)
 
 
 class TestInvestigatorFailsClosed:
-    async def test_another_registrant_named_by_the_statement_is_dropped(
+    async def test_a_namesake_registrant_named_by_the_statement_is_dropped(
         self, monkeypatch,  # noqa: ANN001
     ) -> None:
+        # HON2 (confirmed): "<Subject> Aerospace plans a plant" is the separately
+        # registered namesake's, not the subject's.
         evidence = [
-            _web("ev:c:hold", "The FDA placed two gene therapies on clinical hold after a "
-                 "trial patient developed a brain tumor.", title="FDA halts two trials"),
+            _web("ev:c:a", "The company plans a $500m plant in Arizona.",
+                 title="Aerospace plant plans"),
             _web("ev:c:own", "Vexgene reported cash of EUR 61.5 million at year end.",
                  title="Vexgene full-year results"),
         ]
         inv, findings = await _run_with_directory(monkeypatch, [
-            ("FDA placed two Regenxbio gene therapies on clinical hold after a trial "
-             "patient developed a brain tumor.", ["ev:c:hold"]),
+            ("Vexgene Aerospace plans a $500m plant in Arizona.", ["ev:c:a"]),
             ("Cash was EUR 61.5 million at year end.", ["ev:c:own"]),
-        ], evidence)
+        ], evidence, exchange="NASDAQ")
         assert [f.statement for f in findings] == ["Cash was EUR 61.5 million at year end."]
         assert inv.diagnostics.statements_subject_unresolved == 1
-        assert inv.diagnostics.statements_subject_unresolved_shadow == 0
+        assert inv.diagnostics.statements_other_registrant_shadow == 0
 
-    async def test_another_registrant_opening_the_cited_passage_is_dropped(
+    async def test_another_sec_registrant_named_is_shadow_only(
         self, monkeypatch,  # noqa: ANN001
     ) -> None:
-        evidence = [_web("ev:c:p", "REGENXBIO said the FDA placed two of its gene therapies "
-                         "on clinical hold.", title="Gene therapy holds")]
-        inv, findings = await _run_with_directory(monkeypatch, [
-            ("Two gene therapies were placed on clinical hold.", ["ev:c:p"])], evidence)
-        assert findings == []
-        assert inv.diagnostics.statements_subject_unresolved == 1
+        # The registrant path never drops (final review): counted, and recorded.
+        evidence = [_web("ev:c:hold", "REGENXBIO said the FDA placed two of its gene "
+                         "therapies on clinical hold.", title="FDA halts two trials")]
+        statement = ("FDA placed two Regenxbio gene therapies on clinical hold after a trial "
+                     "patient developed a brain tumor.")
+        inv, findings = await _run_with_directory(
+            monkeypatch, [(statement, ["ev:c:hold"])], evidence)
+        assert [f.statement for f in findings] == [statement]
+        assert inv.diagnostics.statements_subject_unresolved == 0
+        assert inv.diagnostics.statements_other_registrant_shadow == 1
+        (ref,) = inv.diagnostics.other_registrant_shadow
+        assert set(ref) == {"question_key", "evidence_ids", "statement_sha256"}
+        assert statement not in json.dumps(inv.diagnostics.to_dict())
+
+    @pytest.mark.parametrize("statement", [
+        "Revenue rose 12% in Q3, according to Gartner.",
+        "Net interest income was $92.6bn, per Morningstar.",
+        "Checkout is now live at Target and Walmart stores.",
+        "Total payment volume rose 8%, with Apple Pay competition intensifying.",
+        "R&D expenses were 69,081 for the nine months, partly funded by AstraZeneca.",
+        "Target net leverage of 2.5x was reaffirmed for FY2026.",
+        "Block trades accounted for 4% of volume.",
+        "Shell company costs fell.",
+        "Southern Africa revenue rose 4%.",
+        "Unit cash cost was $1,236/t, Linde gas supply costs rose.",
+        "Corning glass supply constrained Q3 output.",
+        "Backlog was $18.8bn, led by orders from Oracle data centers.",
+    ])
+    async def test_review_probes_a_named_source_or_word_never_drops(
+        self, monkeypatch, statement: str,  # noqa: ANN001
+    ) -> None:
+        evidence = [_web("ev:c:r", "Gartner and Target said volumes rose.",
+                         title="Industry update")]
+        inv, findings = await _run_with_directory(
+            monkeypatch, [(statement, ["ev:c:r"])], evidence,
+            domain="financial_performance", exchange="NASDAQ")
+        assert [f.statement for f in findings] == [statement]
+        assert inv.diagnostics.statements_subject_unresolved == 0
 
     async def test_no_other_entity_named_is_kept_in_shadow(self, monkeypatch) -> None:  # noqa: ANN001
         # The re-review: about 25 of 33 replay candidates were the subject's own
@@ -766,23 +823,26 @@ class TestOtherEntityNames:
         ("FDA placed two Regenxbio gene therapies on hold.", "regenxbio"),
         ("REGENXBIO halts two trials", "regenxbio"),
         ("Odysight.ai said it received a purchase order.", "odysight"),
-        ("Altavia Aerospace selected for a contract.", "a separately registered namesake"),
-        # A capitalised common word, a lowercase mention, a one-word match of a two-word
-        # registrant ("Stage" of "Stage Stores"), and the subject itself: no one else.
         ("Revenue rose 12% in Q3.", None),
         ("Placement proceeds fund Stage 1 at the site.", None),
         ("the regenxbio programme was paused.", None),
         ("Altavia won a contract.", None),
-        ("Altavia and Altavia Aerospace signed.", None),
     ])
-    def test_another_entity_is_named_positively(self, text: str, other: str | None) -> None:
-        assert sm.names_other_entity(text, self.NAMES, self._index()) == other
+    def test_a_registrant_name_is_read_for_the_shadow_count(
+        self, text: str, other: str | None,
+    ) -> None:
+        assert sm.names_other_registrant(text, self.NAMES, self._index()) == other
 
-    def test_a_subject_brand_is_never_another_entity(self) -> None:
+    def test_the_namesake_is_the_drop_path(self) -> None:
+        assert sm.names_only_related_registrant("Altavia Aerospace selected.", self.NAMES)
+        assert not sm.names_only_related_registrant("Altavia and Altavia Aerospace signed.",
+                                                    self.NAMES)
+
+    def test_a_subject_brand_is_never_another_registrant(self) -> None:
         names = sm.SubjectNames.of("Alphabet Inc.", ("GOOGL",))
         index = sm.RegistrantIndex.of([_Listing("Waymo Holdings Inc.", "WAY", "9")], names)
-        assert sm.names_other_entity("Waymo Holdings expanded to two cities.", names,
-                                     index) is None
+        assert sm.names_other_registrant("Waymo Holdings expanded to two cities.", names,
+                                         index) is None
 
 
 # ── Linear time ───────────────────────────────────────────────────────────── #

@@ -170,7 +170,8 @@ _CAUSE_LEAD_RE = re.compile(
 #: The change itself, as a cause names it. Never a bare "sale" or "proceeds": a sale of
 #: bonds or of a building is not a change of perimeter.
 _CAUSE_EVENT_RE = re.compile(
-    r"\b(?:spin[- ]?offs?|spun[- ]off|split[- ]off|separation|de-?merger|discontinued)\b",
+    r"\b(?:spin[- ]?offs?|spun[- ]off|split[- ]off|separation|de-?merger"
+    r"|discontinued\s{1,3}operations?)\b",
     re.I,
 )
 #: How far after a cause lead the change must be named (one clause).

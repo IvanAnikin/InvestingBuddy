@@ -26,11 +26,12 @@ THE RULES
 2. A FINDING about the subject's own business (not an industry, peer or market
    question) that rests only on open-web documents that are not the subject's, and that
    neither it, a cited passage nor a cited document's title NAMES the subject, has an
-   unknown subject. It is DROPPED only on POSITIVE evidence that it is someone else's:
-   the statement, or a cited passage's opening, names another entity — a separately
-   registered namesake (ADR-066) or an SEC registrant (``RegistrantIndex``), never a
-   brand of the subject. Otherwise it is KEPT and only counted (shadow): a missing name
-   alone is not evidence. "The company / the group / the issuer" wording is left to
+   unknown subject. It is DROPPED only when the STATEMENT names a separately registered
+   namesake of the subject (ADR-066: "<Name> Aerospace plans a plant"). An SEC registrant
+   the statement or a cited passage's opening may name (``RegistrantIndex``) is counted
+   only (shadow): a one-word registrant name is too often an ordinary word or a named
+   source. Otherwise it is KEPT and counted (shadow): a missing name alone is not
+   evidence. "The company / the group / the issuer" wording is left to
    ADR-066 / ADR-083, and filings to ADR-079 (placed by registrant).
 3. A statement whose writer declares its opening entity another company ("<Name>, a
    separate company …", "<Name>, an unrelated company …") is that company's, wherever
@@ -292,18 +293,19 @@ class RegistrantIndex:
         return cls(single=frozenset(single), pairs=frozenset(pairs))
 
 
-def names_other_entity(
+def names_other_registrant(
     text: str | None, names: SubjectNames, registrants: RegistrantIndex
 ) -> str | None:
-    """The other company a text NAMES, or None: a separately registered namesake of the
-    subject ("<Name> Aerospace", ADR-066), or an SEC registrant written with a capital —
-    by its one distinctive name word, or its first two words — that is neither the
-    subject nor a brand of it. A capitalised common word ("Revenue", "March") never is."""
+    """An SEC registrant a text may NAME (its one distinctive name word, or its first two
+    words, written with a capital), neither the subject nor a brand of it; else None.
+
+    SHADOW EVIDENCE ONLY (ADR-096 final review): a one-word registrant name is also an
+    ordinary word or a named source, customer or partner ("according to Gartner", "live
+    at Target", "Apple Pay", "Block trades", "Southern Africa"). Nothing is dropped on
+    it; it is counted, until a precision replay over persisted passages says otherwise."""
     if not text:
         return None
     cut = text[:MAX_TEXT_CHARS]
-    if names_only_related_registrant(cut, names):
-        return "a separately registered namesake"
     if not registrants.single and not registrants.pairs:
         return None
     from app.services.discovery.identity import _fold  # noqa: PLC2701
@@ -353,6 +355,6 @@ __all__ = [
     "implicit_subject_unresolved",
     "RegistrantIndex",
     "names_only_related_registrant",
-    "names_other_entity",
+    "names_other_registrant",
     "names_subject",
 ]
