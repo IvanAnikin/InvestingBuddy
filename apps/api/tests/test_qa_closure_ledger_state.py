@@ -798,6 +798,8 @@ class TestChairDisagreements:
                             "finding_id": "f"}],
             "unresolved_disagreement_ids": [],
         })
+        # ADR-095 review: "the red team disputed" is held to the unresolved challenges.
+        payload["challenges"] = {"challenges": 2, "resolved": 2, "unresolved": 0}
         result = inv.enforce(payload, _state(payload, tally=_tally()))
         assert result.v3["chair"]["synthesis"] == "Revenue grew 4%."
         assert result.v3["chair"]["key_points"][0]["text"].startswith(

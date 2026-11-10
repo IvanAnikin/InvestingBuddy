@@ -10037,8 +10037,12 @@ findings did not contain, and 41 impossible combinations of state across the pay
    while 41 searches ran and all 41 failed with a provider error.
 2. **Phantom disagreements.** `reconcile_run` recorded every `absence_contradicted`
    pair as a ledger disagreement (`gap_reconciliation.py:1960-1995`). Reviewed by hand,
-   all 41 such pairs in the 18 reports were a denial of a SUB-item next to a finding
-   about the item, or two agreeing figures. The Red Team recorded every unanswered
+   none of the 41 such pairs in the 18 reports was a conflict between two figures: each
+   set a denial of a SUB-item (a split, a breakdown) or a negated clause about the
+   company ("no cash was generated after capex") beside a finding stating the item's
+   total. That does not make every denial true: PYPL5 F1 ("no product, geographic or
+   customer revenue split is disclosed") is contradicted by other findings that state
+   splits, and no pair caught it (see Known limits). The Red Team recorded every unanswered
    objection to ONE finding as a disagreement between two findings
    (`council_v2/red_team.py:334`, `_persist_disagreement`). CLLS7 showed 18 unresolved
    disagreements; none was a conflict.
@@ -10079,8 +10083,47 @@ findings did not contain, and 41 impossible combinations of state across the pay
   `state_invariants.impossible_combinations`.
 - No migration.
 
+### Review follow-ups (H5 review, NO-GO → this commit)
+1. **Red Team narration.** "The red team disputed / contested …" left
+   `_LEDGER_DISAGREEMENT_RE` and is held to `canonical_state.challenges.unresolved`
+   (`_rule_unbacked_challenge`, `red_team_dispute_narrated_with_none_unresolved`). The
+   round records each unresolved challenge (`challenges.unresolved_items`: finding,
+   weakness class, text); the research panel lists them under the Red Team block.
+2. **Contradicted absences.** All candidate pairs stay in `absences_contradicted`
+   (audit); `absences_contradicted_precise` (`denied_while_stated`: a disclosure denial
+   of the whole field, no split/breakdown/segment/margin words, and the other finding
+   states the field's Group amount) is told to the Chair as "FINDINGS DENIED BY ANOTHER
+   FINDING".
+3. **No invented conflicts.** A reported-value conflict needs GROUP scope on both
+   sides; the stating clause, read with the 40 characters before it (the clause split
+   cuts "U.S." off "U.S. revenue"), must name no qualified measure, segment, product,
+   service or region (`names_other_measure`: adjusted, organic, pro forma, underlying,
+   core, comparable, transaction, subscription, US/U.S./UK/EU …; "US$" and "USD" are
+   currencies), and the up-to-three words before the metric may only be a period, a
+   Group qualifier or the issuer's name and ticker (`issuer_tokens`).
+4. **One ledger.** `financial_statements_state.conflicts` (two or more values for one
+   statement line) are `conflicts.items` with `source: "statement_slot"`, counted in
+   `conflicts.count` (`finding_count` / `statement_slot_count` beside it) and listed to
+   the Chair as "STATEMENT-LINE CONFLICTS". They back a narrated conflict only when the
+   sentence names no finding as a party, every research field it names is a conflicted
+   line, and a period it names is that line's (`report_invariants.slot_backs`).
+6. The linearity test pauses the collector and compares a text four times longer
+   (bound 12x; quadratic is 16x).
+7. `search_network_calls_exceed_recorded_calls`: stage successes not from cache plus
+   failures may not exceed the stage's recorded `web_search_calls`. Follow-up rounds
+   now record `from_cache`; the check runs only when every stage block recorded it.
+8. "N from cache" on the research panel and the web research summary
+   (`searches_from_cache`).
+9. `v3_impossible_combinations` (count, codes) and
+   `v3_impossible_combinations_check_failed` (exception class) are logged; never text.
+10. `_search_lines` repairs `searches_run / planned / succeeded / failed` and the
+    "(N of M searches ran)" label in the stored payload.
+11. A conflict whose pair the ledger already held keeps that row's id.
+
 ### Replay (offline, stored payloads, base vs branch)
 - Impossible combinations 41 → 0 across the 18 reports.
+- Statement-line conflicts now in the one ledger: HON2 1, HON3 3, HON4 2, CFR 4,
+  CFR2 1, CFR3 1 (finding conflicts: 0 in every report).
 - Search line now counts every class: e.g. HON2 2 → 29, LIN2 6 → 28, CLLS5 10 → 45,
   PYPL3 5 → 28; CFR3's web panel "0 of 32 ran" → "41 of 41 ran, 0 returned results,
   41 failed".
@@ -10090,7 +10133,23 @@ findings did not contain, and 41 impossible combinations of state across the pay
 
 ### Known limits
 - Investigator web-search outcomes are unknown; corpus queries are assumed to succeed.
-- The detector is deliberately narrow (scope_key, one amount, a linking verb): a real
-  conflict worded otherwise is missed, never invented.
+- The detector is deliberately narrow, and narrow is not the same as correct. Its
+  checks (below) were chosen against the review's probes; a pair that passes all of them
+  can still be two different measures worded in a way the checks do not anticipate.
+- **Recall (review item 5).** The reviewer's 31 recall probes: 12 found, 19 missed;
+  all 17 false-positive probes (and 7 more in the tests) find nothing. Missed by design: no Group scope on one side, a period key that is a bare year
+  on one side and FY on the other, "came in at" / "posted … in revenue" / an amount
+  before the metric, two amounts in one clause, a negative sign written as "an outflow
+  of", currency mismatch, a 1000x scale error (indistinguishable from a unit slip), a
+  rounding difference within tolerance, "three months ended …" against "Q3", every
+  metric outside the research-field vocabulary (net income, EPS, margins, CET1,
+  headcount), and an issuer name before the metric when the name is not passed in (the
+  payload replay has no issuer name). The 18 stored reports produce 0 finding conflicts.
+- **A false absence is not caught.** `absences_contradicted_precise` keeps a pair only
+  when the denial is about DISCLOSURE of the whole field and the other finding states
+  that field's Group amount; 0 of the 41 stored pairs qualify. A finding that wrongly
+  denies a SUB-item another finding states (PYPL5 F1) is neither listed to the Chair
+  nor kept out of the synthesis; ADR-094's absence rule withholds only sentences whose
+  topic the gap queue LOCATED.
 - The 9M latest-period and DOCUMENT_NOT_PARSED checks are proven in tests only; the
   stored payloads predate ADR-093/094.

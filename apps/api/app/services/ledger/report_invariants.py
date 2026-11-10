@@ -97,6 +97,8 @@ RULE_ABSENCE_CONTRADICTED = "absence_stated_while_found"
 RULE_CONFLICT_COUNT = "conflict_count_differs_from_ledger"
 #: ADR-095 — a report search count that is not the one search-status producer's.
 RULE_SEARCH_COUNT = "search_count_differs_from_search_status"
+#: ADR-095 review — "the red team disputed …" while no Red Team challenge is unresolved.
+RULE_UNBACKED_CHALLENGE = "red_team_dispute_narrated_with_none_unresolved"
 
 RULES: tuple[str, ...] = (
     RULE_FINDING_COUNT,
@@ -124,6 +126,7 @@ RULES: tuple[str, ...] = (
     RULE_ABSENCE_CONTRADICTED,
     RULE_CONFLICT_COUNT,
     RULE_SEARCH_COUNT,
+    RULE_UNBACKED_CHALLENGE,
 )
 
 #: Where a text sits. The chair is checked for everything; other texts are checked for
@@ -558,16 +561,17 @@ _EVIDENCE_ADEQUATE_RE = re.compile(
     re.I,
 )
 
-#: A disagreement the LEDGER would record (QA review B2): "unresolved disagreement",
-#: "the red team disputed …", a disagreement id. A sentence about the WORLD disagreeing
+#: A disagreement the LEDGER would record (QA review B2): "unresolved disagreement", a
+#: disagreement id. A sentence about the WORLD disagreeing
 #: — "conflicting data on FY2026 operating profit", "analysts disagree", "guidance
 #: contradicts the consensus" — is a claim about the company, not about the research.
 #: Challenge wording is NOT a disagreement: the ledger records Red Team challenges
 #: separately (CFR: 5 challenges, 0 disagreements — "the red team challenged five
-#: findings" is true there). QA re-review X1.
+#: findings" is true there). QA re-review X1. ADR-095 review: "the red team disputed /
+#: contested …" narrates a CHALLENGE, held to the unresolved challenges
+#: (``_RED_TEAM_DISPUTE_RE``), never to the conflicts between findings.
 _LEDGER_DISAGREEMENT_RE = re.compile(
     r"\b(?:unresolved\s+(?:disagreements?|disputes?)"
-    r"|red[- ]team\s+(?:disputed|disputes|contested|contests)"
     r"|disagreement\s+(?:id\s+)?[0-9a-f]{8}\b"
     # ADR-095 (HON4, CFR2) — the same claim about the research in other words, explicit
     # forms only: the conflict word must be "unresolved" AND sit in the evidence /
@@ -581,6 +585,8 @@ _LEDGER_DISAGREEMENT_RE = re.compile(
     r"|disagreements?[ \t]{1,3}(?:between|among)[ \t]{1,3}(?:the[ \t]{1,3})?findings\b)",
     re.I,
 )
+_RED_TEAM_DISPUTE_RE = re.compile(
+    r"\bred[- \t]team[ \t]{1,3}(?:disputed|disputes|contested|contests)\b", re.I)
 _NEGATED_DISAGREEMENT_RE = re.compile(
     r"\b(?:no|without|nor|0|zero|none)\s+(?:\w+\s+){0,2}(?:disagreements?|disputes?"
     r"|challenges?|conflicts?|conflicting|contradictory|inconsistenc(?:y|ies)"
@@ -993,7 +999,13 @@ def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit
                         "it cites a disagreement id the research ledger does not hold")
     unresolved = _g(state, "disagreements", "unresolved")
     total = _g(state, "disagreements", "total")
-    if unresolved != 0 or (total not in (0, None)):
+    finding_conflicts = _g(state, "conflicts", "finding_count")
+    if isinstance(finding_conflicts, int):
+        # ADR-095 review — a conflict between findings backs any such sentence; a
+        # statement-line conflict backs only one about ITS line (``slot_backs``).
+        if finding_conflicts > 0:
+            return None
+    elif unresolved != 0 or (total not in (0, None)):
         return None
     if _NEGATED_DISAGREEMENT_RE.search(sentence):
         return None
@@ -1001,8 +1013,69 @@ def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit
     # findings / sources (the ADR-091 conservative forms) is unbacked too.
     if _LEDGER_DISAGREEMENT_RE.search(sentence) is None and not _narrates_conflict(sentence):
         return None
+    if slot_backs(sentence, state):
+        return None
     return _Hit(RULE_UNBACKED_DISAGREEMENT,
-                "it narrates a research disagreement, while the ledger records none")
+                "it narrates a research disagreement, while the ledger records none for "
+                "what it names")
+
+
+#: ADR-095 review — the research field a statement line is (the vocabulary
+#: ``research_fields.fields_mentioned`` reads a sentence with). A line not listed backs
+#: nothing: missing beats wrong.
+_SLOT_FIELDS = {
+    "revenue": "metric:revenue",
+    "cash_and_equivalents": "metric:cash",
+    "cash": "metric:cash",
+    "net_cash": "metric:net_debt",
+    "net_debt": "metric:net_debt",
+    "operating_cash_flow": "metric:operating_cash_flow",
+    "capex": "metric:capex",
+    "capital_expenditure": "metric:capex",
+}
+#: "conflicting findings", "between findings": the sentence says FINDINGS conflict, and a
+#: statement-line conflict is between the issuer's documents.
+_FINDINGS_CONFLICT_RE = re.compile(r"\bfindings?\b", re.IGNORECASE)
+
+
+def slot_backs(sentence: str, state: Mapping[str, Any]) -> bool:
+    """ADR-095 review — a sentence narrating a conflict is backed by the statement-line
+    conflicts only when it names no finding as a party, every research field it names is
+    a conflicted line, and a period it names is that line's period."""
+    from app.services import research_fields as rf
+
+    text = sentence[:MAX_SENTENCE_CHARS]
+    if _FINDINGS_CONFLICT_RE.search(text):
+        return False
+    items = _g(state, "conflicts", "items")
+    lines: dict[str, set[str | None]] = {}
+    for item in items if isinstance(items, list) else ():
+        if not isinstance(item, Mapping) or item.get("source") != "statement_slot":
+            continue
+        key = _SLOT_FIELDS.get(str(item.get("metric") or ""))
+        if key:
+            lines.setdefault(key, set()).add(rf.normalise_period(item.get("period")) or None)
+    named = set(rf.fields_mentioned(text))
+    if not lines or not named or not named <= set(lines):
+        return False
+    wanted = rf.normalise_period(rf.requested_period(text))
+    return not wanted or all(wanted in lines[k] for k in named)
+
+
+def _rule_unbacked_challenge(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """ADR-095 review — "the red team disputed …" is backed by an UNRESOLVED Red Team
+    challenge (``canonical_state.challenges``), not by a conflict between findings. With
+    the count unknown nothing is said."""
+    if _RED_TEAM_DISPUTE_RE.search(sentence[:MAX_SENTENCE_CHARS]) is None:
+        return None
+    unresolved = _g(state, "challenges", "unresolved")
+    if not isinstance(unresolved, int) or unresolved > 0:
+        return None
+    if _NEGATED_DISAGREEMENT_RE.search(sentence):
+        return None
+    return _Hit(RULE_UNBACKED_CHALLENGE,
+                "it says the Red Team disputed a finding, while no Red Team challenge "
+                "is unresolved")
 
 
 def _rule_conflict_count(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
@@ -1210,6 +1283,7 @@ _CHAIR_RULES = (
     *_RECORD_RULES,
     _rule_conflict_count,
     _rule_unbacked_disagreement,
+    _rule_unbacked_challenge,
     _rule_absence_located,
 )
 #: ADR-095 — editor-written professional prose (with or without citations): the record
@@ -1218,6 +1292,7 @@ _PROSE_RULES = (
     *_RECORD_RULES,
     _rule_conflict_count,
     _rule_unbacked_disagreement,
+    _rule_unbacked_challenge,
 )
 
 
@@ -1509,7 +1584,7 @@ def _structured(enforcer: _Enforcer, v3: dict[str, Any], legacy: dict[str, Any] 
 
     chair = v3.get("chair")
     known = _g(state, "disagreements", "unresolved_ids")
-    if known is None and _g(state, "conflicts", "count") == 0:
+    if known is None and _g(state, "conflicts", "finding_count") == 0:
         # ADR-095 — no conflict was computed between the run's findings, so no chair id
         # names one (a replay of a report whose ledger recorded phantom pairs).
         known = []
@@ -1620,7 +1695,9 @@ def _status_lines(enforcer: _Enforcer, v3: Mapping[str, Any]) -> None:
 def _search_lines(enforcer: _Enforcer, v3: Mapping[str, Any]) -> None:
     """ADR-095 — the professional report's "N searches ran" is the web stage's EXECUTED
     count in the one search-status block (``canonical_state.searches``). A stated count
-    that differs is recorded as repaired; the page reads the block."""
+    that differs is repaired IN THE PAYLOAD (ADR-095 review: every reader of the stored
+    report sees the same count, not only the page), and so is the "(N of M searches
+    ran)" label beside it."""
     stage = _g(enforcer.state, "searches", "web_stage_total")
     if not isinstance(stage, Mapping):
         return
@@ -1629,19 +1706,34 @@ def _search_lines(enforcer: _Enforcer, v3: Mapping[str, Any]) -> None:
         return
     for i, section in enumerate(report.get("sections") or ()):
         web = section.get("web_research") if isinstance(section, Mapping) else None
-        if not isinstance(web, Mapping):
+        if not isinstance(web, dict):
             continue
+        repaired = False
         for key, truth in (("searches_run", stage.get("executed")),
-                           ("searches_planned", stage.get("planned"))):
+                           ("searches_planned", stage.get("planned")),
+                           ("searches_succeeded", stage.get("succeeded")),
+                           ("searches_failed", stage.get("failed"))):
             said = web.get(key)
-            if isinstance(said, int) and isinstance(truth, int) and said != truth:
-                enforcer.violations.append(Violation(
-                    RULE_SEARCH_COUNT,
-                    f"professional_research.sections[{i}].web_research.{key}",
-                    str(said), "repaired",
-                    f"the web stage's {key.replace('searches_', '')} searches are "
-                    f"{truth} in the run's search status", str(truth),
-                ))
+            if not isinstance(truth, int) or not isinstance(said, int) or said == truth:
+                continue
+            enforcer.violations.append(Violation(
+                RULE_SEARCH_COUNT,
+                f"professional_research.sections[{i}].web_research.{key}",
+                str(said), "repaired",
+                f"the web stage's {key.replace('searches_', '')} searches are "
+                f"{truth} in the run's search status", str(truth),
+            ))
+            web[key] = truth
+            repaired = True
+        label = web.get("label")
+        if repaired and isinstance(label, str):
+            web["label"] = _SEARCHES_RAN_RE.sub(
+                f"({stage.get('executed')} of {stage.get('planned')} searches ran)",
+                label[:MAX_SENTENCE_CHARS], count=1)
+
+
+#: ADR-095 review — the web stage's "(N of M searches ran)" label words.
+_SEARCHES_RAN_RE = re.compile(r"\(\d{1,6}[ \t]of[ \t]\d{1,6}[ \t]searches[ \t]ran\)")
 
 
 def enforce(

@@ -1895,7 +1895,17 @@ reader takes its counts and status lines from it.
   results), conflicts, searches, the latest period (now reading `-9M` keys), evidence
   status (incomplete with `DOCUMENT_NOT_PARSED` gaps) and the chair's verdict.
   `ledger_invariants.impossible_combinations` records what the report still states that
-  cannot be true together with it (`state_invariants.impossible_combinations`).
+  cannot be true together with it (`state_invariants.impossible_combinations`), and the
+  pipeline logs its count and codes (`v3_impossible_combinations`), never its text.
+- **Review follow-ups.** A reported-value conflict needs Group scope on both sides, a
+  stating clause naming no adjusted / organic / pro forma / segment / product / region
+  measure, and only a period, a Group qualifier or the issuer's name before the metric.
+  Statement lines the issuer's documents state differently are in the same conflict
+  list (`statement_slot`) and are listed to the Chair; they back a narrated conflict only
+  about their own line and period. "The red team disputed …" is held to the unresolved
+  Red Team challenges, which the research panel lists with their text. Contradicted
+  absences that deny a whole field's disclosure while another finding states its Group
+  amount are told to the Chair; a false denial of a sub-item is not caught.
 
 ## Status lines, scope, applicability and fiscal calendars (ADR-091)
 

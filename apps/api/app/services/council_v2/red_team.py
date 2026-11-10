@@ -177,6 +177,9 @@ class ChallengeRoundResult:
     confidence_lowered: int = 0
     disagreements_created: int = 0
     skipped_unchallengeable: list[tuple[str, str]] = field(default_factory=list)
+    #: ADR-095 review — each unresolved challenge as the reader sees it: the finding it
+    #: objects to, its weakness class and its text (the Red Team's words, clipped).
+    unresolved_items: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def all_resolved(self) -> bool:
@@ -191,6 +194,7 @@ class ChallengeRoundResult:
             "withdrawn_findings": self.withdrawn_findings,
             "confidence_lowered": self.confidence_lowered,
             "disagreements_created": self.disagreements_created,
+            "unresolved_items": [dict(i) for i in self.unresolved_items],
             "skipped_unchallengeable": [
                 {"finding_id": fid, "reason": reason}
                 for fid, reason in self.skipped_unchallengeable
@@ -326,6 +330,12 @@ async def run_challenge_round(
             # (``CouncilInput.unresolved_challenges``); conflicts between findings come
             # only from the deterministic list (``gap_reconciliation``).
             result.unresolved += 1
+            result.unresolved_items.append({
+                "challenge_id": str(record.id),
+                "finding_id": str(challenge.finding_id),
+                "weakness_class": str(challenge.weakness_class),
+                "text": record.challenge_text[:400],
+            })
         if response is not None and outcome != ledger.UNRESOLVED:
             record.responded_at = _utcnow()
         await session.flush()

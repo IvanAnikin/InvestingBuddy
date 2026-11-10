@@ -3765,6 +3765,22 @@ Additive keys under `source_summary_json.v3_research`:
   `search_count_differs_from_search_status` (repaired where the page reads it).
 - `challenges.disagreements_created` is always 0 for new runs: an unresolved Red Team
   challenge is no longer recorded as a disagreement.
+- Review follow-ups (same ADR):
+  - `challenges.unresolved_items[*]` `{challenge_id, finding_id, weakness_class, text}`
+    and `canonical_state.challenges` `{unresolved, ids, items}`.
+  - `canonical_state.conflicts` gains `finding_count` and `statement_slot_count`;
+    `count` is their sum, and `items` may hold `{source: "statement_slot", metric,
+    period, values[{value, scale, currency, document_title, document_date}]}`. Finding
+    conflicts carry `source: "findings"`. `ids` covers finding conflicts only.
+  - `gap_reconciliation.absences_contradicted_precise` — the contradicted absences the
+    Chair is told about.
+  - `canonical_state.status.web_searches.from_cache`,
+    `professional_research.sections[*].web_research.searches_from_cache`,
+    `web_context.followup.rounds[*].from_cache`, `searches.credits.web_search_calls`.
+  - New rule `red_team_dispute_narrated_with_none_unresolved`; new search-status
+    violation `search_network_calls_exceed_recorded_calls`.
+  - `search_count_differs_from_search_status` now also repairs the stored payload's
+    `searches_*` counts and the "(N of M searches ran)" label.
 
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 

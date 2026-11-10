@@ -200,9 +200,14 @@ export function WebResearchSummary({ web }: { web: WebResearchQuality | null }) 
     ran !== null && web.searchesFailed !== null && web.searchesFailed > 0
       ? `${web.searchesSucceeded ?? 0} returned results · ${web.searchesFailed} failed with a provider error`
       : null;
+  const cached =
+    ran !== null && web.searchesFromCache !== null && web.searchesFromCache > 0
+      ? `${web.searchesFromCache} from cache`
+      : null;
   const stats = [
     ran,
     outcome,
+    cached,
     web.documentsStored !== null
       ? `${web.documentsStored} web document${web.documentsStored === 1 ? "" : "s"} read and stored`
       : null,

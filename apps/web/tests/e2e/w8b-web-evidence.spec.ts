@@ -150,6 +150,7 @@ test.describe("W8b readers", () => {
         "followup_stopped_by",
         "label",
         "searches_failed",
+        "searches_from_cache",
         "searches_planned",
         "searches_run",
         "searches_succeeded",

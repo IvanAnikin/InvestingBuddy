@@ -151,6 +151,7 @@
       "searches_planned": 20,
       "searches_succeeded": 14,
       "searches_failed": 0,
+      "searches_from_cache": 0,
       "documents_stored": 9,
       "source_classes": {
         "aggregator": 1,

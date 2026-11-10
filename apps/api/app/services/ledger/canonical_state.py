@@ -961,6 +961,9 @@ def build_canonical_state(
         # from the ledger. The ONLY source of an "unresolved disagreement" count.
         "conflicts": conflicts,
         "disagreements": _disagreements(tally, conflicts),
+        # ADR-095 review — Red Team objections to ONE finding each that no cited
+        # evidence answered. Backs "the red team disputed …"; never a conflict.
+        "challenges": challenge_state(v3),
         # ADR-095 — the run's searches, every class, from the one producer.
         "searches": searches,
         "documents": {
@@ -1024,17 +1027,95 @@ def conflict_state(v3: Mapping[str, Any]) -> dict[str, Any]:
                  if f is not None]
         source = "payload_findings"
         items = [c.to_dict() for c in deterministic_conflicts(facts)]
+    for item in items:
+        item.setdefault("source", SOURCE_FINDINGS)
     ids = [str(c.get("disagreement_id")).lower() for c in items if c.get("disagreement_id")]
+    slots = statement_slot_conflicts(v3)
     return {
         "source": source,
-        "count": len(items),
-        # Every listed conflict's ledger id, or ``None`` when any is unknown.
+        # ADR-095 review — ONE ledger for conflicts: between findings, and between the
+        # issuer's documents for one statement line (``financial_statements_state``).
+        "count": len(items) + len(slots),
+        "finding_count": len(items),
+        "statement_slot_count": len(slots),
+        # Every listed FINDING conflict's ledger id, or ``None`` when any is unknown. A
+        # statement-line conflict has no ledger row and so no id.
         "ids": ids if len(ids) == len(items) else None,
         "finding_pairs": sorted(
             [str(c.get("finding_a_id")).lower(), str(c.get("finding_b_id")).lower()]
             for c in items
         ),
-        "items": items[:40],
+        "items": [*items[:40], *slots[:MAX_STATEMENT_SLOT_CONFLICTS]],
+    }
+
+
+SOURCE_FINDINGS = "findings"
+SOURCE_STATEMENT_SLOT = "statement_slot"
+MAX_STATEMENT_SLOT_CONFLICTS = 12
+
+
+def statement_slot_conflicts(v3: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """ADR-095 review — a statement line the issuer's documents state differently for the
+    same period and scope (``financial_statements_state.conflicts``: no value is shown
+    for it). Each needs two values at least; the values are listed as the documents state
+    them, never chosen between."""
+    raw = _mapping(v3.get("financial_statements_state")).get("conflicts")
+    out: list[dict[str, Any]] = []
+    for entry in raw if isinstance(raw, list) else ():
+        if not isinstance(entry, Mapping) or not entry.get("field"):
+            continue
+        values = []
+        for value in entry.get("values") or ():
+            if not isinstance(value, Mapping) or value.get("numeric_value") is None:
+                continue
+            values.append({
+                "value": value.get("numeric_value"),
+                "scale": value.get("scale"),
+                "currency": value.get("currency"),
+                "document_title": value.get("document_title"),
+                "document_date": value.get("document_date"),
+            })
+        if len(values) < 2:
+            continue
+        out.append({
+            "source": SOURCE_STATEMENT_SLOT,
+            "metric": str(entry["field"]),
+            "period": entry.get("period"),
+            "values": values[:6],
+        })
+    return out
+
+
+#: Unresolved challenges carried for the reader, and the characters of each text.
+MAX_CHALLENGE_ITEMS = 10
+_CHALLENGE_TEXT_MAX = 400
+
+
+def challenge_state(v3: Mapping[str, Any]) -> dict[str, Any]:
+    """ADR-095 review — the Red Team's UNRESOLVED challenges: the count the round
+    recorded (``None`` when the run recorded no round), the ids, and each challenge's
+    finding, weakness class and text when the run wrote them (``unresolved_items``)."""
+    record = _mapping(v3.get("challenges"))
+    unresolved = record.get("unresolved")
+    raw = record.get("unresolved_items")
+    items: list[dict[str, Any]] = []
+    for entry in raw if isinstance(raw, list) else ():
+        if not isinstance(entry, Mapping) or not entry.get("finding_id"):
+            continue
+        items.append({
+            "challenge_id": str(entry.get("challenge_id") or "") or None,
+            "finding_id": str(entry["finding_id"]).lower(),
+            "weakness_class": str(entry.get("weakness_class") or "") or None,
+            "text": str(entry.get("text") or "")[:_CHALLENGE_TEXT_MAX],
+        })
+    ids = [i["challenge_id"] for i in items if i["challenge_id"]]
+    count = unresolved if isinstance(unresolved, int) and not isinstance(unresolved, bool) \
+        else None
+    return {
+        "unresolved": count,
+        # Every unresolved challenge's id, or ``None`` when the run did not list them.
+        "ids": ids if count is not None and len(ids) == count else None,
+        "items": items[:MAX_CHALLENGE_ITEMS],
     }
 
 

@@ -304,6 +304,8 @@ def _web_stage_searches(
         "searches_planned": stage["planned"],
         "searches_succeeded": stage["succeeded"],
         "searches_failed": stage["failed"],
+        # ADR-095 review — of the succeeded, served from the same-day cache.
+        "searches_from_cache": stage["from_cache"],
     }
 
 
