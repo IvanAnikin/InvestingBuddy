@@ -682,6 +682,10 @@ const FIELD_GROUPS: { key: string; label: string; fields: string[] }[] = [
       "total_liabilities",
       "borrowings",
       "issued_capital",
+      "short_term_deposits",
+      "short_term_investments",
+      "restricted_cash",
+      "current_financial_assets",
     ],
   },
 ];

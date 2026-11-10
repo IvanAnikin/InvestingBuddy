@@ -899,11 +899,11 @@ def _requires_full_reextraction(
         garbled, not just under-interpreted; re-deriving facts from that
         same stale text under current-code semantics would silently keep
         serving the old, potentially-mislabeled values.
-      * (ADR-085 review) an SEC Archives filing stamped before
-        ``INLINE_XBRL_MIN_PIPELINE_VERSION`` whose active facts include no tagged
-        (inline-XBRL) fact: its tags live only in the bytes, so an excerpts-only
-        replay would restamp it current without ever reading them — and the bridge
-        would then never re-read it either.
+      * (ADR-085 review; ADR-096) an SEC Archives filing stamped before
+        ``INLINE_XBRL_MIN_PIPELINE_VERSION``: its tags (or the ones the current concept
+        map added) live only in the bytes, so an excerpts-only replay would restamp it
+        current without ever reading them — and the bridge would then never re-read it
+        either.
     """
     if _has_unreconstructable_table_facts(facts, doc.excerpts_json):
         return True
@@ -917,19 +917,18 @@ def _tags_never_read(doc: ExtractedDocument, facts: "Sequence[ExtractedFact]") -
     from app.services.sources.extraction_pipeline_version import (
         INLINE_XBRL_MIN_PIPELINE_VERSION,
     )
-    from app.services.sources.inline_xbrl_facts import (
-        EXTRACTION_METHOD_INLINE_XBRL,
-        is_sec_archive_url,
-    )
+    from app.services.sources.inline_xbrl_facts import is_sec_archive_url
 
     if (doc.pipeline_version or 0) >= INLINE_XBRL_MIN_PIPELINE_VERSION:
         return False
     if not is_sec_archive_url(getattr(doc, "canonical_url", None)):
         return False
-    return not any(
-        getattr(fact, "extraction_method", None) == EXTRACTION_METHOD_INLINE_XBRL
-        for fact in facts
-    )
+    # No tagged fact: its tags were never read. A tagged fact (ADR-096): its tags were
+    # read under an OLDER concept map, and the concepts the current map added (the
+    # liquidity components) live only in the bytes too. Either way, only a full
+    # re-extraction reads them.
+    del facts
+    return True
 
 
 async def _deactivate_active_facts(session: AsyncSession, document_id: uuid.UUID) -> None:

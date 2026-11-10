@@ -2053,3 +2053,34 @@ statements view (`issuer_financials`):
   - `professional_research` sentences and section leads that cite findings by label
     are now checked as `synthesis`. The legacy red team gets the two hierarchy rules
     only.
+
+## Liquidity, perimeter and implicit subjects (ADR-096)
+
+- `app/services/calculations/liquidity.py` holds `build_liquidity(slots, held_fields=…)`.
+  - Available liquidity = cash + short-term deposits + short-term investments, each for
+    the cash's date, currency and Group scope, and each cited.
+  - Restricted cash is shown and never added. IFRS current financial assets is an
+    aggregate and never summed.
+  - A component held for another date (or an unexplained aggregate) gives
+    `cash_only_incomplete`.
+  - `issuer_financials._derived_runway` runs the runway over available liquidity, or
+    labels it "cash only, excludes …".
+- `app/services/ledger/perimeter.py` holds `apply_perimeter_guard(v3, as_of=…,
+  basis_changes=…)`.
+  - It runs after period supersession.
+  - Trigger: a completed, dated spin-off / separation / demerger / discontinued
+    operations stated by an issuer-only finding, or an SEC `perimeter_recast`.
+  - Labels debt, cash, equity and backlog levels from before the change "[before the
+    <date> separation]".
+  - Withholds a text comparing levels across it as a change.
+- `app/services/entities/subject_mention.py` holds three rules.
+  - Rule 1: a current-development title must name the subject, other than inside a
+    separately registered namesake's name. Applied by
+    `v3_pipeline._subject_current_developments`.
+  - Rule 2: an `unknown` (ADR-083) statement resting only on open-web prose that neither
+    is the subject's nor names it — in statement, passage or document title — is
+    dropped. Industry and peer domains, filings, statements opening with a named entity,
+    and "the company" statements are exempt.
+  - Rule 3: "<Name>, a separate company …" is that company's.
+  - The investigator (`_implicit_subject_verdict`) counts drops as
+    `statements_subject_unresolved` / `statements_declared_other_company`.

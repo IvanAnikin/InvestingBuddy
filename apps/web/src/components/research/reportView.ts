@@ -110,6 +110,11 @@ export const FINANCIAL_FIELDS: { key: string; label: string }[] = [
   { key: "total_liabilities", label: "Total liabilities" },
   { key: "borrowings", label: "Borrowings" },
   { key: "issued_capital", label: "Issued capital" },
+  // ADR-096 — liquidity components beside cash, each the issuer's own tagged line.
+  { key: "short_term_deposits", label: "Short-term deposits" },
+  { key: "short_term_investments", label: "Short-term investments" },
+  { key: "restricted_cash", label: "Restricted cash" },
+  { key: "current_financial_assets", label: "Current financial assets" },
 ];
 
 /** Regulator/aggregator statement slots, present on SEC-registered issuers. */

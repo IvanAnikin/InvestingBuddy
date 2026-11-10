@@ -487,6 +487,10 @@ class TestDiagnosticsCarryNoSensitiveContent:
             # statements scoped to a subsidiary / JV / mine heading. Counts.
             "statements_about_implicit_other_entity",
             "statements_scoped_to_entity",
+            # ADR-096 — an implicit subject on a page that is not the subject's and
+            # never names it, and an opening entity the writer calls another company.
+            "statements_subject_unresolved",
+            "statements_declared_other_company",
             # QA closure (ADR-088) — statements whose period had not ended: relabelled
             # forward, or withheld. Counts.
             "statements_reclassified_period_not_ended",
