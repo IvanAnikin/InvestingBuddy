@@ -217,7 +217,7 @@ class TestRedTeamNarration:
         assert "readUnresolvedChallenges(v.challenges)" in reader
 
 
-# ── Item 4: statement-line conflicts sit in the one ledger ───────────────────── #
+# ── Item 4 / re-review N1: statement-line conflicts, cleaned, backing only ───── #
 
 
 HON_LIKE_SLOT = {"conflicts": [{
@@ -232,31 +232,59 @@ HON_LIKE_SLOT = {"conflicts": [{
 }]}
 
 
+def _slot(field: str, period: str, *values: tuple[float, str, str]) -> dict[str, Any]:
+    return {"conflicts": [{"field": field, "period": period, "values": [
+        {"numeric_value": v, "scale": scale, "currency": cur} for v, scale, cur in values]}]}
+
+
 class TestStatementSlotConflicts:
-    def _v3(self) -> dict[str, Any]:
-        return {"financial_statements_state": HON_LIKE_SLOT,
+    def _v3(self, slot: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {"financial_statements_state": slot or HON_LIKE_SLOT,
                 "gap_reconciliation": {"conflicts": []},
                 "findings": [{"finding_id": "a", "statement": "x"}]}
 
-    def test_they_are_counted_with_their_source(self) -> None:
+    def test_they_are_visible_but_not_an_unresolved_disagreement(self) -> None:
         state = conflict_state(self._v3())
-        assert state["count"] == 1
+        assert state["count"] == 0
         assert state["finding_count"] == 0
         assert state["statement_slot_count"] == 1
         assert state["ids"] == []
-        assert state["items"][0]["source"] == "statement_slot"
+        assert state["items"] == []
+        assert state["statement_slots"][0]["distinct_amounts"] == [12273e6, 12487e6]
+        full = build_canonical_state(self._v3(), as_of=AS_OF)
+        assert full["disagreements"]["unresolved"] == 0
 
-    def test_one_value_is_no_conflict(self) -> None:
-        one = {"conflicts": [{**HON_LIKE_SLOT["conflicts"][0],
-                              "values": HON_LIKE_SLOT["conflicts"][0]["values"][:1]}]}
-        assert statement_slot_conflicts({"financial_statements_state": one}) == []
+    @pytest.mark.parametrize("slot", [
+        # The stored phantoms (re-review N1), in their own shapes.
+        _slot("net_cash", "2026", (8496.0, "billion", "EUR"), (8496.0, "million", "EUR")),
+        _slot("net_income", "2025", (3484.0, "million", "EUR"), (2750.0, "billion", "EUR")),
+        _slot("operating_cash_flow", "2026", (4880.0, "million", "EUR"),
+              (4880.0, "billion", "EUR")),
+        _slot("operating_profit", "2026", (4.5, "billion", "EUR"), (4492.0, "million", "EUR"),
+              (107.0, "million", "EUR"), (5.0, "billion", "EUR")),
+        _slot("revenue", "2025-Q3", (9437.0, "million", "USD"), (4929.0, "million", "USD")),
+        _slot("revenue", "2026", (4.52, "billion", "USD"), (1064.0, "million", "USD"),
+              (19.8, "billion", "USD")),
+        # Agree after rounding; two currencies; one value.
+        _slot("operating_profit", "2026", (4.5, "billion", "EUR"), (4492.0, "million", "EUR")),
+        _slot("revenue", "2025", (10.0, "billion", "EUR"), (10.5, "billion", "USD")),
+        _slot("cash", "2025", (12487.0, "million", "USD")),
+    ])
+    def test_a_phantom_is_cleaned_away(self, slot: dict[str, Any]) -> None:
+        assert statement_slot_conflicts({"financial_statements_state": slot}) == []
 
-    def test_they_back_a_narrated_conflict(self) -> None:
+    @pytest.mark.parametrize("sentence", [
+        "The issuer filings disagree on FY2025 cash: the 10-K states USD 12,487m and the "
+        "Q3 10-Q comparative USD 12,273m.",
+        "There is a discrepancy between the filings on FY2025 cash (12,487 vs 12,273).",
+        "There are unresolved conflicts in the evidence regarding cash and cash "
+        "equivalents.",
+    ])
+    def test_they_back_a_sentence_about_their_own_line(self, sentence: str) -> None:
         state = build_canonical_state(self._v3(), as_of=AS_OF)
-        assert ri.check_sentence(
-            "There are unresolved conflicts in the evidence regarding cash and cash equivalents.", state,
-            site=ri.SITE_CHAIR) is None
-        assert li.impossible_combinations(self._v3(), state) == []
+        assert ri.check_sentence(sentence, state, site=ri.SITE_CHAIR) is None
+        v3 = {**self._v3(), "chair": {"synthesis": sentence, "key_points": []}}
+        assert li.impossible_combinations(v3, state) == []
 
     @pytest.mark.parametrize("sentence", [
         # Replay (HON4, CFR2): a line the slot conflicts do not cover, or findings named
@@ -265,14 +293,17 @@ class TestStatementSlotConflicts:
         "expenditure, operating cash flow, and revenue data.",
         "However, unresolved disagreements exist regarding the net debt status due to "
         "conflicting findings.",
-        "There are unresolved conflicts in the evidence regarding Q3 2026 cash and cash equivalents.",
+        "There are unresolved conflicts in the evidence regarding Q3 2026 cash and cash "
+        "equivalents.",
+        "The issuer filings disagree on FY2025 net cash.",
+        "The issuer filings disagree on FY2025 operating cash flow.",
     ])
     def test_a_sentence_about_another_line_is_not_backed(self, sentence: str) -> None:
         state = build_canonical_state(self._v3(), as_of=AS_OF)
         hit = ri.check_sentence(sentence, state, site=ri.SITE_CHAIR)
         assert hit is not None and hit.rule == ri.RULE_UNBACKED_DISAGREEMENT
 
-    def test_the_chair_is_told(self) -> None:
+    def test_the_chair_is_not_told_to_narrate_them(self) -> None:
         council = CouncilInput(research_run_id=uuid.uuid4(), convened=True)
         v3_pipeline._attach_chair_conflicts(council, SimpleNamespace(  # noqa: SLF001
             financial_statements=HON_LIKE_SLOT,
@@ -280,10 +311,35 @@ class TestStatementSlotConflicts:
                 {"finding_a_id": "a", "finding_b_id": "b", "field": "metric:revenue",
                  "reason": "absence_contradicted"}]}))
         prompt = LLMChair()._prompt(council)  # noqa: SLF001
-        assert "STATEMENT-LINE CONFLICTS" in prompt
-        assert "12273.0" in prompt and "12487.0" in prompt
+        assert "STATEMENT-LINE CONFLICTS" not in prompt
+        assert "12273" not in prompt
+        assert "UNRESOLVED DISAGREEMENTS: none computed between findings." in prompt
         assert "FINDINGS DENIED BY ANOTHER FINDING" in prompt
         assert "metric:revenue: a denies; b states it" in prompt
+
+
+# ── Re-review N2: an annual key is never set against a part-year or prior year ── #
+
+
+class TestAnnualKeyDurations:
+    @pytest.mark.parametrize("statement", [
+        "Q4 revenue was USD 8,700m.",
+        "Quarterly revenue was USD 8,700m in FY2025.",
+        "Revenue was USD 16,000m in the first half of FY2025.",
+        "H1 revenue was USD 16,000m.",
+        "Revenue was USD 31,800m in the prior year.",
+        "Revenue was USD 31,800m in the previous fiscal year.",
+        "Revenue was USD 31,800m a year earlier.",
+        "Nine-month revenue was USD 24,000m.",
+    ])
+    def test_another_duration_is_no_conflict(self, statement: str) -> None:
+        base = _f(1, "FY2025 revenue was USD 33,172m.")
+        assert gr.deterministic_conflicts([base, _f(2, statement)]) == []
+
+    def test_the_same_year_still_conflicts(self) -> None:
+        base = _f(1, "FY2025 revenue was USD 33,172m.")
+        found = gr.deterministic_conflicts([base, _f(2, "FY2025 revenue was USD 31,800m.")])
+        assert len(found) == 1
 
 
 # ── Item 7: credits, and follow-up cache serves ──────────────────────────────── #

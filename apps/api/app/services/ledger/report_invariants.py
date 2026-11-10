@@ -1020,18 +1020,46 @@ def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit
                 "what it names")
 
 
-#: ADR-095 review — the research field a statement line is (the vocabulary
-#: ``research_fields.fields_mentioned`` reads a sentence with). A line not listed backs
-#: nothing: missing beats wrong.
-_SLOT_FIELDS = {
-    "revenue": "metric:revenue",
-    "cash_and_equivalents": "metric:cash",
-    "cash": "metric:cash",
-    "net_cash": "metric:net_debt",
-    "net_debt": "metric:net_debt",
-    "operating_cash_flow": "metric:operating_cash_flow",
-    "capex": "metric:capex",
-    "capital_expenditure": "metric:capex",
+#: ADR-095 re-review N1 — a statement line by the words a sentence names it with.
+#: Bounded alternations. A line not listed backs nothing: missing beats wrong.
+_LINE_CASH = "cash"
+_LINE_NET_CASH = "net_cash"
+_SLOT_LINES = {
+    "cash_and_equivalents": _LINE_CASH,
+    "cash": _LINE_CASH,
+    "net_cash": _LINE_NET_CASH,
+    "net_debt": "net_debt",
+    "operating_profit": "operating_profit",
+    "net_income": "net_income",
+    "revenue": "revenue",
+    "total_debt": "total_debt",
+    "operating_cash_flow": "operating_cash_flow",
+}
+_LINE_WORDS: dict[str, re.Pattern[str]] = {
+    # "cash", "cash and cash equivalents" — not "net cash", "cash flow", "cash burn".
+    _LINE_CASH: re.compile(
+        r"(?<!net[ \t])\bcash\b(?![ \t]{1,3}(?:flows?|burn|runway|generation|"
+        r"position|returns?)\b)", re.IGNORECASE),
+    _LINE_NET_CASH: re.compile(r"\bnet[ \t]{1,3}cash\b(?![ \t]{1,3}flows?\b)",
+                               re.IGNORECASE),
+    "net_debt": re.compile(r"\bnet[ \t]{1,3}debt\b", re.IGNORECASE),
+    "operating_profit": re.compile(r"\boperating[ \t]{1,3}(?:profit|income|result)\b",
+                                   re.IGNORECASE),
+    "net_income": re.compile(r"\bnet[ \t]{1,3}(?:income|profit|earnings)\b",
+                             re.IGNORECASE),
+    "revenue": re.compile(r"\b(?:revenues?|net[ \t]{1,3}sales|turnover)\b", re.IGNORECASE),
+    "total_debt": re.compile(r"\btotal[ \t]{1,3}(?:debt|borrowings)\b", re.IGNORECASE),
+    "operating_cash_flow": re.compile(
+        r"\b(?:operating[ \t]{1,3}cash[ \t]{1,3}flows?|cash[ \t]{1,3}flows?[ \t]{1,3}"
+        r"from[ \t]{1,3}operations)\b", re.IGNORECASE),
+}
+#: The research fields a line covers: a sentence naming another research field
+#: (capex, runway …) is about more than the conflicted lines.
+_FIELD_LINES = {
+    "metric:revenue": {"revenue"},
+    "metric:cash": {_LINE_CASH, _LINE_NET_CASH},
+    "metric:net_debt": {"net_debt", _LINE_NET_CASH, "total_debt"},
+    "metric:operating_cash_flow": {"operating_cash_flow"},
 }
 #: "conflicting findings", "between findings": the sentence says FINDINGS conflict, and a
 #: statement-line conflict is between the issuer's documents.
@@ -1039,27 +1067,33 @@ _FINDINGS_CONFLICT_RE = re.compile(r"\bfindings?\b", re.IGNORECASE)
 
 
 def slot_backs(sentence: str, state: Mapping[str, Any]) -> bool:
-    """ADR-095 review — a sentence narrating a conflict is backed by the statement-line
-    conflicts only when it names no finding as a party, every research field it names is
-    a conflicted line, and a period it names is that line's period."""
+    """ADR-095 — a sentence narrating a conflict is backed by the (cleaned) statement-line
+    conflicts only when it names no finding as a party, names at least one statement
+    line, every line it names is conflicted, every research field it names is covered by
+    those lines, and a period it names is the conflicted line's period."""
     from app.services import research_fields as rf
 
     text = sentence[:MAX_SENTENCE_CHARS]
     if _FINDINGS_CONFLICT_RE.search(text):
         return False
-    items = _g(state, "conflicts", "items")
+    slots = _g(state, "conflicts", "statement_slots")
     lines: dict[str, set[str | None]] = {}
-    for item in items if isinstance(items, list) else ():
-        if not isinstance(item, Mapping) or item.get("source") != "statement_slot":
+    for item in slots if isinstance(slots, list) else ():
+        if not isinstance(item, Mapping):
             continue
-        key = _SLOT_FIELDS.get(str(item.get("metric") or ""))
-        if key:
-            lines.setdefault(key, set()).add(rf.normalise_period(item.get("period")) or None)
-    named = set(rf.fields_mentioned(text))
-    if not lines or not named or not named <= set(lines):
+        line = _SLOT_LINES.get(str(item.get("metric") or ""))
+        if line:
+            lines.setdefault(line, set()).add(rf.normalise_period(item.get("period")) or None)
+    if not lines:
         return False
+    named = {line for line, words in _LINE_WORDS.items() if words.search(text)}
+    if not named or not named <= set(lines):
+        return False
+    for key in rf.fields_mentioned(text):
+        if not (_FIELD_LINES.get(key, set()) & named):
+            return False
     wanted = rf.normalise_period(rf.requested_period(text))
-    return not wanted or all(wanted in lines[k] for k in named)
+    return not wanted or all(wanted in lines[line] for line in named)
 
 
 def _rule_unbacked_challenge(sentence: str, state: Mapping[str, Any]) -> _Hit | None:

@@ -1132,7 +1132,22 @@ def _period_compatible(finding: FindingFacts, period: str) -> bool:
         return False
     if is_ytd and _QUARTER_WORDS_RE.search(text):
         return False
+    # ADR-095 re-review N2 — an annual key over a statement that names a quarter, a part
+    # of the year or the prior year is a figure of another duration or year.
+    if (not is_quarter and not is_ytd and re.fullmatch(r"(?:FY)?\d{4}", period)
+            and (_QUARTER_WORDS_RE.search(text) or _YTD_WORDS_RE.search(text)
+                 or _PART_OR_PRIOR_YEAR_RE.search(text))):
+        return False
     return True
+
+
+#: N2 — "H1", "Q4"-style tokens already sit in the quarter / YTD words; these add the
+#: prior year ("prior year", "a year earlier") and a half named by its letter.
+_PART_OR_PRIOR_YEAR_RE = re.compile(
+    r"\b(?:prior|previous|last|preceding)[ \t]{1,3}(?:fiscal[ \t]{1,3})?year\b"
+    r"|\ba[ \t]{1,3}year[ \t]{1,3}(?:earlier|ago|before)\b|\bH[12]\b",
+    re.IGNORECASE,
+)
 
 
 def _reported_value_conflicts(

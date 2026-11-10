@@ -1900,9 +1900,11 @@ reader takes its counts and status lines from it.
 - **Review follow-ups.** A reported-value conflict needs Group scope on both sides, a
   stating clause naming no adjusted / organic / pro forma / segment / product / region
   measure, and only a period, a Group qualifier or the issuer's name before the metric.
-  Statement lines the issuer's documents state differently are in the same conflict
-  list (`statement_slot`) and are listed to the Chair; they back a narrated conflict only
-  about their own line and period. "The red team disputed …" is held to the unresolved
+  An annual key is never set against a quarter, a part year or the prior year.
+  Statement lines the issuer's documents state differently are cleaned (unit slips,
+  rounding, far-apart measures dropped) and kept visible as `statement_slots`; they are
+  neither counted as unresolved disagreements nor listed to the Chair, and back a
+  narrated conflict only about their own line and period. "The red team disputed …" is held to the unresolved
   Red Team challenges, which the research panel lists with their text. Contradicted
   absences that deny a whole field's disclosure while another finding states its Group
   amount are told to the Chair; a false denial of a sub-item is not caught.

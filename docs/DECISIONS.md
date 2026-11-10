@@ -10365,12 +10365,25 @@ findings did not contain, and 41 impossible combinations of state across the pay
    core, comparable, transaction, subscription, US/U.S./UK/EU …; "US$" and "USD" are
    currencies), and the up-to-three words before the metric may only be a period, a
    Group qualifier or the issuer's name and ticker (`issuer_tokens`).
-4. **One ledger.** `financial_statements_state.conflicts` (two or more values for one
-   statement line) are `conflicts.items` with `source: "statement_slot"`, counted in
-   `conflicts.count` (`finding_count` / `statement_slot_count` beside it) and listed to
-   the Chair as "STATEMENT-LINE CONFLICTS". They back a narrated conflict only when the
-   sentence names no finding as a party, every research field it names is a conflicted
-   line, and a period it names is that line's (`report_invariants.slot_backs`).
+4. **Statement-line conflicts: cleaned, visible, backing only** (re-review N1).
+   `financial_statements_state.conflicts` are cleaned (`statement_slot_conflicts`):
+   value x scale, one currency, amounts that agree within 0.5% or differ by a power of
+   a thousand are one amount, at least two distinct amounts must remain, and they must
+   lie within 25% of each other (further apart is another duration or scope). Of the 12
+   stored slot conflicts, 10 were phantoms (unit slips such as 8,496 "billion" vs
+   8,496m, a quarter vs nine months, a segment's 107m beside the Group's 4.5bn); only
+   HON cash 12,487 vs 12,273 survives (HON3, HON4). The survivors are
+   `conflicts.statement_slots` / `statement_slot_count`: NOT counted in
+   `conflicts.count` or the unresolved disagreements and NOT listed to the Chair. They
+   only back a narrated conflict (`report_invariants.slot_backs`) when the sentence
+   names no finding as a party, names a statement line by its own words (cash, cash
+   and cash equivalents, net cash, net debt, operating profit, net income, revenue,
+   total debt, operating cash flow), every line and research field it names is a
+   conflicted line, and a period it names is that line's.
+5. **An annual key is the whole year** (re-review N2). `_period_compatible` rejects,
+   for an annual key, a statement naming a quarter, a part of the year (half, H1, nine
+   months, year to date) or the prior year ("prior / previous / last year", "a year
+   earlier / ago").
 6. The linearity test pauses the collector and compares a text four times longer
    (bound 12x; quadratic is 16x).
 7. `search_network_calls_exceed_recorded_calls`: stage successes not from cache plus
@@ -10386,8 +10399,8 @@ findings did not contain, and 41 impossible combinations of state across the pay
 
 ### Replay (offline, stored payloads, base vs branch)
 - Impossible combinations 41 → 0 across the 18 reports.
-- Statement-line conflicts now in the one ledger: HON2 1, HON3 3, HON4 2, CFR 4,
-  CFR2 1, CFR3 1 (finding conflicts: 0 in every report).
+- Finding conflicts: 0 in every report. Cleaned statement-line conflicts: HON3 1,
+  HON4 1 (cash 12,487 vs 12,273); 0 elsewhere (12 stored, 10 phantoms dropped).
 - Search line now counts every class: e.g. HON2 2 → 29, LIN2 6 → 28, CLLS5 10 → 45,
   PYPL3 5 → 28; CFR3's web panel "0 of 32 ran" → "41 of 41 ran, 0 returned results,
   41 failed".

@@ -1033,19 +1033,21 @@ def conflict_state(v3: Mapping[str, Any]) -> dict[str, Any]:
     slots = statement_slot_conflicts(v3)
     return {
         "source": source,
-        # ADR-095 review — ONE ledger for conflicts: between findings, and between the
-        # issuer's documents for one statement line (``financial_statements_state``).
-        "count": len(items) + len(slots),
+        # ADR-095 re-review N1 — the count is the conflicts between FINDINGS. A
+        # statement-line conflict is not promoted to an unresolved disagreement (the
+        # stored ones were mostly unit slips, durations and segments); it is kept
+        # visible here and backs only a sentence about its own line (``slot_backs``).
+        "count": len(items),
         "finding_count": len(items),
         "statement_slot_count": len(slots),
-        # Every listed FINDING conflict's ledger id, or ``None`` when any is unknown. A
-        # statement-line conflict has no ledger row and so no id.
+        # Every listed finding conflict's ledger id, or ``None`` when any is unknown.
         "ids": ids if len(ids) == len(items) else None,
         "finding_pairs": sorted(
             [str(c.get("finding_a_id")).lower(), str(c.get("finding_b_id")).lower()]
             for c in items
         ),
-        "items": [*items[:40], *slots[:MAX_STATEMENT_SLOT_CONFLICTS]],
+        "items": items[:40],
+        "statement_slots": slots[:MAX_STATEMENT_SLOT_CONFLICTS],
     }
 
 
@@ -1054,33 +1056,78 @@ SOURCE_STATEMENT_SLOT = "statement_slot"
 MAX_STATEMENT_SLOT_CONFLICTS = 12
 
 
+_SCALES = {None: 1.0, "": 1.0, "unit": 1.0, "units": 1.0, "thousand": 1e3,
+           "thousands": 1e3, "million": 1e6, "millions": 1e6, "billion": 1e9,
+           "billions": 1e9}
+#: Two amounts within this relative difference are one figure rounded two ways
+#: ("EUR 4.5 billion" and "EUR 4,492 million").
+_SLOT_ROUNDING = 0.005
+#: Distinct amounts further apart than this are different measures (a quarter against
+#: nine months, a segment against the Group), never a restatement of one line.
+_SLOT_MAX_SPREAD = 1.25
+
+
+def _same_amount(a: float, b: float) -> bool:
+    low, high = sorted((abs(a), abs(b)))
+    if low <= 0:
+        return low == high
+    for power in (1.0, 1e3, 1e6, 1e9):
+        if abs(high / (low * power) - 1.0) <= _SLOT_ROUNDING:
+            return True
+    return False
+
+
 def statement_slot_conflicts(v3: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """ADR-095 review — a statement line the issuer's documents state differently for the
-    same period and scope (``financial_statements_state.conflicts``: no value is shown
-    for it). Each needs two values at least; the values are listed as the documents state
-    them, never chosen between."""
+    """ADR-095 — a statement line the issuer's documents state differently for the same
+    period and scope (``financial_statements_state.conflicts``), CLEANED (re-review N1):
+    each value times its scale, one currency only, amounts that agree after rounding or
+    differ by a power of a thousand (a unit slip) are one amount, at least two distinct
+    amounts must remain, and they must lie within 25% of each other (further apart is a
+    different duration or scope, not a restatement). The values are listed as the
+    documents state them, never chosen between."""
     raw = _mapping(v3.get("financial_statements_state")).get("conflicts")
     out: list[dict[str, Any]] = []
     for entry in raw if isinstance(raw, list) else ():
         if not isinstance(entry, Mapping) or not entry.get("field"):
             continue
-        values = []
+        values: list[dict[str, Any]] = []
+        amounts: list[float] = []
+        currencies: set[str] = set()
+        usable = True
         for value in entry.get("values") or ():
-            if not isinstance(value, Mapping) or value.get("numeric_value") is None:
+            if not isinstance(value, Mapping):
                 continue
+            number = value.get("numeric_value")
+            scale = str(value.get("scale") or "").strip().lower() or None
+            if (not isinstance(number, (int, float)) or isinstance(number, bool)
+                    or scale not in _SCALES):
+                usable = False
+                break
+            currencies.add(str(value.get("currency") or "").upper())
+            amounts.append(float(number) * _SCALES[scale])
             values.append({
-                "value": value.get("numeric_value"),
+                "value": number,
                 "scale": value.get("scale"),
                 "currency": value.get("currency"),
                 "document_title": value.get("document_title"),
                 "document_date": value.get("document_date"),
             })
-        if len(values) < 2:
+        if not usable or len(currencies) != 1:
+            continue
+        distinct: list[float] = []
+        for amount in amounts:
+            if not any(_same_amount(amount, d) for d in distinct):
+                distinct.append(amount)
+        if len(distinct) < 2:
+            continue
+        low, high = min(abs(d) for d in distinct), max(abs(d) for d in distinct)
+        if low <= 0 or high / low > _SLOT_MAX_SPREAD:
             continue
         out.append({
             "source": SOURCE_STATEMENT_SLOT,
             "metric": str(entry["field"]),
             "period": entry.get("period"),
+            "distinct_amounts": sorted(distinct),
             "values": values[:6],
         })
     return out

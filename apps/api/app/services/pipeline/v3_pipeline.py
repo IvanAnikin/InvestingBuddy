@@ -1383,15 +1383,10 @@ def company_context_notes(applicability: Any, commercial_stage: str | None) -> t
 
 def _attach_chair_conflicts(council: Any, outcome: Any) -> None:
     """ADR-095 review — what the Chair is told beside the ledger's disagreements: the
-    statement lines the issuer's documents state differently, and the findings that deny
-    a whole field another finding states. Never raises; missing is the fail-closed
+    findings that deny a whole field another finding states. Statement-line conflicts are
+    not listed for narration (re-review N1). Never raises; missing is the fail-closed
     direction (the Chair is then told less, never something wrong)."""
     try:
-        from app.services.ledger.canonical_state import statement_slot_conflicts
-
-        council.statement_conflicts = tuple(statement_slot_conflicts(
-            {"financial_statements_state": getattr(outcome, "financial_statements", None)}
-        ))
         record = getattr(outcome, "gap_reconciliation", None)
         precise = record.get("absences_contradicted_precise") if isinstance(
             record, dict) else None
