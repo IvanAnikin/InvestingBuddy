@@ -3756,8 +3756,8 @@ Additive keys under `source_summary_json.v3_research`:
   Labelled findings carry `perimeter: "pre_change"` and `perimeter_label`. Withheld ones
   carry `perimeter_withheld: true`, and their statement is a "[Withheld at report
   assembly: …]" notice.
-- `v3_research.web_context.catalyst_evidence` holds only items whose title names the
-  subject. The rest are in `catalyst_evidence_withheld[]` as `{title, domain, reason:
+- `v3_research.web_context.catalyst_evidence` holds only items that are the verified
+  issuer's own (`origin_key` = `issuer:<company id>`) or whose title names the subject. The rest are in `catalyst_evidence_withheld[]` as `{title, domain, reason:
   title_does_not_name_the_subject | title_about_a_separately_registered_namesake}`. V2
   `news_catalyst_discovery.web_catalyst_evidence` is built from the filtered list.
 - The investigator's diagnostics gain `statements_subject_unresolved` and

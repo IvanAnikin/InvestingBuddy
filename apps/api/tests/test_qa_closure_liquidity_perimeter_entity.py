@@ -391,6 +391,36 @@ class TestCurrentDevelopments:
         names = sm.SubjectNames.of(subject, (ticker,))
         assert (sm.current_development_verdict(title, names) is None) is kept
 
+    def test_the_issuers_own_verified_page_is_the_subjects(self) -> None:
+        # A verified issuer origin (``issuer:<company id>``) is the subject's, whatever
+        # its title says; a press-release CLASS alone, or another issuer's origin, is not.
+        cid = uuid.uuid4()
+        names = sm.SubjectNames.of("Vexgene SA", ("VXG",))
+        items = [
+            {"title": "Q3 2026 business update", "origin_key": f"issuer:{cid}",
+             "source_class": "company_press_release"},
+            {"title": "Q3 2026 business update", "origin_key": f"issuer:{uuid.uuid4()}",
+             "source_class": "company_press_release"},
+            {"title": "Q3 2026 business update", "origin_key": "news.example",
+             "source_class": "company_press_release"},
+        ]
+        kept, withheld = sm.filter_current_developments(items, names, issuer_key=cid)
+        assert [k["origin_key"] for k in kept] == [f"issuer:{cid}"]
+        assert len(withheld) == 2
+        # No issuer key: nothing is the subject's own (fail closed).
+        kept, _ = sm.filter_current_developments(items, names)
+        assert kept == []
+
+    @pytest.mark.parametrize(("subject", "title", "kept"), [
+        ("Amazon.com, Inc.", "Whole Foods opens 40 new stores", True),
+        ("Rio Tinto Group", "Rio Tinto Limited lifts iron ore guidance", True),
+        ("Alphabet Inc.", "Waymo expands to two cities", True),
+        ("Alphabet Inc.", "Whole Foods opens 40 new stores", False),
+    ])
+    def test_a_listed_brand_names_its_parent(self, subject, title, kept) -> None:  # noqa: ANN001
+        names = sm.SubjectNames.of(subject, ())
+        assert (sm.current_development_verdict(title, names) is None) is kept
+
     def test_a_name_in_initials_or_run_together_still_names_the_subject(self) -> None:
         names = sm.SubjectNames.of("NORVANCO CHASE & CO", ("NVC",))
         for title in ("N.V. Norvanco Releases 2027 Capital Market Assumptions",

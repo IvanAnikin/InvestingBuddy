@@ -16,11 +16,13 @@ Eleven items about other companies stood under four subjects:
 
 THE RULES
 =========
-1. A CURRENT-DEVELOPMENT document stands under the subject only when its own title
+1. A CURRENT-DEVELOPMENT document stands under the subject only when the platform
+   verified it as the subject's own (its origin is the run's issuer), or its own title
    names the subject — its ticker (exact case, whole token), a distinctive word of its
-   name, or a brand of it — other than inside the name of a separately registered
-   company that carries the subject's name (``RelatedRegistrant``, ADR-066). Fail
-   closed: a title that names no one is not the subject's.
+   name, or a brand of it (``trust.BRAND_ALIASES``, multi-word slugs included) — other
+   than inside the name of a separately registered company that carries the subject's
+   name (``RelatedRegistrant``, ADR-066). Fail closed: a title that names no one is not
+   the subject's.
 2. A FINDING about the subject's own business (not an industry, peer or market
    question) that rests only on documents that are not the subject's — no cited passage
    owned by the subject (its filing, its verified site, a typed platform record) — is
@@ -104,12 +106,33 @@ def _names_by_ticker(text: str, names: SubjectNames) -> bool:
     )
 
 
+#: A brand slug in ``trust.BRAND_ALIASES`` spans at most this many words ("whole-foods").
+_MAX_BRAND_WORDS = 3
+
+
+def _brand_names_subject(words: Sequence[str], i: int, names: SubjectNames) -> bool:
+    """A brand of the subject starts at ``words[i]``: one of ``trust.BRAND_ALIASES``'
+    slugs (one to three words, hyphen-joined) whose parent is the subject — the parent
+    slug itself, or one of its distinctive words, is a subject alias ("rio-tinto")."""
+    from app.services.web_research.trust import BRAND_ALIASES
+
+    for n in range(1, _MAX_BRAND_WORDS + 1):
+        if i + n > len(words):
+            break
+        parent = BRAND_ALIASES.get("-".join(words[i: i + n]))
+        if not parent:
+            continue
+        if parent in names.aliases or any(
+            len(part) >= 4 and part in names.aliases for part in parent.split("-")
+        ):
+            return True
+    return False
+
+
 def names_subject(text: str | None, names: SubjectNames) -> bool:
     """The text NAMES the subject: its ticker, a distinctive name word or a brand of it
     — never "the company" (that is an implicit subject) — other than only inside a
     separately registered namesake's name ("<Name> Aerospace")."""
-    from app.services.web_research.trust import BRAND_ALIASES
-
     if not text or not names.aliases:
         return False
     if _names_by_ticker(text, names):
@@ -117,7 +140,7 @@ def names_subject(text: str | None, names: SubjectNames) -> bool:
     words = _words(text)
     long_aliases = [a for a in names.aliases if len(a) >= _MIN_JOINED_ALIAS]
     for i, word in enumerate(words):
-        if word in names.aliases or BRAND_ALIASES.get(word) in names.aliases:
+        if word in names.aliases or _brand_names_subject(words, i, names):
             nxt = words[i + 1] if i + 1 < len(words) else ""
             if f"{word} {nxt}" in names.related_phrases:
                 continue  # the namesake's name, not the subject's
@@ -143,10 +166,16 @@ def names_only_related_registrant(text: str | None, names: SubjectNames) -> bool
     )
 
 
-def current_development_verdict(title: str | None, names: SubjectNames) -> str | None:
+def current_development_verdict(
+    title: str | None, names: SubjectNames, *, issuer_origin: bool = False
+) -> str | None:
     """None when a current-development document stands under the subject; else the
-    reason it does not (rule 1). With no name to tell the subject apart, nothing is
-    judged (None)."""
+    reason it does not (rule 1). A document the platform VERIFIED as the subject's own
+    (its origin is the run's issuer: an issuer domain, an issuer press release) is the
+    subject's whatever its title says. With no name to tell the subject apart, nothing
+    is judged (None)."""
+    if issuer_origin:
+        return None
     if not names.aliases and not names.tickers:
         return None
     if names_subject(title, names):
@@ -157,15 +186,23 @@ def current_development_verdict(title: str | None, names: SubjectNames) -> str |
 
 
 def filter_current_developments(
-    items: Sequence[dict], names: SubjectNames
+    items: Sequence[dict], names: SubjectNames, *, issuer_key: object = None
 ) -> tuple[list[dict], list[dict]]:
-    """``(kept, withheld)`` — withheld items carry their title, domain and reason only."""
+    """``(kept, withheld)`` — withheld items carry their title, domain and reason only.
+    ``issuer_key`` is the run's issuer key (its company id): an item whose stored
+    ``origin_key`` is that verified issuer (``trust.is_verified_issuer``) is kept. A
+    source class alone ("company_press_release") never is: it may be another company's."""
+    from app.services.web_research.trust import is_verified_issuer
+
     kept: list[dict] = []
     withheld: list[dict] = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        reason = current_development_verdict(str(item.get("title") or ""), names)
+        own = is_verified_issuer(item.get("origin_key"), issuer_key)
+        reason = current_development_verdict(
+            str(item.get("title") or ""), names, issuer_origin=own
+        )
         if reason is None:
             kept.append(item)
         else:

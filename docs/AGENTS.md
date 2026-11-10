@@ -2074,7 +2074,8 @@ statements view (`issuer_financials`):
     <date> separation]".
   - Withholds a text comparing levels across it as a change.
 - `app/services/entities/subject_mention.py` holds three rules.
-  - Rule 1: a current-development title must name the subject, other than inside a
+  - Rule 1: a current-development item must be the verified issuer's own (its origin)
+    or have a title that names the subject (a listed brand counts), other than inside a
     separately registered namesake's name. Applied by
     `v3_pipeline._subject_current_developments`.
   - Rule 2: an `unknown` (ADR-083) statement resting only on open-web prose that neither

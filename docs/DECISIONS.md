@@ -10100,9 +10100,17 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
      finding's amount at the printed precision. Industry and peer findings are never
      labelled. The record is `v3_research.perimeter`.
 3. **Implicit-subject firewall** (`entities/subject_mention.py`).
-   - Rule 1: a current-development document stays only when its title names the subject
-     (ticker, a distinctive name word, a brand, or the name in initials or run together,
-     such as "J.P. Morgan" or "JPMorganChase"). The name may not appear only inside a
+   - Rule 1: a current-development document stays only when one of these holds:
+     - the platform verified it as the subject's own: its stored `origin_key` is the
+       run's issuer (`trust.is_verified_issuer`, `issuer:<company id>`), such as an
+       issuer domain or the issuer's press release. A `company_press_release` source
+       class alone does not count, because it may be another company's release.
+     - its title names the subject: the ticker, a distinctive name word, the name in
+       initials or run together ("J.P. Morgan", "JPMorganChase"), or a brand in
+       `trust.BRAND_ALIASES`. Multi-word brand slugs ("whole-foods") and hyphenated
+       parents ("rio-tinto") are read too.
+
+     A name inside a title does not count when it appears only inside a
      separately registered namesake's name (ADR-066 `related_registrants`, from the SEC
      directory). Applied in `v3_pipeline._subject_current_developments` right after the
      web stage, so `web_context` and V2 `web_catalyst_evidence` both use the filtered
@@ -10139,6 +10147,10 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
 - **Entity.**
   - Current developments: HON4 3→0, LIN4 3→0, CLLS7 2→0, PYPL5 1→0 of the evaluated
     items.
+  - The issuer-origin and brand-slug additions change nothing on the 18 stored reports
+    (withheld counts are identical): no stored current-development item carries a
+    verified issuer origin, and none of the possibly-correct withholds uses a listed
+    brand. Script: `replay_rule1.py`.
   - CLLS7 F9 (Calyxt) is withheld by rule 3. F48 (Regenxbio) meets rule 2 unless its
     page names Cellectis, which cannot be checked offline.
 
@@ -10155,8 +10167,17 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
   - a level at the first period end after the change is never labelled;
   - flows (FY revenue of the old perimeter) remain V2's `basis_change_note`;
   - stale SIC or playbook after a spin-off (HON4-11) is not addressed.
-- Rule 1 is title-only. A correct item whose title omits the subject's name is withheld,
-  for example "Australian miner snaps up rare earth project", or a brand not in
-  `BRAND_ALIASES` such as Montblanc for Richemont or Honey for PayPal.
+- Rule 1 reads only the title and a verified issuer origin. The platform holds no
+  issuer-listed brand or subsidiary names: `entities.relationships` has no writer, and
+  adding issuer brands to `BRAND_ALIASES` would be issuer-specific data that
+  `independence_key` also reads. So a correct third-party item is withheld when its
+  title omits the subject's name or uses a brand not in the table. Misses on the stored
+  reports, all third-party origins:
+  - LIN3: "Global race for critical minerals … Malawi" (africa.businessinsider.com) and
+    "STRATEGIC PARTNERSHIP WITH CARESTER …" (investingnews.com);
+  - PYPL3: "Honey loses access to 2,000 clients …" (ppc.land; Honey is a PayPal brand);
+  - JPM: "First Republic Bank | FDIC.gov" (fdic.gov);
+  - CFR: "… South Africa's richest man …" (businessinsider) and "Wem gehört Montblanc?"
+    (cupssy.com; Montblanc is a Richemont brand).
 - Rule 2 cannot be replayed exactly on stored payloads, because passages are not
   persisted. Candidates are listed for manual review in the hand-back.

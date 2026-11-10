@@ -2363,6 +2363,7 @@ async def _subject_current_developments(summary: Any, company: Any) -> Any:
         kept, withheld = filter_current_developments(
             list(summary.get("catalyst_evidence") or ()),
             SubjectNames.of(name, (ticker,), phrases),
+            issuer_key=getattr(company, "id", None),
         )
         if not withheld:
             return summary
