@@ -59,6 +59,9 @@ SEARCH_EXECUTED_EXCEEDS_ATTEMPTED = "search_executed_exceeds_attempted"
 SEARCH_ATTEMPTED_EXCEEDS_PLANNED = "search_attempted_exceeds_planned"
 SEARCH_OUTCOMES_DO_NOT_SUM = "search_outcomes_do_not_sum_to_executed"
 SEARCH_SUCCEEDED_WITHOUT_CREDIT = "search_succeeded_with_zero_credits"
+#: ADR-095 review — more network searches (successes not served from cache, plus
+#: provider errors) than the stage's cost record says it made.
+SEARCH_CALLS_EXCEED_SPEND = "search_network_calls_exceed_recorded_calls"
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -112,7 +115,7 @@ def _web_stage(context: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     results = _mapping(context.get("results"))
     seen = results.get("seen")
-    return _counts(
+    return {**_counts(
         planned=_int(queries.get("planned")),
         # The stage counts a cache serve as executed: an answer came back (spec §18).
         succeeded=_int(queries.get("executed")),
@@ -120,7 +123,7 @@ def _web_stage(context: Mapping[str, Any]) -> dict[str, Any] | None:
         not_issued=_int(queries.get("not_issued")),
         from_cache=_int(queries.get("from_cache")),
         results_returned=_int(seen) if isinstance(seen, int) else None,
-    )
+    ), "from_cache_recorded": "from_cache" in queries}
 
 
 def _web_followup(context: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -128,7 +131,7 @@ def _web_followup(context: Mapping[str, Any]) -> dict[str, Any] | None:
     rounds = [r for r in followup.get("rounds") or () if isinstance(r, Mapping)]
     if not followup or not rounds:
         return None
-    planned = succeeded = failed = not_issued = candidates = 0
+    planned = succeeded = failed = not_issued = candidates = cached = 0
     for item in rounds:
         issued = item.get("queries")
         planned += len(issued) if isinstance(issued, list) else 0
@@ -136,8 +139,12 @@ def _web_followup(context: Mapping[str, Any]) -> dict[str, Any] | None:
         failed += _int(item.get("failed"))
         not_issued += _int(item.get("not_issued"))
         candidates += _int(item.get("candidates"))
-    return _counts(planned=planned, succeeded=succeeded, failed=failed,
-                   not_issued=not_issued, results_returned=candidates)
+        # ADR-095 review — recorded since the review; absent on older rounds (0).
+        cached += _int(item.get("from_cache"))
+    return {**_counts(planned=planned, succeeded=succeeded, failed=failed,
+                      not_issued=not_issued, from_cache=cached,
+                      results_returned=candidates),
+            "from_cache_recorded": all("from_cache" in r for r in rounds)}
 
 
 def _investigator_web(consumption: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -226,7 +233,11 @@ def _credits(v3: Mapping[str, Any]) -> dict[str, Any]:
     stage_units = _mapping(consumption.get("web_stage")) or _mapping(context.get("cost_units"))
     unreported = stage_units.get("unreported") or ()
     credits = _num(stage_units.get("tavily_credits"))
+    calls = stage_units.get("web_search_calls")
     return {
+        # The stage's (and its follow-up rounds') paid network calls, failures included.
+        "web_search_calls": calls if isinstance(calls, int) and not isinstance(calls, bool)
+        and "web_search_calls" not in unreported else None,
         "provider": context.get("provider") if isinstance(context.get("provider"), str)
         else None,
         "tavily_credits": credits,
@@ -310,6 +321,18 @@ def check_search_status(status: Mapping[str, Any]) -> list[dict[str, Any]]:
             and credits.get("tavily_credits") == 0.0 and stage
             and int(stage["succeeded"]) - int(stage["from_cache"]) > 0):
         out.append({"code": SEARCH_SUCCEEDED_WITHOUT_CREDIT, "class": "web_stage"})
+    calls = credits.get("web_search_calls")
+    classes = _mapping(status.get("classes"))
+    # Exact only when every stage block recorded its cache serves (rounds written before
+    # the review did not): an unrecorded cache serve would read as a network call.
+    cache_known = all(
+        _mapping(classes.get(n)).get("from_cache_recorded") is True
+        for n in ("web_stage", "web_followup") if classes.get(n) is not None
+    )
+    if (isinstance(calls, int) and stage and cache_known
+            and int(stage["succeeded"]) - int(stage["from_cache"]) + int(stage["failed"])
+            > calls):
+        out.append({"code": SEARCH_CALLS_EXCEED_SPEND, "class": "web_stage"})
     return out
 
 
@@ -330,6 +353,7 @@ def web_status_line(status: Mapping[str, Any]) -> dict[str, Any] | None:
         "succeeded": int(web["succeeded"]),
         "failed": int(web["failed"]),
         "outcome_unknown": int(web["outcome_unknown"]),
+        "from_cache": int(web["from_cache"]),
     }
 
 

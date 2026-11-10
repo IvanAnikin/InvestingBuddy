@@ -323,6 +323,8 @@ export type WebResearchQuality = {
   /** ADR-095 — of the executed, those that returned results and those that failed. */
   searchesSucceeded: number | null;
   searchesFailed: number | null;
+  /** ADR-095 review — of the succeeded, served from the same-day cache (no credit). */
+  searchesFromCache: number | null;
   documentsStored: number | null;
   sourceClasses: Record<string, number>;
   notAccessible: NotAccessibleSource[];
@@ -343,6 +345,7 @@ export function readWebResearchQuality(v: unknown): WebResearchQuality | null {
     searchesPlanned: num(v.searches_planned),
     searchesSucceeded: num(v.searches_succeeded),
     searchesFailed: num(v.searches_failed),
+    searchesFromCache: num(v.searches_from_cache),
     documentsStored: num(v.documents_stored),
     sourceClasses: counts(v.source_classes),
     notAccessible: readNotAccessible(v.sources_found_not_accessible),

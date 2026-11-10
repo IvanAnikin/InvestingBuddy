@@ -108,7 +108,8 @@ class TestStatusLines:
         assert status["web_searches"] == {
             "total": 34, "web_stage": 33, "investigators": 1,
             # ADR-095 — what the executed searches returned.
-            "planned": 34, "succeeded": 33, "failed": 0, "outcome_unknown": 1}
+            "planned": 34, "succeeded": 33, "failed": 0, "outcome_unknown": 1,
+            "from_cache": 0}
         # The undated duplicate of the dated annual report is one document.
         assert status["documents_read"] == 3
         assert status["latest_interim"] == {"label": "Q3 2026", "basis": "statement_facts"}

@@ -927,14 +927,125 @@ _METRIC_WINDOW = 60
 _SCALE_RATIOS = (1e3, 1e6, 1e9)
 
 
-def _metric_amount(clause: str, field_key: str) -> tuple[str, float, float] | None:
+#: ADR-095 review — a clause naming a measure OTHER than the reported Group total
+#: (adjusted / organic / pro forma revenue, transaction revenues, a product or service
+#: line, a segment, a region) states a different quantity: it is never set against the
+#: reported figure. Deny-list, read over the whole stating clause; a miss is the
+#: accepted direction. Bounded alternation.
+_QUALIFIED_MEASURE_RE = re.compile(
+    r"\b(?:adjusted|organic(?:ally)?|pro[- \t]?forma|underlying|core|comparable"
+    r"|like[- \t]for[- \t]like|non[- \t]?(?:gaap|ifrs)|recurring|constant[ \t]currency"
+    r"|transaction(?:s|al)?|subscriptions?|products?|services?|segments?|divisions?"
+    r"|divisional|business[ \t](?:unit|line)s?|geographic(?:al)?|regions?|regional"
+    r"|domestic|international|overseas|americas?|north[ \t]america|latin[ \t]america"
+    r"|europe(?:an)?|asia(?:[- ]pacific)?|china|japan|germany|france|canada|australia"
+    r"|africa|middle[ \t]east|united[ \t]states|united[ \t]kingdom|excluding|ex-)",
+    re.IGNORECASE,
+)
+#: Upper-case geographic abbreviations ("U.S. revenue", "UK sales"), never a currency
+#: ("US$", "USD").
+_GEO_ABBREVIATION_RE = re.compile(
+    r"(?<![\w.])(?:U\.S\.|U\.K\.)(?![ \t]?\$)|\b(?:US|UK|EU|EMEA|APAC|LATAM)\b(?!\$)")
+#: Clause boundaries for the words right before a metric mention.
+_PREFIX_BOUNDARY_RE = re.compile(r"[;:,()]|\.(?:[ \t]|$)")
+_PREFIX_TOKEN_RE = re.compile(r"[\w'’&-]{1,40}")
+#: What may stand in the (up to) three words right before the metric: a period, the
+#: Group / consolidated / total / net qualifiers, or the issuer's own name.
+_PREFIX_WORD_RE = re.compile(
+    r"(?:(?:fy|q[1-4]|h[12]|[369]m)?['’]?\d{2,4}|fy|fiscal|full|full-year|annual|year"
+    r"|quarter|quarterly|q[1-4]|h[12]|the|its|in|for|during|total|group|consolidated"
+    r"|net|reported)",
+    re.IGNORECASE,
+)
+_PREFIX_WORDS = 3
+#: Words of a legal name that never identify the issuer on their own.
+_GENERIC_NAME_WORDS = frozenset(
+    "inc inc. corp corporation co company plc ltd limited llc lp holdings holding group "
+    "sa ag nv se spa the international global".split()
+)
+
+
+def issuer_tokens(names: Iterable[str | None]) -> frozenset[str]:
+    """The casefolded words of the issuer's name and ticker that may precede a metric
+    ("PayPal revenue"), generic legal words excluded."""
+    out: set[str] = set()
+    for name in names:
+        for token in _PREFIX_TOKEN_RE.findall(str(name or "")[:200]):
+            word = token.casefold().strip("'’")
+            if len(word) >= 2 and word not in _GENERIC_NAME_WORDS:
+                out.add(word)
+    return frozenset(out)
+
+
+def _prefix_allowed(clause: str, start: int, issuer: frozenset[str]) -> bool:
+    """The (up to) three words right before a metric mention, in its own clause, are
+    a period, a Group qualifier or the issuer's name — nothing else ("adjusted",
+    "transaction", "Americas", "U.S." all fail)."""
+    before = _PREFIX_BOUNDARY_RE.split(clause[max(0, start - 80): start])[-1]
+    for token in _PREFIX_TOKEN_RE.findall(before)[-_PREFIX_WORDS:]:
+        word = token.casefold()
+        for suffix in ("'s", "’s"):
+            if word.endswith(suffix):
+                word = word[: -len(suffix)]
+        if word in issuer or _PREFIX_WORD_RE.fullmatch(word):
+            continue
+        return False
+    return True
+
+
+def names_other_measure(clause: str) -> bool:
+    """ADR-095 review — the clause names a qualified measure, a segment, a product line
+    or a region: not the Group's reported total."""
+    text = clause[:2000]
+    if _QUALIFIED_MEASURE_RE.search(text) or _GEO_ABBREVIATION_RE.search(text):
+        return True
+    from app.services.sources.primary_document_extractor import scope_claim_signal
+
+    return gap_scope(text) not in (None, "group") or scope_claim_signal(text) == "segment"
+
+
+#: How far before its clause a statement is read for a qualifier the clause split cut
+#: off ("FY2025 U.S. revenue was ..." splits after "U.S").
+_CLAUSE_CONTEXT_BEFORE = 40
+
+
+def _clause_context(statement: str, clause: str) -> str:
+    """The clause with the words right before it in its statement. A clause the
+    statement does not contain verbatim is read with the whole (bounded) statement:
+    missing beats wrong."""
+    text = statement[:2000]
+    # The clause may come back case-folded; find it case-insensitively.
+    at = text.lower().find(clause[:200].lower())
+    if at < 0:
+        return text
+    return text[max(0, at - _CLAUSE_CONTEXT_BEFORE): at + len(clause)]
+
+
+def _stated_amount(
+    finding: FindingFacts, clause: str, field_key: str, issuer: frozenset[str]
+) -> tuple[str, float, float] | None:
+    """``_metric_amount`` of the clause, read with the words before it (review item 3:
+    the clause split must not cut a region or a qualifier off the metric)."""
+    if names_other_measure(_clause_context(finding.statement, clause)):
+        return None
+    return _metric_amount(clause, field_key, issuer)
+
+
+def _metric_amount(
+    clause: str, field_key: str, issuer: frozenset[str] = frozenset()
+) -> tuple[str, float, float] | None:
     """The one amount a clause states FOR ``field_key``: the first amount right after a
     mention of the metric, linked to it by nothing but a short parenthesis, a colon or
-    one linking verb. ``None`` when no mention has one, or mentions state different
-    amounts."""
+    one linking verb, the mention preceded only by a period, a Group qualifier or the
+    issuer's name. ``None`` when no mention has one, mentions state different amounts,
+    or the clause names another measure (``names_other_measure``)."""
+    if names_other_measure(clause):
+        return None
     found: set[tuple[str, float, float]] = set()
     for pattern in rf._COMPILED.get(field_key, ()):  # noqa: SLF001 - same module family
         for mention in pattern.finditer(clause[:2000]):
+            if not _prefix_allowed(clause, mention.start(), issuer):
+                continue
             window = clause[mention.end(): mention.end() + _METRIC_WINDOW]
             first = None
             for money in (rf.MONEY_RE, rf.MONEY_SUFFIX_RE):
@@ -1024,18 +1135,25 @@ def _period_compatible(finding: FindingFacts, period: str) -> bool:
     return True
 
 
-def _reported_value_conflicts(findings: Sequence[FindingFacts]) -> list[Conflict]:
+def _reported_value_conflicts(
+    findings: Sequence[FindingFacts], issuer: frozenset[str] = frozenset()
+) -> list[Conflict]:
     """Reported figures (not guidance): one money amount per stating clause, the same
-    metric, the same financial reporting period (ADR-093 durations included), the same
-    NAMED scope and project, the same statement kind, and values that differ beyond
-    rounding (``compare_values``). Fail-closed by construction: a finding about another
-    entity, with an unsettled period or duration, with no scope, or stating two amounts
-    in the clause is never paired."""
+    metric, the same financial reporting period (ADR-093 durations included), GROUP
+    scope on both sides, the same project and statement kind, and values that differ
+    beyond rounding (``compare_values``). Never paired: a finding about another entity,
+    with an unsettled period or duration, not keyed to the Group, stating two amounts in
+    the clause, or naming another measure (adjusted, organic, a segment, a region —
+    ``names_other_measure``). These checks narrow the detector; they do not prove a
+    pair that passes them is a true conflict (ADR-095 known limits)."""
     groups: dict[tuple[str, ...], list[tuple[FindingFacts, _Value]]] = {}
     for finding in findings:
         if finding.withdrawn or finding.superseded_by or finding.is_other_entity:
             continue
-        if finding.period_conflict or not finding.scope_key:
+        # ADR-095 review — Group scope only: a segment figure keyed to a segment is
+        # set against nothing, and a segment figure carrying Group scope is caught by
+        # the clause's own words below.
+        if finding.period_conflict or not _is_group_scope(finding.scope_key):
             continue
         period = rf.normalise_period(finding.period_key)
         if not period or not rf.is_financial_period(period):
@@ -1051,13 +1169,13 @@ def _reported_value_conflicts(findings: Sequence[FindingFacts]) -> list[Conflict
             # One amount in the clause, and it is the metric's own.
             if len(rf.money_values(clause)) != 1:
                 continue
-            amount = _metric_amount(clause, field_key)
+            amount = _stated_amount(finding, clause, field_key, issuer)
             if amount is None:
                 continue
             money = (amount,)
             key = (
                 field_key,
-                finding.scope_key.casefold(),
+                "group",
                 finding.project or "",
                 period,
                 "|".join(sorted(rf.value_qualifiers(clause, field_key))),
@@ -1110,22 +1228,90 @@ def _guidance_conflicts(findings: Sequence[FindingFacts]) -> list[Conflict]:
     return out
 
 
-def deterministic_conflicts(findings: Sequence[FindingFacts]) -> list[Conflict]:
+def deterministic_conflicts(
+    findings: Sequence[FindingFacts], *, issuer_names: Iterable[str | None] = ()
+) -> list[Conflict]:
     """ADR-095 — the run's conflicts, computed from the ledger's findings ONLY.
 
     ONE mechanism: same entity (neither finding says it is about another), same metric,
     compatible period, same scope and project, values incompatible beyond rounding. A
     finding that DENIES a figure another states (``contradicted_absences``) is no value
-    conflict and is not listed; nor is a Red Team objection to one finding."""
+    conflict and is not listed; nor is a Red Team objection to one finding.
+
+    ``issuer_names``: the subject's name and ticker, the only proper name that may stand
+    before a metric ("<Issuer> revenue was ..."). Without them such a clause is skipped."""
     seen: set[frozenset[str]] = set()
     out: list[Conflict] = []
-    for conflict in [*_guidance_conflicts(findings), *_reported_value_conflicts(findings)]:
+    issuer = issuer_tokens(issuer_names)
+    for conflict in [*_guidance_conflicts(findings),
+                     *_reported_value_conflicts(findings, issuer)]:
         pair = frozenset((conflict.finding_a_id, conflict.finding_b_id))
         if pair in seen:
             continue
         seen.add(pair)
         out.append(conflict)
     return out[:MAX_DISAGREEMENTS]
+
+
+#: ADR-095 review — a denial of a SUB-item of a field ("no product revenue split", "no
+#: segment margin breakdown") is not contradicted by a finding stating the field's total.
+#: Bounded alternation.
+_SUB_ITEM_RE = re.compile(
+    r"\b(?:split|splits|breakdown|broken[ \t]{1,3}(?:down|out)|by[ \t]{1,3}[a-z]{3,20}"
+    r"|per[ \t]{1,3}[a-z]{3,20}|mix|concentration|segments?|products?|geograph[a-z]{0,6}"
+    r"|regions?|customers?|margins?|growth|guidance|forecast|outlook|drivers?)\b",
+    re.IGNORECASE,
+)
+
+
+#: ADR-095 review — the denial must be about DISCLOSURE ("is not disclosed", "no capex
+#: figure is reported", "was not found in the evidence"). "So no cash was generated after
+#: capital spending" and "five-sixths of operating cash was not spent on capex" are
+#: negated clauses about the company, not denials that the figure exists. Bounded.
+_DISCLOSURE_DENIAL_RE = re.compile(
+    r"\b(?:not[ \t]{1,3}(?:separately[ \t]{1,3})?(?:disclosed|reported|provided|available"
+    r"|stated|given|found|quantified|broken[ \t]{1,3}out)|undisclosed|unavailable"
+    r"|(?:does|did|do)[ \t]{1,3}not[ \t]{1,3}(?:disclose|report|provide|state|break)"
+    r"|no[ \t]{1,3}(?:\w{1,20}[ \t]{1,3}){0,3}(?:is|was|were|are)[ \t]{1,3}"
+    r"(?:disclosed|reported|provided|available|stated|found))\b",
+    re.IGNORECASE,
+)
+
+
+def denied_while_stated(
+    findings: Sequence[FindingFacts],
+    absences: Sequence[TemporalDisagreement],
+    *,
+    issuer_names: Iterable[str | None] = (),
+) -> list[TemporalDisagreement]:
+    """ADR-095 review — the contradicted absences precise enough to tell the Chair: the
+    denying finding denies the WHOLE field (no split, breakdown, segment or margin of
+    it), and the stating finding states that field's own Group amount
+    (``_metric_amount``). "No product, geographic or customer revenue split is disclosed"
+    beside "revenue was $33.2bn" is dropped: the two do not touch the same thing."""
+    by_id = {f.finding_id: f for f in findings}
+    issuer = issuer_tokens(issuer_names)
+    out: list[TemporalDisagreement] = []
+    for item in absences:
+        absent, stated = by_id.get(item.finding_a_id), by_id.get(item.finding_b_id)
+        if absent is None or stated is None:
+            continue
+        denying: list[str] = []
+        for raw in rf._raw_clauses(absent.statement):  # noqa: SLF001 - same module family
+            clause = _SOURCE_LABEL_NEGATION.sub(" ", raw)
+            if (rf.is_negated(clause.lower(), clause)
+                    and item.field_key in _denied_fields(clause)[0]):
+                denying.append(clause)
+        if not denying or any(_SUB_ITEM_RE.search(c[:2000]) for c in denying):
+            continue
+        if not any(_DISCLOSURE_DENIAL_RE.search(c[:2000]) for c in denying):
+            continue
+        stating = _single_field_clause(stated, item.field_key)
+        if stating is None or _stated_amount(stated, stating, item.field_key,
+                                             issuer) is None:
+            continue
+        out.append(item)
+    return out
 
 
 def finding_facts_from_payload(finding: Mapping[str, Any]) -> FindingFacts | None:
@@ -2224,8 +2410,10 @@ async def reconcile_run(
     # (``absences_contradicted``), never as a disagreement between findings: the two
     # agree on the figure, and the chair narrated 6-18 phantom "unresolved
     # disagreements" from such pairs.
-    conflicts = deterministic_conflicts(row_facts)
+    names = (subject_name, subject_ticker)
+    conflicts = deterministic_conflicts(row_facts, issuer_names=names)
     absences = contradicted_absences(row_facts)
+    precise_absences = denied_while_stated(row_facts, absences, issuer_names=names)
     temporal = [c.to_temporal() for c in conflicts]
     conflict_ids: dict[frozenset[str], str] = {}
     # The column holds ONE pointer: the LATEST newer finding. The per-field map in the
@@ -2238,10 +2426,13 @@ async def reconcile_run(
             latest[sup.older_id] = sup
     for older_id, sup in latest.items():
         await ledger.mark_superseded(session, by_id[older_id], by=by_id[sup.newer_id])
-    existing_pairs = {
-        frozenset((str(a), str(b)))
-        for a, b in (await session.execute(
-            select(ResearchDisagreement.finding_a_id, ResearchDisagreement.finding_b_id)
+    # ADR-095 review — a pair already recorded keeps its id, so the conflict list names
+    # the ledger row the Chair may cite.
+    existing_pairs: dict[frozenset[str], str] = {
+        frozenset((str(a), str(b))): str(d)
+        for d, a, b in (await session.execute(
+            select(ResearchDisagreement.id, ResearchDisagreement.finding_a_id,
+                   ResearchDisagreement.finding_b_id)
             .where(ResearchDisagreement.research_run_id == run.id)
         )).all()
     }
@@ -2249,8 +2440,8 @@ async def reconcile_run(
     for c in conflicts:
         pair = frozenset((c.finding_a_id, c.finding_b_id))
         if pair in existing_pairs:
+            conflict_ids[pair] = existing_pairs[pair]
             continue
-        existing_pairs.add(pair)
         row = await ledger.record_disagreement(
             session, run, finding_a=by_id[c.finding_a_id], finding_b=by_id[c.finding_b_id],
             nature="value",
@@ -2263,6 +2454,7 @@ async def reconcile_run(
             ),
         )
         conflict_ids[pair] = str(row.id)
+        existing_pairs[pair] = str(row.id)
         recorded_disagreements += 1
 
     findings = [FindingFacts.from_row(r) for r in finding_rows]
@@ -2339,8 +2531,10 @@ async def reconcile_run(
                  frozenset((c.finding_a_id, c.finding_b_id)))}
             for c in conflicts
         ],
-        # A finding that denies what another states: a wrong absence, not a conflict.
+        # A finding that denies what another states: not a conflict between figures.
+        # Every candidate pair (audit), and the precise ones the Chair is told about.
         "absences_contradicted": [d.to_dict() for d in absences][:60],
+        "absences_contradicted_precise": [d.to_dict() for d in precise_absences][:20],
         # What attach_to_report labels the V2 report's own gap statements against.
         "closing_findings": [f.to_dict() for f in closers][:MAX_CLOSING_FINDINGS],
         "note": (

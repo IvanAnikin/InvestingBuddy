@@ -122,14 +122,17 @@ def _conflicts(v3: Mapping[str, Any], out: list[dict[str, Any]],
         _LEDGER_DISAGREEMENT_RE,
         _NEGATED_DISAGREEMENT_RE,
         _narrates_conflict,
+        slot_backs,
     )
 
     count = conflicts.get("count")
+    # Statement-line conflicts have no ledger row: ids are the finding conflicts' only.
+    finding_count = conflicts.get("finding_count", count)
     unresolved = _g(state, "disagreements", "unresolved")
     ids = _g(state, "disagreements", "unresolved_ids")
-    if isinstance(unresolved, int) and isinstance(ids, list) and unresolved != len(ids):
+    if isinstance(finding_count, int) and isinstance(ids, list) and finding_count != len(ids):
         _hit(out, CONFLICT_COUNT_IDS, "canonical_state.disagreements",
-             f"{unresolved} unresolved with {len(ids)} id(s)")
+             f"{finding_count} finding conflict(s) with {len(ids)} id(s)")
     council = _mapping(v3.get("council"))
     said = council.get("unresolved_disagreement_count")
     if isinstance(said, int) and isinstance(unresolved, int) and said != unresolved:
@@ -138,7 +141,7 @@ def _conflicts(v3: Mapping[str, Any], out: list[dict[str, Any]],
     chair = _mapping(v3.get("chair"))
     chair_ids = chair.get("unresolved_disagreement_ids")
     conflict_ids = conflicts.get("ids")
-    if count == 0:
+    if finding_count == 0:
         conflict_ids = []
     # Checked when the conflicts' ledger ids are known (a run that wrote them, or none
     # computed); a replay of an older report cannot name them.
@@ -152,13 +155,15 @@ def _conflicts(v3: Mapping[str, Any], out: list[dict[str, Any]],
                 _hit(out, CONFLICT_COUNT_IDS, path,
                      f"states {m.group(1)} unresolved; {count} conflict(s) computed")
                 break
-        if count == 0:
+        if finding_count == 0:
             for sentence in re.split(r"(?<=[.!?])[ \t]+", text):
                 if (_LEDGER_DISAGREEMENT_RE.search(sentence)
                         or _narrates_conflict(sentence)) and not (
                         _NEGATED_DISAGREEMENT_RE.search(sentence)):
                     if _UNRESOLVED_COUNT_RE.search(sentence):
                         continue  # a count; checked above
+                    if slot_backs(sentence, state):
+                        continue  # about a conflicted statement line (ADR-095 review)
                     _hit(out, CONFLICT_UNBACKED, path, sentence)
 
 

@@ -151,8 +151,14 @@ export type V3CanonicalState = {
   webSearchesSucceeded: number | null;
   webSearchesFailed: number | null;
   webSearchesOutcomeUnknown: number | null;
+  /** ADR-095 review — of the succeeded, served from the same-day cache. */
+  webSearchesFromCache: number | null;
   webStageSearches: number | null;
   investigatorSearches: number | null;
+  /** ADR-095 review — Red Team objections to one finding each that no cited evidence
+   *  answered. Never a disagreement between findings. */
+  unresolvedChallengeCount: number | null;
+  unresolvedChallenges: V3UnresolvedChallenge[];
   /** ADR-091 — primary documents the run read (one per document). */
   documentsRead: number | null;
   /** ADR-091 — how many of the open gaps the payload lists. */
@@ -161,6 +167,24 @@ export type V3CanonicalState = {
    *  Null on older reports. */
   gapQueue: V3GapQueueCounts | null;
 };
+
+/** ADR-095 review — one unresolved Red Team challenge, as the run recorded it. */
+export type V3UnresolvedChallenge = {
+  findingId: string;
+  weaknessClass: string | null;
+  text: string;
+};
+
+function readUnresolvedChallenges(v: unknown): V3UnresolvedChallenge[] {
+  if (!isRecord(v)) return [];
+  return records(v.items)
+    .map((item) => ({
+      findingId: str(item.finding_id) ?? "",
+      weaknessClass: str(item.weakness_class),
+      text: str(item.text) ?? "",
+    }))
+    .filter((item) => item.findingId !== "" && item.text !== "");
+}
 
 /** ADR-094 — how every gap of the run was routed and what the re-read did. */
 export type V3GapQueueCounts = {
@@ -1293,8 +1317,11 @@ export function readCanonicalState(
     webSearchesSucceeded: status.webSearchesSucceeded,
     webSearchesFailed: status.webSearchesFailed,
     webSearchesOutcomeUnknown: status.webSearchesOutcomeUnknown,
+    webSearchesFromCache: status.webSearchesFromCache,
     webStageSearches: status.webStageSearches,
     investigatorSearches: status.investigatorSearches,
+    unresolvedChallengeCount: isRecord(v.challenges) ? num(v.challenges.unresolved) : null,
+    unresolvedChallenges: readUnresolvedChallenges(v.challenges),
     documentsRead: status.documentsRead,
     gapsListed: status.gapsListed,
     gapQueue: readGapQueue(v.gap_resolution),
@@ -1432,6 +1459,7 @@ export function canonicalStatus(canonical: unknown): {
   webSearchesSucceeded: number | null;
   webSearchesFailed: number | null;
   webSearchesOutcomeUnknown: number | null;
+  webSearchesFromCache: number | null;
   webStageSearches: number | null;
   investigatorSearches: number | null;
   documentsRead: number | null;
@@ -1448,6 +1476,7 @@ export function canonicalStatus(canonical: unknown): {
     webSearchesSucceeded: num(searches.succeeded),
     webSearchesFailed: num(searches.failed),
     webSearchesOutcomeUnknown: num(searches.outcome_unknown),
+    webSearchesFromCache: num(searches.from_cache),
     webStageSearches: num(searches.web_stage),
     investigatorSearches: num(searches.investigators),
     documentsRead: num(status.documents_read),

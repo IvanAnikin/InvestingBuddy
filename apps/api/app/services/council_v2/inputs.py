@@ -337,6 +337,12 @@ class CouncilInput:
     disagreements: tuple[DisagreementRef, ...] = ()
     #: ADR-095 — unresolved Red Team challenges (objections to one finding each).
     unresolved_challenges: tuple[ChallengeRef, ...] = ()
+    #: ADR-095 review — statement lines the issuer's documents state differently for the
+    #: same period and scope (``canonical_state.statement_slot_conflicts``), set by the
+    #: pipeline before the Chair; and findings that deny a whole field another finding
+    #: states as a Group amount (``gap_reconciliation.denied_while_stated``).
+    statement_conflicts: tuple[dict[str, Any], ...] = ()
+    denied_while_stated: tuple[dict[str, Any], ...] = ()
     open_question_keys: tuple[str, ...] = ()
     playbook_versions: dict[str, int] = field(default_factory=dict)
     truncated: dict[str, int] = field(default_factory=dict)

@@ -5,6 +5,7 @@ Company names appear here as test fixtures only; no app code names an issuer.
 
 from __future__ import annotations
 
+import gc
 import itertools
 import re
 import time
@@ -483,18 +484,47 @@ def test_the_conflict_detector_and_checker_are_quick_on_degenerate_input() -> No
     gr._metric_amount(big.lower(), "metric:revenue")  # noqa: SLF001
     li.impossible_combinations({"chair": {"synthesis": "no findings " * 3000}},
                                {"findings": {"total": 1}})
-    assert time.perf_counter() - started < 2.0
+    # ~1.3s unloaded, almost all in research_fields' clause scan of a 24k-char finding
+    # (pre-existing); the bound catches a quadratic blow-up, not machine load.
+    assert time.perf_counter() - started < 5.0
 
 
 @pytest.mark.parametrize("pattern", [
     gr._YTD_WORDS_RE, gr._QUARTER_WORDS_RE, gr._METRIC_LINK_RE, ri._CONFLICT_COUNT_RE,
     ri._LEDGER_DISAGREEMENT_RE, ri._NEGATED_DISAGREEMENT_RE, li._NO_FINDINGS_RE,
     li._UNRESOLVED_COUNT_RE,
+    # ADR-095 review.
+    gr._QUALIFIED_MEASURE_RE, gr._GEO_ABBREVIATION_RE, gr._PREFIX_BOUNDARY_RE,
+    gr._PREFIX_TOKEN_RE, gr._PREFIX_WORD_RE, gr._SUB_ITEM_RE, gr._DISCLOSURE_DENIAL_RE,
+    ri._RED_TEAM_DISPUTE_RE,
+    ri._SEARCHES_RAN_RE,
 ], ids=lambda p: p.pattern[:30])
 def test_new_patterns_are_linear(pattern: re.Pattern[str]) -> None:
-    for text in (" " * 10000, "unresolved " * 2000, "no " * 3000, "9 " * 5000,
-                 "(" * 5000, "was " * 3000):
-        started = time.perf_counter()
-        list(pattern.finditer(text))
-        pattern.fullmatch(text)
-        assert time.perf_counter() - started < 0.2
+    """Review item 6 — linear by RATIO, with the collector paused: the time on a text
+    four times longer stays within a linear bound of the shorter one's, so a loaded
+    machine (or a collector pass over the suite's heap) cannot fail it, while a
+    quadratic pattern (16x) still does."""
+    units = (" ", "unresolved ", "no ", "9 ", "(", "was ", "U.S. ", "by segment ")
+
+    def cost(text: str) -> float:
+        best = float("inf")
+        for _ in range(3):
+            started = time.perf_counter()
+            for _m in pattern.finditer(text):
+                pass
+            pattern.fullmatch(text)
+            best = min(best, time.perf_counter() - started)
+        return best
+
+    was_enabled = gc.isenabled()  # restore, never force on
+    gc.disable()
+    try:
+        for unit in units:
+            short = cost(unit * 1500)
+            long = cost(unit * 6000)
+            # Linear is 4x; quadratic is 16x. 12x leaves room for cache effects.
+            assert long < 12 * short + 0.05, (unit, short, long)
+            assert long < 0.5
+    finally:
+        if was_enabled:
+            gc.enable()
