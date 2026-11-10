@@ -183,6 +183,10 @@ class V3ResearchOutcome:
     #: ``withdrawn``, with its reason). EMPTY — and absent from ``to_dict()`` — when no
     #: finding of the run declared a kind.
     statement_kinds: dict[str, Any] = field(default_factory=dict)
+    #: ADR-093 — the issuer's segment hierarchy (``SegmentHierarchy.to_dict()``): its
+    #: reportable segments, the business lines under each, the basis. EMPTY — and absent
+    #: from ``to_dict()`` — when no reportable-segment list was read.
+    segment_hierarchy: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -208,6 +212,8 @@ class V3ResearchOutcome:
             payload["period_sweep"] = dict(self.period_sweep)
         if self.statement_kinds:
             payload["statement_kinds"] = dict(self.statement_kinds)
+        if self.segment_hierarchy:
+            payload["segment_hierarchy"] = dict(self.segment_hierarchy)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -900,6 +906,14 @@ async def _run(
         if search_backend is not None
         else None
     )
+    # ADR-093 — the issuer's reportable segments, the business lines under them and the
+    # segment section of each held-filing chunk, read ONCE from the held periodic
+    # reports. ``None`` (unknown) scopes nothing.
+    from app.services.pipeline.segment_scope import load_segment_hierarchy
+
+    segment_hierarchy = await load_segment_hierarchy(session, company.id, primary_inventory)
+    if segment_hierarchy is not None:
+        outcome.segment_hierarchy = segment_hierarchy.to_dict()
 
     class _RoleRoutedInvestigator:
         """One session per role, because a tool policy is per role.
@@ -1025,6 +1039,7 @@ async def _run(
                 # ADR-084 review M2: a re-read near the run's cap runs one query.
                 max_tool_calls=limits.max_tool_calls,
                 company_notes=company_notes,
+                segment_hierarchy=segment_hierarchy,
             )
             result = await worker.investigate(
                 role_id=role_id,

@@ -1930,3 +1930,67 @@ statements view (`issuer_financials`):
   - Any other table, two disagreeing statements, or a disagreeing Group-scoped sentence
     remains a conflict.
 - Extraction pipeline version 24.
+
+## Segment hierarchy and period duration (ADR-093)
+
+- **Hierarchy.** The pipeline builds a hierarchy of company → reportable segment →
+  business line → metric (`ledger/segment_hierarchy.py`, loaded by
+  `pipeline/segment_scope.py`) from the issuer's held periodic filings. Three sources
+  feed it:
+  - the issuer's own list ("three reportable segments: A, B and C"). A list framed as
+    the past is skipped, and a tie between lists yields no segments;
+  - the SEC inline-XBRL segment members;
+  - upper-case segment headings, under which "<Name> revenue was …" names a business
+    line. A name found under two segments is dropped.
+
+  A section ends at the next upper-case heading, or at a listed Title-case MD&A
+  heading ("Liquidity and Capital Resources", "Cash Flows", "Item 7 …"), and never runs
+  past 40,000 characters. A region or country is never a business line. The pipeline
+  maps each corpus chunk under a segment heading to that segment. It fails closed: a
+  chunk with a coverage gap or a heading inside it is not mapped. The
+  hierarchy is stored in `v3_research.segment_hierarchy` and passed to the
+  investigator.
+- **Investigator scope.** An unscoped finding gets a segment scope (`scope_type`
+  `segment` or `business_line`) in either of two cases:
+  - its statement names exactly one owner segment, or only that segment's business
+    lines, case as written, and every clause stating a figure names it before that
+    figure, with no "firm-wide / consolidated / company sales" wording. A generic
+    segment ("Other", "Corporate") never scopes by name;
+  - it names no segment, but every cited passage lies in one segment's section of the
+    filing, holds the figure and names the segment or one of its lines, with no
+    consolidated or balance-sheet wording in the statement or the passage.
+
+  The statement is labelled "[business lines of the X segment]" or "[X segment, not
+  the whole company]". A segment named after "excluding", "ex-", "driven by" and
+  similar is a mention, not an owner. Diagnostic: `statements_scoped_to_segment`.
+- **Investigator duration.** A calendar quarter key inherited from the chunk (Q2 or
+  Q3; never `FY…-Q3`) is re-keyed to the year-to-date key (`2026-H1`, `2026-9M`) in two
+  cases:
+  - the statement itself states the duration in an explicit reporting form ("nine
+    months ended / to", "first nine months of", "9M 2026", "first half", "year-to-date
+    revenue") (`period_basis: "statement_duration"`). A bare "nine months" or "year to
+    date" is not one;
+  - every occurrence of every amount in the cited passages sits under a year-to-date
+    marker, sentence or table column (`period_basis: "source_duration"`). Matching
+    quarter labels in the statement are then rewritten.
+
+  An instant (balance sheet) figure, any statement naming a balance or an "at / as
+  of" date, and a three-month figure keep their quarter key. A year to date of unstated
+  length is read only on a known calendar fiscal year (the issuer's calendar is read
+  on demand). Diagnostic: `statements_ytd_rekeyed`.
+- **Claim checks (council, chair, synthesis, red team).**
+  - `business_line_presented_as_main_revenue_driver`: a sentence naming a business line
+    as the issuer's main revenue driver, when the issuer reports two or more segments,
+    is withheld.
+  - `business_line_presented_as_segment`: "the Markets segment", where Markets is a
+    business line, is rewritten to "Markets business (part of the X segment)".
+  - `claim_scope_differs_from_cited_source` now also fires on a metric:
+    - when every figure-bearing source of the same metric (a shared content-word
+      bigram) is scoped to one segment, and the claim does not name it;
+    - for an uncited sentence, over the whole ledger, but only when the hierarchy is
+      known.
+  - A sentence holding its whole cited finding, adding only a short label ending in a
+    colon (no period, figure or segment name), skips the figure checks.
+  - `professional_research` sentences and section leads that cite findings by label
+    are now checked as `synthesis`. The legacy red team gets the two hierarchy rules
+    only.

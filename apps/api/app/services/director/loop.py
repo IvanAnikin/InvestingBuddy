@@ -137,6 +137,9 @@ class FindingDraft:
     #: (``text_stated``); persisted in the finding's ``period_type`` column.
     period_basis: str | None = None
     scope_key: str | None = None
+    #: ADR-093 — ``segment`` / ``business_line`` when the issuer's segment hierarchy set
+    #: ``scope_key``; persisted in the finding's ``scope_type`` column.
+    scope_type: str | None = None
     #: V3.18.2 — source kinds of the cited evidence, for the finding's provenance.
     source_kinds: tuple[str, ...] = ()
     #: V3.18.7 — findings OTHER domains own that this one builds on, by id.
@@ -499,6 +502,7 @@ async def run_investigation(
                         # ADR-086: the basis of a period not inherited from evidence.
                         period_type=getattr(draft, "period_basis", None),
                         scope_key=draft.scope_key,
+                        scope_type=getattr(draft, "scope_type", None),
                         originating_role=role_id,
                         # V3.18.2 — ownership. The finding belongs to its question's
                         # domain, so the report can place it exactly once.

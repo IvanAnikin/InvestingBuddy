@@ -933,8 +933,9 @@ def normalise_period(period_key: str | None) -> str | None:
     text = str(period_key or "").strip()
     if not text:
         return None
-    if re.fullmatch(r"(?:FYE|HYE)?\d{4}-\d{2}-\d{2}|CY\d{4}|FY\d{4}(?:-[HQ]\d)?|\d{4}-[HQ]\d",
-                    text, re.IGNORECASE):
+    # ADR-093: a nine-month year to date (``2026-9M``) is its own period, never a year.
+    if re.fullmatch(r"(?:FYE|HYE)?\d{4}-\d{2}-\d{2}|CY\d{4}|FY\d{4}(?:-[HQ]\d|-9M)?|"
+                    r"\d{4}-[HQ]\d|\d{4}-9M", text, re.IGNORECASE):
         return text.upper()
     parsed = statement_period(text)
     if parsed:
@@ -947,7 +948,8 @@ def normalise_period(period_key: str | None) -> str | None:
 def period_rank(period_key: str | None) -> tuple[int, int] | None:
     """A comparable (year, sub-period), or ``None`` when the period is not rankable.
 
-    Sub-period: Q1..Q4 → 1..4, H1 → 5, H2 → 6, a full year or a date → 9. A half ended
+    Sub-period: Q1..Q4 → 1..4, H1 → 5, H2 → 6, nine months (ADR-093) → 7, a full year
+    or a date → 9. A half ended
     on a date is not ranked: which half it is depends on the fiscal calendar.
     """
     normalised = normalise_period(period_key)
@@ -962,6 +964,9 @@ def period_rank(period_key: str | None) -> tuple[int, int] | None:
     match = re.fullmatch(r"(?:FY)?(\d{4})-H([12])", normalised)
     if match:
         return int(match.group(1)), 4 + int(match.group(2))
+    match = re.fullmatch(r"(?:FY)?(\d{4})-9M", normalised)
+    if match:
+        return int(match.group(1)), 7
     match = re.fullmatch(r"(?:FYE)?(\d{4})-\d{2}-\d{2}", normalised)
     if match:
         return int(match.group(1)), 9
@@ -975,7 +980,7 @@ def period_end_date(period: str | None) -> date | None:
 
 
 _REAL_PERIOD_RE = re.compile(
-    r"^(?:FY\d{4}(?:-[HQ]\d)?|CY\d{4}|\d{4}-Q[1-4]|\d{4}-H[12]|\d{4}|"
+    r"^(?:FY\d{4}(?:-[HQ]\d|-9M)?|CY\d{4}|\d{4}-Q[1-4]|\d{4}-H[12]|\d{4}-9M|\d{4}|"
     r"(?:FYE|HYE)?\d{4}-\d{2}-\d{2})$",
     re.IGNORECASE,
 )

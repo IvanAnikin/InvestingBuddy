@@ -9606,3 +9606,174 @@ Replay after the review:
   sentence as scope. It is unchanged from base and does not reach a slot in the replay,
   because the statement row 5,293 is held for that year. However, it can still make a
   conflict.
+
+## ADR-093: A Figure Knows Its Segment and Its Duration
+
+**Status:** Accepted (branch `fix/qa-closure-segment-hierarchy-duration`)
+**Date:** 2026-11-09
+
+### What was wrong (JPM3)
+
+- **P0, synthesis.** "JPMorgan Chase's revenue is primarily driven by its Markets
+  segment". Markets is a business line of the Commercial & Investment Bank (CIB), one
+  of three reportable segments. The sentence lives in
+  `professional_research.sections[0].sentences`, which were only checked as
+  `record`, with no claim checks (`report_invariants._walk_report`). Nothing in the
+  platform knew that Markets belongs to CIB.
+- **F4, duration.** "Q3 FY2026 segment revenue: Payments $16.0bn, … Markets $34.0bn"
+  is the 10-Q's *Year-to-date results* table. The finding inherited the chunk's
+  `2026-Q3` key (`investigator._inherited`), and nothing read the table's duration.
+- **F18/F19, scope.** "total nonperforming assets $5,496m / $5,555m" come from the
+  CIB *Selected metrics* tables of the 10-Q and 10-K. SEC HTML chunks carry no section
+  name, and the statement says "total", so `claim_checks.stated_segment` (ADR-091)
+  correctly declined to scope it. Both NPAs then read as the firm's.
+
+### Decision
+
+1. **Hierarchy** (`ledger/segment_hierarchy.py`, `pipeline/segment_scope.py`). The
+   hierarchy is company → reportable segment → business line → metric. It is built from:
+   - the issuer's own segment list (majority vote over its list sentences, skipping
+     past-structure lists, failing closed on ties);
+   - the SEC XBRL segment members;
+   - upper-case segment headings in the held periodic filings.
+
+   A segment section ends at the next upper-case heading, or at a Title-case MD&A
+   heading from a closed list ("Liquidity and Capital Resources", "Cash Flows", "Item
+   7 …"), and never runs past 40,000 characters. Under a heading, "<Name> revenue was …"
+   names a business line, unless the name is a region or country. Corpus chunks are
+   mapped to the segment heading they sit under; any coverage gap or inner heading
+   leaves a chunk unmapped. The hierarchy is stored in `v3_research.segment_hierarchy`.
+   No issuer is named in app code.
+2. **Finding scope.** The investigator scopes an unscoped finding to a segment when
+   either:
+   - its statement names one owner segment, or that segment's business lines, as
+     written (case-sensitive), and every clause stating a figure names it before that
+     figure. A generic segment name ("Other", "Corporate") never scopes by name, and
+     "company sales" / "group" wording means the company;
+   - every cited passage lies in one segment's section, holds the figure and itself
+     names the segment or one of its lines. Neither the statement nor the passage may
+     carry consolidated or balance-sheet wording (cash and cash equivalents, total
+     debt, consolidated …).
+
+   It records `scope_key: segment:<name>` and `scope_type` (`segment` /
+   `business_line`), and labels the statement.
+3. **Duration** (`ledger/period_duration.py`). An inherited calendar Q2/Q3 key
+   (never an `FY`-prefixed one) becomes `YYYY-H1` / `YYYY-9M` in two cases:
+   - the statement states the duration in an explicit reporting form: "nine months
+     ended / to …", "first nine months of", "nine-month 2026", "9M 2026", "six months
+     ended", "first half", "year-to-date revenue", "YTD <metric>". A bare "nine
+     months" / "year to date" / "six months" is not a reporting period;
+   - every occurrence of every amount in the cited passages sits under a
+     year-to-date marker line, sentence or two-column table header.
+
+   In the second case the quarter label in the statement is rewritten. A statement
+   naming a balance (cash, debt, inventory, backlog, deposits, nonperforming assets …)
+   or a date it is stated "at" / "as of" is never rekeyed, and nor is a three-month
+   figure. A year to date of unstated length is read only when the issuer's fiscal year
+   is known to be the calendar year. `claim_period` reads `9M 2026` and `2026-9M`;
+   `research_fields` and gap reconciliation treat `2026-9M` as its own sub-annual
+   period (rank 7), so two different nine-month values stay a same-period disagreement.
+4. **Claims.** Council, chair, synthesis and red team are checked:
+   - `business_line_presented_as_main_revenue_driver` (withheld) when the issuer
+     reports two or more segments;
+   - `business_line_presented_as_segment` (repaired to "<line> business (part of the X
+     segment)");
+   - `claim_scope_differs_from_cited_source` for a metric that every figure-bearing
+     source states for one segment only, where the claim does not name the segment.
+     An uncited sentence is checked over the ledger only when the hierarchy is known.
+
+   `professional_research` sentences and leads are now checked as `synthesis`. A
+   sentence that holds its whole cited finding, adding only a short label ending in a
+   colon (no period, figure or segment name), skips the figure checks.
+
+### Replay (18 stored reports, base `3203fc3` vs branch)
+
+The investigator was simulated from the evaluators' filing text (stated in
+`~/.ib-closure/H3b/replay.py`). Only findings sourced from issuer filings get a
+simulated passage.
+
+- **No change:** HON2, HON3, LIN2–4, CLLS5–7, PYPL3, JPM, CFR, CFR2, CFR3.
+- **Re-keyed `2026-Q3` → `2026-9M`** (each statement states nine months): HON4
+  working capital; PYPL4 Braintree/Venmo; PYPL5 acquisitions; JPM2 net income; JPM3
+  NII.
+- **JPM3:**
+  - F4 → `2026-9M`, labelled "business lines of the Commercial & Investment Bank
+    segment … 9M 2026 (year to date)".
+  - F18/F19 → `segment:commercial & investment bank`, labelled.
+  - The P0 sentence and the business-model lead ("Markets is the largest revenue
+    segment") are withheld as main-driver claims.
+  - The chair's "rising nonperforming assets" and synthesis sentence 4 are withheld
+    for scope.
+- **JPM2:** the NPA findings are scoped to CIB. The chair and synthesis NPA sentences
+  are withheld for scope.
+- No other sentence was withheld or rewritten.
+
+### Known limits
+
+- The red-team (legacy) claims carry no excerpts in the payload. Only the two
+  hierarchy rules apply there, so the legacy "$93m Corporate" claim is not
+  re-checked.
+- Business lines are found only via "<Name> revenue was …" under a segment heading.
+  JPM's CCB lines are not detected.
+- Chunk sections need the platform's HTML text to keep heading lines. A filing without
+  upper-case segment headings gives no source-section scope.
+- `canonical_state` does not read a `-9M` key as a latest reporting period. A 9M
+  finding never sets "latest interim".
+- A YTD figure whose statement does not state its duration, and whose amount also
+  appears under a quarterly header, keeps its quarter key. This fails open on the
+  label, not on the number.
+
+### Review round 1 (NO-GO → fixes)
+
+Principle: missing beats wrong — explicit forms only. Each reviewer probe is a
+negative test (`TestReviewNegatives`).
+
+- **P1-1 verbatim.** "In Q3 2026, net income was $14.4 billion …" citing an FY2025
+  source with the rest of that sentence is now withheld. A copy may add only a short
+  label ending in a colon.
+- **P1-2 section bleed.** A listed Title-case heading closes the section, and the
+  section is capped at 40,000 characters. The source-section route needs the passage to
+  name the segment and to carry no consolidated or balance-sheet wording. Firm cash on
+  a segment page is no longer labelled with the segment.
+- **P1-3 generic names.** Segment names match case as written. "Other" / "Corporate" /
+  "Eliminations" never scope by name, "company sales" is firm wording, and every
+  figure's clause must name the segment.
+- **P2-4 bare durations.** "fund operations for nine months", "up 30% year to date",
+  "six months of supply" and "response rate at nine months" no longer rekey, and nor
+  does any balance.
+- **P2-5 consumers.** `2026-9M` is sub-annual for gap reconciliation, a financial
+  period for `research_fields`, and is not normalised to a year. `FY`-prefixed quarter
+  keys are not rekeyed.
+- **P2-6 regions.** Europe, North America, U.S., International and other regions or
+  countries are never business lines.
+- **P3-7.** A year to date of unstated length needs a known calendar fiscal year (the
+  investigator reads the issuer's calendar on demand, once).
+- **P3-8.** Every pattern of the change is in both linearity lists.
+- **Re-review (R1–R4):**
+  - "to" / "through" count only before a month or date, and "of" never counts ("six
+    months of production"). A form after "next / coming / following / over the" is a
+    forward duration.
+  - The first form's own year (in the form, or in the date right after it) must be the
+    key's year. A form with no year needs the statement's only year, if it states one,
+    to match. So "nine months ended September 30, 2025", "9M 2025" and "first half of
+    2025" on a 2026 key are not rekeyed, while "Nine-month 2026 … versus nine-month
+    2025" is.
+  - ", and" ends a clause, unless it sits inside a matched name.
+  - A verbatim label naming a period in words ("Latest quarter:") is not a label.
+  - The linearity harnesses restore the collector's prior state.
+  - Replay: identical to round 1.
+- **Replay after the fixes:** the same deltas as above, with one change. JPM2's press
+  finding "CIB segment (not Group) 3Q26: net income $8.2B …; revenue $22.7B …" is no
+  longer scoped, because its second clause names no segment.
+  - HON, LIN and CFR: no new withholds. LIN and CFR read no hierarchy from their
+    documents, so the uncited ledger-wide check does not run there.
+  - A stress replay with their published segments forced in withholds one CFR2
+    synthesis sentence ("Richemont has responded … with targeted price increases"),
+    because every cited source states the price increases for Jewellery Maisons only.
+    LIN: no change.
+- **Accepted misses:**
+  - a Title-case heading not in the list does not close a section (the cap still
+    bounds it);
+  - a lower-case segment name in a claim is not read;
+  - a source-section passage that never names its segment scopes nothing;
+  - a YTD statement in a form not listed keeps its quarter key.

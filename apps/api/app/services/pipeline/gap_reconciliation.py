@@ -541,7 +541,8 @@ def _years_of(text: str, period_key: str | None = None) -> set[str]:
 def _period_class(text: str, period_key: str | None = None) -> str | None:
     """``sub_annual`` | ``annual`` | None, from the stored period when it has one."""
     key = rf.normalise_period(period_key) or ""
-    if re.search(r"(?:^|[-\s])(?:Q[1-4]|H[12])\b", key):
+    # ADR-093: a year to date (``2026-9M``) is sub-annual too.
+    if re.search(r"(?:^|[-\s])(?:Q[1-4]|H[12]|\d{1,2}M)\b", key):
         return "sub_annual"
     if key:
         return "annual"

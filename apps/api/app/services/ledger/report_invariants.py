@@ -75,6 +75,9 @@ RULE_COUNCIL_STATUS = "council_status_overstated"
 RULE_CLAIM_PERIOD = claim_checks.RULE_CLAIM_PERIOD
 RULE_CLAIM_SCOPE = claim_checks.RULE_CLAIM_SCOPE
 RULE_DERIVED_AS_REPORTED = claim_checks.RULE_DERIVED_AS_REPORTED
+#: ADR-093 — a business line called a segment, or the company's main revenue driver.
+RULE_LINE_AS_SEGMENT = claim_checks.RULE_LINE_AS_SEGMENT
+RULE_LINE_AS_MAIN_DRIVER = claim_checks.RULE_LINE_AS_MAIN_DRIVER
 #: ADR-086 — the V2 "no primary issuer document ingested" line, while the ledger holds
 #: issuer documents.
 RULE_PRIMARY_DOC_GROUP = "primary_document_group_denied_while_held"
@@ -108,6 +111,8 @@ RULES: tuple[str, ...] = (
     RULE_STATUS_LINE,
     RULE_CITED_FINDING_UNKNOWN,
     RULE_PHANTOM_CONFLICT,
+    RULE_LINE_AS_SEGMENT,
+    RULE_LINE_AS_MAIN_DRIVER,
 )
 
 #: Where a text sits. The chair is checked for everything; other texts are checked for
@@ -115,6 +120,11 @@ RULES: tuple[str, ...] = (
 SITE_CHAIR = "chair"
 SITE_RECORD = "record"
 SITE_LEGACY = "legacy"
+#: ADR-093 — an editor-written synthesis sentence or section lead that cites its findings
+#: by label: checked like a record text, and held to what it cites like a chair claim.
+SITE_SYNTHESIS = "synthesis"
+#: ADR-093 — findings read when a sentence citing nothing is held to the whole ledger.
+MAX_LEDGER_SOURCES = 120
 
 #: Days by which a held document must be newer than the one named as newest before a
 #: sentence is called stale (a margin in the direction of keeping a sentence: same-week
@@ -1100,8 +1110,11 @@ class _Enforcer:
         self,
         state: Mapping[str, Any],
         sources: Mapping[str, claim_checks.ClaimSource] | None = None,
+        hierarchy: Any = None,
     ) -> None:
         self.state = state
+        #: ADR-093 — the issuer's segments and business lines (``None``: unknown).
+        self.hierarchy = hierarchy
         self.violations: list[Violation] = []
         #: ADR-086 — the run's findings by id, for the chair claim check. ``None``: no
         #: claim is checked against what it cites.
@@ -1134,18 +1147,30 @@ class _Enforcer:
         return _Hit(RULE_PHANTOM_CONFLICT,
                     "it narrates a conflict between findings no recorded disagreement pairs")
 
-    def _claim(self, sentence: str, cited: tuple[str, ...]) -> _Hit | None:
-        """ADR-086 — a chair claim checked against the findings it cites."""
+    def _claim(self, sentence: str, cited: tuple[str, ...],
+               site: str = SITE_CHAIR) -> _Hit | None:
+        """ADR-086 — a chair claim checked against the findings it cites. ADR-093: an
+        editor-written synthesis sentence too (``SITE_SYNTHESIS``), and both are held
+        to the issuer's segment hierarchy."""
         ids = [i for i in dict.fromkeys([*cited, *claim_checks.cited_ids(sentence)]) if i]
-        hit = self._cited_exist(ids) or self._conflict_backed(sentence, ids)
-        if hit is not None:
-            return hit
-        if not self.sources:
-            return None
-        found = [self.sources[i] for i in ids if i in self.sources]
-        if not found:
-            return None
-        verdict = claim_checks.check_claim(sentence, found)
+        if site == SITE_CHAIR:
+            hit = self._cited_exist(ids) or self._conflict_backed(sentence, ids)
+            if hit is not None:
+                return hit
+        found = [self.sources[i] for i in ids if self.sources and i in self.sources]
+        if found:
+            verdict = claim_checks.check_claim(sentence, found, self.hierarchy)
+        else:
+            verdict = claim_checks.check_hierarchy(sentence, self.hierarchy)
+            if (verdict is None and not ids and self.hierarchy and self.sources
+                    and self.finding_ids is not None):
+                # ADR-093 — a sentence citing nothing, when the payload lists EVERY
+                # finding: a metric every finding states for one segment only is that
+                # segment's, whatever the sentence leaves out ("rising nonperforming
+                # assets" over one segment's figures).
+                verdict = claim_checks.metric_scope(
+                    sentence, list(self.sources.values()), self.hierarchy,
+                    limit=MAX_LEDGER_SOURCES)
         if verdict is None:
             return None
         return _Hit(verdict.rule, verdict.reason, verdict.replacement)
@@ -1171,8 +1196,15 @@ class _Enforcer:
         changed = False
         for sentence, separator in pieces:
             hit = check_sentence(sentence, self.state, site=site)
-            if hit is None and site == SITE_CHAIR and len(sentence) <= MAX_SENTENCE_CHARS:
-                hit = self._claim(sentence, cited)
+            if (hit is None and site in (SITE_CHAIR, SITE_SYNTHESIS)
+                    and len(sentence) <= MAX_SENTENCE_CHARS):
+                hit = self._claim(sentence, cited, site)
+            elif hit is None and site == SITE_LEGACY and self.hierarchy:
+                # ADR-093 — the legacy council's claims cite run-local evidence handles,
+                # so only the hierarchy rules (no sources) apply to them.
+                verdict = claim_checks.check_hierarchy(sentence, self.hierarchy)
+                if verdict is not None:
+                    hit = _Hit(verdict.rule, verdict.reason, verdict.replacement)
             if hit is None:
                 kept.append((sentence, separator))
                 continue
@@ -1214,20 +1246,37 @@ class _Enforcer:
         return "\n".join(lines)
 
 
+def _labelled_ids(item: Mapping[str, Any], by_label: Mapping[str, str]) -> tuple[str, ...]:
+    """ADR-093 — the finding ids an editor-written sentence cites by label ("F4")."""
+    labels = item.get("labels")
+    if not isinstance(labels, list):
+        return ()
+    return tuple(dict.fromkeys(
+        by_label[str(label)] for label in labels if str(label) in by_label))
+
+
 def _walk_report(enforcer: _Enforcer, report: Any) -> None:
     if not isinstance(report, dict):
         return
+    raw_labels = report.get("finding_labels")
+    by_label = ({str(label): str(fid).lower() for fid, label in raw_labels.items()}
+                if isinstance(raw_labels, Mapping) else {})
     for i, section in enumerate(report.get("sections") or ()):
         if not isinstance(section, dict):
             continue
         base = f"professional_research.sections[{i}]"
         lead = section.get("lead")
         if isinstance(lead, dict):
-            lead["text"] = enforcer.text(lead.get("text"), f"{base}.lead", SITE_RECORD)
+            # ADR-093: a lead that cites its findings is held to them, like the chair.
+            cited = _labelled_ids(lead, by_label)
+            lead["text"] = enforcer.text(lead.get("text"), f"{base}.lead",
+                                         SITE_SYNTHESIS if cited else SITE_RECORD, cited)
         for j, sentence in enumerate(section.get("sentences") or ()):
             if isinstance(sentence, dict):
+                cited = _labelled_ids(sentence, by_label)
                 sentence["text"] = enforcer.text(
-                    sentence.get("text"), f"{base}.sentences[{j}]", SITE_RECORD)
+                    sentence.get("text"), f"{base}.sentences[{j}]",
+                    SITE_SYNTHESIS if cited else SITE_RECORD, cited)
         for j, finding in enumerate(section.get("findings") or ()):
             if isinstance(finding, dict):
                 finding["statement"] = enforcer.text(
@@ -1397,7 +1446,11 @@ def enforce(
     partial payload."""
     out = copy.deepcopy(dict(v3))
     legacy = copy.deepcopy(dict(llm_council)) if isinstance(llm_council, Mapping) else None
-    enforcer = _Enforcer(state, sources=finding_sources(out.get("findings")))
+    from app.services.ledger.segment_hierarchy import SegmentHierarchy
+
+    hierarchy = SegmentHierarchy.from_dict(out.get("segment_hierarchy"))
+    enforcer = _Enforcer(state, sources=finding_sources(out.get("findings"), hierarchy),
+                         hierarchy=hierarchy)
     enforcer.finding_ids = ledger_finding_ids(out.get("findings"), state)
 
     _structured(enforcer, out, legacy)
@@ -1443,12 +1496,14 @@ def ledger_finding_ids(findings: Any, state: Mapping[str, Any]) -> set[str] | No
     return ids
 
 
-def finding_sources(findings: Any) -> dict[str, claim_checks.ClaimSource]:
-    """ADR-086 — the payload's findings by id, as claim-check sources."""
+def finding_sources(findings: Any, hierarchy: Any = None
+                    ) -> dict[str, claim_checks.ClaimSource]:
+    """ADR-086 — the payload's findings by id, as claim-check sources (ADR-093: scoped
+    by the issuer's segment hierarchy when one is known)."""
     out: dict[str, claim_checks.ClaimSource] = {}
     for finding in findings or ():
         if isinstance(finding, Mapping):
-            source = claim_checks.source_of_finding(dict(finding))
+            source = claim_checks.source_of_finding(dict(finding), hierarchy)
             if source is not None:
                 out[source.source_id.lower()] = source
     return out

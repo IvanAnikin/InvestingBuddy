@@ -135,6 +135,28 @@ _KEY_LABEL_RE = re.compile(r"^(?P<fy>FY)?(?P<y>\d{4})-(?P<k>[QH])(?P<o>[1-4])$")
 _KEY_YEAR_RE = re.compile(r"^(?P<cy>CY|FY)?(?P<y>\d{4})$")
 _KEY_SPLIT_RE = re.compile(r"^(?P<y>\d{4})/(?P<y2>\d{2})$")
 _KEY_DATE_RE = re.compile(r"^(?P<p>FYE|HYE|QE)?(?P<d>\d{4}-\d{2}-\d{2})$")
+#: ADR-093 — a year-to-date key ("2026-9M", "FY2026-9M"): the first nine months of a
+#: fiscal year.
+_KEY_YTD_RE = re.compile(r"^(?P<fy>FY)?(?P<y>\d{4})-(?P<m>9)M$")
+#: ADR-093 — the year-to-date label a rekeyed finding writes ("9M 2026", "9M FY2026").
+_YTD_LABEL_RE = re.compile(
+    r"\b(?P<m>9)M[ \t]{0,2}(?P<fy>FY[ \t]?)?(?P<y>(?:19|20)\d{2})\b", re.IGNORECASE
+)
+
+
+def ytd_period(year: int, months: int, fiscal: bool, *, key: str, start: int = 0,
+               end: int = 0) -> Period | None:
+    """ADR-093 — the first ``months`` months of fiscal ``year``: ends at month ``months``
+    of the calendar year, or up to a year earlier on a fiscal calendar."""
+    if months != SPAN_NINE or not 1900 <= year <= 2100:
+        return None
+    calendar_end = _month_end(year, months)
+    return Period(key=key, span=months, end_lo=_shift_months(calendar_end, 12),
+                  end_hi=calendar_end, start=start, end=end)
+
+
+def is_ytd_key(key: object) -> bool:
+    return _KEY_YTD_RE.match(str(key or "").strip().upper()) is not None
 
 
 @dataclass(frozen=True)
@@ -172,6 +194,9 @@ class Period:
             if kind == "y":
                 return f"FY{year}" if fiscal else str(year)
             return f"{kind.upper()}{ordinal} {'FY' if fiscal else ''}{year}"
+        ytd = _KEY_YTD_RE.match(self.key.upper())
+        if ytd is not None:
+            return f"9M {'FY' if ytd.group('fy') else ''}{ytd.group('y')} (year to date)"
         if self.end_lo is not None and self.end_lo == self.end_hi:
             day = f"{self.end_lo.day} {self.end_lo.strftime('%b')} {self.end_lo.year}"
             length = {SPAN_QUARTER: "three months", SPAN_HALF: "six months",
@@ -273,6 +298,9 @@ def period_of_key(key: object) -> Period | None:
         year = int(m.group("y")) + 1
         return Period(key=text, span=SPAN_YEAR, end_lo=_month_end(year, 1),
                       end_hi=_month_end(year, 12), label=("y", year, 0, True))
+    m = _KEY_YTD_RE.match(text)
+    if m:
+        return ytd_period(int(m.group("y")), int(m.group("m")), bool(m.group("fy")), key=text)
     m = _KEY_DATE_RE.match(text)
     if m:
         try:
@@ -366,6 +394,11 @@ def _read(text: str, *, bare_dates: bool = False) -> list[Period]:
             # Claim side: a bare date is not read as a period, and its year is not a
             # calendar-year mention either.
             taken.append((m.start(), m.end()))
+    for m in _YTD_LABEL_RE.finditer(text):
+        fiscal = bool(m.group("fy"))
+        year = int(m.group("y"))
+        add(ytd_period(year, int(m.group("m")), fiscal,
+                       key=f"{'FY' if fiscal else ''}{year}-9M", start=m.start(), end=m.end()))
     for m in _FY_FIRST_RE.finditer(text):
         year = _year4(m.group("y"))
         kind, ordinal = m.group("k").lower(), int(m.group("o"))
