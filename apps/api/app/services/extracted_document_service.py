@@ -131,6 +131,11 @@ def _scope_key_of(fact: Any) -> str | None:
     return parse_scope(getattr(fact, "scope", None)).scope_key
 
 
+def _line_rank(value: object) -> int | None:
+    """ADR-092 review — a persisted line rank is 0, 1 or 2; anything else is unknown."""
+    return value if isinstance(value, int) and value in (0, 1, 2) else None
+
+
 def _to_decimal(value: float | None) -> Decimal | None:
     """Convert a float fact value to a clean, finite Decimal (else None)."""
     if value is None:
@@ -546,6 +551,7 @@ async def _persist_validated_facts(
                 table_location=_clip(
                     getattr(fact, "table_location", None), _TABLE_LOCATION_MAX
                 ),
+                line_rank=_line_rank(getattr(fact, "line_rank", None)),
                 extraction_method=_clip(
                     getattr(fact, "extraction_method", "") or "",
                     _EXTRACTION_METHOD_MAX,
@@ -803,6 +809,7 @@ def _rebuild_artifact(
             period=fact.period,
             page_number=fact.page_number,
             table_location=fact.table_location,
+            line_rank=fact.line_rank,
             extraction_method=fact.extraction_method or "",
             confidence=float(fact.confidence or 0.0),
             validation_status=VALIDATION_VALIDATED,
@@ -984,6 +991,7 @@ def _insert_active_facts(
                 table_location=_clip(
                     getattr(fact, "table_location", None), _TABLE_LOCATION_MAX
                 ),
+                line_rank=_line_rank(getattr(fact, "line_rank", None)),
                 extraction_method=_clip(
                     getattr(fact, "extraction_method", "") or "",
                     _EXTRACTION_METHOD_MAX,

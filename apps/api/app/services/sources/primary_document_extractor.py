@@ -202,6 +202,13 @@ class ExtractedTable(BaseModel):
     # Reconstructed tables only: the unit in the header cell was read beside the
     # figures, not printed in the header (see ``ReconstructedFinancialTable``).
     unit_from_values: bool = False
+    # ADR-092 — grid row indices of section headings ("Current assets") that carry the
+    # unlabelled subtotal printed under their lines, verified to be those lines' sum.
+    section_total_rows: list[int] = Field(default_factory=list)
+    # ADR-092 review — the headings printed over a reconstructed table (its region
+    # heading, the titles above it, the page title): a "Parent company balance sheet" or
+    # a "Five-year record" has the shape of a statement and is not the Group's.
+    context_headings: list[str] = Field(default_factory=list)
 
 
 class ExtractedBlock(BaseModel):
@@ -1761,6 +1768,19 @@ def extract_pdf(
                         reconstructed=True,
                         column_periods=[c.period for c in rebuilt_table.columns],
                         unit_from_values=rebuilt_table.unit_from_values,
+                        # Grid row 0 is the header, so table row i is grid row i + 1.
+                        section_total_rows=[
+                            i + 1 for i, row in enumerate(rebuilt_table.rows)
+                            if row.section_total and i + 1 < len(grid)
+                        ],
+                        context_headings=[
+                            h[:300] for h in (
+                                rebuilt_table.region_heading,
+                                *rebuilt_table.preceding_headings,
+                                rebuilt_table.page_title,
+                                rebuilt_table.carried_page_title,
+                            ) if h
+                        ][:8],
                     )
                 )
                 result.warnings.append(

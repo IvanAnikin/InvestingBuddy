@@ -546,7 +546,7 @@ def test_an_older_pipeline_reading_is_re_read() -> None:
         CURRENT_EXTRACTION_PIPELINE_VERSION,
     )
 
-    assert CURRENT_EXTRACTION_PIPELINE_VERSION == 23
+    assert CURRENT_EXTRACTION_PIPELINE_VERSION == 24
 
     class _Session:
         def __init__(self, version: int) -> None:
@@ -556,7 +556,9 @@ def test_an_older_pipeline_reading_is_re_read() -> None:
             return SimpleNamespace(pipeline_version=self.version)
 
     assert asyncio.run(_read_by_an_older_pipeline(_Session(22), uuid.uuid4())) is True
-    assert asyncio.run(_read_by_an_older_pipeline(_Session(23), uuid.uuid4())) is False
+    # ADR-092 (version 24) re-reads a version-23 row once more.
+    assert asyncio.run(_read_by_an_older_pipeline(_Session(23), uuid.uuid4())) is True
+    assert asyncio.run(_read_by_an_older_pipeline(_Session(24), uuid.uuid4())) is False
 
 
 def test_the_runway_field_is_a_statement_field() -> None:

@@ -3618,6 +3618,25 @@ Additive keys under `source_summary_json.v3_research`:
     `null`.
   - `scope_differs` from a product line applies only to revenue gaps.
 
+## ADR-092 — statement-line selector (no new endpoint)
+
+- `financial_statements_state.withheld_counts` / `withheld[*].reason` gain
+  `prose_disagrees_with_statement_table`: a prose read of unknown scope that states a
+  different number than the Group's primary-statement reads for the same field and
+  period, when those agree among themselves. It fills no slot and enters no `conflicts`
+  entry. A primary-statement read is a fact whose persisted `line_rank` is 0 (the
+  validator judged its table the Group's primary statement), or an inline XBRL tag
+  (`excerpt=ixbrl:…`). Any other table can only conflict with prose, never silence it:
+  a highlights or KPI box, a parent-company, segment or multi-year table, or a fact
+  persisted before migration 046. A figure withheld only because its period has not
+  ended is never on the statement side.
+- `slots.total_current_assets_*` / `total_current_liabilities_*` / `total_assets_*` /
+  `total_liabilities_*` / `cash_and_equivalents_*` hold the statement's total line or
+  are absent; never a component row. `slots[*].fact_provenance` names the cited row's
+  locator. Among agreeing reads it is now the statement table's (`excerpt=p14:m0`)
+  rather than a prose sentence's (`excerpt=X12`).
+- No other payload key changes. The rules apply from extraction pipeline version 24.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

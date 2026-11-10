@@ -130,6 +130,8 @@ async def load_statement_facts(session: Any, company_id: Any) -> list[dict[str, 
                 "source_url": document.canonical_url,
                 "page_number": fact.page_number,
                 "excerpt_id": fact.table_location,
+                # ADR-092 review — 0 when read from the Group's primary statement.
+                "line_rank": fact.line_rank,
                 "confidence": _confidence_bucket(float(fact.confidence or 0.0)),
                 "fact_id": str(fact.id),
                 "document_id": str(document.id),
@@ -177,6 +179,10 @@ WITHHELD_FORWARD_STATEMENT = "forward_statement"
 WITHHELD_ANNUAL_PERIOD_NOT_ENDED = "annual_period_not_ended"
 WITHHELD_ANNUAL_PERIOD_UNDATED = "annual_period_undated"
 WITHHELD_PERIOD_NOT_ENDED = "period_not_ended"
+#: ADR-092 — a prose read of UNKNOWN scope that states a different number than the
+#: issuer's statement tables (which agree among themselves) for the same line and
+#: period. Set aside: it neither fills the slot nor manufactures a conflict.
+WITHHELD_PROSE_DISAGREES_WITH_STATEMENT = "prose_disagrees_with_statement_table"
 
 _PERIOD_REASONS = frozenset(
     {WITHHELD_ANNUAL_PERIOD_NOT_ENDED, WITHHELD_ANNUAL_PERIOD_UNDATED, WITHHELD_PERIOD_NOT_ENDED}
@@ -929,11 +935,57 @@ def _agree(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return abs(ma - mb) <= max(tolerance, 0.5)
 
 
+def _is_statement_read(fact: dict[str, Any]) -> bool:
+    """A read of the Group's primary statement: the validator ranked its table as one
+    (``line_rank`` 0), or it is an inline XBRL tag. Any other table — a highlights box,
+    a parent-company or segment table, a fact persisted before the rank existed — is
+    not, and never sets another read aside."""
+    from app.services.sources.statement_line_selector import LINE_RANK_STATEMENT
+
+    if fact.get("line_rank") == LINE_RANK_STATEMENT:
+        return True
+    return str(fact.get("excerpt_id") or "").startswith("ixbrl:")
+
+
+def _prose_set_aside(
+    group: list[dict[str, Any]], exclude: set[int] | None = None
+) -> list[dict[str, Any]]:
+    """ADR-092 rule 3 at the slot: the prose reads of UNKNOWN scope that disagree with
+    the group's primary-statement reads (:func:`_is_statement_read`), when those agree
+    among themselves and setting the prose aside leaves no disagreement. Otherwise
+    nothing: two tables that disagree, any other table, or an explicitly Group-scoped
+    sentence that disagrees, stay a conflict (never a side picked between two
+    statements of the same rank). A fact in ``exclude`` (a period-only blocker) is never
+    on the statement side."""
+    from app.services.sources.fact_scope import parse_scope
+    from app.services.sources.statement_line_selector import LINE_RANK_PROSE, line_rank
+
+    skip = exclude or set()
+    tables = [f for f in group if id(f) not in skip and _is_statement_read(f)]
+    if not tables or any(not _agree(tables[0], other) for other in tables[1:]):
+        return []
+    aside = [
+        f for f in group
+        if line_rank(f.get("excerpt_id")) == LINE_RANK_PROSE
+        and parse_scope(f.get("scope")).scope_type is None
+        and not _agree(tables[0], f)
+    ]
+    aside_ids = {id(f) for f in aside}
+    rest = [f for f in group if id(f) not in aside_ids]
+    if not aside or any(not _agree(rest[0], other) for other in rest[1:]):
+        return []
+    return aside
+
+
 def _without_conflicts(
     facts: list[dict[str, Any]],
+    set_aside: list[dict[str, Any]] | None = None,
+    exclude: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Drop every high-confidence, non-segment fact whose (field, period) another
-    document states differently — and list the disagreement. Never picks a side."""
+    document states differently — and list the disagreement. Never picks a side
+    between two statements of one rank; a prose read of unknown scope that a statement
+    table contradicts is set aside instead (ADR-092), into ``set_aside`` when given."""
     from app.services.sources.fact_scope import parse_scope
 
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -943,8 +995,16 @@ def _without_conflicts(
         groups.setdefault((str(fact["field"]), _period_group(fact)), []).append(fact)
     conflicted: set[tuple[str, str]] = set()
     conflicts: list[dict[str, Any]] = []
+    aside_ids: set[int] = set()
     for key, group in groups.items():
-        if any(not _agree(group[0], other) for other in group[1:]):
+        disagree = any(not _agree(group[0], other) for other in group[1:])
+        aside = _prose_set_aside(group, exclude) if disagree else []
+        if aside:
+            aside_ids |= {id(f) for f in aside}
+            if set_aside is not None:
+                set_aside.extend(aside)
+            continue
+        if disagree:
             conflicted.add(key)
             conflicts.append(
                 {
@@ -967,8 +1027,9 @@ def _without_conflicts(
     kept = [
         f
         for f in facts
-        if (str(f["field"]), _period_group(f)) not in conflicted
-        or f.get("confidence") != "high"
+        if id(f) not in aside_ids
+        and ((str(f["field"]), _period_group(f)) not in conflicted
+             or f.get("confidence") != "high")
     ]
     return kept, conflicts
 
@@ -1515,7 +1576,23 @@ def build_financial_statements_state(
     blockers = [
         f for f in period_only if (str(f["field"]), _period_group(f)) in eligible_groups
     ]
-    usable, conflicts = _without_conflicts([*eligible, *blockers])
+    set_aside: list[dict[str, Any]] = []
+    usable, conflicts = _without_conflicts(
+        [*eligible, *blockers], set_aside, exclude={id(f) for f in blockers})
+    # A blocker is already withheld (for its period); it is not listed twice.
+    already = {id(f) for f in blockers}
+    set_aside = [f for f in set_aside if id(f) not in already]
+    withheld = withheld + [
+        {
+            "field": f.get("field"),
+            "period": f.get("period"),
+            "reason": WITHHELD_PROSE_DISAGREES_WITH_STATEMENT,
+            "document_title": f.get("document_title"),
+            "document_date": f.get("document_date"),
+            "fact_id": f.get("fact_id"),
+        }
+        for f in set_aside
+    ]
     blocker_ids = {id(f) for f in blockers}
     usable = [f for f in usable if id(f) not in blocker_ids]
     selected_annual = _high_confidence_facts_for(usable, ISSUER_STATEMENT_FIELDS)

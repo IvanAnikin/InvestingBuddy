@@ -113,6 +113,15 @@ from app.services.sources.primary_fact_parser import (
     _parse_excerpt,
     _scale_word,
 )
+from app.services.sources.statement_line_selector import (
+    LINE_RANK_PROSE,
+    LINE_RANK_STATEMENT,
+    LINE_RANK_TABLE,
+    is_statement_shaped,
+    line_qualifies,
+    may_be_primary_statement,
+    section_totals_in_grid,
+)
 
 # --------------------------------------------------------------------------- #
 # Vocabulary
@@ -596,6 +605,10 @@ class ValidatedFact(BaseModel):
     period: str | None = None
     page_number: int | None = None
     table_location: str | None = None
+    # ADR-092 review — where the figure was read (``statement_line_selector``): 0 the
+    # Group's primary statement, 1 another table, 2 prose; ``None`` when not judged
+    # (an inline XBRL tag, a fact persisted before ADR-092).
+    line_rank: int | None = None
     extraction_method: str
     confidence: float
     validation_status: str
@@ -640,6 +653,7 @@ class _Candidate:
         "status",
         "notes",
         "scope",
+        "line_rank",
     )
 
     def __init__(
@@ -677,6 +691,9 @@ class _Candidate:
         self.status = status
         self.notes: list[str] = []
         self.scope = scope
+        # ADR-092 — where the figure was read: a primary statement table, another
+        # table, or prose (``statement_line_selector``). Prose until a table says so.
+        self.line_rank = LINE_RANK_PROSE
 
 
 # --------------------------------------------------------------------------- #
@@ -722,6 +739,10 @@ def _match_label(text: str) -> str | None:
         # statement then carried two magnitudes for one (cash, period) and the real
         # closing balance was demoted to excerpt-only.
         if label == FIELD_CASH and _OPENING_BALANCE_RE.search(text):
+            continue
+        # ADR-092 — a component is not its total: "Trade receivables and other current
+        # assets" names a line INSIDE current assets, and is no current-assets row.
+        if not line_qualifies(label, text):
             continue
         matched.add(label)
     if len(matched) == 1:
@@ -1252,6 +1273,15 @@ def _candidates_from_table(
     interim statements are in whole US dollars ("US$" headers, net loss 3,265,409),
     and a "million" in the page's prose made "40,133" read as US$ 40,133 million.
     """
+    # ADR-092 — a section heading ("Current assets") followed by its lines and an
+    # UNLABELLED subtotal: the heading carries the subtotal when the lines add up to it.
+    # A reconstructed table has already done this from the page geometry.
+    section_rows = set(table.section_total_rows)
+    if not table.reconstructed:
+        grid, filled = section_totals_in_grid(table.rows)
+        if filled:
+            table = table.model_copy(update={"rows": grid})
+            section_rows |= set(filled)
     col_period = _column_periods(table, document_period, part_year_document,
                                  december_needs_annual_signal)
     currency, scale = _table_currency_scale(
@@ -1335,6 +1365,11 @@ def _candidates_from_table(
             )
             if sign_note:
                 candidates[-1].notes.append(sign_note)
+            if row_index in section_rows:
+                candidates[-1].notes.append(
+                    "Read from the unlabelled subtotal printed under the section heading "
+                    f"'{row[0].strip()[:80]}'; the section's own lines sum to it."
+                )
             if label == FIELD_BORROWINGS:
                 borrowings_rows.append((row_index, candidates[-1]))
 
@@ -1343,7 +1378,33 @@ def _candidates_from_table(
     candidates = _resolve_secondary_revenue(candidates)
     _apply_subtotal_check(candidates)
     _apply_balance_sheet_check(candidates)
+    # ADR-092 — rank the table's reads: the Group's primary statement outranks any
+    # other table, and every table outranks prose (statement_line_selector).
+    rank = LINE_RANK_STATEMENT if _is_primary_statement(table, candidates) else LINE_RANK_TABLE
+    for cand in candidates:
+        cand.line_rank = rank
     return candidates
+
+
+def _is_primary_statement(table: ExtractedTable, candidates: list[_Candidate]) -> bool:
+    """ADR-092 review — the Group's primary statement, not merely its shape.
+
+    * Statement-shaped: at least 8 value rows reading at least 2 statement lines.
+    * Group or unknown scope: never a segment's or a business unit's table.
+    * At most three period columns and no parent-company, segment, multi-year,
+      highlights or adjusted marker in its header row or the headings over it
+      (``may_be_primary_statement``).
+    * No total in it failed its own check (a subtotal or the balance-sheet identity).
+    """
+    value_rows = sum(1 for row in table.rows[1:] if row and _numeric_cells(row))
+    if not is_statement_shaped(value_rows, len({c.label for c in candidates})):
+        return False
+    if (table.scope or "group").strip().lower() != "group":
+        return False
+    header = table.rows[0] if table.rows else []
+    if not may_be_primary_statement(header, table.context_headings):
+        return False
+    return not any("did not reconcile" in note for c in candidates for note in c.notes)
 
 
 def _is_bracketed(cell: str) -> bool:
@@ -1935,7 +1996,62 @@ def _may_conflict(a: "_Candidate", b: "_Candidate") -> bool:
     return a.fully_qualified and b.fully_qualified
 
 
+_UNKNOWN_SCALE_FACTORS: tuple[float, ...] = (1.0, 1e3, 1e6, 1e9, 1e-3, 1e-6, 1e-9)
+
+
+def _could_agree(a: "_Candidate", b: "_Candidate") -> bool:
+    """Whether two reads can state one figure. Two fully qualified reads agree as
+    :func:`_candidates_agree` says; when either one's units are unknown, they could
+    agree only if one is the other at some power-of-a-thousand scale."""
+    if a.value_numeric is None or b.value_numeric is None:
+        return True
+    if a.fully_qualified and b.fully_qualified:
+        return _candidates_agree(a, b)
+    return any(_values_agree(a.value_numeric * f, b.value_numeric)
+               for f in _UNKNOWN_SCALE_FACTORS)
+
+
 def _resolve_group(
+    key: tuple[str, str | None, str | None], group: list[_Candidate], cfg: Settings
+) -> ValidatedFact:
+    """:func:`_resolve_candidates`, after ADR-092's rule 3: the document's primary
+    statement table outranks every other read of the same line and period.
+
+    When the statement-shaped table's rows for this key agree among themselves, a read
+    from any other table, or from prose, that cannot state the same figure is set aside
+    rather than counted. Two real failures:
+
+    * A European annual report — a two-column page spliced a segment's "€ 107 million"
+      into an unscoped sentence about the operating result; it demoted the income
+      statement's 4 492 to excerpt-only and, across documents, withheld the Group figure.
+    * A foreign issuer's annual filing — a related-party balance table prints "Total
+      current assets 6,053"; the balance sheet's own "Total current assets 287,069" has
+      no unit in its grid, so it could not contradict, and the related-party balance
+      became Group current assets. Setting it aside leaves the statement row, whose units are
+      unknown: nothing is validated, which is the honest outcome.
+    """
+    statement = [c for c in group if c.line_rank == LINE_RANK_STATEMENT
+                 and c.value_numeric is not None]
+    set_aside: list[_Candidate] = []
+    if statement and all(_could_agree(statement[0], c) for c in statement[1:]):
+        set_aside = [
+            c for c in group
+            if c.line_rank != LINE_RANK_STATEMENT and c.value_numeric is not None
+            and not any(_could_agree(s, c) for s in statement)
+        ]
+    if not set_aside:
+        return _resolve_candidates(key, group, cfg)
+    aside = {id(c) for c in set_aside}
+    fact = _resolve_candidates(key, [c for c in group if id(c) not in aside], cfg)
+    fact.validation_notes.append(
+        f"{len(set_aside)} read(s) from prose or another table stating a different figure "
+        "were set aside: the document's primary statement table states this line for "
+        "this period."
+    )
+    return fact
+
+
+def _resolve_candidates(
     key: tuple[str, str | None, str | None], group: list[_Candidate], cfg: Settings
 ) -> ValidatedFact:
     """Collapse all candidates for one ``(label, period, scope)`` into a single
@@ -1986,6 +2102,7 @@ def _resolve_group(
                 period=period,
                 page_number=rep.page_number,
                 table_location=rep.table_location,
+                line_rank=rep.line_rank,
                 extraction_method=primary_method,
                 confidence=round(min(c.base_confidence for c in group), 4),
                 validation_status=VALIDATION_REJECTED,
@@ -2042,6 +2159,7 @@ def _resolve_group(
         period=period,
         page_number=best.page_number,
         table_location=best.table_location,
+        line_rank=best.line_rank,
         extraction_method=primary_method,
         confidence=conf,
         validation_status=status,
@@ -2075,10 +2193,12 @@ def _best_candidate(group: list[_Candidate]) -> _Candidate:
     representative value merely because of its unrelated excerpt-ranking
     score — exactly the "never prefer a candidate merely due to a higher
     excerpt score" failure mode this parser is designed to avoid."""
+    # ADR-092 — among agreeing reads, the statement table's own row is the one cited.
     return min(
         group,
         key=lambda c: (
             0 if c.status == VALIDATION_VALIDATED else 1,
+            c.line_rank,
             _SCALE_PRECISION_RANK.get(c.scale, 3),
             -c.base_confidence,
             _METHOD_QUALITY.get(c.method, 9),
@@ -2101,6 +2221,7 @@ def _excerpt_only_fact(
         period=rep.period,
         page_number=rep.page_number,
         table_location=rep.table_location,
+        line_rank=rep.line_rank,
         extraction_method=methods[0] if methods else rep.method,
         confidence=round(rep.base_confidence, 4),
         validation_status=VALIDATION_EXCERPT_ONLY,

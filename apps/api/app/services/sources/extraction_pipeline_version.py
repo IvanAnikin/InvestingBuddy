@@ -377,8 +377,20 @@ from __future__ import annotations
 # whose row an older pipeline derived (any kind, any issuer) once, within the existing
 # acquisition budgets; only the 5B/4C readings change. Raw-text extraction is
 # unchanged, so ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
+# Version 24 (Research Integrity Closure H3a, ADR-092): the statement-line selector. A
+# total line (current assets, current liabilities, total assets, total liabilities,
+# cash and cash equivalents) is read only from a row whose WHOLE label is the concept —
+# "Trade receivables and other current assets" is no longer current assets, "Exchange
+# gains on cash and cash equivalents" no longer cash — and operating profit refuses
+# "other operating income", "share of", non-operating and segment lines. A section
+# heading's UNLABELLED subtotal is read as the heading's line when the section's lines
+# sum to it (a European balance sheet: current assets 28 934, not 1 907). A prose read
+# that contradicts the document's primary statement table is set aside rather than
+# demoting the statement's figure, and among agreeing reads the statement row is cited.
+# A version-23 row may hold a component as a total. Raw-text extraction is unchanged, so
+# ``EXTRACTION_TEXT_LAYER_MIN_VERSION`` does not advance.
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
-CURRENT_EXTRACTION_PIPELINE_VERSION = 23
+CURRENT_EXTRACTION_PIPELINE_VERSION = 24
 
 #: ADR-085 — the first version whose SEC filing-body extraction reads inline XBRL. A held
 #: SEC filing document stamped below it has never had its tagged statements read.

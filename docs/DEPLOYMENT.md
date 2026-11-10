@@ -729,6 +729,34 @@ were already on.
   `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
 
+#### Extraction pipeline version 24 — statement-line selector (Research Integrity Closure H3a, ADR-092)
+
+Version 24 changes which statement row is read as a total. A total line (current assets,
+current liabilities, total assets, total liabilities, cash and cash equivalents) is read
+only from a row whose whole label is that line. A balance-sheet section heading carries
+its unlabelled subtotal when the section's own lines sum to it (with a held-for-sale
+line, the later subtotal that includes it). A prose read that contradicts the Group's
+primary statement table is set aside. A version-23 row may hold a component as a total
+(Richemont: current assets 1 907, which is "Trade receivables and other current
+assets"). Re-read cost and paths are the same as version 23: every held disclosure is
+re-read once on its company's next run, within `V3_DISCLOSURE_CORE_BUDGET_SECONDS`; a
+held document with table-derived facts is fully re-extracted on reuse.
+
+- **Migration 046** (`extracted_facts.line_rank`, nullable SMALLINT + CHECK 0/1/2).
+  Additive, no backfill. **Apply 046 before deploying this code**: the ORM maps the
+  column, so every read of `extracted_facts` selects it. Facts written before 046 have
+  `NULL` and never set another read aside. No new setting; no new host is contacted.
+- Rolling back the code to 23 re-reads the documents read at 24. The reuse path
+  compares versions with `==` (`load_reusable_documents`): a held document stamped 24
+  does not match 23, so it is revalidated, and one with table-derived facts is fully
+  re-extracted. The restamp compares with `!=`, so it is then stamped 23 again. After a
+  rollback, a document's facts are therefore version 23's again on its next reuse,
+  including the component-as-total reads this version removes. The `line_rank` column
+  can stay: version-23 code does not map it and writes `NULL`. Downgrading 046 is not
+  needed for a code rollback.
+- A parallel batch that also bumps the version must take the next number (25) and keep
+  this entry.
+
 #### Extraction pipeline version 23 — Appendix 5B / 4C items (Research Integrity Closure E2, ADR-087)
 
 Version 23 adds the ASX quarterly cash flow report reader. A held Appendix 5B or 4C PDF
@@ -742,8 +770,10 @@ re-read once on its company's next run, within `V3_DISCLOSURE_CORE_BUDGET_SECOND
   holds.
 - Rolling back to 22 (or 21) is safe. The 5B facts stay in the database as validated
   facts with extraction method `asx_quarterly_cash_flow_report`. Older code still shows
-  the cash and cash-flow facts and ignores the runway field, which it does not know. A
-  document read at 23 is not re-read by an older pipeline.
+  the cash and cash-flow facts and ignores the runway field, which it does not know.
+  (Corrected by ADR-092's review: an older pipeline DOES re-read a document read at 23
+  on its next reuse. `load_reusable_documents` matches versions with `==` and the
+  restamp uses `!=`, so the document is revalidated and stamped with the older version.)
 
 #### Extraction pipeline version 22 — inline XBRL in SEC filings (QA campaign 2026-11, ADR-085)
 

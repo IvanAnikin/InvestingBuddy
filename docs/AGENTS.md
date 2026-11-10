@@ -1874,3 +1874,59 @@ reader takes its counts and status lines from it.
     before the marked name, and a reporting verb right after the marker.
   - "while" and "whereas" count as comparisons.
 
+
+## Statement-line selector (ADR-092)
+
+`services/sources/statement_line_selector.py` decides which printed row is a statement
+line. Three rules, used by the table reconstructor, the fact validator and the V3
+statements view (`issuer_financials`):
+
+- **A component is not its total.** Current assets, current liabilities, non-current
+  assets, total assets, total liabilities and cash and cash equivalents are read only
+  from a row whose whole label is the line. Before comparing, these are removed: a
+  leading item number ("4.6"), a trailing note reference ("12", "21,22", "21-22",
+  "(note 5(a))", "(Notes 5, 6)", "(item 4.6)", "(a)", "(iii)"), a footnote mark, a
+  colon, ", total", and one of "(restated)", "(re-presented)", "(unaudited)",
+  "(audited)". Any other parenthetical names a different line and is not removed:
+  "(restricted)", "(parent company)", "(segment)", "(excl. HFS)", "(pro forma)". For
+  cash, a closing balance may follow: "at end of the (reporting) period", "at year-end",
+  "– end of year", "at the close of the period", "at 31 December 2025",
+  "at 31.12.2025", or a leading "Closing". "Trade receivables and other current
+  assets", "Restricted cash and cash equivalents" and "Exchange gains on cash and cash
+  equivalents" are not those lines. Operating profit refuses:
+  - "other operating …", "share of …", non-operating and segment rows;
+  - an issuer's own measure: adjusted, underlying, non-GAAP or pro forma;
+  - "before/after exceptional items", and anything before or after a share of
+    associates or joint ventures.
+- **A section heading carries its unlabelled subtotal** (current assets, current
+  liabilities, non-current assets only). It does so when the section's lines sum to it
+  in every column it prints, within half a printed unit per line. Otherwise nothing is
+  read. The section stays open until the next heading (`SectionTotalScanner`):
+  - Labelled rows after the first subtotal, then a second unlabelled row: the later row
+    is taken when it equals the first subtotal plus those rows (IFRS 5, "Assets of
+    disposal group held for sale"). Otherwise the section is refused.
+  - A held-for-sale line after the subtotal with no such second row also refuses it.
+  - The reconstructor places the row at the heading (`TableRow.section_total`,
+    `ExtractedTable.section_total_rows`). For ruled and HTML grids, the validator fills
+    the heading row. The fact says so in its validation notes.
+- **The Group's primary statement outranks other reads.** A table is ranked as the
+  primary statement (`line_rank` 0) only when all of these hold (`_is_primary_statement`):
+  - at least 8 value rows reading 2 distinct statement lines;
+  - Group or unknown scope;
+  - at most 3 distinct years in its header;
+  - no parent-company, company-only, segment, divisional, multi-year, highlights, key
+    figures, adjusted, underlying, non-GAAP or pro forma marker in its header row or
+    the headings over it (`ExtractedTable.context_headings`);
+  - none of its totals failed the subtotal or balance-sheet identity check.
+
+  Other tables are rank 1 and prose is rank 2. The rank is persisted on the fact
+  (`extracted_facts.line_rank`, migration 046).
+  - Inside a document, a read that cannot agree with the agreeing rank-0 rows is set
+    aside, with a note. Among agreeing reads, the statement row is cited.
+  - In the statements view, a prose read (`excerpt=X…`) of unknown scope is withheld as
+    `prose_disagrees_with_statement_table` and makes no conflict, when it disagrees with
+    agreeing rank-0 or inline XBRL reads. A figure withheld only for its period is never
+    on that side.
+  - Any other table, two disagreeing statements, or a disagreeing Group-scoped sentence
+    remains a conflict.
+- Extraction pipeline version 24.
