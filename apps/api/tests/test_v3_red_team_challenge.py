@@ -389,9 +389,11 @@ class TestEffectOnFindings:
 
 
 class TestUnresolvedReachesTheChair:
-    async def test_an_unresolved_challenge_becomes_a_disagreement(
+    async def test_an_unresolved_challenge_reaches_the_chair_not_the_disagreements(
         self, session
     ) -> None:
+        """ADR-095 — an unanswered objection to ONE finding is not a disagreement
+        between two findings; it reaches the Chair as an unresolved challenge."""
         run = await ledger.open_run(session, mode="standard")
         a = await ledger.record_finding(
             session,
@@ -426,9 +428,13 @@ class TestUnresolvedReachesTheChair:
         )
         await session.commit()
         assert result.unresolved == 1
-        assert result.disagreements_created == 1
+        assert result.disagreements_created == 0
         summary = await ledger.summarise(session, run)
-        assert summary.disagreements_unresolved == 1
+        assert summary.disagreements_unresolved == 0
+        refs = (await assemble(session, run)).unresolved_challenges
+        assert [(r.finding_id, r.weakness_class) for r in refs] == [
+            (a.id, WEAKNESS_PERIOD_MISMATCH)
+        ]
 
     async def test_no_counterpart_means_no_invented_second_finding(
         self, session

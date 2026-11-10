@@ -309,8 +309,12 @@ class LLMChair:
             f"{', '.join(sorted(ALLOWED_FUNDAMENTAL_SETUPS))}.\n"
             "3. NEVER output BUY, SELL, HOLD, WATCH, a price target or a fair value.\n"
             "4. Every key_point MUST carry the finding_id it rests on.\n"
-            "5. Where two findings disagree, SAY THAT THEY DISAGREE and which source is "
-            "more authoritative and why. Do NOT quietly pick one.\n"
+            "5. The platform computes conflicts between findings itself and lists them "
+            "under UNRESOLVED DISAGREEMENTS. Surface each listed one: say which "
+            "findings disagree and which source is more authoritative and why. Do NOT "
+            "say that findings or sources disagree, conflict or are inconsistent unless "
+            "that pair is listed; with none listed, there is no disagreement to report. "
+            "A Red Team challenge is an objection to ONE finding, not a disagreement.\n"
             "6. Group and segment figures are different; annual and interim are "
             "different. Never merge them.\n"
             "7. Never state a takeover offer, merger, going-private, insolvency, "
@@ -422,6 +426,17 @@ class LLMChair:
                     f"  {d.nature}: {d.finding_a_id} vs {d.finding_b_id} — "
                     f"{(d.description or '')[:300]}"
                 )
+        else:
+            # ADR-095 — said, so "no conflict" is the model's starting point.
+            lines.append("\nUNRESOLVED DISAGREEMENTS: none computed between findings.")
+        challenges = getattr(council_input, "unresolved_challenges", ())
+        if challenges:
+            lines.append(
+                "\nUNRESOLVED RED TEAM CHALLENGES — objections to ONE finding each that "
+                "no cited evidence answered (not disagreements between findings):"
+            )
+            for c in challenges[:10]:
+                lines.append(f"  [{c.weakness_class}] {c.finding_id}: {c.text[:300]}")
         if council_input.gaps:
             # Closed and superseded gaps never reach here (council_v2.inputs). A gap a
             # finding PARTLY addresses says which finding, so the analysis does not call

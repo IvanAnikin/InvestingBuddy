@@ -47,6 +47,7 @@ from app.services.director.domains import (
     label_for,
     report_section_for,
 )
+from app.services.ledger import search_status as _search_status
 
 REPORT_VERSION = 1
 
@@ -289,6 +290,23 @@ def web_evidence_block(
     }
 
 
+def _web_stage_searches(
+    context: Mapping[str, Any], queries: Mapping[str, Any]
+) -> dict[str, Any]:
+    """ADR-095 — the web stage's search counts, from the one search-status producer."""
+    stage = _search_status.build_search_status({"web_context": context}).get(
+        "web_stage_total")
+    if not stage:
+        return {"searches_run": queries.get("executed"),
+                "searches_planned": queries.get("planned")}
+    return {
+        "searches_run": stage["executed"],
+        "searches_planned": stage["planned"],
+        "searches_succeeded": stage["succeeded"],
+        "searches_failed": stage["failed"],
+    }
+
+
 def web_research_block(
     context: Mapping[str, Any],
     sections_findings: Sequence[Mapping[str, Any]],
@@ -327,8 +345,9 @@ def web_research_block(
         **followup,
         "state": context.get("state"),
         "label": context.get("label"),
-        "searches_run": queries.get("executed"),
-        "searches_planned": queries.get("planned"),
+        # ADR-095 — the one search-status producer: "N searches ran" is EXECUTED (an
+        # answer came back, a success or a provider error), never planned or paid calls.
+        **_web_stage_searches(context, queries),
         "documents_stored": (context.get("ingest") or {}).get("ingested"),
         "source_classes": dict(context.get("source_classes") or {}),
         "sources_found_not_accessible": listed,
@@ -1614,29 +1633,8 @@ def peer_selection(payloads: Sequence[Mapping[str, Any]]) -> dict[str, Any] | No
     }
 
 
-def domain_cost(
-    questions: Sequence[tuple[str | None, Sequence[Mapping[str, Any]]]]
-) -> dict[str, dict[str, int]]:
-    """What each domain's acquisition spent, from the questions' own acquisition logs."""
-    out: dict[str, dict[str, int]] = {}
-    for domain, log in questions:
-        bucket = out.setdefault(
-            domain or "unclassified",
-            {"tool_calls": 0, "corpus_queries": 0, "external_searches": 0, "fetches": 0},
-        )
-        for step in log or []:
-            rung = step.get("rung")
-            if rung == "platform_tools":
-                bucket["tool_calls"] += int(step.get("tool_calls") or 0)
-            elif rung == "corpus_by_intent":
-                bucket["corpus_queries"] += len(step.get("queries") or [])
-            elif rung in ("recency_corpus", "primary_document_reread"):
-                # ADR-076 newest-documents pass; ADR-084 held-primary-document re-read.
-                bucket["corpus_queries"] += int(step.get("tool_calls") or 0)
-            elif rung == "external_search" and step.get("query"):
-                bucket["external_searches"] += 1
-                bucket["fetches"] += int(step.get("fetched") or 0)
-    return dict(sorted(out.items()))
+#: ADR-095 — the per-domain search counts have ONE producer (``ledger.search_status``).
+domain_cost = _search_status.domain_cost
 
 
 __all__ = [

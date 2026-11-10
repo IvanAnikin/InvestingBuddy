@@ -782,6 +782,9 @@ class TestChairDisagreements:
         invented = str(uuid.uuid4())
         payload = _payload(chair={"synthesis": "", "key_points": [],
                                   "unresolved_disagreement_ids": [known, invented]})
+        # ADR-095: the unresolved ids are the computed conflicts'.
+        payload["gap_reconciliation"] = {"conflicts": [
+            {"finding_a_id": "a", "finding_b_id": "b", "disagreement_id": known}]}
         result = inv.enforce(payload, _state(payload, tally=_tally(unresolved_ids=(known,))))
         assert result.v3["chair"]["unresolved_disagreement_ids"] == [known]
         assert result.v3["chair"]["dropped_disagreement_ids"] == [invented]
@@ -802,6 +805,8 @@ class TestChairDisagreements:
 
     def test_a_recorded_disagreement_may_be_narrated(self) -> None:
         payload = _payload(chair={"synthesis": "Unresolved disagreements exist on net debt."})
+        payload["gap_reconciliation"] = {"conflicts": [
+            {"finding_a_id": "a", "finding_b_id": "b", "disagreement_id": "d1"}]}
         state = _state(payload, tally=_tally(unresolved_ids=("d1",)))
         rules = {v.rule for v in inv.enforce(payload, state).violations}
         # Only the stale council block count is repaired; the sentence stands.
@@ -1088,9 +1093,11 @@ def _patterns() -> list[tuple[str, Any]]:
     import re
 
     from app.services.ledger import canonical_state as cs
+    from app.services.ledger import ledger_invariants as li
 
     out: list[tuple[str, Any]] = []
-    for module in (inv, cs):
+    # ADR-095: the impossible-combination checker's patterns too.
+    for module in (inv, cs, li):
         short = module.__name__.rsplit(".", 1)[1]
         for name, value in vars(module).items():
             if isinstance(value, re.Pattern):
