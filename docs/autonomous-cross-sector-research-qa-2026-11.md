@@ -2176,6 +2176,32 @@ PYPL, JPM and CFR. **Acceptance bar** (not yet met):
 
 Deployed API/Web: `3203fc3`.
 
+### Corrective PRs — batch 2 (merged to main, NOT deployed)
+
+Status as of 2026-11-10. These five PRs are on `main` (head `e8d57c2`) but are **not deployed**. The Azure subscription
+has been suspended since 2026-11-10 ~07:54 UTC because it hit its credit spending limit. It is expected to reactivate on
+2026-11-16. Migration 046 has **not** been applied in production.
+
+**Every "replay" figure below comes from an offline replay over stored reports. None is from a live run.** A replay
+re-applies the new code to evidence already persisted from earlier runs. It does not fetch, search or re-run the council, so
+it cannot show how a fresh live run will behave.
+
+| PR | ADR | Commit | Change | Replay result (offline, stored reports) |
+|---|---|---|---|---|
+| #332 | 092 | `ea56d12` | Statement-line selector. A total line is the whole line; section subtotals; statement rank outranks prose. Migration 046 adds `extracted_facts.line_rank`. | CFR3: current assets 1,907 → 28,934; current liabilities 3,086 → 9,341; operating profit FY2026 4,492, with the 107m phantom conflict removed. Addresses the CFR P0. |
+| #333 | 093 | `92c51d1` | Segment hierarchy and duration. A figure knows its segment and its duration; business lines are not segments. | JPM3: the P0 sentence "primarily driven by its Markets segment" is withheld; NPA findings are scoped to CIB; -9M/-H1 period keys are used only when the source states them explicitly. Addresses the JPM P0. |
+| #334 | 094 | `f3a8e56` | Gap resolution pipeline. Every gap carries the resolution state research derived for it. Note pages past page 40 are read, and any truncation is recorded. | False "not found" gaps removed: HON4 7/11, LIN4 6/12, CLLS7 9/14, PYPL5 10/13, JPM3 9/14, CFR3 4/15. |
+| #335 | 096 | `2d196b7` | Liquidity built from its components; spin-off perimeter labels; implicit-subject entity firewall (fails closed). | CLLS7 runway 5.89 → 19.76 quarters (term deposits included, components shown). HON perimeter labels. Wrong-company findings: HON4 3 → 0, LIN4 3 → 0, PYPL5 1 → 0, CLLS7 4 → 1. Six genuine items are lost; ADR-096 lists them. |
+| #336 | 095 | `e8d57c2` | One search-status producer; deterministic chair conflicts; one ledger. | Over 18 reports: impossible combinations 41 → 0; unresolved disagreements 0 in every report; statement-slot conflicts 12 → 2 (the remaining one is HON FY2025 cash 12,487 vs 12,273, backing only). CFR3 status now reads "41 of 41 ran, 0 ok, 41 failed" (0 credits). |
+
+Known limits of batch 2:
+- **Conflict detector recall is 12/31** on the probe set. The PYPL5 false denial of a revenue split is **not** caught.
+- **Wrong-company firewall.** It fails closed, so it drops six genuine items (ADR-096). One wrong-company item is still
+  present in CLLS7 on replay.
+- **Residual gaps.** False gaps are reduced on replay, not eliminated. The fractions above count the gaps that were removed.
+- **Residual conflict.** One statement-slot conflict remains (HON FY2025 cash).
+- **Replay scope.** Replay cannot test acquisition, search or council behaviour, so none of these fixes is confirmed live.
+
 ### Representative reruns
 
 Scores are overall usefulness on a 0–10 scale, with P0/P1 counts, scored by independent evaluators against primary sources.
@@ -2193,12 +2219,17 @@ Scores are overall usefulness on a 0–10 scale, with P0/P1 counts, scored by in
 
 The baseline HON score of 6 comes from a different evaluator with a different rubric, so the drop to 4 is not like-for-like.
 
+The round-3 scores (`3203fc3`) are the baseline for batch 2: HON4 4, LIN4 5, CLLS7 4, PYPL5 4, JPM3 4 (P0 1), CFR3 5 (P0 1).
+Batch 2 has not been scored, because no live rerun has run on it.
+
 ### Open P0
+
+Both P0s stay **open** until a live rerun confirms the fix. A replay result does not close a P0.
 
 | Report | Defect | Status |
 |---|---|---|
-| CFR3 | Statement slots show current assets 1,907 and current liabilities 3,086, which are component rows. The totals are 28,934 and 9,341. | In progress: ADR-092, statement-line selector |
-| JPM3 | The synthesis calls Markets (a CIB business line) the main revenue "segment" and says it declined. CIB rose 14%, and CCB is larger. | In progress: ADR-093, segment hierarchy + duration |
+| CFR3 | Statement slots show current assets 1,907 and current liabilities 3,086, which are component rows. The totals are 28,934 and 9,341. | Open. Fix merged (#332, ADR-092, `ea56d12`), not deployed. Migration 046 is not applied in prod. The replay shows 28,934 / 9,341. |
+| JPM3 | The synthesis calls Markets (a CIB business line) the main revenue "segment" and says it declined. CIB rose 14%, and CCB is larger. | Open. Fix merged (#333, ADR-093, `92c51d1`), not deployed. The sentence is withheld on replay. |
 
 ### Open P1 (generic)
 
@@ -2215,13 +2246,31 @@ The baseline HON score of 6 comes from a different evaluator with a different ru
 - **Liquidity.** The Cellectis runway ignores US$144.8M of term deposits.
 - **Wrong-company items.** They persist in "current developments": HONA under HON, plus unrelated items for LIN, CLLS and PYPL.
 
+All of these P1s stay open. Batch 2 targets every one of them, as listed below. Each item has a merged fix that is not
+deployed and has been checked only by offline replay:
+- false gaps: #334;
+- search status, chair conflicts and the ledger: #336;
+- segment and duration: #333;
+- corporate action, liquidity and wrong-company items: #335.
+
+Stale periods (FY2025 facts partially closing FY2026 gaps) have no specific replay result on record.
+
 ### Status
 
 | State | Items |
 |---|---|
 | Fixed and live-confirmed | Latest annual FY2025 for HON; Q1 FY2027 fiscal keys for CFR; CLLS H1 2026 period; no other-company statement slots; document counts; cited findings exist; LIN Appendix 5B; PYPL "2025" = "FY2025"; customer funds kept separate |
-| Fixed, not live-confirmed | none |
+| Merged, not deployed, replay only (not live-confirmed) | #332 ADR-092 statement-line selector; #333 ADR-093 segment hierarchy + duration; #334 ADR-094 gap resolution; #335 ADR-096 liquidity/perimeter/entity firewall; #336 ADR-095 search status, chair conflicts, ledger |
+| Deploy blocker | Azure subscription suspended since 2026-11-10 ~07:54 UTC (credit spending limit); self-reactivation expected 2026-11-16 |
 | P2/P3 deferred | Recorded per report in the evaluations; tracked in this section as batches land |
+
+### Next steps
+
+1. On reactivation, deploy `main`, apply migration 046, and SHA-verify the deployed API/Web.
+2. Rerun **CFR and JPM** live first, to confirm or refute the two P0 fixes.
+3. Then rerun **Cellectis, HON and PYPL**, then **LIN**.
+4. Then score all six companies against the acceptance bar.
+5. Pace the runs at about 3–4 per day, to stay within the Tavily budget.
 
 This section is updated as each batch is merged and confirmed live. "RESEARCH INTEGRITY CLOSURE COMPLETE" is written only when
 the acceptance bar is met.
