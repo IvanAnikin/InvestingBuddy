@@ -92,6 +92,13 @@ RULE_PHANTOM_CONFLICT = "conflict_narrated_between_unpaired_findings"
 #: ADR-094 — a chair sentence saying a metric or topic is not disclosed / missing while
 #: a finding it cites states it, or the gap queue located it in a held document.
 RULE_ABSENCE_CONTRADICTED = "absence_stated_while_found"
+#: ADR-095 — a count of unresolved disagreements / conflicts that is not the number of
+#: conflicts the platform computed between the run's findings.
+RULE_CONFLICT_COUNT = "conflict_count_differs_from_ledger"
+#: ADR-095 — a report search count that is not the one search-status producer's.
+RULE_SEARCH_COUNT = "search_count_differs_from_search_status"
+#: ADR-095 review — "the red team disputed …" while no Red Team challenge is unresolved.
+RULE_UNBACKED_CHALLENGE = "red_team_dispute_narrated_with_none_unresolved"
 
 RULES: tuple[str, ...] = (
     RULE_FINDING_COUNT,
@@ -117,6 +124,9 @@ RULES: tuple[str, ...] = (
     RULE_LINE_AS_SEGMENT,
     RULE_LINE_AS_MAIN_DRIVER,
     RULE_ABSENCE_CONTRADICTED,
+    RULE_CONFLICT_COUNT,
+    RULE_SEARCH_COUNT,
+    RULE_UNBACKED_CHALLENGE,
 )
 
 #: Where a text sits. The chair is checked for everything; other texts are checked for
@@ -127,6 +137,9 @@ SITE_LEGACY = "legacy"
 #: ADR-093 — an editor-written synthesis sentence or section lead that cites its findings
 #: by label: checked like a record text, and held to what it cites like a chair claim.
 SITE_SYNTHESIS = "synthesis"
+#: ADR-095 — professional-report prose that cites nothing: checked like a record text,
+#: and for disagreements / conflicts the ledger's conflict list does not back.
+SITE_REPORT_PROSE = "report_prose"
 #: ADR-093 — findings read when a sentence citing nothing is held to the whole ledger.
 MAX_LEDGER_SOURCES = 120
 
@@ -548,22 +561,42 @@ _EVIDENCE_ADEQUATE_RE = re.compile(
     re.I,
 )
 
-#: A disagreement the LEDGER would record (QA review B2): "unresolved disagreement",
-#: "the red team disputed …", a disagreement id. A sentence about the WORLD disagreeing
+#: A disagreement the LEDGER would record (QA review B2): "unresolved disagreement", a
+#: disagreement id. A sentence about the WORLD disagreeing
 #: — "conflicting data on FY2026 operating profit", "analysts disagree", "guidance
 #: contradicts the consensus" — is a claim about the company, not about the research.
 #: Challenge wording is NOT a disagreement: the ledger records Red Team challenges
 #: separately (CFR: 5 challenges, 0 disagreements — "the red team challenged five
-#: findings" is true there). QA re-review X1.
+#: findings" is true there). QA re-review X1. ADR-095 review: "the red team disputed /
+#: contested …" narrates a CHALLENGE, held to the unresolved challenges
+#: (``_RED_TEAM_DISPUTE_RE``), never to the conflicts between findings.
 _LEDGER_DISAGREEMENT_RE = re.compile(
     r"\b(?:unresolved\s+(?:disagreements?|disputes?)"
-    r"|red[- ]team\s+(?:disputed|disputes|contested|contests)"
-    r"|disagreement\s+(?:id\s+)?[0-9a-f]{8}\b)",
+    r"|disagreement\s+(?:id\s+)?[0-9a-f]{8}\b"
+    # ADR-095 (HON4, CFR2) — the same claim about the research in other words, explicit
+    # forms only: the conflict word must be "unresolved" AND sit in the evidence /
+    # findings / sources / data ("unresolved conflicts in the evidence regarding capex"),
+    # or the findings themselves must be called conflicting ("conflicting findings
+    # exist"). "Unresolved conflicts in the region" is about the world and is kept.
+    r"|unresolved[ \t]{1,3}(?:conflicts?|inconsistenc(?:y|ies)|discrepanc(?:y|ies)"
+    r"|contradictions?)[ \t]{1,3}(?:in|between|among|within|across)[ \t]{1,3}"
+    r"(?:the[ \t]{1,3})?(?:evidence|findings|sources|data|research|record)\b"
+    r"|(?:conflicting|contradictory)[ \t]{1,3}findings\b"
+    r"|disagreements?[ \t]{1,3}(?:between|among)[ \t]{1,3}(?:the[ \t]{1,3})?findings\b)",
     re.I,
 )
+_RED_TEAM_DISPUTE_RE = re.compile(
+    r"\bred[- \t]team[ \t]{1,3}(?:disputed|disputes|contested|contests)\b", re.I)
 _NEGATED_DISAGREEMENT_RE = re.compile(
     r"\b(?:no|without|nor|0|zero|none)\s+(?:\w+\s+){0,2}(?:disagreements?|disputes?"
-    r"|challenges?)\b",
+    r"|challenges?|conflicts?|conflicting|contradictory|inconsistenc(?:y|ies)"
+    r"|discrepanc(?:y|ies)|contradictions?)\b",
+    re.I,
+)
+#: ADR-095 — "N unresolved disagreement(s)" / "N unresolved conflicts": a count the
+#: deterministic conflict list must back.
+_CONFLICT_COUNT_RE = re.compile(
+    r"\b(\d{1,4})[ \t]{1,3}unresolved[ \t]{1,3}(disagreement|conflict)(s|\(s\))?(?![\w(])",
     re.I,
 )
 
@@ -966,13 +999,137 @@ def _rule_unbacked_disagreement(sentence: str, state: Mapping[str, Any]) -> _Hit
                         "it cites a disagreement id the research ledger does not hold")
     unresolved = _g(state, "disagreements", "unresolved")
     total = _g(state, "disagreements", "total")
-    if unresolved != 0 or (total not in (0, None)):
+    finding_conflicts = _g(state, "conflicts", "finding_count")
+    if isinstance(finding_conflicts, int):
+        # ADR-095 review — a conflict between findings backs any such sentence; a
+        # statement-line conflict backs only one about ITS line (``slot_backs``).
+        if finding_conflicts > 0:
+            return None
+    elif unresolved != 0 or (total not in (0, None)):
         return None
-    m = _LEDGER_DISAGREEMENT_RE.search(sentence)
-    if m is None or _NEGATED_DISAGREEMENT_RE.search(sentence):
+    if _NEGATED_DISAGREEMENT_RE.search(sentence):
+        return None
+    # ADR-095 — with no conflict computed, an explicit conflict narrated between
+    # findings / sources (the ADR-091 conservative forms) is unbacked too.
+    if _LEDGER_DISAGREEMENT_RE.search(sentence) is None and not _narrates_conflict(sentence):
+        return None
+    if slot_backs(sentence, state):
         return None
     return _Hit(RULE_UNBACKED_DISAGREEMENT,
-                "it narrates a research disagreement, while the ledger records none")
+                "it narrates a research disagreement, while the ledger records none for "
+                "what it names")
+
+
+#: ADR-095 re-review N1 — a statement line by the words a sentence names it with.
+#: Bounded alternations. A line not listed backs nothing: missing beats wrong.
+_LINE_CASH = "cash"
+_LINE_NET_CASH = "net_cash"
+_SLOT_LINES = {
+    "cash_and_equivalents": _LINE_CASH,
+    "cash": _LINE_CASH,
+    "net_cash": _LINE_NET_CASH,
+    "net_debt": "net_debt",
+    "operating_profit": "operating_profit",
+    "net_income": "net_income",
+    "revenue": "revenue",
+    "total_debt": "total_debt",
+    "operating_cash_flow": "operating_cash_flow",
+}
+_LINE_WORDS: dict[str, re.Pattern[str]] = {
+    # "cash", "cash and cash equivalents" — not "net cash", "cash flow", "cash burn".
+    _LINE_CASH: re.compile(
+        r"(?<!net[ \t])\bcash\b(?![ \t]{1,3}(?:flows?|burn|runway|generation|"
+        r"position|returns?)\b)", re.IGNORECASE),
+    _LINE_NET_CASH: re.compile(r"\bnet[ \t]{1,3}cash\b(?![ \t]{1,3}flows?\b)",
+                               re.IGNORECASE),
+    "net_debt": re.compile(r"\bnet[ \t]{1,3}debt\b", re.IGNORECASE),
+    "operating_profit": re.compile(r"\boperating[ \t]{1,3}(?:profit|income|result)\b",
+                                   re.IGNORECASE),
+    "net_income": re.compile(r"\bnet[ \t]{1,3}(?:income|profit|earnings)\b",
+                             re.IGNORECASE),
+    "revenue": re.compile(r"\b(?:revenues?|net[ \t]{1,3}sales|turnover)\b", re.IGNORECASE),
+    "total_debt": re.compile(r"\btotal[ \t]{1,3}(?:debt|borrowings)\b", re.IGNORECASE),
+    "operating_cash_flow": re.compile(
+        r"\b(?:operating[ \t]{1,3}cash[ \t]{1,3}flows?|cash[ \t]{1,3}flows?[ \t]{1,3}"
+        r"from[ \t]{1,3}operations)\b", re.IGNORECASE),
+}
+#: The research fields a line covers: a sentence naming another research field
+#: (capex, runway …) is about more than the conflicted lines.
+_FIELD_LINES = {
+    "metric:revenue": {"revenue"},
+    "metric:cash": {_LINE_CASH, _LINE_NET_CASH},
+    "metric:net_debt": {"net_debt", _LINE_NET_CASH, "total_debt"},
+    "metric:operating_cash_flow": {"operating_cash_flow"},
+}
+#: "conflicting findings", "between findings": the sentence says FINDINGS conflict, and a
+#: statement-line conflict is between the issuer's documents.
+_FINDINGS_CONFLICT_RE = re.compile(r"\bfindings?\b", re.IGNORECASE)
+
+
+def slot_backs(sentence: str, state: Mapping[str, Any]) -> bool:
+    """ADR-095 — a sentence narrating a conflict is backed by the (cleaned) statement-line
+    conflicts only when it names no finding as a party, names at least one statement
+    line, every line it names is conflicted, every research field it names is covered by
+    those lines, and a period it names is the conflicted line's period."""
+    from app.services import research_fields as rf
+
+    text = sentence[:MAX_SENTENCE_CHARS]
+    if _FINDINGS_CONFLICT_RE.search(text):
+        return False
+    slots = _g(state, "conflicts", "statement_slots")
+    lines: dict[str, set[str | None]] = {}
+    for item in slots if isinstance(slots, list) else ():
+        if not isinstance(item, Mapping):
+            continue
+        line = _SLOT_LINES.get(str(item.get("metric") or ""))
+        if line:
+            lines.setdefault(line, set()).add(rf.normalise_period(item.get("period")) or None)
+    if not lines:
+        return False
+    named = {line for line, words in _LINE_WORDS.items() if words.search(text)}
+    if not named or not named <= set(lines):
+        return False
+    for key in rf.fields_mentioned(text):
+        if not (_FIELD_LINES.get(key, set()) & named):
+            return False
+    wanted = rf.normalise_period(rf.requested_period(text))
+    return not wanted or all(wanted in lines[line] for line in named)
+
+
+def _rule_unbacked_challenge(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """ADR-095 review — "the red team disputed …" is backed by an UNRESOLVED Red Team
+    challenge (``canonical_state.challenges``), not by a conflict between findings. With
+    the count unknown nothing is said."""
+    if _RED_TEAM_DISPUTE_RE.search(sentence[:MAX_SENTENCE_CHARS]) is None:
+        return None
+    unresolved = _g(state, "challenges", "unresolved")
+    if not isinstance(unresolved, int) or unresolved > 0:
+        return None
+    if _NEGATED_DISAGREEMENT_RE.search(sentence):
+        return None
+    return _Hit(RULE_UNBACKED_CHALLENGE,
+                "it says the Red Team disputed a finding, while no Red Team challenge "
+                "is unresolved")
+
+
+def _rule_conflict_count(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
+    """ADR-095 — "N unresolved disagreement(s)" is the number of conflicts the platform
+    computed (the deterministic chair sentence has its own repair)."""
+    if sentence.startswith("Deterministic synthesis:"):
+        return None
+    count = _g(state, "conflicts", "count")
+    if not isinstance(count, int):
+        return None
+    for m in _CONFLICT_COUNT_RE.finditer(sentence[:MAX_SENTENCE_CHARS]):
+        said = int(m.group(1))
+        if said == count:
+            continue
+        fixed = sentence[: m.start(1)] + str(count) + sentence[m.end(1):]
+        return _Hit(RULE_CONFLICT_COUNT,
+                    f"it states {said} unresolved disagreement(s) while the platform "
+                    f"computed {count} conflict(s) between the run's findings",
+                    fixed)
+    return None
 
 
 def _rule_det_counts(sentence: str, state: Mapping[str, Any]) -> _Hit | None:
@@ -1158,8 +1315,18 @@ _CHAIR_RULES = (
     _rule_det_counts,
     _rule_fallback_reason,
     *_RECORD_RULES,
+    _rule_conflict_count,
     _rule_unbacked_disagreement,
+    _rule_unbacked_challenge,
     _rule_absence_located,
+)
+#: ADR-095 — editor-written professional prose (with or without citations): the record
+#: rules and the conflict rules; counts and council narration stay chair-only.
+_PROSE_RULES = (
+    *_RECORD_RULES,
+    _rule_conflict_count,
+    _rule_unbacked_disagreement,
+    _rule_unbacked_challenge,
 )
 
 
@@ -1170,7 +1337,10 @@ def check_sentence(
     than ``MAX_SENTENCE_CHARS`` is not checked."""
     if len(sentence) > MAX_SENTENCE_CHARS:
         return None
-    for rule in _CHAIR_RULES if site == SITE_CHAIR else _RECORD_RULES:
+    rules = (_CHAIR_RULES if site == SITE_CHAIR
+             else _PROSE_RULES if site in (SITE_SYNTHESIS, SITE_REPORT_PROSE)
+             else _RECORD_RULES)
+    for rule in rules:
         hit = rule(sentence, state)
         if hit is not None:
             return hit
@@ -1385,13 +1555,14 @@ def _walk_report(enforcer: _Enforcer, report: Any) -> None:
             # ADR-093: a lead that cites its findings is held to them, like the chair.
             cited = _labelled_ids(lead, by_label)
             lead["text"] = enforcer.text(lead.get("text"), f"{base}.lead",
-                                         SITE_SYNTHESIS if cited else SITE_RECORD, cited)
+                                         SITE_SYNTHESIS if cited else SITE_REPORT_PROSE,
+                                         cited)
         for j, sentence in enumerate(section.get("sentences") or ()):
             if isinstance(sentence, dict):
                 cited = _labelled_ids(sentence, by_label)
                 sentence["text"] = enforcer.text(
                     sentence.get("text"), f"{base}.sentences[{j}]",
-                    SITE_SYNTHESIS if cited else SITE_RECORD, cited)
+                    SITE_SYNTHESIS if cited else SITE_REPORT_PROSE, cited)
         for j, finding in enumerate(section.get("findings") or ()):
             if isinstance(finding, dict):
                 finding["statement"] = enforcer.text(
@@ -1447,6 +1618,10 @@ def _structured(enforcer: _Enforcer, v3: dict[str, Any], legacy: dict[str, Any] 
 
     chair = v3.get("chair")
     known = _g(state, "disagreements", "unresolved_ids")
+    if known is None and _g(state, "conflicts", "finding_count") == 0:
+        # ADR-095 — no conflict was computed between the run's findings, so no chair id
+        # names one (a replay of a report whose ledger recorded phantom pairs).
+        known = []
     if isinstance(chair, dict) and known is not None:
         ids = [str(i) for i in chair.get("unresolved_disagreement_ids") or ()]
         unknown = [i for i in ids if i not in set(known)]
@@ -1530,6 +1705,7 @@ def _status_lines(enforcer: _Enforcer, v3: Mapping[str, Any]) -> None:
                 f"{searches} web searches, "
                 f"{_g(enforcer.state, 'status', 'web_searches', 'web_stage')} of them in "
                 "the company web stage")
+    _search_lines(enforcer, v3)
     statements = v3.get("financial_statements_state")
     interim = _g(enforcer.state, "status", "latest_interim", "label")
     periods = statements.get("reporting_periods") if isinstance(statements, Mapping) else None
@@ -1548,6 +1724,50 @@ def _status_lines(enforcer: _Enforcer, v3: Mapping[str, Any]) -> None:
                 enforcer, "loop.gaps_open", said, gaps_open,
                 f"the loop counted every gap it recorded ({said}), closed ones included; "
                 f"the ledger records {gaps_open} open")
+
+
+def _search_lines(enforcer: _Enforcer, v3: Mapping[str, Any]) -> None:
+    """ADR-095 — the professional report's "N searches ran" is the web stage's EXECUTED
+    count in the one search-status block (``canonical_state.searches``). A stated count
+    that differs is repaired IN THE PAYLOAD (ADR-095 review: every reader of the stored
+    report sees the same count, not only the page), and so is the "(N of M searches
+    ran)" label beside it."""
+    stage = _g(enforcer.state, "searches", "web_stage_total")
+    if not isinstance(stage, Mapping):
+        return
+    report = v3.get("professional_research")
+    if not isinstance(report, Mapping):
+        return
+    for i, section in enumerate(report.get("sections") or ()):
+        web = section.get("web_research") if isinstance(section, Mapping) else None
+        if not isinstance(web, dict):
+            continue
+        repaired = False
+        for key, truth in (("searches_run", stage.get("executed")),
+                           ("searches_planned", stage.get("planned")),
+                           ("searches_succeeded", stage.get("succeeded")),
+                           ("searches_failed", stage.get("failed"))):
+            said = web.get(key)
+            if not isinstance(truth, int) or not isinstance(said, int) or said == truth:
+                continue
+            enforcer.violations.append(Violation(
+                RULE_SEARCH_COUNT,
+                f"professional_research.sections[{i}].web_research.{key}",
+                str(said), "repaired",
+                f"the web stage's {key.replace('searches_', '')} searches are "
+                f"{truth} in the run's search status", str(truth),
+            ))
+            web[key] = truth
+            repaired = True
+        label = web.get("label")
+        if repaired and isinstance(label, str):
+            web["label"] = _SEARCHES_RAN_RE.sub(
+                f"({stage.get('executed')} of {stage.get('planned')} searches ran)",
+                label[:MAX_SENTENCE_CHARS], count=1)
+
+
+#: ADR-095 review — the web stage's "(N of M searches ran)" label words.
+_SEARCHES_RAN_RE = re.compile(r"\(\d{1,6}[ \t]of[ \t]\d{1,6}[ \t]searches[ \t]ran\)")
 
 
 def enforce(

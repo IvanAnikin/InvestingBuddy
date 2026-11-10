@@ -3778,6 +3778,68 @@ Additive keys under `source_summary_json.v3_research`:
   Each `*_shadow[]` list holds `{question_key, evidence_ids, statement_sha256}`, at
   most 50 entries, never the text.
 
+## ADR-095 — one search status, deterministic conflicts, one ledger view (no new endpoint)
+
+Additive keys under `source_summary_json.v3_research`:
+
+- `canonical_state.searches` — the ONE search-status producer
+  (`app/services/ledger/search_status.py`): `{version, web, classes, by_domain, credits,
+  web_stage_total, violations}`.
+  - Every class (`web_stage`, `web_followup`, `investigator_web`, `corpus`, `gap_queue`;
+    `null` when the run has no record of it) and the `web` total carry `planned`,
+    `attempted`, `executed`, `succeeded`, `failed`, `outcome_unknown`, `not_issued`,
+    `from_cache`, `not_attempted`, `results_returned`.
+  - `executed` = an answer came back (a success or a provider error); "N searches ran"
+    means `executed`. `succeeded + failed + outcome_unknown == executed` and
+    `executed <= attempted <= planned` by construction.
+  - `credits {provider, tavily_credits, tavily_credits_reported}`; `violations` lists
+    `search_succeeded_with_zero_credits` and the count invariants when they fail.
+- `canonical_state.status.web_searches` now reads the block: `{total, web_stage,
+  investigators, planned, succeeded, failed, outcome_unknown}`. **Changed meaning:**
+  `total` and `web_stage` count EXECUTED searches (stage + follow-up rounds), not the
+  stage's paid network calls.
+- `professional_research.sections[*].web_research` gains `searches_succeeded` and
+  `searches_failed`. **Changed meaning:** `searches_run` / `searches_planned` are the web
+  stage's executed / planned searches including its follow-up rounds; a provider error
+  counts as run and failed.
+- `canonical_state.conflicts` — `{source, count, ids, finding_pairs, items}`. `source` is
+  `reconciliation` (the run's record) or `payload_findings` (recomputed on an older
+  payload; `ids` is then `null`). `items[*]`: `{finding_a_id, finding_b_id, metric,
+  metric_label, period, scope, project, value_a, value_b, reason, disagreement_id?}`.
+- **Changed meaning:** `canonical_state.disagreements.{total, unresolved,
+  unresolved_ids, finding_pairs}` are the conflicts'; `ids` stays every ledger
+  disagreement id; new `ledger_rows` / `ledger_unresolved` keep the ledger's own counts.
+- `gap_reconciliation` gains `conflicts` (with `disagreement_id`) and
+  `absences_contradicted` (a finding denying a figure another states — no longer a
+  ledger disagreement). `temporal_disagreements` now lists the conflicts only.
+- `council` gains `unresolved_challenge_count`; a refused council's input carries the
+  disagreement ids.
+- `canonical_state.gaps` gains `closed` and `total`; `canonical_state.chair` gains
+  `label` and `cited_finding_ids`; the evidence status is never `adequate` while a gap is
+  `DOCUMENT_NOT_PARSED`; a `2026-9M` key is a period (latest period and latest interim).
+- `state_invariants` gains `impossible_combinations: [{code, path, detail}]` and two
+  rules: `conflict_count_differs_from_ledger` (repaired) and
+  `search_count_differs_from_search_status` (repaired where the page reads it).
+- `challenges.disagreements_created` is always 0 for new runs: an unresolved Red Team
+  challenge is no longer recorded as a disagreement.
+- Review follow-ups (same ADR):
+  - `challenges.unresolved_items[*]` `{challenge_id, finding_id, weakness_class, text}`
+    and `canonical_state.challenges` `{unresolved, ids, items}`.
+  - `canonical_state.conflicts` gains `finding_count`, `statement_slot_count` and
+    `statement_slots[{source: "statement_slot", metric, period, distinct_amounts,
+    values[{value, scale, currency, document_title, document_date}]}]` (cleaned).
+    `count` stays the finding conflicts' count; finding conflicts carry
+    `source: "findings"`.
+  - `gap_reconciliation.absences_contradicted_precise` — the contradicted absences the
+    Chair is told about.
+  - `canonical_state.status.web_searches.from_cache`,
+    `professional_research.sections[*].web_research.searches_from_cache`,
+    `web_context.followup.rounds[*].from_cache`, `searches.credits.web_search_calls`.
+  - New rule `red_team_dispute_narrated_with_none_unresolved`; new search-status
+    violation `search_network_calls_exceed_recorded_calls`.
+  - `search_count_differs_from_search_status` now also repairs the stored payload's
+    `searches_*` counts and the "(N of M searches ran)" label.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

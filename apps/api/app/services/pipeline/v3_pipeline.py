@@ -42,11 +42,13 @@ V2 path would have produced — and a test asserts exactly that.
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from app.core.structured_logging import log_event
 from app.services.agent_tools.builtin import register_builtins
 from app.services.agent_tools.contracts import ToolBudget
 from app.services.agent_tools.policy import policy_for
@@ -85,6 +87,8 @@ from app.services.sources.taxonomy import tier_rank
 #: The key the V3 research state is attached under. Additive on a JSONB column the
 #: report API already returns and the frontend already tolerates unknown keys in.
 SOURCE_SUMMARY_KEY = "v3_research"
+
+logger = logging.getLogger(__name__)
 
 
 class _PlaybookAdapter:
@@ -1186,6 +1190,7 @@ async def _run(
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
     #    and the Chair must not see one that was retired.
     council = await council_inputs.assemble(session, run)
+    _attach_chair_conflicts(council, outcome)
     # ADR-082 — the council block a reader sees is the one the Chair deliberated over,
     # not the pre-challenge one: the Red Team may have withdrawn findings and recorded
     # disagreements, and a block saying "0 unresolved" beside a chair listing three
@@ -1374,6 +1379,22 @@ def company_context_notes(applicability: Any, commercial_stage: str | None) -> t
             "that has ended."
         )
     return tuple(notes)
+
+
+def _attach_chair_conflicts(council: Any, outcome: Any) -> None:
+    """ADR-095 review — what the Chair is told beside the ledger's disagreements: the
+    findings that deny a whole field another finding states. Statement-line conflicts are
+    not listed for narration (re-review N1). Never raises; missing is the fail-closed
+    direction (the Chair is then told less, never something wrong)."""
+    try:
+        record = getattr(outcome, "gap_reconciliation", None)
+        precise = record.get("absences_contradicted_precise") if isinstance(
+            record, dict) else None
+        council.denied_while_stated = tuple(
+            dict(d) for d in (precise or ()) if isinstance(d, dict)
+        )
+    except Exception:  # noqa: BLE001 - context for the Chair never costs the run
+        pass
 
 
 async def reconcile_step(session: Any, run: Any, *, company: Any, outcome: Any) -> None:
@@ -2308,6 +2329,30 @@ def _enforce_research_state(
     out["state_invariants"] = invariants.InvariantResult(
         v3=out, llm_council=None, violations=violations
     ).to_dict()
+    try:
+        # ADR-095 — what the report still says that cannot be true together with the
+        # one ledger view, recorded for the audit (the enforcer above repaired or
+        # withheld what it could).
+        from app.services.ledger.ledger_invariants import impossible_combinations
+
+        found = impossible_combinations(
+            out, state,
+            repaired_paths=[v.path for v in violations if v.action == "repaired"],
+        )
+        out["state_invariants"]["impossible_combinations"] = found
+        # Counts and codes only — never a sentence of the report.
+        log_event(
+            logger, "v3_impossible_combinations",
+            level=logging.WARNING if found else logging.INFO,
+            research_run_id=payload.get("research_run_id"),
+            count=len(found),
+            codes=",".join(sorted({str(f.get("code")) for f in found})) or None,
+        )
+    except Exception as exc:  # noqa: BLE001 - an audit record never costs the report
+        log_event(
+            logger, "v3_impossible_combinations_check_failed", level=logging.WARNING,
+            research_run_id=payload.get("research_run_id"), error=type(exc).__name__,
+        )
     if legacy is not None:
         out["legacy_council"] = invariants.legacy_council_block(state)
         # The V2 block is rewritten ONLY when one of its sentences was withheld; a

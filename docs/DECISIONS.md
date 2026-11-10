@@ -10281,3 +10281,152 @@ evaluations of CLLS7 (`0fd3d358`), HON4 (`16434358`), LIN4 (`171fff21`) and PYPL
   statements. r4 dropped on any SEC-registrant name, which matched ordinary words and
   named sources. The final rule drops only on a namesake the statement names; the
   registrant path is shadow only.
+
+---
+
+## ADR-095: One Search Status, Deterministic Conflicts, One Ledger View
+
+**Date:** 2026-11-10 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** research integrity closure batch H5. The 18 stored round-1..3 reports
+(HON2–4, LIN2–4, CLLS5–7, PYPL3–5, JPM–JPM3, CFR–CFR3) showed three search counts that
+disagreed on the same page, chair text that narrated "unresolved disagreements" the
+findings did not contain, and 41 impossible combinations of state across the payload.
+
+### Root causes (base `f3a8e56`)
+1. **Several search counters.** `canonical_state.status_lines` summed the cost basis's
+   `consumption.web_search_calls` with `consumption.web_stage.web_search_calls`
+   (`canonical_state.py:1108-1126`), while the professional section read
+   `web_context.queries.executed` (`professional_research.py:330`). Neither counted
+   follow-up rounds, nor said how many searches SUCCEEDED: CFR3 showed "0 of 32 ran"
+   while 41 searches ran and all 41 failed with a provider error.
+2. **Phantom disagreements.** `reconcile_run` recorded every `absence_contradicted`
+   pair as a ledger disagreement (`gap_reconciliation.py:1960-1995`). Reviewed by hand,
+   none of the 41 such pairs in the 18 reports was a conflict between two figures: each
+   set a denial of a SUB-item (a split, a breakdown) or a negated clause about the
+   company ("no cash was generated after capex") beside a finding stating the item's
+   total. That does not make every denial true: PYPL5 F1 ("no product, geographic or
+   customer revenue split is disclosed") is contradicted by other findings that state
+   splits, and no pair caught it (see Known limits). The Red Team recorded every unanswered
+   objection to ONE finding as a disagreement between two findings
+   (`council_v2/red_team.py:334`, `_persist_disagreement`). CLLS7 showed 18 unresolved
+   disagreements; none was a conflict.
+3. **The chair narrated a count it was not given.** Rule 5 of the chair prompt asked it
+   to surface disagreements; with none listed it still wrote "unresolved conflicts in
+   the evidence" (HON2, HON4, LIN3, PYPL5, CFR2).
+4. **No check on the whole view.** Each invariant judged one field. Nothing caught a
+   chair saying "no findings" over 30 findings, `gaps_closed > gaps`, a conflict count
+   that disagreed with its ids, or a latest period older than a held finding.
+
+### Decision
+- **One search status** (`ledger/search_status.py`, `build_search_status`). One record
+  per class: `web_stage`, `web_followup`, `investigator_web`, `corpus`, `gap_queue`,
+  each with planned / attempted / executed / succeeded / failed / outcome_unknown /
+  not_issued / from_cache, consistent by construction; `check_search_status` reports a
+  record that is not. The status line, the professional section and the web panel all
+  read it. Investigator tool calls count as `outcome_unknown` (the tool rows hold calls,
+  not outcomes); corpus queries count as succeeded. A cache serve counts as executed and
+  succeeded and is listed as `from_cache`.
+- **Conflicts are computed, never narrated.** `gap_reconciliation.deterministic_conflicts`
+  is the only producer of a disagreement between findings: two reported values of the
+  same metric, same scope_key, compatible period (YTD vs quarter, dates), one money
+  amount each linked to the metric, no scale ambiguity (a power-of-1000 ratio is a unit
+  difference, not a conflict), neither withdrawn / superseded / another entity; or two
+  DIFFERENT guidance statements from the supersede pass. A contradicted absence is
+  recorded as `absences_contradicted`, not as a disagreement. An unresolved Red Team
+  challenge stays a challenge and reaches the chair as `UNRESOLVED RED TEAM CHALLENGES`.
+- **The chair is told when there are none.** The prompt says "UNRESOLVED DISAGREEMENTS:
+  none computed between findings."; rule 5 allows only the listed conflicts. A sentence
+  that narrates a conflict when none was computed is withheld
+  (`report_invariants._rule_unbacked_disagreement`); a stated count that differs from
+  the ledger is repaired (`conflict_count_differs_from_ledger`), and so is a search count
+  that differs from the search status (`search_count_differs_from_search_status`).
+- **One ledger view, checked whole.** `canonical_state` carries `searches`, `conflicts`,
+  `disagreements`, gaps `closed/total`, the chair's label and cited finding ids, and
+  year-to-date periods (`2026-9M`). `ledger/ledger_invariants.impossible_combinations`
+  runs in `v3_pipeline._enforce_research_state` and writes
+  `state_invariants.impossible_combinations`.
+- No migration.
+
+### Review follow-ups (H5 review, NO-GO → this commit)
+1. **Red Team narration.** "The red team disputed / contested …" left
+   `_LEDGER_DISAGREEMENT_RE` and is held to `canonical_state.challenges.unresolved`
+   (`_rule_unbacked_challenge`, `red_team_dispute_narrated_with_none_unresolved`). The
+   round records each unresolved challenge (`challenges.unresolved_items`: finding,
+   weakness class, text); the research panel lists them under the Red Team block.
+2. **Contradicted absences.** All candidate pairs stay in `absences_contradicted`
+   (audit); `absences_contradicted_precise` (`denied_while_stated`: a disclosure denial
+   of the whole field, no split/breakdown/segment/margin words, and the other finding
+   states the field's Group amount) is told to the Chair as "FINDINGS DENIED BY ANOTHER
+   FINDING".
+3. **No invented conflicts.** A reported-value conflict needs GROUP scope on both
+   sides; the stating clause, read with the 40 characters before it (the clause split
+   cuts "U.S." off "U.S. revenue"), must name no qualified measure, segment, product,
+   service or region (`names_other_measure`: adjusted, organic, pro forma, underlying,
+   core, comparable, transaction, subscription, US/U.S./UK/EU …; "US$" and "USD" are
+   currencies), and the up-to-three words before the metric may only be a period, a
+   Group qualifier or the issuer's name and ticker (`issuer_tokens`).
+4. **Statement-line conflicts: cleaned, visible, backing only** (re-review N1).
+   `financial_statements_state.conflicts` are cleaned (`statement_slot_conflicts`):
+   value x scale, one currency, amounts that agree within 0.5% or differ by a power of
+   a thousand are one amount, at least two distinct amounts must remain, and they must
+   lie within 25% of each other (further apart is another duration or scope). Of the 12
+   stored slot conflicts, 10 were phantoms (unit slips such as 8,496 "billion" vs
+   8,496m, a quarter vs nine months, a segment's 107m beside the Group's 4.5bn); only
+   HON cash 12,487 vs 12,273 survives (HON3, HON4). The survivors are
+   `conflicts.statement_slots` / `statement_slot_count`: NOT counted in
+   `conflicts.count` or the unresolved disagreements and NOT listed to the Chair. They
+   only back a narrated conflict (`report_invariants.slot_backs`) when the sentence
+   names no finding as a party, names a statement line by its own words (cash, cash
+   and cash equivalents, net cash, net debt, operating profit, net income, revenue,
+   total debt, operating cash flow), every line and research field it names is a
+   conflicted line, and a period it names is that line's.
+5. **An annual key is the whole year** (re-review N2). `_period_compatible` rejects,
+   for an annual key, a statement naming a quarter, a part of the year (half, H1, nine
+   months, year to date) or the prior year ("prior / previous / last year", "a year
+   earlier / ago").
+6. The linearity test pauses the collector and compares a text four times longer
+   (bound 12x; quadratic is 16x).
+7. `search_network_calls_exceed_recorded_calls`: stage successes not from cache plus
+   failures may not exceed the stage's recorded `web_search_calls`. Follow-up rounds
+   now record `from_cache`; the check runs only when every stage block recorded it.
+8. "N from cache" on the research panel and the web research summary
+   (`searches_from_cache`).
+9. `v3_impossible_combinations` (count, codes) and
+   `v3_impossible_combinations_check_failed` (exception class) are logged; never text.
+10. `_search_lines` repairs `searches_run / planned / succeeded / failed` and the
+    "(N of M searches ran)" label in the stored payload.
+11. A conflict whose pair the ledger already held keeps that row's id.
+
+### Replay (offline, stored payloads, base vs branch)
+- Impossible combinations 41 → 0 across the 18 reports.
+- Finding conflicts: 0 in every report. Cleaned statement-line conflicts: HON3 1,
+  HON4 1 (cash 12,487 vs 12,273); 0 elsewhere (12 stored, 10 phantoms dropped).
+- Search line now counts every class: e.g. HON2 2 → 29, LIN2 6 → 28, CLLS5 10 → 45,
+  PYPL3 5 → 28; CFR3's web panel "0 of 32 ran" → "41 of 41 ran, 0 returned results,
+  41 failed".
+- Ledger disagreements removed: 41 absence pairings + 1 red-team pairing (LIN2); the
+  deterministic detector finds 0 conflicts in the 18 reports. Unbacked chair sentences
+  withheld: HON2 1, HON4 2, LIN3 1, PYPL5 1, CFR2 3.
+
+### Known limits
+- Investigator web-search outcomes are unknown; corpus queries are assumed to succeed.
+- The detector is deliberately narrow, and narrow is not the same as correct. Its
+  checks (below) were chosen against the review's probes; a pair that passes all of them
+  can still be two different measures worded in a way the checks do not anticipate.
+- **Recall (review item 5).** The reviewer's 31 recall probes: 12 found, 19 missed;
+  all 17 false-positive probes (and 7 more in the tests) find nothing. Missed by design: no Group scope on one side, a period key that is a bare year
+  on one side and FY on the other, "came in at" / "posted … in revenue" / an amount
+  before the metric, two amounts in one clause, a negative sign written as "an outflow
+  of", currency mismatch, a 1000x scale error (indistinguishable from a unit slip), a
+  rounding difference within tolerance, "three months ended …" against "Q3", every
+  metric outside the research-field vocabulary (net income, EPS, margins, CET1,
+  headcount), and an issuer name before the metric when the name is not passed in (the
+  payload replay has no issuer name). The 18 stored reports produce 0 finding conflicts.
+- **A false absence is not caught.** `absences_contradicted_precise` keeps a pair only
+  when the denial is about DISCLOSURE of the whole field and the other finding states
+  that field's Group amount; 0 of the 41 stored pairs qualify. A finding that wrongly
+  denies a SUB-item another finding states (PYPL5 F1) is neither listed to the Chair
+  nor kept out of the synthesis; ADR-094's absence rule withholds only sentences whose
+  topic the gap queue LOCATED.
+- The 9M latest-period and DOCUMENT_NOT_PARSED checks are proven in tests only; the
+  stored payloads predate ADR-093/094.

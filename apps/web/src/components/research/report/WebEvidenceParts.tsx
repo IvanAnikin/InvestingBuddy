@@ -194,8 +194,20 @@ export function WebResearchSummary({ web }: { web: WebResearchQuality | null }) 
         ? `${web.searchesRun} of ${web.searchesPlanned} planned searches ran`
         : `${web.searchesRun} search${web.searchesRun === 1 ? "" : "es"} ran`
       : null;
+  // ADR-095 — "ran" is executed; a search that came back with a provider error ran and
+  // failed, and the line says so rather than counting it as research done.
+  const outcome =
+    ran !== null && web.searchesFailed !== null && web.searchesFailed > 0
+      ? `${web.searchesSucceeded ?? 0} returned results · ${web.searchesFailed} failed with a provider error`
+      : null;
+  const cached =
+    ran !== null && web.searchesFromCache !== null && web.searchesFromCache > 0
+      ? `${web.searchesFromCache} from cache`
+      : null;
   const stats = [
     ran,
+    outcome,
+    cached,
     web.documentsStored !== null
       ? `${web.documentsStored} web document${web.documentsStored === 1 ? "" : "s"} read and stored`
       : null,

@@ -143,10 +143,22 @@ export type V3CanonicalState = {
   chairReasonText: string | null;
   /** Report-status sentences repaired or withheld at assembly. */
   invariantViolations: number;
-  /** ADR-091 — the run's web searches: the company web stage's plus the investigators'. */
+  /** ADR-091 — the run's web searches: the company web stage's plus the investigators'.
+   *  ADR-095 — EXECUTED searches, from the one search-status producer. */
   webSearchesTotal: number | null;
+  /** ADR-095 — of the executed web searches: planned, succeeded, failed, outcome unknown. */
+  webSearchesPlanned: number | null;
+  webSearchesSucceeded: number | null;
+  webSearchesFailed: number | null;
+  webSearchesOutcomeUnknown: number | null;
+  /** ADR-095 review — of the succeeded, served from the same-day cache. */
+  webSearchesFromCache: number | null;
   webStageSearches: number | null;
   investigatorSearches: number | null;
+  /** ADR-095 review — Red Team objections to one finding each that no cited evidence
+   *  answered. Never a disagreement between findings. */
+  unresolvedChallengeCount: number | null;
+  unresolvedChallenges: V3UnresolvedChallenge[];
   /** ADR-091 — primary documents the run read (one per document). */
   documentsRead: number | null;
   /** ADR-091 — how many of the open gaps the payload lists. */
@@ -155,6 +167,24 @@ export type V3CanonicalState = {
    *  Null on older reports. */
   gapQueue: V3GapQueueCounts | null;
 };
+
+/** ADR-095 review — one unresolved Red Team challenge, as the run recorded it. */
+export type V3UnresolvedChallenge = {
+  findingId: string;
+  weaknessClass: string | null;
+  text: string;
+};
+
+function readUnresolvedChallenges(v: unknown): V3UnresolvedChallenge[] {
+  if (!isRecord(v)) return [];
+  return records(v.items)
+    .map((item) => ({
+      findingId: str(item.finding_id) ?? "",
+      weaknessClass: str(item.weakness_class),
+      text: str(item.text) ?? "",
+    }))
+    .filter((item) => item.findingId !== "" && item.text !== "");
+}
 
 /** ADR-094 — how every gap of the run was routed and what the re-read did. */
 export type V3GapQueueCounts = {
@@ -1127,10 +1157,29 @@ export function readProfessionalResearch(v3Payload: unknown): ProfessionalResear
   if (!isRecord(raw) || !Array.isArray(raw.sections) || raw.sections.length === 0) {
     return null;
   }
-  const sections = records(raw.sections)
+  const read = records(raw.sections)
     .map(readProfessionalSection)
     .filter((s): s is ProfessionalSection => s !== null);
-  if (sections.length === 0) return null;
+  if (read.length === 0) return null;
+  // ADR-095 — the web stage's search counts come from the one search-status block
+  // (`canonical_state.searches.web_stage_total`) whenever the report carries it.
+  const stage = canonicalWebStageSearches(v3Payload.canonical_state);
+  const sections = stage
+    ? read.map((section): ProfessionalSection =>
+        section.kind === "evidence" && section.webResearch
+          ? {
+              ...section,
+              webResearch: {
+                ...section.webResearch,
+                searchesRun: stage.executed,
+                searchesPlanned: stage.planned,
+                searchesSucceeded: stage.succeeded,
+                searchesFailed: stage.failed,
+              },
+            }
+          : section,
+      )
+    : read;
 
   const subject = isRecord(raw.subject)
     ? {
@@ -1264,8 +1313,15 @@ export function readCanonicalState(
     chairReasonText: str(chair.reason_text),
     invariantViolations: num(checks.violations_total) ?? 0,
     webSearchesTotal: status.webSearchesTotal,
+    webSearchesPlanned: status.webSearchesPlanned,
+    webSearchesSucceeded: status.webSearchesSucceeded,
+    webSearchesFailed: status.webSearchesFailed,
+    webSearchesOutcomeUnknown: status.webSearchesOutcomeUnknown,
+    webSearchesFromCache: status.webSearchesFromCache,
     webStageSearches: status.webStageSearches,
     investigatorSearches: status.investigatorSearches,
+    unresolvedChallengeCount: isRecord(v.challenges) ? num(v.challenges.unresolved) : null,
+    unresolvedChallenges: readUnresolvedChallenges(v.challenges),
     documentsRead: status.documentsRead,
     gapsListed: status.gapsListed,
     gapQueue: readGapQueue(v.gap_resolution),
@@ -1373,11 +1429,37 @@ function readStatementsPayload(
   };
 }
 
+/** ADR-095 — the company web stage's searches (with its follow-up rounds), from the one
+ *  search-status block; null on reports written before it. */
+export function canonicalWebStageSearches(canonical: unknown): {
+  planned: number;
+  executed: number;
+  succeeded: number;
+  failed: number;
+} | null {
+  if (!isRecord(canonical) || !isRecord(canonical.searches)) return null;
+  const stage = canonical.searches.web_stage_total;
+  if (!isRecord(stage)) return null;
+  const planned = num(stage.planned);
+  const executed = num(stage.executed);
+  const succeeded = num(stage.succeeded);
+  const failed = num(stage.failed);
+  if (planned === null || executed === null || succeeded === null || failed === null) {
+    return null;
+  }
+  return { planned, executed, succeeded, failed };
+}
+
 /** ADR-091 — the canonical status lines (`canonical_state.status`), each null when the
     report predates them. */
 export function canonicalStatus(canonical: unknown): {
   latestInterim: string | null;
   webSearchesTotal: number | null;
+  webSearchesPlanned: number | null;
+  webSearchesSucceeded: number | null;
+  webSearchesFailed: number | null;
+  webSearchesOutcomeUnknown: number | null;
+  webSearchesFromCache: number | null;
   webStageSearches: number | null;
   investigatorSearches: number | null;
   documentsRead: number | null;
@@ -1390,6 +1472,11 @@ export function canonicalStatus(canonical: unknown): {
   return {
     latestInterim: str(interim.label),
     webSearchesTotal: num(searches.total),
+    webSearchesPlanned: num(searches.planned),
+    webSearchesSucceeded: num(searches.succeeded),
+    webSearchesFailed: num(searches.failed),
+    webSearchesOutcomeUnknown: num(searches.outcome_unknown),
+    webSearchesFromCache: num(searches.from_cache),
     webStageSearches: num(searches.web_stage),
     investigatorSearches: num(searches.investigators),
     documentsRead: num(status.documents_read),

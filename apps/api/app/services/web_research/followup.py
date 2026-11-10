@@ -1028,6 +1028,8 @@ class FollowupRound:
     query_keys: list[str] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     executed: int = 0
+    #: ADR-095 review — of the executed, served from the same-day cache (no credit spent).
+    from_cache: int = 0
     failed: int = 0
     not_issued: int = 0
     deduped: int = 0
@@ -1064,6 +1066,7 @@ class FollowupRound:
             "queries": list(self.queries),
             "query_keys": list(self.query_keys),
             "executed": self.executed,
+            "from_cache": self.from_cache,
             "failed": self.failed,
             "not_issued": self.not_issued,
             "deduped": self.deduped,
@@ -1695,6 +1698,8 @@ class WebFollowup:
             ex = outcome.execution
             if ex.executed:
                 record.executed += 1
+                if getattr(outcome, "from_cache", False):
+                    record.from_cache += 1
                 executed.add(_norm(outcome.request.query))
             elif ex.network_call_count:
                 record.failed += 1

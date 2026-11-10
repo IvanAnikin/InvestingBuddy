@@ -58,6 +58,13 @@ function Stat({
 
 const n = (v: number | null): string => (v === null ? "—" : String(v));
 
+/** ADR-095 review — a finding as the report labels it ("finding F3"), else its short id. */
+function professionalLabel(v3: V3Research, findingId: string): string {
+  const labels = v3.professionalResearch?.findingLabels ?? {};
+  const label = labels[findingId] ?? labels[findingId.toLowerCase()];
+  return label ? `finding ${label}` : `finding ${findingId.slice(0, 8)}`;
+}
+
 
 function labelWords(raw: string | null): string {
   if (!raw) return "—";
@@ -384,6 +391,23 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
             {challenges.confidenceLowered} had confidence lowered.
           </p>
           <RiskEvidenceNote risk={challenges.riskEvidence} />
+          {(v3.canonicalState?.unresolvedChallenges.length ?? 0) > 0 && (
+            <ul className="mt-3 max-w-3xl space-y-2" data-testid="v3-unresolved-challenges">
+              {v3.canonicalState?.unresolvedChallenges.map((c, i) => (
+                <li
+                  key={`${c.findingId}-${i}`}
+                  className="text-sm leading-relaxed text-[color:var(--ib-ink-2)]"
+                >
+                  <span className="font-medium text-[color:var(--ib-ink)]">
+                    Unresolved challenge to{" "}
+                    {professionalLabel(v3, c.findingId)}
+                    {c.weaknessClass ? ` (${c.weaknessClass.replace(/_+/g, " ")})` : ""}:
+                  </span>{" "}
+                  <span className="[overflow-wrap:anywhere]">{c.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
@@ -470,9 +494,25 @@ export default function V3ResearchPanel({ v3 }: { v3: V3Research | null }) {
               value={n(v3.canonicalState?.webSearchesTotal ?? consumption.webSearchCalls)}
               hint={
                 v3.canonicalState?.webSearchesTotal != null
-                  ? `${n(v3.canonicalState.webStageSearches)} web stage · ${n(
-                      v3.canonicalState.investigatorSearches,
-                    )} by investigators`
+                  ? [
+                      `${n(v3.canonicalState.webStageSearches)} web stage · ${n(
+                        v3.canonicalState.investigatorSearches,
+                      )} by investigators`,
+                      // ADR-095 — what the executed searches returned.
+                      v3.canonicalState.webSearchesSucceeded != null
+                        ? `${n(v3.canonicalState.webSearchesSucceeded)} returned results · ${n(
+                            v3.canonicalState.webSearchesFailed,
+                          )} failed`
+                        : null,
+                      v3.canonicalState.webSearchesOutcomeUnknown
+                        ? `${n(v3.canonicalState.webSearchesOutcomeUnknown)} outcome not recorded`
+                        : null,
+                      v3.canonicalState.webSearchesFromCache
+                        ? `${n(v3.canonicalState.webSearchesFromCache)} from cache`
+                        : null,
+                    ]
+                      .filter((s): s is string => s !== null)
+                      .join(" · ")
                   : undefined
               }
             />

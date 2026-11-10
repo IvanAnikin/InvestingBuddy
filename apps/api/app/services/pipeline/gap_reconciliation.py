@@ -893,6 +893,470 @@ def _capped_pairs(
                 raised += 1
 
 
+# ── ADR-095. Deterministic conflicts ──────────────────────────────────────── #
+
+#: Why a pair of findings is a conflict: two statements of the same metric for the same
+#: reporting period, scope and project whose values differ beyond rounding.
+CONFLICT_SAME_PERIOD_VALUES = "same_period_values_differ"
+
+#: A year-to-date duration in a statement's own words, and a three-month one. A quarter
+#: key whose statement names a year to date (or the reverse) is a figure whose duration
+#: is unsettled (ADR-093): it is never set against another figure.
+_YTD_WORDS_RE = re.compile(
+    r"\b(?:nine|six)[- \t]months?\b|\b(?:9|6)M\b|\byear[- \t]to[- \t]date\b|\bYTD\b"
+    r"|\bfirst[ \t]half\b|\bhalf[- \t]year\b",
+    re.IGNORECASE,
+)
+_QUARTER_WORDS_RE = re.compile(
+    r"\bthree[- \t]months?\b|\bquarter(?:ly)?\b|\bQ[1-4]\b", re.IGNORECASE)
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: What may sit between a metric's words and ITS amount: a short parenthesis, a colon
+#: and one linking verb ("revenue was $5.0bn", "revenue: $5.0bn", "revenue of $5.0bn").
+#: Anything else ("operating cash flow / net income), against net income of 57,048")
+#: means the amount belongs to another quantity.
+_METRIC_LINK_RE = re.compile(
+    r"[ \t:,]{0,3}(?:\([^()]{0,30}\)[ \t]{0,3})?"
+    r"(?:(?:was|were|is|of|at|totall?ed|reached|amounted[ \t]{1,3}to|stood[ \t]{1,3}at"
+    r"|(?:rose|fell|grew|increased|decreased|declined)[ \t]{1,3}to)[ \t]{1,3})?"
+    # A sign before the amount ("was -147,782"); the amount's magnitude is compared.
+    r"[-−]?"
+)
+_METRIC_WINDOW = 60
+#: Two amounts a power of a thousand apart are one figure read at two scales ("33172.0
+#: USD m" parsed without its "m"), never a conflict.
+_SCALE_RATIOS = (1e3, 1e6, 1e9)
+
+
+#: ADR-095 review — a clause naming a measure OTHER than the reported Group total
+#: (adjusted / organic / pro forma revenue, transaction revenues, a product or service
+#: line, a segment, a region) states a different quantity: it is never set against the
+#: reported figure. Deny-list, read over the whole stating clause; a miss is the
+#: accepted direction. Bounded alternation.
+_QUALIFIED_MEASURE_RE = re.compile(
+    r"\b(?:adjusted|organic(?:ally)?|pro[- \t]?forma|underlying|core|comparable"
+    r"|like[- \t]for[- \t]like|non[- \t]?(?:gaap|ifrs)|recurring|constant[ \t]currency"
+    r"|transaction(?:s|al)?|subscriptions?|products?|services?|segments?|divisions?"
+    r"|divisional|business[ \t](?:unit|line)s?|geographic(?:al)?|regions?|regional"
+    r"|domestic|international|overseas|americas?|north[ \t]america|latin[ \t]america"
+    r"|europe(?:an)?|asia(?:[- ]pacific)?|china|japan|germany|france|canada|australia"
+    r"|africa|middle[ \t]east|united[ \t]states|united[ \t]kingdom|excluding|ex-)",
+    re.IGNORECASE,
+)
+#: Upper-case geographic abbreviations ("U.S. revenue", "UK sales"), never a currency
+#: ("US$", "USD").
+_GEO_ABBREVIATION_RE = re.compile(
+    r"(?<![\w.])(?:U\.S\.|U\.K\.)(?![ \t]?\$)|\b(?:US|UK|EU|EMEA|APAC|LATAM)\b(?!\$)")
+#: Clause boundaries for the words right before a metric mention.
+_PREFIX_BOUNDARY_RE = re.compile(r"[;:,()]|\.(?:[ \t]|$)")
+_PREFIX_TOKEN_RE = re.compile(r"[\w'’&-]{1,40}")
+#: What may stand in the (up to) three words right before the metric: a period, the
+#: Group / consolidated / total / net qualifiers, or the issuer's own name.
+_PREFIX_WORD_RE = re.compile(
+    r"(?:(?:fy|q[1-4]|h[12]|[369]m)?['’]?\d{2,4}|fy|fiscal|full|full-year|annual|year"
+    r"|quarter|quarterly|q[1-4]|h[12]|the|its|in|for|during|total|group|consolidated"
+    r"|net|reported)",
+    re.IGNORECASE,
+)
+_PREFIX_WORDS = 3
+#: Words of a legal name that never identify the issuer on their own.
+_GENERIC_NAME_WORDS = frozenset(
+    "inc inc. corp corporation co company plc ltd limited llc lp holdings holding group "
+    "sa ag nv se spa the international global".split()
+)
+
+
+def issuer_tokens(names: Iterable[str | None]) -> frozenset[str]:
+    """The casefolded words of the issuer's name and ticker that may precede a metric
+    ("PayPal revenue"), generic legal words excluded."""
+    out: set[str] = set()
+    for name in names:
+        for token in _PREFIX_TOKEN_RE.findall(str(name or "")[:200]):
+            word = token.casefold().strip("'’")
+            if len(word) >= 2 and word not in _GENERIC_NAME_WORDS:
+                out.add(word)
+    return frozenset(out)
+
+
+def _prefix_allowed(clause: str, start: int, issuer: frozenset[str]) -> bool:
+    """The (up to) three words right before a metric mention, in its own clause, are
+    a period, a Group qualifier or the issuer's name — nothing else ("adjusted",
+    "transaction", "Americas", "U.S." all fail)."""
+    before = _PREFIX_BOUNDARY_RE.split(clause[max(0, start - 80): start])[-1]
+    for token in _PREFIX_TOKEN_RE.findall(before)[-_PREFIX_WORDS:]:
+        word = token.casefold()
+        for suffix in ("'s", "’s"):
+            if word.endswith(suffix):
+                word = word[: -len(suffix)]
+        if word in issuer or _PREFIX_WORD_RE.fullmatch(word):
+            continue
+        return False
+    return True
+
+
+def names_other_measure(clause: str) -> bool:
+    """ADR-095 review — the clause names a qualified measure, a segment, a product line
+    or a region: not the Group's reported total."""
+    text = clause[:2000]
+    if _QUALIFIED_MEASURE_RE.search(text) or _GEO_ABBREVIATION_RE.search(text):
+        return True
+    from app.services.sources.primary_document_extractor import scope_claim_signal
+
+    return gap_scope(text) not in (None, "group") or scope_claim_signal(text) == "segment"
+
+
+#: How far before its clause a statement is read for a qualifier the clause split cut
+#: off ("FY2025 U.S. revenue was ..." splits after "U.S").
+_CLAUSE_CONTEXT_BEFORE = 40
+
+
+def _clause_context(statement: str, clause: str) -> str:
+    """The clause with the words right before it in its statement. A clause the
+    statement does not contain verbatim is read with the whole (bounded) statement:
+    missing beats wrong."""
+    text = statement[:2000]
+    # The clause may come back case-folded; find it case-insensitively.
+    at = text.lower().find(clause[:200].lower())
+    if at < 0:
+        return text
+    return text[max(0, at - _CLAUSE_CONTEXT_BEFORE): at + len(clause)]
+
+
+def _stated_amount(
+    finding: FindingFacts, clause: str, field_key: str, issuer: frozenset[str]
+) -> tuple[str, float, float] | None:
+    """``_metric_amount`` of the clause, read with the words before it (review item 3:
+    the clause split must not cut a region or a qualifier off the metric)."""
+    if names_other_measure(_clause_context(finding.statement, clause)):
+        return None
+    return _metric_amount(clause, field_key, issuer)
+
+
+def _metric_amount(
+    clause: str, field_key: str, issuer: frozenset[str] = frozenset()
+) -> tuple[str, float, float] | None:
+    """The one amount a clause states FOR ``field_key``: the first amount right after a
+    mention of the metric, linked to it by nothing but a short parenthesis, a colon or
+    one linking verb, the mention preceded only by a period, a Group qualifier or the
+    issuer's name. ``None`` when no mention has one, mentions state different amounts,
+    or the clause names another measure (``names_other_measure``)."""
+    if names_other_measure(clause):
+        return None
+    found: set[tuple[str, float, float]] = set()
+    for pattern in rf._COMPILED.get(field_key, ()):  # noqa: SLF001 - same module family
+        for mention in pattern.finditer(clause[:2000]):
+            if not _prefix_allowed(clause, mention.start(), issuer):
+                continue
+            window = clause[mention.end(): mention.end() + _METRIC_WINDOW]
+            first = None
+            for money in (rf.MONEY_RE, rf.MONEY_SUFFIX_RE):
+                hit = money.search(window)
+                if hit is not None and (first is None or hit.start() < first.start()):
+                    first = hit
+            if first is None or not _METRIC_LINK_RE.fullmatch(window[: first.start()]):
+                continue
+            values = rf.money_values(window[first.start(): first.end()])
+            if len(values) == 1:
+                found.add(values[0])
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _scale_ambiguous(a: _Value, b: _Value) -> bool:
+    va, vb = abs(a.items[0][1]), abs(b.items[0][1])
+    low, high = min(va, vb), max(va, vb)
+    if low <= 0:
+        return True
+    ratio = high / low
+    return any(abs(ratio / r - 1.0) < ROUNDED_SAME_TOLERANCE for r in _SCALE_RATIOS)
+
+
+@dataclass(frozen=True)
+class Conflict:
+    """Two findings of the run that state different values for the same metric, the
+    same reporting period, the same scope and the same project. Computed from the
+    ledger alone; the Chair may narrate only these (ADR-095)."""
+
+    finding_a_id: str
+    finding_b_id: str
+    metric: str
+    period: str | None
+    scope: str | None
+    project: str | None
+    value_a: str
+    value_b: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "finding_a_id": self.finding_a_id,
+            "finding_b_id": self.finding_b_id,
+            "metric": self.metric,
+            "metric_label": rf.label_of(self.metric),
+            "period": self.period,
+            "scope": self.scope,
+            "project": self.project,
+            "value_a": self.value_a,
+            "value_b": self.value_b,
+            "reason": self.reason,
+        }
+
+    def to_temporal(self) -> TemporalDisagreement:
+        return TemporalDisagreement(self.finding_a_id, self.finding_b_id, self.metric,
+                                    self.reason)
+
+
+def _value_text(value: _Value | None) -> str:
+    if value is None:
+        return "?"
+    if value.kind == "money":
+        return "; ".join(f"{str(c).upper()} {v:,.0f}" for c, v, _t in value.items)
+    return "; ".join(str(i) for i in value.items)
+
+
+def _period_compatible(finding: FindingFacts, period: str) -> bool:
+    """The period a finding is keyed to is the one its own words state: the same key, a
+    balance date that is the key's end, or no stated period and no duration word of
+    another kind."""
+    stated = finding.stated_period
+    if stated and stated != period:
+        if not _ISO_DATE_RE.match(stated):
+            return False
+        from app.services.ledger.canonical_state import period_bounds
+
+        bounds = period_bounds(period)
+        if bounds is None or bounds[1].isoformat() != stated:
+            return False
+    text = finding.statement[:2000]
+    is_quarter = bool(re.search(r"-Q[1-4]$", period))
+    is_ytd = bool(re.search(r"-(?:H[12]|\d{1,2}M)$", period))
+    if is_quarter and _YTD_WORDS_RE.search(text):
+        return False
+    if is_ytd and _QUARTER_WORDS_RE.search(text):
+        return False
+    # ADR-095 re-review N2 — an annual key over a statement that names a quarter, a part
+    # of the year or the prior year is a figure of another duration or year.
+    if (not is_quarter and not is_ytd and re.fullmatch(r"(?:FY)?\d{4}", period)
+            and (_QUARTER_WORDS_RE.search(text) or _YTD_WORDS_RE.search(text)
+                 or _PART_OR_PRIOR_YEAR_RE.search(text))):
+        return False
+    return True
+
+
+#: N2 — "H1", "Q4"-style tokens already sit in the quarter / YTD words; these add the
+#: prior year ("prior year", "a year earlier") and a half named by its letter.
+_PART_OR_PRIOR_YEAR_RE = re.compile(
+    r"\b(?:prior|previous|last|preceding)[ \t]{1,3}(?:fiscal[ \t]{1,3})?year\b"
+    r"|\ba[ \t]{1,3}year[ \t]{1,3}(?:earlier|ago|before)\b|\bH[12]\b",
+    re.IGNORECASE,
+)
+
+
+def _reported_value_conflicts(
+    findings: Sequence[FindingFacts], issuer: frozenset[str] = frozenset()
+) -> list[Conflict]:
+    """Reported figures (not guidance): one money amount per stating clause, the same
+    metric, the same financial reporting period (ADR-093 durations included), GROUP
+    scope on both sides, the same project and statement kind, and values that differ
+    beyond rounding (``compare_values``). Never paired: a finding about another entity,
+    with an unsettled period or duration, not keyed to the Group, stating two amounts in
+    the clause, or naming another measure (adjusted, organic, a segment, a region —
+    ``names_other_measure``). These checks narrow the detector; they do not prove a
+    pair that passes them is a true conflict (ADR-095 known limits)."""
+    groups: dict[tuple[str, ...], list[tuple[FindingFacts, _Value]]] = {}
+    for finding in findings:
+        if finding.withdrawn or finding.superseded_by or finding.is_other_entity:
+            continue
+        # ADR-095 review — Group scope only: a segment figure keyed to a segment is
+        # set against nothing, and a segment figure carrying Group scope is caught by
+        # the clause's own words below.
+        if finding.period_conflict or not _is_group_scope(finding.scope_key):
+            continue
+        period = rf.normalise_period(finding.period_key)
+        if not period or not rf.is_financial_period(period):
+            continue
+        if not _period_compatible(finding, period):
+            continue
+        for field_key in finding.fields:
+            if field_key in rf.SUPERSEDABLE_FIELDS or field_key.startswith("milestone:"):
+                continue
+            clause = _single_field_clause(finding, field_key)
+            if clause is None:
+                continue
+            # One amount in the clause, and it is the metric's own.
+            if len(rf.money_values(clause)) != 1:
+                continue
+            amount = _stated_amount(finding, clause, field_key, issuer)
+            if amount is None:
+                continue
+            money = (amount,)
+            key = (
+                field_key,
+                "group",
+                finding.project or "",
+                period,
+                "|".join(sorted(rf.value_qualifiers(clause, field_key))),
+                "non_actual" if finding.is_non_actual else "actual",
+            )
+            groups.setdefault(key, []).append((finding, _Value("money", money)))
+    out: list[Conflict] = []
+    for (field_key, _scope, project, period, _q, _kind), members in groups.items():
+        raised = 0
+        for i, (a, va) in enumerate(members):
+            for b, vb in members[i + 1:]:
+                if raised >= MAX_DISAGREEMENTS_PER_GROUP:
+                    break
+                if (a.finding_id == b.finding_id or compare_values(va, vb) != DIFFERENT
+                        or _scale_ambiguous(va, vb)):
+                    continue
+                out.append(Conflict(
+                    a.finding_id, b.finding_id, field_key, period, a.scope_key,
+                    project or None, _value_text(va), _value_text(vb),
+                    CONFLICT_SAME_PERIOD_VALUES,
+                ))
+                raised += 1
+    return out
+
+
+def _guidance_conflicts(findings: Sequence[FindingFacts]) -> list[Conflict]:
+    """Guidance (``SUPERSEDABLE_FIELDS``) whose statements for the same field, scope,
+    project, period and qualifiers differ and that ``supersede`` could not order in
+    time. A pair whose values are not comparable (two currencies) is no conflict."""
+    by_id = {f.finding_id: f for f in findings}
+    _supersessions, unordered = supersede(findings)
+    out: list[Conflict] = []
+    for item in unordered:
+        a, b = by_id.get(item.finding_a_id), by_id.get(item.finding_b_id)
+        if a is None or b is None or a.is_other_entity or b.is_other_entity:
+            continue
+        clause_a = _single_field_clause(a, item.field_key)
+        clause_b = _single_field_clause(b, item.field_key)
+        if clause_a is None or clause_b is None:
+            continue
+        va = _value(item.field_key, clause_a, a.published_at)
+        vb = _value(item.field_key, clause_b, b.published_at)
+        if va is None or vb is None or compare_values(va, vb) != DIFFERENT:
+            continue
+        period = rf.normalise_period(a.period_key) or None
+        out.append(Conflict(
+            a.finding_id, b.finding_id, item.field_key, period, a.scope_key, a.project,
+            _value_text(va), _value_text(vb), item.reason,
+        ))
+    return out
+
+
+def deterministic_conflicts(
+    findings: Sequence[FindingFacts], *, issuer_names: Iterable[str | None] = ()
+) -> list[Conflict]:
+    """ADR-095 — the run's conflicts, computed from the ledger's findings ONLY.
+
+    ONE mechanism: same entity (neither finding says it is about another), same metric,
+    compatible period, same scope and project, values incompatible beyond rounding. A
+    finding that DENIES a figure another states (``contradicted_absences``) is no value
+    conflict and is not listed; nor is a Red Team objection to one finding.
+
+    ``issuer_names``: the subject's name and ticker, the only proper name that may stand
+    before a metric ("<Issuer> revenue was ..."). Without them such a clause is skipped."""
+    seen: set[frozenset[str]] = set()
+    out: list[Conflict] = []
+    issuer = issuer_tokens(issuer_names)
+    for conflict in [*_guidance_conflicts(findings),
+                     *_reported_value_conflicts(findings, issuer)]:
+        pair = frozenset((conflict.finding_a_id, conflict.finding_b_id))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        out.append(conflict)
+    return out[:MAX_DISAGREEMENTS]
+
+
+#: ADR-095 review — a denial of a SUB-item of a field ("no product revenue split", "no
+#: segment margin breakdown") is not contradicted by a finding stating the field's total.
+#: Bounded alternation.
+_SUB_ITEM_RE = re.compile(
+    r"\b(?:split|splits|breakdown|broken[ \t]{1,3}(?:down|out)|by[ \t]{1,3}[a-z]{3,20}"
+    r"|per[ \t]{1,3}[a-z]{3,20}|mix|concentration|segments?|products?|geograph[a-z]{0,6}"
+    r"|regions?|customers?|margins?|growth|guidance|forecast|outlook|drivers?)\b",
+    re.IGNORECASE,
+)
+
+
+#: ADR-095 review — the denial must be about DISCLOSURE ("is not disclosed", "no capex
+#: figure is reported", "was not found in the evidence"). "So no cash was generated after
+#: capital spending" and "five-sixths of operating cash was not spent on capex" are
+#: negated clauses about the company, not denials that the figure exists. Bounded.
+_DISCLOSURE_DENIAL_RE = re.compile(
+    r"\b(?:not[ \t]{1,3}(?:separately[ \t]{1,3})?(?:disclosed|reported|provided|available"
+    r"|stated|given|found|quantified|broken[ \t]{1,3}out)|undisclosed|unavailable"
+    r"|(?:does|did|do)[ \t]{1,3}not[ \t]{1,3}(?:disclose|report|provide|state|break)"
+    r"|no[ \t]{1,3}(?:\w{1,20}[ \t]{1,3}){0,3}(?:is|was|were|are)[ \t]{1,3}"
+    r"(?:disclosed|reported|provided|available|stated|found))\b",
+    re.IGNORECASE,
+)
+
+
+def denied_while_stated(
+    findings: Sequence[FindingFacts],
+    absences: Sequence[TemporalDisagreement],
+    *,
+    issuer_names: Iterable[str | None] = (),
+) -> list[TemporalDisagreement]:
+    """ADR-095 review — the contradicted absences precise enough to tell the Chair: the
+    denying finding denies the WHOLE field (no split, breakdown, segment or margin of
+    it), and the stating finding states that field's own Group amount
+    (``_metric_amount``). "No product, geographic or customer revenue split is disclosed"
+    beside "revenue was $33.2bn" is dropped: the two do not touch the same thing."""
+    by_id = {f.finding_id: f for f in findings}
+    issuer = issuer_tokens(issuer_names)
+    out: list[TemporalDisagreement] = []
+    for item in absences:
+        absent, stated = by_id.get(item.finding_a_id), by_id.get(item.finding_b_id)
+        if absent is None or stated is None:
+            continue
+        denying: list[str] = []
+        for raw in rf._raw_clauses(absent.statement):  # noqa: SLF001 - same module family
+            clause = _SOURCE_LABEL_NEGATION.sub(" ", raw)
+            if (rf.is_negated(clause.lower(), clause)
+                    and item.field_key in _denied_fields(clause)[0]):
+                denying.append(clause)
+        if not denying or any(_SUB_ITEM_RE.search(c[:2000]) for c in denying):
+            continue
+        if not any(_DISCLOSURE_DENIAL_RE.search(c[:2000]) for c in denying):
+            continue
+        stating = _single_field_clause(stated, item.field_key)
+        if stating is None or _stated_amount(stated, stating, item.field_key,
+                                             issuer) is None:
+            continue
+        out.append(item)
+    return out
+
+
+def finding_facts_from_payload(finding: Mapping[str, Any]) -> FindingFacts | None:
+    """A payload finding (``v3_research.findings[]``) as reconciliation reads it — the
+    replay and the report-assembly check use the same detector as the run."""
+    from types import SimpleNamespace
+
+    if not isinstance(finding, Mapping) or not finding.get("finding_id"):
+        return None
+    published = finding.get("source_published_at")
+    try:
+        published_at = date.fromisoformat(str(published)[:10]) if published else None
+    except ValueError:
+        published_at = None
+    row = SimpleNamespace(
+        id=str(finding.get("finding_id")).lower(),
+        statement=str(finding.get("statement") or ""),
+        claim_key=finding.get("claim_key"),
+        question_key=finding.get("question_key"),
+        scope_key=finding.get("scope_key"),
+        period_key=finding.get("period_key"),
+        source_kinds_json=list(finding.get("source_kinds") or ()),
+        source_published_at=published_at,
+        verification_status=finding.get("verification_status"),
+        superseded_by_finding_id=finding.get("superseded_by_finding_id"),
+        statement_kind=finding.get("statement_kind"),
+    )
+    return FindingFacts.from_row(row)
+
+
 # ── 18. Gap reconciliation ──────────────────────────────────────────────────── #
 
 
@@ -1955,9 +2419,18 @@ async def reconcile_run(
 
     # 19 — supersession first, so closure prefers current guidance.
     row_facts = [FindingFacts.from_row(r) for r in finding_rows]
-    supersessions, temporal = supersede(row_facts)
-    # A finding that denies what another states is a disagreement too (never silently kept).
-    temporal = [*temporal, *contradicted_absences(row_facts)][:MAX_DISAGREEMENTS]
+    supersessions, _unordered = supersede(row_facts)
+    # ADR-095 — the run's conflicts: ONE deterministic mechanism over the ledger. A
+    # finding that denies a figure another states is recorded as such
+    # (``absences_contradicted``), never as a disagreement between findings: the two
+    # agree on the figure, and the chair narrated 6-18 phantom "unresolved
+    # disagreements" from such pairs.
+    names = (subject_name, subject_ticker)
+    conflicts = deterministic_conflicts(row_facts, issuer_names=names)
+    absences = contradicted_absences(row_facts)
+    precise_absences = denied_while_stated(row_facts, absences, issuer_names=names)
+    temporal = [c.to_temporal() for c in conflicts]
+    conflict_ids: dict[frozenset[str], str] = {}
     # The column holds ONE pointer: the LATEST newer finding. The per-field map in the
     # returned record (``supersessions``) is authoritative — a finding can be prior
     # guidance for one field and current for another.
@@ -1968,34 +2441,35 @@ async def reconcile_run(
             latest[sup.older_id] = sup
     for older_id, sup in latest.items():
         await ledger.mark_superseded(session, by_id[older_id], by=by_id[sup.newer_id])
-    existing_pairs = {
-        frozenset((str(a), str(b)))
-        for a, b in (await session.execute(
-            select(ResearchDisagreement.finding_a_id, ResearchDisagreement.finding_b_id)
+    # ADR-095 review — a pair already recorded keeps its id, so the conflict list names
+    # the ledger row the Chair may cite.
+    existing_pairs: dict[frozenset[str], str] = {
+        frozenset((str(a), str(b))): str(d)
+        for d, a, b in (await session.execute(
+            select(ResearchDisagreement.id, ResearchDisagreement.finding_a_id,
+                   ResearchDisagreement.finding_b_id)
             .where(ResearchDisagreement.research_run_id == run.id)
         )).all()
     }
     recorded_disagreements = 0
-    for d in temporal:
-        pair = frozenset((d.finding_a_id, d.finding_b_id))
+    for c in conflicts:
+        pair = frozenset((c.finding_a_id, c.finding_b_id))
         if pair in existing_pairs:
+            conflict_ids[pair] = existing_pairs[pair]
             continue
-        existing_pairs.add(pair)
-        await ledger.record_disagreement(
-            session, run, finding_a=by_id[d.finding_a_id], finding_b=by_id[d.finding_b_id],
+        row = await ledger.record_disagreement(
+            session, run, finding_a=by_id[c.finding_a_id], finding_b=by_id[c.finding_b_id],
             nature="value",
             description=(
-                f"One finding says {rf.label_of(d.field_key)} is absent from the evidence; "
-                f"another finding in this run states it. Both cannot stand; neither is "
-                f"treated as settled."
-                if d.reason == CONTRADICTED_ABSENCE
-                else (
-                    f"Two statements of {rf.label_of(d.field_key)} for the same scope and "
-                    f"project differ and are not ordered in time "
-                    f"({d.reason.replace('_', ' ')}). Neither is treated as current."
-                )
+                f"Two findings state {rf.label_of(c.metric)}"
+                + (f" for {c.period}" if c.period else "")
+                + (f" ({c.scope})" if c.scope else "")
+                + f" differently: {c.value_a} vs {c.value_b} "
+                f"({c.reason.replace('_', ' ')}). Neither is treated as settled."
             ),
         )
+        conflict_ids[pair] = str(row.id)
+        existing_pairs[pair] = str(row.id)
         recorded_disagreements += 1
 
     findings = [FindingFacts.from_row(r) for r in finding_rows]
@@ -2064,6 +2538,18 @@ async def reconcile_run(
         "supersessions": [s.to_dict() for s in supersessions][:60],
         "temporal_disagreements": [d.to_dict() for d in temporal][:60],
         "temporal_disagreements_recorded": recorded_disagreements,
+        # ADR-095 — the deterministic conflict list the Chair may narrate, each with the
+        # ledger disagreement id it was recorded under.
+        "conflicts": [
+            {**c.to_dict(),
+             "disagreement_id": conflict_ids.get(
+                 frozenset((c.finding_a_id, c.finding_b_id)))}
+            for c in conflicts
+        ],
+        # A finding that denies what another states: not a conflict between figures.
+        # Every candidate pair (audit), and the precise ones the Chair is told about.
+        "absences_contradicted": [d.to_dict() for d in absences][:60],
+        "absences_contradicted_precise": [d.to_dict() for d in precise_absences][:20],
         # What attach_to_report labels the V2 report's own gap statements against.
         "closing_findings": [f.to_dict() for f in closers][:MAX_CLOSING_FINDINGS],
         "note": (

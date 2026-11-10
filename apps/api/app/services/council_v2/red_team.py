@@ -81,18 +81,6 @@ WEAKNESS_CLASSES: frozenset[str] = frozenset(
     }
 )
 
-#: Which weakness class maps to which kind of disagreement when it stays unresolved, so
-#: the Chair sees the conflict in the vocabulary it already reads.
-_WEAKNESS_TO_NATURE: dict[str, str] = {
-    WEAKNESS_UNSUPPORTED_EXTRAPOLATION: "interpretation",
-    WEAKNESS_SINGLE_SOURCE: "source_quality",
-    WEAKNESS_PERIOD_MISMATCH: "period",
-    WEAKNESS_SCOPE_MISMATCH: "scope",
-    WEAKNESS_SURVIVORSHIP: "interpretation",
-    WEAKNESS_STALE_EVIDENCE: "source_quality",
-    WEAKNESS_CONTRADICTED: "value",
-}
-
 #: Three to five, per the architecture. The lower bound is not enforced — a run with two
 #: findings cannot have three weakest ones — but the upper bound is: a Red Team that
 #: challenges everything has ranked nothing.
@@ -189,6 +177,9 @@ class ChallengeRoundResult:
     confidence_lowered: int = 0
     disagreements_created: int = 0
     skipped_unchallengeable: list[tuple[str, str]] = field(default_factory=list)
+    #: ADR-095 review — each unresolved challenge as the reader sees it: the finding it
+    #: objects to, its weakness class and its text (the Red Team's words, clipped).
+    unresolved_items: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def all_resolved(self) -> bool:
@@ -203,6 +194,7 @@ class ChallengeRoundResult:
             "withdrawn_findings": self.withdrawn_findings,
             "confidence_lowered": self.confidence_lowered,
             "disagreements_created": self.disagreements_created,
+            "unresolved_items": [dict(i) for i in self.unresolved_items],
             "skipped_unchallengeable": [
                 {"finding_id": fid, "reason": reason}
                 for fid, reason in self.skipped_unchallengeable
@@ -330,64 +322,25 @@ async def run_challenge_round(
         elif outcome == "partially_resolved":
             result.partially_resolved += 1
         else:
+            # ADR-095 — an unresolved objection stays a CHALLENGE to one finding. It is
+            # no longer paired with "the most recent other finding on the same
+            # question" as a ledger disagreement: that pairing named two findings in
+            # conflict that no comparison ever set against each other, and the Chair
+            # narrated it as one. The Chair reads unresolved challenges separately
+            # (``CouncilInput.unresolved_challenges``); conflicts between findings come
+            # only from the deterministic list (``gap_reconciliation``).
             result.unresolved += 1
-            disagreement = await _persist_disagreement(
-                session, run, row, challenge, response
-            )
-            if disagreement is not None:
-                record.disagreement_id = disagreement.id
-                result.disagreements_created += 1
+            result.unresolved_items.append({
+                "challenge_id": str(record.id),
+                "finding_id": str(challenge.finding_id),
+                "weakness_class": str(challenge.weakness_class),
+                "text": record.challenge_text[:400],
+            })
         if response is not None and outcome != ledger.UNRESOLVED:
             record.responded_at = _utcnow()
         await session.flush()
 
     return result
-
-
-async def _persist_disagreement(
-    session: Any,
-    run: Any,
-    finding: ResearchFinding,
-    challenge: Challenge,
-    response: Response | None,
-) -> Any:
-    """Turn an unresolved challenge into a disagreement the Chair receives.
-
-    A ``ResearchDisagreement`` needs **two** findings, and the Red Team's objection is
-    not one — it has no evidence of its own by construction. So the challenge is recorded
-    against the finding it targets and the counterparty is the *most recent other finding
-    on the same question*, when one exists; otherwise the challenge stands alone as a
-    ``research_challenges`` row and reaches the Chair through that table.
-
-    Inventing a second finding to satisfy the schema would put an unsupported statement
-    in the ledger, which is the one thing it exists to prevent.
-    """
-    counterpart = (
-        await session.execute(
-            select(ResearchFinding)
-            .where(
-                ResearchFinding.research_run_id == run.id,
-                ResearchFinding.id != finding.id,
-                ResearchFinding.question_key == finding.question_key,
-                ResearchFinding.verification_status != "withdrawn",
-            )
-            .order_by(ResearchFinding.created_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if counterpart is None:
-        return None
-    detail = challenge.text
-    if response is not None and response.text:
-        detail = f"{detail} — response: {response.text}"
-    return await ledger.record_disagreement(
-        session,
-        run,
-        finding_a=finding,
-        finding_b=counterpart,
-        nature=_WEAKNESS_TO_NATURE.get(challenge.weakness_class, "interpretation"),
-        description=_clip(detail, 1000),
-    )
 
 
 async def challenges_for_chair(

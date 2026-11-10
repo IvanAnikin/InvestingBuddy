@@ -1868,6 +1868,47 @@ reader takes its counts and status lines from it.
     matching period.
   - "Answered" and "located, unverified" are counted apart.
 
+## One search status, deterministic conflicts, one ledger view (ADR-095)
+
+- **Search status.** `app/services/ledger/search_status.py` is the only producer of
+  search counts: web stage, its follow-up rounds, the investigators' web searches, the
+  corpus queries and the ADR-094 gap queue, each with planned / attempted / executed /
+  succeeded / failed / outcome unknown. "N searches ran" means executed; a provider error
+  ran and failed. The canonical status line, the professional report's web block, the
+  research panel and the per-domain effort lines (`domain_cost`) all read it.
+- **Conflicts.** `gap_reconciliation.deterministic_conflicts` is the one mechanism: two
+  findings, neither about another entity, stating the same metric for the same reporting
+  period (ADR-093 durations included; a quarter key over year-to-date words is skipped),
+  the same named scope, project and statement kind, with the metric's own amount (a
+  linking verb at most between them) differing beyond rounding and not by a power of a
+  thousand; plus guidance `supersede` cannot order in time. Only these are recorded as
+  ledger disagreements. A finding denying a figure another states is recorded as
+  `absences_contradicted`; an unresolved Red Team challenge stays a challenge and reaches
+  the Chair in its own prompt section.
+- **Chair.** The prompt lists the computed conflicts (or says none were computed) and the
+  unresolved challenges apart. With no conflict computed, a chair, synthesis or
+  professional-prose sentence narrating unresolved disagreements / conflicts in the
+  evidence, conflicting findings, or the ADR-091 explicit conflict forms is withheld;
+  "N unresolved disagreement(s)" is repaired to the conflict count; chair disagreement ids
+  no conflict backs are dropped.
+- **One ledger view.** `canonical_state` owns findings, gaps (closed / total, ADR-094
+  results), conflicts, searches, the latest period (now reading `-9M` keys), evidence
+  status (incomplete with `DOCUMENT_NOT_PARSED` gaps) and the chair's verdict.
+  `ledger_invariants.impossible_combinations` records what the report still states that
+  cannot be true together with it (`state_invariants.impossible_combinations`), and the
+  pipeline logs its count and codes (`v3_impossible_combinations`), never its text.
+- **Review follow-ups.** A reported-value conflict needs Group scope on both sides, a
+  stating clause naming no adjusted / organic / pro forma / segment / product / region
+  measure, and only a period, a Group qualifier or the issuer's name before the metric.
+  An annual key is never set against a quarter, a part year or the prior year.
+  Statement lines the issuer's documents state differently are cleaned (unit slips,
+  rounding, far-apart measures dropped) and kept visible as `statement_slots`; they are
+  neither counted as unresolved disagreements nor listed to the Chair, and back a
+  narrated conflict only about their own line and period. "The red team disputed …" is held to the unresolved
+  Red Team challenges, which the research panel lists with their text. Contradicted
+  absences that deny a whole field's disclosure while another finding states its Group
+  amount are told to the Chair; a false denial of a sub-item is not caught.
+
 ## Status lines, scope, applicability and fiscal calendars (ADR-091)
 
 - **Status lines.** `canonical_state.status` is every status line's one source: latest

@@ -90,6 +90,8 @@ _PERIOD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^Q([1-4])\s+(\d{4})$", re.I), "quarter_rev"),
     (re.compile(r"^(\d{4})-H([12])$", re.I), "half"),
     (re.compile(r"^H([12])\s+(\d{4})$", re.I), "half_rev"),
+    # ADR-095 (the ADR-093 known limit) — a year to date of N months: ``2026-9M``.
+    (re.compile(r"^(\d{4})-(3|6|9)M$", re.I), "year_to_date"),
 )
 
 
@@ -134,6 +136,17 @@ def period_bounds(key: Any, *, fiscal_year_end_month: int | None = None
                 return date(year, 1, 1), date(year, 12, 31)
             start_year, start_month = _fiscal_month(year, m + 1 - 12)
             return date(start_year, start_month, 1), _month_end(year, m)
+        if kind == "year_to_date":
+            year, months = int(match.group(1)), int(match.group(2))
+            # The fiscal year's first month, then N months on (ADR-065 convention: the
+            # fiscal year is named by the year it ends in).
+            start_year, start_month = _fiscal_month(year, m + 1 - 12)
+            end_year, end_month = _fiscal_month(start_year, start_month + months - 1 - 12)
+            if end_month <= start_month + months - 1 - 12 + 12 and (
+                (end_year, end_month) < (start_year, start_month)
+            ):
+                end_year += 1
+            return date(start_year, start_month, 1), _month_end(end_year, end_month)
         if kind in ("quarter", "quarter_rev"):
             year, q = (
                 (int(match.group(1)), int(match.group(2)))
@@ -698,7 +711,7 @@ def _chair(v3: Mapping[str, Any], model_available: bool | None) -> dict[str, Any
     council = _mapping(v3.get("council"))
     if not chair:
         return {"mode": None, "fallback_reason": None, "model_available": model_available,
-                "reason_text": None}
+                "reason_text": None, "label": None, "cited_finding_ids": []}
     deterministic = bool(chair.get("deterministic_fallback"))
     reason = chair.get("fallback_reason")
     if deterministic and reason is None:
@@ -723,6 +736,13 @@ def _chair(v3: Mapping[str, Any], model_available: bool | None) -> dict[str, Any
         "fallback_reason": reason if deterministic else None,
         "model_available": model_available,
         "reason_text": text,
+        # ADR-095 — the chair's verdict and the findings it cites, in the one ledger view.
+        "label": chair.get("label") if isinstance(chair.get("label"), str) else None,
+        "cited_finding_ids": sorted({
+            str(_mapping(p).get("finding_id")).lower()
+            for p in chair.get("key_points") or ()
+            if _mapping(p).get("finding_id")
+        }),
     }
 
 
@@ -907,6 +927,18 @@ def build_canonical_state(
     council_block = _mapping(v3.get("council"))
     if council_block.get("convened") is False:
         reasons.append("the council did not convene")
+    gap_queue = gap_resolution_state(v3)
+    by_result = _mapping(_mapping(_mapping(gap_queue).get("counts")).get("by_result"))
+    not_parsed = _int(by_result.get("DOCUMENT_NOT_PARSED"))
+    if not_parsed:
+        # ADR-095 — a gap searched over a document only partly parsed is no complete
+        # evidence base: "adequate" beside DOCUMENT_NOT_PARSED gaps is impossible.
+        reasons.append(
+            f"{not_parsed} gap(s) were searched over a held document that was only "
+            "partly parsed"
+        )
+    searches = _search_status(v3)
+    conflicts = conflict_state(v3)
     evidence_status = (
         "insufficient" if tally.findings == 0 else ("incomplete" if reasons else "adequate")
     )
@@ -921,25 +953,19 @@ def build_canonical_state(
             "primary_source": tally.primary_source,
             "council_saw": council_block.get("council_finding_count"),
         },
-        "gaps": {"open": tally.gaps_open, "by_status": dict(tally.gaps_by_status)},
+        "gaps": {"open": tally.gaps_open, "by_status": dict(tally.gaps_by_status),
+                 **_gap_totals(v3)},
         # ADR-094 — the gap queue: routes, results and what the re-read located.
-        "gap_resolution": gap_resolution_state(v3),
-        "disagreements": {
-            "total": tally.disagreements,
-            "unresolved": tally.unresolved,
-            "unresolved_ids": (
-                list(tally.unresolved_disagreement_ids)
-                if tally.unresolved_disagreement_ids is not None
-                else None
-            ),
-            "ids": (
-                list(tally.disagreement_ids) if tally.disagreement_ids is not None else None
-            ),
-            "finding_pairs": (
-                [list(p) for p in tally.disagreement_pairs]
-                if tally.disagreement_pairs is not None else None
-            ),
-        },
+        "gap_resolution": gap_queue,
+        # ADR-095 — the run's conflicts between findings, computed deterministically
+        # from the ledger. The ONLY source of an "unresolved disagreement" count.
+        "conflicts": conflicts,
+        "disagreements": _disagreements(tally, conflicts),
+        # ADR-095 review — Red Team objections to ONE finding each that no cited
+        # evidence answered. Backs "the red team disputed …"; never a conflict.
+        "challenges": challenge_state(v3),
+        # ADR-095 — the run's searches, every class, from the one producer.
+        "searches": searches,
         "documents": {
             "issuer_documents_held": held_count,
             "issuer_documents_held_basis": (
@@ -968,9 +994,206 @@ def build_canonical_state(
         # ADR-091 — what every status line shows.
         "status": status_lines(
             v3, current=current, gaps_open=tally.gaps_open,
-            issuer_documents_held=held_count, today=today,
+            issuer_documents_held=held_count, today=today, searches=searches,
         ),
     }
+
+
+def _search_status(v3: Mapping[str, Any]) -> dict[str, Any]:
+    from app.services.ledger.search_status import build_search_status
+
+    return build_search_status(v3)
+
+
+def conflict_state(v3: Mapping[str, Any]) -> dict[str, Any]:
+    """ADR-095 — the run's conflicts between findings.
+
+    From the reconciliation record when the run wrote one (``gap_reconciliation.
+    conflicts``, each with the ledger disagreement id it was recorded under); else
+    computed from the payload's findings by the same detector (a replay of a report
+    written before ADR-095: ``source: "payload_findings"``, ids unknown)."""
+    record = _mapping(v3.get("gap_reconciliation"))
+    items: list[dict[str, Any]]
+    if isinstance(record.get("conflicts"), list):
+        source = "reconciliation"
+        items = [dict(_mapping(c)) for c in record["conflicts"] if isinstance(c, Mapping)]
+    else:
+        from app.services.pipeline.gap_reconciliation import (
+            deterministic_conflicts,
+            finding_facts_from_payload,
+        )
+
+        facts = [f for f in (finding_facts_from_payload(x) for x in _all_findings(v3))
+                 if f is not None]
+        source = "payload_findings"
+        items = [c.to_dict() for c in deterministic_conflicts(facts)]
+    for item in items:
+        item.setdefault("source", SOURCE_FINDINGS)
+    ids = [str(c.get("disagreement_id")).lower() for c in items if c.get("disagreement_id")]
+    slots = statement_slot_conflicts(v3)
+    return {
+        "source": source,
+        # ADR-095 re-review N1 — the count is the conflicts between FINDINGS. A
+        # statement-line conflict is not promoted to an unresolved disagreement (the
+        # stored ones were mostly unit slips, durations and segments); it is kept
+        # visible here and backs only a sentence about its own line (``slot_backs``).
+        "count": len(items),
+        "finding_count": len(items),
+        "statement_slot_count": len(slots),
+        # Every listed finding conflict's ledger id, or ``None`` when any is unknown.
+        "ids": ids if len(ids) == len(items) else None,
+        "finding_pairs": sorted(
+            [str(c.get("finding_a_id")).lower(), str(c.get("finding_b_id")).lower()]
+            for c in items
+        ),
+        "items": items[:40],
+        "statement_slots": slots[:MAX_STATEMENT_SLOT_CONFLICTS],
+    }
+
+
+SOURCE_FINDINGS = "findings"
+SOURCE_STATEMENT_SLOT = "statement_slot"
+MAX_STATEMENT_SLOT_CONFLICTS = 12
+
+
+_SCALES = {None: 1.0, "": 1.0, "unit": 1.0, "units": 1.0, "thousand": 1e3,
+           "thousands": 1e3, "million": 1e6, "millions": 1e6, "billion": 1e9,
+           "billions": 1e9}
+#: Two amounts within this relative difference are one figure rounded two ways
+#: ("EUR 4.5 billion" and "EUR 4,492 million").
+_SLOT_ROUNDING = 0.005
+#: Distinct amounts further apart than this are different measures (a quarter against
+#: nine months, a segment against the Group), never a restatement of one line.
+_SLOT_MAX_SPREAD = 1.25
+
+
+def _same_amount(a: float, b: float) -> bool:
+    low, high = sorted((abs(a), abs(b)))
+    if low <= 0:
+        return low == high
+    for power in (1.0, 1e3, 1e6, 1e9):
+        if abs(high / (low * power) - 1.0) <= _SLOT_ROUNDING:
+            return True
+    return False
+
+
+def statement_slot_conflicts(v3: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """ADR-095 — a statement line the issuer's documents state differently for the same
+    period and scope (``financial_statements_state.conflicts``), CLEANED (re-review N1):
+    each value times its scale, one currency only, amounts that agree after rounding or
+    differ by a power of a thousand (a unit slip) are one amount, at least two distinct
+    amounts must remain, and they must lie within 25% of each other (further apart is a
+    different duration or scope, not a restatement). The values are listed as the
+    documents state them, never chosen between."""
+    raw = _mapping(v3.get("financial_statements_state")).get("conflicts")
+    out: list[dict[str, Any]] = []
+    for entry in raw if isinstance(raw, list) else ():
+        if not isinstance(entry, Mapping) or not entry.get("field"):
+            continue
+        values: list[dict[str, Any]] = []
+        amounts: list[float] = []
+        currencies: set[str] = set()
+        usable = True
+        for value in entry.get("values") or ():
+            if not isinstance(value, Mapping):
+                continue
+            number = value.get("numeric_value")
+            scale = str(value.get("scale") or "").strip().lower() or None
+            if (not isinstance(number, (int, float)) or isinstance(number, bool)
+                    or scale not in _SCALES):
+                usable = False
+                break
+            currencies.add(str(value.get("currency") or "").upper())
+            amounts.append(float(number) * _SCALES[scale])
+            values.append({
+                "value": number,
+                "scale": value.get("scale"),
+                "currency": value.get("currency"),
+                "document_title": value.get("document_title"),
+                "document_date": value.get("document_date"),
+            })
+        if not usable or len(currencies) != 1:
+            continue
+        distinct: list[float] = []
+        for amount in amounts:
+            if not any(_same_amount(amount, d) for d in distinct):
+                distinct.append(amount)
+        if len(distinct) < 2:
+            continue
+        low, high = min(abs(d) for d in distinct), max(abs(d) for d in distinct)
+        if low <= 0 or high / low > _SLOT_MAX_SPREAD:
+            continue
+        out.append({
+            "source": SOURCE_STATEMENT_SLOT,
+            "metric": str(entry["field"]),
+            "period": entry.get("period"),
+            "distinct_amounts": sorted(distinct),
+            "values": values[:6],
+        })
+    return out
+
+
+#: Unresolved challenges carried for the reader, and the characters of each text.
+MAX_CHALLENGE_ITEMS = 10
+_CHALLENGE_TEXT_MAX = 400
+
+
+def challenge_state(v3: Mapping[str, Any]) -> dict[str, Any]:
+    """ADR-095 review — the Red Team's UNRESOLVED challenges: the count the round
+    recorded (``None`` when the run recorded no round), the ids, and each challenge's
+    finding, weakness class and text when the run wrote them (``unresolved_items``)."""
+    record = _mapping(v3.get("challenges"))
+    unresolved = record.get("unresolved")
+    raw = record.get("unresolved_items")
+    items: list[dict[str, Any]] = []
+    for entry in raw if isinstance(raw, list) else ():
+        if not isinstance(entry, Mapping) or not entry.get("finding_id"):
+            continue
+        items.append({
+            "challenge_id": str(entry.get("challenge_id") or "") or None,
+            "finding_id": str(entry["finding_id"]).lower(),
+            "weakness_class": str(entry.get("weakness_class") or "") or None,
+            "text": str(entry.get("text") or "")[:_CHALLENGE_TEXT_MAX],
+        })
+    ids = [i["challenge_id"] for i in items if i["challenge_id"]]
+    count = unresolved if isinstance(unresolved, int) and not isinstance(unresolved, bool) \
+        else None
+    return {
+        "unresolved": count,
+        # Every unresolved challenge's id, or ``None`` when the run did not list them.
+        "ids": ids if count is not None and len(ids) == count else None,
+        "items": items[:MAX_CHALLENGE_ITEMS],
+    }
+
+
+def _disagreements(tally: LedgerTally, conflicts: Mapping[str, Any]) -> dict[str, Any]:
+    """ADR-095 — the "unresolved disagreement" counts every reader states are the
+    deterministic conflicts'. ``ids`` stays every disagreement id the ledger holds (a
+    chair naming a resolved one names a known one); ``ledger_unresolved`` is what the
+    ledger's own rows say, for the audit."""
+    return {
+        "total": conflicts["count"],
+        "unresolved": conflicts["count"],
+        "unresolved_ids": conflicts["ids"],
+        "ids": list(tally.disagreement_ids) if tally.disagreement_ids is not None else None,
+        "finding_pairs": [list(p) for p in conflicts["finding_pairs"]],
+        "ledger_rows": tally.disagreements,
+        "ledger_unresolved": tally.unresolved,
+    }
+
+
+#: ADR-086 gap statuses that mean the research answered the gap.
+_CLOSED_GAP_STATUSES = frozenset({"CLOSED", "SUPERSEDED"})
+
+
+def _gap_totals(v3: Mapping[str, Any]) -> dict[str, Any]:
+    """ADR-095 — closed and total gaps, from the reconciliation's status counts."""
+    counts = _mapping(_mapping(v3.get("gap_reconciliation")).get("gap_status_counts"))
+    if not counts:
+        return {"closed": None, "total": None}
+    total = sum(_int(v) for v in counts.values())
+    closed = sum(_int(v) for k, v in counts.items() if str(k) in _CLOSED_GAP_STATUSES)
+    return {"closed": closed, "total": total}
 
 
 #: ADR-094 — results whose topics the research LOCATED (a finding answered the gap, or
@@ -1026,6 +1249,11 @@ def _period_label(key: Any, *, fiscal: bool = False) -> str | None:
     if match:
         year = f"FY{match.group(1)}" if fiscal else match.group(1)
         return f"{match.group(2).upper()} {year}"
+    # ADR-095 — a year to date (ADR-093 ``2026-9M``) reads "9M 2026 (year to date)".
+    match = re.fullmatch(r"(\d{4})-([369])M", text, re.I)
+    if match:
+        year = f"FY{match.group(1)}" if fiscal else match.group(1)
+        return f"{match.group(2)}M {year} (year to date)"
     return text or None
 
 
@@ -1076,7 +1304,9 @@ def _latest_interim(v3: Mapping[str, Any], current: Mapping[str, Any],
     month = int(fye["month"]) if fye else None
     for finding in _all_findings(v3):
         key = str(finding.get("period_key") or "")
-        if not _is_issuer(finding) or not re.fullmatch(r"\d{4}-[HQ][1-4]", key, re.I):
+        # ADR-095 — a year to date (``2026-9M``, ADR-093) is a part-year period too.
+        if not _is_issuer(finding) or not re.fullmatch(r"\d{4}-(?:[HQ][1-4]|[369]M)", key,
+                                                        re.I):
             continue
         fiscal = (month not in (None, 12)
                   and finding.get("period_basis") in _FISCAL_PERIOD_BASES)
@@ -1100,15 +1330,17 @@ def _latest_interim(v3: Mapping[str, Any], current: Mapping[str, Any],
 def status_lines(
     v3: Mapping[str, Any], *, current: Mapping[str, Any], gaps_open: int,
     issuer_documents_held: int, today: date,
+    searches: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """ADR-091 — the values every report STATUS LINE shows, derived once from the
     ledger state, the statements view and the document coverage. A reader that shows a
     count or a sourced / not-sourced state reads it from here."""
-    consumption = _mapping(v3.get("consumption"))
-    stage = _mapping(consumption.get("web_stage"))
-    web_queries = _mapping(_mapping(v3.get("web_context")).get("queries"))
-    investigators = _int(consumption.get("web_search_calls"))
-    stage_calls = _int(stage.get("web_search_calls")) or _int(web_queries.get("executed"))
+    from app.services.ledger.search_status import build_search_status, web_status_line
+
+    # ADR-095 — the web search line is the one search-status producer's: searches
+    # EXECUTED (an answer came back, a success or a provider error), never the paid
+    # network calls or the planned queries.
+    web_line = web_status_line(searches if searches is not None else build_search_status(v3))
     statements = _mapping(v3.get("financial_statements_state"))
     slots = _mapping(statements.get("slots"))
     tagged = sum(1 for s in slots.values() if _mapping(s).get("xbrl_concept"))
@@ -1121,11 +1353,7 @@ def status_lines(
     listed = len([g for g in v3.get("gaps") or () if isinstance(g, Mapping)])
     return {
         "latest_interim": _latest_interim(v3, current, today),
-        "web_searches": {
-            "total": investigators + stage_calls,
-            "web_stage": stage_calls,
-            "investigators": investigators,
-        },
+        "web_searches": web_line or {"total": 0, "web_stage": 0, "investigators": 0},
         "documents_read": _read_documents(v3, issuer_documents_held),
         "statement_facts": {
             "held": bool(slots),

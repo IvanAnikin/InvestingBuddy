@@ -43,6 +43,7 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
+from app.models.challenge import ResearchChallenge
 from app.models.ledger import (
     ResearchDisagreement,
     ResearchFinding,
@@ -69,6 +70,8 @@ REFUSAL_REASONS: frozenset[str] = frozenset(
 MAX_FINDINGS = 120
 MAX_GAPS = 60
 MAX_DISAGREEMENTS = 40
+#: ADR-095 — unresolved Red Team challenges the Chair is shown.
+MAX_CHALLENGES = 10
 
 
 #: ``period_type`` values that say how a finding's period was set (ADR-086 / ADR-093).
@@ -274,6 +277,23 @@ class DisagreementRef:
 
 
 @dataclass(frozen=True)
+class ChallengeRef:
+    """ADR-095 — a Red Team objection to ONE finding that no cited evidence answered. It
+    is a challenge, never a disagreement between two findings."""
+
+    finding_id: uuid.UUID
+    weakness_class: str
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "finding_id": str(self.finding_id),
+            "weakness_class": self.weakness_class,
+            "text": self.text,
+        }
+
+
+@dataclass(frozen=True)
 class LedgerCounts:
     """What the LEDGER records for the run, whatever the Council was shown (ADR-082).
 
@@ -315,6 +335,12 @@ class CouncilInput:
     findings: tuple[FindingRef, ...] = ()
     gaps: tuple[GapRef, ...] = ()
     disagreements: tuple[DisagreementRef, ...] = ()
+    #: ADR-095 — unresolved Red Team challenges (objections to one finding each).
+    unresolved_challenges: tuple[ChallengeRef, ...] = ()
+    #: ADR-095 review — findings that deny a whole field another finding states as a
+    #: Group amount (``gap_reconciliation.denied_while_stated``), set by the pipeline
+    #: before the Chair. Statement-line conflicts are NOT listed (re-review N1).
+    denied_while_stated: tuple[dict[str, Any], ...] = ()
     open_question_keys: tuple[str, ...] = ()
     playbook_versions: dict[str, int] = field(default_factory=dict)
     truncated: dict[str, int] = field(default_factory=dict)
@@ -406,6 +432,7 @@ class CouncilInput:
             "gap_count": len(self.gaps),
             "disagreement_count": len(self.disagreements),
             "unresolved_disagreement_count": self.unresolved_count,
+            "unresolved_challenge_count": len(self.unresolved_challenges),
             "open_question_keys": list(self.open_question_keys),
             "playbook_versions": dict(self.playbook_versions),
             "truncated": dict(self.truncated),
@@ -435,6 +462,10 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
                 "around the hole."
             ),
             gaps=gaps,
+            # ADR-095 (CLLS7) — the refusal withholds the synthesis, not the conflict
+            # ids: "18 unresolved disagreement(s)" beside an empty id list was a count
+            # no reader could check.
+            disagreements=disagreements[:MAX_DISAGREEMENTS],
             open_question_keys=open_keys,
             playbook_versions=dict(run.playbook_versions_json or {}),
             ledger_counts=counts,
@@ -448,6 +479,10 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
                 f"{summary.gaps_blocking_council} gap(s) block the Council."
             ),
             gaps=gaps,
+            # ADR-095 (CLLS7) — the refusal withholds the synthesis, not the conflict
+            # ids: "18 unresolved disagreement(s)" beside an empty id list was a count
+            # no reader could check.
+            disagreements=disagreements[:MAX_DISAGREEMENTS],
             open_question_keys=open_keys,
             playbook_versions=dict(run.playbook_versions_json or {}),
             ledger_counts=counts,
@@ -463,6 +498,10 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
                 "the Council to reason over that is not prose."
             ),
             gaps=gaps,
+            # ADR-095 (CLLS7) — the refusal withholds the synthesis, not the conflict
+            # ids: "18 unresolved disagreement(s)" beside an empty id list was a count
+            # no reader could check.
+            disagreements=disagreements[:MAX_DISAGREEMENTS],
             open_question_keys=open_keys,
             playbook_versions=dict(run.playbook_versions_json or {}),
             ledger_counts=counts,
@@ -493,6 +532,7 @@ async def assemble(session: Any, run: Any) -> CouncilInput:
         findings=findings,
         gaps=gaps,
         disagreements=disagreements,
+        unresolved_challenges=await _unresolved_challenges(session, run),
         open_question_keys=open_keys,
         playbook_versions=dict(run.playbook_versions_json or {}),
         truncated=truncated,
@@ -665,6 +705,28 @@ async def _disagreements(session: Any, run: Any) -> tuple[DisagreementRef, ...]:
             description=row.description,
             resolution=row.resolution,
             resolution_note=row.resolution_note,
+        )
+        for row in rows
+    )
+
+
+async def _unresolved_challenges(session: Any, run: Any) -> tuple[ChallengeRef, ...]:
+    """ADR-095 — the Red Team's unresolved objections, each to one finding."""
+    stmt = (
+        select(ResearchChallenge)
+        .where(
+            ResearchChallenge.research_run_id == run.id,
+            ResearchChallenge.outcome == ledger.UNRESOLVED,
+        )
+        .order_by(ResearchChallenge.created_at)
+        .limit(MAX_CHALLENGES)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return tuple(
+        ChallengeRef(
+            finding_id=row.finding_id,
+            weakness_class=str(row.weakness_class),
+            text=str(row.challenge_text or "")[:300],
         )
         for row in rows
     )
