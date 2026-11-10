@@ -1016,12 +1016,25 @@ function EvidenceBody({
                   <p className="ib-breakable text-sm leading-relaxed text-[color:var(--ib-ink-2)]">
                     {gap.description}
                   </p>
-                  {gap.knowledgeState && (
-                    <p className="text-xs text-[color:var(--ib-ink-3)]">
-                      {KNOWLEDGE_STATE_WORDS[gap.knowledgeState] ?? words(gap.knowledgeState)}
+                  {gap.resolution?.words ? (
+                    // ADR-094 — the research state the gap queue derived; only a gap
+                    // searched for and not found is worded as absent.
+                    <p
+                      className="text-xs text-[color:var(--ib-ink-3)]"
+                      data-testid="platform-gap-resolution"
+                      data-result={gap.resolution.result ?? undefined}
+                    >
+                      {gap.resolution.words}
                     </p>
+                  ) : (
+                    gap.knowledgeState && (
+                      <p className="text-xs text-[color:var(--ib-ink-3)]">
+                        {KNOWLEDGE_STATE_WORDS[gap.knowledgeState] ?? words(gap.knowledgeState)}
+                      </p>
+                    )
                   )}
-                  {gap.reconciliationStatus === "partially_closed" && (
+                  {gap.reconciliationStatus === "partially_closed" &&
+                    (gap.gapStatus === null || gap.gapStatus === "PARTIALLY_CLOSED") && (
                     <p
                       className="text-xs text-[color:var(--ib-ink-3)]"
                       data-testid="platform-gap-partial"

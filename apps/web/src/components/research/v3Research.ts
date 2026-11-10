@@ -151,6 +151,23 @@ export type V3CanonicalState = {
   documentsRead: number | null;
   /** ADR-091 — how many of the open gaps the payload lists. */
   gapsListed: number | null;
+  /** ADR-094 — the gap queue's counts, shown on the report page's research panel.
+   *  Null on older reports. */
+  gapQueue: V3GapQueueCounts | null;
+};
+
+/** ADR-094 — how every gap of the run was routed and what the re-read did. */
+export type V3GapQueueCounts = {
+  created: number | null;
+  mappedExisting: number | null;
+  reread: number | null;
+  /** Answered by a finding of the report. Never a re-read passage. */
+  found: number | null;
+  /** A held passage the re-read located that no finding has read (unverified). */
+  locatedUnverified: number | null;
+  failed: number | null;
+  notRun: number | null;
+  rereadQueries: number | null;
 };
 
 /** How the page labels the legacy V2 council beside a V3 run. */
@@ -359,6 +376,22 @@ export type PlatformEvidenceGap = {
   reconciliationStatus: string | null;
   /** Labels of the findings that partly address it. */
   partiallyAddressedBy: string[];
+  /** ADR-086 report status ("PARTIALLY_CLOSED", "NONCOMPARABLE", …). Null on older
+      reports. */
+  gapStatus: string | null;
+  /** ADR-094 — the gap queue's result and its honest wording. Null when the queue did
+      not run (older reports). */
+  resolution: GapResolutionView | null;
+};
+
+/** ADR-094 — one gap's research state, as the backend worded it. */
+export type GapResolutionView = {
+  result: string | null;
+  route: string | null;
+  words: string | null;
+  /** Only NOT_FOUND_AFTER_SEARCH may be shown as "not found in the evidence". */
+  maySayNotFound: boolean;
+  foundIn: string[];
 };
 
 type SectionHead = {
@@ -1031,6 +1064,8 @@ function readEvidenceSection(
               knowledgeState: str(g.knowledge_state),
               reconciliationStatus: str(g.reconciliation_status),
               partiallyAddressedBy: strings(g.partially_addressed_by),
+              gapStatus: str(g.gap_status),
+              resolution: readGapResolution(g.resolution),
             }
           : null;
       })
@@ -1231,6 +1266,35 @@ export function readCanonicalState(
     investigatorSearches: status.investigatorSearches,
     documentsRead: status.documentsRead,
     gapsListed: status.gapsListed,
+    gapQueue: readGapQueue(v.gap_resolution),
+  };
+}
+
+function readGapQueue(v: unknown): V3GapQueueCounts | null {
+  if (!isRecord(v) || !isRecord(v.counts)) return null;
+  const c = v.counts;
+  return {
+    created: num(c.gaps_created),
+    mappedExisting: num(c.gaps_mapped_existing),
+    reread: num(c.gaps_reread),
+    found: num(c.gaps_found),
+    locatedUnverified: num(c.gaps_located_unverified),
+    failed: num(c.gaps_failed),
+    notRun: num(c.gaps_not_run),
+    rereadQueries: num(c.reread_queries),
+  };
+}
+
+function readGapResolution(v: unknown): GapResolutionView | null {
+  if (!isRecord(v)) return null;
+  const result = str(v.result);
+  if (!result) return null;
+  return {
+    result,
+    route: str(v.route),
+    words: str(v.words),
+    maySayNotFound: bool(v.may_say_not_found) ?? false,
+    foundIn: strings(v.found_in),
   };
 }
 

@@ -300,6 +300,10 @@ def _hit_payload(result: Any) -> dict[str, Any]:
     }
 
 
+#: ADR-094 — the same citation-complete hit shape, for the pipeline's gap re-read.
+hit_payload = _hit_payload
+
+
 async def _company_names(session: Any, company_id: uuid.UUID) -> tuple[str, ...]:
     """The name the company is registered under, for stripping from its own queries.
 
