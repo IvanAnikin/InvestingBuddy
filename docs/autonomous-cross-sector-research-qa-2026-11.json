@@ -12042,7 +12042,7 @@
   "research_integrity_closure": {
     "status": "IN_PROGRESS",
     "opened": "2026-11-03",
-    "updated": "2026-11-09",
+    "updated": "2026-11-10",
     "acceptance_bar": [
       "P0=0 across six",
       "material P1=0",
@@ -12194,12 +12194,14 @@
       {
         "report": "CFR3",
         "defect": "current assets/liabilities slots take component rows (1,907/3,086 vs 28,934/9,341)",
-        "fix": "ADR-092 in progress"
+        "fix": "#332 ADR-092 merged (ea56d12), not deployed; migration 046 not applied; replay-only",
+        "status": "open until live-confirmed"
       },
       {
         "report": "JPM3",
         "defect": "synthesis treats Markets business line as main revenue segment, says it declined",
-        "fix": "ADR-093 in progress"
+        "fix": "#333 ADR-093 merged (92c51d1), not deployed; replay-only",
+        "status": "open until live-confirmed"
       }
     ],
     "open_p1_generic": [
@@ -12223,6 +12225,119 @@
       "PYPL 2025=FY2025",
       "customer funds separate"
     ],
-    "fixed_not_live_confirmed": []
+    "fixed_not_live_confirmed": [
+      "#332 ADR-092 (merged, not deployed, replay only)",
+      "#333 ADR-093 (merged, not deployed, replay only)",
+      "#334 ADR-094 (merged, not deployed, replay only)",
+      "#335 ADR-096 (merged, not deployed, replay only)",
+      "#336 ADR-095 (merged, not deployed, replay only)"
+    ],
+    "batch2_merged_not_deployed": {
+      "main_head": "e8d57c2",
+      "deployed": false,
+      "deploy_blocker": "Azure subscription suspended since 2026-11-10 ~07:54 UTC (credit spending limit); self-reactivation expected 2026-11-16",
+      "migration_046_applied_in_prod": false,
+      "evidence_kind": "offline replay over stored reports; NOT live runs",
+      "prs": [
+        {
+          "pr": 332,
+          "adr": "092",
+          "sha": "ea56d12",
+          "change": "statement-line selector; migration 046 adds extracted_facts.line_rank",
+          "replay": "CFR3 current assets 1,907->28,934; current liabilities 3,086->9,341; operating profit FY2026 4,492 with 107m phantom conflict removed",
+          "addresses": "CFR3 P0"
+        },
+        {
+          "pr": 333,
+          "adr": "093",
+          "sha": "92c51d1",
+          "change": "segment hierarchy + duration",
+          "replay": "JPM3 P0 sentence 'primarily driven by its Markets segment' withheld; NPA findings scoped to CIB; explicit-only -9M/-H1 period keys",
+          "addresses": "JPM3 P0"
+        },
+        {
+          "pr": 334,
+          "adr": "094",
+          "sha": "f3a8e56",
+          "change": "gap resolution pipeline; note pages past page 40 read, truncation recorded",
+          "replay_false_gaps_removed": {
+            "HON4": "7/11",
+            "LIN4": "6/12",
+            "CLLS7": "9/14",
+            "PYPL5": "10/13",
+            "JPM3": "9/14",
+            "CFR3": "4/15"
+          }
+        },
+        {
+          "pr": 335,
+          "adr": "096",
+          "sha": "2d196b7",
+          "change": "liquidity components, spin-off perimeter, implicit-subject entity firewall",
+          "replay": "CLLS7 runway 5.89->19.76 quarters (term deposits included, components exposed); HON perimeter labels",
+          "replay_wrong_company_before_after": {
+            "HON4": [
+              3,
+              0
+            ],
+            "LIN4": [
+              3,
+              0
+            ],
+            "PYPL5": [
+              1,
+              0
+            ],
+            "CLLS7": [
+              4,
+              1
+            ]
+          },
+          "known_loss": "six genuine items lost, documented in ADR-096"
+        },
+        {
+          "pr": 336,
+          "adr": "095",
+          "sha": "e8d57c2",
+          "change": "one search-status producer, deterministic chair conflicts, one ledger",
+          "replay_reports": 18,
+          "replay": {
+            "impossible_combinations_before_after": [
+              41,
+              0
+            ],
+            "unresolved_disagreements_after": 0,
+            "statement_slot_conflicts_before_after": [
+              12,
+              2
+            ],
+            "remaining_slot_conflict": "HON FY2025 cash 12,487 vs 12,273 (backing only)",
+            "cfr3_status": "41 of 41 ran, 0 ok, 41 failed (0 credits)"
+          },
+          "known_limit": "detector recall 12/31 probes; PYPL5 false denial of a revenue split not caught"
+        }
+      ]
+    },
+    "round3_baseline": {
+      "sha": "3203fc3",
+      "HON4": 4,
+      "LIN4": 5,
+      "CLLS7": 4,
+      "PYPL5": 4,
+      "JPM3": 4,
+      "CFR3": 5,
+      "P0": {
+        "JPM3": 1,
+        "CFR3": 1
+      }
+    },
+    "next_steps": [
+      "on reactivation: deploy main, apply migration 046, SHA-verify",
+      "rerun CFR + JPM live only; confirm P0s",
+      "then CLLS, HON, PYPL",
+      "then LIN",
+      "final six-company scoring",
+      "pace ~3-4 runs/day for Tavily budget"
+    ]
   }
 }
