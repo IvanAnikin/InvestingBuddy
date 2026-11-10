@@ -788,6 +788,87 @@ class TestReviewNegatives:
         assert [b.name for b in lines] == ["Sensing"]
 
 
+class TestReReviewNegatives:
+    """Re-review (probe4): explicit year-to-date forms, the form's year, per-clause
+    scoping and period words in a verbatim label."""
+
+    @pytest.mark.parametrize("key,statement", [
+        # R1 — "of" and a forward "next … through" are not reporting periods.
+        ("2026-Q2", "Orders of $3.0bn represent six months of production."),
+        ("2026-Q3", "Management expects capex of $1.2bn over the next nine months through "
+                    "June 2027."),
+        ("2026-Q3", "Cash burn over the coming nine months ended in a loss of $40m."),
+        # R2 — the form's year (or the statement's only year) is not the key's.
+        ("2026-Q3", "Revenue for the nine months ended September 30, 2025 was $15.0bn."),
+        ("2026-Q3", "9M 2025 revenue was $15.0bn."),
+        ("2026-Q3", "9M25 revenue was $15.0bn."),
+        ("2026-Q2", "In the first half of 2025, revenue was $8.1bn."),
+    ])
+    def test_not_rekeyed(self, key: str, statement: str) -> None:
+        for calendar in (None, True):
+            assert pd.rekey_for_duration(key, statement, [],
+                                         calendar_fiscal_year=calendar) is None, statement
+
+    @pytest.mark.parametrize("key,statement,want", [
+        ("2026-Q3", "Revenue for the nine months ended September 30, 2026 was $16.0bn.",
+         "2026-9M"),
+        ("2026-Q2", "Half-year results showed revenue of $8.1bn.", "2026-H1"),
+        ("2026-Q3", "Nine months to 30 September 2026: revenue $16.0bn, versus $15.0bn in "
+                    "the 2025 period.", "2026-9M"),
+        ("2026-Q3", "Nine-month 2026 net interest income was $77.9bn, versus $70.4bn in "
+                    "nine-month 2025.", "2026-9M"),
+    ])
+    def test_rekeyed(self, key: str, statement: str, want: str) -> None:
+        rk = pd.rekey_for_duration(key, statement, [])
+        assert rk is not None and rk.period_key == want
+
+    def test_year_to_date_needs_the_calendar(self) -> None:
+        statement = "Year-to-date revenue was $16.0bn."
+        assert pd.rekey_for_duration("2026-Q3", statement, []) is None
+        rk = pd.rekey_for_duration("2026-Q3", statement, [], calendar_fiscal_year=True)
+        assert rk is not None and rk.period_key == "2026-9M"
+
+    def test_and_clause_needs_its_own_name(self) -> None:
+        h = sh.SegmentHierarchy((sh.Segment("Industrial Automation"),
+                                 sh.Segment("Building Automation")))
+        for statement in ("Industrial Automation sales were $2.4bn and revenue rose 3% to "
+                          "$10.1bn.",
+                          "Industrial Automation sales were $2.4bn; revenue rose 3% to "
+                          "$10.1bn."):
+            assert sh.scope_finding(statement, h) is None, statement
+        kept = sh.scope_finding("Industrial Automation sales were $2.4bn, down 4%, with "
+                                "margins of 18.2%.", h)
+        assert kept is not None and kept.scope_key == "segment:industrial automation"
+        # An "and" inside a segment's own name is not a clause boundary.
+        named = sh.SegmentHierarchy((sh.Segment("Commercial and Investment Bank"),
+                                     sh.Segment("Asset Management")))
+        scope = sh.scope_finding("Commercial and Investment Bank revenue was $22.7bn.", named)
+        assert scope is not None
+
+    def test_section_route_balance_sheet_passage(self) -> None:
+        h = sh.SegmentHierarchy((sh.Segment("Industrial Automation"),
+                                 sh.Segment("Building Automation")))
+        passage = ("Industrial Automation\nSegment profit was $412 million. Selected balance "
+                   "sheet data: total assets $9.0bn")
+        assert sh.scope_finding("Segment profit was $412 million.", h,
+                                cited=[("Industrial Automation", passage)],
+                                figure_found=True) is None
+        clean = "Industrial Automation sales were $2.4bn. Segment profit was $412 million."
+        assert sh.scope_finding("Segment profit was $412 million.", h,
+                                cited=[("Industrial Automation", clean)],
+                                figure_found=True) is not None
+
+    @pytest.mark.parametrize("claim", [
+        "Latest quarter: Net income was $14.4 billion, up 12% from the prior year.",
+        "In the third quarter: net income was $14.4 billion, up 12% from the prior year.",
+    ])
+    def test_period_word_label_is_not_verbatim(self, claim: str) -> None:
+        source = cc.ClaimSource("f1", "Net income was $14.4 billion, up 12% from the prior "
+                                "year.", "FY2025", None)
+        assert cc._verbatim(claim, [source]) is False
+        assert cc._verbatim("Profitability: " + source.text, [source]) is True
+
+
 # ── Linear time ───────────────────────────────────────────────────────────── #
 
 PATTERNS = [
@@ -802,6 +883,7 @@ PATTERNS = [
     sh._LEADING_JOINER_RE, sh._BLANKS_RE, sh._ITEM_SPLIT_RE, sh._OXFORD_RE, sh._AND_RE,
     pd._QUARTER_KEY_RE, pd._STATEMENT_YTD_RE, pd._INSTANT_RE, cc._WS_RE, cc._LABEL_LEAD_RE,
     cc._TAIL_PUNCT_RE, segment_scope._PERIODIC_RE,
+    pd._FORWARD_BEFORE_RE, pd._YEAR_RE, pd._SHORT_YEAR_RE, cc._LABEL_PERIOD_RE,
 ]
 DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000,
               "Aa " * 3000, "& " * 4000, "1," * 4000, "9M " * 3000,
@@ -812,6 +894,7 @@ DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000,
 def test_patterns_are_linear(pattern) -> None:  # noqa: ANN001
     # A pattern matching thousands of times allocates thousands of match objects; a
     # collector pass over the whole suite's heap is not the pattern's time.
+    was_enabled = gc.isenabled()  # re-review R4: restore, never force on
     gc.disable()
     try:
         for text in DEGENERATE:
@@ -820,7 +903,8 @@ def test_patterns_are_linear(pattern) -> None:  # noqa: ANN001
                 pass
             assert time.perf_counter() - started < 0.2
     finally:
-        gc.enable()
+        if was_enabled:
+            gc.enable()
 
 
 def test_helpers_are_fast_on_degenerate_text() -> None:

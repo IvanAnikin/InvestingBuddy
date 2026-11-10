@@ -76,8 +76,14 @@ _YTD_METRIC = (
     r"cash[ \t]{1,3}flows?)|free[ \t]{1,3}cash[ \t]{1,3}flows?|cash[ \t]{1,3}flows?|orders|"
     r"bookings|expenses|costs|capex|capital[ \t]{1,3}expenditures?)"
 )
+_MONTH_AFTER = (
+    r"(?:\d{1,2}[ \t]{1,3})?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]{0,6}\.?\b"
+)
 _STATEMENT_YTD_RE = re.compile(
-    r"\b(?:(?P<n>six|nine|6|9)[- \t]{1,2}months?[ \t]{1,3}(?:ended|ending|to|through|of)\b"
+    # Re-review R1: "to" / "through" only before a month or date ("nine months to 30
+    # September"); never "of" ("six months of production").
+    r"\b(?:(?P<n>six|nine|6|9)[- \t]{1,2}months?[ \t]{1,3}(?:ended|ending|"
+    r"(?:to|through)[ \t]{1,3}" + _MONTH_AFTER + r")"
     r"|(?P<n2>six|nine|6|9)[- \t]{1,2}month[ \t]{1,3}(?:period|(?:19|20)\d{2})\b"
     r"|first[ \t]{1,3}(?P<f>six|nine)[ \t]{1,3}months\b"
     r"|(?P<m>6|9)M[ \t]{0,1}(?:FY[ \t]{0,1})?(?:19|20)?\d{2}\b"
@@ -86,6 +92,18 @@ _STATEMENT_YTD_RE = re.compile(
     r"|(?P<t>year[- \t]to[- \t]date|ytd)[ \t]{1,3}" + _YTD_METRIC + r"\b)",
     re.IGNORECASE,
 )
+#: Re-review R1: a forward duration ("over the next nine months", "the coming six
+#: months") is not a reporting period. Read on the 30 characters before the form.
+_FORWARD_BEFORE_RE = re.compile(
+    r"\b(?:next|coming|following|upcoming|remaining|another|over[ \t]{1,3}the)"
+    r"(?:[ \t]{1,3}(?:next|coming|following))?[ \t]{1,3}$",
+    re.IGNORECASE,
+)
+#: A year written in a form or its date: "2026", and the two-digit "9M 25".
+_YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+_SHORT_YEAR_RE = re.compile(r"(?:[69]M|H1)[ \t]{0,1}(?:FY[ \t]{0,1})?(?P<y>\d{2})\b", re.IGNORECASE)
+#: Characters after a form read for its date's year ("ended September 30, 2025").
+FORM_DATE_CHARS = 40
 #: ADR-093 review: a balance (an instant) — never rekeyed to a duration.
 _INSTANT_RE = re.compile(
     r"\b(?:as[ \t]{1,3}(?:of|at)\b|at[ \t]{1,3}(?:the[ \t]{1,3}end[ \t]{1,3}of\b|"
@@ -155,13 +173,42 @@ def _ytd_months(text: str) -> set[int | None]:
     return out
 
 
-def statement_months(statement: str) -> int | None:
+def _form_year(text: str, m: re.Match[str]) -> int | None:
+    """The year a form names, in itself or in the date right after it, else ``None``."""
+    short = _SHORT_YEAR_RE.match(text, m.start())
+    if short is not None and short.end() <= m.end():
+        return 2000 + int(short.group("y"))
+    end = m.end() + FORM_DATE_CHARS
+    for stop in (".", ";", "\n"):
+        at = text.find(stop, m.end(), end)
+        if at >= 0:
+            end = at
+    year = _YEAR_RE.search(text, m.start(), end)
+    return int(year.group(0)) if year else None
+
+
+def statement_months(statement: str, year: int | None = None) -> int | None:
     """The one year-to-date length a statement states in an explicit reporting form,
     when it states no quarter. ``None``: none, two, or a quarter beside it; ``0``:
-    "year-to-date revenue" (length from the key)."""
+    "year-to-date revenue" (length from the key).
+
+    Re-review R1/R2: a form after "next / coming / over the" is a forward duration, not
+    a period. With ``year`` (the key's): the FIRST form's own year (in it, or in the
+    date right after it) must be that year — a later form is the comparison ("…
+    versus nine-month 2025"); a form with no year needs the statement's only year, if
+    it states one, to be that year."""
     text = str(statement or "")[:cp.MAX_TEXT_CHARS]
     lengths: set[int] = set()
-    for m in _STATEMENT_YTD_RE.finditer(text):
+    forms = [m for m in _STATEMENT_YTD_RE.finditer(text)
+             if not _FORWARD_BEFORE_RE.search(text[max(0, m.start() - 30):m.start()])]
+    if forms and year is not None:
+        stated = _form_year(text, forms[0])
+        if stated is None:
+            years = {int(y) for y in _YEAR_RE.findall(text)}
+            stated = next(iter(years)) if len(years) == 1 else None
+        if stated is not None and stated != year:
+            return None
+    for m in forms:
         if m.group("h"):
             lengths.add(6)
         elif m.group("t"):
@@ -333,7 +380,7 @@ def rekey_for_duration(
     if _INSTANT_RE.search(text[:cp.MAX_TEXT_CHARS]):
         return None  # a balance at a date has no duration
     unstated_ok = calendar_fiscal_year is True
-    own = statement_months(text)
+    own = statement_months(text, year)
     if own is not None:
         if own not in (0, months) or (own == 0 and not unstated_ok):
             return None

@@ -9749,6 +9749,19 @@ negative test (`TestReviewNegatives`).
 - **P3-7.** A year to date of unstated length needs a known calendar fiscal year (the
   investigator reads the issuer's calendar on demand, once).
 - **P3-8.** Every pattern of the change is in both linearity lists.
+- **Re-review (R1–R4):**
+  - "to" / "through" count only before a month or date, and "of" never counts ("six
+    months of production"). A form after "next / coming / following / over the" is a
+    forward duration.
+  - The first form's own year (in the form, or in the date right after it) must be the
+    key's year. A form with no year needs the statement's only year, if it states one,
+    to match. So "nine months ended September 30, 2025", "9M 2025" and "first half of
+    2025" on a 2026 key are not rekeyed, while "Nine-month 2026 … versus nine-month
+    2025" is.
+  - ", and" ends a clause, unless it sits inside a matched name.
+  - A verbatim label naming a period in words ("Latest quarter:") is not a label.
+  - The linearity harnesses restore the collector's prior state.
+  - Replay: identical to round 1.
 - **Replay after the fixes:** the same deltas as above, with one change. JPM2's press
   finding "CIB segment (not Group) 3Q26: net income $8.2B …; revenue $22.7B …" is no
   longer scoped, because its second clause names no segment.

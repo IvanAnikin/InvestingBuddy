@@ -1121,7 +1121,8 @@ PATTERNS = [
     sh._KEY_SEP_RE, sh._CAMEL_RE, sh._TITLE_HEADING_RE, sh._CLAUSE_RE, sh._FIRMWIDE_ITEM_RE,
     sh._LEADING_JOINER_RE, sh._BLANKS_RE, sh._ITEM_SPLIT_RE, sh._OXFORD_RE, sh._AND_RE,
     pdur._QUARTER_KEY_RE, pdur._STATEMENT_YTD_RE, pdur._INSTANT_RE, cc._WS_RE,
-    cc._LABEL_LEAD_RE, cc._TAIL_PUNCT_RE,
+    cc._LABEL_LEAD_RE, cc._TAIL_PUNCT_RE, pdur._FORWARD_BEFORE_RE, pdur._YEAR_RE,
+    pdur._SHORT_YEAR_RE, cc._LABEL_PERIOD_RE,
 ]
 DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000]
 
@@ -1130,6 +1131,7 @@ DEGENERATE = [" " * 10000, "\n" * 10000, "A-" * 3000, "a," * 5000, "a." * 3000]
 def test_new_patterns_are_linear(pattern) -> None:  # noqa: ANN001
     # ADR-093: thousands of match objects can trigger a collector pass over the whole
     # suite's heap; that is not the pattern's time.
+    was_enabled = gc.isenabled()  # re-review R4: restore, never force on
     gc.disable()
     try:
         for text in DEGENERATE:
@@ -1138,7 +1140,8 @@ def test_new_patterns_are_linear(pattern) -> None:  # noqa: ANN001
                 pass
             assert time.perf_counter() - start < 0.2
     finally:
-        gc.enable()
+        if was_enabled:
+            gc.enable()
 
 
 def test_new_helpers_are_fast_on_degenerate_text() -> None:

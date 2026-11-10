@@ -736,6 +736,13 @@ _WS_RE = re.compile(r"\s+")
 #: colon ("Business model: "). Letters, spaces and & / - only: no digit, no period.
 _LABEL_LEAD_RE = re.compile(r"^[a-z][a-z &/-]{0,40}:[ \t]?$")
 _TAIL_PUNCT_RE = re.compile(r"^[ \t.;,)\]]{0,4}$")
+#: Re-review: a label naming a period in words ("Latest quarter:", "In the third
+#: quarter:") is a period claim, not a label.
+_LABEL_PERIOD_RE = re.compile(
+    r"\b(?:quarter(?:ly)?|year|annual|half|months?|fy|q[1-4]|h[12]|ytd|period|latest|"
+    r"current|prior|recent|last|interim|first|second|third|fourth)\b",
+    re.IGNORECASE,
+)
 
 
 def _verbatim(claim: str, sources: Sequence[ClaimSource],
@@ -763,7 +770,7 @@ def _verbatim(claim: str, sources: Sequence[ClaimSource],
             continue
         if not _TAIL_PUNCT_RE.match(tail):
             continue
-        if lead and (cp.mentions(lead, classify=False)
+        if lead and (cp.mentions(lead, classify=False) or _LABEL_PERIOD_RE.search(lead)
                      or (hierarchy is not None
                          and sh.names_in(as_written[:at], hierarchy,
                                          owned_only=False).owners)):

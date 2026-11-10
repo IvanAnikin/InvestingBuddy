@@ -714,7 +714,7 @@ MAX_PASSAGE_CHARS = 6000
 #: contrast ("…, versus company sales up 4%", "…, while Group revenue …").
 _CLAUSE_RE = re.compile(
     r";|\.(?:[ \t]|$)|\n|,?[ \t]{1,3}(?:versus|vs\.?|while|whereas|against|compared[ \t]{1,3}"
-    r"(?:with|to))\b"
+    r"(?:with|to)|and)\b"
 )
 #: ADR-093 review: consolidated / balance-sheet wording — a figure said of the whole
 #: company even when it sits on a segment page.
@@ -737,7 +737,10 @@ def _every_figure_named(text: str, named: NamedScope) -> bool:
     starts = [s for s, _e, _k, _g in named.spans]
     clause_start = 0
     any_figure = False
-    bounds = [m.start() for m in _CLAUSE_RE.finditer(text)] + [len(text)]
+    # Re-review R3: "…$2.4bn and revenue rose 3% to $10.1bn" is two clauses; an "and"
+    # inside a matched name ("Commercial and Investment Bank") is not a boundary.
+    bounds = [m.start() for m in _CLAUSE_RE.finditer(text)
+              if not any(s <= m.start() < e for s, e, _k, _g in named.spans)] + [len(text)]
     for bound in bounds:
         first = _FIGURE_RE.search(text, clause_start, bound)
         if first is not None:
