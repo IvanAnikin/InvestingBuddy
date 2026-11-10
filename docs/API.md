@@ -3637,6 +3637,57 @@ Additive keys under `source_summary_json.v3_research`:
   rather than a prose sentence's (`excerpt=X12`).
 - No other payload key changes. The rules apply from extraction pipeline version 24.
 
+## ADR-094 — gap queue and resolution state (no new endpoint)
+
+Additive keys under `source_summary_json.v3_research`:
+
+- `gap_resolution` (only when the queue ran): `{version, counts, gaps, note}`.
+  - `counts`: `gaps_created`, `gaps_mapped_existing`, `gaps_reread`,
+    `gaps_not_required`, `gaps_found`, `gaps_failed`, `gaps_not_run`, `by_result`,
+    `reread_queries`, `reread_query_cap`.
+  - `gaps[*]`: `{gap_id, question_key, producer, route, result, why, words,
+    may_say_not_found, topics, topic_labels, period_constraint, scope_constraint,
+    source_classes_searched, queries, documents_searched, unparsed_documents,
+    finding_ids, evidence}`. `evidence` rows carry
+    the document name, evidence id, page, table and topics only — never passage text.
+- `gaps[*]` handed to the council gain `resolution_result` and `resolution_words` when
+  the gap was resolved.
+- `professional_research` platform evidence gaps gain `resolution {result, route, why,
+  words, may_say_not_found, found_in, documents_searched}`. `partially_addressed_by` is
+  set only when the gap is PARTIALLY_CLOSED (or carries no gap status).
+- `canonical_state.gap_resolution`: `{counts, topics_located}` or `null`.
+- New `state_invariants` rule: `absence_stated_while_found`.
+- Changed meaning (`gap_reconciliation`):
+  - a field inferred from the question leaves the gap STILL_OPEN with
+    `field_inferred_from_question` and no finding ids (was PARTIALLY_CLOSED);
+  - another period alone is NONCOMPARABLE unless the gap asks for history;
+  - another metric sub-type alone is NONCOMPARABLE;
+  - new non-comparable reason `value_stale`: the gap names no period and the finding or
+    fact is older than the newest year held for the metric.
+- Part 2 (§7/§8):
+  - `primary_document_coverage.documents[*]` gains `pages_total`, `pages_parsed_count`
+    and `truncated`; the audit gains `documents_truncated`.
+  - A truncated held document is named in a gap's `unparsed_documents` as
+    "<document>, N of M pages parsed".
+  - New re-read topic keys may appear in `topics` / `topic_labels`: `commitments`,
+    `investing_financing_cash`, `major_shareholders`, `governance`, `going_concern`,
+    `dividend_policy`, `properties`, `store_network`, `regulatory_status`,
+    `collaborations`, `rate_sensitivity`.
+  - Extraction pipeline version 25.
+- Review round 1:
+  - `gap_resolution.gaps[*]` gains `queries_planned`, `queries_succeeded`,
+    `queries_failed` and `queries_skipped`.
+  - `gap_resolution.counts` gains `gaps_located_unverified`, `queries_planned`,
+    `queries_succeeded`, `queries_failed` and `queries_skipped`. `gaps_found` now counts
+    only gaps a finding answers.
+  - `gaps[*].evidence[*]` gains `period`, the period the passage was located for (or
+    `null`).
+  - `canonical_state.gap_resolution` gains `located: [{topic, period}]`. `topics_located`
+    now holds only located evidence topics.
+  - New `why` values: `not_every_query_ran` and `gap_queue_time_budget_spent`.
+  - `PERIOD_MISMATCH` wording now covers an unconfirmed period.
+  - Follow-up: `counts.gaps_failed` no longer includes `NOT_RUN` gaps.
+
 ## V3.1 Research Corpus — no API surface (`develop/v3` only)
 
 The corpus added **no HTTP endpoints**. It is an internal research capability:

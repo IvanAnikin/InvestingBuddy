@@ -1809,6 +1809,65 @@ reader takes its counts and status lines from it.
   carries its filing's date; an undated stored document or corpus version is
   backfilled on re-encounter, never overwritten.
 
+## Gap queue and resolution state (ADR-094)
+
+- **Step 7c, after reconciliation and before the Chair.** `pipeline/gap_resolution.py`
+  routes every ledger gap once:
+  - `mapped_existing`: reconciled CLOSED / SUPERSEDED / PARTIALLY_CLOSED;
+  - `reread`: the gap's own words name a reviewed topic (`document_reread.topics_asked`),
+    so the held primary documents are searched lexically (`disclosures_only`; no web, no
+    model);
+  - `not_required`: with a closed reason (not an absence, source blocked, needs a
+    non-issuer source, no searchable topic, no primary document held, corpus search
+    unavailable, budget spent, search failed).
+  Bounds: 3 queries per gap, 80 distinct queries per run, top 30 hits, 3 evidence rows.
+- **Result vocabulary.** FOUND, PARTIALLY_FOUND, NOT_FOUND_AFTER_SEARCH,
+  DOCUMENT_NOT_PARSED, EXTRACTION_FAILED, SCOPE_MISMATCH, PERIOD_MISMATCH,
+  SOURCE_BLOCKED, NOT_RUN. Only NOT_FOUND_AFTER_SEARCH may be worded "not found in the
+  available evidence". A located passage (topic named beside a figure, not boilerplate,
+  compatible period and scope) is EXTRACTION_FAILED — held but not read into a finding.
+  It never becomes a finding.
+- **Consumers.** The resolution is stored in `research_gaps.reconciliation_json.resolution`;
+  the council `GapRef`, the chair prompt ("RESEARCH STATE …: do not call this
+  undisclosed"), the professional report's platform gaps, the canonical state and the
+  admin panel ("Gaps re-read") read it.
+- **Required metrics.** A playbook question's required metrics are always re-read once,
+  even when its evidence already names them beside a figure (a subsidiary's ratio no
+  longer satisfies the Group's).
+- **Reconciliation.** A field inferred from the question never closes. Another period is
+  NONCOMPARABLE unless the gap asks for history; another metric sub-type is
+  NONCOMPARABLE alone. With no period in the gap, a finding or fact older than the
+  metric's newest held year is `value_stale`. A finding whose stored and stated years
+  differ has an unknown period. "Partially addressed" is shown only for PARTIALLY_CLOSED.
+- **Chair absence claims.** "X is not disclosed / no X split" is withheld
+  (`absence_stated_while_found`) when a cited finding carries X or the queue located X.
+- **Aliases and table rows (§7).** The re-read lexicon gains commitments, investing and
+  financing cash flows, major shareholders, board and related parties, going concern,
+  dividend policy, sites and facilities, store network, regulatory designations,
+  collaborations and rate sensitivity, plus IFRS/ASX debt wordings ("loans and
+  borrowings", "loan facility", "undrawn") and payments KPIs (TPV, take rate). A topic's
+  ROW LABELS ("capital commitments", "borrowings") carry it only at the start of a line
+  holding a figure — a statement-table row — never in prose, and run as their own
+  lexical query in the gap queue.
+- **Section-aware page budget (§8).** When a long PDF's outline does not fill the
+  supplemental budget, pages beyond the leading window whose own text opens a note or
+  statement section (a short heading line: borrowings, commitments, segment, related
+  parties, shareholder information …) are read, in document order, within the same cap.
+  The parse records `pages_extracted` and `skipped_page_ranges`; the inventory carries
+  the active parse's `pages_total` / `pages_parsed` / `truncated`, and a gap searched
+  over a truncated document is DOCUMENT_NOT_PARSED, never "not found". Extraction
+  pipeline version 25 refetches and re-extracts every held disclosure on its next run.
+- **Review round 1.**
+  - An absence needs a complete search: every planned query ran and every topic got its
+    own query. Otherwise the result is NOT_RUN with the reason.
+  - Step 7c reads the inventory again, including truncated documents beyond the window,
+    and has a 90 s budget.
+  - Located passages must carry the metric with the year beside it, and table rows must
+    be cells.
+  - The chair absence rule reads only named topics, needs all of them, and needs a
+    matching period.
+  - "Answered" and "located, unverified" are counted apart.
+
 ## Status lines, scope, applicability and fiscal calendars (ADR-091)
 
 - **Status lines.** `canonical_state.status` is every status line's one source: latest

@@ -77,6 +77,7 @@ from app.services.director.planner import persist_plan, plan_research
 from app.services.ledger import store as ledger
 from app.services.memory import store as memory
 from app.services.memory.delta import compute_delta, persist_delta
+from app.services.pipeline.gap_resolution import resolution_of as gap_resolution_of
 from app.services.playbooks import select as select_playbooks
 from app.services.research_mode import budget_for, limits_for, parse_mode
 from app.services.sources.taxonomy import tier_rank
@@ -183,6 +184,11 @@ class V3ResearchOutcome:
     #: ``withdrawn``, with its reason). EMPTY — and absent from ``to_dict()`` — when no
     #: finding of the run declared a kind.
     statement_kinds: dict[str, Any] = field(default_factory=dict)
+    #: ADR-094 — the gap queue: every gap's route (mapped to a finding / re-read in the
+    #: held primary documents / not requiring one, with why) and its result in the closed
+    #: vocabulary (``gap_resolution.RESULTS``), with the counts. EMPTY — and absent from
+    #: ``to_dict()`` — when the step did not run.
+    gap_resolution: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -208,6 +214,8 @@ class V3ResearchOutcome:
             payload["period_sweep"] = dict(self.period_sweep)
         if self.statement_kinds:
             payload["statement_kinds"] = dict(self.statement_kinds)
+        if self.gap_resolution:
+            payload["gap_resolution"] = dict(self.gap_resolution)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -1152,6 +1160,13 @@ async def _run(
     #     current. A failure costs the reconciliation only: the gaps then stand as
     #     recorded, which is the fail-closed direction.
     await reconcile_step(session, run, company=company, outcome=outcome)
+    # 7c. ADR-094 — the gap queue: every gap still open after reconciliation is re-read
+    #     in the held primary documents by its own words (corpus only, no web, no
+    #     model), or recorded as not needing one; each gets its result BEFORE the Chair
+    #     reads the gaps and the report words them.
+    await gap_resolution_step(
+        session, run, company=company, outcome=outcome, backend=search_backend, cfg=cfg,
+    )
 
     # 8. Chair. Re-assembled first, because the Red Team may have withdrawn a finding
     #    and the Chair must not see one that was retired.
@@ -1375,6 +1390,31 @@ async def reconcile_step(session: Any, run: Any, *, company: Any, outcome: Any) 
         )
 
 
+async def gap_resolution_step(
+    session: Any, run: Any, *, company: Any, outcome: Any, backend: Any, cfg: Any,
+) -> None:
+    """Step 7c (ADR-094). Never raises; in a SAVEPOINT. A failure costs the resolution
+    only: the gaps then carry their reconciliation verdict and no result."""
+    from app.services.pipeline import document_coverage, gap_resolution
+
+    try:
+        # ADR-094 review — the inventory is read AGAIN here: the one computed before the
+        # investigator misses every document acquired during the run (and a first-run
+        # company had none). ``None`` (lookup failed) leaves every re-read NOT_RUN.
+        company_id = getattr(company, "id", None)
+        current = await document_coverage.current_inventory(session, company_id)
+        async with session.begin_nested():
+            outcome.gap_resolution = await gap_resolution.resolve_run(
+                session, run, company_id=company_id,
+                inventory=current, backend=backend, cfg=cfg,
+            )
+    except Exception as exc:  # noqa: BLE001 - the queue must not end the run
+        outcome.degraded.append(
+            f"open gaps were not re-read in the held documents ({type(exc).__name__}); "
+            "they are shown as reconciled"
+        )
+
+
 #: Findings read into the report. The ledger may hold more; the report says how many.
 MAX_REPORT_FINDINGS = 200
 #: Tool calls the acquisition ladder may add per question: two corpus intents, two
@@ -1517,6 +1557,7 @@ async def _professional_report(
                 str(r) for r in ((row.reconciliation_json or {}).get("reasons") or ())
             ),
             gap_status=(row.reconciliation_json or {}).get("gap_status"),
+            resolution=gap_resolution_of(row),
         )
         for row in gap_rows
         if row.status in (ledger.GAP_OPEN, ledger.GAP_ACCEPTED)

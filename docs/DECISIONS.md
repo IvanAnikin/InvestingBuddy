@@ -9606,3 +9606,243 @@ Replay after the review:
   sentence as scope. It is unchanged from base and does not reach a slot in the replay,
   because the statement row 5,293 is held for that year. However, it can still make a
   conflict.
+
+## ADR-094: A Gap Carries the Resolution State Research Derived for It
+
+**Date:** 2026-11-09 · **Status:** Accepted (implementation; not yet proven live)
+**Trigger:** research integrity closure batch H4. Every round-3 report (HON4, LIN4,
+CLLS7, PYPL5, JPM3, CFR3) listed 14–27 false "not found" gaps over documents the
+platform held, although each run made 23–29 re-read queries.
+
+### Root causes (verified on the stored payloads and the downloaded primary sources)
+1. **A gap never entered a re-read of its own.** The ADR-084/090 re-read is chosen from
+   the QUESTION's topics, before the model answers; the gap is written afterwards and
+   nothing reads it again. JPM3 `capital_adequacy` never re-read at all: its evidence
+   "carried" CET1 (the metric named beside a figure) through a SUBSIDIARY's CET1 of 20.0%
+   (2024), so the count and metric contracts were met, ADR-090's `uncarried_topics` was
+   empty, and the answer wrote "No reported FY2025 CET1 ratio for the Firm" over a held
+   10-Q stating 14.0% (`agents/investigator.py`, `_acquire`, the `uncarried` block).
+2. **Reconciliation knew a dozen fields.** `research_fields` covers capex, capacity,
+   milestones, offtake, cash, runway, NPV/IRR, OCF, revenue, net debt and resources.
+   Every other gap (CET1, LCR, litigation, buybacks, segments …) was `field_unknown` →
+   `OPEN` → shown as "Not acquired by the platform".
+3. **Bogus partial closes.** A gap whose words named no field took its QUESTION's fields
+   (`field_inferred_from_question`): "no customer concentration" under a revenue
+   question was "partially addressed" by FY2025 revenue (HON4-6, PYPL5). Another period
+   (`older_period` / `other_period` / `later_period`) and another capex sub-type
+   (`field_subtype_differs`) stayed PARTIALLY_CLOSED; ADR-091 made them non-comparable
+   only in combination.
+4. **The stale-period hole.** ADR-091's `_fact_is_stale` judged validated FACTS only, and
+   only against the newest ANNUAL fact year. A FINDING for an older period was never
+   judged stale when the gap named no period, and for a gap naming FY2026 an FY2025
+   finding was a comparable `older_period` partial answer (PYPL5-4, HON4).
+   A finding whose stored key and own words name different years (LIN4-D3: "year to
+   30 June 2025" stored as 2026) closed six revenue gaps.
+5. **The page and chair could not tell "searched, not there" from "never searched".**
+
+### Decision
+- **Gap queue (`pipeline/gap_resolution.py`, step 7c, after reconciliation and before
+  the Chair).** Every ledger gap is routed once: (A) `mapped_existing` (reconciled
+  CLOSED / SUPERSEDED / PARTIALLY_CLOSED), (B) `reread` — its OWN words name a topic of
+  the reviewed lexicon (`document_reread.topics_asked`), so the held primary documents
+  are searched (lexical corpus search, `disclosures_only`, no web, no model), or (C)
+  `not_required` with a closed reason (not an absence, source blocked, needs a
+  non-issuer source, no searchable topic, no primary document held, budget spent, search
+  failed). Bounds: 3 queries per gap, 80 distinct queries per run (shared), top 30 hits.
+- **Results (spec §5):** `FOUND`, `PARTIALLY_FOUND`, `NOT_FOUND_AFTER_SEARCH`,
+  `DOCUMENT_NOT_PARSED`, `EXTRACTION_FAILED`, `SCOPE_MISMATCH`, `PERIOD_MISMATCH`,
+  `SOURCE_BLOCKED`, `NOT_RUN`. Only `NOT_FOUND_AFTER_SEARCH` may be worded "not found in
+  the available evidence"; every other result has its own wording (`RESULT_WORDS`). A
+  passage the re-read locates (the topic named beside a figure, not boilerplate, a
+  compatible period and scope) makes the gap `EXTRACTION_FAILED` — "not established
+  either way: <document> has a passage naming <topic> beside a figure that no finding has
+  read; whether it answers this gap is unchecked". It never becomes a finding: no
+  model read it and no figure was checked. Evidence is recorded by platform-derived
+  document name, evidence id and page, never by passage text.
+- **Persisted and consumed.** Each resolution is stored in
+  `research_gaps.reconciliation_json.resolution`; the council input (`GapRef`), the
+  chair prompt ("RESEARCH STATE …: do not call this undisclosed"), the professional
+  report's platform gaps and the page read it. The record and its counts
+  (`gaps_created`, `gaps_mapped_existing`, `gaps_reread`, `gaps_found`, `gaps_failed`,
+  `gaps_not_run`, `gaps_not_required`, `by_result`, `reread_queries`) are
+  `v3_research.gap_resolution`; the canonical state carries the counts and the topics
+  located (`canonical_state.gap_resolution`), and the admin panel shows them.
+- **Required metrics are always re-read once.** A playbook question's required metrics
+  join the ADR-090 re-read even when its evidence "carries" them (the JPM3 fix).
+- **Reconciliation (extends ADR-086/091, no parallel path).**
+  - A field inferred from the question never closes, not even partly: the gap stays open
+    and goes to the queue.
+  - Another period than the gap names is `NONCOMPARABLE` unless the gap asks for history
+    (trend, series, across periods); another metric sub-type or qualifier is
+    `NONCOMPARABLE` on its own.
+  - A gap naming no period: a finding or validated fact for a year older than the newest
+    year ANY live primary finding or validated fact of the metric is for is stale
+    (`value_stale`, non-comparable). A finding whose stored and stated years differ has
+    an unknown period for every period-bound metric.
+  - The page says "Partially addressed" only for `PARTIALLY_CLOSED`, never for
+    `NONCOMPARABLE`.
+- **Chair absence claims.** A chair sentence saying a topic is "not disclosed / not
+  reported / no … split / lacks a … breakdown" is withheld (rule
+  `absence_stated_while_found`) when a finding it cites carries that topic (CFR3: "no
+  segment split beyond Jewellery Maisons" citing segment findings) or the gap queue
+  located it in a held document. The topic is read in the cue's own clause only, and
+  "no evidence of …" (a claim about the company) is not a disclosure-absence cue.
+
+### Replay (offline; stored payloads + downloaded primary sources)
+Evaluator false gaps (excluding ISSUER_NOT_DISCLOSED) that the page worded as absent,
+before → after (the rest are located, honestly NOT_RUN, or unmatched). The harness
+windows a flattened HTML document into ~1,400-character chunks like the corpus chunker:
+
+| Report | before: worded absent | after: located / honest | after: still "not found" |
+|---|---|---|---|
+| HON4 | 7 of 11 | 6 | 0 |
+| LIN4 | 9 of 12 | 3 | 0 |
+| CLLS7 | 10 of 14 | 5 | 0 |
+| PYPL5 | 12 of 13 | 9 | 0 |
+| JPM3 | 12 of 14 | 8 | 1 |
+| CFR3 | 8 of 15 | 4 | 0 |
+
+Partial closes from a question-inferred field (HON4 13, LIN4 6, CLLS7 6, PYPL5 8, JPM3 6,
+CFR3 9) and from another period or sub-type alone (HON4 7, CLLS7 8, PYPL5 10, JPM3 2)
+are gone.
+
+### Limits
+- The queue reads the ledger's gaps (investigator and unsupported-statement gaps).
+  Chair and synthesis prose are covered by the absence rule; V2 `missing_information`
+  keeps its ADR-086 labels.
+- A topic is matched lexically; a gap whose words name no lexicon topic is `NOT_RUN`
+  (`no_searchable_topic_in_gap`), worded as not searched — never as absent.
+- `EXTRACTION_FAILED` says a held passage names the topic with a figure; it does not
+  prove the passage answers the gap's exact period and scope when the chunk is undated.
+
+### Part 2 — retrieval and truncation (§7/§8)
+**Root causes.**
+- *Held tables missed.* The re-read ran the question's 1–2 prose topic queries, and the
+  lexicon had no word for what many gaps asked: commitments, investing/financing cash,
+  shareholders, board and related parties, going concern, dividend policy, sites, stores,
+  designations, collaborations, rate sensitivity. Nor did it have the row labels a
+  statement table prints ("Loans and borrowings", "Capital commitments", "Number of
+  shares"). JPM3 recorded 34 PARSED_NO_MATCH and 22 TABLE_UNREAD out of 78 document ×
+  question outcomes.
+- *LIN stops at page 40.* `primary_document_extractor.extract_pdf` reads the first
+  `primary_document_max_pdf_pages` (40) pages. Its supplemental pass
+  (`_select_statement_pages`) reads only PDF outline/bookmark titles. The LIN annual
+  report has 59 pages and no outline, so notes 18 (exploration commitments), 21 (related
+  parties) and 28 (commitments and contingencies: A$20.5m capital commitments and the
+  US$20m facility) were never parsed. The inventory reported `pages = max(page_end) = 40`
+  and no page total, so the truncation was invisible.
+
+**Decision.**
+- *§7 alias table.* Eleven topics were added, and the debt, KPI, capacity and legal
+  aliases were widened. Question cues were added for the round-3 gap wordings, such as
+  "capital ratios" → CET1. A topic's `rows` are table-row labels. They carry the topic
+  only at the start of a line that holds a figure (`table_rows_carried`). A corpus table
+  chunk is rendered one row per line, so this is a row lookup. They also run as a second
+  lexical query in the gap queue. The investigator's own re-read plan is unchanged; it
+  gains the aliases and the row lookup through `metrics_carried` and `rank_hits`.
+- *§8 section-aware budget.* When the outline leaves the supplemental budget unfilled,
+  the extractor reads pages beyond the leading window whose own text opens a note or
+  statement section, in document order and within the same cap. A section opening is a
+  short heading line, numbered or not. The scan is a pypdf text pass over at most 160
+  pages, inside the extraction deadline. The parse records `pages_extracted` and
+  `skipped_page_ranges`. The inventory adds the active derivation's `page_count` /
+  `pages_persisted` / `truncated` (no migration needed). The coverage audit shows
+  truncation. A gap searched over a truncated document is `DOCUMENT_NOT_PARSED` and
+  names "N of M pages parsed". Extraction pipeline version 25 makes the held-disclosure
+  re-read open such a report again (version 24 is ADR-092, batch H3a's statement-line selector).
+
+**Replay (offline lexical index over the downloaded sources; LIN with the branch's page
+selection).** Evaluator false gaps that were located or honestly worded, out of the
+total:
+
+| Report | commit 1 | commit 2 | still "not found" (commit 2) |
+|---|---|---|---|
+| HON4 | 6/11 | 7/11 | 0 |
+| LIN4 | 3/12 | 6/12 | 0 |
+| CLLS7 | 5/14 | 9/14 | 0 |
+| PYPL5 | 9/13 | 10/13 | 0 |
+| JPM3 | 8/14 | 9/14 | 1 (contract awards / backlog) |
+| CFR3 | 4/15 | 4/15 | 0 |
+
+LIN's heading pass selects pages 41, 46, 47, 48, 50, 56 and 57: the capital-risk,
+commitments, related-party, financial-risk, commitments-and-contingencies and
+shareholder pages.
+
+**Limits (part 2).** Lexical aliases remain a reviewed list: a gap worded outside it is
+`NOT_RUN`. The heading pass is bounded by the supplemental cap (12). A report with more
+note sections than that still skips some, and records which. The V2 excerpt-replay path
+(`EXTRACTION_TEXT_LAYER_MIN_VERSION`) does not advance. The version bump is not cheap.
+Production keeps no raw bytes, so `_read_by_an_older_pipeline` REFETCHES and
+RE-EXTRACTS every held disclosure an older pipeline derived, of any kind and for any
+issuer, on its company's next run. This happens within `V3_DISCLOSURE_CORE_BUDGET_SECONDS`
+and the existing acquisition budgets. Only PDFs longer than the leading window can read
+differently. H4 is version 25, after ADR-092's 24.
+- *Precision (replay over the evaluator's genuinely undisclosed gaps).* 5 of the 10 that
+  matched a payload gap are `EXTRACTION_FAILED`, because the documents hold the TOPIC but
+  not the specific ask. Examples: a debt figure but no covenant terms, a resource
+  statement but no reserve for that project. So the wording claims only that a passage
+  naming the topic with a figure is held and unchecked, never that the answer exists. The
+  chair absence rule can then withhold a true "not disclosed" sentence on that topic.
+  That is a withheld claim, not a wrong one.
+
+### Review round 1 (NO-GO → fixes)
+- **An absence needs a complete search.** `NOT_FOUND_AFTER_SEARCH` is allowed only when
+  every planned query ran without error and every topic the gap names got its own query.
+  Each topic's own query is planned before any row-label query. A failed, budget-skipped,
+  deadline-skipped or cap-cut query makes the gap `NOT_RUN`, with `search_failed`,
+  `reread_query_budget_spent`, `gap_queue_time_budget_spent` or `not_every_query_ran`.
+  Each gap records `queries_planned` / `queries_succeeded` / `queries_failed` /
+  `queries_skipped`, and the counts sum them.
+- **Step 7c reads the inventory as it is now.** It no longer uses the one taken before the
+  investigator, so documents acquired mid-run count and a first-run company is searched.
+  `document_coverage.current_inventory` adds every truncated held document that the
+  60-document window would hide. If the lookup fails, every re-read is `NOT_RUN`.
+- **Queue time budget.** Step 7c has a 90-second budget (`MAX_QUEUE_SECONDS`).
+- **Located is held to the metric.**
+  - An undated passage counts for the gap's period only when the year is stated beside
+    the carried metric (`carried_windows`). Otherwise the result is `PERIOD_MISMATCH`,
+    worded "another or an unconfirmed period".
+  - A table row carries only when the rest of its line is cells: figures, separators and
+    a short list of unit or note words.
+  - `canonical_state.gap_resolution.topics_located` holds only located evidence topics,
+    never a FOUND gap's words. `located[]` carries the period each was located for.
+  - `absence_stated_while_found` reads only topics the clause NAMES, needs EVERY topic
+    of the denied thing ("segment margins" = segment × margin), and needs a located
+    period that matches or is unknown. "The board has not disclosed a dividend policy"
+    is no longer withheld for governance, and "segment margins are not disclosed" is
+    not withheld by a cited segment-revenue finding.
+- **Counts.** `gaps_found` counts only gaps a finding answers. A re-read passage is
+  `gaps_located_unverified`, shown on the report page as "located, unverified".
+- **A mismatch comes first.** A NONCOMPARABLE gap is `PERIOD_MISMATCH` /
+  `SCOPE_MISMATCH` before `DOCUMENT_NOT_PARSED`.
+- **Wording.** A located gap names what the passage carries, and a narrative topic's
+  wording claims no figure.
+- **Page selection.**
+  - The outline pages that version 23 read are extracted first.
+  - The heading scan then runs on at most a quarter of the time left. It scans the
+    report's back half first and stops at the cap.
+  - A heading must have a heading SHAPE in the original case: numbered and title-case
+    with no figure, or all capitals. Narrative lines such as "segment revenue grew 12%",
+    "1. we reduced debt by $40m" or "Commitments to our customers" are not headings.
+- **Version 25.**
+- **PostgreSQL SAVEPOINT test.** `test_a_database_error_in_a_reread_query_leaves_the_session_usable`
+  runs in CI, where `api-ci.yml` sets `V3_TEST_POSTGRES_URL` to a migrated database.
+  Locally it skips when no migrated PostgreSQL is reachable.
+- **Replay after review.** The offline replay is unchanged for false gaps: HON4 7/11, LIN4
+  6/12, CLLS7 9/14, PYPL5 10/13, JPM3 9/14 and CFR3 4/15 are located or honestly worded,
+  and no planned query was skipped. Of the 10 matched gaps the evaluator calls genuinely
+  undisclosed, 5 remain EXTRACTION_FAILED (located on the topic, not the ask) and are
+  worded as unchecked, 1 is NOT_FOUND_AFTER_SEARCH, and the rest are NOT_RUN or a
+  mismatch.
+
+### Re-review follow-ups
+- `gaps_failed` excludes `NOT_RUN`, so no gap is counted twice.
+- `current_inventory` returns `None` when the truncated-document query fails. It never
+  returns a partial inventory.
+- A located passage counts for a period only when a PERIOD naming the year is stated
+  within about 60 characters of the carried metric (`stated_period_years`): "FY2025",
+  "30 June 2025", "December 31, 2025", "year ended … 2025". A bare year is not
+  enough: "Capital commitments 1,200 … The lease expires in 2025" does not take FY2025.
+- The chair absence rule needs the located period to match the denied one in year AND
+  kind. An H1 2026 location does not withhold "FY2026 full-year revenue is not
+  disclosed".

@@ -233,14 +233,16 @@ class TestGapReconciliation:
         assert verdict.status == ledger.RECONCILED_STILL_OPEN
         assert verdict.reasons == [gr.REASON_FIELD_UNKNOWN]
 
-    def test_a_field_inferred_from_the_question_never_fully_closes(self) -> None:
+    def test_a_field_inferred_from_the_question_never_closes_at_all(self) -> None:
+        # ADR-094: an inferred field is not what the gap asks for; not even partly.
         gap = _gap("The model returned an empty JSON object", question_key="capex_q")
         finding = _finding("f1", "Capex of US$268m")
         (verdict,) = gr.reconcile(
             [gap], [finding], question_fields={"capex_q": ("metric:capex",)}
         )
-        assert verdict.status == ledger.RECONCILED_PARTIALLY_CLOSED
-        assert verdict.reasons[0] == gr.REASON_FIELD_INFERRED
+        assert verdict.status == ledger.RECONCILED_STILL_OPEN
+        assert verdict.reasons == [gr.REASON_FIELD_INFERRED]
+        assert verdict.finding_ids == []
 
     def test_an_unreachable_source_is_superseded_by_a_ready_document(self) -> None:
         gap = _gap("The annual report could not be fetched",
