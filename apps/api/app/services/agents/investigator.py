@@ -3015,6 +3015,12 @@ class LLMInvestigator:
                 *(ref for ref in (self._metric_ref(item) for item in evidence)
                   if ref is not None),
             ])
+            # ADR-094 (JPM3 ``capital_adequacy``): a playbook question's REQUIRED metrics
+            # are always read from the held primary documents once. "Carried" only means
+            # the metric is named beside a figure — a subsidiary's CET1, a requirement
+            # percentage, last year's ratio — and that satisfied the contract, skipped
+            # the re-read, and the answer then said the held 10-Q had no CET1 ratio.
+            uncarried = tuple(dict.fromkeys([*metrics, *uncarried]))
         if (
             (not current.satisfied or uncarried)
             and not follow_up

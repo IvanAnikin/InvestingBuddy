@@ -47,7 +47,8 @@ _READY_SLOT_STATES = frozenset({"ready", "acquired", "reused"})
 
 
 async def held_primary_documents(
-    session: Any, company_id: uuid.UUID | None, *, limit: int = MAX_INVENTORY
+    session: Any, company_id: uuid.UUID | None, *, limit: int = MAX_INVENTORY,
+    truncated_only: bool = False,
 ) -> list[dict[str, Any]] | None:
     """The subject's held primary documents (current versions), newest first.
 
@@ -60,6 +61,7 @@ async def held_primary_documents(
     from sqlalchemy.orm import aliased
 
     from app.models.research_chunk import ResearchDocumentChunk as C
+    from app.models.research_derivation import ResearchDocumentDerivation as Der
     from app.models.research_document import ResearchDocument as D
     from app.models.research_document import ResearchDocumentVersion
     from app.services.corpus.search.backends.postgres import _filter_clauses
@@ -97,6 +99,17 @@ async def held_primary_documents(
         ),
     )
     owned_versions = select(C.research_document_version_id).where(C.company_id == company_id)
+
+    # ADR-094 §8 — the active parse's own page accounting: how many pages the document
+    # has, how many this parse persisted, and whether the parser said it was cut short.
+    def _active(column: Any) -> Any:
+        return (
+            select(column)
+            .where(Der.research_document_version_id == V.id, Der.is_active.is_(True))
+            .limit(1)
+            .scalar_subquery()
+        )
+
     stmt = (
         select(
             V.id, V.title, D.title, D.document_type, V.canonical_url, V.published_at,
@@ -104,6 +117,7 @@ async def held_primary_documents(
             func.count(C.id), func.count(C.indexed_at),
             func.sum(case((C.kind == "table", 1), else_=0)),
             func.max(C.page_end), func.count(func.distinct(C.section_path)),
+            _active(Der.page_count), _active(Der.pages_persisted), _active(Der.truncated),
         )
         .join(D, D.id == V.research_document_id)
         .outerjoin(C, retrievable)
@@ -111,6 +125,7 @@ async def held_primary_documents(
             V.is_current.is_(True),
             or_(D.company_id == company_id, V.id.in_(owned_versions)),
             version_is_disclosure,
+            *((_active(Der.truncated).is_(True),) if truncated_only else ()),
         )
         .group_by(
             V.id, V.title, D.title, D.document_type, V.canonical_url, V.published_at,
@@ -128,7 +143,7 @@ async def held_primary_documents(
     out: list[dict[str, Any]] = []
     for row in rows:
         (version_id, v_title, d_title, doc_type, url, published, tier, extraction,
-         chunks, indexed, tables, pages, sections) = row
+         chunks, indexed, tables, pages, sections, total, persisted, truncated) = row
         out.append(
             {
                 "version_id": str(version_id),
@@ -143,11 +158,38 @@ async def held_primary_documents(
                 "table_chunks": int(tables or 0),
                 "pages": int(pages or 0),
                 "sections": int(sections or 0),
+                "pages_total": int(total) if total else None,
+                "pages_parsed": int(persisted) if persisted else None,
+                "truncated": bool(truncated),
             }
         )
         if len(out) >= limit:
             break
     return out
+
+
+async def current_inventory(
+    session: Any, company_id: uuid.UUID | None, *, limit: int = MAX_INVENTORY
+) -> list[dict[str, Any]] | None:
+    """ADR-094 review — the held primary documents NOW (documents acquired during the run
+    included), plus every truncated one the ``MAX_INVENTORY`` newest-first window would
+    hide: a truncated parse beyond it must still stop an absence claim. ``None`` when the
+    lookup fails."""
+    inventory = await held_primary_documents(session, company_id, limit=limit)
+    if inventory is None:
+        return None
+    truncated = await held_primary_documents(
+        session, company_id, limit=limit, truncated_only=True)
+    if truncated is None:
+        # Never a partial inventory: without the truncated documents an absence could be
+        # stated over a document whose pages were never parsed.
+        return None
+    seen = {d.get("version_id") for d in inventory}
+    for doc in truncated:
+        if doc.get("version_id") not in seen:
+            inventory.append(doc)
+            seen.add(doc.get("version_id"))
+    return inventory
 
 
 def _slot_failures(
@@ -265,9 +307,14 @@ def build_coverage(
                 "pages": int(d.get("pages") or 0),
                 "sections": int(d.get("sections") or 0),
                 "extraction_status": d.get("extraction_status"),
+                # ADR-094 §8 — truncation is visible, never inferred from max(page).
+                "pages_total": d.get("pages_total"),
+                "pages_parsed_count": d.get("pages_parsed"),
+                "truncated": bool(d.get("truncated")),
             }
             for d in docs
         ],
+        "documents_truncated": sum(1 for d in docs if d.get("truncated")),
         "pages_parsed": sum(int(d.get("pages") or 0) for d in docs),
         "sections_parsed": sum(int(d.get("sections") or 0) for d in docs),
         "chunks_parsed": sum(int(d.get("indexed_chunks") or 0) for d in docs),

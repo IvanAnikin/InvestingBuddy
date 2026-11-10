@@ -146,6 +146,9 @@ class GapView:
     reconciliation_reasons: tuple[str, ...] = ()
     #: ADR-086 — the report's gap status (``gap_reconciliation.GAP_STATUSES``).
     gap_status: str | None = None
+    #: ADR-094 — the gap queue's resolution (``gap_resolution.GapResolution.to_dict``):
+    #: its route, result and the wording the page shows instead of a bare absence.
+    resolution: Mapping[str, Any] | None = None
 
 
 @dataclass
@@ -851,11 +854,17 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
             entry["reconciliation_status"] = g.reconciliation_status
         if g.gap_status:
             entry["gap_status"] = g.gap_status
-        if g.reconciliation_status == "partially_closed":
+        if g.reconciliation_status == "partially_closed" and g.gap_status in (
+            None, "PARTIALLY_CLOSED"
+        ):
+            # ADR-094: a NONCOMPARABLE answer (another period, scope or metric) is not
+            # "partially addressed" — the page must not say so.
             entry["partially_addressed_by"] = [
                 labels[f] for f in g.addressed_by_finding_ids if f in labels
             ]
             entry["reconciliation_reasons"] = list(g.reconciliation_reasons)
+        if g.resolution:
+            entry["resolution"] = _resolution_entry(g.resolution)
         platform_gaps.append(entry)
     business_risks = [
         f["label"] for f in by_section["risks_and_counter_thesis"]
@@ -937,6 +946,21 @@ def _informativeness(finding: Mapping[str, Any]) -> tuple[int, float]:
     except (TypeError, ValueError):
         confidence = 0.0
     return (min(figures, 5), confidence)
+
+
+def _resolution_entry(resolution: Mapping[str, Any]) -> dict[str, Any]:
+    """ADR-094 — what the page shows of a gap's resolution: its result, the honest
+    wording, and the documents (platform-derived names) it was searched in or found in."""
+    evidence = [e for e in resolution.get("evidence") or () if isinstance(e, Mapping)]
+    return {
+        "result": resolution.get("result"),
+        "route": resolution.get("route"),
+        "why": resolution.get("why"),
+        "words": resolution.get("words"),
+        "may_say_not_found": bool(resolution.get("may_say_not_found")),
+        "found_in": [str(e.get("document")) for e in evidence if e.get("document")][:3],
+        "documents_searched": list(resolution.get("documents_searched") or ())[:6],
+    }
 
 
 def deterministic_synthesis(

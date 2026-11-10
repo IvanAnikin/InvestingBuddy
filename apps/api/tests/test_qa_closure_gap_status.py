@@ -139,13 +139,14 @@ class TestGapStatus:
         older = _finding("f1", "Cash and cash equivalents of US$45m.",
                          period_key="2026-03-31", published_at=date(2026, 4, 25))
         verdict = _one(_gap("No cash balance at 30 June 2026 in evidence."), [older])
-        assert verdict.gap_status == gr.GAP_STATUS_PARTIALLY_CLOSED
+        # ADR-094: another period than the gap names is not comparable.
+        assert verdict.gap_status == gr.GAP_STATUS_NONCOMPARABLE
         assert gr.REASON_OLDER_PERIOD in verdict.reasons
 
-    def test_a_later_flow_figure_is_only_partial(self) -> None:
+    def test_a_later_flow_figure_is_noncomparable(self) -> None:
         later = _finding("f2", "Revenue of US$50m", period_key="FY2025")
         verdict = _one(_gap("FY2023 revenue was not acquired"), [later])
-        assert verdict.gap_status == gr.GAP_STATUS_PARTIALLY_CLOSED
+        assert verdict.gap_status == gr.GAP_STATUS_NONCOMPARABLE
         assert gr.REASON_LATER_PERIOD in verdict.reasons
 
     def test_an_undated_balance_is_noncomparable(self) -> None:

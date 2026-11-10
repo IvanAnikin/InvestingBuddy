@@ -213,6 +213,9 @@ class GapRef:
     reconciliation_reasons: tuple[str, ...] = ()
     #: ADR-086 — the report's gap status (``gap_reconciliation.GAP_STATUSES``).
     gap_status: str | None = None
+    #: ADR-094 — the gap queue's result (``gap_resolution.RESULTS``) and its wording.
+    resolution_result: str | None = None
+    resolution_words: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -227,6 +230,10 @@ class GapRef:
             "reconciliation_reasons": list(self.reconciliation_reasons),
             # Only when reconciliation ran, so the pinned key set of an older gap holds.
             **({"gap_status": self.gap_status} if self.gap_status else {}),
+            # ADR-094 — only when the gap queue ran.
+            **({"resolution_result": self.resolution_result,
+                "resolution_words": self.resolution_words}
+               if self.resolution_result else {}),
         }
 
 
@@ -624,9 +631,18 @@ async def _gaps(session: Any, run: Any) -> tuple[GapRef, ...]:
                                  .get("reasons") or ())
             ),
             gap_status=(getattr(row, "reconciliation_json", None) or {}).get("gap_status"),
+            resolution_result=_resolution_field(row, "result"),
+            resolution_words=_resolution_field(row, "words"),
         )
         for row in rows
     )
+
+
+def _resolution_field(row: Any, key: str) -> str | None:
+    """ADR-094 — one field of the gap's persisted resolution."""
+    found = (getattr(row, "reconciliation_json", None) or {}).get("resolution")
+    value = found.get(key) if isinstance(found, dict) else None
+    return str(value) if value else None
 
 
 async def _disagreements(session: Any, run: Any) -> tuple[DisagreementRef, ...]:

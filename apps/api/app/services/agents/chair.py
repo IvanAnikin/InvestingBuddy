@@ -429,7 +429,17 @@ class LLMChair:
             lines.append("\nGAPS — the analysis must be explicit about these:")
             for gap in council_input.gaps[:15]:
                 line = f"  [{gap.gap_type}] {gap.description[:300]}"
-                if getattr(gap, "reconciliation_status", None) == "partially_closed":
+                result = getattr(gap, "resolution_result", None)
+                if result and result != "NOT_FOUND_AFTER_SEARCH":
+                    # ADR-094: only a gap searched for and not found may be called
+                    # absent; every other result is said as what it is.
+                    line += (
+                        f" (RESEARCH STATE {result}: {getattr(gap, 'resolution_words', '')}"
+                        " Do not call this undisclosed or absent.)"
+                    )
+                if getattr(gap, "reconciliation_status", None) == "partially_closed" and (
+                    getattr(gap, "gap_status", None) in (None, "PARTIALLY_CLOSED")
+                ):
                     addressed = ", ".join(getattr(gap, "addressed_by_finding_ids", ())[:3])
                     reasons = ", ".join(getattr(gap, "reconciliation_reasons", ())[:3])
                     line += (

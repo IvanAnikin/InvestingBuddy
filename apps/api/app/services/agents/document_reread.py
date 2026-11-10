@@ -106,6 +106,12 @@ class ReadTopic:
     #: A metric is CARRIED only with a figure beside its name; a narrative topic (legal
     #: proceedings, trial status, guidance) is carried by being named.
     needs_figure: bool = True
+    #: ADR-094 §7 — the ROW LABELS a statement table or a note prints the item under
+    #: ("loans and borrowings", "capital commitments"). Plain lower-case words. A row
+    #: label carries the topic only at the START of a line that holds a figure (a table
+    #: row), never in prose, where a word like "borrowings" or "commitments" says nothing.
+    #: Also run as their own lexical query, so the table itself is retrieved.
+    rows: tuple[str, ...] = ()
 
 
 TOPICS: tuple[ReadTopic, ...] = (
@@ -114,10 +120,19 @@ TOPICS: tuple[ReadTopic, ...] = (
         "total_debt", "total debt and borrowings",
         (r"\btotal\s+debt\b", r"\bborrowings\b", r"\blong[\s-]?term\s+debt\b",
          r"\b(?:senior|convertible)\s+notes\b", r"\bnotes\s+payable\b",
-         r"\b(?:revolving\s+)?credit\s+facilit(?:y|ies)\b", r"\bdebt\s+maturities\b"),
+         r"\b(?:revolving\s+)?credit\s+facilit(?:y|ies)\b", r"\bdebt\s+maturities\b",
+         # ADR-094 §7 — what an IFRS / ASX / French filer calls it.
+         r"\bloans?\s+and\s+borrowings\b",
+         r"\b(?:loan|debt|bank|finance|term)\s+facilit(?:y|ies)\b",
+         r"\bundrawn\s+(?:facilit(?:y|ies)|amounts?|portion|commitments?)\b",
+         r"\binterest[\s-]+bearing\s+(?:loans|liabilities|borrowings)\b",
+         r"\b(?:state|government)[\s-]+guaranteed\s+loans?\b", r"\bfinancial\s+debt\b"),
         "total debt borrowings long-term notes payable credit facility maturities",
-        (r"\bdebt\b", r"\bborrowings\b", r"\bliquidity\b", r"\bcapital\s+resources\b"),
+        (r"\bdebt\b", r"\bborrowings\b", r"\bliquidity\b", r"\bcapital\s+resources\b",
+         r"\bfinancial\s+liabilities\b"),
         ("total_debt", "debt", "borrowings", "gross_debt"),
+        rows=("borrowings", "loans and borrowings", "bank loans", "interest-bearing loans",
+              "convertible notes", "loan facility"),
     ),
     ReadTopic(
         "net_debt", "net debt",
@@ -136,6 +151,17 @@ TOPICS: tuple[ReadTopic, ...] = (
         (r"\bcash\s+flows?\b",),
         ("operating_cash_flow", "cash_conversion", "cash_burn"),
         field="metric:operating_cash_flow",
+    ),
+    ReadTopic(
+        "investing_financing_cash", "investing and financing cash flows",
+        (r"\bnet\s+cash\s+(?:provided\s+by|from|used\s+in|generated\s+(?:by|from))\s+"
+         r"(?:investing|financing)\s+activities\b",
+         r"\bcash\s+flows?\s+(?:from|used\s+in)\s+(?:investing|financing)\b"),
+        "net cash investing activities financing activities cash flows statement",
+        (r"\bcash\s+flows?\b",),
+        ("investing_cash_flow", "financing_cash_flow"),
+        rows=("net cash used in investing activities", "net cash from investing activities",
+              "net cash from financing activities", "net cash used in financing activities"),
     ),
     ReadTopic(
         "capex", "capital expenditure",
@@ -196,8 +222,8 @@ TOPICS: tuple[ReadTopic, ...] = (
     ),
     ReadTopic(
         "segment", "segment revenue and profit",
-        (r"\breportable\s+segments?\b", r"\bsegment\s+(?:revenues?|results|information|"
-         r"profit|operating\s+income)\b", r"\boperating\s+segments?\b",
+        (r"\breportable\s+segments?\b", r"\bsegment\s+(?:revenues?|sales|results|information|"
+         r"profit|operating\s+income|net\s+(?:revenues?|sales))\b", r"\boperating\s+segments?\b",
          r"\bsegment\s+revenue\s+mix\b"),
         "segment information reportable segments revenue operating income",
         (r"\bsegment",),
@@ -257,12 +283,15 @@ TOPICS: tuple[ReadTopic, ...] = (
         "shares outstanding weighted average shares issued capital",
         (r"\bequity\b", r"\bshare\s+capital\b", r"\bearnings\s+per\s+share\b"),
         ("shares_outstanding", "share_count", "dilution"),
+        rows=("number of shares", "ordinary shares", "shares outstanding"),
     ),
     ReadTopic(
         "operating_kpis", "operating metrics",
         (r"\bkey\s+(?:operating\s+|performance\s+)?metrics\b",
          r"\bkey\s+performance\s+indicators?\b", r"\boperating\s+(?:data|metrics)\b",
-         r"\bpayment\s+volume\b", r"\bactive\s+(?:accounts|users|customers)\b"),
+         r"\bpayment\s+volume\b", r"\bactive\s+(?:accounts|users|customers)\b",
+         r"\btpv\b", r"\btake\s+rate\b", r"\btransactions?\s+per\s+active\s+account\b",
+         r"\bpayment\s+transactions\b"),
         "key operating metrics performance indicators volume active accounts",
         (r"\bkey\s+metrics\b", r"\boperating\s+(?:data|metrics)\b"),
         ("operating_kpis",),
@@ -270,8 +299,8 @@ TOPICS: tuple[ReadTopic, ...] = (
     # ── Resources and projects ─────────────────────────────────────────────────
     ReadTopic(
         "production_capacity", "production capacity",
-        (r"\b(?:production|nameplate|name-plate|design|installed|annual|plant|processing)\s+"
-         r"capacity\b", r"\bcapacity\s+of\b", r"\b(?:tpa|ktpa|mtpa)\b"),
+        (r"\b(?:production|nameplate|name-plate|design|installed|annual|plant|processing|"
+         r"manufacturing)\s+capacity\b", r"\bcapacity\s+of\b", r"\b(?:tpa|ktpa|mtpa)\b"),
         "production capacity nameplate tonnes per annum throughput",
         (r"\bproduction\b", r"\boperations\b", r"\bproject\b"),
         ("capacity", "production_capacity", "capacity_overbuild"),
@@ -313,7 +342,7 @@ TOPICS: tuple[ReadTopic, ...] = (
     ),
     ReadTopic(
         "legal", "legal proceedings, contingencies and regulatory actions",
-        (r"\blegal\s+proceedings\b", r"\blitigation\b", r"\blawsuits?\b",
+        (r"\blegal\s+(?:proceedings|challenges?)\b", r"\blitigation\b", r"\blawsuits?\b",
          r"\bcontingenc(?:y|ies)\b", r"\bdisputes?\b", r"\bfines\b", r"\bfined\b",
          r"\bpenalt(?:y|ies)\b",
          r"\bregulatory\s+(?:actions?|matters|proceedings|investigations?|inquir(?:y|ies))\b",
@@ -342,6 +371,99 @@ TOPICS: tuple[ReadTopic, ...] = (
         (r"\bacquisitions?\b", r"\bbusiness\s+combinations?\b", r"\bdivestitures?\b",
          r"\bdiscontinued\s+operations\b"),
         ("acquisitions", "m_and_a"), needs_figure=False,
+    ),
+    # ── ADR-094 §7 — topics the round-3 gaps named and the lexicon did not ──────
+    ReadTopic(
+        "commitments", "capital and contractual commitments",
+        (r"\bcapital\s+commitments?\b", r"\bcontractual\s+(?:obligations|commitments)\b",
+         r"\b(?:exploration|expenditure|purchase)\s+commitments?\b",
+         r"\bcommitted\s+(?:capital\s+)?expenditure\b",
+         r"\bcontracted\s+(?:but\s+not\s+(?:yet\s+)?)?(?:provided|recognised|recognized)\s+for\b"),
+        "capital commitments contractual obligations expenditure commitments contracted",
+        (r"\bcommitments\b",),
+        ("commitments", "capital_commitments", "contractual_obligations"),
+        rows=("commitments", "capital commitments", "capital expenditure commitments"),
+    ),
+    ReadTopic(
+        "major_shareholders", "major shareholders and voting rights",
+        (r"\b(?:substantial|major|principal|significant|largest)\s+(?:shareholders?|holders)\b",
+         r"\bvoting\s+rights?\b", r"\bcontrolling\s+(?:shareholder|interest)\b",
+         r"\bbeneficial\s+owners?\s+of\b", r"\bsecurity\s+ownership\s+of\b"),
+        "substantial shareholders major shareholders voting rights beneficial ownership",
+        (r"\bshareholders?\b", r"\bsecurity\s+ownership\b"),
+        ("major_shareholders", "shareholder_structure"),
+    ),
+    ReadTopic(
+        "governance", "board and related-party transactions",
+        (r"\brelated[\s-]+part(?:y|ies)\b", r"\bboard\s+of\s+directors\b",
+         r"\bindependent\s+(?:non-executive\s+)?directors?\b",
+         r"\bkey\s+management\s+personnel\b", r"\bdirectors'?\s+(?:remuneration|interests)\b"),
+        "related party transactions board directors independent key management personnel",
+        (r"\brelated\s+part", r"\bgovernance\b", r"\bdirectors\b"),
+        ("governance", "related_party"), needs_figure=False,
+    ),
+    ReadTopic(
+        "going_concern", "going concern",
+        (r"\bgoing\s+concern\b", r"\bmaterial\s+uncertainty\b", r"\bsubstantial\s+doubt\b"),
+        "going concern material uncertainty substantial doubt",
+        (r"\bgoing\s+concern\b", r"\bbasis\s+of\s+preparation\b"),
+        ("going_concern",), needs_figure=False,
+    ),
+    ReadTopic(
+        "dividend_policy", "dividend policy",
+        (r"\bdividend\s+polic(?:y|ies)\b", r"\bpayout\s+(?:ratio|polic(?:y|ies))\b",
+         r"\bdoes\s+not\s+(?:intend|expect|anticipate)\s+to\s+pay\s+(?:any\s+)?dividends?\b",
+         r"\b(?:has|have)\s+(?:never|not)\s+(?:paid|declared)\s+(?:any\s+)?dividends?\b"),
+        "dividend policy payout ratio pay dividends",
+        (r"\bdividends?\b",),
+        ("dividend_policy",), needs_figure=False,
+    ),
+    ReadTopic(
+        "properties", "sites, plants and facilities",
+        (r"\bitem\s+2\.?\s+properties\b",
+         r"\bprincipal\s+(?:properties|facilities|plants|sites)\b",
+         r"\b(?:manufacturing|production|operating)\s+(?:sites?|facilities|plants)\b",
+         r"\bsquare\s+(?:feet|met(?:re|er)s)\b"),
+        "properties principal facilities manufacturing sites plants square feet",
+        (r"\bproperties\b",),
+        ("properties", "sites"), needs_figure=False,
+    ),
+    ReadTopic(
+        "store_network", "store / boutique network",
+        (r"\bnumber\s+of\s+(?:stores|boutiques|outlets|points\s+of\s+sale)\b",
+         r"\bstore\s+(?:count|network|openings)\b", r"\bboutique\s+(?:network|openings)\b",
+         r"\b(?:directly[\s-]+operated|internal|own[\s-]+retail)\s+(?:stores|boutiques)\b"),
+        "number of stores boutiques store network directly operated points of sale",
+        (r"\bretail\b", r"\bdistribution\b"),
+        ("store_count", "store_network"),
+        rows=("boutiques", "stores", "points of sale", "directly operated stores"),
+    ),
+    ReadTopic(
+        "regulatory_status", "regulatory designations, holds and approvals",
+        (r"\b(?:orphan(?:\s+drug)?|fast\s+track|breakthrough(?:\s+therapy)?|prime|rmat)\s+"
+         r"designations?\b", r"\bclinical\s+holds?\b", r"\bcomplete\s+response\s+letters?\b",
+         r"\bmarketing\s+authori[sz]ations?\b", r"\b(?:fda|ema)\s+approv\w{0,4}\b",
+         r"\bbiologics\s+license\s+applications?\b", r"\bind\s+(?:application|clearance)\b"),
+        "designation clinical hold approval marketing authorization complete response letter",
+        (r"\bregulatory\b", r"\bgovernment\s+regulation\b"),
+        ("regulatory_status",), needs_figure=False,
+    ),
+    ReadTopic(
+        "collaborations", "collaboration and licence agreements",
+        (r"\bcollaboration\s+(?:and\s+licen[cs]e\s+)?agreements?\b",
+         r"\blicen[cs](?:e|ing)\s+agreements?\b", r"\bupfront\s+payments?\b",
+         r"\bmilestone\s+payments?\b", r"\bstrategic\s+(?:collaboration|partnership)\b"),
+        "collaboration agreement license agreement upfront payment milestone payments",
+        (r"\bcollaborat", r"\blicen[cs]"),
+        ("collaborations", "partnerships"), needs_figure=False,
+    ),
+    ReadTopic(
+        "rate_sensitivity", "interest rate sensitivity",
+        (r"\bearnings[\s-]+at[\s-]+risk\b", r"\beconomic\s+value\s+of\s+equity\b",
+         r"\b(?:interest\s+)?rate\s+sensitivity\b", r"\bparallel\s+(?:shift|shock)\b"),
+        "earnings-at-risk interest rate sensitivity parallel shift economic value of equity",
+        (r"\bmarket\s+risk\b", r"\binterest\s+rate\s+risk\b"),
+        ("rate_sensitivity", "nii_sensitivity"),
     ),
     # ── Bank KPIs ──────────────────────────────────────────────────────────────
     ReadTopic(
@@ -473,6 +595,61 @@ _CARRIED: dict[str, tuple[re.Pattern[str], ...]] = {
     for t in TOPICS
 }
 
+def _row_pattern(label: str) -> str:
+    # A row label at the start of a line, after optional note numbering ("18.", "(b)").
+    words = r"[\s-]+".join(re.escape(w) for w in label.split() if w)
+    return r"^[ \t]{0,8}(?:\(?[0-9a-z]{1,3}[.)][ \t]{1,4})?" + words + r"\b"
+
+
+#: ADR-094 §7 — table-row lookup: each topic's row labels, anchored at a line start.
+_ROWS: dict[str, tuple[re.Pattern[str], ...]] = {
+    t.key: tuple(re.compile(_row_pattern(r), re.MULTILINE) for r in t.rows) for t in TOPICS
+}
+#: How much of a row's line may sit after its label: a table row is short.
+_ROW_LINE_CHARS = 240
+
+
+def table_rows_carried(text: str | None, topics: Iterable[str] | None = None) -> frozenset[str]:
+    """Topic keys a statement table CARRIES through a row: a line that opens with one of
+    the topic's row labels and holds a figure on the same line ("Loans and borrowings
+    20,000 —"). Prose naming "borrowings" carries nothing here."""
+    low = _clean_for_figures(text)
+    if not low:
+        return frozenset()
+    keys = [k for k in (topics if topics is not None else TOPIC_KEYS) if _ROWS.get(k)]
+    out: set[str] = set()
+    for key in keys:
+        for pattern in _ROWS[key]:
+            for match in pattern.finditer(low):
+                rest = low[match.end(): match.end() + _ROW_LINE_CHARS].split("\n", 1)[0]
+                if _is_row_tail(rest):
+                    out.add(key)
+                    break
+            if key in out:
+                break
+    return frozenset(out)
+
+
+#: What may sit between a row label and its cells besides figures: cell separators,
+#: a note reference, a currency or scale word. Anything else is prose ("commitments to
+#: our customers and communities 2026") and the line is no table row.
+_ROW_TAIL_TOKEN_RE = re.compile(r"[a-z]{1,12}")
+_ROW_TAIL_WORDS: frozenset[str] = frozenset({
+    "note", "notes", "ref", "us", "a", "au", "eur", "usd", "gbp", "chf", "m", "bn", "k",
+    "million", "millions", "billion", "thousand", "thousands", "nil", "total", "current",
+    "non", "and", "of", "the", "group", "company", "consolidated",
+})
+
+
+def _is_row_tail(rest: str) -> bool:
+    """ADR-094 review — the rest of a row's line is CELLS: at least one figure, and no
+    word outside the short list a statement row prints beside its numbers."""
+    if not _has_figure(rest):
+        return False
+    words = _ROW_TAIL_TOKEN_RE.findall(_FIGURE_RE.sub(" ", rest))
+    return sum(1 for w in words if w not in _ROW_TAIL_WORDS) == 0
+
+
 #: An XBRL concept name ("ResearchAndDevelopmentExpense", "LongTermDebt"): read as words.
 _CAMEL_RE = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+\b")
 _CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -570,6 +747,43 @@ QUESTION_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (r"\bheadline\s+figures?\b|\bmost\s+recent(?:ly)?\s+reported\b", ("revenue",)),
     (r"\bguidance\b|\boutlook\b|\bnext\s+\d{1,2}\b", ("guidance",)),
     (r"\bcontract\s+awards?\b|\border\s+(?:intake|book)\b", ("backlog",)),
+    # ADR-094 §7 — the gap wordings of the 2026-11 round-3 reports.
+    (r"\bcapital\s+(?:ratios?|adequacy)\b|\bregulatory\s+capital\b", ("cet1",)),
+    (r"\bcommitments?\b|\bcontractual\s+obligations\b|\bfunding\s+schedule\b",
+     ("commitments",)),
+    (r"\b(?:loan|debt|credit|bank|finance)\s+facilit(?:y|ies)\b|\bundrawn\b"
+     r"|\bmaturit(?:y|ies)\b", ("total_debt",)),
+    (r"\binvesting\b|\bfinancing\s+(?:cash|activities|outflows?|inflows?|totals?)\b",
+     ("investing_financing_cash", "operating_cash_flow")),
+    (r"\bshare\s+count\b|\bnumber\s+of\s+shares\b|\bshares\s+on\s+issue\b",
+     ("share_count",)),
+    (r"\bownership\s+(?:percentage|%|interest|stake)\b|\b(?:equity|project)\s+stake\b",
+     ("ownership_interest",)),
+    (r"\bshareholders?\s+register\b|\b(?:major|substantial|principal)\s+shareholders?\b"
+     r"|\bshareholding\s+percentages?\b|\bvoting\b", ("major_shareholders",)),
+    (r"\bboard\b|\brelated[\s-]+part\w{0,4}\b|\bgovernance\b|\bdirectors?\b",
+     ("governance",)),
+    (r"\bgoing[\s-]+concern\b", ("going_concern",)),
+    (r"\bdividend\s+polic(?:y|ies)\b", ("dividend_policy",)),
+    (r"\b(?:manufacturing|production|plant|facility|processing)\s+capacity\b"
+     r"|\bcapacity\s+(?:utili[sz]ation|additions?|expansion)\b|\bthroughput\b"
+     r"|\bnameplate\b|\bbioreactors?\b", ("production_capacity",)),
+    (r"\b(?:sites|plants|locations)\b|\bwhich\s+facilities\b", ("properties",)),
+    (r"\bstores?\b|\bboutiques?\b|\bpoints?\s+of\s+sale\b|\bretail\s+network\b",
+     ("store_network",)),
+    (r"\b(?:product|clinical|drug|development)\s+pipeline\b"
+     r"|\bpipeline\s+(?:table|detail|assets?|programmes?|programs?)\b|\bnext\s+milestones?\b",
+     ("trial_status",)),
+    (r"\bdesignations?\b|\bclinical\s+holds?\b|\bmarketing\s+authori[sz]ations?\b"
+     r"|\bcomplete\s+response\b|\bregulatory\s+approvals?\b", ("regulatory_status",)),
+    (r"\bcollaborat\w{0,6}\b|\bpartner(?:ed|s|ship|ships)?\b|\blicen[cs]\w{0,4}\b",
+     ("collaborations",)),
+    (r"\bsplits?\s+deposits\b|\bdeposits?\s+(?:split|mix|costs?|composition|by)\b"
+     r"|\b(?:split|mix|cost)\s+of\s+deposits\b", ("deposits",)),
+    (r"\bpayment\s+volume\b|\btpv\b|\btake\s+rate\b|\bkpis?\b", ("operating_kpis",)),
+    (r"\b(?:rate|nii)\s+sensitivit\w{0,3}\b|\bearnings[\s-]+at[\s-]+risk\b"
+     r"|\brate\s+(?:shocks?|scenarios?)\b", ("rate_sensitivity",)),
+    (r"\bcourt\b|\brulings?\b|\bprotests?\b|\blegal\s+challenges?\b", ("legal",)),
 )
 _QUESTION_CUES: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = tuple(
     (re.compile(pattern), topics) for pattern, topics in QUESTION_CUES
@@ -668,7 +882,32 @@ def metrics_carried(text: str | None, topics: Iterable[str] | None = None) -> fr
                     break
             if key in out:
                 break
-    return frozenset(out)
+    return frozenset(out) | table_rows_carried(text, keys)
+
+
+def carried_windows(
+    text: str | None, topics: Iterable[str], *, reach: int = 160, limit: int = 12
+) -> list[str]:
+    """ADR-094 review — the text AROUND each place a topic is carried (its mention with
+    a figure, or its table row): where a period must be stated for a located passage to
+    count for that period. Bounded: ``limit`` windows of ``2 × reach`` characters."""
+    low = _clean_for_figures(text)
+    out: list[str] = []
+    for key in topics:
+        if key not in TOPICS_BY_KEY:
+            continue
+        for pattern in (*_CARRIED[key], *_ROWS.get(key, ())):
+            for match in pattern.finditer(low):
+                window = low[max(0, match.start() - reach): match.end() + reach]
+                if TOPICS_BY_KEY[key].needs_figure and not _has_figure(
+                        low[match.end(): match.end() + _FIGURE_AFTER_CHARS]
+                        ) and not _has_figure(
+                        low[max(0, match.start() - _FIGURE_BEFORE_CHARS): match.start()]):
+                    continue
+                out.append(window)
+                if len(out) >= limit:
+                    return out
+    return out
 
 
 #: Where a TYPED record (a fact, a statement line, a calculation) names its metric...
@@ -826,6 +1065,17 @@ def reread_plan(
     return plan
 
 
+def topic_queries(topic_key: str) -> tuple[str, ...]:
+    """ADR-094 — the lexical queries that find one topic in a held document: its
+    section/table terms. Raw: the caller reduces them with ``keyword_query``."""
+    found = TOPICS_BY_KEY.get(topic_key)
+    if found is None:
+        return ()
+    if not found.rows:
+        return (found.query,)
+    return (found.query, " ".join(dict.fromkeys(found.rows)))
+
+
 # ── Extraction status per (held document × question) ──────────────────────── #
 
 
@@ -935,6 +1185,9 @@ __all__ = [
     "required_metrics",
     "reread_plan",
     "section_matches",
+    "topic_queries",
+    "carried_windows",
+    "table_rows_carried",
     "topics_for_metrics",
     "topics_named",
 ]
