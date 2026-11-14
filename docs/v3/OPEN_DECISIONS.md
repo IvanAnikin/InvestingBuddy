@@ -20,13 +20,13 @@ Five of them go further than the spec recommended (marked ▲).
 |---|---|---|
 | D1 | Size mandate | Default ceiling **USD 2bn**, changeable per run; unknown market cap kept out of the shortlist, listed as "size unverified". |
 | D2 | Consensus source | **Alpha Vantage free key**; guidance-vs-actual for uncovered names. FMP not approved. |
-| D3 | Consensus in the record | **Allowed** as labelled third-party expectation data, earnings section only (ADR-097, to be written). |
-| D4 ▲ | Verdict vocabulary | **PASS / WATCHLIST / SHORTLIST allowed** in the rubric verdict field only; BUY/SELL/HOLD stay banned (ADR-098, to be written). |
-| D5 ▲ | Valuation scope | **Full valuation including fair value** — resolves [#16](#16-future-valuation-scope) as option **(c)**. Range-based, assumption-explicit, phrase scope limited to the valuation section (ADR-099, to be written). |
+| D3 | Consensus in the record | **Allowed** as labelled third-party expectation data, earnings section only ([ADR-097](../DECISIONS.md#adr-097-analyst-consensus-is-labelled-third-party-expectation-data-shown-only-where-earnings-are-compared-with-it)). |
+| D4 ▲ | Verdict vocabulary | **PASS / WATCHLIST / SHORTLIST allowed** in the rubric verdict field only; BUY/SELL/HOLD stay banned ([ADR-098](../DECISIONS.md#adr-098-the-research-verdict-is-pass--watchlist--shortlist-computed-deterministically-and-allowed-only-in-its-own-field)). |
+| D5 ▲ | Valuation scope | **Full valuation including fair value** — resolves [#16](#16-future-valuation-scope) as option **(c)**. Range-based, assumption-explicit, phrase scope limited to the valuation section ([ADR-099](../DECISIONS.md#adr-099-full-valuation--a-fair-value-range-from-cited-inputs-and-named-assumptions-allowed-only-in-the-valuation-section)). |
 | D6 ▲ | Geographies | **Global including Asia** (JP, KR, TW, IN connectors and grid plans). |
 | D7 | Paid data | **Free only.** The 2026-09-05 "no new paid subscriptions" rule stands. |
 | D8 ▲ | ETF issuer holdings files | **Allowed** (iShares, SPDR, Vanguard, Invesco, VanEck, Global X, incl. UCITS) as *private use, own risk* — same class as FCA NSM / ASX. |
-| D9 ▲ | PM sparring | **Portfolio-review version**: hand-entered portfolio, thesis status per holding, no orders, sizing or BUY/SELL/HOLD (ADR-100 narrows ADR-005, to be written). |
+| D9 ▲ | PM sparring | **Portfolio-review version**: hand-entered portfolio, thesis status per holding, no orders, sizing or BUY/SELL/HOLD ([ADR-100](../DECISIONS.md#adr-100-portfolio-review--a-research-review-of-a-hand-entered-portfolio-never-orders-sizing-or-broker-access) narrows ADR-005). |
 
 **Standing condition.** D4, D5, D8 and D9 are accepted for **private use only**. Any public
 or commercial launch requires a regulatory review (investment-research / advice
@@ -408,7 +408,7 @@ ships unconfigured), [15](#15-monitoring-cadence) (V3.9 scheduling),
 
 ## 16. Future valuation scope
 
-- **Status:** **RESOLVED 2026-11-14 → (c)** full valuation incl. fair value, range-based and assumption-explicit (V3.20 D5; ADR-099 to be written). Was: OPEN — out of initial V3.
+- **Status:** **RESOLVED 2026-11-14 → (c)** full valuation incl. fair value, range-based and assumption-explicit (V3.20 D5; ADR-099). Was: OPEN — out of initial V3.
 - **Options:** (a) none; (b) valuation *context* only (multiples with peers and
   history); (c) a DCF/fair-value engine.
 - **Recommendation:** **(b)**. The existing valuation-guard role already provides
