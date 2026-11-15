@@ -1350,6 +1350,19 @@ async def _run(
     tool_units = await _tool_call_consumption(session, run, company)
     outcome.external_research = await _external_research(session, run, company)
     outcome.external_research["reused_verifications"] = list(investigator.reused.values())[:40]
+    # V3.20 slice 4.3 — guidance (this and earlier runs' ledger findings) vs the actuals
+    # in ``earnings_results``; writes the guidance columns only. After the ledger is
+    # written, before the report reads it.
+    if getattr(cfg, "v3_entity_master_enabled", False) and getattr(
+            cfg, "v3_earnings_guidance_enabled", False):
+        from app.services.pipeline.guidance_step import guidance_step
+
+        guided = await guidance_step(session, company, cfg=cfg)
+        outcome.earnings = {**outcome.earnings, "guidance": guided}
+        if guided.get("state") == "error":
+            outcome.degraded.append(
+                "guidance could not be compared with actuals ("
+                + str(guided.get("error") or "unknown error") + ")")
     # 11. V3.18.8 — the professional report, from the ledger. Never costs the run.
     #     BEFORE consumption is read: the editor's model call is spend on the chair's
     #     client, and `_consumption` takes each client's usage once.

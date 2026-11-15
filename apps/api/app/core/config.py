@@ -1406,6 +1406,9 @@ class Settings(BaseSettings):
     # (companyconcept + submissions; ~6 requests per SEC filer per run) into
     # earnings_results. Non-SEC issuers are skipped (state no_cik).
     v3_earnings_actuals_enabled: bool = True
+    # V3.20 slice 4.3: compare ledger guidance findings (statement_kind=guidance) with the
+    # stored actuals and write earnings_results.guidance_* / vs_guidance. No external call.
+    v3_earnings_guidance_enabled: bool = True
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off

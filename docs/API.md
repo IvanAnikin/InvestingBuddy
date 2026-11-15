@@ -291,6 +291,14 @@ Error `404 Not Found`: company does not exist.
 
 - **`state`:** `written`, `no_quarters` (the filer tags no quarterly revenue or diluted EPS), `no_cik` (not an SEC filer), `error` (also added to `degraded`), or `disabled`.
 - **Restatements:** `restated_eps_quarters` names the quarters whose diluted EPS as first reported differs from the latest filing's (a split or a restatement). Both values are stored.
+- **Guidance (V3.20 slice 4.3):** `earnings.guidance` reports what `pipeline/guidance_step.py` did. It compares this and earlier runs' ledger findings with `statement_kind = "guidance"` (not withdrawn) with the stored actuals. Flag `V3_EARNINGS_GUIDANCE_ENABLED`; no external call. The result: `{"state": "matched", "matched": [{"period": "2026", "metric": "revenue", "vs": "within"}], "candidates": 3, "skipped": {"guidance_published_on_or_after_the_result": 1}}`.
+  - **`state`:** `matched`, `none_matched`, `no_guidance_figures`, `no_actuals`, `error`, or `disabled`.
+  - **Figures:** `sources/guidance_figures.py` reads one unambiguous revenue or EPS range or point per clause, with currency and scale. A clause that names two metrics, another metric (EBITDA, margin, orders …) or only percentages gives nothing.
+  - **Period:** the finding's `period_key` must equal the row's label.
+  - **Timing:** only guidance whose cited evidence was published before the row's `report_date` counts, and the newest such guidance wins. An undated finding is skipped and counted.
+  - **Currency:** the guided currency must equal the actual's. An unsigned figure is accepted only for EPS.
+  - **Metric:** revenue is compared first, EPS only when revenue was not guided.
+  - **Written:** `guidance_metric`, `guidance_low` / `guidance_high` / `guidance_mid`, `guidance_evidence_ref` (`finding:<id>`), and `vs_guidance`: `within` / `above` / `below` a range, or `above_point` / `below_point` / `at_point`. An "approximately" figure is a point, and its % difference from the point is stated in `detail_json.guidance`, never rounded into "in line".
 
 ---
 
