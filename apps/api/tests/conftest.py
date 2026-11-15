@@ -223,6 +223,16 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(relationship_step, "_live_annual_ixbrl", _no_annual)
 
+    # V3.20 slice 2.5: the held-document counterparty step spends a model call, and the
+    # pipeline suites script their clients' calls one by one. Off unless a test calls the
+    # real function (``tests/test_v3_20_2_5_text_counterparties.py`` imports it directly).
+    from app.services.pipeline import counterparty_step
+
+    async def _no_counterparties(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return {}
+
+    monkeypatch.setattr(counterparty_step, "text_counterparties_step", _no_counterparties)
+
 
 @pytest.fixture(autouse=True)
 def _no_live_size_recheck(monkeypatch: pytest.MonkeyPatch) -> None:

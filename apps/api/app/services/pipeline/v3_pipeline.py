@@ -753,6 +753,21 @@ async def _run(
             "no model provider resolved; investigations run tools and report gaps"
         )
 
+    # V3.20 slice 2.5 — named customers / suppliers / offtakers from the company's own
+    # held documents: one unread document, one model call, every claim verified.
+    if getattr(cfg, "v3_entity_master_enabled", False):
+        from app.services.pipeline.counterparty_step import text_counterparties_step
+
+        named = await text_counterparties_step(
+            session, company, cfg=cfg, client=model_routing.client_for(SLOT_INVESTIGATOR))
+        if named:
+            outcome.relationships["document_counterparties"] = named
+            if named.get("state") == "error":
+                outcome.degraded.append(
+                    "named customers and suppliers could not be read from the company's "
+                    "documents (" + "; ".join(named.get("errors") or ["unknown error"]) + ")"
+                )
+
     # 1. Prior research — the "before" a delta compares against, and the gaps that
     #    become this run's questions.
     prior = await memory.recall(session, company_id=company.id)

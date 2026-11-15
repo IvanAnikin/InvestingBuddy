@@ -184,6 +184,20 @@ The company's parents, ultimate parents, subsidiaries, customers, suppliers and 
   - **Skipped:** a fact on any other axis (a segment, a product, a timing axis).
   - **Once per filing:** the 10-K is read once.
   - **Not tagged ≠ none:** `none_tagged` means the filing has no such tag, not that the company has no concentration.
+- Named customers, suppliers, offtakers and framework partners (V3.20 slice 2.5) come from the company's own held primary documents (`T1_primary_filing` chunks: annual reports, 10-K Item 1/1A, NSM/ASX releases). Per run, the investigator-slot model reads one unread document (annual first, then newest), at most 10 passages.
+  - **Model output:** the model only proposes claims. A claim is written only if every check passes:
+    - the quote is verbatim in the cited chunk;
+    - the counterparty's name is in the quote;
+    - the counterparty is not the company itself;
+    - a word of the role is in the quote;
+    - the role is framed to the company ("we", "our", "the Company", its name). Another company's possessive ("X's largest customer", "its sales") is refused;
+    - any share appears in the quote as a % with a word of its basis;
+    - the ADR-083 passage firewall says the sentence is the company's;
+    - a period is stated (the quote's own fiscal year, else the document's; a share with several years in its sentence must name which).
+  - **Edges:** customer / offtaker / framework partner → `supplier_of(company → counterparty)` (under `customers`); supplier → `supplier_of(counterparty → company)` (under `suppliers`). `extraction_method: "text_llm_verified"`, `source_kind: "document_text"`, `evidence_ref: "chunk:<chunk_id>"`, the quote as `evidence_excerpt`, confidence 0.8.
+  - **Overlap with XBRL:** where an XBRL edge already holds the same counterparty and period, the XBRL row is kept.
+  - **Anonymous names:** an anonymous counterparty ("Customer A") is written only with its share.
+  - **Run outcome:** `relationships.document_counterparties` carries `state` (`written` / `none_verified` / `already_read` / `no_candidates` / `no_model` / `entity_unresolved` / `error`), the document, the claim count, the accepted edges and the rejection counts by reason. A failed model call does not mark the document read.
 - `state`: `ok`; `entity_unresolved` (the company has no entity-master row); or `disabled` (`V3_ENTITY_MASTER_ENABLED` is off).
 - Within a group, edges are ordered by largest disclosed share first.
 

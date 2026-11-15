@@ -1392,6 +1392,12 @@ class Settings(BaseSettings):
     # filing for customer concentration (ConcentrationRiskPercentage1 × MajorCustomersAxis)
     # → supplier_of edges with % of revenue / receivables. One 2–15 MB download per 10-K.
     v3_xbrl_concentration_enabled: bool = True
+    # V3.20 slice 2.5: research reads ONE unread held primary document per run (annual
+    # report / filing first) with the investigator-slot model for named customers,
+    # suppliers, offtakers and framework partners. Every claim must pass the verbatim,
+    # figure, role, framing, ADR-083 attribution and period gates before an edge is
+    # written. One model call per run when an unread document exists; none otherwise.
+    v3_text_counterparties_enabled: bool = True
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off
