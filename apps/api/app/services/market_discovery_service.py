@@ -701,6 +701,7 @@ async def create_pending_thesis_run(
     # constraints with hard/soft semantics. Stored beside the legacy parse (every existing
     # reader of ``parsed_thesis_json`` keeps working) and it, not the legacy parse, decides
     # the universe: it knows materials, multi-region geography and end markets.
+    size_mandate = resolve_size_mandate(payload)
     intent = build_intent(
         payload.thesis_text,
         parsed=parsed,
@@ -710,6 +711,8 @@ async def create_pending_thesis_run(
         industry=payload.industry,
         industry_keywords=payload.industry_keywords,
         market_cap_bucket=payload.market_cap_bucket,
+        max_market_cap_usd=size_mandate["explicit_max_usd"],
+        default_max_market_cap_usd=size_mandate["default_max_usd"],
     )
     if intent.needs_narrowing:
         raise ValueError(
@@ -767,6 +770,8 @@ async def create_pending_thesis_run(
             "sector": payload.sector,
             "industry": payload.industry,
             "market_cap_bucket": payload.market_cap_bucket,
+            "max_market_cap_usd": (intent.size.max_usd if intent.size else None),
+            "size_mandate_source": size_mandate["source"],
             "notes": payload.notes,
         },
         safety_notes={
@@ -783,6 +788,24 @@ async def create_pending_thesis_run(
     await db.commit()
     await db.refresh(run)
     return run
+
+
+def resolve_size_mandate(payload: Any) -> dict[str, Any]:
+    """V3.20 D1 — which market-cap ceiling a thesis run asked for.
+
+    * field omitted → the platform default, applied only if the thesis names no size;
+    * field set to a number → that explicit ceiling;
+    * field set to null → no ceiling at all.
+    """
+    explicit = "max_market_cap_usd" in getattr(payload, "model_fields_set", set())
+    if explicit and payload.max_market_cap_usd is not None:
+        return {"explicit_max_usd": float(payload.max_market_cap_usd),
+                "default_max_usd": None, "source": "explicit"}
+    if explicit:
+        return {"explicit_max_usd": None, "default_max_usd": None, "source": "none"}
+    default = settings.discovery_default_max_market_cap_usd
+    return {"explicit_max_usd": None, "default_max_usd": default,
+            "source": "default" if default is not None else "none"}
 
 
 def score_dynamic_items(

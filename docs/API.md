@@ -2409,12 +2409,29 @@ publish, or recommendation change.
   "industry": "Aerospace & Defense",  // optional
   "industry_keywords": ["defense"],   // optional
   "market_cap_bucket": "large_cap",   // optional
+  "max_market_cap_usd": 2000000000,   // optional, V3.20 size mandate (see below)
   "max_universe_size": 25,            // hard cap ≤ 50 (default 25)
   "max_candidates": 10,
   "provider_name": "free_real",
   "lookback_days": 90
 }
 ```
+
+**Size mandate (`max_market_cap_usd`, V3.20 slice 1.1, owner decision D1).**
+- **Omitted** → the platform default `DISCOVERY_DEFAULT_MAX_MARKET_CAP_USD` (USD 2bn). It applies only when the thesis and `market_cap_bucket` name no size, so a "mid-cap" thesis is never silently capped.
+- **A number** → an explicit ceiling (`> 0`, `≤ 1e13`). It narrows any size the thesis names, or becomes the size constraint on its own.
+- **`null`** → no ceiling.
+
+The ceiling is a **hard** constraint, and it is checked on the verified market cap converted to USD:
+- below the ceiling → `pass`;
+- at or above it → `fail` (excluded);
+- within 15% of it → `borderline`, shown but not decisive.
+
+A US public float (a lower bound) can only *fail* a ceiling, never pass it.
+
+**Unverified size under a mandate.** If the market cap cannot be verified, the issuer is **not shortlisted**. It is returned in the dynamic stage's `size_unverified[]`, together with a `funnel.size_unverified` count and a warning. A size named only in words keeps the V3.19 behaviour: unverified names are ranked last but stay on the shortlist.
+
+The applied ceiling is stored in `config_json.max_market_cap_usd`, and `config_json.size_mandate_source` records where it came from (`default` | `explicit` | `none`). It is also stored on the size constraint in `parsed_thesis_json.discovery_intent` (`max_usd`). `POST /parse-thesis` previews the default the same way.
 
 **Rejections (422, before any background work):**
 - A **vague thesis** that cannot bound a universe (e.g. "best stocks to buy",

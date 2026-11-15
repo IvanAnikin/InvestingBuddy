@@ -41,7 +41,7 @@ from app.services.discovery.identity import (
     platform_identity,
     verify_identity,
 )
-from app.services.discovery.intent import DiscoveryIntent
+from app.services.discovery.intent import HARD, DiscoveryIntent
 from app.services.discovery.leads import CompanyLead, _bounded, discover_leads
 from app.services.discovery.screening import ScreeningResult, screen_issuers
 from app.services.exchange_registry import region_for_country
@@ -123,6 +123,9 @@ class StageResult:
     #: with the flag off.
     web: dict[str, Any] | None = None
     also_surfaced: list[CandidateRecord] = field(default_factory=list)
+    #: V3.20 D1 — issuers that met every other hard requirement but whose market cap
+    #: could not be verified. Shown as "size unverified", never shortlisted.
+    size_unverified: list[CandidateRecord] = field(default_factory=list)
     #: Where this run's leads could come from and whether each source actually ran: web
     #: search (provider + executed queries), model recall, the registries, and the
     #: screening investigation. ``external_discovery`` is the union, so "unavailable" is
@@ -143,6 +146,14 @@ class StageResult:
         return out
 
     def _base_dict(self) -> dict[str, Any]:
+        out = self._v319_base_dict()
+        if self.size_unverified:
+            # V3.20 D1 — only present when a size mandate left names unverified, so a
+            # run without one persists exactly the V3.19 shape.
+            out["size_unverified"] = [c.to_dict() for c in self.size_unverified][:40]
+        return out
+
+    def _v319_base_dict(self) -> dict[str, Any]:
         return {
             "schema": "discovery_dynamic_stage/1",
             "status": "completed",
@@ -905,8 +916,24 @@ async def run_dynamic_stage(
 
     # 6. Decide. Eligibility is final; the quota is never filled with excluded names.
     cap = _bounded(max_candidates, DEFAULT_MAX_CANDIDATES, 50)
-    included = [r for r in records if r.eligibility.status != cons.EXCLUDED]
+    not_excluded = [r for r in records if r.eligibility.status != cons.EXCLUDED]
+    # V3.20 D1 — under a numeric size MANDATE (the default or an explicit ceiling), a
+    # size that could not be verified keeps the name OFF the shortlist: it is listed
+    # apart as "size unverified". A size named only in words keeps the V3.19 ranking.
+    mandate = intent.size is not None and (
+        intent.size.max_usd is not None or intent.size.min_usd is not None
+    )
+    stage.size_unverified = [r for r in not_excluded if mandate and size_unverified(r)]
+    included = [r for r in not_excluded if not (mandate and size_unverified(r))]
     stage.candidates, beyond_cap = shortlist(included, cap, relevance)
+    if stage.size_unverified:
+        stage.warnings.append(
+            f"{len(stage.size_unverified)} issuer(s) met the other requirements but their "
+            "market cap could not be verified, so they are listed as size unverified and "
+            "not shortlisted: "
+            + ", ".join(f"{r.identity.exchange}:{r.identity.ticker}"
+                        for r in stage.size_unverified[:20]),
+        )
     # Never silent: a name the cap cut is stated, with why (ADR-073). First, so the run's
     # truncated warning list keeps it.
     if beyond_cap:
@@ -935,6 +962,8 @@ async def run_dynamic_stage(
         "returned": len(stage.candidates),
         "beyond_cap": len(beyond_cap),
     }
+    if mandate:
+        stage.funnel["size_unverified"] = len(stage.size_unverified)
     if web_on:
         stage.also_surfaced = also_surfaced
         stage.lead_sources = _lead_sources(
@@ -969,6 +998,14 @@ async def run_dynamic_stage(
 # --------------------------------------------------------------------------- #
 # Open-web W6b helpers
 # --------------------------------------------------------------------------- #
+
+
+def size_unverified(record: CandidateRecord) -> bool:
+    """True when a HARD size requirement is unverified for this record (V3.20 D1)."""
+    return any(
+        r.key == "size" and r.hardness == HARD and r.status == cons.UNKNOWN
+        for r in record.results
+    )
 
 
 def shortlist(

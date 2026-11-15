@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: The ``--timeout`` of the DEPLOYED gunicorn startup command, mirrored here so
@@ -405,6 +405,25 @@ class Settings(BaseSettings):
     # It is NOT a recommendation engine and never runs an uncontrolled scan.
     # Defaults are conservative so a scan stays small and cheap.
     discovery_default_provider: str = "free_real"
+    # V3.20 D1 — the default size mandate: a thesis run that does not ask for a size
+    # only shortlists companies with a VERIFIED market cap below this (USD). A run can
+    # raise or remove it (``max_market_cap_usd``). Set the env value to empty, "none",
+    # "off" or "0" for no default ceiling (see ``_ceiling_or_none``).
+    discovery_default_max_market_cap_usd: float | None = 2_000_000_000.0
+
+    @field_validator("discovery_default_max_market_cap_usd", mode="before")
+    @classmethod
+    def _ceiling_or_none(cls, value: object) -> object:
+        """An empty / "none" / "off" / non-positive env value means NO default ceiling —
+        never a startup crash and never a ceiling of zero that would exclude everything."""
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip().lower() in ("", "none", "null", "off"):
+            return None
+        try:
+            return None if float(value) <= 0 else value  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return value  # let pydantic report a malformed value
     # Hard cap on the number of tickers processed in a single run. A run above
     # this size is rejected — protecting against an accidental full-market scan.
     discovery_max_universe_size: int = 15
