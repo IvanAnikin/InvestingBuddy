@@ -611,6 +611,63 @@ class EntityRelationship(Base):
     )
 
 
+class EntityRelationshipException(Base):
+    """A registry's stated reason for NOT reporting a relationship (migration 048).
+
+    GLEIF Level 2 files a reporting exception when an entity has no parent to report:
+    ``NATURAL_PERSONS`` (controlled by individuals), ``NON_CONSOLIDATING``,
+    ``NO_KNOWN_PERSON``, ``NON_PUBLIC`` and its successors. That is a FACT with a reason,
+    and it is not "independent" — the report shows it as such. Effective-dated: closed,
+    never deleted, when a parent is later reported.
+    """
+
+    __tablename__ = "entity_relationship_exceptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "legal_entities.id",
+            ondelete="CASCADE",
+            name="fk_entity_relationship_exceptions_legal_entities",
+        ),
+        nullable=False,
+    )
+    #: ``parent_of`` | ``ultimate_parent_of`` — the edge type that was NOT reported.
+    relationship_type: Mapped[str] = mapped_column(sa.String(40), nullable=False)
+    #: GLEIF's ``category`` (``DIRECT_ACCOUNTING_CONSOLIDATION_PARENT`` / ``ULTIMATE_…``).
+    category: Mapped[str | None] = mapped_column(sa.String(80))
+    #: GLEIF's ``reason`` as published (``NATURAL_PERSONS``, ``NON_CONSOLIDATING``, …).
+    reason: Mapped[str] = mapped_column(sa.String(60), nullable=False)
+    source: Mapped[str] = mapped_column(sa.String(100), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(sa.String(2000))
+    as_of: Mapped[date | None] = mapped_column(sa.Date())
+    effective_from: Mapped[date | None] = mapped_column(sa.Date())
+    effective_to: Mapped[date | None] = mapped_column(sa.Date())
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "ix_entity_relationship_exceptions_current",
+            "legal_entity_id",
+            "relationship_type",
+            unique=True,
+            postgresql_where=sa.text("effective_to IS NULL"),
+            sqlite_where=sa.text("effective_to IS NULL"),
+        ),
+    )
+
+
 class ReportingScope(Base):
     """The durable identity of a scope a figure can be reported at.
 

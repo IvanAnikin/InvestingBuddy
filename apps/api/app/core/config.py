@@ -1375,6 +1375,16 @@ class Settings(BaseSettings):
     # discovery snapshot is used, dated and flagged when older than 30 days.
     v3_size_recheck_enabled: bool = True
 
+    # V3.20 slice 2.2: GLEIF Level 2 (direct / ultimate parent, reporting exceptions) is
+    # looked up for the company's verified LEI during research and written to the
+    # relationship graph. CC0, free, no key; ~4 requests per company. Needs the entity
+    # master (V3_ENTITY_MASTER_ENABLED).
+    v3_gleif_parents_enabled: bool = True
+    # When the entity master holds no LEI for the company, ask GLEIF for one by EXACT
+    # legal name through the gated identifier promotion (an ambiguous or partial name
+    # match is withheld, never guessed). Off = only an LEI already on file is used.
+    v3_gleif_lei_promotion_enabled: bool = True
+
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off
     # ``ToolSession.call`` refuses every tool with reason ``disabled`` — recorded,

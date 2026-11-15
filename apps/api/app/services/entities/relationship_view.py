@@ -5,7 +5,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.schemas.relationships import CompanyRelationshipsRead, RelationshipEdgeRead
+from app.schemas.relationships import (
+    CompanyRelationshipsRead,
+    RelationshipEdgeRead,
+    ReportingExceptionRead,
+)
+from app.services.entities.gleif_parents import current_exceptions, exception_label
 from app.services.entities.relationships import RelatedEntity, relationships_for
 
 #: The label a company READS an edge as → the group it belongs to.
@@ -18,6 +23,12 @@ LABEL_GROUP: dict[str, str] = {
     "customer_of": "suppliers",
     "significantly_held_by": "significant_holders",
     "significant_holder_of": "holdings",
+}
+
+#: A reporting exception on edge type X → the group the missing edge would sit in.
+EXCEPTION_GROUP: dict[str, str] = {
+    "parent_of": "parents",
+    "ultimate_parent_of": "ultimate_parents",
 }
 
 GROUPS: tuple[str, ...] = (
@@ -76,10 +87,24 @@ async def company_relationships(
         return CompanyRelationshipsRead(company_id=company_id, legal_entity_id=None,
                                         state="entity_unresolved", groups=empty, total=0)
     related = await relationships_for(session, legal_entity_id=entity_id, cfg=cfg)
+    exceptions = [
+        ReportingExceptionRead(
+            relationship_type=x.relationship_type,
+            group=EXCEPTION_GROUP.get(x.relationship_type, "other"),
+            reason=x.reason,
+            reason_label=exception_label(x.reason),
+            category=x.category,
+            source=x.source,
+            source_url=x.source_url,
+            as_of=x.as_of,
+        )
+        for x in await current_exceptions(session, entity_id)
+    ]
     return CompanyRelationshipsRead(
         company_id=company_id, legal_entity_id=entity_id, state="ok",
         groups=group_edges(related), total=len(related),
+        reporting_exceptions=exceptions,
     )
 
 
-__all__ = ["GROUPS", "LABEL_GROUP", "company_relationships", "group_edges"]
+__all__ = ["EXCEPTION_GROUP", "GROUPS", "LABEL_GROUP", "company_relationships", "group_edges"]

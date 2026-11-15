@@ -184,6 +184,26 @@ def _no_live_filing_acquisition(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V3.20 slice 2.2: research never reaches GLEIF Level 2 from the unit suite.
+
+    The lookup answers "nothing reported" and LEI promotion is a no-op. A test that means
+    to exercise either patches ``relationship_step._live_lookup`` / ``_live_promote``.
+    """
+    from app.integrations.gleif_level2 import ParentReport
+    from app.services.pipeline import relationship_step
+
+    async def _nothing(lei: str) -> ParentReport:
+        return ParentReport(lei=lei, not_reported=["direct", "ultimate"])
+
+    async def _no_promotion(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return None
+
+    monkeypatch.setattr(relationship_step, "_live_lookup", _nothing)
+    monkeypatch.setattr(relationship_step, "_live_promote", _no_promotion)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_size_recheck(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the V3.20 analysis-time size re-check read no exchange directory by default.
 

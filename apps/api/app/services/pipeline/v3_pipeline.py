@@ -197,6 +197,10 @@ class V3ResearchOutcome:
     #: vocabulary (``gap_resolution.RESULTS``), with the counts. EMPTY — and absent from
     #: ``to_dict()`` — when the step did not run.
     gap_resolution: dict[str, Any] = field(default_factory=dict)
+    #: V3.20 slice 2.2 — the relationship steps, by name: ``gleif_parents``
+    #: (``ParentWriteResult.to_dict()``). EMPTY — and absent from ``to_dict()`` — when
+    #: the steps are off.
+    relationships: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -226,6 +230,8 @@ class V3ResearchOutcome:
             payload["segment_hierarchy"] = dict(self.segment_hierarchy)
         if self.gap_resolution:
             payload["gap_resolution"] = dict(self.gap_resolution)
+        if self.relationships:
+            payload["relationships"] = dict(self.relationships)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -607,6 +613,21 @@ async def _run(
                 f"an official {item.get('document_kind') or 'document'} "
                 f"({item.get('source_id')} {item.get('document_ref')}) is not in the "
                 f"corpus ({item.get('reason')})"
+            )
+
+    # V3.20 slice 2.2 — who owns the company: its direct and ultimate parent (or GLEIF's
+    # stated reason there is none) from GLEIF Level 2, into the relationship graph.
+    if getattr(cfg, "v3_gleif_parents_enabled", False) and getattr(
+        cfg, "v3_entity_master_enabled", False
+    ):
+        from app.services.pipeline.relationship_step import gleif_parents_step
+
+        gleif = await gleif_parents_step(session, company, cfg=cfg)
+        outcome.relationships["gleif_parents"] = gleif
+        if gleif.get("state") == "error":
+            outcome.degraded.append(
+                "the company's parent companies could not be read from GLEIF ("
+                + "; ".join(gleif.get("errors") or ["unknown error"]) + ")"
             )
 
     # Item 21 — the statements those documents yielded, read the way the V2 snapshot

@@ -1224,6 +1224,29 @@ Checks: no self-reference when both ends are set; at least one end resolved; an 
 
 Downgrade deletes rows with an unresolved end, and any period-split duplicates (they cannot exist under 028), then restores 028 exactly. Checked on PostgreSQL: upgrade, constraint violations, downgrade, re-upgrade. **Apply 047 before deploying the code**, because the ORM maps the new columns.
 
+## Migration 048 — relationship reporting exceptions (V3.20 slice 2.2)
+
+New table `entity_relationship_exceptions`. It holds a registry's stated reason for NOT reporting a parent.
+
+GLEIF Level 2 answers "who is the parent?" in one of three ways:
+- a parent LEI record, stored as an `entity_relationships` edge;
+- a **reporting exception** (`NATURAL_PERSONS`, `NON_CONSOLIDATING`, `NO_KNOWN_PERSON`, `NON_PUBLIC` and its successors), stored as a row here;
+- nothing at all, stored as no row (unknown).
+
+A reporting exception is a fact about the company, and it is not "independent". The report shows it with GLEIF's reason.
+
+| Column | Meaning |
+|---|---|
+| `legal_entity_id` | The entity that has no reported parent (FK `legal_entities`, cascade). |
+| `relationship_type` | The edge that was not reported: `parent_of` or `ultimate_parent_of`. |
+| `category`, `reason` | GLEIF's own values, as published. |
+| `source`, `source_url`, `as_of` | The GLEIF URL and the retrieval date. |
+| `effective_from`, `effective_to` | Effective-dated. A row is closed, never deleted, when GLEIF later reports a parent. |
+
+There is one current row per (entity, relationship type), enforced by the partial unique index `ix_entity_relationship_exceptions_current`.
+
+Downgrade drops the table. Checked on PostgreSQL: upgrade, downgrade, re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

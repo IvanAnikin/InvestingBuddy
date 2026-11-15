@@ -159,10 +159,20 @@ The company's parents, ultimate parents, subsidiaries, customers, suppliers and 
     "significant_holders": [], "holdings": [], "other": []
   },
   "total": 1,
+  "reporting_exceptions": [{
+    "relationship_type": "parent_of", "group": "parents",
+    "reason": "NATURAL_PERSONS",
+    "reason_label": "controlled by one or more natural persons (no parent company)",
+    "category": "DIRECT_ACCOUNTING_CONSOLIDATION_PARENT", "source": "gleif",
+    "source_url": "https://api.gleif.org/api/v1/lei-records/…/direct-parent-reporting-exception",
+    "as_of": "2026-11-15"
+  }],
   "note": "… An empty group means nothing was found in the sources read — not that the company has none."
 }
 ```
 
+- `reporting_exceptions` (V3.20 slice 2.2): GLEIF's stated reason for reporting no direct or ultimate parent. This is a fact with a reason, not "independent". An empty `parents` group with no exception means unknown.
+- Parents come from GLEIF Level 2 during company research. Each is written as a `parent_of` or `ultimate_parent_of` edge with `source: "gleif"`, `extraction_method: "gleif_api"`, the GLEIF URL, and `effective_from` set to the relationship start date. Confidence follows GLEIF's corroboration level: fully 1.0, partially 0.9, entity-supplied only 0.8.
 - `state`: `ok`; `entity_unresolved` (the company has no entity-master row); or `disabled` (`V3_ENTITY_MASTER_ENABLED` is off).
 - Within a group, edges are ordered by largest disclosed share first.
 

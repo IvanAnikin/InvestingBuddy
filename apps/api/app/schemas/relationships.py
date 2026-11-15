@@ -45,6 +45,23 @@ class RelationshipEdgeRead(BaseModel):
     effective_from: date | None = None
 
 
+class ReportingExceptionRead(BaseModel):
+    """A registry's stated reason for NOT reporting a parent (GLEIF Level 2).
+
+    "No parent reported: controlled by natural persons" is a fact about the company and
+    is NOT the same as "independent".
+    """
+
+    relationship_type: str
+    group: str = Field(description="The group the missing edge would sit in (parents, …).")
+    reason: str = Field(description="GLEIF's reason as published, e.g. NATURAL_PERSONS.")
+    reason_label: str | None = None
+    category: str | None = None
+    source: str
+    source_url: str | None = None
+    as_of: date | None = None
+
+
 class CompanyRelationshipsRead(BaseModel):
     company_id: uuid.UUID
     legal_entity_id: uuid.UUID | None
@@ -54,6 +71,7 @@ class CompanyRelationshipsRead(BaseModel):
     #: Keys are the ``RelationshipGroup`` values; every group is always present.
     groups: dict[str, list[RelationshipEdgeRead]]
     total: int
+    reporting_exceptions: list[ReportingExceptionRead] = Field(default_factory=list)
     note: str = (
         "Relationships come only from cited sources (GLEIF, SEC filings, XBRL, the "
         "company's own documents). An empty group means nothing was found in the sources "
