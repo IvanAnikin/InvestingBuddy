@@ -184,6 +184,10 @@ class ReportInputs:
     #: ADR-069 — the playbook's reader note when generic metrics are not meaningful for
     #: this company (a deposit-taking bank). Shown beside the financials and the peers.
     not_meaningful_note: str | None = None
+    #: V3.20 slice 2.6 — Customers / Suppliers / Parent & group
+    #: (``relationship_report.relationship_block``); ``None`` when the relationship graph
+    #: is off, and then the report is unchanged.
+    relationships: Mapping[str, Any] | None = None
 
 
 
@@ -812,6 +816,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
     industry["commodity_table"] = [dict(row) for row in inputs.commodity_rows]
     competitive = next(s for s in sections if s["key"] == "competitive_position")
     competitive["peer_table"] = [dict(row) for row in inputs.peer_rows]
+    if inputs.relationships:
+        # Only when the graph is on, so every other report is byte-identical.
+        business = next(s for s in sections if s["key"] == "business_model")
+        business["relationships"] = dict(inputs.relationships)
     if inputs.peer_selection:
         # Only when a peer set ran, so every other report is byte-identical.
         competitive["peer_selection"] = dict(inputs.peer_selection)

@@ -1352,6 +1352,8 @@ async def _run(
             not_meaningful_calculations=applicability.calculations,
             not_meaningful_note=applicability.reader_note or None,
             commercial_stage=commercial_stage,
+            relationships=await _relationship_section(
+                session, company, cfg=cfg, steps=outcome.relationships),
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1517,6 +1519,25 @@ MAX_REPORT_FINDINGS = 200
 LADDER_CALLS_PER_QUESTION = 9
 
 
+async def _relationship_section(
+    session: Any, company: Any, *, cfg: Any, steps: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 2.6 — the report's Customers / Suppliers / Parent & group block, from
+    the relationship graph and what this run's relationship steps read. ``None`` when the
+    graph is off or unreadable: the report is then unchanged. Never raises."""
+    if not getattr(cfg, "v3_entity_master_enabled", False):
+        return None
+    try:
+        from app.services.entities.relationship_view import company_relationships
+        from app.services.pipeline.relationship_report import relationship_block
+
+        async with session.begin_nested():
+            view = await company_relationships(session, company=company, cfg=cfg)
+        return relationship_block(view.model_dump(mode="json"), steps or {})
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        return None
+
+
 async def _professional_report(
     session: Any,
     run: Any,
@@ -1535,6 +1556,7 @@ async def _professional_report(
     not_meaningful_calculations: "frozenset[str]" = frozenset(),
     not_meaningful_note: str | None = None,
     commercial_stage: str | None = None,
+    relationships: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1726,6 +1748,7 @@ async def _professional_report(
         web_support=web_support,
         web_context=web_context or None,
         not_meaningful_note=not_meaningful_note,
+        relationships=relationships,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

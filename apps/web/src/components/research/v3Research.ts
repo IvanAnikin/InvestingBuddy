@@ -36,6 +36,7 @@ import {
   type WebEvidenceBlock,
   type WebResearchQuality,
 } from "./webEvidence";
+import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
 
 /** One statement the ledger holds, with the ids that make it citable. */
 export type V3Finding = {
@@ -466,6 +467,10 @@ export type DomainSection = SectionHead & {
       industry_and_market, growth_and_catalysts, risks_and_counter_thesis). Null on every
       report written before open-web research. */
   webEvidence: WebEvidenceBlock | null;
+  /** V3.20 slice 2.6 (business_model): customers, suppliers, parent & group, each with
+      its citations and a disclosed / not disclosed / not researched state. Null when the
+      relationship graph is off, and on older reports. */
+  relationships: RelationshipBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -1065,6 +1070,7 @@ function readDomainSection(
     peerSelectionNote: isRecord(r.peer_selection) ? str(r.peer_selection.note) : null,
     metricsNote: str(r.metrics_note),
     webEvidence: readWebEvidenceBlock(r.web_evidence),
+    relationships: readRelationshipBlock(r.relationships),
   };
 }
 

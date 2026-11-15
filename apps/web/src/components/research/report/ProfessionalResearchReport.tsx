@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Surface from "@/components/product/Surface";
+import RelationshipSection from "@/components/research/report/RelationshipSection";
 import { sourceTierWord } from "@/components/research/reportSections";
 import type {
   ChangeSection,
@@ -799,6 +800,7 @@ function DomainBody({
 
       {section.commodityTable.length > 0 && <CommodityTable rows={section.commodityTable} />}
       {section.peerTable.length > 0 && <PeerTable rows={section.peerTable} />}
+      <RelationshipSection block={section.relationships} company="This company" />
       {section.peerTable.length === 0 && section.peerSelectionNote && (
         <p
           className="mt-3 max-w-2xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
