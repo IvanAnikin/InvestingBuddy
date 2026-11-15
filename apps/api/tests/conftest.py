@@ -215,6 +215,14 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(relationship_step, "_live_sec_lookup", _no_sec)
     monkeypatch.setattr(relationship_step, "_live_cik", _no_cik)
 
+    # V3.20 slice 2.4: nor a 10-K body for its inline XBRL.
+    from app.integrations.sec_relationships import AnnualInlineXbrl
+
+    async def _no_annual(cik: str, annual: object) -> AnnualInlineXbrl:
+        return AnnualInlineXbrl(url=None, error="offline test")
+
+    monkeypatch.setattr(relationship_step, "_live_annual_ixbrl", _no_annual)
+
 
 @pytest.fixture(autouse=True)
 def _no_live_size_recheck(monkeypatch: pytest.MonkeyPatch) -> None:

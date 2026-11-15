@@ -1388,6 +1388,10 @@ class Settings(BaseSettings):
     # (20-F Exhibit 8) subsidiary list and the newest structured Schedule 13D/13G filings
     # (≤ 12, XML since 2024-12) into the relationship graph. Free, ~15 EDGAR requests.
     v3_sec_relationships_enabled: bool = True
+    # V3.20 slice 2.4: inside that step, the newest 10-K's inline XBRL is read ONCE per
+    # filing for customer concentration (ConcentrationRiskPercentage1 × MajorCustomersAxis)
+    # → supplier_of edges with % of revenue / receivables. One 2–15 MB download per 10-K.
+    v3_xbrl_concentration_enabled: bool = True
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off

@@ -178,6 +178,12 @@ The company's parents, ultimate parents, subsidiaries, customers, suppliers and 
   - **Minority stakes:** a listed entity with a stated holding under 50 % appears under `holdings` with its % of capital. Rows under a "Joint ventures" heading are not counted as subsidiaries.
   - **Holders:** the newest structured SCHEDULE 13D / 13G per holder, written as `significant_holder_of` with `share_basis: "share_class"`, `as_of` set to the event date, and `source_kind` `sec_13d` (active) or `sec_13g` (passive). Joint filers report one holding, not a sum. A filing at or below 5 % closes the holder's edge.
   - **Not read:** pre-2025 free-text SC 13D/13G filings; the count is stated.
+- Customers (V3.20 slice 2.4) come from the newest 10-K's own inline XBRL: `us-gaap:ConcentrationRiskPercentage1` on `srt:MajorCustomersAxis`, with a revenue or receivables benchmark.
+  - **Edge:** `supplier_of(company → customer)`, read by the company under `customers`. The customer is unresolved, named by the filer's member. Its kind is named, anonymous ("One customer") or aggregate ("Three major customers"), stated in the note.
+  - **Share:** `disclosed_share_pct` is the tagged % with `share_basis` `revenue` or `receivables`. `period` is the fact's own fiscal period; a receivables share is a year-end balance (`FY2025 year-end`). Older years tagged in the filing are kept as their own rows.
+  - **Skipped:** a fact on any other axis (a segment, a product, a timing axis).
+  - **Once per filing:** the 10-K is read once.
+  - **Not tagged ≠ none:** `none_tagged` means the filing has no such tag, not that the company has no concentration.
 - `state`: `ok`; `entity_unresolved` (the company has no entity-master row); or `disabled` (`V3_ENTITY_MASTER_ENABLED` is off).
 - Within a group, edges are ordered by largest disclosed share first.
 

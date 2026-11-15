@@ -66,6 +66,92 @@ async def _live_sec_lookup(cik: str, registrant_name: str | None) -> SecRelation
     return await fetch_sec_relationships(cik, registrant_name=registrant_name)
 
 
+async def _live_annual_ixbrl(cik: str, annual: dict[str, Any]) -> Any:
+    from app.integrations.sec_relationships import fetch_annual_inline_xbrl
+
+    return await fetch_annual_inline_xbrl(cik, annual)
+
+
+CONCENTRATION_STRATEGY = "customer_concentration_v1"
+
+
+async def _attempted(session: Any, company_id: Any, url: str) -> bool:
+    from sqlalchemy import select
+
+    from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+    from app.services.document_ingestion_attempt_service import url_hash_of
+
+    if company_id is None:
+        return False
+    return (await session.execute(
+        select(DocumentIngestionAttempt.id).where(
+            DocumentIngestionAttempt.company_id == company_id,
+            DocumentIngestionAttempt.url_hash == url_hash_of(url),
+            DocumentIngestionAttempt.discovery_strategy == CONCENTRATION_STRATEGY,
+        ).limit(1)
+    )).first() is not None
+
+
+async def _record_attempt(session: Any, company_id: Any, url: str, cfg: Any) -> None:
+    from app.models.document_ingestion_attempt import STATUS_EXTRACTED
+    from app.services.document_ingestion_attempt_service import (
+        IngestionAttemptRecord,
+        record_ingestion_attempts,
+    )
+
+    await record_ingestion_attempts(
+        session, company_id=company_id, agent_run_id=None, cfg=cfg,
+        attempts=[IngestionAttemptRecord(
+            canonical_url=url, source_type="sec_filing", source_tier="T2_regulator_or_gov",
+            status=STATUS_EXTRACTED, discovery_strategy=CONCENTRATION_STRATEGY,
+        )],
+    )
+
+
+async def customer_concentration_part(
+    session: Any, *, company_id: Any, entity_id: Any, cik: str, annual: dict[str, Any] | None,
+    cfg: Any,
+) -> dict[str, Any]:
+    """V3.20 slice 2.4 — the newest 10-K's tagged customer concentration, once per filing."""
+    from app.services.entities.sec_relationships import (
+        ixbrl_already_read,
+        record_concentrations,
+    )
+    from app.services.sources.customer_concentration import concentrations_from_inline_xbrl
+    from app.services.sources.sec_filing_documents import build_document_url
+
+    if not getattr(cfg, "v3_xbrl_concentration_enabled", False):
+        return {}
+    if not annual or annual.get("form") != "10-K":
+        return {"state": "not_applicable",
+                "notes": ["customer concentration is read from a 10-K's inline XBRL"]}
+    url = build_document_url(cik, annual.get("accession"), annual.get("primary_document"))
+    accession = str(annual.get("accession") or "")
+    if url is None:
+        return {"state": "error", "errors": ["annual report URL could not be built"]}
+    if await ixbrl_already_read(session, entity_id=entity_id, accession=accession) or (
+        await _attempted(session, company_id, url)
+    ):
+        return {"state": "already_read", "accession": accession}
+    read = await _live_annual_ixbrl(cik, annual)
+    if read.error or read.document is None:
+        return {"state": "error", "accession": accession,
+                "errors": [read.error or "annual report unread"]}
+    items = concentrations_from_inline_xbrl(read.document)
+    async with session.begin_nested():
+        written = await record_concentrations(
+            session, entity_id=entity_id, concentrations=items, annual=annual,
+            source_url=url, cfg=cfg)
+        await _record_attempt(session, company_id, url, cfg)
+    return {
+        "state": "written" if written else "none_tagged", "accession": accession,
+        "source_url": url, "concentrations": written,
+        **({} if written else {"notes": [
+            "the 10-K tags no customer concentration (ConcentrationRiskPercentage1 on "
+            "MajorCustomersAxis); not disclosed in XBRL is not the same as none"]}),
+    }
+
+
 async def _live_cik(ticker: str, exchange: str | None) -> str | None:
     from app.integrations.providers.sec_recent_filings_provider import (
         SecRecentFilingsProvider,
@@ -111,6 +197,15 @@ async def sec_relationships_step(session: Any, company: Any, *, cfg: Any) -> dic
                 "errors": [f"SEC relationship step failed ({type(exc).__name__})"]}
     out = result.to_dict()
     out["cik"] = str(cik)
+    try:
+        concentration = await customer_concentration_part(
+            session, company_id=getattr(company, "id", None), entity_id=entity_id,
+            cik=str(cik), annual=getattr(report, "annual", None), cfg=cfg)
+    except Exception as exc:  # noqa: BLE001 - this part degrades alone
+        concentration = {"state": "error",
+                         "errors": [f"customer concentration failed ({type(exc).__name__})"]}
+    if concentration:
+        out["customer_concentration"] = concentration
     return out
 
 

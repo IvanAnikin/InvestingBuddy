@@ -44,6 +44,8 @@ MAX_HOLDER_FILINGS = 12
 MAX_SUBSIDIARIES = 500
 MAX_DOCUMENT_BYTES = 3_000_000
 MAX_XML_BYTES = 1_000_000
+#: A 10-K's iXBRL body is typically 2–15 MB (``inline_xbrl.MAX_INLINE_XBRL_BYTES`` = 40 MB).
+MAX_ANNUAL_BODY_BYTES = 40_000_000
 
 #: ``(url, accept)`` → ``(status, body or None)``. Raises on a transport failure.
 SecFetch = Callable[[str, str], Awaitable[tuple[int, bytes | None]]]
@@ -117,6 +119,8 @@ class HolderFiling:
 @dataclass
 class SecRelationshipReport:
     cik: str
+    #: The newest 10-K / 20-F: ``{form, accession, filing_date, primary_document}``.
+    annual: dict[str, Any] | None = None
     subsidiaries: SubsidiaryList | None = None
     holders: list[HolderFiling] = field(default_factory=list)
     legacy_holder_filings_skipped: int = 0
@@ -413,6 +417,70 @@ async def _default_fetch(url: str, accept: str) -> tuple[int, bytes | None]:  # 
     return 200, resp.content[:MAX_DOCUMENT_BYTES]
 
 
+async def _default_large_fetch(  # pragma: no cover - network
+    url: str, accept: str
+) -> tuple[int, bytes | None]:
+    import httpx
+
+    from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
+    from app.services.sources.sec_filing_documents import SecRateLimiter
+
+    await SecRateLimiter().acquire()
+    async with httpx.AsyncClient(timeout=90.0, follow_redirects=False) as client:
+        async with client.stream(
+            "GET", url, headers={USER_AGENT_HEADER: research_user_agent(), "Accept": accept}
+        ) as resp:
+            if resp.status_code != 200:
+                return resp.status_code, None
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in resp.aiter_bytes():
+                size += len(chunk)
+                if size > MAX_ANNUAL_BODY_BYTES:
+                    return 413, None  # refused whole, never parsed half
+                chunks.append(chunk)
+    return 200, b"".join(chunks)
+
+
+@dataclass
+class AnnualInlineXbrl:
+    url: str | None
+    document: Any = None
+    error: str | None = None
+
+
+async def fetch_annual_inline_xbrl(
+    cik: str, annual: dict[str, Any], *, fetch: SecFetch | None = None
+) -> AnnualInlineXbrl:
+    """The newest annual report's primary document, parsed as inline XBRL. Never raises.
+
+    The URL is built by ``build_document_url`` from EDGAR's own ``primaryDocument``.
+    Parsing runs in a worker thread (a 10-K body is megabytes).
+    """
+    import asyncio
+
+    from app.services.sources.inline_xbrl import parse_inline_xbrl
+    from app.services.sources.sec_filing_documents import build_document_url
+
+    url = build_document_url(cik, annual.get("accession"), annual.get("primary_document"))
+    if url is None:
+        return AnnualInlineXbrl(
+            url=None, error="primary document name is not a safe Archives name")
+    try:
+        status, body = await (fetch or _default_large_fetch)(url, "text/html")
+    except Exception as exc:  # noqa: BLE001
+        return AnnualInlineXbrl(url=url, error=f"annual report unread ({type(exc).__name__})")
+    if status != 200 or not body:
+        return AnnualInlineXbrl(url=url, error=f"annual report returned HTTP {status}")
+    try:
+        document = await asyncio.to_thread(parse_inline_xbrl, body)
+    except Exception as exc:  # noqa: BLE001
+        return AnnualInlineXbrl(url=url, error=f"inline XBRL unreadable ({type(exc).__name__})")
+    if getattr(document, "refused", None):
+        return AnnualInlineXbrl(url=url, error=f"inline XBRL refused ({document.refused})")
+    return AnnualInlineXbrl(url=url, document=document)
+
+
 async def fetch_sec_relationships(
     cik: str,
     *,
@@ -448,6 +516,8 @@ async def fetch_sec_relationships(
 
     # Subsidiaries — the newest annual report's exhibit.
     annual = next((f for f in filings if f["form"] in SUBSIDIARY_FORMS), None)
+    if annual is not None:
+        report.annual = dict(annual)
     if annual is None:
         report.notes.append("no 10-K or 20-F in the registrant's recent filings")
     else:
@@ -542,7 +612,9 @@ async def _read_subsidiaries(report: SecRelationshipReport, cik: str, annual: di
 
 
 __all__ = [
+    "AnnualInlineXbrl",
     "LEGACY_HOLDER_FORMS",
+    "fetch_annual_inline_xbrl",
     "MAX_HOLDER_FILINGS",
     "MAX_SUBSIDIARIES",
     "STRUCTURED_HOLDER_FORMS",

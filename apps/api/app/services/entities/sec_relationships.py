@@ -35,6 +35,7 @@ from app.services.entities.relationships import close_relationship, record_relat
 from app.services.entities.vocabulary import (
     REL_PARENT_OF,
     REL_SIGNIFICANT_HOLDER_OF,
+    REL_SUPPLIER_OF,
     counterparty_key,
 )
 
@@ -247,8 +248,86 @@ async def record_sec_relationships(
     return result
 
 
+def concentration_period(item: Any) -> str:
+    """The edge's period: a receivables share is a year-end balance, so it is keyed apart
+    from the same customer's revenue share for the same year."""
+    period = str(item.period)
+    if item.share_basis == "receivables" and not period.endswith(("year-end", " end")):
+        period = f"{period} year-end"
+    return period[:40]
+
+
+async def ixbrl_already_read(session: Any, *, entity_id: uuid.UUID, accession: str) -> bool:
+    """Has a concentration edge already been recorded from this filing's iXBRL?"""
+    found = (
+        await session.execute(
+            select(EntityRelationship.id).where(
+                EntityRelationship.subject_entity_id == entity_id,
+                EntityRelationship.extraction_method == "xbrl_dimension",
+                EntityRelationship.evidence_ref.like(f"sec:{accession}:ixbrl:%"),
+            ).limit(1)
+        )
+    ).first()
+    return found is not None
+
+
+async def record_concentrations(
+    session: Any, *, entity_id: uuid.UUID, concentrations: list[Any], annual: dict[str, Any],
+    source_url: str, cfg: "Settings",
+) -> list[dict[str, Any]]:
+    """Customer-concentration facts → ``supplier_of(registrant → customer)``. Flush-only.
+
+    The customer is UNRESOLVED (named by the filing's member), the share is the tagged
+    % of revenue or of receivables, the period the fact's own. One row per customer,
+    basis and period; a re-read of the same filing is idempotent.
+    """
+    if not _enabled(cfg):
+        return []
+    filing_date = annual.get("filing_date")
+    as_of = filing_date if isinstance(filing_date, date) else None
+    written: list[dict[str, Any]] = []
+    for item in concentrations:
+        period = concentration_period(item)
+        span = (f"{item.start} to {item.end}" if item.start and item.end
+                else f"at {item.instant or item.end}")
+        excerpt = (
+            f"{annual.get('form')} filed {filing_date}: us-gaap:ConcentrationRiskPercentage1 "
+            f"[srt:MajorCustomersAxis={item.member}; benchmark {item.share_basis}] printed "
+            f"{item.printed!r} = {item.share_pct:g}% of {item.share_basis}, {period} ({span})"
+        )
+        edge = await record_relationship(
+            session,
+            subject_entity_id=entity_id,
+            object_entity_id=None,
+            counterparty_name=item.customer,
+            relationship_type=REL_SUPPLIER_OF,
+            source=SEC_SOURCE,
+            cfg=cfg,
+            source_url=source_url,
+            evidence_ref=f"sec:{annual.get('accession')}:ixbrl:{item.context_id}"[:200],
+            source_kind="sec_xbrl",
+            extraction_method="xbrl_dimension",
+            evidence_excerpt=excerpt,
+            as_of=as_of,
+            period=period,
+            note=f"{item.kind} customer as tagged by the filer ({item.member})",
+            disclosed_share_pct=item.share_pct,
+            share_basis=item.share_basis,
+        )
+        written.append({
+            "customer": item.customer, "kind": item.kind, "share_pct": item.share_pct,
+            "share_basis": item.share_basis, "period": period,
+            "relationship_id": str(edge.id) if edge is not None else None,
+        })
+    await session.flush()
+    return written
+
+
 __all__ = [
     "EXIT_THRESHOLD_PCT",
+    "concentration_period",
+    "ixbrl_already_read",
+    "record_concentrations",
     "SEC_SOURCE",
     "SUBSIDIARY_MIN_PCT",
     "SecRelationshipWriteResult",
