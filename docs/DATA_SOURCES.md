@@ -358,6 +358,7 @@ The full list is in `source_taxonomy.json`. Key free sources relevant to the rea
 ### Financials & Market Data
 - **Stooq** — historical OHLCV for many global exchanges, no key
 - **FRED (St Louis Fed)** — macro and FX data, free JSON API
+- **ECB data portal** (`data-api.ecb.europa.eu`) — euro FX reference rates (SDMX `EXR`), free, no key; FX fallback and the only source for PLN/CZK/HUF/RON/ISK/TRY/ILS/IDR/PHP (V3.20 slice 1.2)
 - **World Bank Pink Sheet** — monthly commodity price benchmarks, free
 
 ### Company Filings

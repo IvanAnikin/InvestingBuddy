@@ -36,6 +36,7 @@ from app.services.discovery.leads import CompanyLead, parse_company_leads, plan_
 from app.services.discovery.pipeline import run_dynamic_stage, universe_item
 from app.services.providers.contracts import ResearchLead, ResearchProviderResult
 from app.services.sources.document_fetcher import DocumentFetchResult
+from tests.helpers.discovery_web import fx_csv
 
 LUXURY = "small cap growing european luxury companies"
 
@@ -55,9 +56,7 @@ PAGES: dict[str, str] = {
         "In FY2025, organic revenue growth was 8.0%. "
         "Maison Exemple designs and sells luxury leather goods and accessories."
     ),
-    "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXUSEU": (
-        "observation_date,DEXUSEU\n2026-09-17,1.15\n2026-09-18,1.15\n"
-    ),
+    "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXUSEU": fx_csv("DEXUSEU", 1.15),
 }
 
 

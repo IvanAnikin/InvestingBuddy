@@ -2429,6 +2429,12 @@ The ceiling is a **hard** constraint, and it is checked on the verified market c
 
 A US public float (a lower bound) can only *fail* a ceiling, never pass it.
 
+**FX for the size check (V3.20 slice 1.2).** A non-USD market cap is converted with an official rate, and the rate (`publisher`, `series`, `rate_date`, `source_url`) travels with the size result:
+- FRED H.10 first, for the 19 currencies it quotes;
+- the ECB euro reference rates (`data-api.ecb.europa.eu`, cross `USD/EUR ÷ CCY/EUR` on one shared date) for currencies H.10 lacks (PLN, CZK, HUF, RON, ISK, TRY, ILS, IDR, PHP, MYR, THB, BGN) and when H.10 is unreachable or stale.
+
+A rate more than **5 business days** before the market-cap date is stale. A stale rate, or no rate from either source, gives `size: unknown` with both reasons — under a mandate the issuer then lands in `size_unverified[]`.
+
 **Unverified size under a mandate.** If the market cap cannot be verified, the issuer is **not shortlisted**. It is returned in the dynamic stage's `size_unverified[]`, together with a `funnel.size_unverified` count and a warning. A size named only in words keeps the V3.19 behaviour: unverified names are ranked last but stay on the shortlist.
 
 The applied ceiling is stored in `config_json.max_market_cap_usd`, and `config_json.size_mandate_source` records where it came from (`default` | `explicit` | `none`). It is also stored on the size constraint in `parsed_thesis_json.discovery_intent` (`max_usd`). `POST /parse-thesis` previews the default the same way.
