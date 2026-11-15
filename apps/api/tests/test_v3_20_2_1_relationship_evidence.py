@@ -28,7 +28,11 @@ from app.services.entities.vocabulary import (
     counterparty_key,
     require_relationship_type,
 )
-from tests.test_v3_entity_relationships import _cfg, _entity, session  # noqa: F401
+from tests import test_v3_entity_relationships as _base
+from tests.test_v3_entity_relationships import _cfg, _entity
+
+# Reuse the base module's in-memory SQLite session fixture without shadowing it.
+session = _base.session
 
 URL = "https://www.sec.gov/Archives/edgar/data/1/000000000126000001/x10k.htm"
 
