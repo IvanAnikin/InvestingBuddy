@@ -209,6 +209,68 @@ The company's parents, ultimate parents, subsidiaries, customers, suppliers and 
 
 Error `404 Not Found`: company does not exist.
 
+**GET /api/v1/companies/{company_id}/passive-ownership** — US-registered funds / ETFs holding the company (V3.20 slice 3.3)
+
+Read from the stored SEC Form N-PORT aggregates, which the offline ingest writes (`scripts/ingest_nport.py`, slice 3.2). The only live call is the denominator: SEC `companyconcept` `dei:EntityCommonStockSharesOutstanding` (research User-Agent). It is made only when there is something to divide.
+
+```json
+{
+  "company_id": "uuid", "legal_entity_id": "uuid", "state": "ok",
+  "period": "2026Q3", "previous_period": "2026Q2",
+  "securities": [{
+    "identifier_kind": "isin", "identifier": "US7391281067", "security_type": "ordinary_share",
+    "counted_in_pct": true, "not_counted_reason": null,
+    "fund_count": 212, "etf_count": 41, "etf_unknown_count": 9, "index_fund_count": 120,
+    "shares_held": 3643256.0, "etf_shares_held": 1800000.0, "value_usd": 0.0,
+    "non_share_holdings": 0, "report_date_min": "2026-05-31", "report_date_max": "2026-06-30",
+    "top_funds": [{"series_id": "S000004310", "name": "…", "sponsor": "…", "unit": "shares",
+                   "is_etf": true, "shares": 0.0, "value_usd": 0.0, "pct_of_fund": 0.0,
+                   "report_date": "2026-06-30"}],
+    "source_url": "https://www.sec.gov/files/dera/data/form-n-port-data-sets/2026q3_nport.zip",
+    "period": "2026Q3",
+    "previous": {"period": "2026Q2", "fund_count": 205, "shares_held": 3000000.0,
+                 "change_shares": 643256.0, "change_pct": 21.44, "change_fund_count": 7}
+  }],
+  "shares_held": 3643256.0, "etf_shares_held": 1800000.0,
+  "pct_of_shares_outstanding": 10.0, "etf_pct_of_shares_outstanding": 4.94,
+  "pct_label": "Held by US-registered funds and ETFs only (SEC Form N-PORT). UCITS and other non-US funds are not included.",
+  "pct_withheld_reason": null,
+  "denominator": {"shares": 36432564.0, "as_of": "2026-08-03", "accession": "0000080420-26-000107",
+                  "form": "10-Q", "filed": "2026-08-04", "classes": 1,
+                  "source_url": "https://data.sec.gov/api/xbrl/companyconcept/CIK0000080420/dei/EntityCommonStockSharesOutstanding.json",
+                  "concept": "dei:EntityCommonStockSharesOutstanding"},
+  "holdings_as_of": "2026-06-30",
+  "concentration": {"top3_share_of_passive_pct": 31.2, "basis": "…"},
+  "source": "SEC Form N-PORT data sets (US-registered funds)",
+  "freshness_note": "N-PORT holdings are as of each fund's report date; …"
+}
+```
+(The figures are illustrative; the denominator is Powell Industries' real cover-page count, read 2026-11-15.)
+
+- **Which rows:**
+  - rows are found by the issuer's securities' ISINs (and the CUSIP a US / CA ISIN embeds) and by the issuer's LEI (ADR-061: an LEI names the issuer);
+  - only `ordinary_share` / `class_share` rows count toward the %;
+  - a depositary receipt (`security_type_adr`) or an LEI-only match (`matched_by_issuer_lei_only`) is listed, never added.
+- **The %:** `pct_of_shares_outstanding` is shown only with `pct_label` and with `denominator.as_of`. The denominator sums all classes on the newest cover page (`classes` says how many).
+- **When the % is withheld,** it is null and `pct_withheld_reason` says why:
+  - `no_ordinary_share_holdings`;
+  - `no_sec_cik_for_cover_page_share_count` (a non-SEC issuer);
+  - `no_cover_page_share_count`;
+  - `denominator_http_<status>` or `denominator_fetch_failed: …`;
+  - `exceeds_100_pct_data_error` (never shown).
+- **QoQ:** `previous` compares with the newest earlier period stored for the same identifier.
+- **ETF status:** `etf_unknown_count` counts funds whose ETF status the N-CEN data sets do not state. It is not "not an ETF".
+- **Concentration:** `concentration.top3_share_of_passive_pct` is the top three fund positions divided by the shares held by all US-registered funds (counted rows, share units only).
+- **`period`** is the data set's filing quarter. The holdings are as of `holdings_as_of`, which is 2–5 months before the data set.
+- **`state`:**
+  - `ok`;
+  - `disabled` (`V3_ENTITY_MASTER_ENABLED` off);
+  - `entity_unresolved`;
+  - `no_identifiers` (no ISIN or LEI known);
+  - `not_held_or_not_ingested` (no stored row: either no US-registered fund held it, or the period has not been ingested).
+
+Error `404 Not Found`: company does not exist.
+
 ---
 
 ### Workflows
