@@ -30,6 +30,7 @@ from app.models.legal_entity import (
 )
 from app.models.macro import MacroDataset, MacroObservation, MacroSeries
 from app.models.monitoring import MonitoringSignal, Watchlist, WatchlistEntry
+from app.models.passive_ownership import Fund, FundHoldingsIngest, SecurityPassiveOwnership
 from app.models.report import Report
 from app.models.research_artifact import ResearchArtifact
 from app.models.research_chunk import ResearchDocumentChunk
@@ -69,6 +70,8 @@ __all__ = [
     "EntityRelationshipException",
     "ExtractedDocument",
     "ExtractedFact",
+    "Fund",
+    "FundHoldingsIngest",
     "FieldReviewCandidateSummary",
     "FieldReviewRun",
     "LegalEntity",
@@ -104,6 +107,7 @@ __all__ = [
     "ResearchLeadRecord",
     "ResearchToolCall",
     "Scorecard",
+    "SecurityPassiveOwnership",
     "Security",
     "SecurityListing",
     "Source",

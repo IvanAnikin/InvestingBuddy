@@ -1247,6 +1247,34 @@ There is one current row per (entity, relationship type), enforced by the partia
 
 Downgrade drops the table. Checked on PostgreSQL: upgrade, downgrade, re-upgrade.
 
+## Migration 049 — passive / ETF ownership (V3.20 slices 3.1–3.2)
+
+Three new tables, filled by the offline N-PORT ingest (`scripts/ingest_nport.py`). Nothing in a research request writes them. The source facts are in `docs/v3.20-passive-ownership-spike.md`.
+
+| Table | Holds |
+|---|---|
+| `funds` | One row per EDGAR series (`series_id`, unique): name, series LEI, registrant CIK and name, net assets with their report date, and `is_etf` / `is_index` with `fund_type_source` (`ncen`) and `fund_type_as_of`. |
+| `security_passive_ownership` | Per (`identifier_kind`, `identifier`, `period`, `source_kind`), unique: what US-registered funds held of one security in one data-set period. |
+| `fund_holdings_ingests` | One row per (`source_kind`, `period`), unique: the status (`running` / `complete` / `failed`), the counts written, the error, and the timings. It makes the ingest idempotent per quarter. |
+
+Columns of `security_passive_ownership`:
+
+| Column | Meaning |
+|---|---|
+| `identifier_kind`, `identifier` | The security's ISIN, else its CUSIP, else the issuer LEI (ADR-061: an LEI names the issuer, so an LEI-only row covers every security of that issuer). |
+| `period` | The DERA data set's quarter, e.g. `2026Q3`. It is a FILING quarter; the holdings are as of `report_date_min`–`report_date_max`. |
+| `source_kind` | `nport` (SEC data sets) or `issuer_file` (an issuer's own holdings file, D8, slices 3.5–3.6). |
+| `fund_count`, `etf_count`, `etf_unknown_count`, `index_fund_count` | Distinct series holding it. `etf_unknown_count` counts funds with no N-CEN type: never shown as "not an ETF". |
+| `shares_held`, `etf_shares_held` | Sum of `BALANCE` where `UNIT = 'NS'` only. |
+| `non_share_holdings` | Holdings in another unit (principal amount, contracts): counted, never added. |
+| `value_usd` | Sum of `CURRENCY_VALUE` for USD-reported holdings. |
+| `top_funds_json` | Up to 20 funds `{series_id, name, sponsor, unit, is_etf, shares, value_usd, pct_of_fund, report_date}`; share holdings first. |
+| `source_url` | The DERA data-set URL, cited on every row. |
+
+`is_etf` is three-valued (true / false / null) because the N-CEN data sets omit filings in schema 3.1 (EDGAR 25.2). Raw holdings and the ZIPs are not stored.
+
+Downgrade drops the three tables. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches the migrated columns, nullability, indexes and unique constraints.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.
