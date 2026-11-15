@@ -383,6 +383,7 @@ class TestCompanyScreener:
             }
 
     def test_market_cap_min_filter_rejects(self) -> None:
+        from app.services.discovery.fx import FxRate
         from app.services.screener import CompanyScreener
 
         # Test market cap filter via _build_candidate (raw mock data has explicit market_cap)
@@ -404,6 +405,8 @@ class TestCompanyScreener:
             data_quality="D_weak_or_stale",
             market_cap_min=1000.0,
             market_cap_max=None,
+            # V3.20 slice 1.3: bounds are USD; a NOK figure needs an official rate.
+            fx_rates={"NOK": FxRate("NOK", 0.09, "2026-11-13", "DEXNOUS", "u")},
         )
         assert candidate.candidate_status == "rejected_by_screen"
         assert "Market cap below minimum" in candidate.discovery_reasons[0]
@@ -1255,7 +1258,8 @@ class TestDiscoverySafetyInvariants:
 
         screener = CompanyScreener()
         candidate = screener._build_candidate(
-            raw={"ticker": "TINY", "exchange": "OSE", "name": "Tiny Corp", "market_cap": 1.0},
+            raw={"ticker": "TINY", "exchange": "OSE", "name": "Tiny Corp", "market_cap": 1.0,
+                 "currency": "USD"},  # V3.20 1.3: bounds compare in USD
             theme=None,
             source_tier="T6_model_estimate",
             data_quality="D_weak_or_stale",

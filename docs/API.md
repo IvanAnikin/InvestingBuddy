@@ -1361,6 +1361,8 @@ Response `201 Created`:
 }
 ```
 
+`market_cap_min` / `market_cap_max` are **USD**, in the provider's unit (V3.20 slice 1.3). A non-USD figure is converted at an official rate (FRED H.10, else ECB). With a bound set, a candidate whose size cannot be put in USD (no market cap, no currency, or no rate) gets `needs_data` and a "Size not verified" warning; it never passes the filter silently.
+
 Response `201 Created`:
 ```json
 {
@@ -2434,6 +2436,10 @@ A US public float (a lower bound) can only *fail* a ceiling, never pass it.
 - the ECB euro reference rates (`data-api.ecb.europa.eu`, cross `USD/EUR ÷ CCY/EUR` on one shared date) for currencies H.10 lacks (PLN, CZK, HUF, RON, ISK, TRY, ILS, IDR, PHP, MYR, THB, BGN) and when H.10 is unreachable or stale.
 
 A rate more than **5 business days** before the market-cap date is stale. A stale rate, or no rate from either source, gives `size: unknown` with both reasons — under a mandate the issuer then lands in `size_unverified[]`.
+
+**Size at analysis time (V3.20 slice 1.3).** Deep research re-checks size: the report's `thesis.size_fit` re-reads the exchange's own market cap (`V3_SIZE_RECHECK_ENABLED`, default on) and applies the run's numeric mandate as well as the bands. It adds `mandate`, `market_cap_as_of`, `market_cap_origin` (`analysis_time` | `discovery_snapshot`), `market_cap_method`, `market_cap_age_days`, `stale` (snapshot > 30 days) and `fx`; when the figure was re-read, `market_cap_at_discovery` shows the old one and the note states how much size moved. A US 10-K public float is a lower bound: it can fail a ceiling, never pass it (`fits: null`).
+
+**Universe generation.** Universe members carry no market cap, so the size mandate is enforced by the dynamic stage that verifies each one; the universe is not pre-filtered on an unverified figure.
 
 **Unverified size under a mandate.** If the market cap cannot be verified, the issuer is **not shortlisted**. It is returned in the dynamic stage's `size_unverified[]`, together with a `funnel.size_unverified` count and a warning. A size named only in words keeps the V3.19 behaviour: unverified names are ranked last but stay on the shortlist.
 

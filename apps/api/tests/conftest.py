@@ -184,6 +184,23 @@ def _no_live_filing_acquisition(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_size_recheck(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the V3.20 analysis-time size re-check read no exchange directory by default.
+
+    ``analysis_time_size`` re-reads the exchange's own market cap for the company being
+    analysed — a live download in production, and an offline-hostile one in a unit suite.
+    Tests that mean to exercise it call ``recheck_market_cap`` with their own fetcher, or
+    patch it in the test body (which wins over this fixture).
+    """
+    from app.services.discovery import size_recheck
+
+    async def _inert(**_kw):  # noqa: ANN003, ANN202
+        return None, "size re-check disabled in tests"
+
+    monkeypatch.setattr(size_recheck, "recheck_market_cap", _inert)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_6k_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make ADR-077's results-6-K selector read nothing from the SEC by default.
 

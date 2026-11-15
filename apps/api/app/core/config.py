@@ -1370,6 +1370,10 @@ class Settings(BaseSettings):
     # research run is 261-451s, so an uncontrolled universe is not a slow feature,
     # it is an outage.
     v3_universe_providers_enabled: bool = False
+    # V3.20 slice 1.3: re-read the exchange's own market cap at ANALYSIS time for the
+    # report's size check (market caps move between discovery and research). Off = the
+    # discovery snapshot is used, dated and flagged when older than 30 days.
+    v3_size_recheck_enabled: bool = True
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off

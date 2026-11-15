@@ -809,14 +809,18 @@ async def _run(
     thesis = await resolve_thesis(session, discovery_candidate_id=discovery_candidate_id)
     thesis_size = None
     if thesis.present:
-        market_cap = thesis.market_cap_usd
+        # V3.20 slice 1.3 — size is RE-CHECKED at analysis time (market caps move), from
+        # the exchange's own figure; the discovery snapshot is the fallback, with its age.
+        observation, previous = await analysis_time_size(thesis, company, cfg=cfg)
+        market_cap = observation.market_cap_usd if observation is not None else None
         if (
             market_cap is None
             and getattr(company, "market_cap", None) is not None
             and str(getattr(company, "currency", "") or "").upper() == "USD"
         ):
             market_cap = float(company.market_cap)
-        thesis_size = size_fit(thesis, market_cap)
+        thesis_size = size_fit(thesis, market_cap, observation=observation,
+                               previous=previous)
         outcome.thesis = {**thesis.to_dict(), "size_fit": thesis_size}
         # V3.19.1 — "is it a critical mineral?" is answered by the OFFICIAL list, for the
         # commodities the company's own documents are about. Never by its wording.
@@ -2530,9 +2534,48 @@ def _label_v2(
     )
 
 
+async def analysis_time_size(thesis: Any, company: Any, *, cfg: Any) -> tuple[Any, Any]:
+    """``(observation, discovery_snapshot_if_superseded)`` for the report's size check.
+
+    V3.20 slice 1.3. The exchange's own market cap is re-read for the company being
+    analysed (``V3_SIZE_RECHECK_ENABLED``); failing that, the discovery snapshot is used
+    as it was — dated, so ``size_fit`` can say how old it is. Never raises.
+    """
+    from app.services.discovery.size_recheck import SizeObservation, recheck_market_cap
+
+    snapshot = None
+    if thesis.market_cap_usd is not None:
+        snapshot = SizeObservation(
+            market_cap_usd=float(thesis.market_cap_usd),
+            as_of=str(thesis.market_cap_as_of)[:10] if thesis.market_cap_as_of else None,
+            method=thesis.market_cap_method or "discovery_verified",
+            source_url=None,
+            origin="discovery_snapshot",
+            native_amount=(thesis.market_cap_native or {}).get("amount"),
+            native_currency=(thesis.market_cap_native or {}).get("currency"),
+        )
+    if not getattr(cfg, "v3_size_recheck_enabled", True):
+        return snapshot, None
+    try:
+        fresh, _reason = await recheck_market_cap(
+            name=getattr(company, "name", None),
+            ticker=getattr(company, "ticker", None),
+            venue=getattr(company, "exchange", None),
+            isin=getattr(company, "isin", None),
+            cfg=cfg,
+        )
+    except Exception:  # noqa: BLE001 - a re-check that fails leaves the snapshot
+        fresh = None
+    if fresh is None:
+        return snapshot, None
+    return fresh, snapshot
+
+
 __all__ = [
+    "analysis_time_size",
     "SOURCE_SUMMARY_KEY",
     "V3ResearchOutcome",
     "attach_to_report",
     "run_v3_research",
 ]
+

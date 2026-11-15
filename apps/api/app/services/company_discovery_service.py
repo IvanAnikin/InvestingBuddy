@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -161,6 +163,20 @@ async def run_screening(
 
     try:
         screener = CompanyScreener()
+        fx_rates: dict[str, Any] = {}
+        if data.market_cap_min is not None or data.market_cap_max is not None:
+            # V3.20 slice 1.3 — bounds are USD; resolve an official rate per currency.
+            fx_rates = await screening_fx_rates(
+                screener.candidate_currencies(
+                    region=universe.region,
+                    exchange=universe.exchange,
+                    sector=universe.sector_filter,
+                    theme=universe.theme,
+                    provider_name=universe.provider_name,
+                    keyword_search=data.keyword_search,
+                    eodhd_search_results=eodhd_search_results,
+                )
+            )
         candidate_inputs = screener.screen(
             region=universe.region,
             exchange=universe.exchange,
@@ -172,6 +188,7 @@ async def run_screening(
             market_cap_max=data.market_cap_max,
             keyword_search=data.keyword_search,
             eodhd_search_results=eodhd_search_results,
+            fx_rates=fx_rates,
         )
 
         candidates = await _persist_candidates(db, run.id, candidate_inputs)
@@ -217,6 +234,30 @@ async def run_screening(
         await db.commit()
         await db.refresh(run)
         return run
+
+
+async def screening_fx_rates(currencies: Iterable[str | None]) -> dict[str, Any]:
+    """``{major currency: FxRate}`` for the currencies an official source quotes.
+
+    One lookup per distinct currency; a currency with no rate is simply absent, and the
+    screener then reports that candidate's size as unverified.
+    """
+    from app.services.discovery import fx
+
+    rates: dict[str, Any] = {}
+    seen: set[str] = set()
+    for code in currencies:
+        major, _divisor = fx.normalise_currency(code)
+        if major is None or major in seen:
+            continue
+        seen.add(major)
+        if major == "USD":
+            rates["USD"] = fx.USD_IDENTITY
+            continue
+        rate, _reason = await fx.usd_rate(major)
+        if rate is not None:
+            rates[major] = rate
+    return rates
 
 
 async def _persist_candidates(

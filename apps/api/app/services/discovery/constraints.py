@@ -669,6 +669,7 @@ def verified_attributes(results: Sequence[ConstraintResult]) -> dict[str, Any]:
                 k: r.value.get(k) for k in ("amount", "currency", "as_of", "as_of_basis")
             }
             out["size_borderline"] = r.borderline
+            out["market_cap_method"] = r.value.get("method")
         elif r.key == "growth" and r.value and r.value.get("growth_status"):
             out["growth_status"] = r.value["growth_status"]
             if r.value.get("metric"):
