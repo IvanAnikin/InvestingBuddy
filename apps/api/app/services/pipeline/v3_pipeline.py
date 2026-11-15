@@ -202,6 +202,10 @@ class V3ResearchOutcome:
     #: (``SecRelationshipWriteResult.to_dict()``). EMPTY — and absent from ``to_dict()``
     #: — when the steps are off.
     relationships: dict[str, Any] = field(default_factory=dict)
+    #: V3.20 slice 4.1 — the earnings-actuals step (``earnings_step.
+    #: earnings_actuals_step``): state, quarters written, the newest quarter. EMPTY — and
+    #: absent from ``to_dict()`` — when the step is off.
+    earnings: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -233,6 +237,8 @@ class V3ResearchOutcome:
             payload["gap_resolution"] = dict(self.gap_resolution)
         if self.relationships:
             payload["relationships"] = dict(self.relationships)
+        if self.earnings:
+            payload["earnings"] = dict(self.earnings)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -767,6 +773,19 @@ async def _run(
                     "named customers and suppliers could not be read from the company's "
                     "documents (" + "; ".join(named.get("errors") or ["unknown error"]) + ")"
                 )
+
+    # V3.20 slice 4.1 — quarterly revenue / diluted EPS from SEC XBRL into
+    # ``earnings_results`` (actual columns only; consensus and guidance are never touched).
+    if getattr(cfg, "v3_entity_master_enabled", False) and getattr(
+            cfg, "v3_earnings_actuals_enabled", False):
+        from app.services.pipeline.earnings_step import earnings_actuals_step
+
+        earnings = await earnings_actuals_step(session, company, cfg=cfg)
+        outcome.earnings = earnings
+        if earnings.get("state") == "error":
+            outcome.degraded.append(
+                "quarterly earnings actuals could not be read from SEC XBRL ("
+                + str(earnings.get("error") or "unknown error") + ")")
 
     # 1. Prior research — the "before" a delta compares against, and the gaps that
     #    become this run's questions.

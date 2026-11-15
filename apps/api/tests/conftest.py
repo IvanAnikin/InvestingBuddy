@@ -233,6 +233,15 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(counterparty_step, "text_counterparties_step", _no_counterparties)
 
+    # V3.20 slice 4.1: nor SEC XBRL for quarterly earnings actuals. A test that means to
+    # exercise the step imports and calls it directly with its own ``fetch``.
+    from app.services.pipeline import earnings_step
+
+    async def _no_earnings(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return {"state": "offline_test"}
+
+    monkeypatch.setattr(earnings_step, "earnings_actuals_step", _no_earnings)
+
 
 @pytest.fixture(autouse=True)
 def _no_live_size_recheck(monkeypatch: pytest.MonkeyPatch) -> None:

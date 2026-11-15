@@ -5,6 +5,7 @@ from app.models.company import Company
 from app.models.delta import ResearchDelta
 from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 from app.models.document_ingestion_attempt import DocumentIngestionAttempt
+from app.models.earnings import EarningsResult
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.models.field_review import FieldReviewCandidateSummary, FieldReviewRun
 from app.models.ir_event import IrEvent, IrEventMaterial
@@ -64,6 +65,7 @@ __all__ = [
     "DiscoveryCandidate",
     "DiscoveryRun",
     "DocumentIngestionAttempt",
+    "EarningsResult",
     "EntityAlias",
     "EntityIdentifier",
     "EntityRelationship",

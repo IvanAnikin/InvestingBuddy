@@ -1402,6 +1402,10 @@ class Settings(BaseSettings):
     # N-PORT aggregates (offline ingest, scripts/ingest_nport.py). One SEC request (the
     # cover-page share count) per report, and only when a US-registered fund holds it.
     v3_passive_ownership_enabled: bool = True
+    # V3.20 slice 4.1: quarterly revenue and diluted EPS per fiscal quarter from SEC XBRL
+    # (companyconcept + submissions; ~6 requests per SEC filer per run) into
+    # earnings_results. Non-SEC issuers are skipped (state no_cik).
+    v3_earnings_actuals_enabled: bool = True
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off

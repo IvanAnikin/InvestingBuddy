@@ -1275,6 +1275,26 @@ Columns of `security_passive_ownership`:
 
 Downgrade drops the three tables. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches the migrated columns, nullability, indexes and unique constraints.
 
+## Migration 050 — earnings results (V3.20 slice 4.1)
+
+New table `earnings_results`: one row per company × fiscal quarter (`2026-Q3`, `fiscal_quarter` 1–4) or full fiscal year (`2026`, `fiscal_quarter` 0, CHECK 0–4), unique on (`company_id`, `fiscal_period_label`). The label is the filer's own fiscal calendar (ADR-091; the `ExtractedFact.period` form). Annual rows are the 10-K's own full year; they are what annual guidance is compared with (slice 4.3). The table is written during company research by `pipeline/earnings_step.py` from SEC XBRL (`sources/sec_actuals.py`).
+
+| Columns | Meaning |
+|---|---|
+| `period_start`, `period_end` | The quarter's own dates. |
+| `report_date`, `report_date_source`, `report_date_accession` | The 8-K Item 2.02 release between the quarter end and the periodic report; else the periodic report's filing date. The source column says which. |
+| `actual_revenue`, `actual_eps` | As **first reported** in the quarter's own 10-Q / 10-K: what a consensus of the time was compared with. |
+| `actual_revenue_latest`, `actual_eps_latest` | The newest filing's value for the same dates. A split or restatement makes them differ (Powell 2025-Q3 diluted EPS: 3.96 as filed, 1.32 after its 2026 split). |
+| `revenue_basis` | `reported_quarter`, or `derived_fy_minus_9m`: the 10-K tags no three-month Q4, so Q4 = full year minus the Q3 10-Q's nine-month figure. **Q4 EPS is never derived**; it is stated only when the 10-K tags a three-month value. |
+| `*_currency`, `*_concept`, `*_accession`, `*_source_url` | Where each figure came from: the us-gaap concept, and the EDGAR filing index URL. |
+| `actuals_source`, `actuals_as_of` | `sec_xbrl`, and when the actuals were read. |
+| `consensus_*`, `analyst_count_*`, `consensus_source`, `consensus_as_of`, `consensus_status` | Slice 4.2 (third-party expectation data, ADR-097). NULL = not looked up, never zero. `consensus_as_of` must precede `report_date`. |
+| `surprise_*` | Slice 4.4. |
+| `guidance_*`, `vs_guidance` | Slice 4.3. |
+| `detail_json` | `actuals`: strategy, notes (e.g. `q4_eps_not_tagged_as_a_quarter`), restated flags, periodic form and filing date. |
+
+Re-running the actuals rewrites only the actual and report-date columns; consensus, guidance and surprise columns are never touched. FK `companies` cascade; index on `report_date`; CHECK `ck_earnings_results_fiscal_quarter`. Downgrade drops the table. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

@@ -282,6 +282,16 @@ Read from the stored SEC Form N-PORT aggregates, which the offline ingest writes
 
 Error `404 Not Found`: company does not exist.
 
+**Earnings actuals (V3.20 slice 4.1)** — no endpoint yet; the report section is slice 4.4. During company research, each SEC filer's quarterly (newest 12) and full-year (newest 3) revenue and diluted EPS are written to `earnings_results` (docs/DATABASE.md, migration 050). The V3 run outcome carries `earnings`:
+
+```json
+{"state": "written", "cik": "80420", "quarters": 12, "years": 3, "newest": "2026-Q3",
+ "newest_report_date": "2026-08-03", "restated_eps_quarters": ["2025-Q3", "2025-Q2"]}
+```
+
+- **`state`:** `written`, `no_quarters` (the filer tags no quarterly revenue or diluted EPS), `no_cik` (not an SEC filer), `error` (also added to `degraded`), or `disabled`.
+- **Restatements:** `restated_eps_quarters` names the quarters whose diluted EPS as first reported differs from the latest filing's (a split or a restatement). Both values are stored.
+
 ---
 
 ### Workflows
