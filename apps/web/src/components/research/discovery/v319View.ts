@@ -66,7 +66,18 @@ function constraintOf(
   return intent.constraints.find((c) => c.key === key);
 }
 
+function mandateWords(c: DiscoveryIntentConstraint): string | null {
+  const lo = typeof c.min_usd === "number" ? c.min_usd : null;
+  const hi = typeof c.max_usd === "number" ? c.max_usd : null;
+  if (lo === null && hi === null) return null;
+  if (lo !== null && hi !== null) return `USD ${formatMoney(lo)}–${formatMoney(hi)}`;
+  return hi !== null ? `below ${formatMoney(hi, "USD")}` : `at least ${formatMoney(lo, "USD")}`;
+}
+
 function constraintValue(c: DiscoveryIntentConstraint): string {
+  // V3.20 — a numeric mandate IS the size request; the bands below it are derived.
+  const mandate = c.key === "size" ? mandateWords(c) : null;
+  if (mandate) return `Market cap ${mandate}`;
   const wanted = c.requested.map(humanise).join(" or ");
   const excluded = (c.excluded ?? []).map(humanise);
   if (!wanted && excluded.length) return `Not ${excluded.join(", not ")}`;
@@ -184,9 +195,24 @@ function sizeDetail(value: Record<string, unknown> | null): string {
     parts[0] += ` (≈ ${formatMoney(usd, "USD")})`;
   }
   if (bucket) parts.push(humanise(bucket));
+  const method = value.method as string | undefined;
+  if (method && SIZE_METHOD_WORD[method]) parts.push(SIZE_METHOD_WORD[method]);
   if (asOf) parts.push(`as of ${asOf}`);
+  const mandate = value.mandate as { max_usd?: number | null } | undefined;
+  if (mandate && typeof mandate.max_usd === "number") {
+    parts.push(`mandate below ${formatMoney(mandate.max_usd, "USD")}`);
+  }
   return parts.join(" · ");
 }
+
+/** How a market cap was established (V3.20 — shown beside every size). */
+export const SIZE_METHOD_WORD: Record<string, string> = {
+  exchange_directory: "the exchange's published figure",
+  admitted_shares_x_price: "admitted shares × closing price (exchange)",
+  public_float_floor: "10-K public float — a lower bound",
+  stated_market_cap: "stated on the source page",
+  shares_x_price: "shares × price",
+};
 
 export function constraintRows(record: DiscoveryCandidateRecord | null | undefined): ConstraintRow[] {
   if (!record) return [];
@@ -347,6 +373,9 @@ export function funnelSteps(stage: DiscoveryDynamicStage | null | undefined): st
   // ADR-073: a name that met every requirement but fell beyond the shortlist cap is stated.
   if (typeof f.beyond_cap === "number" && f.beyond_cap > 0)
     steps.push(`${f.beyond_cap} met the requirements but were beyond the shortlist cap`);
+  // V3.20 — under a size mandate an unverified size is kept off the shortlist.
+  if (typeof f.size_unverified === "number" && f.size_unverified > 0)
+    steps.push(`${f.size_unverified} size unverified (listed apart)`);
   return steps;
 }
 

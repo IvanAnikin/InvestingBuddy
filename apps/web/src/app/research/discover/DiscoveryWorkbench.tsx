@@ -14,7 +14,9 @@ import {
 import { formatDate } from "@/lib/format";
 import {
   DISCOVERY_DEFAULTS,
+  SIZE_MANDATE_OPTIONS,
   buildThesisDiscoveryRequest,
+  sizeMandateUsd,
 } from "@/lib/workflows";
 import type {
   DiscoveryRun,
@@ -67,6 +69,8 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
   const [country, setCountry] = useState("");
   const [sector, setSector] = useState("");
   const [industry, setIndustry] = useState("");
+  // V3.20 — the size mandate. "default" omits the field (USD 2bn unless the text names a size).
+  const [sizeMandate, setSizeMandate] = useState("default");
   const [maxUniverse, setMaxUniverse] = useState(
     String(DISCOVERY_DEFAULTS.maxUniverseSize),
   );
@@ -282,6 +286,7 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
           industry,
           maxUniverseSize: parseInt(maxUniverse, 10) || undefined,
           maxCandidates: parseInt(maxCandidates, 10) || undefined,
+          maxMarketCapUsd: sizeMandateUsd(sizeMandate),
         }),
       );
       // The new run's own address becomes the page. The run is handed to the
@@ -503,6 +508,25 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
                         {o.label}
                       </option>
                     ))}
+                </select>
+              </label>
+
+              <label className="text-xs text-[color:var(--ib-ink-3)]">
+                Max market cap (USD){" "}
+                <span className="text-[color:var(--ib-ink-3)]">
+                  — checked on a verified figure; unverified sizes are listed apart
+                </span>
+                <select
+                  className={`${inputCls} mt-1`}
+                  data-testid="size-mandate"
+                  value={sizeMandate}
+                  onChange={(e) => setSizeMandate(e.target.value)}
+                >
+                  {SIZE_MANDATE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value} className="bg-[#0a0f1c]">
+                      {o.label}
+                    </option>
+                  ))}
                 </select>
               </label>
 
