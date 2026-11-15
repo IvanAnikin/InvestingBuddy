@@ -288,7 +288,9 @@ RELATIONSHIP_INVERSE_LABEL: dict[str, str] = {
 
 #: What a disclosed share is a share OF.
 SHARE_BASES: frozenset[str] = frozenset(
-    {"revenue", "receivables", "purchases", "voting_rights", "capital", "backlog"}
+    # ``share_class`` = % of the class of securities named in the filing (13D / 13G).
+    {"revenue", "receivables", "purchases", "voting_rights", "capital", "backlog",
+     "share_class"}
 )
 
 #: How an edge was extracted. ``text_llm_verified`` = read from document text by a

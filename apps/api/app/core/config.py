@@ -1384,6 +1384,10 @@ class Settings(BaseSettings):
     # legal name through the gated identifier promotion (an ambiguous or partial name
     # match is withheld, never guessed). Off = only an LEI already on file is used.
     v3_gleif_lei_promotion_enabled: bool = True
+    # V3.20 slice 2.3: for an SEC registrant, research reads the latest 10-K Exhibit 21
+    # (20-F Exhibit 8) subsidiary list and the newest structured Schedule 13D/13G filings
+    # (≤ 12, XML since 2024-12) into the relationship graph. Free, ~15 EDGAR requests.
+    v3_sec_relationships_enabled: bool = True
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off

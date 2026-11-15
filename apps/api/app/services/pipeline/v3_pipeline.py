@@ -197,9 +197,10 @@ class V3ResearchOutcome:
     #: vocabulary (``gap_resolution.RESULTS``), with the counts. EMPTY — and absent from
     #: ``to_dict()`` — when the step did not run.
     gap_resolution: dict[str, Any] = field(default_factory=dict)
-    #: V3.20 slice 2.2 — the relationship steps, by name: ``gleif_parents``
-    #: (``ParentWriteResult.to_dict()``). EMPTY — and absent from ``to_dict()`` — when
-    #: the steps are off.
+    #: V3.20 slices 2.2–2.3 — the relationship steps: ``gleif_parents``
+    #: (``ParentWriteResult.to_dict()``) and ``sec_filings``
+    #: (``SecRelationshipWriteResult.to_dict()``). EMPTY — and absent from ``to_dict()``
+    #: — when the steps are off.
     relationships: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
@@ -617,18 +618,33 @@ async def _run(
 
     # V3.20 slice 2.2 — who owns the company: its direct and ultimate parent (or GLEIF's
     # stated reason there is none) from GLEIF Level 2, into the relationship graph.
-    if getattr(cfg, "v3_gleif_parents_enabled", False) and getattr(
-        cfg, "v3_entity_master_enabled", False
-    ):
-        from app.services.pipeline.relationship_step import gleif_parents_step
+    if getattr(cfg, "v3_entity_master_enabled", False):
+        from app.services.pipeline.relationship_step import (
+            gleif_parents_step,
+            sec_relationships_step,
+        )
 
-        gleif = await gleif_parents_step(session, company, cfg=cfg)
-        outcome.relationships["gleif_parents"] = gleif
+        gleif = (
+            await gleif_parents_step(session, company, cfg=cfg)
+            if getattr(cfg, "v3_gleif_parents_enabled", False) else {}
+        )
+        if gleif:
+            outcome.relationships["gleif_parents"] = gleif
         if gleif.get("state") == "error":
             outcome.degraded.append(
                 "the company's parent companies could not be read from GLEIF ("
                 + "; ".join(gleif.get("errors") or ["unknown error"]) + ")"
             )
+        # V3.20 slice 2.3 — subsidiaries (Exhibit 21) and 5 %+ holders (13D/13G XML).
+        sec = await sec_relationships_step(session, company, cfg=cfg)
+        if sec:
+            outcome.relationships["sec_filings"] = sec
+            if sec.get("state") == "error":
+                outcome.degraded.append(
+                    "the company's subsidiaries and major holders could not be read from "
+                    "its SEC filings (" + "; ".join(sec.get("errors") or ["unknown error"])
+                    + ")"
+                )
 
     # Item 21 — the statements those documents yielded, read the way the V2 snapshot
     # reads its own facts. The V2 report was assembled before any of this was acquired,

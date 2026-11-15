@@ -217,10 +217,20 @@ async def record_relationship(
         )
         if as_of is not None and (existing.as_of is None or as_of > existing.as_of):
             existing.as_of = as_of
-            # A later disclosure of the same period's share supersedes an earlier one.
+            # A later disclosure of the same period's share supersedes an earlier one —
+            # and its citation moves with it: a share and the document it came from must
+            # never disagree (V3.20 slice 2.3: a 13G/A replacing the 13G).
             if disclosed_share_pct is not None:
                 existing.disclosed_share_pct = disclosed_share_pct
                 existing.share_basis = share_basis
+            existing.source_url = source_url or existing.source_url
+            if evidence_ref:
+                existing.evidence_ref = evidence_ref[:200]
+            if evidence_excerpt:
+                existing.evidence_excerpt = evidence_excerpt[:1000]
+            if source_kind:
+                existing.source_kind = source_kind[:40]
+            existing.note = note or existing.note
         elif existing.disclosed_share_pct is None and disclosed_share_pct is not None:
             existing.disclosed_share_pct = disclosed_share_pct
             existing.share_basis = share_basis

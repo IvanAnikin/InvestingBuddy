@@ -185,7 +185,8 @@ def _no_live_filing_acquisition(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
-    """V3.20 slice 2.2: research never reaches GLEIF Level 2 from the unit suite.
+    """V3.20 slices 2.2–2.3: research never reaches GLEIF Level 2 or EDGAR's relationship
+    documents from the unit suite.
 
     The lookup answers "nothing reported" and LEI promotion is a no-op. A test that means
     to exercise either patches ``relationship_step._live_lookup`` / ``_live_promote``.
@@ -201,6 +202,18 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(relationship_step, "_live_lookup", _nothing)
     monkeypatch.setattr(relationship_step, "_live_promote", _no_promotion)
+
+    # V3.20 slice 2.3: nor EDGAR's Exhibit 21 / 13D / 13G documents.
+    from app.integrations.sec_relationships import SecRelationshipReport
+
+    async def _no_sec(cik: str, registrant_name: object = None) -> SecRelationshipReport:
+        return SecRelationshipReport(cik=cik, notes=["offline test"])
+
+    async def _no_cik(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return None
+
+    monkeypatch.setattr(relationship_step, "_live_sec_lookup", _no_sec)
+    monkeypatch.setattr(relationship_step, "_live_cik", _no_cik)
 
 
 @pytest.fixture(autouse=True)
