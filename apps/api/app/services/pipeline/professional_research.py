@@ -188,6 +188,10 @@ class ReportInputs:
     #: (``relationship_report.relationship_block``); ``None`` when the relationship graph
     #: is off, and then the report is unchanged.
     relationships: Mapping[str, Any] | None = None
+    #: V3.20 slice 3.4 — passive / ETF ownership
+    #: (``passive_ownership_report.passive_ownership_block``); ``None`` leaves the report
+    #: unchanged.
+    passive_ownership: Mapping[str, Any] | None = None
 
 
 
@@ -820,6 +824,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when the graph is on, so every other report is byte-identical.
         business = next(s for s in sections if s["key"] == "business_model")
         business["relationships"] = dict(inputs.relationships)
+    if inputs.passive_ownership:
+        # Only when the block is on, so every other report is byte-identical.
+        valuation = next(s for s in sections if s["key"] == "valuation_context")
+        valuation["passive_ownership"] = dict(inputs.passive_ownership)
     if inputs.peer_selection:
         # Only when a peer set ran, so every other report is byte-identical.
         competitive["peer_selection"] = dict(inputs.peer_selection)

@@ -36,6 +36,10 @@ import {
   type WebEvidenceBlock,
   type WebResearchQuality,
 } from "./webEvidence";
+import {
+  readPassiveOwnershipBlock,
+  type PassiveOwnershipBlock,
+} from "./passiveOwnership";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
 
 /** One statement the ledger holds, with the ids that make it citable. */
@@ -471,6 +475,9 @@ export type DomainSection = SectionHead & {
       its citations and a disclosed / not disclosed / not researched state. Null when the
       relationship graph is off, and on older reports. */
   relationships: RelationshipBlock | null;
+  /** V3.20 slice 3.4 (valuation_context): US-registered funds / ETFs holding the
+      company (SEC N-PORT). Null when off, and on older reports. */
+  passiveOwnership: PassiveOwnershipBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -1071,6 +1078,7 @@ function readDomainSection(
     metricsNote: str(r.metrics_note),
     webEvidence: readWebEvidenceBlock(r.web_evidence),
     relationships: readRelationshipBlock(r.relationships),
+    passiveOwnership: readPassiveOwnershipBlock(r.passive_ownership),
   };
 }
 

@@ -1354,6 +1354,7 @@ async def _run(
             commercial_stage=commercial_stage,
             relationships=await _relationship_section(
                 session, company, cfg=cfg, steps=outcome.relationships),
+            passive_ownership=await _passive_ownership_section(session, company, cfg=cfg),
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1538,6 +1539,38 @@ async def _relationship_section(
         return None
 
 
+async def _passive_ownership_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 3.4 — the report's "Passive ownership" block from the stored N-PORT
+    aggregates. ``None`` when off or unreadable: the report is then unchanged. When no
+    N-PORT period has ever been ingested the block says so, rather than "none found".
+    Never raises."""
+    if not (getattr(cfg, "v3_entity_master_enabled", False)
+            and getattr(cfg, "v3_passive_ownership_enabled", False)):
+        return None
+    try:
+        from sqlalchemy import func, select
+
+        from app.models.passive_ownership import INGEST_COMPLETE, FundHoldingsIngest
+        from app.services.passive_ownership.view import company_passive_ownership
+        from app.services.pipeline.passive_ownership_report import (
+            not_ingested_block,
+            passive_ownership_block,
+        )
+
+        async with session.begin_nested():
+            ingested = await session.scalar(
+                select(func.count()).select_from(FundHoldingsIngest).where(
+                    FundHoldingsIngest.status == INGEST_COMPLETE))
+            if not ingested:
+                return not_ingested_block()
+            view = await company_passive_ownership(session, company=company, cfg=cfg)
+        return passive_ownership_block(view)
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        return None
+
+
 async def _professional_report(
     session: Any,
     run: Any,
@@ -1557,6 +1590,7 @@ async def _professional_report(
     not_meaningful_note: str | None = None,
     commercial_stage: str | None = None,
     relationships: dict[str, Any] | None = None,
+    passive_ownership: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1749,6 +1783,7 @@ async def _professional_report(
         web_context=web_context or None,
         not_meaningful_note=not_meaningful_note,
         relationships=relationships,
+        passive_ownership=passive_ownership,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

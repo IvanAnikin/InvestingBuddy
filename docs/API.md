@@ -268,6 +268,17 @@ Read from the stored SEC Form N-PORT aggregates, which the offline ingest writes
   - `entity_unresolved`;
   - `no_identifiers` (no ISIN or LEI known);
   - `not_held_or_not_ingested` (no stored row: either no US-registered fund held it, or the period has not been ingested).
+- **The report (V3.20 slice 3.4):** `professional_research.sections[valuation_context].passive_ownership` is present when both `V3_ENTITY_MASTER_ENABLED` and `V3_PASSIVE_OWNERSHIP_ENABLED` are on; otherwise it is absent and the report is unchanged. It is built by `pipeline/passive_ownership_report.passive_ownership_block` from the view above.
+  - **`state`:**
+    - `held`;
+    - `none_found` (data sets were ingested, but none showed a position; the note says this is not a statement that no fund owns the company);
+    - `not_researched`, with a `reason`: `no_data_set_ingested` (no N-PORT period has ever been ingested), `entity_unresolved`, or `no_identifiers`.
+  - **Fields:** the %, ETF %, `pct_label`, `denominator` (shares, as-of, form, accession, classes, SEC URL) or `pct_withheld_reason`, fund / ETF / ETF-not-stated / index-fund counts, `change` since the previous data set, top-3 `concentration`, and `funds[]`.
+  - **`funds[]`:** up to 15, merged across the counted share lines, largest first. Each has `{name, sponsor, is_etf: yes|no|not_stated, shares, value_usd, pct_of_fund, report_date, theme_flags[]}`.
+  - **Theme flags:** `grid_and_electrification`, `clean_energy`, `nuclear`, `materials_for_electrification`, `small_cap`. They are fund-NAME matches, and `theme_flag_basis` says so.
+  - **Other fields:** `other_lines[]` (ADR / LEI-only lines, not added), `source_urls[]`, `freshness_note`.
+  - **Safety:** a fund name the shared language check flags drops that fund (counted in `withheld_for_safety`), never the report.
+  - **Web:** `PassiveOwnershipSection.tsx` shows the % only with its label and denominator date. `tests/test_v3_20_3_4_passive_ownership_report.py` pins every key `passiveOwnership.ts` reads to the producer.
 
 Error `404 Not Found`: company does not exist.
 

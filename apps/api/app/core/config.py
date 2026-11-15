@@ -1398,6 +1398,10 @@ class Settings(BaseSettings):
     # figure, role, framing, ADR-083 attribution and period gates before an edge is
     # written. One model call per run when an unread document exists; none otherwise.
     v3_text_counterparties_enabled: bool = True
+    # V3.20 slice 3.4: the report's "Passive ownership" block, read from the stored
+    # N-PORT aggregates (offline ingest, scripts/ingest_nport.py). One SEC request (the
+    # cover-page share count) per report, and only when a US-registered fund holds it.
+    v3_passive_ownership_enabled: bool = True
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off
