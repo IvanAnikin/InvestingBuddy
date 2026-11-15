@@ -1205,6 +1205,25 @@ There are no schema changes. The new values live in existing columns:
 | `research_gaps` | `reconciliation_json.gap_status` | The report's gap status: `OPEN` / `PARTIALLY_CLOSED` / `CLOSED` / `SUPERSEDED` / `NONCOMPARABLE` / `EXTRACTION_FAILED`. `reconciliation_status` keeps its four CHECK-constrained values (`NONCOMPARABLE` is stored as `partially_closed`, `EXTRACTION_FAILED` as `still_open`). `reconciliation_json.superseded_by_finding_id` names the later balance that superseded an older-dated balance gap. |
 | `research_findings` | `period_type` | `text_stated` when `period_key` was read from a web finding's own statement (ADR-080 framing) rather than inherited from its evidence. It is NULL otherwise. |
 
+## Migration 047 — relationship evidence (V3.20 slice 2.1)
+
+`entity_relationships` becomes the company relationship graph: parent, ultimate parent,
+significant holder, supplier/customer (spec §3.2).
+
+| Change | Why |
+|---|---|
+| `subject_entity_id`, `object_entity_id` nullable | One end may be unresolved: "Customer A, 14% of revenue" is a concentration fact; a GLEIF parent may not be in the entity master yet. |
+| `counterparty_name_raw`, `counterparty_name_key` | Name the unresolved end. The key is casefolded and punctuation-trimmed (`vocabulary.counterparty_key`). |
+| `evidence_ref`, `source_kind`, `extraction_method`, `evidence_excerpt`, `as_of` | Every V3.20 edge carries its citation. The writer refuses a `supplier_of`, `ultimate_parent_of` or `significant_holder_of` edge, or any unresolved edge, with neither `source_url` nor `evidence_ref`. |
+| `disclosed_share_pct` (0–100), `share_basis` | The disclosed share and what it is a share of (`revenue`, `receivables`, `purchases`, `voting_rights`, `capital`, `backlog`). |
+| `period` NOT NULL default `''` | Part of the identity: FY2024 and FY2025 shares for one customer are two rows. |
+
+New canonical types: `ultimate_parent_of` (alias `ultimately_controlled_by`), `significant_holder_of` (alias `significantly_held_by`) and `supplier_of` (alias `customer_of`). One fact is never two rows.
+
+Checks: no self-reference when both ends are set; at least one end resolved; an unresolved end has a name key; share within 0–100. `ix_entity_relationships_current` is rebuilt with `period`, and two partial unique indexes cover an unresolved object and an unresolved subject.
+
+Downgrade deletes rows with an unresolved end, and any period-split duplicates (they cannot exist under 028), then restores 028 exactly. Checked on PostgreSQL: upgrade, constraint violations, downgrade, re-upgrade. **Apply 047 before deploying the code**, because the ORM maps the new columns.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

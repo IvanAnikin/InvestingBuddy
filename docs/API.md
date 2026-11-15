@@ -136,6 +136,38 @@ Response `200 OK`:
 Response `200 OK`: company object
 Error `404 Not Found`: company does not exist
 
+**GET /api/v1/companies/{company_id}/relationships** — Relationship graph (V3.20 slice 2.1)
+
+The company's parents, ultimate parents, subsidiaries, customers, suppliers and significant holders, each edge read from this company's point of view, with its evidence.
+
+```json
+{
+  "company_id": "uuid",
+  "legal_entity_id": "uuid",
+  "state": "ok",
+  "groups": {
+    "customers": [{
+      "label": "supplier_of", "canonical_type": "supplier_of",
+      "counterparty_entity_id": null, "counterparty_name": "Customer A",
+      "counterparty_resolved": false,
+      "disclosed_share_pct": 14.0, "share_basis": "revenue", "period": "FY2025",
+      "source": "10-K FY2025", "source_kind": "xbrl", "extraction_method": "xbrl_dimension",
+      "source_url": "https://www.sec.gov/…", "evidence_ref": null, "evidence_excerpt": null,
+      "confidence": 1.0, "as_of": "2026-02-20", "effective_from": null
+    }],
+    "parents": [], "ultimate_parents": [], "subsidiaries": [], "suppliers": [],
+    "significant_holders": [], "holdings": [], "other": []
+  },
+  "total": 1,
+  "note": "… An empty group means nothing was found in the sources read — not that the company has none."
+}
+```
+
+- `state`: `ok`; `entity_unresolved` (the company has no entity-master row); or `disabled` (`V3_ENTITY_MASTER_ENABLED` is off).
+- Within a group, edges are ordered by largest disclosed share first.
+
+Error `404 Not Found`: company does not exist.
+
 ---
 
 ### Workflows
