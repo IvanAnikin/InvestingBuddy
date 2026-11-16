@@ -51,6 +51,7 @@ import { type LayerPeersBlock, readLayerPeersBlock } from "./layerPeers";
 import { type MarketImpliedBlock, readMarketImpliedBlock } from "./marketImplied";
 import { type ResearchVerdictBlock, readResearchVerdictBlock } from "./researchVerdict";
 import { type ValuationRangeBlock, readValuationRangeBlock } from "./valuationRange";
+import { type SelfCritiqueBlock, readSelfCritiqueBlock } from "./selfCritique";
 import { type FinancialDepthBlock, readFinancialDepthBlock } from "./financialDepth";
 import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
 import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
@@ -587,6 +588,9 @@ export type ProfessionalResearch = {
   /** V3.20 slice 8.6 wiring (ADR-099): the computed valuation range beside a dated price.
       Null when the engine is off, and on older reports. */
   valuation: ValuationRangeBlock | null;
+  /** V3.20 slice 9.3: the report's self-critique (bear case, weakest links). Null when
+      off, and on older reports. */
+  selfCritique: SelfCritiqueBlock | null;
 };
 
 export type V3Research = {
@@ -1293,6 +1297,7 @@ export function readProfessionalResearch(v3Payload: unknown): ProfessionalResear
     disclaimer: str(raw.disclaimer),
     verdict: readResearchVerdictBlock(raw.verdict),
     valuation: readValuationRangeBlock(raw.valuation),
+    selfCritique: readSelfCritiqueBlock(raw.self_critique),
   };
 }
 

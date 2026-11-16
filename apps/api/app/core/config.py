@@ -1494,6 +1494,10 @@ class Settings(BaseSettings):
     # {"value": 0.045, "source_url": "https://…", "as_of": "2026-11-01"}. Empty (the
     # default) leaves the DCF ``insufficient_evidence``: no ERP is ever made up.
     v3_equity_risk_premium_json: str = ""
+    # V3.20 slice 9.3: the report's mandatory ``self_critique`` (bear case, weakest links,
+    # data-quality warnings, disconfirming search), assembled from the Red Team round and
+    # the report's own adverse evidence. Deterministic; no call.
+    v3_self_critique_enabled: bool = True
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

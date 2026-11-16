@@ -1459,6 +1459,8 @@ async def _run(
             valuation=await _valuation_section(
                 session, company, cfg=cfg, ev_block=enterprise_value, peers_block=layer_peers,
                 depth_block=financial_depth, size_fit=thesis_size),
+            challenges=outcome.challenges or None,
+            self_critique_enabled=bool(getattr(cfg, "v3_self_critique_enabled", False)),
         )
         outcome.professional_research = report
         await _mark_researched(session, company, cfg=cfg, change_events=change_events)
@@ -1893,6 +1895,8 @@ async def _professional_report(
     financial_depth: dict[str, Any] | None = None,
     verdict_enabled: bool = False,
     valuation: dict[str, Any] | None = None,
+    challenges: dict[str, Any] | None = None,
+    self_critique_enabled: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -2112,6 +2116,15 @@ async def _professional_report(
             report["verdict"] = verdict_block(report, valuation=report.get("valuation"))
         except Exception:  # noqa: BLE001 - an additive block never costs the report
             logger.warning("research verdict failed")
+    if self_critique_enabled:
+        # V3.20 slice 9.3: the report argues against itself, from what the run recorded.
+        try:
+            from app.services.pipeline.self_critique import self_critique_block
+
+            report["self_critique"] = self_critique_block(
+                report, challenges, report.get("verdict"))
+        except Exception:  # noqa: BLE001 - an additive block never costs the report
+            logger.warning("self-critique failed")
     hits = _report_safety_hits(report)
     if hits:
         # Every component was screened; a hit here is in text this module composed or a

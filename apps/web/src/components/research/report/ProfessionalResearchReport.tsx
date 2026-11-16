@@ -13,6 +13,7 @@ import { ObscuritySection } from "@/components/research/report/ObscuritySection"
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
 import { ResearchVerdictSection } from "@/components/research/report/ResearchVerdictSection";
 import { ValuationRangeSection } from "@/components/research/report/ValuationRangeSection";
+import { SelfCritiqueSection } from "@/components/research/report/SelfCritiqueSection";
 import { sourceTierWord } from "@/components/research/reportSections";
 import type {
   ChangeSection,
@@ -1235,6 +1236,8 @@ export default function ProfessionalResearchReport({
           )}
         </SectionCard>
       ))}
+
+      <SelfCritiqueSection block={report.selfCritique} />
 
       {report.disclaimer && (
         <p

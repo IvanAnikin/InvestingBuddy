@@ -4084,6 +4084,17 @@ shares_period, formula}`, `relative_position` (`undervalued | in_line | overvalu
 and `upside_downside_pct{low, mid, high} | null`. Rules: [v3.20-valuation.md
 §8.6](v3.20-valuation.md).
 
+## Self-critique (V3.20 slice 9.3)
+
+`source_summary_json.v3_research.professional_research.self_critique` is present when
+`V3_SELF_CRITIQUE_ENABLED` is on (the default). Shape: `{version, state (complete |
+incomplete), reason, publication_ready, bear_case[{kind, label, section?, weakness_class?,
+statement?, author?}], bear_case_total, challenges_withheld_for_safety,
+weakest_links[{kind, key, text}], data_quality_warnings[{label, section, reason}],
+platform_evidence_gaps, red_team{…}, disconfirming_search{…, statement}, note}`. The web
+print view and memo are pages (`/research/reports/{id}/print[?format=memo]`), not API
+routes. Rules: [v3.20-output.md §9.3](v3.20-output.md).
+
 ## Private portfolios (V3.20 slice 12.1, ADR-100)
 
 Owner-scoped: every route resolves the owner from `request.state.admin_email` (set by the
