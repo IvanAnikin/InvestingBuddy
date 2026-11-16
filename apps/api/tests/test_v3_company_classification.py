@@ -203,10 +203,20 @@ def test_pipeline_passes_only_the_stage_detectors_signals_to_selection():
     source = inspect.getsource(v3_pipeline)
     call_start = source.index("selection = select_playbooks(")
     call = source[call_start : source.index(")", call_start)]
-    assert "signals=stage.signals" in call, (
-        "production selection takes signals from the stage detector only; if that "
-        "changes, update the test that documents it rather than the documentation"
+    # V3.20 slice 5.3: the stage detector's signals plus the electricity layer
+    # classifier's — both positive proof from the company's own disclosure, never a
+    # model's or a ticker list's. Nothing else is added.
+    assert "signals=selection_signals" in call, (
+        "production selection takes signals from the stage detector and the electricity "
+        "classifier only; if that changes, update the test that documents it rather than "
+        "the documentation"
     )
+    built = [line.strip() for line in source.splitlines()
+             if line.strip().startswith("selection_signals")]
+    assert built == [
+        "selection_signals: tuple[str, ...] = tuple(stage.signals)",
+        "selection_signals += await electricity_selection_signals(session, company, cfg=cfg)",
+    ], built
 
 
 # ---------------------------------------------------------------------------

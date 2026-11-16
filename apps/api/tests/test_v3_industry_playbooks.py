@@ -216,7 +216,8 @@ class TestSelection:
         assert "biotech" in select(signals=["pre_revenue"]).versions
 
     def test_an_unclassifiable_company_gets_none_with_a_reason(self) -> None:
-        selection = select(sector="Utilities")
+        # Not "Utilities": since V3.20 slice 5.3 the electricity playbook declares it.
+        selection = select(sector="Real Estate")
         assert selection.is_empty
         assert "no playbook declares this company" in selection.reason
 
