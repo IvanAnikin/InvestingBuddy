@@ -614,6 +614,43 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             ),
         ),
         RegisteredSource(
+            source_id="spdr_holdings",
+            name="SPDR daily ETF holdings files",
+            provider_type=ProviderType.fundamentals_aggregator,
+            tier=T5_API_AGGREGATOR,
+            status=SourceStatus.enabled,
+            enabled=True,
+            jurisdiction="US",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="spdr_holdings",
+            connector_implemented=True,
+            capabilities=["etf_holdings"],
+            reliability_note=(
+                "Sponsor file (D8): private_use_own_risk, redistribution none. Offline "
+                "operator job only (scripts/ingest_issuer_holdings.py); layout pinned on a "
+                "real file; fails closed on drift."
+            ),
+        ),
+        RegisteredSource(
+            source_id="ishares_holdings",
+            name="iShares daily ETF holdings files (US + UCITS)",
+            provider_type=ProviderType.fundamentals_aggregator,
+            tier=T5_API_AGGREGATOR,
+            status=SourceStatus.enabled,
+            enabled=True,
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="ishares_holdings",
+            connector_implemented=True,
+            capabilities=["etf_holdings"],
+            reliability_note=(
+                "Sponsor file (D8): private_use_own_risk, redistribution none. Layout NOT "
+                "verified on a real file: the download URL served an HTML page to a plain "
+                "request on 2026-11-16, which the adapter refuses (html_instead_of_file)."
+            ),
+        ),
+        RegisteredSource(
             source_id="stooq",
             name="Stooq (price history)",
             provider_type=ProviderType.price_aggregator,
@@ -773,6 +810,16 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             source_ids=("alpha_vantage",),
             configured=alpha_vantage_configured,
             needs_credentials=True,
+        ),
+        "spdr_holdings": WrappedProviderConnector(
+            connector_key="spdr_holdings",
+            source_ids=("spdr_holdings",),
+            configured=True,
+        ),
+        "ishares_holdings": WrappedProviderConnector(
+            connector_key="ishares_holdings",
+            source_ids=("ishares_holdings",),
+            configured=True,
         ),
         "stooq": WrappedProviderConnector(
             connector_key="stooq",

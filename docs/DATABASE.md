@@ -1254,8 +1254,8 @@ Three new tables, filled by the offline N-PORT ingest (`scripts/ingest_nport.py`
 | Table | Holds |
 |---|---|
 | `funds` | One row per EDGAR series (`series_id`, unique): name, series LEI, registrant CIK and name, net assets with their report date, and `is_etf` / `is_index` with `fund_type_source` (`ncen`) and `fund_type_as_of`. |
-| `security_passive_ownership` | Per (`identifier_kind`, `identifier`, `period`, `source_kind`), unique: what US-registered funds held of one security in one data-set period. |
-| `fund_holdings_ingests` | One row per (`source_kind`, `period`), unique: the status (`running` / `complete` / `failed`), the counts written, the error, and the timings. It makes the ingest idempotent per quarter. |
+| `security_passive_ownership` | Per (`identifier_kind`, `identifier`, `period`, `source_kind`), unique: what US-registered funds held of one security in one data-set period. Since slice 3.5 also `source_kind = issuer_file`: the curated ETFs' sponsor files, `period` = the newest file date (`2026-11-13`), `top_funds_json` one entry per fund with its own `as_of`, `domicile` (US / UCITS), `sponsor` and `match_basis` (`cusip` / `isin` / `ticker_us_exchange`). |
+| `fund_holdings_ingests` | One row per (`source_kind`, `period`), unique: the status (`running` / `complete` / `failed`), the counts written, the error, and the timings. It makes the ingest idempotent per quarter. Issuer files log one row per file: `source_kind = issuer_file:<sponsor>:<ticker>`, `period` = the file date (the run date when the file was refused), `error` = the adapter's fail-closed reason. |
 
 Columns of `security_passive_ownership`:
 
