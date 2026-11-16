@@ -6,6 +6,7 @@ import { EarningsTrackRecordSection } from "@/components/research/report/Earning
 import { ElectricityLayersSection } from "@/components/research/report/ElectricityLayersSection";
 import { ChangeEventsSection } from "@/components/research/report/ChangeEventsSection";
 import { EnterpriseValueSection } from "@/components/research/report/EnterpriseValueSection";
+import { LayerPeersSection } from "@/components/research/report/LayerPeersSection";
 import { ObscuritySection } from "@/components/research/report/ObscuritySection";
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
 import { sourceTierWord } from "@/components/research/reportSections";
@@ -812,6 +813,7 @@ function DomainBody({
       <RelationshipSection block={section.relationships} company="This company" />
       <PassiveOwnershipSection block={section.passiveOwnership} />
       <EnterpriseValueSection block={section.enterpriseValue} />
+      <LayerPeersSection block={section.layerPeers} />
       <ObscuritySection block={section.obscurity} />
       <ChangeEventsSection block={section.changeEvents} />
       <EarningsTrackRecordSection block={section.earningsTrackRecord} />

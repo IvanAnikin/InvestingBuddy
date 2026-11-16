@@ -1404,6 +1404,8 @@ async def _run(
         passive_ownership = await _passive_ownership_section(session, company, cfg=cfg)
         change_events = await _change_events_section(session, company, cfg=cfg)
         real_asset = await _real_asset_section(session, run, electricity_layers)
+        enterprise_value = await _enterprise_value_section(
+            session, company, cfg=cfg, observation=size_observation, real_asset=real_asset)
         report, withheld_reason = await _professional_report(
             session,
             run,
@@ -1428,9 +1430,10 @@ async def _run(
                 session, company, cfg=cfg),
             electricity_layers=electricity_layers,
             real_asset=real_asset,
-            enterprise_value=await _enterprise_value_section(
-                session, company, cfg=cfg, observation=size_observation,
-                real_asset=real_asset),
+            enterprise_value=enterprise_value,
+            layer_peers=await _layer_peers_section(
+                session, company, cfg=cfg, layers_block=electricity_layers,
+                ev_block=enterprise_value, size_fit=thesis_size),
             obscurity=await _obscurity_section(
                 session, company, cfg=cfg, passive_block=passive_ownership,
                 layers_block=electricity_layers),
@@ -1667,6 +1670,32 @@ async def _enterprise_value_section(
                                           real_asset=real_asset)
 
 
+async def _layer_peers_section(
+    session: Any, company: Any, *, cfg: Any, layers_block: dict[str, Any] | None,
+    ev_block: dict[str, Any] | None, size_fit: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.2 — peers in the same electricity layer from the comparable-set
+    store; None when off, unclassified or no other record (report unchanged)."""
+    if not getattr(cfg, "v3_layer_peers_enabled", False):
+        return None
+    if not layers_block or layers_block.get("status") != "classified":
+        return None
+    layer = layers_block.get("primary_layer")
+    if not layer:
+        return None
+    try:
+        from app.services.research_records import comparable_set
+        from app.services.valuation.layer_peers import layer_peers_block, subject_inputs
+
+        records = await comparable_set(session, str(layer), exclude_company_id=company.id)
+        cap, ev_to_ebit = subject_inputs(ev_block, size_fit)
+        return layer_peers_block(layer=str(layer), subject_market_cap_usd=cap,
+                                 subject_ev_to_ebit=ev_to_ebit, records=records)
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        logger.warning("layer peers block failed")
+        return None
+
+
 async def _mark_researched(
     session: Any, company: Any, *, cfg: Any, change_events: dict[str, Any] | None,
 ) -> None:
@@ -1803,6 +1832,7 @@ async def _professional_report(
     obscurity: dict[str, Any] | None = None,
     change_events: dict[str, Any] | None = None,
     enterprise_value: dict[str, Any] | None = None,
+    layer_peers: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -2002,6 +2032,7 @@ async def _professional_report(
         obscurity=obscurity,
         change_events=change_events,
         enterprise_value=enterprise_value,
+        layer_peers=layer_peers,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

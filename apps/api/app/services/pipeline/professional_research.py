@@ -213,6 +213,9 @@ class ReportInputs:
     #: (``enterprise_value_step.enterprise_value_section``); ``None`` leaves the report
     #: unchanged.
     enterprise_value: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.2 — peers in the same electricity layer (``valuation.layer_peers``);
+    #: ``None`` leaves the report unchanged.
+    layer_peers: Mapping[str, Any] | None = None
 
 
 
@@ -861,6 +864,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when the block is on and had an input, so other reports are byte-identical.
         ev_section = next(s for s in sections if s["key"] == "valuation_context")
         ev_section["enterprise_value"] = dict(inputs.enterprise_value)
+    if inputs.layer_peers:
+        # Only when another company holds a record in the layer.
+        peers_section = next(s for s in sections if s["key"] == "valuation_context")
+        peers_section["layer_peers"] = dict(inputs.layer_peers)
     if inputs.change_events:
         # Only when an event was found, so every other report is byte-identical.
         growth = next(s for s in sections if s["key"] == "growth_and_catalysts")

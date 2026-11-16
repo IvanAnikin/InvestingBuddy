@@ -47,6 +47,7 @@ import {
 import { type ElectricityLayersBlock, readElectricityLayersBlock } from "./electricityLayers";
 import { type ChangeEventsBlock, readChangeEventsBlock } from "./changeEvents";
 import { type EnterpriseValueBlock, readEnterpriseValueBlock } from "./enterpriseValue";
+import { type LayerPeersBlock, readLayerPeersBlock } from "./layerPeers";
 import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
 import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
@@ -507,6 +508,9 @@ export type DomainSection = SectionHead & {
   /** V3.20 slice 8.1 (valuation_context): enterprise value and multiples over dated,
       cited inputs. Null when off or no input, and on older reports. */
   enterpriseValue: EnterpriseValueBlock | null;
+  /** V3.20 slice 8.2 (valuation_context): companies researched in the same electricity
+      layer, from the comparable-set store. Null when none, and on older reports. */
+  layerPeers: LayerPeersBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -1114,6 +1118,7 @@ function readDomainSection(
     obscurity: readObscurityBlock(r.obscurity),
     changeEvents: readChangeEventsBlock(r.change_events),
     enterpriseValue: readEnterpriseValueBlock(r.enterprise_value),
+    layerPeers: readLayerPeersBlock(r.layer_peers),
   };
 }
 

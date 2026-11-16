@@ -1464,6 +1464,9 @@ class Settings(BaseSettings):
     # V3.20 slice 9.1: write one comparable-set record per completed research run
     # (``company_research_records``, migration 053), read from the report's own blocks.
     v3_research_records_enabled: bool = True
+    # V3.20 slice 8.2: "Layer peers" block (valuation_context) — the newest research record
+    # of every other company in the subject's electricity layer. No external call.
+    v3_layer_peers_enabled: bool = True
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.
