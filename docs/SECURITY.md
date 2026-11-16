@@ -375,6 +375,37 @@ this section exists so that cannot recur.
 
 ---
 
+## Output safety gate: path-scoped allowances (ADR-098, ADR-099; V3.20 slice 0.3)
+
+`app/services/safety_terms.py` is the one definition of banned recommendation and
+valuation language. Since V3.20 slice 0.3 a caller may pass **allowances** to
+`scan_value(..., allowances=...)`. An allowance (`FieldAllowance`) works as follows:
+
+- It names an **exact** report path. List indices may be written `[*]`; no other wildcard is accepted.
+- It admits a string leaf only when its **whole value** equals a member of a closed set.
+  `"SHORTLIST, BUY"` is not a member, so it is scanned as usual. This makes it impossible
+  to allow a free-text field.
+- It can never admit a term in `NEVER_ALLOWED_TERMS`: BUY, SELL, HOLD, REJECT,
+  OUT/UNDERPERFORM, OVER/UNDERWEIGHT, price target, target price, strong buy, buy/sell
+  signal, guaranteed return, will go up/down, personalized advice, and tailored
+  recommendation. The check runs at construction, is case-insensitive, and also rejects
+  any rating-context phrasing.
+- It is **opt-in per call**. Every existing gate passes none, so its behaviour is
+  unchanged. `neutralize_text` (external text) is not affected at all.
+
+Shipped allowances (`V320_REPORT_ALLOWANCES`):
+
+| Path | Allowed values | ADR |
+|---|---|---|
+| `verdict.recommendation` | `PASS`, `WATCHLIST`, `SHORTLIST` | ADR-098 |
+| `valuation.relative_position` | `undervalued`, `in_line`, `overvalued` | ADR-099 |
+
+No producer emits these paths yet. The V3.20 report gate starts passing them in slices
+8.6 and 9.2. Tests: `apps/api/tests/test_v3_20_0_3_gate_path_allowances.py`.
+
+**Private use only.** Verdicts and valuation positions are investment-research opinions
+(ADR-098). A public or commercial launch needs a regulatory review first.
+
 ## Data Isolation
 
 - `portfolio_positions` — never included in public API responses
