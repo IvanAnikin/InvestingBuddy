@@ -16,7 +16,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from app.services.web_research.source_policy import USE_PRIVATE_USE_PERMITTED
+from app.services.web_research.source_policy import (
+    USE_OPEN_LICENCE,
+    USE_PRIVATE_USE_PERMITTED,
+)
 
 BASE_VERSION = "2026-11-16.1"
 
@@ -33,6 +36,8 @@ class GridSource:
     attribution: str
     #: Settings attribute that must be True to ingest or read this source.
     flag: str
+    #: The edition of the pinned file (``--edition`` overrides it).
+    default_edition: str
 
 
 SOURCES: dict[str, GridSource] = {
@@ -51,6 +56,43 @@ SOURCES: dict[str, GridSource] = {
         use_constraint=USE_PRIVATE_USE_PERMITTED,
         attribution="Source: ENTSO-E, TYNDP 2026 project portfolio (draft).",
         flag="v3_grid_plans_entsoe_enabled",
+        default_edition="2026-02-03",
+    ),
+    "aemo_tai": GridSource(
+        key="aemo_tai",
+        name="AEMO NEM Transmission Augmentation Information (August 2026)",
+        plan_name="AEMO Integrated System Plan / NEM transmission augmentations",
+        landing_url=("https://www.aemo.com.au/energy-systems/electricity/national-electricity-"
+                     "market-nem/nem-forecasting-and-planning/forecasting-and-planning-data/"
+                     "transmission-augmentation-information"),
+        download_url=("https://www.aemo.com.au/-/media/files/electricity/nem/"
+                      "planning_and_forecasting/transmission-augmentation-information/2026/"
+                      "nem-transmission-augmentation-information-august-2026.xlsx"),
+        licence=("AEMO copyright permissions (read 2026-11-16): general permission for "
+                 "anyone to use AEMO Material for any purpose, with accurate attribution of "
+                 "the material and AEMO as its author. The workbook says it may be used under "
+                 "those permissions."),
+        use_constraint=USE_OPEN_LICENCE,
+        attribution=("Source: Australian Energy Market Operator (AEMO), NEM Transmission "
+                     "Augmentation Information, August 2026."),
+        flag="v3_grid_plans_aemo_enabled",
+        default_edition="2026-08",
+    ),
+    "lbl_queued_up": GridSource(
+        key="lbl_queued_up",
+        name="Berkeley Lab Queued Up 2026 data file (interconnection queues through 2025)",
+        plan_name="US interconnection queues (Berkeley Lab Queued Up)",
+        landing_url="https://emp.lbl.gov/queues",
+        download_url=("https://emp.lbl.gov/sites/default/files/2026-05/"
+                      "LBNL_Ix_Queue_Data_File_thru2025.xlsx"),
+        licence=("CC BY 4.0 (stated on emp.lbl.gov/queues, read 2026-11-16): use, share or "
+                 "adapt with attribution to Lawrence Berkeley National Laboratory and "
+                 "GridTracker."),
+        use_constraint=USE_OPEN_LICENCE,
+        attribution=("Source: Lawrence Berkeley National Laboratory and GridTracker, Queued Up "
+                     "2026 data file (CC BY 4.0)."),
+        flag="v3_grid_plans_lbl_enabled",
+        default_edition="2026-05",
     ),
 }
 
@@ -112,9 +154,34 @@ def status_class(text: str | None) -> str:
     return "other"
 
 
+_MONTH_YY = re.compile(
+    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*[- ](\d{2})(?!\d)", re.I)
+_EXCEL_EPOCH_ORDINAL = 693594  # date(1899, 12, 30).toordinal()
+
+
+def serial_to_iso(text: str | None) -> str | None:
+    """A bare spreadsheet date serial ("46204") as an ISO date; anything else unchanged."""
+    t = (text or "").strip()
+    if re.fullmatch(r"\d{5}(?:\.0+)?", t) and 20000 <= int(float(t)) <= 80000:
+        from datetime import date
+
+        return date.fromordinal(_EXCEL_EPOCH_ORDINAL + int(float(t))).isoformat()
+    return text
+
+
 def commissioning_year(text: str | None) -> int | None:
-    m = _YEAR.search(text or "")
-    return int(m.group(1)) if m else None
+    """The first year stated: "2032(6GWh)/2038" → 2032, "12-2027" → 2027, "Oct-26" →
+    2026, and a bare spreadsheet date serial ("47452") → its year."""
+    t = (text or "").strip()
+    if re.fullmatch(r"\d{5}(?:\.0+)?", t):
+        from datetime import date
+
+        serial = int(float(t))
+        if 20000 <= serial <= 80000:
+            return date.fromordinal(_EXCEL_EPOCH_ORDINAL + serial).year
+    hits = [(m.start(), int(m.group(1))) for m in _YEAR.finditer(t)]
+    hits += [(m.start(), 2000 + int(m.group(1))) for m in _MONTH_YY.finditer(t)]
+    return min(hits)[1] if hits else None
 
 
 def split_promoters(text: str | None) -> list[str]:
@@ -133,4 +200,4 @@ def split_promoters(text: str | None) -> list[str]:
 
 
 __all__ = ["BASE_VERSION", "SOURCES", "GridSource", "commissioning_year", "max_voltage_kv",
-           "split_promoters", "status_class", "technology_tags"]
+           "serial_to_iso", "split_promoters", "status_class", "technology_tags"]

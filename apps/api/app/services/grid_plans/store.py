@@ -13,7 +13,6 @@ A source whose flag is off is refused BEFORE anything is parsed or stored
 from __future__ import annotations
 
 import hashlib
-import re
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -21,8 +20,6 @@ from typing import Any
 
 from app.services.grid_plans.base import SOURCES, GridSource
 from app.services.sources.issuer_holdings.base import LayoutError
-
-_EDITION_FROM_FILE = re.compile(r"(20\d{2})(\d{2})(\d{2})")
 
 
 class SourceDisabled(RuntimeError):
@@ -34,6 +31,14 @@ def parser_for(key: str) -> Callable[[bytes], list[dict[str, Any]]]:
         from app.services.grid_plans.entsoe_tyndp import parse
 
         return parse
+    if key == "aemo_tai":
+        from app.services.grid_plans.aemo_tai import parse as parse_aemo
+
+        return parse_aemo
+    if key == "lbl_queued_up":
+        from app.services.grid_plans.lbl_queued_up import parse as parse_lbl
+
+        return parse_lbl
     raise KeyError(key)
 
 
@@ -47,8 +52,7 @@ def source(key: str, cfg: Any) -> GridSource:
 
 
 def default_edition(src: GridSource) -> str:
-    m = _EDITION_FROM_FILE.search(src.download_url.rsplit("/", 1)[-1])
-    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else "unknown"
+    return src.default_edition
 
 
 async def ingest_file(session: Any, *, key: str, body: bytes, cfg: Any,
@@ -86,8 +90,16 @@ async def ingest_file(session: Any, *, key: str, body: bytes, cfg: Any,
     existing = {(r.record_kind, r.external_id): r for r in (await session.execute(
         select(GridCapexPlan).where(GridCapexPlan.source_key == key,
                                     GridCapexPlan.plan_edition == edition))).scalars()}
-    written = 0
+    written, seen = 0, set()
     for rec in records:
+        # A parser must give unique keys; a repeat in one file is suffixed, never merged.
+        base_key = (rec["record_kind"], rec["external_id"][:76])
+        n, ext = 1, rec["external_id"][:80]
+        while (rec["record_kind"], ext) in seen:
+            n += 1
+            ext = f"{base_key[1]}~{n}"
+        seen.add((rec["record_kind"], ext))
+        rec = {**rec, "external_id": ext}
         values = {
             "ingest_id": ingest.id, "source_key": key, "plan_name": src.plan_name,
             "plan_edition": edition, "record_kind": rec["record_kind"],

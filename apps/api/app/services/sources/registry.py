@@ -53,6 +53,7 @@ from app.services.sources.taxonomy import (
     CANONICAL_TIERS,
     T1_PRIMARY_COMPANY_SOURCE,
     T2_REGULATOR_OR_GOV,
+    T3_INDUSTRY_SPECIALIST,
     T4_QUALITY_MEDIA,
     T5_API_AGGREGATOR,
     AccessMode,
@@ -653,6 +654,49 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
                 "closed on drift. States no capex (CBA results come with the final plan). "
                 + ("ON." if cfg.v3_grid_plans_entsoe_enabled
                    else "OFF (V3_GRID_PLANS_ENTSOE_ENABLED).")
+            ),
+        ),
+        RegisteredSource(
+            source_id="aemo_tai",
+            name="AEMO NEM Transmission Augmentation Information",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_aemo_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_aemo_enabled,
+            jurisdiction="AU",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="aemo_tai",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid plan (V3.20 slice 7.2): AEMO copyright permissions allow any use with "
+                "attribution. Offline operator job (scripts/ingest_grid_plans.py); layout "
+                "pinned on the August 2026 workbook; states no capex. The aemo.com.au pages "
+                "sit behind a bot challenge, so a server download may be refused — then the "
+                "operator passes the file (--file)."
+            ),
+        ),
+        RegisteredSource(
+            source_id="lbl_queued_up",
+            name="Berkeley Lab Queued Up (US interconnection queues)",
+            provider_type=ProviderType.regulator,
+            tier=T3_INDUSTRY_SPECIALIST,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_lbl_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_lbl_enabled,
+            jurisdiction="US",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="lbl_queued_up",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid demand signal (V3.20 slice 7.2): CC BY 4.0, attribution LBNL + "
+                "GridTracker. Offline operator job; layout pinned on the 2026 edition (data "
+                "through 2025); ACTIVE requests aggregated per transmission provider / utility "
+                "(MW, MW with an executed agreement, MW by type). Not capex."
             ),
         ),
         RegisteredSource(

@@ -1481,6 +1481,11 @@ class Settings(BaseSettings):
     # use only (owner decision 2026-11-16: private use, OFF by default). Gates both the
     # operator ingest (scripts/ingest_grid_plans.py) and every read of its rows.
     v3_grid_plans_entsoe_enabled: bool = False
+    # V3.20 slice 7.2: AEMO NEM Transmission Augmentation Information (AEMO copyright
+    # permissions: any purpose, with attribution) and Berkeley Lab "Queued Up" (CC BY 4.0,
+    # attribution LBNL + GridTracker) in ``grid_capex_plans``. Operator ingest only.
+    v3_grid_plans_aemo_enabled: bool = True
+    v3_grid_plans_lbl_enabled: bool = True
     # V3.20 slice 8.4: "What today's price implies" block (valuation_context) — peer
     # position, implied margin at the peer median, implied perpetual growth on a named
     # discount-rate grid, observed discount characteristics. Filed facts only; no call.
