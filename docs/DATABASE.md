@@ -1334,6 +1334,30 @@ history — the history itself is never deleted.
 
 Additive; downgrade drops the table.
 
+## Migration 053 — comparable-set store (V3.20 slice 9.1)
+
+One new table, `company_research_records` (`app/models/research_record.py`), written once
+per completed company research run by `services/research_records.write_record`
+(`V3_RESEARCH_RECORDS_ENABLED`, default on). Every value is **read from the run's own
+report blocks**, so the memo, the report and the record cannot disagree; a missing block
+is NULL, never zero. Rows are never updated and never deleted.
+
+| Columns | Meaning |
+|---|---|
+| `company_id`, `research_run_id` | FK `companies` (cascade), FK `research_runs` (`SET NULL`, unique). |
+| `as_of`, `record_version` | The run date and the record builder's version. |
+| `ticker`, `exchange`, `sector`, `industry` | The company's labels at the time. |
+| `layer` | Electricity primary layer (slice 5.2) when classified; NULL otherwise. Indexed. |
+| `market_cap_usd`, `market_cap_as_of` | From the run's size check. |
+| `enterprise_value`, `ev_currency`, `ev_to_ebit` | From the 8.1 block, only when computed. |
+| `obscurity_score` | From the 6.3 block. |
+| `rubric_json` | NULL until slice 9.2. |
+| `record_json` | `{record_version, report_version, size_fit, blocks{"section.block": …}}` — the blocks verbatim. |
+
+Index (`company_id`, `as_of`). `comparable_set(layer)` returns the newest record per
+company in one layer (window function). Checked on PostgreSQL: upgrade, downgrade,
+re-upgrade; the comparable-set query runs.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

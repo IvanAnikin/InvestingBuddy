@@ -51,6 +51,7 @@ from app.models.research_document import (
 )
 from app.models.research_job import ResearchJob
 from app.models.research_lead import ResearchLeadRecord
+from app.models.research_record import CompanyResearchRecord
 from app.models.research_run_consumption import ResearchRunConsumption
 from app.models.research_tool_call import ResearchToolCall
 from app.models.scorecard import Scorecard
@@ -58,6 +59,7 @@ from app.models.source import Citation, Source
 from app.models.web_research import WebFetchAttempt, WebSearchQuery, WebSearchResult
 
 __all__ = [
+    "CompanyResearchRecord",
     "AgentRun",
     "AgentStep",
     "BusinessSegment",

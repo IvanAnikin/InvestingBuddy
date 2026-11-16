@@ -1461,6 +1461,9 @@ class Settings(BaseSettings):
     # V3.20 slice 8.1: without a thesis observation, re-read the exchange's market cap for
     # the EV block (one exchange-directory read). Off by default.
     v3_enterprise_value_recheck_enabled: bool = False
+    # V3.20 slice 9.1: write one comparable-set record per completed research run
+    # (``company_research_records``, migration 053), read from the report's own blocks.
+    v3_research_records_enabled: bool = True
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

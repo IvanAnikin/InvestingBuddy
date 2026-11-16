@@ -1438,6 +1438,11 @@ async def _run(
         )
         outcome.professional_research = report
         await _mark_researched(session, company, cfg=cfg, change_events=change_events)
+        # V3.20 slice 9.1 — the comparable-set record, read from this report's blocks.
+        from app.services.research_records import write_record
+
+        await write_record(session, company=company, research_run_id=outcome.research_run_id,
+                           report=report, size_fit=thesis_size, cfg=cfg)
         if withheld_reason:
             outcome.degraded.append(withheld_reason)
     except Exception as exc:  # noqa: BLE001 - a report failure costs the report block only
