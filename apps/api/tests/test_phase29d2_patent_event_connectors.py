@@ -322,7 +322,7 @@ def test_registry_summary_counts_after_patent_layer():
     assert summary["scaffolded"] == 2
     # Only OpenBB remains planned (Phase 30B promoted the local-language press).
     assert summary["planned"] == 1
-    assert summary["total"] == 42  # +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5)
+    assert summary["total"] == 43  # +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default)
     assert summary["total"] == len(reg.all_sources())
     # Health covers every patent connector, network-free.
     keys = {h.connector_key for h in reg.health()}

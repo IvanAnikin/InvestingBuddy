@@ -633,6 +633,29 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             ),
         ),
         RegisteredSource(
+            source_id="entsoe_tyndp",
+            name="ENTSO-E TYNDP 2026 project portfolio",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_entsoe_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_entsoe_enabled,
+            region="EU",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="entsoe_tyndp",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid plan (V3.20 slice 7.1): PRIVATE USE ONLY — ENTSO-E's site terms allow "
+                "downloads for non-commercial, personal use. Offline operator job "
+                "(scripts/ingest_grid_plans.py), layout pinned on the 2026-02-03 file, fails "
+                "closed on drift. States no capex (CBA results come with the final plan). "
+                + ("ON." if cfg.v3_grid_plans_entsoe_enabled
+                   else "OFF (V3_GRID_PLANS_ENTSOE_ENABLED).")
+            ),
+        ),
+        RegisteredSource(
             source_id="ishares_holdings",
             name="iShares daily ETF holdings files (US + UCITS)",
             provider_type=ProviderType.fundamentals_aggregator,

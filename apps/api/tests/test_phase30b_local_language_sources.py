@@ -223,7 +223,7 @@ def test_5_registry_promotes_local_language_press_to_enabled():
     assert summary["enabled"] == 39  # +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: Italian regulated disclosures (readiness PR-E)
     assert summary["planned"] == 1
     assert summary["scaffolded"] == 2
-    assert summary["total"] == 42  # +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5)
+    assert summary["total"] == 43  # +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default)
     assert summary["total"] == len(reg.all_sources())
 
 

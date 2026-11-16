@@ -10,6 +10,7 @@ from app.models.document_ingestion_attempt import DocumentIngestionAttempt
 from app.models.earnings import EarningsResult
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.models.field_review import FieldReviewCandidateSummary, FieldReviewRun
+from app.models.grid_plan import GridCapexPlan, GridPlanIngest
 from app.models.ir_event import IrEvent, IrEventMaterial
 from app.models.ledger import (
     ResearchDisagreement,
@@ -128,6 +129,8 @@ __all__ = [
     "WebSearchQuery",
     "WebSearchResult",
     "PrecedentTransaction",
+    "GridCapexPlan",
+    "GridPlanIngest",
     "UserPortfolio",
     "UserPortfolioPosition",
 ]

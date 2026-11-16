@@ -1408,6 +1408,21 @@ Checked on PostgreSQL 16:
 - downgrade drops the table;
 - re-upgrade.
 
+## Migration 057 — grid capex plans (V3.20 slice 7.1)
+
+Two public tables (published grid plans; no user data). Rules: [docs/v3.20-grid-plans.md](v3.20-grid-plans.md).
+
+| Table | Columns | Rules |
+|---|---|---|
+| `grid_plan_ingests` | `source_key`, `plan_edition`, `status`, `source_url`, `file_sha256`, `rows_read`, `rows_written`, `detail_json`, `error`, `retrieved_at`, `finished_at` | status ∈ running/complete/failed; a failed ingest is kept |
+| `grid_capex_plans` | FK `grid_plan_ingests` (`SET NULL`), `source_key`, `plan_name`, `plan_edition`, `record_kind` (project/investment/queue_summary), `external_id`, `parent_external_id`, `project_name`, `promoters_text`, `promoters_json`, `region`, `category`, `technology_tags_json`, `voltage_kv`, `description`, `capex_amount` + `capex_currency` + `capex_period`, `capacity_text`, `capacity_mw`, `commissioning_text`, `commissioning_year`, `status_text`, `status_class`, `source_url`, `source_title`, `retrieved_at`, `use_constraint`, `attribution` | unique (`source_key`, `plan_edition`, `record_kind`, `external_id`); CHECK capex amount > 0 with its currency, or neither; CHECK on `status_class`; index (`source_key`, `plan_edition`) |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- the capex-pair CHECK rejects an amount without a currency;
+- downgrade drops both tables;
+- re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

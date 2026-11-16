@@ -1476,6 +1476,11 @@ class Settings(BaseSettings):
     # and, with at least three on an EV basis, a precedent EV/EBIT method for the engine.
     # A database read only; an empty table leaves every report unchanged.
     v3_precedent_transactions_enabled: bool = True
+    # V3.20 slice 7.1: ENTSO-E TYNDP 2026 project portfolio in ``grid_capex_plans``
+    # (migration 057). ENTSO-E's site terms allow downloads for non-commercial, personal
+    # use only (owner decision 2026-11-16: private use, OFF by default). Gates both the
+    # operator ingest (scripts/ingest_grid_plans.py) and every read of its rows.
+    v3_grid_plans_entsoe_enabled: bool = False
     # V3.20 slice 8.4: "What today's price implies" block (valuation_context) — peer
     # position, implied margin at the peer median, implied perpetual growth on a named
     # discount-rate grid, observed discount characteristics. Filed facts only; no call.
