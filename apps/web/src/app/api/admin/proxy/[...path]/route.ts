@@ -63,6 +63,9 @@ const ALLOWED_PREFIXES = [
   // Open-web W1 — the web search provenance audit (admin read-only). Its own prefix:
   // "/api/v1/admin/reports" above does not cover it.
   "/api/v1/admin/web-research",
+  // V3.20 slice 12.1 — the signed-in admin's private, hand-entered portfolios. The
+  // backend scopes every row to the X-IB-Admin-Email this proxy forwards (ADR-100).
+  "/api/v1/portfolios",
 ];
 
 function isAllowed(backendPath: string): boolean {

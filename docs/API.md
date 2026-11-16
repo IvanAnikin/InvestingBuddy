@@ -4063,3 +4063,22 @@ That is deliberate. A corpus search endpoint would need its own auth, its own
 rate limiting and its own answer to "which entity may this caller see", and none
 of those questions has an owner yet. Nothing about the corpus is reachable from
 the public API, and `V3_CORPUS_ENABLED` is off by default in any case.
+
+## Private portfolios (V3.20 slice 12.1, ADR-100)
+
+Owner-scoped: every route resolves the owner from `request.state.admin_email` (set by the
+Basic Auth middleware from the admin proxy's `X-IB-Admin-Email`; in `APP_ENV`
+development/test, where there is no Basic Auth layer, from the header directly). No owner →
+**403**. Another owner's portfolio → **404** (existence is not revealed). Reached from the
+web only through the admin proxy (`/api/v1/portfolios` is on its allow-list).
+
+| Method | Path | Body / response |
+|---|---|---|
+| GET | `/api/v1/portfolios` | `[{id, name, note, created_at, position_count, weight_pct_total}]` |
+| POST | `/api/v1/portfolios` | `{name, note?}` → 201 summary; 409 on a duplicate name |
+| GET | `/api/v1/portfolios/{id}` | summary + `positions[{id, company_id, ticker, exchange, entry_date, entry_price, entry_currency, weight_pct, note, created_at}]` |
+| DELETE | `/api/v1/portfolios/{id}` | 204; the positions go with it |
+| POST | `/api/v1/portfolios/{id}/positions` | `{ticker, exchange?, entry_date (not future), entry_price? + entry_currency? (both or neither), weight_pct? (0–100], note?}` → 201; 409 on the same ticker/exchange/date; 422 on invalid input |
+| DELETE | `/api/v1/portfolios/{id}/positions/{position_id}` | 204 |
+
+No route imports from a broker, places an order or computes a size.

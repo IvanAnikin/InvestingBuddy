@@ -1369,6 +1369,21 @@ signal of a new kind exists — signals are history and a downgrade never delete
 Checked on PostgreSQL 16: upgrade, refused downgrade with a new-kind row, downgrade,
 re-upgrade.
 
+## Migration 055 — private, hand-entered portfolios (V3.20 slice 12.1, ADR-100)
+
+Two **private** tables (CLAUDE.md rule 10). No public table references them, and the
+portfolio review (12.2) only reads public research records — it never writes a holding
+into them. A test pins that no other table has a foreign key to either.
+
+| Table | Columns | Rules |
+|---|---|---|
+| `user_portfolios` | `owner_key` (SHA-256 of the signed-in admin's lower-cased e-mail — never the address), `name`, `note`, timestamps | unique (`owner_key`, `name`) |
+| `user_portfolio_positions` | FK `user_portfolios` (cascade; the API also deletes explicitly), FK `companies` (`SET NULL`; linked only when the ticker[+exchange] matches exactly one company), `ticker`, `exchange`, `entry_date`, `entry_price` + `entry_currency` (both or neither), `weight_pct` (0 < w ≤ 100, as typed — never computed), `note` | unique (`portfolio_id`, `ticker`, `exchange`, `entry_date`); CHECKs for price > 0, the weight range and price/currency pairing |
+
+Entered by hand only: no broker import, credential or account link. Checked on PostgreSQL
+16: upgrade, the CHECKs reject a price without currency and a weight of 150, the cascade
+removes positions, downgrade, re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.
