@@ -338,9 +338,9 @@ def aggregate_nport(nport_zf: Any, targets: Targets, *, period: str | None,
         read += 1
         if accession not in kept:
             continue
-        isin = isin_of.get(holding_id)
+        holding_isin = isin_of.get(holding_id)
         cusip_key, lei_key = _lookup_key(raw_cusip), _lookup_key(raw_lei)
-        target = (by_isin.get(isin or "") or by_cusip.get(cusip_key) or by_lei.get(lei_key))
+        target = (by_isin.get(holding_isin or "") or by_cusip.get(cusip_key) or by_lei.get(lei_key))
         if target is None:
             continue
         if payoff.strip().lower() not in ("", "long", "n/a"):
@@ -356,7 +356,7 @@ def aggregate_nport(nport_zf: Any, targets: Targets, *, period: str | None,
         agg.issuer_name = agg.issuer_name or issuer_name or None
         agg.issuer_lei = agg.issuer_lei or lei
         agg.cusip = agg.cusip or cusip
-        agg.isin = agg.isin or isin
+        agg.isin = agg.isin or holding_isin
         unit = unit_raw.strip().upper()
         holding = _Holding(
             series_id=info.series_id, report_date=info.report_date,
