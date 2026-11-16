@@ -4,6 +4,7 @@ import RelationshipSection from "@/components/research/report/RelationshipSectio
 import { PassiveOwnershipSection } from "@/components/research/report/PassiveOwnershipSection";
 import { EarningsTrackRecordSection } from "@/components/research/report/EarningsTrackRecordSection";
 import { ElectricityLayersSection } from "@/components/research/report/ElectricityLayersSection";
+import { ObscuritySection } from "@/components/research/report/ObscuritySection";
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
 import { sourceTierWord } from "@/components/research/reportSections";
 import type {
@@ -808,6 +809,7 @@ function DomainBody({
       <RealAssetSection block={section.realAsset} />
       <RelationshipSection block={section.relationships} company="This company" />
       <PassiveOwnershipSection block={section.passiveOwnership} />
+      <ObscuritySection block={section.obscurity} />
       <EarningsTrackRecordSection block={section.earningsTrackRecord} />
       {section.peerTable.length === 0 && section.peerSelectionNote && (
         <p

@@ -1428,6 +1428,13 @@ class Settings(BaseSettings):
     # its held description and segment revenue facts, and add the "Electricity layers"
     # block to the report (business_model section). No external call.
     v3_electricity_classifier_enabled: bool = True
+    # V3.20 slice 6.3: the obscurity score block (valuation_context section) from held
+    # data — analyst count, N-PORT passive %, theme-fund holders, sector mis-tag, filing
+    # language. No external call unless the news-volume component is switched on.
+    v3_obscurity_score_enabled: bool = True
+    # V3.20 slice 6.3: add GDELT's English article count (3-month window) as a component.
+    # One GDELT DOC API call per company research run. Off by default.
+    v3_obscurity_news_volume_enabled: bool = False
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

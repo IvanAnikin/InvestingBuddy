@@ -203,6 +203,9 @@ class ReportInputs:
     #: V3.20 slice 5.4 — the electricity real-asset block (``electricity.real_asset``);
     #: ``None`` leaves the report unchanged.
     real_asset: Mapping[str, Any] | None = None
+    #: V3.20 slice 6.3 — the obscurity score (``obscurity_step.obscurity_section``);
+    #: ``None`` leaves the report unchanged.
+    obscurity: Mapping[str, Any] | None = None
 
 
 
@@ -843,6 +846,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only for a company classified into the electricity stack.
         operations = next(s for s in sections if s["key"] == "operations")
         operations["real_asset"] = dict(inputs.real_asset)
+    if inputs.obscurity:
+        # Only when the score is on, so every other report is byte-identical.
+        valuation_section = next(s for s in sections if s["key"] == "valuation_context")
+        valuation_section["obscurity"] = dict(inputs.obscurity)
     if inputs.passive_ownership:
         # Only when the block is on, so every other report is byte-identical.
         valuation = next(s for s in sections if s["key"] == "valuation_context")

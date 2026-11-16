@@ -45,6 +45,7 @@ import {
   type EarningsTrackRecordBlock,
 } from "./earningsTrackRecord";
 import { type ElectricityLayersBlock, readElectricityLayersBlock } from "./electricityLayers";
+import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
 import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
 
@@ -494,6 +495,9 @@ export type DomainSection = SectionHead & {
       and certificates from cited findings. Null unless the company is in the electricity
       stack, and on older reports. */
   realAsset: RealAssetBlock | null;
+  /** V3.20 slice 6.3 (valuation_context): the obscurity score with its components.
+      Null when off, and on older reports. */
+  obscurity: ObscurityBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -1098,6 +1102,7 @@ function readDomainSection(
     earningsTrackRecord: readEarningsTrackRecordBlock(r.earnings_track_record),
     electricityLayers: readElectricityLayersBlock(r.electricity_layers),
     realAsset: readRealAssetBlock(r.real_asset),
+    obscurity: readObscurityBlock(r.obscurity),
   };
 }
 

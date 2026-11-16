@@ -1399,6 +1399,7 @@ async def _run(
     #     client, and `_consumption` takes each client's usage once.
     try:
         electricity_layers = await _electricity_layers_section(session, company, cfg=cfg)
+        passive_ownership = await _passive_ownership_section(session, company, cfg=cfg)
         report, withheld_reason = await _professional_report(
             session,
             run,
@@ -1418,11 +1419,14 @@ async def _run(
             commercial_stage=commercial_stage,
             relationships=await _relationship_section(
                 session, company, cfg=cfg, steps=outcome.relationships),
-            passive_ownership=await _passive_ownership_section(session, company, cfg=cfg),
+            passive_ownership=passive_ownership,
             earnings_track_record=await _earnings_track_record_section(
                 session, company, cfg=cfg),
             electricity_layers=electricity_layers,
             real_asset=await _real_asset_section(session, run, electricity_layers),
+            obscurity=await _obscurity_section(
+                session, company, cfg=cfg, passive_block=passive_ownership,
+                layers_block=electricity_layers),
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1627,6 +1631,17 @@ async def _electricity_layers_section(
     return await electricity_layers_section(session, company, cfg=cfg)
 
 
+async def _obscurity_section(
+    session: Any, company: Any, *, cfg: Any,
+    passive_block: dict[str, Any] | None, layers_block: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 6.3 — the obscurity score block; None when off (report unchanged)."""
+    from app.services.pipeline.obscurity_step import obscurity_section
+
+    return await obscurity_section(session, company, cfg=cfg, passive_block=passive_block,
+                                   layers_block=layers_block)
+
+
 async def _real_asset_section(
     session: Any, run: Any, electricity_layers: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -1726,6 +1741,7 @@ async def _professional_report(
     earnings_track_record: dict[str, Any] | None = None,
     electricity_layers: dict[str, Any] | None = None,
     real_asset: dict[str, Any] | None = None,
+    obscurity: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1922,6 +1938,7 @@ async def _professional_report(
         earnings_track_record=earnings_track_record,
         electricity_layers=electricity_layers,
         real_asset=real_asset,
+        obscurity=obscurity,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)
