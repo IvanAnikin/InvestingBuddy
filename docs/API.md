@@ -2620,6 +2620,8 @@ A rate more than **5 business days** before the market-cap date is stale. A stal
 
 **Unverified size under a mandate.** If the market cap cannot be verified, the issuer is **not shortlisted**. It is returned in the dynamic stage's `size_unverified[]`, together with a `funnel.size_unverified` count and a warning. A size named only in words keeps the V3.19 behaviour: unverified names are ranked last but stay on the shortlist.
 
+**Anti-convergence (V3.20 slice 6.4).** After eligibility and before the cap: a name researched within `V3_DISCOVERY_NOVELTY_WINDOW_DAYS` (90) with no change event in its held disclosures newer than that research is **held back** (not shortlisted, not excluded) with a warning; then at most `V3_DISCOVERY_DIVERSITY_MAX_PER_CELL` (2) names per layer × driver × regime cell come before the rest (reorders, never shrinks; names with no electricity-layer hint are never moved). Only when either acted, the dynamic stage carries `anti_convergence: {novelty_held[candidate + novelty{state, last_researched_at, rule}], diversity_moved[{exchange, ticker, cell}]}`. Every evaluated name is recorded in `discovery_seen` (migration 052). Flags: `V3_DISCOVERY_SEEN_ENABLED`, `V3_DISCOVERY_NOVELTY_GATE_ENABLED` (both default on).
+
 The applied ceiling is stored in `config_json.max_market_cap_usd`, and `config_json.size_mandate_source` records where it came from (`default` | `explicit` | `none`). It is also stored on the size constraint in `parsed_thesis_json.discovery_intent` (`max_usd`). `POST /parse-thesis` previews the default the same way.
 
 **Rejections (422, before any background work):**

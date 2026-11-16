@@ -1443,6 +1443,17 @@ class Settings(BaseSettings):
     # XML documents, research User-Agent, SEC rate limiter) and detect open-market
     # insider purchase clusters (>= 3 insiders within 30 days). Needs a CIK.
     v3_insider_clusters_enabled: bool = True
+    # V3.20 slice 6.4: record every name a discovery run evaluates in ``discovery_seen``
+    # (and stamp it when company research runs). Bookkeeping only.
+    v3_discovery_seen_enabled: bool = True
+    # V3.20 slice 6.4: hold back from the shortlist a name researched within the window
+    # unless a held disclosure carries a change event newer than that research.
+    v3_discovery_novelty_gate_enabled: bool = True
+    v3_discovery_novelty_window_days: int = 90
+    # V3.20 slice 6.4: at most N shortlisted names per electricity layer x driver x
+    # regime before the rest move behind (reorders, never shrinks). 0 = off. Names with
+    # no electricity-layer hint are never moved.
+    v3_discovery_diversity_max_per_cell: int = 2
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

@@ -1316,6 +1316,24 @@ Two new tables (ADR-097). Written during company research by `pipeline/consensus
 
 FK `companies` cascade; index (`company_id`, `period_end`). Downgrade drops both tables. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches.
 
+## Migration 052 — discovery anti-convergence store (V3.20 slice 6.4)
+
+One new table, `discovery_seen` (`app/models/discovery_seen.py`), written by the discovery
+stage (`services/discovery/pipeline.py`, `_record_seen`) and by company research
+(`v3_pipeline._mark_researched`); read by the novelty gate. A summary over research
+history — the history itself is never deleted.
+
+| Columns | Meaning |
+|---|---|
+| `issuer_key` | `EXCHANGE:TICKER`, unique. |
+| `company_id` | The platform company when known (FK `companies`, `ON DELETE SET NULL`; indexed). |
+| `first_seen_at`, `last_seen_at`, `times_seen` | Discovery sightings (a name evaluated against the requirements). `times_seen` is 0 for a row created by research alone. |
+| `times_shortlisted`, `last_shortlisted_at` | Sightings that made the shortlist. |
+| `last_researched_at`, `last_event_date` | When company research last ran, and the newest change-event date (slice 6.2) that research knew of. The gate re-admits a recently researched name only on a NEWER event. |
+| `last_discovery_run_id`, `cell_json` | The last run that saw it, and its diversity cell `{layer, driver, regime}` (NULL outside the electricity vertical). |
+
+Additive; downgrade drops the table.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

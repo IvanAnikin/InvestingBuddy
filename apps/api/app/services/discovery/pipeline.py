@@ -126,6 +126,12 @@ class StageResult:
     #: V3.20 D1 — issuers that met every other hard requirement but whose market cap
     #: could not be verified. Shown as "size unverified", never shortlisted.
     size_unverified: list[CandidateRecord] = field(default_factory=list)
+    #: V3.20 slice 6.4 — names held back by the novelty gate (researched recently, no
+    #: change event since), each with its decision; and names the diversity quota moved
+    #: behind the others. Both empty unless the gate / quota acted.
+    novelty_held: list[CandidateRecord] = field(default_factory=list)
+    novelty_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    diversity_moved: list[CandidateRecord] = field(default_factory=list)
     #: Where this run's leads could come from and whether each source actually ran: web
     #: search (provider + executed queries), model recall, the registries, and the
     #: screening investigation. ``external_discovery`` is the union, so "unavailable" is
@@ -151,6 +157,22 @@ class StageResult:
             # V3.20 D1 — only present when a size mandate left names unverified, so a
             # run without one persists exactly the V3.19 shape.
             out["size_unverified"] = [c.to_dict() for c in self.size_unverified][:40]
+        if self.novelty_held or self.diversity_moved:
+            # V3.20 slice 6.4 — only when the gate or the quota acted.
+            from app.services.discovery.novelty import issuer_key
+
+            held = []
+            for c in self.novelty_held[:40]:
+                row = c.to_dict()
+                key = issuer_key(c.identity.exchange, c.identity.ticker) or ""
+                row["novelty"] = self.novelty_decisions.get(key)
+                held.append(row)
+            out["anti_convergence"] = {
+                "novelty_held": held,
+                "diversity_moved": [
+                    {"exchange": c.identity.exchange, "ticker": c.identity.ticker,
+                     "cell": _record_cell(c)} for c in self.diversity_moved[:40]],
+            }
         return out
 
     def _v319_base_dict(self) -> dict[str, Any]:
@@ -925,7 +947,29 @@ async def run_dynamic_stage(
     )
     stage.size_unverified = [r for r in not_excluded if mandate and size_unverified(r)]
     included = [r for r in not_excluded if not (mandate and size_unverified(r))]
-    stage.candidates, beyond_cap = shortlist(included, cap, relevance)
+    # V3.20 slice 6.4 — anti-convergence: hold back names researched recently with no
+    # change event since, then a per-cell diversity quota that reorders (never shrinks).
+    included = await _novelty_gate(session, stage, included, cfg, plan_date)
+    quota = int(getattr(cfg, "v3_discovery_diversity_max_per_cell", 0) or 0)
+    if quota > 0:
+        from app.services.discovery.novelty import apply_diversity_quota
+
+        ordered, _ = shortlist(included, len(included), relevance)
+        ordered, moved = apply_diversity_quota(ordered, _record_cell, max_per_cell=quota)
+        stage.candidates, beyond_cap = ordered[:cap], ordered[cap:]
+        moved_keys = {id(r) for r in moved}
+        stage.diversity_moved = [r for r in ordered if id(r) in moved_keys]
+        if stage.diversity_moved:
+            stage.warnings.append(
+                f"{len(stage.diversity_moved)} candidate(s) were moved behind the others "
+                f"by the diversity quota (at most {quota} per layer x driver x regime): "
+                + ", ".join(f"{r.identity.exchange}:{r.identity.ticker}"
+                            for r in stage.diversity_moved[:20])
+            )
+    else:
+        stage.candidates, beyond_cap = shortlist(included, cap, relevance)
+    await _record_seen(session, cfg, [*included, *stage.novelty_held],
+                       stage.candidates, run_id)
     if stage.size_unverified:
         stage.warnings.append(
             f"{len(stage.size_unverified)} issuer(s) met the other requirements but their "
@@ -1006,6 +1050,87 @@ def size_unverified(record: CandidateRecord) -> bool:
         r.key == "size" and r.hardness == HARD and r.status == cons.UNKNOWN
         for r in record.results
     )
+
+
+def _record_cell(record: CandidateRecord) -> dict[str, str] | None:
+    """V3.20 slice 6.4 — the record's diversity cell (layer hint × driver × regime)."""
+    from app.services.discovery.novelty import diversity_cell, layer_hint
+
+    item = record.registry_item or {}
+    layer = layer_hint(record.identity.name, record.identity.lead.name,
+                       record.identity.lead.why, item.get("industry"),
+                       item.get("sub_industry"), item.get("description"))
+    driver = item.get("driver") or record.provenance.get("driver")
+    return diversity_cell(layer=layer, driver=driver,
+                          regime=record.identity.listing_country)
+
+
+async def _novelty_gate(
+    session: Any, stage: StageResult, included: list[CandidateRecord], cfg: Any,
+    plan_date: Any,
+) -> list[CandidateRecord]:
+    """V3.20 slice 6.4 — drop recently researched, unchanged names from ``included`` into
+    ``stage.novelty_held`` (stated in a warning). Off, or on any failure: unchanged."""
+    if not getattr(cfg, "v3_discovery_novelty_gate_enabled", False) or not included:
+        return included
+    from datetime import datetime, timezone
+
+    from app.services.discovery.novelty import (
+        issuer_key,
+        load_seen,
+        newest_event_date,
+        novelty_decision,
+    )
+
+    window = int(getattr(cfg, "v3_discovery_novelty_window_days", 90) or 90)
+    now = datetime.now(timezone.utc)
+    today = plan_date if plan_date is not None else now.date()
+    try:
+        keys = {id(r): issuer_key(r.identity.exchange, r.identity.ticker) for r in included}
+        seen = await load_seen(session, [k for k in keys.values() if k])
+        kept: list[CandidateRecord] = []
+        for record in included:
+            key = keys[id(record)]
+            row = seen.get(key) if key else None
+            newest = None
+            if row is not None and row.last_researched_at is not None:
+                newest = await newest_event_date(
+                    session, row.company_id or record.identity.company_id, today=today)
+            decision = novelty_decision(row, now=now, newest_event=newest,
+                                        window_days=window)
+            if key:
+                stage.novelty_decisions[key] = decision
+            (stage.novelty_held if decision["state"] == "held" else kept).append(record)
+    except Exception:  # noqa: BLE001 - the gate never costs the run its candidates
+        logger.warning("discovery novelty gate failed")
+        stage.novelty_held = []
+        return included
+    if stage.novelty_held:
+        stage.warnings.append(
+            f"{len(stage.novelty_held)} candidate(s) were researched in the last {window} "
+            "days with no change event since, so they were not shortlisted again: "
+            + ", ".join(f"{r.identity.exchange}:{r.identity.ticker}"
+                        for r in stage.novelty_held[:20])
+        )
+    return kept
+
+
+async def _record_seen(
+    session: Any, cfg: Any, evaluated: list[CandidateRecord],
+    shortlisted: list[CandidateRecord], run_id: Any,
+) -> None:
+    """V3.20 slice 6.4 — record every evaluated name in ``discovery_seen``."""
+    if not getattr(cfg, "v3_discovery_seen_enabled", False) or not evaluated:
+        return
+    from app.services.discovery.novelty import issuer_key, record_seen
+
+    picked = {id(r) for r in shortlisted}
+    await record_seen(session, [
+        {"key": issuer_key(r.identity.exchange, r.identity.ticker),
+         "company_id": r.identity.company_id, "shortlisted": id(r) in picked,
+         "cell": _record_cell(r)}
+        for r in evaluated
+    ], run_id=run_id)
 
 
 def shortlist(

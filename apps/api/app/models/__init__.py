@@ -5,6 +5,7 @@ from app.models.company import Company
 from app.models.consensus import ConsensusSnapshot, VendorApiCall
 from app.models.delta import ResearchDelta
 from app.models.discovery import DiscoveryCandidate, DiscoveryRun
+from app.models.discovery_seen import DiscoverySeen
 from app.models.document_ingestion_attempt import DocumentIngestionAttempt
 from app.models.earnings import EarningsResult
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
@@ -65,6 +66,7 @@ __all__ = [
     "Company",
     "DiscoveryCandidate",
     "DiscoveryRun",
+    "DiscoverySeen",
     "DocumentIngestionAttempt",
     "ConsensusSnapshot",
     "EarningsResult",

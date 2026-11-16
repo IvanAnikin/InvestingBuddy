@@ -1400,6 +1400,7 @@ async def _run(
     try:
         electricity_layers = await _electricity_layers_section(session, company, cfg=cfg)
         passive_ownership = await _passive_ownership_section(session, company, cfg=cfg)
+        change_events = await _change_events_section(session, company, cfg=cfg)
         report, withheld_reason = await _professional_report(
             session,
             run,
@@ -1427,9 +1428,10 @@ async def _run(
             obscurity=await _obscurity_section(
                 session, company, cfg=cfg, passive_block=passive_ownership,
                 layers_block=electricity_layers),
-            change_events=await _change_events_section(session, company, cfg=cfg),
+            change_events=change_events,
         )
         outcome.professional_research = report
+        await _mark_researched(session, company, cfg=cfg, change_events=change_events)
         if withheld_reason:
             outcome.degraded.append(withheld_reason)
     except Exception as exc:  # noqa: BLE001 - a report failure costs the report block only
@@ -1641,6 +1643,31 @@ async def _obscurity_section(
 
     return await obscurity_section(session, company, cfg=cfg, passive_block=passive_block,
                                    layers_block=layers_block)
+
+
+async def _mark_researched(
+    session: Any, company: Any, *, cfg: Any, change_events: dict[str, Any] | None,
+) -> None:
+    """V3.20 slice 6.4 — stamp ``discovery_seen.last_researched_at`` and the newest change
+    event this research knew of, so the novelty gate can tell a re-run from a change."""
+    if not getattr(cfg, "v3_discovery_seen_enabled", False):
+        return
+    from datetime import date as _date
+
+    from app.services.discovery.novelty import mark_researched
+
+    dates: list[_date] = []
+    for event in (change_events or {}).get("events") or []:
+        try:
+            dates.append(_date.fromisoformat(str(event.get("date"))[:10]))
+        except ValueError:
+            continue
+    for cluster in (change_events or {}).get("insider_clusters") or []:
+        try:
+            dates.append(_date.fromisoformat(str(cluster.get("end_date"))[:10]))
+        except ValueError:
+            continue
+    await mark_researched(session, company, newest_event=max(dates) if dates else None)
 
 
 async def _change_events_section(
