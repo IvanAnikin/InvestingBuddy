@@ -703,6 +703,14 @@ async def _run(
     )
     if stage.signals or stage.basis or stage.commercial_stage:
         outcome.stage = stage.to_dict()
+    # V3.20 slice 5.3 — a company whose own disclosure places it in a layer of the
+    # electricity stack (slice 5.2 classifier) gets the ``electricity_value_chain``
+    # signal, so the electricity playbook reaches a cable maker classified "Industrials"
+    # or a copper-rod producer classified "Materials". No signal, no change.
+    selection_signals: tuple[str, ...] = tuple(stage.signals)
+    from app.services.pipeline.electricity_step import electricity_selection_signals
+
+    selection_signals += await electricity_selection_signals(session, company, cfg=cfg)
     # ADR-088 (LIN-1) — positively shown, or None (then no synthesis gate applies).
     commercial_stage = stage.commercial_stage
     if stage.is_development_stage:
@@ -806,7 +814,7 @@ async def _run(
     selection = select_playbooks(
         sector=classification.matching_sector,
         industry=classification.industry,
-        signals=stage.signals,
+        signals=selection_signals,
     )
     if selection.is_empty:
         outcome.degraded.append(f"no playbook applied: {selection.reason}")
@@ -856,7 +864,7 @@ async def _run(
         selection,
         sector=classification.matching_sector,
         industry=classification.industry,
-        signals=stage.signals,
+        signals=selection_signals,
     )
     outcome.not_meaningful_metrics = applicability.to_dict()
     # ADR-088 — what every model in the run is told about the company (PYPL-4, LIN-1):

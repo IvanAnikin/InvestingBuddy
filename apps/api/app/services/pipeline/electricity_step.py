@@ -104,4 +104,32 @@ async def electricity_layers_section(
         return None
 
 
-__all__ = ["electricity_layers_section", "load_inputs"]
+#: The playbook-selection signal a classified company gets (slice 5.3).
+SELECTION_SIGNAL = "electricity_value_chain"
+
+
+async def electricity_selection_signals(
+    session: Any, company: Any, *, cfg: Any,
+) -> tuple[str, ...]:
+    """``(SELECTION_SIGNAL,)`` when the company is classified into a layer, else ``()``.
+
+    Only ``classified`` counts: an ``excluded`` company (a gold miner that also sells
+    wire) does not get the electricity methodology. Never raises.
+    """
+    if not getattr(cfg, "v3_electricity_classifier_enabled", False):
+        return ()
+    try:
+        texts, segments = await load_inputs(session, company)
+        if classify(texts, segments)["status"] == "classified":
+            return (SELECTION_SIGNAL,)
+    except Exception:  # noqa: BLE001 - selection proceeds on the other signals
+        logger.warning("electricity selection signal failed")
+    return ()
+
+
+__all__ = [
+    "SELECTION_SIGNAL",
+    "electricity_layers_section",
+    "electricity_selection_signals",
+    "load_inputs",
+]
