@@ -209,6 +209,10 @@ class ReportInputs:
     #: V3.20 slice 6.2 — change events (``change_events_step.change_events_section``);
     #: ``None`` leaves the report unchanged.
     change_events: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.1 — enterprise value and multiples
+    #: (``enterprise_value_step.enterprise_value_section``); ``None`` leaves the report
+    #: unchanged.
+    enterprise_value: Mapping[str, Any] | None = None
 
 
 
@@ -853,6 +857,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when the score is on, so every other report is byte-identical.
         valuation_section = next(s for s in sections if s["key"] == "valuation_context")
         valuation_section["obscurity"] = dict(inputs.obscurity)
+    if inputs.enterprise_value:
+        # Only when the block is on and had an input, so other reports are byte-identical.
+        ev_section = next(s for s in sections if s["key"] == "valuation_context")
+        ev_section["enterprise_value"] = dict(inputs.enterprise_value)
     if inputs.change_events:
         # Only when an event was found, so every other report is byte-identical.
         growth = next(s for s in sections if s["key"] == "growth_and_catalysts")

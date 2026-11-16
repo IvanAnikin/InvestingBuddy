@@ -898,10 +898,12 @@ async def _run(
 
     thesis = await resolve_thesis(session, discovery_candidate_id=discovery_candidate_id)
     thesis_size = None
+    size_observation = None
     if thesis.present:
         # V3.20 slice 1.3 — size is RE-CHECKED at analysis time (market caps move), from
         # the exchange's own figure; the discovery snapshot is the fallback, with its age.
         observation, previous = await analysis_time_size(thesis, company, cfg=cfg)
+        size_observation = observation
         market_cap = observation.market_cap_usd if observation is not None else None
         if (
             market_cap is None
@@ -1401,6 +1403,7 @@ async def _run(
         electricity_layers = await _electricity_layers_section(session, company, cfg=cfg)
         passive_ownership = await _passive_ownership_section(session, company, cfg=cfg)
         change_events = await _change_events_section(session, company, cfg=cfg)
+        real_asset = await _real_asset_section(session, run, electricity_layers)
         report, withheld_reason = await _professional_report(
             session,
             run,
@@ -1424,7 +1427,10 @@ async def _run(
             earnings_track_record=await _earnings_track_record_section(
                 session, company, cfg=cfg),
             electricity_layers=electricity_layers,
-            real_asset=await _real_asset_section(session, run, electricity_layers),
+            real_asset=real_asset,
+            enterprise_value=await _enterprise_value_section(
+                session, company, cfg=cfg, observation=size_observation,
+                real_asset=real_asset),
             obscurity=await _obscurity_section(
                 session, company, cfg=cfg, passive_block=passive_ownership,
                 layers_block=electricity_layers),
@@ -1645,6 +1651,17 @@ async def _obscurity_section(
                                    layers_block=layers_block)
 
 
+async def _enterprise_value_section(
+    session: Any, company: Any, *, cfg: Any, observation: Any,
+    real_asset: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.1 — the EV + multiples block; None when off or no input (unchanged)."""
+    from app.services.pipeline.enterprise_value_step import enterprise_value_section
+
+    return await enterprise_value_section(session, company, cfg=cfg, observation=observation,
+                                          real_asset=real_asset)
+
+
 async def _mark_researched(
     session: Any, company: Any, *, cfg: Any, change_events: dict[str, Any] | None,
 ) -> None:
@@ -1780,6 +1797,7 @@ async def _professional_report(
     real_asset: dict[str, Any] | None = None,
     obscurity: dict[str, Any] | None = None,
     change_events: dict[str, Any] | None = None,
+    enterprise_value: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1978,6 +1996,7 @@ async def _professional_report(
         real_asset=real_asset,
         obscurity=obscurity,
         change_events=change_events,
+        enterprise_value=enterprise_value,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

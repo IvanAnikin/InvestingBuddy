@@ -5,6 +5,7 @@ import { PassiveOwnershipSection } from "@/components/research/report/PassiveOwn
 import { EarningsTrackRecordSection } from "@/components/research/report/EarningsTrackRecordSection";
 import { ElectricityLayersSection } from "@/components/research/report/ElectricityLayersSection";
 import { ChangeEventsSection } from "@/components/research/report/ChangeEventsSection";
+import { EnterpriseValueSection } from "@/components/research/report/EnterpriseValueSection";
 import { ObscuritySection } from "@/components/research/report/ObscuritySection";
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
 import { sourceTierWord } from "@/components/research/reportSections";
@@ -810,6 +811,7 @@ function DomainBody({
       <RealAssetSection block={section.realAsset} />
       <RelationshipSection block={section.relationships} company="This company" />
       <PassiveOwnershipSection block={section.passiveOwnership} />
+      <EnterpriseValueSection block={section.enterpriseValue} />
       <ObscuritySection block={section.obscurity} />
       <ChangeEventsSection block={section.changeEvents} />
       <EarningsTrackRecordSection block={section.earningsTrackRecord} />

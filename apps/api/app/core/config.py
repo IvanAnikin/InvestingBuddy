@@ -1454,6 +1454,13 @@ class Settings(BaseSettings):
     # regime before the rest move behind (reorders, never shrinks). 0 = off. Names with
     # no electricity-layer hint are never moved.
     v3_discovery_diversity_max_per_cell: int = 2
+    # V3.20 slice 8.1: enterprise value (dated market cap + filed net debt, same currency,
+    # no FX) and EV/EBIT, EV per capacity unit (valuation_context section). No external
+    # call: the market cap is the run's own analysis-time observation.
+    v3_enterprise_value_enabled: bool = True
+    # V3.20 slice 8.1: without a thesis observation, re-read the exchange's market cap for
+    # the EV block (one exchange-directory read). Off by default.
+    v3_enterprise_value_recheck_enabled: bool = False
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.
