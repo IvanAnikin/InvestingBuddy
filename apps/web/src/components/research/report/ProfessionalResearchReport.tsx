@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import Surface from "@/components/product/Surface";
 import RelationshipSection from "@/components/research/report/RelationshipSection";
+import { DemandTriangulationSection } from "@/components/research/report/DemandTriangulationSection";
 import { PassiveOwnershipSection } from "@/components/research/report/PassiveOwnershipSection";
 import { EarningsTrackRecordSection } from "@/components/research/report/EarningsTrackRecordSection";
 import { ElectricityLayersSection } from "@/components/research/report/ElectricityLayersSection";
@@ -817,6 +818,7 @@ function DomainBody({
       <ElectricityLayersSection block={section.electricityLayers} />
       <RealAssetSection block={section.realAsset} />
       <RelationshipSection block={section.relationships} company="This company" />
+      <DemandTriangulationSection block={section.demandTriangulation} />
       <PassiveOwnershipSection block={section.passiveOwnership} />
       <EnterpriseValueSection block={section.enterpriseValue} />
       <LayerPeersSection block={section.layerPeers} />

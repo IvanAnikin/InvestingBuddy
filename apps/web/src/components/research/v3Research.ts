@@ -57,6 +57,7 @@ import { type FinancialDepthBlock, readFinancialDepthBlock } from "./financialDe
 import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
 import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
+import { type DemandTriangulationBlock, readDemandTriangulationBlock } from "./demandTriangulation";
 
 /** One statement the ledger holds, with the ids that make it citable. */
 export type V3Finding = {
@@ -491,6 +492,9 @@ export type DomainSection = SectionHead & {
       its citations and a disclosed / not disclosed / not researched state. Null when the
       relationship graph is off, and on older reports. */
   relationships: RelationshipBlock | null;
+  /** V3.20 slice 7.3 (business_model): named customers vs published grid plans. Null outside
+      the electricity stack, and on older reports. */
+  demandTriangulation: DemandTriangulationBlock | null;
   /** V3.20 slice 3.4 (valuation_context): US-registered funds / ETFs holding the
       company (SEC N-PORT). Null when off, and on older reports. */
   passiveOwnership: PassiveOwnershipBlock | null;
@@ -1133,6 +1137,7 @@ function readDomainSection(
     metricsNote: str(r.metrics_note),
     webEvidence: readWebEvidenceBlock(r.web_evidence),
     relationships: readRelationshipBlock(r.relationships),
+    demandTriangulation: readDemandTriangulationBlock(r.demand_triangulation),
     passiveOwnership: readPassiveOwnershipBlock(r.passive_ownership),
     earningsTrackRecord: readEarningsTrackRecordBlock(r.earnings_track_record),
     electricityLayers: readElectricityLayersBlock(r.electricity_layers),

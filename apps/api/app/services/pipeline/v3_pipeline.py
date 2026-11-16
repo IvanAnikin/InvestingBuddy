@@ -1465,6 +1465,7 @@ async def _run(
                 precedents_block=precedent_transactions),
             challenges=outcome.challenges or None,
             self_critique_enabled=bool(getattr(cfg, "v3_self_critique_enabled", False)),
+            demand_plans=await _demand_plans(session, cfg=cfg, layers_block=electricity_layers),
         )
         outcome.professional_research = report
         await _mark_researched(session, company, cfg=cfg, change_events=change_events)
@@ -1749,6 +1750,25 @@ async def _valuation_section(
                                    size_fit=size_fit, precedents_block=precedents_block)
 
 
+async def _demand_plans(
+    session: Any, *, cfg: Any, layers_block: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[str]] | None:
+    """V3.20 slice 7.3 — the held grid plans (enabled sources, newest edition each), read
+    only for a company classified into the electricity stack; None otherwise. Never raises."""
+    if not getattr(cfg, "v3_demand_triangulation_enabled", False):
+        return None
+    if not layers_block or layers_block.get("status") != "classified":
+        return None
+    try:
+        from app.services.grid_plans.triangulation import held_plans
+
+        async with session.begin_nested():
+            return await held_plans(session, cfg)  # type: ignore[no-any-return]
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        logger.warning("grid plans read failed")
+        return None
+
+
 async def _precedent_transactions_section(
     session: Any, *, cfg: Any, layers_block: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -1926,6 +1946,7 @@ async def _professional_report(
     valuation: dict[str, Any] | None = None,
     challenges: dict[str, Any] | None = None,
     self_critique_enabled: bool = False,
+    demand_plans: tuple[list[dict[str, Any]], list[str]] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -2137,6 +2158,24 @@ async def _professional_report(
         # model reads or restates it; only when the engine ran, so other reports are
         # byte-identical.
         report["valuation"] = valuation
+    if demand_plans is not None:
+        # V3.20 slice 7.3: do the named customers publish active grid projects in this
+        # technology? Computed after the editor from the report's own blocks.
+        try:
+            from datetime import date as _date
+
+            from app.services.grid_plans.triangulation import triangulation_block
+
+            business = next((s for s in report.get("sections") or []
+                             if s.get("key") == "business_model"), None)
+            block = triangulation_block(
+                relationships=(business or {}).get("relationships"), layers=electricity_layers,
+                plans=demand_plans[0], sources_read=demand_plans[1], today=_date.today(),
+                report=report)
+            if block is not None and business is not None:
+                business["demand_triangulation"] = block
+        except Exception:  # noqa: BLE001 - an additive block never costs the report
+            logger.warning("demand triangulation failed")
     if verdict_enabled:
         # V3.20 slice 9.2 (ADR-098): computed AFTER the editor, from the report itself —
         # no model sees or chooses the label. Failure costs the block, not the report.
