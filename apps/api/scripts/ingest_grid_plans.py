@@ -25,19 +25,29 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from app.core.config import settings  # noqa: E402
 from app.db.session import async_session_factory  # noqa: E402
-from app.services.grid_plans.base import SOURCES  # noqa: E402
-from app.services.grid_plans.store import SourceDisabled, ingest_file, source  # noqa: E402
+from app.services.grid_plans.base import SOURCES, GridSource  # noqa: E402
+from app.services.grid_plans.store import (  # noqa: E402
+    SourceDisabled,
+    ingest_file,
+    redirect_allowed,
+    source,
+)
 
 MAX_BYTES = 60_000_000
 
 
-async def _download(url: str) -> bytes:  # pragma: no cover - network
+async def _download(src: GridSource) -> bytes:  # pragma: no cover - network
     import httpx
 
     from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
 
+    headers = {USER_AGENT_HEADER: research_user_agent()}
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
-        resp = await client.get(url, headers={USER_AGENT_HEADER: research_user_agent()})
+        resp = await client.get(src.download_url, headers=headers)
+        location = resp.headers.get("location")
+        if resp.status_code in (301, 302, 303, 307, 308) and redirect_allowed(location, src):
+            # One hop to the publisher's own file store. The signed link is never printed.
+            resp = await client.get(str(location), headers=headers)
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code} from the pinned URL")
     if len(resp.content) > MAX_BYTES:
@@ -72,7 +82,7 @@ async def main(argv: list[str] | None = None) -> int:
         path = pathlib.Path(args.file)
         body, url = path.read_bytes(), src.download_url
     else:
-        body, url = await _download(src.download_url), src.download_url
+        body, url = await _download(src), src.download_url
     async with async_session_factory() as session:
         ingest = await ingest_file(session, key=args.source, body=body, cfg=settings,
                                    source_url=url, edition=args.edition)

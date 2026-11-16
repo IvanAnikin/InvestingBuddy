@@ -44,18 +44,18 @@ HEADER = ["Project Name", "Customer Name", "Connection Site", "Stage", "MW Conne
           "Project Number", "Gate"]
 ROWS = [
     ["17 Acres and BESS", "AEUK BATTERY PROJECT II LTD", "17 ACRES BESS 275KV SUBSTATION", "",
-     "0.0", "95.76", "95.76", "2032-06-30", "Scoping", "Direct Connection", "SHET",
+     "0.0", "95.76", "95.76", "30/06/2032", "Scoping", "Direct Connection", "SHET",
      "Energy Storage System", "a0l1", "PRO-004392", "1"],
     ["Hornsea Four", "Orsted Hornsea Project Four Ltd", "Killingholme", "", "0", "2400",
-     "2400", "2030-10-31", "Consents Approved", "Direct Connection", "NGET",
+     "2400", "31/10/2030", "Consents Approved", "Direct Connection", "NGET",
      "Wind Offshore", "a0l2", "PRO-000100", "2"],
     ["Seagreen", "Seagreen Wind Energy Ltd", "Tealing", "", "1075", "0", "1075",
-     "2023-10-01", "Built", "Direct Connection", "SPT", "Wind Offshore", "a0l3",
+     "01/10/2023", "Built", "Direct Connection", "SPT", "Wind Offshore", "a0l3",
      "PRO-000200", ""],
     ["Kincardine STATCOM", "SP Transmission", "Kincardine", "", "0", "150", "150",
-     "2027-04-01", "Under Construction/Commissioning", "Direct Connection", "SPT",
+     "01/04/2027", "Under Construction/Commissioning", "Direct Connection", "SPT",
      "Reactive Compensation", "a0l4", "PRO-000300", ""],
-    ["Offshore link", "Some OFTO Ltd", "Sea", "", "0", "500", "500", "2031-01-01",
+    ["Offshore link", "Some OFTO Ltd", "Sea", "", "0", "500", "500", "01/01/2031",
      "Awaiting Consents", "Direct Connection", "OFTO",
      "Interconnector;Wind Offshore", "a0l5", "PRO-000400", ""],
     ["Demand site", "Data Centre Co Ltd", "Slough", "", "0", "300", "300", "2029-03-31",
@@ -80,6 +80,8 @@ def test_projects_carry_the_customer_tags_status_and_year() -> None:
     assert bess["technology_tags"] == ["storage"] and bess["status_class"] == "under_consideration"
     assert bess["commissioning_year"] == 2032 and bess["capacity_mw"] == 95.76
     assert "SHET" in bess["region"]
+    assert bess["commissioning_text"] == "MW effective from 2032-06-30"  # file: 30/06/2032
+    assert rows["PRO-000500"]["commissioning_year"] == 2029  # API form: 2029-03-31
     assert rows["PRO-000100"]["status_class"] == "planned"
     assert rows["PRO-000100"]["technology_tags"] == ["gen_wind_offshore", "offshore"]
     assert rows["PRO-000200"]["status_class"] == "commissioned"
@@ -169,3 +171,17 @@ def test_registry_and_licence() -> None:
     entry = build_registry(Settings()).get("neso_tec")
     assert entry.enabled and entry.jurisdiction == "GB"
     assert "Supported by National Energy SO Open Data" in base.SOURCES["neso_tec"].licence
+
+
+def test_download_follows_one_redirect_only_to_the_publishers_store() -> None:
+    from app.services.grid_plans.store import redirect_allowed
+
+    neso, aemo = base.SOURCES["neso_tec"], base.SOURCES["aemo_tai"]
+    signed = "https://abc123.eu.r2.cloudflarestorage.com/dx/resources/x/tec.csv?X-Amz-Signature=s"
+    assert redirect_allowed(signed, neso)
+    assert not redirect_allowed(signed.replace("https", "http", 1), neso)
+    assert not redirect_allowed("https://r2.cloudflarestorage.com/x", neso)
+    assert not redirect_allowed("https://evil.example/r2.cloudflarestorage.com", neso)
+    assert not redirect_allowed("https://x.r2.cloudflarestorage.com.evil.example/", neso)
+    assert not redirect_allowed(signed, aemo)  # no redirect hosts named
+    assert not redirect_allowed(None, neso)

@@ -38,6 +38,9 @@ class GridSource:
     flag: str
     #: The edition of the pinned file (``--edition`` overrides it).
     default_edition: str
+    #: Host suffixes the pinned URL may redirect to ONCE (the publisher's own file store,
+    #: e.g. a signed object-storage link). Empty = no redirect is followed.
+    redirect_hosts: tuple[str, ...] = ()
 
 
 SOURCES: dict[str, GridSource] = {
@@ -111,6 +114,8 @@ SOURCES: dict[str, GridSource] = {
                      "Entry Capacity (TEC) register."),
         flag="v3_grid_plans_neso_enabled",
         default_edition="2026-11-13",
+        # The portal answers 302 with a signed link to its Cloudflare R2 bucket.
+        redirect_hosts=(".r2.cloudflarestorage.com",),
     ),
 }
 

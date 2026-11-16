@@ -55,6 +55,19 @@ def source(key: str, cfg: Any) -> GridSource:
     return src
 
 
+def redirect_allowed(location: str | None, src: GridSource) -> bool:
+    """May ``--download`` follow this one redirect? Only https, only to a host suffix the
+    source names (its publisher's file store)."""
+    from urllib.parse import urlsplit
+
+    if not location or not src.redirect_hosts:
+        return False
+    parts = urlsplit(location)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and any(
+        host.endswith(suffix) and host != suffix.lstrip(".") for suffix in src.redirect_hosts)
+
+
 def default_edition(src: GridSource) -> str:
     return src.default_edition
 

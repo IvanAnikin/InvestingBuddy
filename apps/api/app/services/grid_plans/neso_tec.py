@@ -5,7 +5,8 @@ Layout pinned on the register as published on the NESO data portal (read 2026-11
 ``Project Name``, ``Customer Name``, ``Connection Site``, ``Stage``, ``MW Connected``,
 ``MW Increase / Decrease``, ``Cumulative Total Capacity (MW)``, ``MW Effective From``,
 ``Project Status``, ``Agreement Type``, ``HOST TO``, ``Plant Type``, ``Project ID``,
-``Project Number``, ``Gate`` — looked up BY NAME.
+``Project Number``, ``Gate`` — looked up BY NAME. Dates are day-first (``31/10/2034``) in
+the file and ISO in NESO's data API; both are read and shown as ISO.
 
 Two kinds of record:
 
@@ -91,9 +92,20 @@ def _mw(v: str) -> float:
     return x if -100_000 < x < 100_000 else 0.0
 
 
+def _iso_date(v: str) -> str | None:
+    """The CSV writes ``31/10/2034`` (day first); NESO's data API returns ``2034-10-31``."""
+    v = v.strip()
+    if m := re.fullmatch(r"(\d{1,2})/(\d{1,2})/((?:19|20)\d\d)", v):
+        day, month, year = int(m.group(1)), int(m.group(2)), m.group(3)
+        return f"{year}-{month:02d}-{day:02d}" if 1 <= month <= 12 and 1 <= day <= 31 else None
+    if m := re.match(r"((?:19|20)\d\d)-(\d\d)-(\d\d)", v):
+        return m.group(0)
+    return None
+
+
 def _year(v: str) -> int | None:
-    m = re.match(r"(20\d\d|19\d\d)-\d\d-\d\d", v.strip())
-    return int(m.group(1)) if m else None
+    iso = _iso_date(v)
+    return int(iso[:4]) if iso else None
 
 
 def parse(body: bytes) -> list[dict[str, Any]]:
@@ -120,7 +132,7 @@ def parse(body: bytes) -> list[dict[str, Any]]:
         status_text = row["Project Status"]
         status = STATUS.get(status_text.lower(), "other")
         host = row["HOST TO"].upper()
-        effective = row["MW Effective From"]
+        effective = _iso_date(row["MW Effective From"]) or row["MW Effective From"]
         mw_total = _mw(row["Cumulative Total Capacity (MW)"])
         mw_change = _mw(row["MW Increase / Decrease"])
         tags = plant_tags(row["Plant Type"])
