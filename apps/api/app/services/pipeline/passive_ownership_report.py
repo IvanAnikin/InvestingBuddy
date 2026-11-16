@@ -126,6 +126,28 @@ def not_ingested_block() -> dict[str, Any]:
             "freshness_note": FRESHNESS_NOTE}
 
 
+def issuer_block(issuer: dict[str, Any] | None) -> dict[str, Any] | None:
+    """V3.20 slice 3.6 — sponsor files: US funds (dated, never added) and UCITS funds."""
+    if not issuer:
+        return None
+
+    def keep(funds: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for f in funds[:MAX_FUNDS]:
+            if not (_safe(f.get("name")) and _safe(f.get("fund_ticker"))):
+                continue
+            out.append({k: f.get(k) for k in ("fund_ticker", "name", "sponsor", "as_of",
+                                              "shares", "weight_pct", "source_url")}
+                       | {"theme_flags": theme_flags(f.get("name"))})
+        return out
+
+    return {"as_of": issuer.get("as_of"), "source": issuer.get("source"),
+            "precedence": issuer.get("precedence"),
+            "us_funds": keep(list(issuer.get("us_funds") or [])),
+            "ucits_funds": keep(list(issuer.get("ucits_funds") or [])),
+            "ucits_shares_held": issuer.get("ucits_shares_held")}
+
+
 def passive_ownership_block(view: dict[str, Any] | None) -> dict[str, Any] | None:
     """``None`` when the view is absent or switched off: the report is then unchanged."""
     if not view or view.get("state") == "disabled":
@@ -138,6 +160,9 @@ def passive_ownership_block(view: dict[str, Any] | None) -> dict[str, Any] | Non
         "theme_flag_basis": "Theme flags match words in the fund's NAME only; they do not "
                             "describe the fund's mandate.",
     }
+    issuer = issuer_block(view.get("issuer_files"))
+    if issuer is not None:
+        base["issuer_files"] = issuer
     if state in _NOT_RESEARCHED_NOTE:
         return base | {"state": STATE_NOT_RESEARCHED, "reason": state,
                        "note": _NOT_RESEARCHED_NOTE[state]}
@@ -185,6 +210,7 @@ def passive_ownership_block(view: dict[str, Any] | None) -> dict[str, Any] | Non
 
 __all__ = [
     "MAX_FUNDS",
+    "issuer_block",
     "THEME_PATTERNS",
     "not_ingested_block",
     "passive_ownership_block",

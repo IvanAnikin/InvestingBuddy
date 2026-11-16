@@ -211,6 +211,51 @@ def _concentration(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             "basis": "top three fund positions ÷ shares held by all US-registered funds"}
 
 
+ISSUER_FILES_SOURCE = ("ETF sponsors' daily holdings files (private use, own risk; "
+                       "redistribution not licensed)")
+ISSUER_FILES_PRECEDENCE = (
+    "SEC N-PORT stays the count for US-registered funds: a US fund's sponsor file is shown "
+    "as a newer dated figure and never added to the N-PORT totals or the % (N-PORT wins). "
+    "UCITS funds are not in N-PORT; their holdings are listed separately and never enter "
+    "the % of shares outstanding, which is labelled US-registered funds only.")
+
+
+async def _issuer_files(session: Any, ids: dict[tuple[str, str], Any]) -> dict[str, Any] | None:
+    """V3.20 slice 3.6 — the newest issuer-file aggregate for the company's identifiers,
+    split into US funds (shown, not added) and UCITS funds (listed separately)."""
+    from sqlalchemy import or_, select
+
+    from app.models.passive_ownership import SOURCE_ISSUER_FILE, SecurityPassiveOwnership
+
+    clauses = [(SecurityPassiveOwnership.identifier_kind == kind)
+               & (SecurityPassiveOwnership.identifier == value) for kind, value in ids]
+    if not clauses:
+        return None
+    rows = (await session.execute(select(SecurityPassiveOwnership).where(
+        SecurityPassiveOwnership.source_kind == SOURCE_ISSUER_FILE,
+        or_(*clauses)))).scalars().all()
+    if not rows:
+        return None
+    period = max(r.period for r in rows)
+    us: list[dict[str, Any]] = []
+    ucits: list[dict[str, Any]] = []
+    for r in rows:
+        if r.period != period:
+            continue
+        for f in r.top_funds_json or []:
+            entry = {k: f.get(k) for k in ("fund_ticker", "name", "sponsor", "as_of",
+                                           "shares", "weight_pct", "match_basis",
+                                           "source_url")}
+            (ucits if f.get("domicile") == "UCITS" else us).append(entry)
+    def _order(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(items, key=lambda f: -(f.get("shares") or 0))
+    ucits_shares = sum((Decimal(str(f["shares"])) for f in ucits if f.get("shares")), Decimal(0))
+    return {"as_of": period, "source": ISSUER_FILES_SOURCE,
+            "precedence": ISSUER_FILES_PRECEDENCE,
+            "us_funds": _order(us), "ucits_funds": _order(ucits),
+            "ucits_shares_held": _num(ucits_shares) if ucits else None}
+
+
 async def company_passive_ownership(
     session: Any, *, company: Any, cfg: Any, fetch: SecFetch | None = None,
 ) -> dict[str, Any]:
@@ -238,6 +283,10 @@ async def company_passive_ownership(
     ids, _lei, cik = await _identifiers(session, entity_id)
     if not ids:
         return base | {"state": "no_identifiers"}
+    if getattr(cfg, "v3_issuer_holdings_enabled", False):
+        issuer = await _issuer_files(session, ids)
+        if issuer is not None:
+            base["issuer_files"] = issuer
     clauses = [(SecurityPassiveOwnership.identifier_kind == kind)
                & (SecurityPassiveOwnership.identifier == value) for kind, value in ids]
     stored = (await session.execute(select(SecurityPassiveOwnership).where(
@@ -282,6 +331,7 @@ async def company_passive_ownership(
 __all__ = [
     "COUNTED_SECURITY_TYPES",
     "CoverShares",
+    "ISSUER_FILES_PRECEDENCE",
     "PCT_LABEL",
     "company_passive_ownership",
     "cover_shares_url",

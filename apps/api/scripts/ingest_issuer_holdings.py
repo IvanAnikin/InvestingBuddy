@@ -10,6 +10,9 @@ PRIVATE USE, OWN RISK (owner decision D8): switch off or license before a public
 
     python scripts/ingest_issuer_holdings.py --list        # the curated list and its version
 
+    # the daily refresh (schedule once a day): only funds without a successful file today
+    python scripts/ingest_issuer_holdings.py --download --due
+
 Without ``--download`` nothing is fetched. ``--dry-run`` parses and prints, then rolls
 back. Each adapter fails closed on a layout it was not written against; the failure is
 recorded in ``fund_holdings_ingests`` and the other files still load.
@@ -28,6 +31,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from app.db.session import async_session_factory  # noqa: E402
 from app.services.passive_ownership.ingest import targets_from_db  # noqa: E402
 from app.services.passive_ownership.issuer_ingest import (  # noqa: E402
+    done_today,
     fetch_curated,
     ingest_files,
     ticker_targets,
@@ -59,6 +63,8 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fund", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--due", action="store_true",
+                        help="skip funds whose file was ingested successfully today (UTC)")
     args = parser.parse_args(argv)
     if args.list:
         print(f"curated funds version {CURATED_FUNDS_VERSION}")
@@ -77,6 +83,10 @@ async def main(argv: list[str] | None = None) -> int:
     if args.download:
         chosen = [f for f in CURATED_FUNDS if not args.fund or f.ticker in
                   {t.upper() for t in args.fund}]
+        if args.due:
+            async with async_session_factory() as session:
+                done = await done_today(session)
+            chosen = [f for f in chosen if f"issuer_file:{f.sponsor}:{f.ticker}" not in done]
         files.extend(await fetch_curated(chosen, _fetch))
     if not files:
         print("nothing to ingest: pass --file TICKER=PATH or --download")

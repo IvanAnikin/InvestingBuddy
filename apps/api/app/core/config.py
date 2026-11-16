@@ -1403,6 +1403,11 @@ class Settings(BaseSettings):
     # N-PORT aggregates (offline ingest, scripts/ingest_nport.py). One SEC request (the
     # cover-page share count) per report, and only when a US-registered fund holds it.
     v3_passive_ownership_enabled: bool = True
+    # V3.20 slice 3.6: show the ETF sponsors' daily holdings files (offline ingest,
+    # scripts/ingest_issuer_holdings.py; private use, own risk — D8) beside N-PORT: US
+    # funds as dated figures never added to N-PORT totals, UCITS funds listed separately.
+    # Turn OFF before any public launch unless the files are licensed.
+    v3_issuer_holdings_enabled: bool = True
     # V3.20 slice 4.1: quarterly revenue and diluted EPS per fiscal quarter from SEC XBRL
     # (companyconcept + submissions; ~6 requests per SEC filer per run) into
     # earnings_results. Non-SEC issuers are skipped (state no_cik).

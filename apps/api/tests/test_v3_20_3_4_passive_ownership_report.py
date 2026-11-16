@@ -202,4 +202,11 @@ class TestWebReaderKeys:
 
         walk(passive_ownership_block(_view()))
         walk(not_ingested_block())
+        # V3.20 slice 3.6: the sponsor-files sub-block.
+        walk(passive_ownership_block(_view() | {"issuer_files": {
+            "as_of": "2026-11-13", "source": "s", "precedence": "p", "ucits_shares_held": 1.0,
+            "us_funds": [], "ucits_funds": [{
+                "fund_ticker": "INRG", "name": "Clean Energy UCITS", "sponsor": "ishares",
+                "as_of": "2026-11-13", "shares": 1.0, "weight_pct": 0.5,
+                "source_url": "https://x"}]}}))
         assert read and read <= written, sorted(read - written)

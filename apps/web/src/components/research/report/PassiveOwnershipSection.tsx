@@ -5,7 +5,11 @@
  * Nothing here produces markup from data.
  */
 
-import type { PassiveOwnershipBlock } from "@/components/research/passiveOwnership";
+import type {
+  IssuerFiles,
+  IssuerFund,
+  PassiveOwnershipBlock,
+} from "@/components/research/passiveOwnership";
 import { themeText } from "@/components/research/passiveOwnership";
 
 const muted = "text-xs leading-relaxed text-[color:var(--ib-ink-3)]";
@@ -23,6 +27,47 @@ const usd = (n: number | null): string =>
       : `$${Math.round(n).toLocaleString("en-US")}`;
 
 const ETF_WORD = { yes: "ETF", no: "Fund", not_stated: "Not stated" } as const;
+
+function IssuerFundList({ title, funds }: { title: string; funds: IssuerFund[] }) {
+  if (funds.length === 0) return null;
+  return (
+    <div className="mt-2">
+      <div className={muted}>{title}</div>
+      <ul className="mt-1 text-sm">
+        {funds.map((f) => (
+          <li key={`${f.ticker}-${f.asOf}`} className="[overflow-wrap:anywhere]">
+            {f.url ? (
+              <a href={f.url} target="_blank" rel="noopener noreferrer"
+                 className="underline underline-offset-2">{f.ticker}</a>
+            ) : (
+              f.ticker
+            )}{" "}
+            {f.name}: {int(f.shares)} shares
+            {f.weightPct !== null && <> ({f.weightPct.toFixed(2)} % of the fund)</>}
+            {f.asOf && <span className={muted}> — file of {f.asOf}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function IssuerFilesView({ files }: { files: IssuerFiles | null }) {
+  if (!files) return null;
+  return (
+    <div className="mt-4" data-testid="passive-issuer-files">
+      <div className="text-sm font-medium text-[color:var(--ib-ink)]">
+        Sponsors&apos; daily holdings files{files.asOf && <> (newest {files.asOf})</>}
+      </div>
+      <IssuerFundList title="US funds — newer dated figures, not added to the N-PORT totals"
+                      funds={files.usFunds} />
+      <IssuerFundList title="UCITS funds — not in N-PORT, never in the percentage"
+                      funds={files.ucitsFunds} />
+      {files.precedence && <p className={`mt-1 max-w-2xl ${muted}`}>{files.precedence}</p>}
+      {files.source && <p className={`mt-1 ${muted}`}>Source: {files.source}.</p>}
+    </div>
+  );
+}
 
 export function PassiveOwnershipSection({ block }: { block: PassiveOwnershipBlock | null }) {
   if (!block) return null;
@@ -167,6 +212,7 @@ export function PassiveOwnershipSection({ block }: { block: PassiveOwnershipBloc
           )}
         </>
       )}
+      <IssuerFilesView files={block.issuerFiles} />
     </section>
   );
 }

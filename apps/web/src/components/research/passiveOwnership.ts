@@ -17,7 +17,11 @@
  *               report_date, theme_flags[]}],
  *        funds_omitted, withheld_for_safety, themed_fund_count,
  *        other_lines[{identifier_kind, identifier, reason, fund_count, shares_held}],
- *        source_urls[]}
+ *        source_urls[],
+ *        issuer_files{as_of, source, precedence, ucits_shares_held,
+ *                     us_funds[] / ucits_funds[] of {fund_ticker, name, sponsor, as_of,
+ *                     shares, weight_pct, source_url, theme_flags[]}} (slice 3.6; also on
+ *        the not_researched state)}
  *
  * Rules: an absent or unreadable block is `null` (older reports render as before); every
  * string stays a plain text node; a URL is a link only when it is https (`httpsUrl`).
@@ -83,7 +87,63 @@ export type PassiveOwnershipBlock = {
   withheldForSafety: number;
   otherLines: { identifier: string; reason: string | null; fundCount: number | null }[];
   sourceUrls: string[];
+  /** V3.20 slice 3.6: ETF sponsors' daily files. US funds are dated figures NEVER added to
+      the N-PORT totals; UCITS funds are listed apart and never enter the %. */
+  issuerFiles: IssuerFiles | null;
 };
+
+export type IssuerFund = {
+  ticker: string;
+  name: string;
+  sponsor: string | null;
+  asOf: string | null;
+  shares: number | null;
+  weightPct: number | null;
+  url: string | null;
+};
+
+export type IssuerFiles = {
+  asOf: string | null;
+  source: string | null;
+  precedence: string | null;
+  usFunds: IssuerFund[];
+  ucitsFunds: IssuerFund[];
+  ucitsSharesHeld: number | null;
+};
+
+function readIssuerFund(r: Record<string, unknown>): IssuerFund | null {
+  const ticker = str(r.fund_ticker);
+  const name = str(r.name);
+  if (!ticker || !name) return null;
+  return {
+    ticker,
+    name,
+    sponsor: str(r.sponsor),
+    asOf: str(r.as_of),
+    shares: num(r.shares),
+    weightPct: num(r.weight_pct),
+    url: httpsUrl(r.source_url),
+  };
+}
+
+export function readIssuerFiles(raw: unknown): IssuerFiles | null {
+  if (!isRecord(raw)) return null;
+  const funds = (v: unknown) =>
+    records(v)
+      .map(readIssuerFund)
+      .filter((f): f is IssuerFund => f !== null);
+  const usFunds = funds(raw.us_funds);
+  const ucitsFunds = funds(raw.ucits_funds);
+  if (usFunds.length === 0 && ucitsFunds.length === 0) return null;
+  return {
+    asOf: str(raw.as_of),
+    source: str(raw.source),
+    precedence: str(raw.precedence),
+    usFunds,
+    ucitsFunds,
+    ucitsSharesHeld: num(raw.ucits_shares_held),
+  };
+}
 
 const STATES: readonly PassiveOwnershipState[] = ["held", "none_found", "not_researched"];
 
@@ -157,6 +217,7 @@ export function readPassiveOwnershipBlock(raw: unknown): PassiveOwnershipBlock |
     sourceUrls: Array.isArray(raw.source_urls)
       ? raw.source_urls.map(httpsUrl).filter((u): u is string => u !== null)
       : [],
+    issuerFiles: readIssuerFiles(raw.issuer_files),
   };
 }
 

@@ -279,6 +279,9 @@ Read from the stored SEC Form N-PORT aggregates, which the offline ingest writes
   - **Other fields:** `other_lines[]` (ADR / LEI-only lines, not added), `source_urls[]`, `freshness_note`.
   - **Safety:** a fund name the shared language check flags drops that fund (counted in `withheld_for_safety`), never the report.
   - **Web:** `PassiveOwnershipSection.tsx` shows the % only with its label and denominator date. `tests/test_v3_20_3_4_passive_ownership_report.py` pins every key `passiveOwnership.ts` reads to the producer.
+- **Sponsor files (V3.20 slices 3.5–3.6):** when `V3_ISSUER_HOLDINGS_ENABLED` is on and sponsor files were ingested (`scripts/ingest_issuer_holdings.py`, private use, own risk), the view and the report block carry `issuer_files` = `{as_of, source, precedence, us_funds[], ucits_funds[], ucits_shares_held}`. Each fund is `{fund_ticker, name, sponsor, as_of, shares, weight_pct, source_url}`, plus `theme_flags[]` in the report.
+  - **Precedence: N-PORT wins.** A US fund's sponsor file is a newer dated figure, shown but never added to `shares_held`, the fund counts or the %. UCITS funds are not in N-PORT. They are listed apart and never enter the %, which stays labelled "US-registered funds only".
+  - **Without N-PORT:** the block is `not_researched` / `no_data_set_ingested`, counted on N-PORT ingests only, and still carries `issuer_files`.
 
 Error `404 Not Found`: company does not exist.
 

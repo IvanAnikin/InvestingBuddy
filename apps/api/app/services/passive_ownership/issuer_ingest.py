@@ -231,6 +231,21 @@ async def ingest_files(session: Any, files: list[tuple[FundSpec, str, bytes | No
     return result
 
 
+async def done_today(session: Any, today: date | None = None) -> set[str]:
+    """``issuer_file:<sponsor>:<ticker>`` kinds with a successful file finished today (UTC):
+    the daily refresh skips them."""
+    from sqlalchemy import select
+
+    from app.models.passive_ownership import INGEST_COMPLETE, FundHoldingsIngest
+
+    day = today or datetime.now(timezone.utc).date()
+    rows = (await session.execute(select(FundHoldingsIngest.source_kind,
+                                         FundHoldingsIngest.finished_at).where(
+        FundHoldingsIngest.status == INGEST_COMPLETE,
+        FundHoldingsIngest.source_kind.like("issuer_file:%")))).all()
+    return {kind for kind, finished in rows if finished and finished.date() == day}
+
+
 async def fetch_curated(
     funds: list[FundSpec], fetch: Fetch
 ) -> list[tuple[FundSpec, str, bytes | None]]:
@@ -249,6 +264,7 @@ async def fetch_curated(
 __all__ = [
     "DOMICILE_UCITS",
     "IssuerIngestResult",
+    "done_today",
     "fetch_curated",
     "ingest_files",
     "match",

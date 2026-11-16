@@ -1620,20 +1620,30 @@ async def _passive_ownership_section(
     try:
         from sqlalchemy import func, select
 
-        from app.models.passive_ownership import INGEST_COMPLETE, FundHoldingsIngest
+        from app.models.passive_ownership import (
+            INGEST_COMPLETE,
+            SOURCE_NPORT,
+            FundHoldingsIngest,
+        )
         from app.services.passive_ownership.view import company_passive_ownership
         from app.services.pipeline.passive_ownership_report import (
+            issuer_block,
             not_ingested_block,
             passive_ownership_block,
         )
 
         async with session.begin_nested():
+            # Only an N-PORT ingest makes "none found" meaningful; issuer-file logs
+            # (slice 3.5) share the table under ``issuer_file:<sponsor>:<ticker>``.
             ingested = await session.scalar(
                 select(func.count()).select_from(FundHoldingsIngest).where(
-                    FundHoldingsIngest.status == INGEST_COMPLETE))
-            if not ingested:
-                return not_ingested_block()
+                    FundHoldingsIngest.status == INGEST_COMPLETE,
+                    FundHoldingsIngest.source_kind == SOURCE_NPORT))
             view = await company_passive_ownership(session, company=company, cfg=cfg)
+        if not ingested:
+            block = not_ingested_block()
+            issuer = issuer_block((view or {}).get("issuer_files"))
+            return block | {"issuer_files": issuer} if issuer else block
         return passive_ownership_block(view)
     except Exception:  # noqa: BLE001 - an additive block never costs the report
         return None
