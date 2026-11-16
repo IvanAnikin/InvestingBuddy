@@ -1089,6 +1089,10 @@ class Settings(BaseSettings):
     # question asked of somebody else and start spending on a path nobody
     # approved. With the flag off, a detection pass observes nothing and says so.
     v3_monitoring_enabled: bool = False
+    # V3.20 slice 9.4: the six record-derived kinds (earnings, consensus revision,
+    # passive ownership, relationships, competitor capacity, change events). Read only
+    # when V3_MONITORING_ENABLED is on; no network call, nothing scheduled (#15).
+    v3_monitoring_research_signals_enabled: bool = True
 
     # ── V3.10: the V3 research pipeline at the real front door ──────────────
     # OFF by default. With it off the company-research entry point behaves

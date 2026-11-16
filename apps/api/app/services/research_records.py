@@ -8,8 +8,8 @@ One structured record per completed research run, READ from the run's own report
 * ``valuation_context.obscurity`` → ``obscurity_score``
 * the size check (``thesis.size_fit``) → USD market cap and its date
 * every block above plus ``operations.real_asset``, ``growth_and_catalysts.change_events``,
-  ``financial_capacity.earnings_track_record`` and ``valuation_context.passive_ownership``
-  verbatim in ``record_json``.
+  ``financial_capacity.earnings_track_record``, ``valuation_context.passive_ownership``
+  and ``business_model.relationships`` (slice 9.4 diffs it) verbatim in ``record_json``.
 
 A missing block is a NULL column, never zero. ``comparable_set`` returns the newest
 record per company in one layer — what peers-by-layer (slice 8.2) reads.
@@ -31,6 +31,7 @@ RECORD_VERSION = "2026-11-16.1"
 #: (section key, block key) read verbatim into ``record_json``.
 RECORD_BLOCKS: tuple[tuple[str, str], ...] = (
     ("business_model", "electricity_layers"),
+    ("business_model", "relationships"),
     ("operations", "real_asset"),
     ("valuation_context", "enterprise_value"),
     ("valuation_context", "obscurity"),

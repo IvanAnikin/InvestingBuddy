@@ -403,6 +403,9 @@ ships unconfigured), [15](#15-monitoring-cadence) (V3.9 scheduling),
 - **Options:** daily; weekly; event-driven on new filings; user-configured.
 - **Recommendation:** event-driven on new filings, plus a user-configurable
   scheduled refresh. Polling on a timer mostly re-reads unchanged documents.
+- **V3.20 proposal (spec §3.11, 2026-11-16):** daily disclosure check, weekly
+  estimates, quarterly N-PORT. Recorded only — slice 9.4 adds signal kinds, not a
+  trigger; nothing is scheduled until the owner decides.
 - **Blocking?** No.
 - **Owner:** user.
 

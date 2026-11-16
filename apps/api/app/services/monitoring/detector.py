@@ -56,6 +56,13 @@ KIND_TRANSCRIPT_PUBLISHED = "transcript_published"
 KIND_RESEARCH_DELTA = "research_delta"
 KIND_OPEN_GAP_CLOSABLE = "open_gap_closable"
 KIND_MACRO_REVISION = "macro_revision"
+# V3.20 slice 9.4 — derived from the comparable-set records (``research_signals``).
+KIND_EARNINGS_RELEASED = "earnings_released"
+KIND_CONSENSUS_REVISION = "consensus_revision"
+KIND_PASSIVE_OWNERSHIP_CHANGE = "passive_ownership_change"
+KIND_RELATIONSHIP_CHANGE = "relationship_change"
+KIND_COMPETITOR_CAPACITY = "competitor_capacity_announcement"
+KIND_CHANGE_EVENT = "change_event"
 
 SIGNAL_KINDS: frozenset[str] = frozenset(
     {
@@ -65,6 +72,12 @@ SIGNAL_KINDS: frozenset[str] = frozenset(
         KIND_RESEARCH_DELTA,
         KIND_OPEN_GAP_CLOSABLE,
         KIND_MACRO_REVISION,
+        KIND_EARNINGS_RELEASED,
+        KIND_CONSENSUS_REVISION,
+        KIND_PASSIVE_OWNERSHIP_CHANGE,
+        KIND_RELATIONSHIP_CHANGE,
+        KIND_COMPETITOR_CAPACITY,
+        KIND_CHANGE_EVENT,
     }
 )
 
@@ -193,6 +206,21 @@ async def detect_for_company(
             open_question_keys=open_question_keys,
         )
     )
+    if getattr(cfg, "v3_monitoring_research_signals_enabled", False):
+        from app.services.monitoring.research_signals import research_signals
+
+        seen = {s.signal_key for s in result.signals}
+        result.signals.extend(
+            s
+            for s in await research_signals(
+                session,
+                company_id=company_id,
+                cutoff=cutoff,
+                prior_run_id=prior.run_id,
+                today=stamp.date(),
+            )
+            if s.signal_key not in seen
+        )
     result.signals = result.signals[:MAX_SIGNALS_PER_PASS]
     if not result.signals:
         result.reason = "nothing observable has changed since the last run."
@@ -410,7 +438,13 @@ async def watchlist_company_ids(
 
 
 __all__ = [
+    "KIND_CHANGE_EVENT",
+    "KIND_COMPETITOR_CAPACITY",
+    "KIND_CONSENSUS_REVISION",
+    "KIND_EARNINGS_RELEASED",
     "KIND_MACRO_REVISION",
+    "KIND_PASSIVE_OWNERSHIP_CHANGE",
+    "KIND_RELATIONSHIP_CHANGE",
     "KIND_NEW_DOCUMENT",
     "KIND_NEW_IR_EVENT",
     "KIND_OPEN_GAP_CLOSABLE",

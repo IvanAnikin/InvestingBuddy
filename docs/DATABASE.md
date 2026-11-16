@@ -1358,6 +1358,17 @@ Index (`company_id`, `as_of`). `comparable_set(layer)` returns the newest record
 company in one layer (window function). Checked on PostgreSQL: upgrade, downgrade,
 re-upgrade; the comparable-set query runs.
 
+## Migration 054 — six more monitoring signal kinds (V3.20 slice 9.4)
+
+No new table. `ck_monitoring_signals_kind` (migration 038) is dropped and recreated wider:
+`earnings_released`, `consensus_revision`, `passive_ownership_change`,
+`relationship_change`, `competitor_capacity_announcement`, `change_event` join the six
+V3.9 kinds. The vocabulary stays closed (`monitoring/detector.SIGNAL_KINDS`, a test pins
+it to the migration). Downgrade restores the narrower constraint and **refuses** while any
+signal of a new kind exists — signals are history and a downgrade never deletes them.
+Checked on PostgreSQL 16: upgrade, refused downgrade with a new-kind row, downgrade,
+re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.
