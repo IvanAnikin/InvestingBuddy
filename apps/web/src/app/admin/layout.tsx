@@ -20,6 +20,7 @@ const navLinks: NavLink[] = [
   { href: "/admin/backtesting", label: "Backtesting" },
   { href: "/admin/sources", label: "Sources" },
   { href: "/admin/portfolio", label: "My portfolio" },
+  { href: "/admin/precedents", label: "Precedent deals" },
 ];
 
 export default async function AdminLayout({

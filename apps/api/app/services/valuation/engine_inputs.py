@@ -30,6 +30,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from app.services.calculations import valuation_engine as eng
+from app.services.valuation.precedents import precedent_peer_multiple
 
 BLOCK_VERSION = "2026-11-16.1"
 SMALL_CAP_USD = 2_000_000_000
@@ -87,6 +88,7 @@ def build_inputs(
     depth_block: Mapping[str, Any] | None, cash_flow: Mapping[str, Any] | None,
     revenue_history: Sequence[Mapping[str, Any]], risk_free: eng.Cited | None,
     erp: eng.Cited | None, market_cap_usd: float | None,
+    precedents_block: Mapping[str, Any] | None = None,
 ) -> eng.Inputs | None:
     """``None`` when there is no computed EV (no currency, no bridge to per share)."""
     ev = (ev_block or {}).get("enterprise_value") or {}
@@ -154,6 +156,9 @@ def build_inputs(
                     "US federal statutory rate" if ccy == "USD" else "a generic 25% rate"),
         debt_weight=_a(weight, "net debt / (net debt + market cap), bounded to 0..0.6"),
         peer_median_ev_to_ebit=peer,
+        # V3.20 slice 8.3 — a precedent EV/EBIT method, only from >=3 approved deals.
+        peer_multiples=tuple(pm for pm in (precedent_peer_multiple(precedents_block, ev_block),)
+                             if pm is not None),
         scenarios={
             "bear": scenario(-SCENARIO_SPREAD, 0.015, 1.2, -0.15, "bear"),
             "base": scenario(0.0, 0.02, 1.0, 0.0, "base"),

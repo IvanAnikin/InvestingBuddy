@@ -18,6 +18,7 @@ from app.api.v1.financial_data import router as financial_data_router
 from app.api.v1.health import router as health_router
 from app.api.v1.market_discovery import router as market_discovery_router
 from app.api.v1.portfolios import router as portfolios_router
+from app.api.v1.precedent_transactions_admin import router as precedents_admin_router
 from app.api.v1.reports import router as reports_router
 from app.api.v1.research_decisions import router as research_decisions_router
 from app.api.v1.scoring import router as scoring_router
@@ -232,6 +233,8 @@ app.include_router(market_discovery_router, prefix="/api/v1")
 app.include_router(research_decisions_router, prefix="/api/v1")
 # V3.20 slice 12.1 — private, hand-entered portfolios (owner-scoped; ADR-100).
 app.include_router(portfolios_router, prefix="/api/v1")
+# V3.20 slice 8.3 — precedent transactions review queue (admin only).
+app.include_router(precedents_admin_router, prefix="/api/v1")
 # Open-web W1 — search provenance audit. Admin only: same guard as research_decisions
 # (backend Basic Auth + the admin-allowlisted Next.js proxy).
 app.include_router(web_research_admin_router, prefix="/api/v1")

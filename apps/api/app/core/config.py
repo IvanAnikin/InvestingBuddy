@@ -1471,6 +1471,11 @@ class Settings(BaseSettings):
     # V3.20 slice 8.2: "Layer peers" block (valuation_context) — the newest research record
     # of every other company in the subject's electricity layer. No external call.
     v3_layer_peers_enabled: bool = True
+    # V3.20 slice 8.3: "Precedent transactions" block (valuation_context) — admin-APPROVED
+    # deals in the subject's electricity layer (``precedent_transactions``, migration 056),
+    # and, with at least three on an EV basis, a precedent EV/EBIT method for the engine.
+    # A database read only; an empty table leaves every report unchanged.
+    v3_precedent_transactions_enabled: bool = True
     # V3.20 slice 8.4: "What today's price implies" block (valuation_context) — peer
     # position, implied margin at the peer median, implied perpetual growth on a named
     # discount-rate grid, observed discount characteristics. Filed facts only; no call.

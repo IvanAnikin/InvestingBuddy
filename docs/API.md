@@ -4114,3 +4114,20 @@ web only through the admin proxy (`/api/v1/portfolios` is on its allow-list).
 | GET | `/api/v1/portfolios/{id}/review` | slice 12.2: `{portfolio_id, name, rules_version, holdings[{position_id, ticker, exchange, entry_date, thesis_status, reason, entry_record, current_record, weakening[{kind, summary, source_url, detail}], context[…], proposed_research[], entry_verdict, current_verdict}], status_counts, thresholds, note}` — rules: docs/v3.20-portfolio.md |
 
 No route imports from a broker, places an order or computes a size.
+
+## Precedent transactions (V3.20 slice 8.3, admin only)
+
+These routes need a signed-in admin: `request.state.admin_email`, or the `X-IB-Admin-Email`
+header in development/test only. Without one they return **403**. From the web they are
+reachable only through the admin proxy (`/api/v1/admin/precedent-transactions` is on its
+allow-list). Nothing here fetches a URL.
+
+| Method | Path | Body / response |
+|---|---|---|
+| GET | `/api/v1/admin/precedent-transactions?status_filter=&layer=` | `[PrecedentRead]` (≤ 500, newest first) |
+| POST | `/api/v1/admin/precedent-transactions` | `{acquirer_name, target_name, announced_date (not future), currency, enterprise_value > 0, value_basis?, metric_key?, metric_value?, metric_period?, layer?, source_url (https), source_title?, source_excerpt?}` → 201, `status: proposed`, `entry_method: curated`; 409 on the same acquirer/target/date |
+| POST | `/api/v1/admin/precedent-transactions/scan` | `{company_id}` → `{chunks_read, deals_found, proposed, skipped_undated}`. Proposes deals from the company's held document chunks and never approves them. |
+| POST | `/api/v1/admin/precedent-transactions/{id}/approve` | `{layer?, metric_key?, metric_value?, metric_period?, value_basis?, note?}` → approved row; 422 if layer, metric or EV is still missing |
+| POST | `/api/v1/admin/precedent-transactions/{id}/reject` | `{note}` (required) → rejected row; the row is kept |
+
+`PrecedentRead` returns every column plus the computed `multiple`.

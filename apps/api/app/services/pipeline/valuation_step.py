@@ -90,6 +90,7 @@ async def valuation_section(
     session: Any, company: Any, *, cfg: Any, ev_block: Mapping[str, Any] | None,
     peers_block: Mapping[str, Any] | None, depth_block: Mapping[str, Any] | None,
     size_fit: Mapping[str, Any] | None, fetcher: Any = None,
+    precedents_block: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not getattr(cfg, "v3_valuation_engine_enabled", False) or not ev_block:
         return None
@@ -115,7 +116,8 @@ async def valuation_section(
             cash_flow=cash_flow, revenue_history=annual_revenues(rows, ccy),
             risk_free=risk_free,
             erp=equity_risk_premium(getattr(cfg, "v3_equity_risk_premium_json", "")),
-            market_cap_usd=float(cap) if isinstance(cap, int | float) else None)
+            market_cap_usd=float(cap) if isinstance(cap, int | float) else None,
+            precedents_block=precedents_block)
         return valuation_block(inputs, ev_block)
     except Exception:  # noqa: BLE001 - an additive block never costs the report
         logger.warning("valuation block failed")

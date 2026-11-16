@@ -66,6 +66,8 @@ const ALLOWED_PREFIXES = [
   // V3.20 slice 12.1 — the signed-in admin's private, hand-entered portfolios. The
   // backend scopes every row to the X-IB-Admin-Email this proxy forwards (ADR-100).
   "/api/v1/portfolios",
+  // V3.20 slice 8.3 — precedent transactions review queue.
+  "/api/v1/admin/precedent-transactions",
 ];
 
 function isAllowed(backendPath: string): boolean {

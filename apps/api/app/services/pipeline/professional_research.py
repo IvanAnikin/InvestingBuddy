@@ -216,6 +216,9 @@ class ReportInputs:
     #: V3.20 slice 8.2 — peers in the same electricity layer (``valuation.layer_peers``);
     #: ``None`` leaves the report unchanged.
     layer_peers: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.3 — admin-approved deals in the subject's layer
+    #: (``valuation.precedents.precedent_block``); ``None`` leaves the report unchanged.
+    precedent_transactions: Mapping[str, Any] | None = None
     #: V3.20 slice 8.4 — what today's EV implies (``market_implied_step``); ``None`` leaves
     #: the report unchanged.
     market_implied: Mapping[str, Any] | None = None
@@ -874,6 +877,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when another company holds a record in the layer.
         peers_section = next(s for s in sections if s["key"] == "valuation_context")
         peers_section["layer_peers"] = dict(inputs.layer_peers)
+    if inputs.precedent_transactions:
+        # Only when an approved deal exists in the layer, so other reports are unchanged.
+        deals_section = next(s for s in sections if s["key"] == "valuation_context")
+        deals_section["precedent_transactions"] = dict(inputs.precedent_transactions)
     if inputs.market_implied:
         # Only when an EV was computed, so every other report is byte-identical.
         implied_section = next(s for s in sections if s["key"] == "valuation_context")

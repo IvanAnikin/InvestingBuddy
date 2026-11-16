@@ -1417,6 +1417,8 @@ async def _run(
         obscurity = await _obscurity_section(
             session, company, cfg=cfg, passive_block=passive_ownership,
             layers_block=electricity_layers)
+        precedent_transactions = await _precedent_transactions_section(
+            session, cfg=cfg, layers_block=electricity_layers)
         market_implied = await _market_implied_section(
             session, company, cfg=cfg, ev_block=enterprise_value, peers_block=layer_peers,
             size_fit=thesis_size, blocks={
@@ -1452,13 +1454,15 @@ async def _run(
             enterprise_value=enterprise_value,
             financial_depth=financial_depth,
             layer_peers=layer_peers,
+            precedent_transactions=precedent_transactions,
             market_implied=market_implied,
             obscurity=obscurity,
             change_events=change_events,
             verdict_enabled=bool(getattr(cfg, "v3_research_verdict_enabled", False)),
             valuation=await _valuation_section(
                 session, company, cfg=cfg, ev_block=enterprise_value, peers_block=layer_peers,
-                depth_block=financial_depth, size_fit=thesis_size),
+                depth_block=financial_depth, size_fit=thesis_size,
+                precedents_block=precedent_transactions),
             challenges=outcome.challenges or None,
             self_critique_enabled=bool(getattr(cfg, "v3_self_critique_enabled", False)),
         )
@@ -1735,14 +1739,38 @@ async def _market_implied_section(
 async def _valuation_section(
     session: Any, company: Any, *, cfg: Any, ev_block: dict[str, Any] | None,
     peers_block: dict[str, Any] | None, depth_block: dict[str, Any] | None,
-    size_fit: dict[str, Any] | None,
+    size_fit: dict[str, Any] | None, precedents_block: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """V3.20 slice 8.6 wiring — the engine's range; None when off or no EV (unchanged)."""
     from app.services.pipeline.valuation_step import valuation_section
 
     return await valuation_section(session, company, cfg=cfg, ev_block=ev_block,
                                    peers_block=peers_block, depth_block=depth_block,
-                                   size_fit=size_fit)
+                                   size_fit=size_fit, precedents_block=precedents_block)
+
+
+async def _precedent_transactions_section(
+    session: Any, *, cfg: Any, layers_block: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.3 — admin-approved deals in the subject's primary electricity layer;
+    None when off, unclassified or no approved deal (report unchanged). Never raises."""
+    if not getattr(cfg, "v3_precedent_transactions_enabled", False):
+        return None
+    if not layers_block or layers_block.get("status") != "classified":
+        return None
+    layer = layers_block.get("primary_layer")
+    if not layer:
+        return None
+    try:
+        from datetime import date as _date
+
+        from app.services.valuation.precedents import approved_in_layer, precedent_block
+
+        rows = await approved_in_layer(session, str(layer))
+        return precedent_block(rows, layer=str(layer), today=_date.today())
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        logger.warning("precedent transactions block failed")
+        return None
 
 
 async def _financial_depth_section(
@@ -1891,6 +1919,7 @@ async def _professional_report(
     change_events: dict[str, Any] | None = None,
     enterprise_value: dict[str, Any] | None = None,
     layer_peers: dict[str, Any] | None = None,
+    precedent_transactions: dict[str, Any] | None = None,
     market_implied: dict[str, Any] | None = None,
     financial_depth: dict[str, Any] | None = None,
     verdict_enabled: bool = False,
@@ -2096,6 +2125,7 @@ async def _professional_report(
         change_events=change_events,
         enterprise_value=enterprise_value,
         layer_peers=layer_peers,
+        precedent_transactions=precedent_transactions,
         market_implied=market_implied,
         financial_depth=financial_depth,
     )

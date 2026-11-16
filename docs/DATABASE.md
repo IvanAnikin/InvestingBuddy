@@ -1384,6 +1384,30 @@ Entered by hand only: no broker import, credential or account link. Checked on P
 16: upgrade, the CHECKs reject a price without currency and a weight of 150, the cascade
 removes positions, downgrade, re-upgrade.
 
+## Migration 056 — precedent transactions (V3.20 slice 8.3)
+
+One public table: `precedent_transactions`. Deals are public facts, and no user data is stored.
+
+| Column(s) | Rule |
+|---|---|
+| `acquirer_name`, `target_name`, `announced_date` | unique together |
+| `target_company_id` | FK `companies`, `SET NULL` |
+| `layer` | an electricity layer key (validated by the API) |
+| `currency`, `enterprise_value` | EV > 0; `value_basis` is `enterprise_value` or `consideration` |
+| `metric_key`, `metric_value`, `metric_period` | `metric_key` ∈ ebit/ebitda/revenue/capacity_mw |
+| `source_url`, `source_title`, `source_excerpt`, `retrieved_at` | URL and retrieval time NOT NULL |
+| `entry_method` | `extracted` or `curated` |
+| `status` | `proposed`, `approved` or `rejected` |
+| `reviewed_by`, `reviewed_at`, `review_note` | |
+
+A CHECK requires an approved row to carry EV, metric > 0 and layer. Index (`layer`, `status`).
+
+Checked on PostgreSQL 16:
+- upgrade;
+- the CHECK rejects an approved row without a metric;
+- downgrade drops the table;
+- re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

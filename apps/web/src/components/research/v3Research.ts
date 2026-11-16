@@ -48,6 +48,7 @@ import { type ElectricityLayersBlock, readElectricityLayersBlock } from "./elect
 import { type ChangeEventsBlock, readChangeEventsBlock } from "./changeEvents";
 import { type EnterpriseValueBlock, readEnterpriseValueBlock } from "./enterpriseValue";
 import { type LayerPeersBlock, readLayerPeersBlock } from "./layerPeers";
+import { type PrecedentTransactionsBlock, readPrecedentTransactionsBlock } from "./precedentTransactions";
 import { type MarketImpliedBlock, readMarketImpliedBlock } from "./marketImplied";
 import { type ResearchVerdictBlock, readResearchVerdictBlock } from "./researchVerdict";
 import { type ValuationRangeBlock, readValuationRangeBlock } from "./valuationRange";
@@ -516,6 +517,9 @@ export type DomainSection = SectionHead & {
   /** V3.20 slice 8.2 (valuation_context): companies researched in the same electricity
       layer, from the comparable-set store. Null when none, and on older reports. */
   layerPeers: LayerPeersBlock | null;
+  /** V3.20 slice 8.3 (valuation_context): admin-approved deals in the same electricity
+      layer, each cited. Null when none, and on older reports. */
+  precedentTransactions: PrecedentTransactionsBlock | null;
   marketImplied: MarketImpliedBlock | null;
   /** V3.20 slice 8.5 (financial_capacity): debt maturity ladder, diluted shares, contract
       balances from SEC XBRL. Null when off / nothing tagged, and on older reports. */
@@ -1137,6 +1141,7 @@ function readDomainSection(
     changeEvents: readChangeEventsBlock(r.change_events),
     enterpriseValue: readEnterpriseValueBlock(r.enterprise_value),
     layerPeers: readLayerPeersBlock(r.layer_peers),
+    precedentTransactions: readPrecedentTransactionsBlock(r.precedent_transactions),
     marketImplied: readMarketImpliedBlock(r.market_implied),
     financialDepth: readFinancialDepthBlock(r.financial_depth),
   };
