@@ -248,6 +248,15 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
         return {"state": "offline_test"}
 
     monkeypatch.setattr(consensus_step, "consensus_snapshot_step", _no_consensus)
+    # V3.20 slice 6.2: nor EDGAR's Form 4 filings. A test that means to exercise the
+    # lookup passes its own ``form4_lookup`` / ``fetch``.
+    from app.integrations.sec_form4 import Form4Report
+    from app.services.pipeline import change_events_step
+
+    async def _no_form4(cik: str, today: object) -> Form4Report:
+        return Form4Report(cik=cik, notes=["offline test"])
+
+    monkeypatch.setattr(change_events_step, "_live_form4", _no_form4)
 
 
 @pytest.fixture(autouse=True)

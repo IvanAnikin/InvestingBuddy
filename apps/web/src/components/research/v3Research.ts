@@ -45,6 +45,7 @@ import {
   type EarningsTrackRecordBlock,
 } from "./earningsTrackRecord";
 import { type ElectricityLayersBlock, readElectricityLayersBlock } from "./electricityLayers";
+import { type ChangeEventsBlock, readChangeEventsBlock } from "./changeEvents";
 import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
 import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
@@ -498,6 +499,10 @@ export type DomainSection = SectionHead & {
   /** V3.20 slice 6.3 (valuation_context): the obscurity score with its components.
       Null when off, and on older reports. */
   obscurity: ObscurityBlock | null;
+  /** V3.20 slice 6.2 (growth_and_catalysts): change events in held disclosures and
+      Form 4 insider purchase clusters. Null when off or nothing found, and on older
+      reports. */
+  changeEvents: ChangeEventsBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -1103,6 +1108,7 @@ function readDomainSection(
     electricityLayers: readElectricityLayersBlock(r.electricity_layers),
     realAsset: readRealAssetBlock(r.real_asset),
     obscurity: readObscurityBlock(r.obscurity),
+    changeEvents: readChangeEventsBlock(r.change_events),
   };
 }
 

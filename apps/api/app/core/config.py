@@ -1435,6 +1435,14 @@ class Settings(BaseSettings):
     # V3.20 slice 6.3: add GDELT's English article count (3-month window) as a component.
     # One GDELT DOC API call per company research run. Off by default.
     v3_obscurity_news_volume_enabled: bool = False
+    # V3.20 slice 6.2: label the titles of the company's held primary disclosures with the
+    # report schema's event_trigger vocabulary (growth_and_catalysts "Change events"
+    # block). No external call.
+    v3_change_events_enabled: bool = True
+    # V3.20 slice 6.2: read the issuer's SEC Form 4 filings (submissions + up to 40 raw
+    # XML documents, research User-Agent, SEC rate limiter) and detect open-market
+    # insider purchase clusters (>= 3 insiders within 30 days). Needs a CIK.
+    v3_insider_clusters_enabled: bool = True
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

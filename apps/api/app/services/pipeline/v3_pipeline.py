@@ -1427,6 +1427,7 @@ async def _run(
             obscurity=await _obscurity_section(
                 session, company, cfg=cfg, passive_block=passive_ownership,
                 layers_block=electricity_layers),
+            change_events=await _change_events_section(session, company, cfg=cfg),
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1642,6 +1643,15 @@ async def _obscurity_section(
                                    layers_block=layers_block)
 
 
+async def _change_events_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 6.2 — the change-events block; None when off or empty (unchanged)."""
+    from app.services.pipeline.change_events_step import change_events_section
+
+    return await change_events_section(session, company, cfg=cfg)
+
+
 async def _real_asset_section(
     session: Any, run: Any, electricity_layers: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -1742,6 +1752,7 @@ async def _professional_report(
     electricity_layers: dict[str, Any] | None = None,
     real_asset: dict[str, Any] | None = None,
     obscurity: dict[str, Any] | None = None,
+    change_events: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1939,6 +1950,7 @@ async def _professional_report(
         electricity_layers=electricity_layers,
         real_asset=real_asset,
         obscurity=obscurity,
+        change_events=change_events,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)
