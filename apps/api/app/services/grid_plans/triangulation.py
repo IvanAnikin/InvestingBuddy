@@ -2,8 +2,9 @@
 
 For a company classified into the electricity stack whose CUSTOMERS are named (the
 relationship block, slice 2.6), look each customer up among the promoters of the held
-grid plans (``grid_capex_plans``: ENTSO-E TYNDP when its flag is on, AEMO, Berkeley Lab
-queues) and ask: does that customer publish ACTIVE projects in the subject's technology?
+grid plans (``grid_capex_plans``: ENTSO-E TYNDP when its flag is on, AEMO, the NESO TEC
+register, Berkeley Lab queues) and ask: does that customer publish ACTIVE projects in
+the subject's technology?
 
 Per customer:
 * ``corroborated`` — it promotes at least one relevant project that is planned, in
@@ -55,7 +56,7 @@ QUEUE_LAYERS = frozenset({"transmission", "distribution_grid_edge",
                           "upstream_electrical_materials"})
 
 #: Versioned aliases: a customer name as filings write it → a promoter name as plans do.
-ALIAS_VERSION = "2026-11-16.1"
+ALIAS_VERSION = "2026-11-16.2"
 ALIASES: dict[str, tuple[str, ...]] = {
     "american electric power": ("aep",),
     "pacific gas and electric": ("pg e", "pgae"),
@@ -71,6 +72,9 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "electric reliability council of texas": ("ercot",),
     "duke energy": ("duke", "duke energy progress", "duke energy carolinas"),
     "transgrid": ("nsw electricity networks", "transgrid"),
+    "sp transmission": ("spt", "sp energy networks", "scottish power transmission"),
+    "scottish hydro electric transmission": ("shet", "ssen transmission",
+                                             "scottish and southern electricity networks"),
 }
 
 _LEGAL = re.compile(

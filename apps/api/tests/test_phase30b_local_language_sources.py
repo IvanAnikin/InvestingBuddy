@@ -220,10 +220,10 @@ def test_5_registry_promotes_local_language_press_to_enabled():
     # The regulator-layer promotions (11) + 29C/29D reference sources (23) + this
     # local-language press promotion => 35 enabled; OpenBB is the last planned row.
     summary = reg.summary()
-    assert summary["enabled"] == 41  # +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: Italian regulated disclosures (readiness PR-E)
+    assert summary["enabled"] == 42  # +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: Italian regulated disclosures (readiness PR-E)
     assert summary["planned"] == 1
     assert summary["scaffolded"] == 2
-    assert summary["total"] == 45  # +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default), +2: AEMO TAI + LBL Queued Up (7.2)
+    assert summary["total"] == 46  # +1: NESO TEC (7.4), +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default), +2: AEMO TAI + LBL Queued Up (7.2)
     assert summary["total"] == len(reg.all_sources())
 
 

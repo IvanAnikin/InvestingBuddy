@@ -265,10 +265,10 @@ def test_registry_summary_counts_after_event_layer():
     # 11 regulator-layer + 15 macro/commodity/policy (29C) + 2 procurement /
     # tender event venues (29D.1) + 3 patent office / index venues (29D.2) + 3
     # permit / regulatory-event venues (29D.3) = 34 enabled.
-    assert summary["enabled"] == 41  # +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E)
+    assert summary["enabled"] == 42  # +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E)
     assert summary["scaffolded"] == 2
     assert summary["planned"] == 1  # only OpenBB remains planned (Phase 30B)
-    assert summary["total"] == 45  # +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default), +2: AEMO TAI + LBL Queued Up (7.2)
+    assert summary["total"] == 46  # +1: NESO TEC (7.4), +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default), +2: AEMO TAI + LBL Queued Up (7.2)
     assert summary["total"] == len(reg.all_sources())
     # Health covers every event connector, network-free.
     keys = {h.connector_key for h in reg.health()}

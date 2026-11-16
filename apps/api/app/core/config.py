@@ -1486,6 +1486,9 @@ class Settings(BaseSettings):
     # attribution LBNL + GridTracker) in ``grid_capex_plans``. Operator ingest only.
     v3_grid_plans_aemo_enabled: bool = True
     v3_grid_plans_lbl_enabled: bool = True
+    # V3.20 slice 7.4: NESO Transmission Entry Capacity register (NESO Open Data Licence,
+    # attribution "Supported by National Energy SO Open Data"). Operator ingest only.
+    v3_grid_plans_neso_enabled: bool = True
     # V3.20 slice 7.3: "Demand triangulation" (business_model) — do the named customers
     # publish active grid projects in the subject's technology? A read of the held grid
     # plans (enabled sources only); None for a company outside the electricity stack.

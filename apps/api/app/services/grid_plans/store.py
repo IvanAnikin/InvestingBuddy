@@ -39,6 +39,10 @@ def parser_for(key: str) -> Callable[[bytes], list[dict[str, Any]]]:
         from app.services.grid_plans.lbl_queued_up import parse as parse_lbl
 
         return parse_lbl
+    if key == "neso_tec":
+        from app.services.grid_plans.neso_tec import parse as parse_neso
+
+        return parse_neso
     raise KeyError(key)
 
 

@@ -94,6 +94,24 @@ SOURCES: dict[str, GridSource] = {
         flag="v3_grid_plans_lbl_enabled",
         default_edition="2026-05",
     ),
+    "neso_tec": GridSource(
+        key="neso_tec",
+        name="NESO Transmission Entry Capacity (TEC) register",
+        plan_name="Great Britain transmission connections (NESO TEC register)",
+        landing_url="https://www.neso.energy/data-portal/transmission-entry-capacity-tec-register",
+        download_url=("https://api.neso.energy/dataset/cbd45e54-e6e2-4a38-99f1-8de6fd96d7c1/"
+                      "resource/17becbab-e3e8-473f-b303-3806f43a6a10/download/"
+                      "tec-register-13-november-2026.csv"),
+        licence=("NESO Open Data Licence v1.0 (based on the Open Government Licence v3.0; "
+                 "read on neso.energy 2026-11-16): copy, adapt and use commercially or not, "
+                 "with the attribution \"Supported by National Energy SO Open Data\"; no "
+                 "implied endorsement. The dataset page names this licence."),
+        use_constraint=USE_OPEN_LICENCE,
+        attribution=("Supported by National Energy SO Open Data. Source: NESO, Transmission "
+                     "Entry Capacity (TEC) register."),
+        flag="v3_grid_plans_neso_enabled",
+        default_edition="2026-11-13",
+    ),
 }
 
 _TAGS: tuple[tuple[str, re.Pattern[str]], ...] = (

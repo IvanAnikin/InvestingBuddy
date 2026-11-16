@@ -700,6 +700,28 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             ),
         ),
         RegisteredSource(
+            source_id="neso_tec",
+            name="NESO Transmission Entry Capacity (TEC) register",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_neso_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_neso_enabled,
+            jurisdiction="GB",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="neso_tec",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid demand signal (V3.20 slice 7.4): NESO Open Data Licence (OGL-based), "
+                "attribution 'Supported by National Energy SO Open Data'. Offline operator "
+                "job; layout pinned on the 13 November 2026 CSV; one row per TEC contract "
+                "(promoter = the customer) plus one not-yet-built summary per host "
+                "transmission owner (NGET, SPT, SHET). Not capex."
+            ),
+        ),
+        RegisteredSource(
             source_id="ishares_holdings",
             name="iShares daily ETF holdings files (US + UCITS)",
             provider_type=ProviderType.fundamentals_aggregator,
