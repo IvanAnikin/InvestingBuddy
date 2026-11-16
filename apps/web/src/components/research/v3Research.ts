@@ -45,6 +45,7 @@ import {
   type EarningsTrackRecordBlock,
 } from "./earningsTrackRecord";
 import { type ElectricityLayersBlock, readElectricityLayersBlock } from "./electricityLayers";
+import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
 
 /** One statement the ledger holds, with the ids that make it citable. */
@@ -489,6 +490,10 @@ export type DomainSection = SectionHead & {
   /** V3.20 slice 5.2 (business_model): layers of the electricity stack with revenue share
       and quoted evidence. Null when off, and on older reports. */
   electricityLayers: ElectricityLayersBlock | null;
+  /** V3.20 slice 5.4 (operations): capacity in its natural unit, expansions, utilisation
+      and certificates from cited findings. Null unless the company is in the electricity
+      stack, and on older reports. */
+  realAsset: RealAssetBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -1092,6 +1097,7 @@ function readDomainSection(
     passiveOwnership: readPassiveOwnershipBlock(r.passive_ownership),
     earningsTrackRecord: readEarningsTrackRecordBlock(r.earnings_track_record),
     electricityLayers: readElectricityLayersBlock(r.electricity_layers),
+    realAsset: readRealAssetBlock(r.real_asset),
   };
 }
 

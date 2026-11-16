@@ -1398,6 +1398,7 @@ async def _run(
     #     BEFORE consumption is read: the editor's model call is spend on the chair's
     #     client, and `_consumption` takes each client's usage once.
     try:
+        electricity_layers = await _electricity_layers_section(session, company, cfg=cfg)
         report, withheld_reason = await _professional_report(
             session,
             run,
@@ -1420,7 +1421,8 @@ async def _run(
             passive_ownership=await _passive_ownership_section(session, company, cfg=cfg),
             earnings_track_record=await _earnings_track_record_section(
                 session, company, cfg=cfg),
-            electricity_layers=await _electricity_layers_section(session, company, cfg=cfg),
+            electricity_layers=electricity_layers,
+            real_asset=await _real_asset_section(session, run, electricity_layers),
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1625,6 +1627,40 @@ async def _electricity_layers_section(
     return await electricity_layers_section(session, company, cfg=cfg)
 
 
+async def _real_asset_section(
+    session: Any, run: Any, electricity_layers: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 5.4 — the electricity real-asset block from this run's findings.
+
+    ``None`` unless the company was classified into the electricity stack (so every
+    other report is unchanged). Never raises.
+    """
+    if not electricity_layers or electricity_layers.get("status") != "classified":
+        return None
+    try:
+        from sqlalchemy import select
+
+        from app.models.ledger import ResearchFinding
+        from app.services.electricity.real_asset import real_asset_block
+
+        async with session.begin_nested():
+            rows = (await session.execute(
+                select(ResearchFinding).where(ResearchFinding.research_run_id == run.id)
+            )).scalars().all()
+        findings = [{
+            "finding_id": str(r.id), "statement": r.statement,
+            "evidence_ids": list(r.evidence_ids_json or []),
+            "verification_status": r.verification_status,
+            "superseded_by": str(r.superseded_by_finding_id)
+            if r.superseded_by_finding_id else None,
+            "source_published_at": r.source_published_at.isoformat()
+            if r.source_published_at else None,
+        } for r in rows]
+        return real_asset_block(findings, electricity_layers)
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        return None
+
+
 async def _passive_ownership_section(
     session: Any, company: Any, *, cfg: Any,
 ) -> dict[str, Any] | None:
@@ -1689,6 +1725,7 @@ async def _professional_report(
     passive_ownership: dict[str, Any] | None = None,
     earnings_track_record: dict[str, Any] | None = None,
     electricity_layers: dict[str, Any] | None = None,
+    real_asset: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1884,6 +1921,7 @@ async def _professional_report(
         passive_ownership=passive_ownership,
         earnings_track_record=earnings_track_record,
         electricity_layers=electricity_layers,
+        real_asset=real_asset,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

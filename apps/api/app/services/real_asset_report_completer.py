@@ -46,6 +46,7 @@ from app.services.data_provenance import (
     derive_data_provenance,
     normalise_provenance,
 )
+from app.services.electricity.real_asset import ASSET_TYPE_BY_LAYER
 from app.services.electricity.taxonomy import (
     LAYER_KEYS,
     TAXONOMY_VERSION,
@@ -580,8 +581,11 @@ class _ReportCompleter:
         }
 
     def _real_asset_block(self) -> dict[str, Any]:
+        layers, _ = self._classified_layers()
         return {
-            "asset_type": "mixed",
+            # V3.20 slice 5.4: the classified primary layer decides the asset type;
+            # unclassified stays "mixed".
+            "asset_type": ASSET_TYPE_BY_LAYER.get(layers[0], "mixed") if layers else "mixed",
             "asset_quality_summary": (
                 "not_applicable_or_not_sourced: this internal draft has no sourced "
                 "real-asset data. If the subject is not a real-asset issuer this "

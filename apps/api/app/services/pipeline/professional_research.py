@@ -200,6 +200,9 @@ class ReportInputs:
     #: (``electricity_step.electricity_layers_section``); ``None`` leaves the report
     #: unchanged.
     electricity_layers: Mapping[str, Any] | None = None
+    #: V3.20 slice 5.4 — the electricity real-asset block (``electricity.real_asset``);
+    #: ``None`` leaves the report unchanged.
+    real_asset: Mapping[str, Any] | None = None
 
 
 
@@ -836,6 +839,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when the classifier is on, so every other report is byte-identical.
         business_section = next(s for s in sections if s["key"] == "business_model")
         business_section["electricity_layers"] = dict(inputs.electricity_layers)
+    if inputs.real_asset:
+        # Only for a company classified into the electricity stack.
+        operations = next(s for s in sections if s["key"] == "operations")
+        operations["real_asset"] = dict(inputs.real_asset)
     if inputs.passive_ownership:
         # Only when the block is on, so every other report is byte-identical.
         valuation = next(s for s in sections if s["key"] == "valuation_context")
