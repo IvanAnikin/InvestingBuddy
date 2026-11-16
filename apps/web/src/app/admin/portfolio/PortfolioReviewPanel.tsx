@@ -6,7 +6,12 @@
  */
 
 import { useState } from "react";
-import { type PortfolioReview, reviewPortfolio } from "@/lib/portfolioReviewApi";
+import { type PortfolioReview, reviewPortfolio, type VerdictSummary } from "@/lib/portfolioReviewApi";
+
+const verdictText = (v: VerdictSummary): string =>
+  v.state === "available" && v.recommendation
+    ? `${v.recommendation}${v.record_as_of ? ` (record ${v.record_as_of})` : ""}`
+    : "not available";
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   intact: { label: "Thesis intact", cls: "border-emerald-400/40 text-emerald-200" },
@@ -64,6 +69,12 @@ export default function PortfolioReviewPanel({ portfolioId }: { portfolioId: str
                     </span>
                   </div>
                   {h.reason && <p className="mt-1 text-xs text-slate-400">{h.reason}.</p>}
+                  {(h.entry_verdict.state === "available" || h.current_verdict.state === "available") && (
+                    <p className="mt-1 text-xs text-slate-300" data-testid="holding-verdicts">
+                      Computed verdict at entry: {verdictText(h.entry_verdict)} · now:{" "}
+                      {verdictText(h.current_verdict)}
+                    </p>
+                  )}
                   {h.weakening.length > 0 && (
                     <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-200">
                       {h.weakening.map((w, i) => (
@@ -101,7 +112,8 @@ export default function PortfolioReviewPanel({ portfolioId }: { portfolioId: str
             })}
           </ul>
           <p className="text-xs text-slate-500">
-            {review.note} Rules {review.rules_version}.
+            {review.note} Rules {review.rules_version}. Verdicts are computed research triage
+            (private use only), not investment advice and not an instruction to trade.
           </p>
         </>
       )}

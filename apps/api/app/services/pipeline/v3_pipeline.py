@@ -1455,6 +1455,7 @@ async def _run(
             market_implied=market_implied,
             obscurity=obscurity,
             change_events=change_events,
+            verdict_enabled=bool(getattr(cfg, "v3_research_verdict_enabled", False)),
         )
         outcome.professional_research = report
         await _mark_researched(session, company, cfg=cfg, change_events=change_events)
@@ -1874,6 +1875,7 @@ async def _professional_report(
     layer_peers: dict[str, Any] | None = None,
     market_implied: dict[str, Any] | None = None,
     financial_depth: dict[str, Any] | None = None,
+    verdict_enabled: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1881,7 +1883,6 @@ async def _professional_report(
 
     from app.models.ledger import ResearchFinding, ResearchGap, ResearchQuestion
     from app.schemas.catalyst import neutralize_forbidden_terms
-    from app.services import safety_terms
     from app.services.pipeline import professional_research as pr
 
     async with session.begin_nested():
@@ -2080,7 +2081,16 @@ async def _professional_report(
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)
     report["withheld_for_safety"] = withheld
-    hits = safety_terms.scan_value(report, path="professional_research")
+    if verdict_enabled:
+        # V3.20 slice 9.2 (ADR-098): computed AFTER the editor, from the report itself —
+        # no model sees or chooses the label. Failure costs the block, not the report.
+        try:
+            from app.services.research_verdict import verdict_block
+
+            report["verdict"] = verdict_block(report, valuation=report.get("valuation"))
+        except Exception:  # noqa: BLE001 - an additive block never costs the report
+            logger.warning("research verdict failed")
+    hits = _report_safety_hits(report)
     if hits:
         # Every component was screened; a hit here is in text this module composed or a
         # question text. It is not shown — an unscreened report is worse than none —
@@ -2091,6 +2101,25 @@ async def _professional_report(
             f"{len(hits)} passage(s) ({where})"
         )
     return report, None
+
+
+#: Top-level report blocks whose typed fields the gate allows by path (ADR-098 §3,
+#: ADR-099 §5). Each is scanned at its own root, so ``verdict.recommendation`` is the
+#: exact path the allowance names; everything else is scanned with no allowance.
+_ALLOWANCE_ROOTS: tuple[str, ...] = ("verdict", "valuation")
+
+
+def _report_safety_hits(report: dict[str, Any]) -> list[Any]:
+    from app.services import safety_terms
+
+    rest = {k: v for k, v in report.items() if k not in _ALLOWANCE_ROOTS}
+    hits = list(safety_terms.scan_value(rest, path="professional_research"))
+    for root in _ALLOWANCE_ROOTS:
+        if root in report:
+            hits.extend(safety_terms.scan_value(
+                report[root], path=root,
+                allowances=safety_terms.V320_REPORT_ALLOWANCES))
+    return hits
 
 
 async def _ledger_findings(session: Any, run: Any, *, limit: int) -> list[dict[str, Any]]:

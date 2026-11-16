@@ -9,6 +9,17 @@ export type ReviewItem = {
   source_url: string | null;
 };
 
+/** ADR-098 verdict of a research record (slice 9.2); "not_available" without one. */
+export type VerdictSummary = {
+  state: "available" | "not_available" | "withheld";
+  recommendation?: "PASS" | "WATCHLIST" | "SHORTLIST";
+  meaning?: string | null;
+  composite_score?: number | null;
+  confidence_band?: string | null;
+  record_as_of?: string;
+  reason?: string;
+};
+
 export type HoldingReview = {
   position_id: string;
   ticker: string;
@@ -21,6 +32,8 @@ export type HoldingReview = {
   weakening: ReviewItem[];
   context: ReviewItem[];
   proposed_research: string[];
+  entry_verdict: VerdictSummary;
+  current_verdict: VerdictSummary;
 };
 
 export type PortfolioReview = {

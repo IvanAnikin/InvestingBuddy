@@ -113,11 +113,11 @@ async def review(portfolio_id: uuid.UUID, owner: str = Depends(require_owner),
                  db: AsyncSession = Depends(get_db)) -> dict:
     """V3.20 slice 12.2 — the research review: a cited thesis status per holding. It reads
     public research records and writes nothing; it never proposes a trade or a size."""
-    from app.services.portfolio_review import review_portfolio
+    from app.services.portfolio_review import gate_review, review_portfolio
 
     p = await _owned(db, portfolio_id, owner)
-    return {"portfolio_id": str(p.id), "name": p.name,
-            **await review_portfolio(db, await _positions(db, p.id))}
+    return gate_review({"portfolio_id": str(p.id), "name": p.name,
+                        **await review_portfolio(db, await _positions(db, p.id))})
 
 
 @router.delete("/{portfolio_id}", status_code=status.HTTP_204_NO_CONTENT)

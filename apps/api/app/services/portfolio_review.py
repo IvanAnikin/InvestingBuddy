@@ -20,7 +20,10 @@ source. Everything else that changed is listed as context, not counted.
 WHAT IT NEVER DOES (ADR-100 §3): propose buying, selling, adding, trimming or
 rebalancing; give a size, weight or order; emit a rating token. Its proposals are
 research changes only — re-run the analysis, investigate a named change. The ADR-098
-verdict at entry and now are ``not_available`` until the rubric (slice 9.2) exists.
+verdict at entry and now (slice 9.2) are read from each record's ``rubric_json``; a record
+without one shows ``not_available``. A lower verdict now than at entry is a weakening item.
+The labels appear only at ``holdings[*].{entry,current}_verdict.recommendation``, which
+the gate allows by path (``safety_terms.PORTFOLIO_REVIEW_ALLOWANCES``).
 
 PRIVATE DATA (ADR-100 §4): the review reads the user's positions and PUBLIC research
 records; it writes nothing, sends nothing outside the process and calls no model.
@@ -34,7 +37,7 @@ from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
 
-RULES_VERSION = "2026-11-16.1"
+RULES_VERSION = "2026-11-16.2"
 BROKEN_MIN_ITEMS = 3
 BROKEN_MIN_KINDS = 2
 #: A lower EV/EBIT than at entry by this fraction counts as a weakening item.
@@ -45,7 +48,20 @@ STALE_RECORD_DAYS = 90
 INTACT, WEAKENED, BROKEN, INSUFFICIENT = ("intact", "weakened", "broken",
                                           "insufficient_evidence")
 VERDICT_NOT_AVAILABLE = {"state": "not_available",
-                         "reason": "the evidence-derived rubric (slice 9.2) is not built yet"}
+                         "reason": "no computed verdict is held for this record"}
+#: Order of the ADR-098 labels, lowest first, for the "verdict lowered" item.
+_VERDICT_RANK = {"PASS": 0, "WATCHLIST": 1, "SHORTLIST": 2}
+
+
+def verdict_of(record: Any) -> dict[str, Any]:
+    from app.services.research_verdict import summary
+
+    if record is None:
+        return dict(VERDICT_NOT_AVAILABLE)
+    out = summary(getattr(record, "rubric_json", None))
+    if out is None:
+        return dict(VERDICT_NOT_AVAILABLE)
+    return {**out, "record_as_of": record.as_of.isoformat()}
 NOTE = ("A research review of a list you entered: what changed in the evidence since each "
         "entry date, with sources. It proposes research, never a trade, a size or a rating.")
 
@@ -91,6 +107,17 @@ def weakening_items(entry: Any, current: Any, signals: Sequence[Any], *,
                         entry_as_of=str(entry.as_of), current_as_of=str(current.as_of),
                         change=float(round(drift, 3)))
             (weak if drift <= -MULTIPLE_DRIFT else context).append(row)
+        before, after = verdict_of(entry), verdict_of(current)
+        if before.get("state") == after.get("state") == "available":
+            a_rank = _VERDICT_RANK[before["recommendation"]]
+            b_rank = _VERDICT_RANK[after["recommendation"]]
+            if a_rank != b_rank:
+                row = _item("verdict_change",
+                            "The computed research verdict is "
+                            f"{'lower' if b_rank < a_rank else 'higher'} than at the entry "
+                            "record", entry_as_of=str(entry.as_of),
+                            current_as_of=str(current.as_of))
+                (weak if b_rank < a_rank else context).append(row)
     for sig in signals:
         if sig.signal_key in seen_keys:
             continue
@@ -152,7 +179,8 @@ async def review_position(session: Any, position: Any, *, today: date | None = N
     today = today or date.today()
     base = {"position_id": str(position.id), "ticker": position.ticker,
             "exchange": position.exchange, "entry_date": position.entry_date.isoformat(),
-            "entry_verdict": VERDICT_NOT_AVAILABLE, "current_verdict": VERDICT_NOT_AVAILABLE}
+            "entry_verdict": dict(VERDICT_NOT_AVAILABLE),
+            "current_verdict": dict(VERDICT_NOT_AVAILABLE)}
     if position.company_id is None:
         return {**base, "thesis_status": INSUFFICIENT,
                 "reason": "not linked to a researched company",
@@ -182,6 +210,8 @@ async def review_position(session: Any, position: Any, *, today: date | None = N
         reason = "nothing has been researched or observed since the entry date"
     return {
         **base,
+        "entry_verdict": verdict_of(entry),
+        "current_verdict": verdict_of(current),
         "thesis_status": status,
         "reason": reason,
         "entry_record": None if entry is None else {
@@ -212,5 +242,23 @@ async def review_portfolio(session: Any, positions: Sequence[Any], *,
             "note": NOTE}
 
 
-__all__ = ["BROKEN", "INSUFFICIENT", "INTACT", "RULES_VERSION", "WEAKENED", "proposals",
-           "review_portfolio", "review_position", "status_for", "weakening_items"]
+def gate_review(review: dict[str, Any]) -> dict[str, Any]:
+    """The safety gate with the review's path allowances. A hit outside them withholds
+    the verdicts (the only typed labels) and records why; nothing else is altered."""
+    from app.services import safety_terms
+
+    # The portfolio's name is the user's own words, shown back to them; it is not output.
+    hits = safety_terms.scan_value({k: v for k, v in review.items() if k != "name"},
+                                   allowances=safety_terms.PORTFOLIO_REVIEW_ALLOWANCES)
+    if not hits:
+        return review
+    for h in review.get("holdings") or []:
+        h["entry_verdict"] = h["current_verdict"] = {
+            "state": "withheld", "reason": "the safety scan flagged this review"}
+    review["safety_hits"] = len(hits)
+    return review
+
+
+__all__ = ["BROKEN", "INSUFFICIENT", "INTACT", "RULES_VERSION", "WEAKENED", "gate_review",
+           "proposals", "review_portfolio", "review_position", "status_for", "verdict_of",
+           "weakening_items"]

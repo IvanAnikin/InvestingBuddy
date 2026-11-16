@@ -1479,6 +1479,10 @@ class Settings(BaseSettings):
     # diluted share series, contract assets/liabilities from SEC XBRL (nine companyconcept
     # reads per company with a CIK; research User-Agent, SEC rate limiter).
     v3_financial_depth_enabled: bool = True
+    # V3.20 slice 9.2 (ADR-098): the eight-pillar rubric and the computed verdict
+    # (PASS / WATCHLIST / SHORTLIST) at ``professional_research.verdict``. Deterministic;
+    # no call. Off by default: it is an investment-research opinion, private use only.
+    v3_research_verdict_enabled: bool = False
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

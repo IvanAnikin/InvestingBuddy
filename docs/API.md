@@ -4064,6 +4064,15 @@ rate limiting and its own answer to "which entity may this caller see", and none
 of those questions has an owner yet. Nothing about the corpus is reachable from
 the public API, and `V3_CORPUS_ENABLED` is off by default in any case.
 
+## Research verdict (V3.20 slice 9.2, ADR-098)
+
+`source_summary_json.v3_research.professional_research.verdict` is present only when
+`V3_RESEARCH_VERDICT_ENABLED` is on. Shape: `{version, recommendation (PASS | WATCHLIST |
+SHORTLIST), meaning, composite_score, confidence {value, band, coverage, primary_share},
+pillars[{key, label, weight, state (scored | insufficient_evidence), score, evidence[],
+thin_share, rule}], caps[{key, reason}], capped, thresholds, missing_information[],
+watchlist_triggers[], rationale, note}`. Rules: [v3.20-output.md §9.2](v3.20-output.md).
+
 ## Private portfolios (V3.20 slice 12.1, ADR-100)
 
 Owner-scoped: every route resolves the owner from `request.state.admin_email` (set by the

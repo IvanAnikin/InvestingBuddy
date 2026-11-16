@@ -99,6 +99,9 @@ def build_record(
         "ev_to_ebit": _dec(ev_to_ebit),
         "obscurity_score": obscurity.get("score") if isinstance(obscurity.get("score"),
                                                                 int) else None,
+        # V3.20 slice 9.2 — the computed verdict block, only when the report carries one.
+        "rubric_json": (dict(verdict) if isinstance(
+            verdict := (report or {}).get("verdict"), Mapping) else None),
         "record_json": {
             "record_version": RECORD_VERSION,
             "report_version": (report or {}).get("version"),

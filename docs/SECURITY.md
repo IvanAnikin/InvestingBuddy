@@ -400,8 +400,12 @@ Shipped allowances (`V320_REPORT_ALLOWANCES`):
 | `verdict.recommendation` | `PASS`, `WATCHLIST`, `SHORTLIST` | ADR-098 |
 | `valuation.relative_position` | `undervalued`, `in_line`, `overvalued` | ADR-099 |
 
-No producer emits these paths yet. The V3.20 report gate starts passing them in slices
-8.6 and 9.2. Tests: `apps/api/tests/test_v3_20_0_3_gate_path_allowances.py`.
+Since slice 9.2 the V3 report gate (`v3_pipeline._report_safety_hits`) scans the
+`verdict` and `valuation` roots with these allowances and the rest of the report without.
+The portfolio review uses `PORTFOLIO_REVIEW_ALLOWANCES`: the same three labels at
+`holdings[*].entry_verdict.recommendation` and `holdings[*].current_verdict.recommendation`.
+Tests: `apps/api/tests/test_v3_20_0_3_gate_path_allowances.py` and
+`test_v3_20_9_2_research_verdict.py`.
 
 **Private use only.** Verdicts and valuation positions are investment-research opinions
 (ADR-098). A public or commercial launch needs a regulatory review first.

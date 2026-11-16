@@ -303,8 +303,23 @@ VALUATION_POSITION_ALLOWANCE = FieldAllowance(
     reason="ADR-099 position vs the fair-value range (typed enum field)",
 )
 
-#: The allowances a V3.20 report gate passes to ``scan_value``. Nothing uses
-#: them until the V3.20 report producer does (slices 8.6 / 9.2).
+#: ADR-098/100: the same verdict, shown per holding in the portfolio review (slice 9.2).
+#: Paths are relative to the review payload root.
+PORTFOLIO_REVIEW_ALLOWANCES: dict[str, frozenset[str]] = build_allowances(
+    FieldAllowance(
+        path="holdings[*].entry_verdict.recommendation",
+        allowed_values=VERDICT_ALLOWANCE.allowed_values,
+        reason="ADR-098 verdict of the research record at the entry date",
+    ),
+    FieldAllowance(
+        path="holdings[*].current_verdict.recommendation",
+        allowed_values=VERDICT_ALLOWANCE.allowed_values,
+        reason="ADR-098 verdict of the newest research record",
+    ),
+)
+
+#: The allowances the V3.20 report gate passes to ``scan_value`` (from slice 9.2,
+#: ``v3_pipeline._report_safety_hits``).
 V320_REPORT_ALLOWANCES: dict[str, frozenset[str]] = build_allowances(
     VERDICT_ALLOWANCE,
     VALUATION_POSITION_ALLOWANCE,
