@@ -15,6 +15,21 @@ Methods in this slice
 * ``peer_multiple`` — the layer-peer median EV/EBIT (slice 8.2) × the subject's cited
   EBIT, with the scenario applying the named discount/premium to the median.
 
+Methods added in slice 8.7 (each runs only when its inputs are given; otherwise it is
+``not_applicable`` and never counted towards the range)
+------------------------------------------------------------------------------------------
+* ``contracted_dcf`` — the cited contracted cash flows (offtake / PPA / availability
+  payments, one per future year) discounted at the cited risk-free rate + the scenario's
+  named contract spread. No terminal value: a contract ends.
+* ``rab_multiple`` — a cited regulated asset base × the scenario's named RAB multiple.
+* ``sotp`` — sum of the parts: each segment's cited metric × its named multiple, the
+  scenario's multiple adjustment applied to every segment.
+* ``multiple:<key>`` — any further peer-median multiple (e.g. EV per MW from slice 8.1/8.2)
+  × the subject's cited metric, with the scenario's multiple adjustment.
+* **Replacement-cost floor** — cited capacity × a named cost per unit × (1 − the scenario's
+  named haircut for age and condition). Reported under ``floors``: a floor, not a method,
+  so it never moves the triangulated range.
+
 Fail-closed (``insufficient_evidence``, no number shown)
 ========================================================
 * no cited base period (FCFF for the DCF, EBIT for the multiple);
@@ -35,12 +50,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-ENGINE_VERSION = "2026-11-16.1"
+ENGINE_VERSION = "2026-11-16.2"
 EXPLICIT_YEARS = 5
 MIN_METHODS = 2
 SCENARIOS = ("bear", "base", "bull")
 INSUFFICIENT = "insufficient_evidence"
 COMPUTED = "computed"
+NOT_APPLICABLE = "not_applicable"
 
 
 @dataclass(frozen=True)
@@ -76,6 +92,37 @@ class Scenario:
     terminal_growth: Assumption
     beta: Assumption
     multiple_adjustment: Assumption  # fraction applied to the peer median (e.g. -0.1)
+    # Slice 8.7 — read only by the method that needs it.
+    contract_spread: Assumption | None = None  # over the risk-free rate
+    rab_multiple: Assumption | None = None  # x the regulated asset base
+    replacement_haircut: Assumption | None = None  # 0..1 for age and condition
+
+
+@dataclass(frozen=True)
+class Segment:
+    """One part of a sum of the parts: a cited metric × a named multiple."""
+
+    name: str
+    metric: Cited
+    multiple: Assumption
+
+
+@dataclass(frozen=True)
+class PeerMultiple:
+    """A further peer-median multiple applied to the subject's cited metric."""
+
+    key: str
+    subject_metric: Cited
+    peer_median: Cited
+
+
+@dataclass(frozen=True)
+class Replacement:
+    """Capacity that would have to be rebuilt, and what one unit costs."""
+
+    capacity: Cited
+    unit: str
+    cost_per_unit: Assumption
 
 
 @dataclass
@@ -93,6 +140,12 @@ class Inputs:
     debt_weight: Assumption
     peer_median_ev_to_ebit: Cited | None
     scenarios: Mapping[str, Scenario] = field(default_factory=dict)
+    # Slice 8.7 — optional; a method without its inputs is ``not_applicable``.
+    contracted_cash_flows: Sequence[Cited] = ()  # one per future year, in order
+    regulated_asset_base: Cited | None = None
+    segments: Sequence[Segment] = ()
+    peer_multiples: Sequence[PeerMultiple] = ()
+    replacement: Replacement | None = None
 
 
 def wacc(inputs: Inputs, beta: float) -> float | None:
@@ -153,6 +206,87 @@ def peer_multiple(inputs: Inputs, s: Scenario) -> dict[str, Any]:
             "per_share": round(_per_share(ev, inputs), 4), "multiple": round(multiple, 2)}
 
 
+def _needs_bridge(inputs: Inputs) -> dict[str, Any] | None:
+    if inputs.net_debt is None or inputs.diluted_shares is None:
+        return {"state": INSUFFICIENT, "reason": "net debt or the diluted share count is "
+                                                 "unknown"}
+    return None
+
+
+def _computed(ev: float, inputs: Inputs, **extra: Any) -> dict[str, Any]:
+    return {"state": COMPUTED, "enterprise_value": round(ev, 0),
+            "per_share": round(_per_share(ev, inputs), 4), **extra}
+
+
+def contracted_dcf(inputs: Inputs, s: Scenario) -> dict[str, Any]:
+    if not inputs.contracted_cash_flows:
+        return {"state": NOT_APPLICABLE, "reason": "no cited contracted cash flows"}
+    if inputs.risk_free is None or s.contract_spread is None:
+        return {"state": INSUFFICIENT, "reason": "risk-free rate not cited or no named "
+                                                 "contract spread"}
+    if (bridge := _needs_bridge(inputs)) is not None:
+        return bridge
+    r = inputs.risk_free.value + s.contract_spread.value
+    if r <= 0:
+        return {"state": INSUFFICIENT, "reason": "the contract discount rate is not positive"}
+    ev = sum(cf.value / (1 + r) ** t
+             for t, cf in enumerate(inputs.contracted_cash_flows, start=1))
+    return _computed(ev, inputs, discount_rate=round(r, 4),
+                     years=len(inputs.contracted_cash_flows))
+
+
+def rab_multiple(inputs: Inputs, s: Scenario) -> dict[str, Any]:
+    if inputs.regulated_asset_base is None:
+        return {"state": NOT_APPLICABLE, "reason": "no cited regulated asset base"}
+    if s.rab_multiple is None or s.rab_multiple.value <= 0:
+        return {"state": INSUFFICIENT, "reason": "no named RAB multiple"}
+    if (bridge := _needs_bridge(inputs)) is not None:
+        return bridge
+    ev = inputs.regulated_asset_base.value * s.rab_multiple.value
+    return _computed(ev, inputs, multiple=round(s.rab_multiple.value, 3))
+
+
+def sotp(inputs: Inputs, s: Scenario) -> dict[str, Any]:
+    if len(inputs.segments) < 2:
+        return {"state": NOT_APPLICABLE, "reason": "fewer than two segments with a cited "
+                                                   "metric"}
+    if any(seg.metric.value <= 0 for seg in inputs.segments):
+        return {"state": INSUFFICIENT, "reason": "a segment metric is zero or negative"}
+    if (bridge := _needs_bridge(inputs)) is not None:
+        return bridge
+    values = [seg.metric.value * seg.multiple.value * (1 + s.multiple_adjustment.value)
+              for seg in inputs.segments]
+    parts = [{"segment": seg.name, "value": round(v, 0)}
+             for seg, v in zip(inputs.segments, values)]
+    return _computed(sum(values), inputs, parts=parts)
+
+
+def multiple_method(pm: PeerMultiple) -> Any:
+    def run(inputs: Inputs, s: Scenario) -> dict[str, Any]:
+        if pm.subject_metric.value <= 0 or pm.peer_median.value <= 0:
+            return {"state": INSUFFICIENT, "reason": f"{pm.key}: metric or median is not "
+                                                     "positive"}
+        if (bridge := _needs_bridge(inputs)) is not None:
+            return bridge
+        multiple = pm.peer_median.value * (1 + s.multiple_adjustment.value)
+        return _computed(multiple * pm.subject_metric.value, inputs,
+                         multiple=round(multiple, 4))
+    return run
+
+
+def replacement_floor(inputs: Inputs, s: Scenario) -> dict[str, Any]:
+    rep = inputs.replacement
+    if rep is None:
+        return {"state": NOT_APPLICABLE, "reason": "no cited capacity with a named cost"}
+    haircut = s.replacement_haircut.value if s.replacement_haircut else None
+    if haircut is None or not 0 <= haircut < 1:
+        return {"state": INSUFFICIENT, "reason": "no named haircut between 0 and 1"}
+    if (bridge := _needs_bridge(inputs)) is not None:
+        return bridge
+    ev = rep.capacity.value * rep.cost_per_unit.value * (1 - haircut)
+    return _computed(ev, inputs, unit=rep.unit, haircut=haircut)
+
+
 def sensitivity(inputs: Inputs, s: Scenario, *, step_r: float = 0.01,
                 step_g: float = 0.005) -> dict[str, Any] | None:
     base_r = wacc(inputs, s.beta.value)
@@ -165,18 +299,34 @@ def sensitivity(inputs: Inputs, s: Scenario, *, step_r: float = 0.01,
     return {"rows_discount_rate": rs, "columns_terminal_growth": gs, "per_share": grid}
 
 
+def _method_state(per: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    computed = all(v.get("state") == COMPUTED for v in per.values()) and len(per) == 3
+    return {"state": COMPUTED if computed else INSUFFICIENT, "scenarios": per,
+            "reason": None if computed else next(
+                (v.get("reason") for v in per.values() if v.get("state") != COMPUTED),
+                "scenarios missing")}
+
+
 def run_engine(inputs: Inputs) -> dict[str, Any]:
     """All methods × scenarios, the triangulated range, or ``insufficient_evidence``."""
     methods: dict[str, dict[str, Any]] = {}
-    for name, fn in (("fcff_dcf", dcf), ("peer_multiple", peer_multiple)):
+    table: list[tuple[str, Any]] = [
+        ("fcff_dcf", dcf), ("peer_multiple", peer_multiple),
+        ("contracted_dcf", contracted_dcf), ("rab_multiple", rab_multiple), ("sotp", sotp),
+        *((f"multiple:{pm.key}", multiple_method(pm)) for pm in inputs.peer_multiples),
+    ]
+    for name, fn in table:
         per = {sc: fn(inputs, inputs.scenarios[sc]) for sc in SCENARIOS
                if sc in inputs.scenarios}
-        computed = all(v.get("state") == COMPUTED for v in per.values()) and len(per) == 3
-        methods[name] = {"state": COMPUTED if computed else INSUFFICIENT,
-                         "scenarios": per,
-                         "reason": None if computed else next(
-                             (v.get("reason") for v in per.values()
-                              if v.get("state") != COMPUTED), "scenarios missing")}
+        if per and all(v.get("state") == NOT_APPLICABLE for v in per.values()):
+            if name not in ("fcff_dcf", "peer_multiple"):
+                continue  # an 8.7 method without its inputs is simply absent
+        methods[name] = _method_state(per)
+    floors: dict[str, Any] = {}
+    if inputs.replacement is not None:
+        floors["replacement_cost"] = _method_state(
+            {sc: replacement_floor(inputs, inputs.scenarios[sc]) for sc in SCENARIOS
+             if sc in inputs.scenarios})
     usable = [m for m in methods.values() if m["state"] == COMPUTED]
     range_: dict[str, Any]
     if len(usable) < MIN_METHODS:
@@ -198,6 +348,7 @@ def run_engine(inputs: Inputs) -> dict[str, Any]:
         "currency": inputs.currency,
         "valuation_range": range_,
         "methods": methods,
+        **({"floors": floors} if floors else {}),
         "sensitivity_fcff_dcf": sensitivity(inputs, base) if base else None,
         "inputs": {
             "cited": {k: v.to_dict() for k, v in (
@@ -205,7 +356,20 @@ def run_engine(inputs: Inputs) -> dict[str, Any]:
                 ("net_debt", inputs.net_debt), ("diluted_shares", inputs.diluted_shares),
                 ("risk_free", inputs.risk_free),
                 ("equity_risk_premium", inputs.equity_risk_premium),
-                ("peer_median_ev_to_ebit", inputs.peer_median_ev_to_ebit)) if v is not None},
+                ("peer_median_ev_to_ebit", inputs.peer_median_ev_to_ebit),
+                ("regulated_asset_base", inputs.regulated_asset_base),
+                ("replacement_capacity",
+                 inputs.replacement.capacity if inputs.replacement else None))
+                if v is not None},
+            **({"contracted_cash_flows": [cf.to_dict() for cf in inputs.contracted_cash_flows]}
+               if inputs.contracted_cash_flows else {}),
+            **({"segments": [{"name": seg.name, "metric": seg.metric.to_dict(),
+                              "multiple": seg.multiple.to_dict()}
+                             for seg in inputs.segments]} if inputs.segments else {}),
+            **({"peer_multiples": [{"key": pm.key, "subject_metric": pm.subject_metric.to_dict(),
+                                    "peer_median": pm.peer_median.to_dict()}
+                                   for pm in inputs.peer_multiples]}
+               if inputs.peer_multiples else {}),
             "assumptions": {
                 "size_premium": inputs.size_premium.to_dict(),
                 "cost_of_debt_pre_tax": inputs.cost_of_debt_pre_tax.to_dict(),
@@ -214,7 +378,13 @@ def run_engine(inputs: Inputs) -> dict[str, Any]:
                 **{f"{sc}.{k}": a.to_dict()
                    for sc, s in inputs.scenarios.items()
                    for k, a in (("terminal_growth", s.terminal_growth), ("beta", s.beta),
-                                ("multiple_adjustment", s.multiple_adjustment))},
+                                ("multiple_adjustment", s.multiple_adjustment),
+                                ("contract_spread", s.contract_spread),
+                                ("rab_multiple", s.rab_multiple),
+                                ("replacement_haircut", s.replacement_haircut))
+                   if a is not None},
+                **({"replacement_cost_per_unit": inputs.replacement.cost_per_unit.to_dict()}
+                   if inputs.replacement else {}),
                 **{f"{sc}.growth_year_{i}": a.to_dict()
                    for sc, s in inputs.scenarios.items() for i, a in enumerate(s.growth, 1)},
             },
@@ -226,4 +396,6 @@ def run_engine(inputs: Inputs) -> dict[str, Any]:
 
 
 __all__ = ["Assumption", "Cited", "ENGINE_VERSION", "INSUFFICIENT", "Inputs", "MIN_METHODS",
-           "Scenario", "dcf", "peer_multiple", "run_engine", "sensitivity", "wacc"]
+           "NOT_APPLICABLE", "PeerMultiple", "Replacement", "Scenario", "Segment",
+           "contracted_dcf", "dcf", "multiple_method", "peer_multiple", "rab_multiple",
+           "replacement_floor", "run_engine", "sensitivity", "sotp", "wacc"]
