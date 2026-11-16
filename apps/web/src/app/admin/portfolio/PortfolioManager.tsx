@@ -16,6 +16,7 @@ import {
   type PortfolioDetail,
   type PortfolioSummary,
 } from "@/lib/portfolioApi";
+import PortfolioReviewPanel from "./PortfolioReviewPanel";
 
 const inputCls =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400/50 focus:outline-none focus:ring-2 focus:ring-sky-500/40";
@@ -253,6 +254,9 @@ export default function PortfolioManager() {
           >
             Add position
           </button>
+          {selected.positions.length > 0 && (
+            <PortfolioReviewPanel key={selected.id} portfolioId={selected.id} />
+          )}
         </div>
       )}
     </div>

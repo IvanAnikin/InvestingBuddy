@@ -4080,5 +4080,6 @@ web only through the admin proxy (`/api/v1/portfolios` is on its allow-list).
 | DELETE | `/api/v1/portfolios/{id}` | 204; the positions go with it |
 | POST | `/api/v1/portfolios/{id}/positions` | `{ticker, exchange?, entry_date (not future), entry_price? + entry_currency? (both or neither), weight_pct? (0–100], note?}` → 201; 409 on the same ticker/exchange/date; 422 on invalid input |
 | DELETE | `/api/v1/portfolios/{id}/positions/{position_id}` | 204 |
+| GET | `/api/v1/portfolios/{id}/review` | slice 12.2: `{portfolio_id, name, rules_version, holdings[{position_id, ticker, exchange, entry_date, thesis_status, reason, entry_record, current_record, weakening[{kind, summary, source_url, detail}], context[…], proposed_research[], entry_verdict, current_verdict}], status_counts, thresholds, note}` — rules: docs/v3.20-portfolio.md |
 
 No route imports from a broker, places an order or computes a size.
