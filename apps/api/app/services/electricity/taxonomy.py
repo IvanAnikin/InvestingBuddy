@@ -42,7 +42,7 @@ from functools import lru_cache
 
 #: Bump on every change to a layer, sub-segment, anchor, exclusion or tag mapping.
 #: A classification records the version it was made under.
-TAXONOMY_VERSION = "2026-11-16.1"
+TAXONOMY_VERSION = "2026-11-16.2"
 
 #: The dominant-end-market threshold for the exclusion override (spec §3.5).
 DOMINANT_END_MARKET_SHARE = 0.5
@@ -140,14 +140,15 @@ LAYERS: tuple[Layer, ...] = (
         (
             SubSegment("distribution_transformers", "Distribution transformers",
                        ("distribution transformer", "pad-mounted transformer",
-                        "pole-mounted transformer")),
+                        "pole-mounted transformer", "transformer")),
             SubSegment("mv_lv_switchgear", "MV/LV switchgear",
                        ("medium-voltage switchgear", "low-voltage switchgear",
-                        "ring main unit", "recloser", "switchboard", "panelboard"),
+                        "ring main unit", "recloser", "switchboard", "panelboard",
+                        "switchgear"),
                        ("grid_switchgear_cables",)),
             SubSegment("mv_lv_cables", "MV/LV cables & wire",
                        ("medium-voltage cable", "low-voltage cable", "building wire",
-                        "power cable"),
+                        "power cable", "wire and cable"),
                        ("grid_switchgear_cables",)),
             SubSegment("metering", "Metering", ("smart meter", "electricity meter",
                                                 "advanced metering")),

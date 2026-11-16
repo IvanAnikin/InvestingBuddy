@@ -1424,6 +1424,10 @@ class Settings(BaseSettings):
     # pre-report snapshots and add the "Earnings track record" block to the report
     # (financial_capacity section). No external call.
     v3_earnings_track_record_enabled: bool = True
+    # V3.20 slice 5.2: classify the company into the electricity taxonomy's layers from
+    # its held description and segment revenue facts, and add the "Electricity layers"
+    # block to the report (business_model section). No external call.
+    v3_electricity_classifier_enabled: bool = True
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

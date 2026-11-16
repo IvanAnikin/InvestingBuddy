@@ -1412,6 +1412,7 @@ async def _run(
             passive_ownership=await _passive_ownership_section(session, company, cfg=cfg),
             earnings_track_record=await _earnings_track_record_section(
                 session, company, cfg=cfg),
+            electricity_layers=await _electricity_layers_section(session, company, cfg=cfg),
         )
         outcome.professional_research = report
         if withheld_reason:
@@ -1607,6 +1608,15 @@ async def _earnings_track_record_section(
     return await earnings_track_record_section(session, company, cfg=cfg)
 
 
+async def _electricity_layers_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 5.2 — the "Electricity layers" block; None when off (report unchanged)."""
+    from app.services.pipeline.electricity_step import electricity_layers_section
+
+    return await electricity_layers_section(session, company, cfg=cfg)
+
+
 async def _passive_ownership_section(
     session: Any, company: Any, *, cfg: Any,
 ) -> dict[str, Any] | None:
@@ -1670,6 +1680,7 @@ async def _professional_report(
     relationships: dict[str, Any] | None = None,
     passive_ownership: dict[str, Any] | None = None,
     earnings_track_record: dict[str, Any] | None = None,
+    electricity_layers: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1864,6 +1875,7 @@ async def _professional_report(
         relationships=relationships,
         passive_ownership=passive_ownership,
         earnings_track_record=earnings_track_record,
+        electricity_layers=electricity_layers,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

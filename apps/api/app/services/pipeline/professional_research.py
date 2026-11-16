@@ -196,6 +196,10 @@ class ReportInputs:
     #: (``earnings_track_record.earnings_track_record_block``); ``None`` leaves the report
     #: unchanged.
     earnings_track_record: Mapping[str, Any] | None = None
+    #: V3.20 slice 5.2 — the electricity layer classification
+    #: (``electricity_step.electricity_layers_section``); ``None`` leaves the report
+    #: unchanged.
+    electricity_layers: Mapping[str, Any] | None = None
 
 
 
@@ -828,6 +832,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when the graph is on, so every other report is byte-identical.
         business = next(s for s in sections if s["key"] == "business_model")
         business["relationships"] = dict(inputs.relationships)
+    if inputs.electricity_layers:
+        # Only when the classifier is on, so every other report is byte-identical.
+        business_section = next(s for s in sections if s["key"] == "business_model")
+        business_section["electricity_layers"] = dict(inputs.electricity_layers)
     if inputs.passive_ownership:
         # Only when the block is on, so every other report is byte-identical.
         valuation = next(s for s in sections if s["key"] == "valuation_context")
