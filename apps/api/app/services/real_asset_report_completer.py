@@ -46,6 +46,7 @@ from app.services.data_provenance import (
     derive_data_provenance,
     normalise_provenance,
 )
+from app.services.discovery.laddering import distance as ladder_distance
 from app.services.electricity.real_asset import ASSET_TYPE_BY_LAYER
 from app.services.electricity.taxonomy import (
     LAYER_KEYS,
@@ -420,10 +421,20 @@ class _ReportCompleter:
             )
         return out
 
+    def _laddering(self) -> dict[str, Any] | None:
+        """V3.20 slice 6.1 — how a laddered candidate was reached, when the draft says."""
+        lad = self._admin.get("supply_chain_laddering")
+        if not isinstance(lad, dict) or not isinstance(lad.get("hops"), int):
+            return None
+        return lad
+
     def _discovery_profile(self) -> dict[str, Any]:
+        lad = self._laddering()
         return {
-            "entry_path": "other",
-            "supply_chain_distance_from_obvious": 0,
+            # V3.20 slice 6.1: a candidate reached by walking supplier_of edges carries its
+            # real hop count; otherwise the stand-in below is unchanged.
+            "entry_path": "supply_chain_laddering" if lad else "other",
+            "supply_chain_distance_from_obvious": ladder_distance(lad["hops"]) if lad else 0,
             "coverage_metrics": {
                 "sell_side_estimate_count": self._missing_dp(
                     "discovery_profile.analyst_estimate_count"
