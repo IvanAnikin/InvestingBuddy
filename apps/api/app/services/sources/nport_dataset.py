@@ -224,6 +224,32 @@ def iter_table(zf: Any, table: str) -> Iterator[dict[str, str]]:
         yield from csv.DictReader(text, delimiter="\t", quoting=csv.QUOTE_NONE)
 
 
+def iter_columns(zf: Any, table: str, columns: tuple[str, ...]) -> Iterator[tuple[str, ...]]:
+    """Only ``columns`` of each row, as a tuple ("" when absent) — the fast path for the
+    two big tables (FUND_REPORTED_HOLDING ~5.6M rows, IDENTIFIERS ~5M rows a quarter),
+    where building a dict per row dominated the run time."""
+    name = _member(zf, table)
+    if name is None:
+        return
+    with zf.open(name) as raw:
+        text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
+        reader = csv.reader(text, delimiter="\t", quoting=csv.QUOTE_NONE)
+        header = next(reader, None)
+        if header is None:
+            return
+        index = {col: i for i, col in enumerate(header)}
+        picks = [index.get(col) for col in columns]
+        for row in reader:
+            width = len(row)
+            yield tuple(row[i] if i is not None and i < width else "" for i in picks)
+
+
+def _lookup_key(value: str | None) -> str:
+    """Whitespace-free upper case: the cheap per-row key. A hit in a ``Targets`` map is
+    valid by construction (targets are validated), so the regex runs only on hits."""
+    return "".join(value.split()).upper() if value else ""
+
+
 def fund_types(ncen_zf: Any) -> dict[str, FundType]:
     """Series id → type, from an N-CEN data set; the newest filing per series wins."""
     filed: dict[str, date | None] = {}
@@ -293,43 +319,50 @@ def aggregate_nport(nport_zf: Any, targets: Targets, *, period: str | None,
 
     isin_of: dict[str, str] = {}
     if targets.isins:
-        for row in iter_table(nport_zf, "IDENTIFIERS"):
-            isin = normalise_identifier("isin", row.get("IDENTIFIER_ISIN"))
-            if isin and isin in targets.isins:
-                isin_of[row["HOLDING_ID"]] = isin
+        wanted = targets.isins
+        for holding_id, raw_isin in iter_columns(nport_zf, "IDENTIFIERS",
+                                                 ("HOLDING_ID", "IDENTIFIER_ISIN")):
+            if raw_isin:
+                isin = _lookup_key(raw_isin)
+                if isin in wanted:
+                    isin_of[holding_id] = isin
 
     aggregates: dict[str, SecurityAggregate] = {}
     read = matched = 0
-    for row in iter_table(nport_zf, "FUND_REPORTED_HOLDING"):
+    by_isin, by_cusip, by_lei = targets.by["isin"], targets.by["cusip"], targets.by["lei"]
+    for (accession, holding_id, raw_cusip, raw_lei, issuer_name, balance, unit_raw,
+         currency, value, pct, payoff) in iter_columns(nport_zf, "FUND_REPORTED_HOLDING", (
+            "ACCESSION_NUMBER", "HOLDING_ID", "ISSUER_CUSIP", "ISSUER_LEI", "ISSUER_NAME",
+            "BALANCE", "UNIT", "CURRENCY_CODE", "CURRENCY_VALUE", "PERCENTAGE",
+            "PAYOFF_PROFILE")):
         read += 1
-        accession = row.get("ACCESSION_NUMBER", "")
         if accession not in kept:
             continue
-        if (row.get("PAYOFF_PROFILE") or "").strip().lower() not in ("", "long", "n/a"):
-            continue
-        cusip = normalise_identifier("cusip", row.get("ISSUER_CUSIP"))
-        lei = normalise_identifier("lei", row.get("ISSUER_LEI"))
-        isin = isin_of.get(row.get("HOLDING_ID", ""))
-        target = (targets.by["isin"].get(isin or "") or targets.by["cusip"].get(cusip or "")
-                  or targets.by["lei"].get(lei or ""))
+        isin = isin_of.get(holding_id)
+        cusip_key, lei_key = _lookup_key(raw_cusip), _lookup_key(raw_lei)
+        target = (by_isin.get(isin or "") or by_cusip.get(cusip_key) or by_lei.get(lei_key))
         if target is None:
             continue
+        if payoff.strip().lower() not in ("", "long", "n/a"):
+            continue
+        cusip = normalise_identifier("cusip", raw_cusip)
+        lei = normalise_identifier("lei", raw_lei)
         matched += 1
         info = infos[accession]
         agg = aggregates.get(target)
         if agg is None:
             agg = aggregates[target] = SecurityAggregate(*targets.primary[target])
             agg.target_key = target
-        agg.issuer_name = agg.issuer_name or row.get("ISSUER_NAME") or None
+        agg.issuer_name = agg.issuer_name or issuer_name or None
         agg.issuer_lei = agg.issuer_lei or lei
         agg.cusip = agg.cusip or cusip
         agg.isin = agg.isin or isin
-        unit = (row.get("UNIT") or "").strip().upper()
+        unit = unit_raw.strip().upper()
         holding = _Holding(
             series_id=info.series_id, report_date=info.report_date,
-            shares=_dec(row.get("BALANCE")), value_usd=_dec(row.get("CURRENCY_VALUE"))
-            if (row.get("CURRENCY_CODE") or "USD").upper() == "USD" else None,
-            pct_of_fund=_dec(row.get("PERCENTAGE")), non_share=unit != "NS")
+            shares=_dec(balance), value_usd=_dec(value)
+            if (currency or "USD").strip().upper() == "USD" else None,
+            pct_of_fund=_dec(pct), non_share=unit != "NS")
         prior = agg.holdings.get(info.series_id)
         if prior is None or (holding.report_date or date.min) > (prior.report_date or date.min):
             agg.holdings[info.series_id] = holding
