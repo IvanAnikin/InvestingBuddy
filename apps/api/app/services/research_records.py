@@ -65,6 +65,18 @@ def _day(value: Any) -> date | None:
         return None
 
 
+def valuation_summary(report: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The report's top-level ``valuation`` block, compacted for the record."""
+    block = (report or {}).get("valuation")
+    if not isinstance(block, Mapping):
+        return None
+    return {"block_version": block.get("block_version"),
+            "valuation_range": block.get("valuation_range"),
+            "price_reference": block.get("price_reference"),
+            "relative_position": block.get("relative_position"),
+            "upside_downside_pct": block.get("upside_downside_pct")}
+
+
 def build_record(
     *,
     report: Mapping[str, Any] | None,
@@ -107,6 +119,8 @@ def build_record(
             "report_version": (report or {}).get("version"),
             "size_fit": dict(size_fit) if size_fit else None,
             "blocks": {k: v for k, v in blocks.items() if v is not None},
+            # V3.20 slice 8.6 wiring — the range and its price, not the whole engine output.
+            **({"valuation": valuation_summary(report)} if valuation_summary(report) else {}),
         },
     }
 

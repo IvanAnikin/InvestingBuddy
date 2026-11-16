@@ -1483,6 +1483,17 @@ class Settings(BaseSettings):
     # (PASS / WATCHLIST / SHORTLIST) at ``professional_research.verdict``. Deterministic;
     # no call. Off by default: it is an investment-research opinion, private use only.
     v3_research_verdict_enabled: bool = False
+    # V3.20 slice 8.6 wiring (ADR-099): the deterministic valuation engine on this run's
+    # cited blocks → ``professional_research.valuation`` (a per-share range beside a dated
+    # price). Off by default: an investment-research opinion, private use only.
+    v3_valuation_engine_enabled: bool = False
+    # Fetch the newest FRED DGS10 observation (one CSV read, no key) as the cited USD
+    # risk-free rate. Read only when the engine is on.
+    v3_valuation_risk_free_fetch_enabled: bool = True
+    # The equity risk premium, entered by the owner WITH its publication, as JSON:
+    # {"value": 0.045, "source_url": "https://…", "as_of": "2026-11-01"}. Empty (the
+    # default) leaves the DCF ``insufficient_evidence``: no ERP is ever made up.
+    v3_equity_risk_premium_json: str = ""
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

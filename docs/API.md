@@ -4073,6 +4073,17 @@ pillars[{key, label, weight, state (scored | insufficient_evidence), score, evid
 thin_share, rule}], caps[{key, reason}], capped, thresholds, missing_information[],
 watchlist_triggers[], rationale, note}`. Rules: [v3.20-output.md §9.2](v3.20-output.md).
 
+## Valuation range (V3.20 slice 8.6 wiring, ADR-099)
+
+`source_summary_json.v3_research.professional_research.valuation` is present only when
+`V3_VALUATION_ENGINE_ENABLED` is on and the run has a computed EV. It carries the engine
+output (`valuation_range`, `methods`, `floors?`, `sensitivity_fcff_dcf`,
+`inputs{cited, assumptions}`, `note`) plus `block_version`,
+`price_reference{per_share, currency, market_cap_as_of, market_cap_source_url,
+shares_period, formula}`, `relative_position` (`undervalued | in_line | overvalued | null`)
+and `upside_downside_pct{low, mid, high} | null`. Rules: [v3.20-valuation.md
+§8.6](v3.20-valuation.md).
+
 ## Private portfolios (V3.20 slice 12.1, ADR-100)
 
 Owner-scoped: every route resolves the owner from `request.state.admin_email` (set by the

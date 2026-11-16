@@ -1352,7 +1352,7 @@ is NULL, never zero. Rows are never updated and never deleted.
 | `enterprise_value`, `ev_currency`, `ev_to_ebit` | From the 8.1 block, only when computed. |
 | `obscurity_score` | From the 6.3 block. |
 | `rubric_json` | Slice 9.2: the report's `verdict` block (rubric + computed verdict), when `V3_RESEARCH_VERDICT_ENABLED`; NULL otherwise. No schema change. |
-| `record_json` | `{record_version, report_version, size_fit, blocks{"section.block": …}}` — the blocks verbatim. |
+| `record_json` | `{record_version, report_version, size_fit, blocks{"section.block": …}, valuation?}` — the blocks verbatim; `valuation` (slice 8.6 wiring) = `{block_version, valuation_range, price_reference, relative_position, upside_downside_pct}` when the engine ran. |
 
 Index (`company_id`, `as_of`). `comparable_set(layer)` returns the newest record per
 company in one layer (window function). Checked on PostgreSQL: upgrade, downgrade,

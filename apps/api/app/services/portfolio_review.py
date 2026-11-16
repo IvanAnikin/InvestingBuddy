@@ -37,7 +37,7 @@ from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
 
-RULES_VERSION = "2026-11-16.2"
+RULES_VERSION = "2026-11-16.3"
 BROKEN_MIN_ITEMS = 3
 BROKEN_MIN_KINDS = 2
 #: A lower EV/EBIT than at entry by this fraction counts as a weakening item.
@@ -107,6 +107,7 @@ def weakening_items(entry: Any, current: Any, signals: Sequence[Any], *,
                         entry_as_of=str(entry.as_of), current_as_of=str(current.as_of),
                         change=float(round(drift, 3)))
             (weak if drift <= -MULTIPLE_DRIFT else context).append(row)
+        _position_drift(entry, current, weak, context)
         before, after = verdict_of(entry), verdict_of(current)
         if before.get("state") == after.get("state") == "available":
             a_rank = _VERDICT_RANK[before["recommendation"]]
@@ -124,6 +125,30 @@ def weakening_items(entry: Any, current: Any, signals: Sequence[Any], *,
         _classify(sig.kind, sig.summary, sig.detail_json or {}, weak, context,
                   observed_at=sig.observed_at)
     return weak, context
+
+
+#: The price against the computed range, as an order (slice 8.6 wiring).
+_POSITION_RANK = {"undervalued": 0, "in_line": 1, "overvalued": 2}
+_POSITION_WORDS = {"undervalued": "below", "in_line": "within", "overvalued": "above"}
+
+
+def _position_drift(entry: Any, current: Any, weak: list, context: list) -> None:
+    """A price that moved up through the computed range is a weakening item; down is
+    context. The ADR-099 terms are not repeated here: the summary says where the price
+    sits against the range."""
+    def pos(rec: Any) -> str | None:
+        v = ((getattr(rec, "record_json", None) or {}).get("valuation") or {})
+        p = v.get("relative_position")
+        return p if p in _POSITION_RANK else None
+
+    a, b = pos(entry), pos(current)
+    if a is None or b is None or a == b:
+        return
+    row = _item("valuation_range_position",
+                f"The price was {_POSITION_WORDS[a]} the computed range at the entry record "
+                f"and is {_POSITION_WORDS[b]} it now", entry_as_of=str(entry.as_of),
+                current_as_of=str(current.as_of))
+    (weak if _POSITION_RANK[b] > _POSITION_RANK[a] else context).append(row)
 
 
 def _classify(kind: str, summary: str, detail: Mapping[str, Any], weak: list, context: list,

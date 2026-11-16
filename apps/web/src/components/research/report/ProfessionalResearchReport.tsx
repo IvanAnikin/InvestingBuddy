@@ -12,6 +12,7 @@ import { FinancialDepthSection } from "@/components/research/report/FinancialDep
 import { ObscuritySection } from "@/components/research/report/ObscuritySection";
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
 import { ResearchVerdictSection } from "@/components/research/report/ResearchVerdictSection";
+import { ValuationRangeSection } from "@/components/research/report/ValuationRangeSection";
 import { sourceTierWord } from "@/components/research/reportSections";
 import type {
   ChangeSection,
@@ -1214,6 +1215,7 @@ export default function ProfessionalResearchReport({
       </Surface>
 
       <ResearchVerdictSection block={report.verdict} />
+      <ValuationRangeSection block={report.valuation} />
 
       {report.sections.map((section, i) => (
         <SectionCard key={section.key} section={section} index={i}>

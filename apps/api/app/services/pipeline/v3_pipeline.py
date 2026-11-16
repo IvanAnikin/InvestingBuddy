@@ -1456,6 +1456,9 @@ async def _run(
             obscurity=obscurity,
             change_events=change_events,
             verdict_enabled=bool(getattr(cfg, "v3_research_verdict_enabled", False)),
+            valuation=await _valuation_section(
+                session, company, cfg=cfg, ev_block=enterprise_value, peers_block=layer_peers,
+                depth_block=financial_depth, size_fit=thesis_size),
         )
         outcome.professional_research = report
         await _mark_researched(session, company, cfg=cfg, change_events=change_events)
@@ -1727,6 +1730,19 @@ async def _market_implied_section(
                                         size_fit=size_fit)
 
 
+async def _valuation_section(
+    session: Any, company: Any, *, cfg: Any, ev_block: dict[str, Any] | None,
+    peers_block: dict[str, Any] | None, depth_block: dict[str, Any] | None,
+    size_fit: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.6 wiring — the engine's range; None when off or no EV (unchanged)."""
+    from app.services.pipeline.valuation_step import valuation_section
+
+    return await valuation_section(session, company, cfg=cfg, ev_block=ev_block,
+                                   peers_block=peers_block, depth_block=depth_block,
+                                   size_fit=size_fit)
+
+
 async def _financial_depth_section(
     session: Any, company: Any, *, cfg: Any,
 ) -> dict[str, Any] | None:
@@ -1876,6 +1892,7 @@ async def _professional_report(
     market_implied: dict[str, Any] | None = None,
     financial_depth: dict[str, Any] | None = None,
     verdict_enabled: bool = False,
+    valuation: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -2081,6 +2098,11 @@ async def _professional_report(
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)
     report["withheld_for_safety"] = withheld
+    if valuation:
+        # V3.20 slice 8.6 wiring (ADR-099): engine output, attached after the editor so no
+        # model reads or restates it; only when the engine ran, so other reports are
+        # byte-identical.
+        report["valuation"] = valuation
     if verdict_enabled:
         # V3.20 slice 9.2 (ADR-098): computed AFTER the editor, from the report itself —
         # no model sees or chooses the label. Failure costs the block, not the report.
