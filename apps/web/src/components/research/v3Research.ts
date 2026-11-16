@@ -40,6 +40,10 @@ import {
   readPassiveOwnershipBlock,
   type PassiveOwnershipBlock,
 } from "./passiveOwnership";
+import {
+  readEarningsTrackRecordBlock,
+  type EarningsTrackRecordBlock,
+} from "./earningsTrackRecord";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
 
 /** One statement the ledger holds, with the ids that make it citable. */
@@ -478,6 +482,9 @@ export type DomainSection = SectionHead & {
   /** V3.20 slice 3.4 (valuation_context): US-registered funds / ETFs holding the
       company (SEC N-PORT). Null when off, and on older reports. */
   passiveOwnership: PassiveOwnershipBlock | null;
+  /** V3.20 slice 4.4 (financial_capacity): filed quarterly results vs the pre-report
+      third-party expectation and guidance. Null when off, and on older reports. */
+  earningsTrackRecord: EarningsTrackRecordBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -1079,6 +1086,7 @@ function readDomainSection(
     webEvidence: readWebEvidenceBlock(r.web_evidence),
     relationships: readRelationshipBlock(r.relationships),
     passiveOwnership: readPassiveOwnershipBlock(r.passive_ownership),
+    earningsTrackRecord: readEarningsTrackRecordBlock(r.earnings_track_record),
   };
 }
 

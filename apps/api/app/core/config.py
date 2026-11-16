@@ -1415,6 +1415,10 @@ class Settings(BaseSettings):
     # calls/day counted in vendor_api_calls). Private use only (ADR-097, registry
     # ``alpha_vantage``). With no key the step makes no call (state no_api_key).
     v3_consensus_snapshots_enabled: bool = True
+    # V3.20 slice 4.4: fill earnings_results consensus / surprise columns from dated
+    # pre-report snapshots and add the "Earnings track record" block to the report
+    # (financial_capacity section). No external call.
+    v3_earnings_track_record_enabled: bool = True
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

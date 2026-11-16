@@ -1289,7 +1289,7 @@ New table `earnings_results`: one row per company × fiscal quarter (`2026-Q3`, 
 | `*_currency`, `*_concept`, `*_accession`, `*_source_url` | Where each figure came from: the us-gaap concept, and the EDGAR filing index URL. |
 | `actuals_source`, `actuals_as_of` | `sec_xbrl`, and when the actuals were read. |
 | `consensus_*`, `analyst_count_*`, `consensus_source`, `consensus_as_of`, `consensus_status` | Filled by slice 4.4 from `consensus_snapshots` (migration 051; third-party expectation data, ADR-097). NULL = not looked up, never zero. `consensus_as_of` must precede `report_date`. |
-| `surprise_*` | Slice 4.4. |
+| `surprise_*` | Slice 4.4 (`pipeline/earnings_track_record.py`). Revenue: filed revenue as first reported − the latest snapshot with `is_pre_report` and `as_of` strictly before `report_date`. EPS: the provider's own surprise, stored as given on the provider's basis (`detail_json.surprise.eps_surprise`, with `eps_basis_difference` when the provider's reported EPS and the filed diluted EPS differ by more than one cent). `consensus_status`: `available` (≥ 3 analysts), `thin` (1–2 or not stated), `none` (covered, no dated pre-report estimate), `source_unavailable` (no provider data). |
 | `guidance_*`, `vs_guidance` | Slice 4.3. |
 | `detail_json` | `actuals`: strategy, notes (e.g. `q4_eps_not_tagged_as_a_quarter`), restated flags, periodic form and filing date. |
 

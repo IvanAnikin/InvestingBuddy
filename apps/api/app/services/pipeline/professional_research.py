@@ -192,6 +192,10 @@ class ReportInputs:
     #: (``passive_ownership_report.passive_ownership_block``); ``None`` leaves the report
     #: unchanged.
     passive_ownership: Mapping[str, Any] | None = None
+    #: V3.20 slice 4.4 — "Earnings track record"
+    #: (``earnings_track_record.earnings_track_record_block``); ``None`` leaves the report
+    #: unchanged.
+    earnings_track_record: Mapping[str, Any] | None = None
 
 
 
@@ -828,6 +832,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when the block is on, so every other report is byte-identical.
         valuation = next(s for s in sections if s["key"] == "valuation_context")
         valuation["passive_ownership"] = dict(inputs.passive_ownership)
+    if inputs.earnings_track_record:
+        # Only when the block is on, so every other report is byte-identical.
+        capacity = next(s for s in sections if s["key"] == "financial_capacity")
+        capacity["earnings_track_record"] = dict(inputs.earnings_track_record)
     if inputs.peer_selection:
         # Only when a peer set ran, so every other report is byte-identical.
         competitive["peer_selection"] = dict(inputs.peer_selection)
