@@ -786,6 +786,17 @@ async def _run(
             outcome.degraded.append(
                 "quarterly earnings actuals could not be read from SEC XBRL ("
                 + str(earnings.get("error") or "unknown error") + ")")
+        # V3.20 slice 4.2 — today's third-party consensus snapshot (Alpha Vantage,
+        # private use). Stores ``consensus_snapshots`` only; no key → no call.
+        if getattr(cfg, "v3_consensus_snapshots_enabled", False):
+            from app.services.pipeline.consensus_step import consensus_snapshot_step
+
+            consensus = await consensus_snapshot_step(session, company, cfg=cfg)
+            outcome.earnings = {**outcome.earnings, "consensus": consensus}
+            if consensus.get("state") == "error":
+                outcome.degraded.append(
+                    "the consensus snapshot could not be stored ("
+                    + str(consensus.get("error") or "unknown error") + ")")
 
     # 1. Prior research — the "before" a delta compares against, and the gaps that
     #    become this run's questions.

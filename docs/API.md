@@ -299,6 +299,9 @@ Error `404 Not Found`: company does not exist.
   - **Currency:** the guided currency must equal the actual's. An unsigned figure is accepted only for EPS.
   - **Metric:** revenue is compared first, EPS only when revenue was not guided.
   - **Written:** `guidance_metric`, `guidance_low` / `guidance_high` / `guidance_mid`, `guidance_evidence_ref` (`finding:<id>`), and `vs_guidance`: `within` / `above` / `below` a range, or `above_point` / `below_point` / `at_point`. An "approximately" figure is a point, and its % difference from the point is stated in `detail_json.guidance`, never rounded into "in line".
+- **Consensus snapshot (V3.20 slice 4.2):** `earnings.consensus` reports what `pipeline/consensus_step.py` did: `{"state": "stored", "symbol": "POWL", "as_of": "2026-11-16", "estimates": 4, "pre_report": 3, "post_report": 1, "undetermined": 0, "reported_quarters": 12}`. Rows go to `consensus_snapshots` (docs/DATABASE.md, migration 051); `earnings_results` is not touched (slice 4.4 computes surprises).
+  - **`state`:** `stored`, `cached` (already read today, no call), `no_api_key` (no `ALPHA_VANTAGE_API_KEY`, no call), `not_us_listed` (the provider covers US-listed tickers only), `budget_exhausted` (25 calls/day used, no call), `vendor_error` with a key-free `reason` (`vendor_rate_limited`, `vendor_premium_only`, `vendor_rejected_request`, `vendor_key_refused`, `vendor_http_error`, `vendor_unreachable`, `unreadable_response`, `no_coverage`), `error` (also added to `degraded`), or `disabled` (`V3_CONSENSUS_SNAPSHOTS_ENABLED=false`).
+  - **Third-party data, private use:** Alpha Vantage is in the source registry as `alpha_vantage` (T5, "PRIVATE USE ONLY"). The key is never stored or logged: every recorded URL omits it.
 
 ---
 

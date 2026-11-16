@@ -2,6 +2,7 @@ from app.models.agent_run import AgentRun, AgentStep
 from app.models.calculation import CalculationRecord
 from app.models.challenge import ResearchChallenge
 from app.models.company import Company
+from app.models.consensus import ConsensusSnapshot, VendorApiCall
 from app.models.delta import ResearchDelta
 from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 from app.models.document_ingestion_attempt import DocumentIngestionAttempt
@@ -65,7 +66,9 @@ __all__ = [
     "DiscoveryCandidate",
     "DiscoveryRun",
     "DocumentIngestionAttempt",
+    "ConsensusSnapshot",
     "EarningsResult",
+    "VendorApiCall",
     "EntityAlias",
     "EntityIdentifier",
     "EntityRelationship",

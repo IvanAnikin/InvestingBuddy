@@ -367,6 +367,7 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     """Construct the default registry from current settings (network-free)."""
     cfg = cfg or default_settings
     eodhd_configured = bool(cfg.eodhd_api_key)
+    alpha_vantage_configured = bool(cfg.alpha_vantage_api_key)
 
     sec_rl = RateLimitPolicy(requests_per_minute=30, min_interval_seconds=0.2)
     gleif_rl = RateLimitPolicy(requests_per_minute=60)
@@ -592,6 +593,27 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             ),
         ),
         RegisteredSource(
+            source_id="alpha_vantage",
+            name="Alpha Vantage (earnings + analyst estimates)",
+            provider_type=ProviderType.fundamentals_aggregator,
+            tier=T5_API_AGGREGATOR,
+            status=SourceStatus.enabled,
+            enabled=True,
+            jurisdiction="US",
+            cost_model=CostModel.freemium,
+            access_mode=AccessMode.rest_api,
+            connector_key="alpha_vantage",
+            connector_implemented=True,
+            capabilities=["consensus_snapshot"],
+            rate_limit="25 requests/day (free tier), counted in vendor_api_calls",
+            reliability_note=(
+                "Aggregator (T5), PRIVATE USE ONLY (ADR-097): third-party analyst "
+                "expectations, labelled as such; US-listed tickers only; EPS on the "
+                "provider's (adjusted) basis. "
+                + ("Configured." if alpha_vantage_configured else "Not configured — idle.")
+            ),
+        ),
+        RegisteredSource(
             source_id="stooq",
             name="Stooq (price history)",
             provider_type=ProviderType.price_aggregator,
@@ -745,6 +767,12 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             configured=eodhd_configured,
             needs_credentials=True,
             rate_limit_policy=price_rl,
+        ),
+        "alpha_vantage": WrappedProviderConnector(
+            connector_key="alpha_vantage",
+            source_ids=("alpha_vantage",),
+            configured=alpha_vantage_configured,
+            needs_credentials=True,
         ),
         "stooq": WrappedProviderConnector(
             connector_key="stooq",

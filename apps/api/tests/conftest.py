@@ -241,6 +241,13 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
         return {"state": "offline_test"}
 
     monkeypatch.setattr(earnings_step, "earnings_actuals_step", _no_earnings)
+    # V3.20 slice 4.2: nor Alpha Vantage, even when a developer's .env holds a key.
+    from app.services.pipeline import consensus_step
+
+    async def _no_consensus(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return {"state": "offline_test"}
+
+    monkeypatch.setattr(consensus_step, "consensus_snapshot_step", _no_consensus)
 
 
 @pytest.fixture(autouse=True)

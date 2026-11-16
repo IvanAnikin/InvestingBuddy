@@ -1288,12 +1288,33 @@ New table `earnings_results`: one row per company × fiscal quarter (`2026-Q3`, 
 | `revenue_basis` | `reported_quarter`, or `derived_fy_minus_9m`: the 10-K tags no three-month Q4, so Q4 = full year minus the Q3 10-Q's nine-month figure. **Q4 EPS is never derived**; it is stated only when the 10-K tags a three-month value. |
 | `*_currency`, `*_concept`, `*_accession`, `*_source_url` | Where each figure came from: the us-gaap concept, and the EDGAR filing index URL. |
 | `actuals_source`, `actuals_as_of` | `sec_xbrl`, and when the actuals were read. |
-| `consensus_*`, `analyst_count_*`, `consensus_source`, `consensus_as_of`, `consensus_status` | Slice 4.2 (third-party expectation data, ADR-097). NULL = not looked up, never zero. `consensus_as_of` must precede `report_date`. |
+| `consensus_*`, `analyst_count_*`, `consensus_source`, `consensus_as_of`, `consensus_status` | Filled by slice 4.4 from `consensus_snapshots` (migration 051; third-party expectation data, ADR-097). NULL = not looked up, never zero. `consensus_as_of` must precede `report_date`. |
 | `surprise_*` | Slice 4.4. |
 | `guidance_*`, `vs_guidance` | Slice 4.3. |
 | `detail_json` | `actuals`: strategy, notes (e.g. `q4_eps_not_tagged_as_a_quarter`), restated flags, periodic form and filing date. |
 
 Re-running the actuals rewrites only the actual and report-date columns; consensus, guidance and surprise columns are never touched. FK `companies` cascade; index on `report_date`; CHECK `ck_earnings_results_fiscal_quarter`. Downgrade drops the table. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches.
+
+## Migration 051 — consensus snapshots + vendor call budget (V3.20 slice 4.2)
+
+Two new tables (ADR-097). Written during company research by `pipeline/consensus_step.py` and by the operator job `scripts/snapshot_consensus.py`; the source is Alpha Vantage (`integrations/alpha_vantage.py`, private use only).
+
+**`consensus_snapshots`** — what the provider said, on one date (`as_of`), about one company period. Unique on (`company_id`, `source`, `horizon`, `period_end`, `as_of`): one row per period per day; a same-day re-read updates it.
+
+| Columns | Meaning |
+|---|---|
+| `horizon` | `fiscal_quarter` / `fiscal_year` (an `EARNINGS_ESTIMATES` row), or `reported_quarter` (the provider's own `EARNINGS` record of a reported quarter). |
+| `period_end`, `as_of`, `symbol`, `source` | The period, the day it was read, the provider symbol, `alpha_vantage`. |
+| `is_pre_report` | True when the period's results were not announced on `as_of` (the period had not ended, or the report date is later); False when they were; NULL when it cannot be told. **Only True is an expectation** (ADR-097 §2). The report date is the SEC one from `earnings_results` when known, else the provider's. |
+| `eps_avg/high/low`, `eps_analyst_count`, `revenue_avg/high/low`, `revenue_analyst_count` | The estimate. NULL = not given, never zero. |
+| `eps_avg_7d/30d/60d/90d_ago`, `eps_revisions_up_30d`, `eps_revisions_down_30d` | The provider's revision history as of `as_of`. |
+| `vendor_reported_date`, `vendor_reported_eps`, `vendor_surprise`, `vendor_surprise_pct`, `vendor_report_time` | `reported_quarter` rows only (with `eps_avg` = the provider's estimate). **Provider EPS basis** (usually adjusted): never subtracted from the filed diluted EPS. |
+| `source_url` | The request URL **without** the key. |
+| `detail_json` | Strategy, `eps_basis: provider`, the report date used for `is_pre_report`. |
+
+**`vendor_api_calls`** — calls per vendor per UTC day, unique on (`vendor`, `day`). The step takes its two calls with one conditional `UPDATE … WHERE calls + n <= 25` in its own short transaction, so concurrent runs share one budget and a long research run never holds the row lock.
+
+FK `companies` cascade; index (`company_id`, `period_end`). Downgrade drops both tables. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches.
 
 ## Rules
 

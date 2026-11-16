@@ -53,6 +53,7 @@ CREDENTIAL_SETTING_FIELDS: frozenset[str] = frozenset(
         "deepseek_api_key",
         "azure_document_intelligence_api_key",
         "tavily_api_key",
+        "alpha_vantage_api_key",
     }
 )
 
@@ -1409,6 +1410,15 @@ class Settings(BaseSettings):
     # V3.20 slice 4.3: compare ledger guidance findings (statement_kind=guidance) with the
     # stored actuals and write earnings_results.guidance_* / vs_guidance. No external call.
     v3_earnings_guidance_enabled: bool = True
+    # V3.20 slice 4.2: Alpha Vantage EARNINGS + EARNINGS_ESTIMATES snapshots into
+    # consensus_snapshots (2 calls per US-listed company per UTC day; free-tier budget 25
+    # calls/day counted in vendor_api_calls). Private use only (ADR-097, registry
+    # ``alpha_vantage``). With no key the step makes no call (state no_api_key).
+    v3_consensus_snapshots_enabled: bool = True
+    # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
+    # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
+    # recorded URL omits it). Key Vault reference in a deployed environment.
+    alpha_vantage_api_key: str = Field(default="", repr=False)
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off
