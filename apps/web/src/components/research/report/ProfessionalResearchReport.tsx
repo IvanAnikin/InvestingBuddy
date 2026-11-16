@@ -7,6 +7,7 @@ import { ElectricityLayersSection } from "@/components/research/report/Electrici
 import { ChangeEventsSection } from "@/components/research/report/ChangeEventsSection";
 import { EnterpriseValueSection } from "@/components/research/report/EnterpriseValueSection";
 import { LayerPeersSection } from "@/components/research/report/LayerPeersSection";
+import { FinancialDepthSection } from "@/components/research/report/FinancialDepthSection";
 import { ObscuritySection } from "@/components/research/report/ObscuritySection";
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
 import { sourceTierWord } from "@/components/research/reportSections";
@@ -817,6 +818,7 @@ function DomainBody({
       <ObscuritySection block={section.obscurity} />
       <ChangeEventsSection block={section.changeEvents} />
       <EarningsTrackRecordSection block={section.earningsTrackRecord} />
+      <FinancialDepthSection block={section.financialDepth} />
       {section.peerTable.length === 0 && section.peerSelectionNote && (
         <p
           className="mt-3 max-w-2xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]"

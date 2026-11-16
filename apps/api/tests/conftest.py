@@ -257,6 +257,13 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
         return Form4Report(cik=cik, notes=["offline test"])
 
     monkeypatch.setattr(change_events_step, "_live_form4", _no_form4)
+    # V3.20 slice 8.5: nor SEC companyconcept for the financial-depth block.
+    from app.services.pipeline import financial_depth_step
+
+    async def _no_concepts(url: str, accept: str) -> tuple[int, None]:
+        return 404, None
+
+    monkeypatch.setattr(financial_depth_step, "_live_fetch", _no_concepts)
 
 
 @pytest.fixture(autouse=True)

@@ -1431,6 +1431,7 @@ async def _run(
             electricity_layers=electricity_layers,
             real_asset=real_asset,
             enterprise_value=enterprise_value,
+            financial_depth=await _financial_depth_section(session, company, cfg=cfg),
             layer_peers=await _layer_peers_section(
                 session, company, cfg=cfg, layers_block=electricity_layers,
                 ev_block=enterprise_value, size_fit=thesis_size),
@@ -1696,6 +1697,15 @@ async def _layer_peers_section(
         return None
 
 
+async def _financial_depth_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.5 — the financial-depth block; None when off / no CIK (unchanged)."""
+    from app.services.pipeline.financial_depth_step import financial_depth_section
+
+    return await financial_depth_section(session, company, cfg=cfg)
+
+
 async def _mark_researched(
     session: Any, company: Any, *, cfg: Any, change_events: dict[str, Any] | None,
 ) -> None:
@@ -1833,6 +1843,7 @@ async def _professional_report(
     change_events: dict[str, Any] | None = None,
     enterprise_value: dict[str, Any] | None = None,
     layer_peers: dict[str, Any] | None = None,
+    financial_depth: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -2033,6 +2044,7 @@ async def _professional_report(
         change_events=change_events,
         enterprise_value=enterprise_value,
         layer_peers=layer_peers,
+        financial_depth=financial_depth,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)

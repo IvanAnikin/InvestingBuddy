@@ -48,6 +48,7 @@ import { type ElectricityLayersBlock, readElectricityLayersBlock } from "./elect
 import { type ChangeEventsBlock, readChangeEventsBlock } from "./changeEvents";
 import { type EnterpriseValueBlock, readEnterpriseValueBlock } from "./enterpriseValue";
 import { type LayerPeersBlock, readLayerPeersBlock } from "./layerPeers";
+import { type FinancialDepthBlock, readFinancialDepthBlock } from "./financialDepth";
 import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
 import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
@@ -511,6 +512,9 @@ export type DomainSection = SectionHead & {
   /** V3.20 slice 8.2 (valuation_context): companies researched in the same electricity
       layer, from the comparable-set store. Null when none, and on older reports. */
   layerPeers: LayerPeersBlock | null;
+  /** V3.20 slice 8.5 (financial_capacity): debt maturity ladder, diluted shares, contract
+      balances from SEC XBRL. Null when off / nothing tagged, and on older reports. */
+  financialDepth: FinancialDepthBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -1119,6 +1123,7 @@ function readDomainSection(
     changeEvents: readChangeEventsBlock(r.change_events),
     enterpriseValue: readEnterpriseValueBlock(r.enterprise_value),
     layerPeers: readLayerPeersBlock(r.layer_peers),
+    financialDepth: readFinancialDepthBlock(r.financial_depth),
   };
 }
 

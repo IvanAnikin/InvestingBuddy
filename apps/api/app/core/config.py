@@ -1467,6 +1467,10 @@ class Settings(BaseSettings):
     # V3.20 slice 8.2: "Layer peers" block (valuation_context) — the newest research record
     # of every other company in the subject's electricity layer. No external call.
     v3_layer_peers_enabled: bool = True
+    # V3.20 slice 8.5: "Financial depth" block (financial_capacity) — debt maturity ladder,
+    # diluted share series, contract assets/liabilities from SEC XBRL (nine companyconcept
+    # reads per company with a CIK; research User-Agent, SEC rate limiter).
+    v3_financial_depth_enabled: bool = True
     # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
     # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
     # recorded URL omits it). Key Vault reference in a deployed environment.

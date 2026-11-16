@@ -216,6 +216,9 @@ class ReportInputs:
     #: V3.20 slice 8.2 — peers in the same electricity layer (``valuation.layer_peers``);
     #: ``None`` leaves the report unchanged.
     layer_peers: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.5 — debt ladder, dilution, contract balances
+    #: (``financial_depth_step.financial_depth_section``); ``None`` leaves the report unchanged.
+    financial_depth: Mapping[str, Any] | None = None
 
 
 
@@ -876,6 +879,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when the block is on, so every other report is byte-identical.
         valuation = next(s for s in sections if s["key"] == "valuation_context")
         valuation["passive_ownership"] = dict(inputs.passive_ownership)
+    if inputs.financial_depth:
+        # Only when something was tagged, so every other report is byte-identical.
+        depth = next(s for s in sections if s["key"] == "financial_capacity")
+        depth["financial_depth"] = dict(inputs.financial_depth)
     if inputs.earnings_track_record:
         # Only when the block is on, so every other report is byte-identical.
         capacity = next(s for s in sections if s["key"] == "financial_capacity")
