@@ -7,6 +7,7 @@ import { ElectricityLayersSection } from "@/components/research/report/Electrici
 import { ChangeEventsSection } from "@/components/research/report/ChangeEventsSection";
 import { EnterpriseValueSection } from "@/components/research/report/EnterpriseValueSection";
 import { LayerPeersSection } from "@/components/research/report/LayerPeersSection";
+import { MarketImpliedSection } from "@/components/research/report/MarketImpliedSection";
 import { FinancialDepthSection } from "@/components/research/report/FinancialDepthSection";
 import { ObscuritySection } from "@/components/research/report/ObscuritySection";
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
@@ -815,6 +816,7 @@ function DomainBody({
       <PassiveOwnershipSection block={section.passiveOwnership} />
       <EnterpriseValueSection block={section.enterpriseValue} />
       <LayerPeersSection block={section.layerPeers} />
+      <MarketImpliedSection block={section.marketImplied} />
       <ObscuritySection block={section.obscurity} />
       <ChangeEventsSection block={section.changeEvents} />
       <EarningsTrackRecordSection block={section.earningsTrackRecord} />

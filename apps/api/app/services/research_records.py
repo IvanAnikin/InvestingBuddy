@@ -34,6 +34,7 @@ RECORD_BLOCKS: tuple[tuple[str, str], ...] = (
     ("business_model", "relationships"),
     ("operations", "real_asset"),
     ("valuation_context", "enterprise_value"),
+    ("valuation_context", "market_implied"),
     ("valuation_context", "obscurity"),
     ("valuation_context", "passive_ownership"),
     ("growth_and_catalysts", "change_events"),

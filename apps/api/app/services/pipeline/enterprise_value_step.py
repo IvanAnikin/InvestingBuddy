@@ -26,7 +26,8 @@ LABELS = ("total_debt", "cash_and_equivalents", "operating_profit")
 MAX_FACTS = 400
 
 
-async def load_fact_rows(session: Any, company: Any) -> list[dict[str, Any]]:
+async def load_fact_rows(session: Any, company: Any,
+                         labels: Sequence[str] = LABELS) -> list[dict[str, Any]]:
     from sqlalchemy import case, select
 
     from app.models.extracted_document import ExtractedDocument, ExtractedFact
@@ -42,7 +43,7 @@ async def load_fact_rows(session: Any, company: Any) -> list[dict[str, Any]]:
             company_documents_clause(company.id),
             ExtractedFact.is_active.is_(True),
             ExtractedFact.scope_type == "group",
-            ExtractedFact.label.in_(LABELS),
+            ExtractedFact.label.in_(list(labels)),
             ExtractedFact.value_numeric.is_not(None),
         )
         .order_by(case((ExtractedFact.extraction_method == EXTRACTION_METHOD_INLINE_XBRL, 0),

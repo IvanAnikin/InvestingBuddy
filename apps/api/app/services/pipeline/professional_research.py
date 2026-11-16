@@ -216,6 +216,9 @@ class ReportInputs:
     #: V3.20 slice 8.2 — peers in the same electricity layer (``valuation.layer_peers``);
     #: ``None`` leaves the report unchanged.
     layer_peers: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.4 — what today's EV implies (``market_implied_step``); ``None`` leaves
+    #: the report unchanged.
+    market_implied: Mapping[str, Any] | None = None
     #: V3.20 slice 8.5 — debt ladder, dilution, contract balances
     #: (``financial_depth_step.financial_depth_section``); ``None`` leaves the report unchanged.
     financial_depth: Mapping[str, Any] | None = None
@@ -871,6 +874,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when another company holds a record in the layer.
         peers_section = next(s for s in sections if s["key"] == "valuation_context")
         peers_section["layer_peers"] = dict(inputs.layer_peers)
+    if inputs.market_implied:
+        # Only when an EV was computed, so every other report is byte-identical.
+        implied_section = next(s for s in sections if s["key"] == "valuation_context")
+        implied_section["market_implied"] = dict(inputs.market_implied)
     if inputs.change_events:
         # Only when an event was found, so every other report is byte-identical.
         growth = next(s for s in sections if s["key"] == "growth_and_catalysts")

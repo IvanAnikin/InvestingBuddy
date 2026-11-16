@@ -1406,6 +1406,27 @@ async def _run(
         real_asset = await _real_asset_section(session, run, electricity_layers)
         enterprise_value = await _enterprise_value_section(
             session, company, cfg=cfg, observation=size_observation, real_asset=real_asset)
+        relationships = await _relationship_section(
+            session, company, cfg=cfg, steps=outcome.relationships)
+        earnings_track_record = await _earnings_track_record_section(
+            session, company, cfg=cfg)
+        financial_depth = await _financial_depth_section(session, company, cfg=cfg)
+        layer_peers = await _layer_peers_section(
+            session, company, cfg=cfg, layers_block=electricity_layers,
+            ev_block=enterprise_value, size_fit=thesis_size)
+        obscurity = await _obscurity_section(
+            session, company, cfg=cfg, passive_block=passive_ownership,
+            layers_block=electricity_layers)
+        market_implied = await _market_implied_section(
+            session, company, cfg=cfg, ev_block=enterprise_value, peers_block=layer_peers,
+            size_fit=thesis_size, blocks={
+                "valuation_context.layer_peers": layer_peers,
+                "financial_capacity.financial_depth": financial_depth,
+                "valuation_context.obscurity": obscurity,
+                "valuation_context.passive_ownership": passive_ownership,
+                "business_model.relationships": relationships,
+                "financial_capacity.earnings_track_record": earnings_track_record,
+            })
         report, withheld_reason = await _professional_report(
             session,
             run,
@@ -1423,21 +1444,16 @@ async def _run(
             not_meaningful_calculations=applicability.calculations,
             not_meaningful_note=applicability.reader_note or None,
             commercial_stage=commercial_stage,
-            relationships=await _relationship_section(
-                session, company, cfg=cfg, steps=outcome.relationships),
+            relationships=relationships,
             passive_ownership=passive_ownership,
-            earnings_track_record=await _earnings_track_record_section(
-                session, company, cfg=cfg),
+            earnings_track_record=earnings_track_record,
             electricity_layers=electricity_layers,
             real_asset=real_asset,
             enterprise_value=enterprise_value,
-            financial_depth=await _financial_depth_section(session, company, cfg=cfg),
-            layer_peers=await _layer_peers_section(
-                session, company, cfg=cfg, layers_block=electricity_layers,
-                ev_block=enterprise_value, size_fit=thesis_size),
-            obscurity=await _obscurity_section(
-                session, company, cfg=cfg, passive_block=passive_ownership,
-                layers_block=electricity_layers),
+            financial_depth=financial_depth,
+            layer_peers=layer_peers,
+            market_implied=market_implied,
+            obscurity=obscurity,
             change_events=change_events,
         )
         outcome.professional_research = report
@@ -1697,6 +1713,19 @@ async def _layer_peers_section(
         return None
 
 
+async def _market_implied_section(
+    session: Any, company: Any, *, cfg: Any, ev_block: dict[str, Any] | None,
+    peers_block: dict[str, Any] | None, size_fit: dict[str, Any] | None,
+    blocks: dict[str, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.4 — what today's EV implies; None when off or no EV (report unchanged)."""
+    from app.services.pipeline.market_implied_step import market_implied_section
+
+    return await market_implied_section(session, company, cfg=cfg, ev_block=ev_block,
+                                        peers_block=peers_block, blocks=blocks,
+                                        size_fit=size_fit)
+
+
 async def _financial_depth_section(
     session: Any, company: Any, *, cfg: Any,
 ) -> dict[str, Any] | None:
@@ -1843,6 +1872,7 @@ async def _professional_report(
     change_events: dict[str, Any] | None = None,
     enterprise_value: dict[str, Any] | None = None,
     layer_peers: dict[str, Any] | None = None,
+    market_implied: dict[str, Any] | None = None,
     financial_depth: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
@@ -2044,6 +2074,7 @@ async def _professional_report(
         change_events=change_events,
         enterprise_value=enterprise_value,
         layer_peers=layer_peers,
+        market_implied=market_implied,
         financial_depth=financial_depth,
     )
     report = pr.assemble(inputs)

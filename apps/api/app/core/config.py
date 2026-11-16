@@ -1471,6 +1471,10 @@ class Settings(BaseSettings):
     # V3.20 slice 8.2: "Layer peers" block (valuation_context) — the newest research record
     # of every other company in the subject's electricity layer. No external call.
     v3_layer_peers_enabled: bool = True
+    # V3.20 slice 8.4: "What today's price implies" block (valuation_context) — peer
+    # position, implied margin at the peer median, implied perpetual growth on a named
+    # discount-rate grid, observed discount characteristics. Filed facts only; no call.
+    v3_market_implied_enabled: bool = True
     # V3.20 slice 8.5: "Financial depth" block (financial_capacity) — debt maturity ladder,
     # diluted share series, contract assets/liabilities from SEC XBRL (nine companyconcept
     # reads per company with a CIK; research User-Agent, SEC rate limiter).
