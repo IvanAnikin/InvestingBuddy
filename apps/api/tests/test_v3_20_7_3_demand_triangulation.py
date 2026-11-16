@@ -190,3 +190,25 @@ def test_the_web_reads_the_producer_keys() -> None:
         assert key in reader, key
     assert "readDemandTriangulationBlock(r.demand_triangulation)" in (
         WEB / "components" / "research" / "v3Research.ts").read_text()
+
+
+def test_a_stripped_one_word_name_never_matches_inside_another() -> None:
+    """Found on the real plans: "Southern Company" (LBL) lost "Company" to the legal-form
+    rule, and "southern" then matched inside the SSEN alias "Scottish and Southern
+    Electricity Networks"."""
+    from app.services.grid_plans.triangulation import _matches
+
+    assert not _matches("SSEN Transmission", "Southern Company")
+    assert not _matches("Southern California Edison", "Southern Company")
+    assert _matches("Transgrid", "Transgrid NSW")            # a one-word name, at the start
+    assert _matches("RWE Renewables UK Ltd", "RWE RENEWABLES UK HUMBER WIND LIMITED")
+    assert not _matches("Electricity Networks", "Scottish and Southern Electricity Networks")
+
+
+def test_tennet_brand_spellings_match_its_legal_entity() -> None:
+    """Found on the real ENTSO-E portfolio: promoters write "TenneT DE", "TenneT-NL",
+    "TenneT Germany"; a filing writes "TenneT TSO GmbH"."""
+    from app.services.grid_plans.triangulation import _matches
+
+    for promoter in ("TenneT DE", "TenneT-NL", "Tennet DE", "TenneT Germany", "TenneT TSO B.V."):
+        assert _matches("TenneT TSO GmbH", promoter), promoter

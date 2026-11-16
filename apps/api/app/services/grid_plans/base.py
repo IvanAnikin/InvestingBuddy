@@ -134,7 +134,7 @@ _TAGS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("pumped_hydro", re.compile(r"pumped[- ]?(?:hydro|storage)|\bPHES\b|\bHPS\b", re.I)),
 )
 _YEAR = re.compile(r"(?<!\d)(19[5-9]\d|20\d\d)(?!\d)")
-_SPLIT = re.compile(r"\s*(?:[,;]|\band\b|&)\s*", re.I)
+_SPLIT = re.compile(r"\s*(?:[,;]|\band\b|\btogether with\b|&)\s*", re.I)
 #: A comma before a legal form is part of the name ("Iberdrola, S.A.").
 _LEGAL_SUFFIX = re.compile(
     r"^(?:S\.?L\.?U?|S\.?A\.?U?|S\.?p\.?A\.?|S\.?r\.?l\.?|Ltd\.?|Limited|GmbH|AG|SE|plc|"

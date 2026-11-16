@@ -56,7 +56,7 @@ QUEUE_LAYERS = frozenset({"transmission", "distribution_grid_edge",
                           "upstream_electrical_materials"})
 
 #: Versioned aliases: a customer name as filings write it → a promoter name as plans do.
-ALIAS_VERSION = "2026-11-16.2"
+ALIAS_VERSION = "2026-11-17.1"
 ALIASES: dict[str, tuple[str, ...]] = {
     "american electric power": ("aep",),
     "pacific gas and electric": ("pg e", "pgae"),
@@ -72,6 +72,8 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "electric reliability council of texas": ("ercot",),
     "duke energy": ("duke", "duke energy progress", "duke energy carolinas"),
     "transgrid": ("nsw electricity networks", "transgrid"),
+    "tennet": ("tennet tso", "tennet de", "tennet nl", "tennet germany",
+               "tennet netherlands", "tennet offshore"),
     "sp transmission": ("spt", "sp energy networks", "scottish power transmission"),
     "scottish hydro electric transmission": ("shet", "ssen transmission",
                                              "scottish and southern electricity networks"),
@@ -82,32 +84,51 @@ _LEGAL = re.compile(
     r"sau|sl|slu|srl|spa|nv|bv|gmbh|ab|asa|as|oy|oyj|ead|pty|holdings?|group|the)\b")
 
 
-def name_key(name: str | None) -> str:
+def _plain(name: str | None) -> str:
     text = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
     text = re.sub(r"\([^)]*\)", " ", text.lower()).replace(".", "")  # S.A.U. -> sau
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return " ".join(_LEGAL.sub(" ", text).split())
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
 
 
-def _keys(name: str) -> set[str]:
-    k = name_key(name)
-    out = {k} if k else set()
+def name_key(name: str | None) -> str:
+    return " ".join(_LEGAL.sub(" ", _plain(name)).split())
+
+
+def _aliases(k: str) -> set[str]:
+    out: set[str] = set()
     for canonical, alts in ALIASES.items():
         if k == canonical or k in alts:
             out |= {canonical, *alts}
     return out
 
 
-def _matches(customer_keys: set[str], promoter: str) -> bool:
-    pk = _keys(promoter)
-    if customer_keys & pk:
+def _keys(name: str) -> set[str]:
+    k = name_key(name)
+    return ({k} if k else set()) | _aliases(k)
+
+
+def _prefix_keys(name: str) -> set[str]:
+    """Keys that may match as the START of a longer name. A one-word key qualifies only
+    when the name really is one word ("Transgrid", "Amprion"): one left over after the
+    legal form is removed ("Southern Company" -> "southern") is too generic to match
+    inside other names. Curated aliases always qualify."""
+    k = name_key(name)
+    own = {k} if k and (" " in k or k == _plain(name)) else set()
+    return own | _aliases(k)
+
+
+def _matches(customer: str, promoter: str) -> bool:
+    if _keys(customer) & _keys(promoter):
         return True
-    # Whole-token containment for longer names ("Transgrid" ~ "Transgrid NSW").
-    for c in customer_keys:
-        for p in pk:
-            short, long_ = sorted((c, p), key=len)
-            if len(short) >= 5 and re.search(rf"(?:^| ){re.escape(short)}(?: |$)", long_):
-                return True
+    # Prefix containment: "Transgrid" ~ "Transgrid NSW", "RWE Renewables UK" ~ "RWE
+    # Renewables UK Dogger Bank South". Never a fragment in the middle of a name.
+    for short_side, long_side in ((customer, promoter), (promoter, customer)):
+        for short in _prefix_keys(short_side):
+            if len(short) < 5:
+                continue
+            for long_ in _keys(long_side):
+                if long_ != short and long_.startswith(short + " "):
+                    return True
     return False
 
 
@@ -158,7 +179,8 @@ def triangulation_block(
         "sources_read": list(sources_read),
         "subject_claim_labels": _claim_labels(report),
         "capex_note": ("The held plans state no capex (ENTSO-E's portfolio precedes its CBA "
-                       "results; AEMO's workbook and the Berkeley Lab queues carry none), so "
+                       "results; AEMO's workbook, the Berkeley Lab queues and the NESO TEC "
+                       "register carry none), so "
                        "the SIZE of a backlog claim is not checked — only whether the named "
                        "customers publish active projects in this technology."),
     }
@@ -171,9 +193,9 @@ def triangulation_block(
     plan_rows = list(plans)
     out: list[dict[str, Any]] = []
     for c in rows:
-        keys = _keys(str(c["name"]))
+        cname = str(c["name"])
         hits = [p for p in plan_rows
-                if any(_matches(keys, str(n)) for n in (p.get("promoters") or []))]
+                if any(_matches(cname, str(n)) for n in (p.get("promoters") or []))]
         relevant = [p for p in hits if _relevant(p, tech, layer) and _active(p, today)]
         status = ("corroborated" if relevant else
                   "not_corroborated" if hits else "not_in_held_plans")
@@ -183,7 +205,7 @@ def triangulation_block(
             "name": c["name"], "customer_source_url": c.get("source_url"),
             "status": status, "plan_records": len(hits), "relevant_active": len(relevant),
             "matched_promoters": sorted({str(n) for p in hits for n in p.get("promoters") or []
-                                         if _matches(keys, str(n))})[:5],
+                                         if _matches(cname, str(n))})[:5],
             "projects": [{
                 "project_name": p.get("project_name"), "source_key": p.get("source_key"),
                 "plan_edition": p.get("plan_edition"), "record_kind": p.get("record_kind"),

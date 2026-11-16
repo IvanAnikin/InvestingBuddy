@@ -217,3 +217,11 @@ def test_migration_057_follows_056_and_is_additive() -> None:
     assert 'drop_table("grid_capex_plans")' in text and 'drop_table("grid_plan_ingests")' in text
     assert "op.alter_column" not in text and "op.drop_column" not in text
     assert "ck_grid_capex_plans_capex_pair" in text
+
+
+def test_together_with_separates_promoters() -> None:
+    """Real ENTSO-E row: "Statnett together with Energinet, TenneT Germany, ..."."""
+    from app.services.grid_plans.base import split_promoters
+
+    assert split_promoters("Statnett together with Energinet, TenneT Germany") == [
+        "Statnett", "Energinet", "TenneT Germany"]
