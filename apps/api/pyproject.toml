@@ -34,6 +34,10 @@ dependencies = [
     # only — its downloader is never used. Apache-2.0 since 1.8. Brings lxml, htmldate,
     # justext and courlan (all pure-Python or manylinux wheels).
     "trafilatura>=2.2,<3",
+    # Registrable-domain parsing for official issuer domains (discovery/official_domains).
+    # Imported directly; it used to arrive only through courlan, and courlan 1.5.0
+    # (2026-11) stopped requiring it, which broke CI with ModuleNotFoundError.
+    "tld>=0.13,<0.14",
 ]
 
 [project.optional-dependencies]
