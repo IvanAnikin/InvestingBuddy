@@ -612,8 +612,14 @@ async def _run(
     # Item 21 — the statements those documents yielded, read the way the V2 snapshot
     # reads its own facts. The V2 report was assembled before any of this was acquired,
     # so without it an acquired annual report still rendered as "Not reported".
-    from app.services.pipeline.issuer_financials import financial_statements_for
+    from app.services.pipeline.issuer_financials import (
+        financial_statements_for,
+        reread_stale_statement_documents,
+    )
 
+    # ADR-092 addendum — a held document whose totals an older pipeline read from a table
+    # is re-read first, so the selector's reading replaces a component held as a total.
+    rereads = await reread_stale_statement_documents(session, company, cfg=cfg)
     try:
         async with session.begin_nested():
             outcome.financial_statements = await financial_statements_for(
@@ -622,6 +628,8 @@ async def _run(
                 core_disclosures=outcome.core_disclosures,
                 core_filings=outcome.core_filings,
             )
+        if rereads and isinstance(outcome.financial_statements, dict):
+            outcome.financial_statements["stale_rereads"] = rereads
     except Exception as exc:  # noqa: BLE001 - a statements view must not end the run
         outcome.degraded.append(
             f"the issuer's statement figures could not be read ({type(exc).__name__})"
