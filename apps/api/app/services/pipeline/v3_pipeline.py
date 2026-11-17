@@ -2199,9 +2199,9 @@ async def _professional_report(
     if translated_citations_enabled:
         # V3.20 slice 10.2: each cited non-English passage, original (the evidence) and
         # held English translation, for the reader. After the editor; read-only.
-        block = await _translated_citations(session, report)
-        if block:
-            report["translated_citations"] = block
+        cited = await _translated_citations(session, report)
+        if cited:
+            report["translated_citations"] = cited
     hits = _report_safety_hits(report)
     if hits:
         # Every component was screened; a hit here is in text this module composed or a
