@@ -411,6 +411,13 @@ from __future__ import annotations
 LEGACY_EXTRACTION_PIPELINE_VERSION = 1
 CURRENT_EXTRACTION_PIPELINE_VERSION = 26
 
+#: ADR-092 addendum (2026-11-17) — the first version whose table reader applies the
+#: statement-line selector. A TOTAL line (current assets, current liabilities, total
+#: assets, total liabilities, non-current assets, cash) or operating profit that a table
+#: read below it may be a component ("Trade receivables and other current assets" as
+#: current assets): the statements view withholds it and the run re-reads the document.
+STATEMENT_LINE_SELECTOR_MIN_VERSION = 24
+
 #: ADR-085 — the first version whose SEC filing-body extraction reads inline XBRL. A held
 #: SEC filing document stamped below it has never had its tagged statements read.
 #: It moves with the version that ships the iXBRL reader and must never trail
@@ -436,6 +443,7 @@ INLINE_XBRL_READER_VERSION = 22
 EXTRACTION_TEXT_LAYER_MIN_VERSION = 11
 
 __all__ = [
+    "STATEMENT_LINE_SELECTOR_MIN_VERSION",
     "LEGACY_EXTRACTION_PIPELINE_VERSION",
     "CURRENT_EXTRACTION_PIPELINE_VERSION",
     "EXTRACTION_TEXT_LAYER_MIN_VERSION",

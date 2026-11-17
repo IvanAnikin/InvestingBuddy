@@ -3620,6 +3620,13 @@ Additive keys under `source_summary_json.v3_research`:
 
 ## ADR-092 — statement-line selector (no new endpoint)
 
+- Addendum (2026-11-17): `withheld[*].reason` also gains `read_before_line_selector`, a
+  total line (current assets/liabilities, non-current assets, total assets/liabilities,
+  cash, operating profit) that a table read under extraction pipeline version below 24
+  (or unstamped). It fills no slot. `financial_statements_state.stale_rereads` (present
+  only when the run tried one) lists `{document_id, outcome}` per held document the run
+  re-read for that reason: `reread`, `not_reread` (the re-fetch was refused, e.g. the
+  content changed) or `failed (<ExceptionType>)`.
 - `financial_statements_state.withheld_counts` / `withheld[*].reason` gain
   `prose_disagrees_with_statement_table`: a prose read of unknown scope that states a
   different number than the Group's primary-statement reads for the same field and

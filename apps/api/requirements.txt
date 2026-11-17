@@ -34,6 +34,9 @@ charset-normalizer>=3.3,<4
 # Open-web W3: main-content extraction for web pages, run on our own bytes only (its
 # downloader is never used). Apache-2.0. Brings lxml, htmldate, justext, courlan.
 trafilatura>=2.2,<3
+# Registrable-domain parsing (discovery/official_domains); imported directly. courlan
+# 1.5.0 stopped bringing it in.
+tld>=0.13,<0.14
 # Phase 32A Slice 5B.2: real Azure Document Intelligence OCR adapter for
 # scanned/image-only primary documents. Inert unless
 # PRIMARY_DOCUMENT_OCR_ENABLED=true AND an endpoint is configured — see
