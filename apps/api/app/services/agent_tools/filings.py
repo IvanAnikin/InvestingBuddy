@@ -112,10 +112,16 @@ async def _get_recent_filings(
         SecRecentFilingsProvider,
     )
     from app.services.exchange_registry import is_sec_eligible, normalize_exchange
-    from app.services.sources.disclosures.model import VENUE_ASX, VENUE_KRX, VENUE_LSE, VENUE_TSE
+    from app.services.sources.disclosures.model import (
+        VENUE_ASX,
+        VENUE_KRX,
+        VENUE_LSE,
+        VENUE_TSE,
+        VENUE_TWSE,
+    )
 
     if normalize_exchange(arguments["exchange"] or "") in (
-            VENUE_LSE, VENUE_ASX, VENUE_TSE, VENUE_KRX, "KQ"):
+            VENUE_LSE, VENUE_ASX, VENUE_TSE, VENUE_KRX, "KQ", VENUE_TWSE):
         return await _get_official_disclosures(context, arguments)
 
     ticker, exchange, cik = arguments["ticker"], arguments["exchange"], None
@@ -251,7 +257,8 @@ async def _subject_sec_basis(
 async def _get_official_disclosures(
     context: "ToolContext", arguments: dict[str, Any]
 ) -> dict[str, Any]:
-    """LSE / ASX / TSE (EDINET) / KRX (OpenDART): the issuer's own official
+    """LSE / ASX / TSE (EDINET) / KRX (OpenDART) / TWSE (material information): the
+    issuer's own official
     disclosures, and the bridge that makes the
     most relevant unread ones searchable.
 

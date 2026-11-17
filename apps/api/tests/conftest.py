@@ -263,6 +263,12 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
         return None, None, "offline_test"
 
     monkeypatch.setattr(change_events_step, "_live_dart_getter", _no_dart)
+    # V3.20 slice 11.4: nor TWSE's material-information feed. A test that means to read
+    # it passes its own ``getter``.
+    from app.services.sources.disclosures import twse_material
+
+    monkeypatch.setattr(twse_material, "guarded_get", _no_dart)
+    twse_material._last_refresh.clear()
     # V3.20 slice 8.5: nor SEC companyconcept for the financial-depth block.
     from app.services.pipeline import financial_depth_step
 

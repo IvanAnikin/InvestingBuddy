@@ -14,6 +14,8 @@ SOURCE_ASX_ANNOUNCEMENTS = "asx_announcements"
 SOURCE_EDINET = "edinet"
 #: V3.20 slice 11.3 — Korea's FSS OpenDART.
 SOURCE_OPENDART = "opendart"
+#: V3.20 slice 11.4 — TWSE's material-information open data (上市公司每日重大訊息).
+SOURCE_TWSE_MATERIAL = "twse_material_info"
 
 #: Venue codes (``exchange_registry.normalize_exchange``) each source covers.
 VENUE_LSE = "LSE"
@@ -21,6 +23,7 @@ VENUE_ASX = "AU"
 VENUE_TSE = "TSE"
 #: KOSPI; KOSDAQ (``KQ``) is covered by the same source.
 VENUE_KRX = "KO"
+VENUE_TWSE = "TW"
 
 # ── Why a disclosure is not in the corpus — CLOSED ─────────────────────────── #
 REASON_CONNECTOR_DISABLED = "connector_disabled"

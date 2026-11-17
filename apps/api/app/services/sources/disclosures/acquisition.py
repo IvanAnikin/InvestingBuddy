@@ -43,11 +43,13 @@ from app.services.sources.disclosures.model import (
     SOURCE_ASX_ANNOUNCEMENTS,
     SOURCE_EDINET,
     SOURCE_OPENDART,
+    SOURCE_TWSE_MATERIAL,
     SOURCE_UK_FCA_NSM,
     VENUE_ASX,
     VENUE_KRX,
     VENUE_LSE,
     VENUE_TSE,
+    VENUE_TWSE,
     DisclosureEvidenceResult,
     DisclosureListing,
     OfficialDocument,
@@ -68,6 +70,7 @@ _SOURCE_TYPES = {
     SOURCE_ASX_ANNOUNCEMENTS: "asx_announcement",
     SOURCE_EDINET: "edinet_filing",
     SOURCE_OPENDART: "opendart_filing",
+    SOURCE_TWSE_MATERIAL: "twse_material_info",
 }
 
 #: How much of a fetched document is searched for the issuer's name.
@@ -84,6 +87,7 @@ _VENUE_ALIASES = {
     "JPX": VENUE_TSE,
     "KO": VENUE_KRX, "KS": VENUE_KRX, "KRX": VENUE_KRX, "KOSPI": VENUE_KRX, "XKRX": VENUE_KRX,
     "KQ": VENUE_KRX, "KOSDAQ": VENUE_KRX, "XKOS": VENUE_KRX,
+    "TW": VENUE_TWSE, "TWSE": VENUE_TWSE, "TPE": VENUE_TWSE, "XTAI": VENUE_TWSE,
 }
 
 
@@ -113,6 +117,12 @@ def source_for(company: Any, cfg: Any) -> tuple[str | None, str | None]:
         if not dart_enabled(cfg):
             return None, REASON_CONNECTOR_DISABLED
         return SOURCE_OPENDART, None
+    if venue == VENUE_TWSE:
+        from app.services.sources.disclosures.twse_material import is_enabled as twse_enabled
+
+        if not twse_enabled(cfg):
+            return None, REASON_CONNECTOR_DISABLED
+        return SOURCE_TWSE_MATERIAL, None
     return None, REASON_VENUE_NOT_COVERED
 
 
@@ -137,6 +147,11 @@ async def list_disclosures(
         from app.services.sources.disclosures.opendart import list_opendart_disclosures
 
         return await list_opendart_disclosures(session, company, cfg=cfg, now=now)
+    if source_id == SOURCE_TWSE_MATERIAL:
+        from app.services.sources.disclosures.twse_material import list_twse_announcements
+
+        return await list_twse_announcements(session, company, cfg=cfg, fetcher=fetcher,
+                                             now=now)
     from app.services.sources.disclosures.asx import list_asx_announcements
 
     return await list_asx_announcements(session, company, cfg=cfg, fetcher=fetcher, now=now)
@@ -257,6 +272,12 @@ async def _content_url(
         from app.services.sources.disclosures.opendart import DART_VIEWER_HOST
 
         return document.official_url, DART_VIEWER_HOST, None
+    if document.source_id == SOURCE_TWSE_MATERIAL:
+        # The content is the HELD row (``twse_material.document_extractor``); the address
+        # passed on is the open-data feed the citation names.
+        from app.services.sources.disclosures.twse_material import TWSE_OPENAPI_HOST
+
+        return document.official_url, TWSE_OPENAPI_HOST, None
     from app.services.sources.disclosures.asx import (
         ASX_HOST,
         ASX_PDF_HOST,
@@ -551,6 +572,12 @@ async def ensure_disclosure_evidence(
         from app.services.sources.disclosures.opendart import document_extractor
 
         extractor = document_extractor(document, issuer)
+    if extractor is None and document.source_id == SOURCE_TWSE_MATERIAL:
+        from app.services.sources.disclosures.twse_material import (
+            document_extractor as twse_extractor,
+        )
+
+        extractor = twse_extractor(document, issuer, session=session)
     if extractor is None:
         from app.services.sources.live_fetchers import live_primary_document_extractor
 

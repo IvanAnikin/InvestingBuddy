@@ -10603,3 +10603,27 @@ Both are right for what they were built against: free text from web pages and LL
 - Each run costs one request, plus one per decision type filed (about 5–6 s measured).
 - Flag `V3_OPENDART_MAJOR_MATTERS_ENABLED` (default on). It needs `OPENDART_API_KEY`, a held corp code and `V3_CHANGE_EVENTS_ENABLED`.
 
+
+## ADR-103: TWSE Material Announcements Are Held As They Are Read; TDnet and BSE Are Excluded on Their Terms
+
+**Date:** 2026-11-17 · **Status:** Accepted (V3.20 slice 11.4; V3 line, not deployed)
+**Trigger:** slice 11.4 was to read Asian exchange announcements: TDnet (Japan), TWSE/MOPS (Taiwan), BSE/NSE (India). Each source's terms were read first.
+
+### Terms decision
+- **TDnet (JPX): excluded.** JPX's site terms prohibit collecting data or making secondary use of it for commercial purposes without permission or a paid contract. They also prohibit generative-AI use that runs against the site's purpose or operational policy. Bulk access is JPX's paid TDnet API, and the public service keeps 31 days. A Japanese issuer's statutory filings already come from EDINET (slice 11.2).
+- **BSE: excluded.** BSE's website disclaimer prohibits any reproduction, redistribution or transmission of its information, and its pages need a browser session.
+- **NSE: excluded.** Its terms prohibit automated collection (already recorded in slice 11.1).
+- **TWSE: read.** The OpenAPI is TWSE's published machine interface. Its swagger names the data.gov.tw Open Government Data License v1.0: any use, royalty-free, attribution required. MOPS pages themselves are not read.
+
+### Decision
+1. **The feed is `t187ap04_L` (上市公司每日重大訊息).** Each row is a complete announcement: code, short name, date and time (ROC calendar, Taipei), the clause it was filed under, the fact date, subject and body. The text is the row; there is no document to fetch.
+2. **Held as it is read.** The feed states one announcement day (measured: 115 rows, all one date). Every read is stored in `twse_material_announcements` (migration 061), keyed by code, time and a content digest, so a re-read adds nothing and a corrected announcement is a second row. A listing reads the held rows. One process reads the feed at most once an hour. History starts with the first read, and `scripts/twse_material_refresh.py` is the daily operator job.
+3. **Identity on TWSE's own directory.** The company must match TWSE's listed-company directory (`t187ap03_L`, slice 11.1) on its code and an agreeing name. Rows are attributed by the feed's own `公司代號` only. The extractor refuses a held row whose code differs from the verified issuer's.
+4. **Content rendered, not invented.** The held row becomes a two-paragraph HTML page (stated fields with the subject, then the whole body), with every field escaped. It goes through the shared acquisition bridge as `twse_material_info` (title-only period), labelled `zh`.
+5. **The citation names the announcement.** `…/t187ap04_L?announcement=<ref>`, a new named document-id parameter of the corpus readiness check. After its day the feed no longer shows the row, so the held row and the raw artifact are the record.
+
+### Consequences
+- A TWSE issuer's material announcements reach the corpus and the official-disclosures tool, and history accumulates from the first read.
+- A day on which neither a run nor the operator job read the feed is a hole. A listing never treats absence as evidence.
+- Flag `V3_TWSE_MATERIAL_INFO_ENABLED` (default on). It needs `V3_DIRECTORY_TWSE_ENABLED` for identity.
+- Not covered: TPEx (OTC) companies, which have their own open data, and the directory's English short names that are not acronyms of the company name (`CENE` for Century Energy is refused, as slice 11.1's rule does).

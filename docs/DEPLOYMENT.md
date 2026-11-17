@@ -745,6 +745,16 @@ issuer's major-matters decisions to the change-events block. Each run makes one 
 request plus one per decision type filed (at most 10). It reads held corp codes only, so
 run the corp-code refresh first. No migration is needed.
 
+### TWSE material announcements (V3.20 slice 11.4 — V3 line, not deployed)
+
+`V3_TWSE_MATERIAL_INFO_ENABLED` (default on, ADR-103) reads TWSE's open-data feed of
+material announcements (`t187ap04_L`); it also needs `V3_DIRECTORY_TWSE_ENABLED`. No key.
+Deploying it needs migration 061 (`twse_material_announcements`). The feed states ONE
+announcement day, so history exists only from the first read: schedule
+`python scripts/twse_material_refresh.py` daily after 08:00 Asia/Taipei (it prints counts
+only; `--dry-run` reports what is held). Until that is scheduled, only research runs on
+Taiwanese companies read the feed, at most once an hour per process.
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

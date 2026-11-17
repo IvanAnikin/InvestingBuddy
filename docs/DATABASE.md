@@ -1470,6 +1470,22 @@ Checked on PostgreSQL 16:
 - downgrade to 059 drops the table;
 - re-upgrade.
 
+## Migration 061 — TWSE material announcements (V3.20 slice 11.4)
+
+One table: every material announcement (重大訊息) TWSE's open-data feed `t187ap04_L` was
+read to state. The feed covers one announcement day, so rows are held as they are read,
+by research runs and `scripts/twse_material_refresh.py`. Public exchange data about
+listed companies; no user data. Rules: [docs/v3.20-asia.md](v3.20-asia.md), ADR-103.
+
+| Table | Columns | Rules |
+|---|---|---|
+| `twse_material_announcements` | `ref` (PK, `<code>-<yyyymmdd>-<hhmmss>-<digest10>`), `company_code`, `company_name`, `announced_at`, `clause`, `fact_date`, `subject`, `body`, `content_sha256`, `fetched_at` | Index on (`company_code`, `announced_at`). Rows are never rewritten: a re-read of the same announcement adds nothing, a corrected one is a new row. `announced_at` is the feed's Taipei time stored in UTC. |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade to 060 drops the table;
+- re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

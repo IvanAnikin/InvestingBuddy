@@ -1534,6 +1534,12 @@ class Settings(BaseSettings):
     # files as an official exchange directory (listing verification + market cap =
     # issued shares × close). Open Government Data License v1.0 (any use, attribution).
     v3_directory_twse_enabled: bool = True
+    # V3.20 slice 11.4: TWSE material announcements (重大訊息) from the OpenAPI open-data
+    # feed t187ap04_L (Open Government Data License v1.0; attribution). The feed covers
+    # one announcement day, so its rows are HELD (twse_material_announcements, migration
+    # 061) by research runs and scripts/twse_material_refresh.py; a TWSE company's
+    # disclosure listing reads the held rows. Needs V3_DIRECTORY_TWSE_ENABLED (identity).
+    v3_twse_material_info_enabled: bool = True
     # V3.20 slice 10.1: the parallel English corpus (spec §3.12). Held non-English
     # document chunks are machine-translated (Azure OpenAI; operator job
     # scripts/translate_corpus.py) into research_chunk_translations, and corpus search

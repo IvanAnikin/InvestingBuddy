@@ -29,9 +29,11 @@ SOURCE_TYPE_ASX_ANNOUNCEMENT = "asx_announcement"
 SOURCE_TYPE_EDINET_FILING = "edinet_filing"
 #: V3.20 slice 11.3 — likewise composed from OpenDART's listing (report name + period).
 SOURCE_TYPE_OPENDART_FILING = "opendart_filing"
+#: V3.20 slice 11.4 — a TWSE material announcement; its title is the issuer's subject line.
+SOURCE_TYPE_TWSE_MATERIAL_INFO = "twse_material_info"
 TITLE_ONLY_SOURCE_TYPES: frozenset[str] = frozenset(
     {SOURCE_TYPE_UK_NSM_DISCLOSURE, SOURCE_TYPE_ASX_ANNOUNCEMENT, SOURCE_TYPE_EDINET_FILING,
-     SOURCE_TYPE_OPENDART_FILING}
+     SOURCE_TYPE_OPENDART_FILING, SOURCE_TYPE_TWSE_MATERIAL_INFO}
 )
 
 
