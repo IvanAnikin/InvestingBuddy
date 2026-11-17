@@ -20,8 +20,12 @@ Some directories also publish what the SIZE constraint needs:
 * **Euronext** — the official closing price, and on each instrument's factsheet the
   number of ADMITTED SHARES: shares × price is an exchange-sourced market cap.
 
+* **TWSE** (V3.20 slice 11.1) — the ISSUED SHARES of every listed company in its open-data
+  company file, and the official closing price in its daily file: shares × close.
+
 Directories covered: Euronext (Paris, Milan, Amsterdam, Brussels, Lisbon, Dublin, Oslo
-and their growth markets), SIX Swiss Exchange, ASX, TSX, TSX Venture, and the US
+and their growth markets), SIX Swiss Exchange, ASX, TSX, TSX Venture, the Taiwan Stock
+Exchange (open data, Open Government Data License v1.0, attribution), and the US
 exchanges through the SEC's own ticker-exchange file. Each is fetched through the
 platform's guarded fetcher (its own host only), parsed defensively, and cached per process
 per day. A directory that cannot be read is a missing source, never a negative answer.
@@ -63,6 +67,8 @@ class DirectoryListing:
     as_of: str
     #: SEC Central Index Key — only for the SEC directory.
     cik: str | None = None
+    #: Issued shares, when the directory publishes them (TWSE).
+    shares: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -75,6 +81,8 @@ class _Directory:
     url: str
     tier: str
     label: str
+    #: The Settings flag that switches this directory on (None: always on).
+    flag: str | None = None
 
 
 EURONEXT = _Directory(
@@ -105,7 +113,21 @@ SEC = _Directory(
     "sec", "www.sec.gov", "https://www.sec.gov/files/company_tickers_exchange.json",
     TIER_REGULATOR, "SEC company tickers and exchanges",
 )
-DIRECTORIES: tuple[_Directory, ...] = (EURONEXT, ASX, TSX, TSXV, SIX, SEC)
+#: V3.20 slice 11.1 — Taiwan Stock Exchange open data (data.gov.tw, Open Government Data
+#: License v1.0: any purpose, attribution required). The company file carries the issued
+#: shares and an English short name; the daily file the official closing price.
+TWSE = _Directory(
+    "twse", "openapi.twse.com.tw", "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+    TIER_EXCHANGE, "TWSE listed company basic information (open data)",
+    flag="v3_directory_twse_enabled",
+)
+TWSE_PRICES = _Directory(
+    "twse_prices", "openapi.twse.com.tw",
+    "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL",
+    TIER_EXCHANGE, "TWSE daily closing prices (open data)", flag="v3_directory_twse_enabled",
+)
+TWSE_ATTRIBUTION = "Source: Taiwan Stock Exchange open data (Open Government Data License v1.0)"
+DIRECTORIES: tuple[_Directory, ...] = (EURONEXT, ASX, TSX, TSXV, SIX, SEC, TWSE)
 
 #: Euronext market name → (registry venue code, MIC for the instrument factsheet).
 EURONEXT_MARKETS: dict[str, tuple[str, str]] = {
@@ -121,7 +143,23 @@ EURONEXT_MARKETS: dict[str, tuple[str, str]] = {
 DIRECTORY_FOR_VENUE: dict[str, _Directory] = {
     "PA": EURONEXT, "MI": EURONEXT, "AS": EURONEXT, "BR": EURONEXT, "LS": EURONEXT,
     "IR": EURONEXT, "OL": EURONEXT, "AU": ASX, "TO": TSX, "V": TSXV, "SW": SIX, "US": SEC,
+    "TW": TWSE,
 }
+
+
+def directory_enabled(directory: _Directory, cfg: Any = None) -> bool:
+    """Whether ``directory``'s flag is on. No ``cfg``: the application settings."""
+    if directory.flag is None:
+        return True
+    if cfg is None:
+        from app.core.config import settings as cfg
+    return bool(getattr(cfg, directory.flag, False))
+
+
+def directory_for_venue(venue: str | None, cfg: Any = None) -> _Directory | None:
+    """The directory authoritative for ``venue`` when it is switched on, else None."""
+    directory = DIRECTORY_FOR_VENUE.get(venue or "")
+    return directory if directory is not None and directory_enabled(directory, cfg) else None
 
 _CACHE: dict[tuple[str, str], list[DirectoryListing]] = {}
 #: Per-key locks so concurrent leads download a directory once, not once each.
@@ -253,8 +291,74 @@ def parse_sec(text: str, source: _Directory = SEC) -> list[DirectoryListing]:
     return out
 
 
+def _roc_date(text: Any) -> str | None:
+    """A Republic of China calendar date ("1151116" = 2026-11-16) as ISO, or None."""
+    raw = str(text or "").strip()
+    m = re.fullmatch(r"(\d{2,3})(\d{2})(\d{2})", raw)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3))).isoformat()
+    except ValueError:
+        return None
+
+
+_TWSE_CODE_RE = re.compile(r"^[0-9A-Z]{4,6}$")
+
+
+def parse_twse(text: str, source: _Directory = TWSE) -> list[DirectoryListing]:
+    """TWSE ``t187ap03_L``: one company per row, with its issued common shares."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    out = []
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("公司代號") or item.get("公司代碼") or "").strip().upper()
+        if not _TWSE_CODE_RE.match(code):
+            continue
+        english = str(item.get("英文簡稱") or "").strip()
+        local = str(item.get("公司簡稱") or item.get("公司名稱") or "").strip()
+        foreign = str(item.get("外國企業註冊地國") or "").strip()
+        out.append(DirectoryListing(
+            name=english or local, ticker=code, exchange="TW", isin=None,
+            country=None if foreign and foreign not in ("-", "－") else "Taiwan",
+            market_cap=None, currency="TWD", price=None, industry=None, mic="XTAI",
+            directory=source.key, source_url=source.url, tier=source.tier,
+            as_of=_roc_date(item.get("出表日期")) or _today(),
+            shares=_num(item.get("已發行普通股數或TDR原股發行股數")),
+        ))
+    return out
+
+
+def parse_twse_prices(text: str, source: _Directory = TWSE_PRICES) -> list[DirectoryListing]:
+    """TWSE ``STOCK_DAY_ALL``: the official closing price of every security that day."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    out = []
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("Code") or "").strip().upper()
+        price = _num(item.get("ClosingPrice"))
+        if not _TWSE_CODE_RE.match(code) or price is None:
+            continue  # no trade that day: no closing price, never a zero
+        out.append(DirectoryListing(
+            name=str(item.get("Name") or "").strip(), ticker=code, exchange="TW", isin=None,
+            country=None, market_cap=None, currency="TWD", price=price, industry=None,
+            mic="XTAI", directory=source.key, source_url=source.url, tier=source.tier,
+            as_of=_roc_date(item.get("Date")) or _today(),
+        ))
+    return out
+
+
 _PARSERS = {
     "euronext": parse_euronext, "asx": parse_asx, "six": parse_six, "sec": parse_sec,
+    "twse": parse_twse, "twse_prices": parse_twse_prices,
     "tsx": lambda text, source: parse_tmx(text, source, "TO"),
     "tsxv": lambda text, source: parse_tmx(text, source, "V"),
 }
@@ -263,7 +367,10 @@ _PARSERS = {
 async def load(
     directory: _Directory, *, cfg: Any = None, fetcher: Any = None
 ) -> list[DirectoryListing]:
-    """The directory's listings, fetched once per process per day. [] when unreadable."""
+    """The directory's listings, fetched once per process per day. [] when unreadable,
+    and [] without a request when the directory's flag is off."""
+    if not directory_enabled(directory, cfg):
+        return []
     key = (directory.key, _today())
     if key in _CACHE:
         return _CACHE[key]
@@ -316,6 +423,7 @@ async def _download(
 _VENUE_SUFFIXES = frozenset({
     "PA", "MI", "AS", "BR", "LS", "IR", "OL", "AX", "AU", "TO", "V", "SW", "US", "L", "LN",
     "CO", "DE", "F", "HE", "ST", "MC", "VX", "CN", "NE", "TSX", "LSE", "ASX",
+    "TW", "TWSE", "KS", "KQ", "NS", "BO",
 })
 
 
@@ -337,7 +445,7 @@ async def find_listing(
     if venue == "LSE" and ticker:
         return await _lse_listing(name=name, ticker=_strip_suffix(ticker), cfg=cfg,
                                   fetcher=fetcher)
-    directory = DIRECTORY_FOR_VENUE.get(venue or "")
+    directory = directory_for_venue(venue, cfg)
     if directory is None:
         return None, None
     listings = await load(directory, cfg=cfg, fetcher=fetcher)
@@ -359,6 +467,8 @@ async def find_listing(
         for row in by_symbol:
             if not wanted or _names_agree(wanted, normalised_name(row.name),
                                           ticker_matched=True):
+                return row, None
+            if _acronym_agrees(row.name, name):
                 return row, None
         if by_symbol:
             return None, (
@@ -439,6 +549,28 @@ async def _lse_listing(
     return row, None
 
 
+#: Words a full legal name may END with after its acronym ("TSMC" for "Taiwan
+#: Semiconductor Manufacturing Company Limited").
+_ACRONYM_TAIL = frozenset({"limited", "ltd", "inc", "corp", "corporation", "co", "plc",
+                           "company", "holdings", "holding", "group", "sa", "ag", "nv"})
+
+
+def _acronym_agrees(short: str | None, full: str | None) -> bool:
+    """An exchange's acronym name for a company whose TICKER already matched: "TSMC" is
+    "Taiwan Semiconductor Manufacturing Company Limited", "TCC" is "Taiwan Cement
+    Corp.". The acronym must spell the initials of the full name's words in order,
+    every word used, except legal words at the end. Three to six letters only."""
+    acronym = re.sub(r"[^a-z]", "", (short or "").lower())
+    if not 3 <= len(acronym) <= 6 or " " in (short or "").strip():
+        return False
+    words = re.findall(r"[a-z0-9]+", (full or "").lower())
+    for end in range(len(words), 0, -1):
+        head, tail = words[:end], words[end:]
+        if all(w in _ACRONYM_TAIL for w in tail) and "".join(w[0] for w in head) == acronym:
+            return True
+    return False
+
+
 def _names_agree(a: str, b: str, *, ticker_matched: bool = False) -> bool:
     """Equal after normalisation, or one is the other plus generic trailing words
     ("kering" vs "kering sa"; "salvatore ferragamo" vs "salvatore ferragamo spa");
@@ -487,6 +619,8 @@ async def official_market_cap(
         return listing.market_cap, listing.currency, listing.source_url, (
             f"market capitalisation published in the {listing.directory.upper()} directory"
         )
+    if listing.directory == "twse":
+        return await _twse_market_cap(listing, cfg=cfg, fetcher=fetcher)
     if listing.directory == "euronext" and listing.isin and listing.mic and listing.price:
         shares, url = await euronext_admitted_shares(listing.isin, listing.mic, cfg=cfg,
                                                      fetcher=fetcher)
@@ -496,6 +630,26 @@ async def official_market_cap(
                 f"{listing.price:g} {listing.currency} (Euronext)"
             )
     return None, None, None, "the exchange does not publish a market capitalisation here"
+
+
+async def _twse_market_cap(
+    listing: DirectoryListing, *, cfg: Any = None, fetcher: Any = None
+) -> tuple[float | None, str | None, str | None, str]:
+    """Issued common shares (company file) × the official closing price (daily file).
+
+    A TDR (code 91xx) is left without one: its file states the UNDERLYING shares, not
+    the depositary receipts the price is quoted for."""
+    none = (None, None, None, "the exchange does not publish a market capitalisation here")
+    if not listing.shares or listing.ticker.startswith("91"):
+        return none
+    prices = await load(TWSE_PRICES, cfg=cfg, fetcher=fetcher)
+    quote = next((p for p in prices if p.ticker == listing.ticker), None)
+    if quote is None or not quote.price:
+        return none
+    return listing.shares * quote.price, "TWD", TWSE_PRICES.url, (
+        f"issued common shares {listing.shares:,.0f} × official closing price "
+        f"{quote.price:g} TWD on {quote.as_of} (TWSE). {TWSE_ATTRIBUTION}"
+    )
 
 
 SEC_DATA_HOST = "data.sec.gov"

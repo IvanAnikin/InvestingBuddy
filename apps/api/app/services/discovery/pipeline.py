@@ -833,9 +833,9 @@ async def run_dynamic_stage(
                 # eligible_unverified(identity). Shown, never admitted, never rejected.
                 # The reason is kept: a venue with a directory we could not READ is an
                 # outage ("cannot check"), not "no directory".
-                from app.services.discovery.directories import DIRECTORY_FOR_VENUE
+                from app.services.discovery.directories import directory_for_venue
 
-                has_directory = (outcome.exchange in DIRECTORY_FOR_VENUE) or (
+                has_directory = (directory_for_venue(outcome.exchange, cfg) is not None) or (
                     outcome.exchange == "LSE"
                 )
                 _attach_admission(

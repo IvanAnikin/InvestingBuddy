@@ -112,6 +112,12 @@ VENUE_ALIASES: dict[str, str] = {
     "tsx-v": "V", "cboe canada": "NEO",
     "tokyo stock exchange": "TSE", "hong kong stock exchange": "HK", "hkex": "HK",
     "nzx": "NZ", "johannesburg stock exchange": "JSE", "jse": "JSE",
+    # V3.20 slice 11.1: Asian venues as providers write them.
+    "taiwan stock exchange": "TW", "twse": "TW", "tpe": "TW", "xtai": "TW",
+    "korea exchange": "KO", "krx": "KO", "kospi": "KO", "kosdaq": "KQ",
+    "xtks": "TSE", "tokyo": "TSE",
+    "national stock exchange of india": "NSE", "nse": "NSE", "bse": "BSE",
+    "bombay stock exchange": "BSE",
 }
 
 _LEGAL_SUFFIXES = {

@@ -1489,6 +1489,10 @@ class Settings(BaseSettings):
     # V3.20 slice 7.4: NESO Transmission Entry Capacity register (NESO Open Data Licence,
     # attribution "Supported by National Energy SO Open Data"). Operator ingest only.
     v3_grid_plans_neso_enabled: bool = True
+    # V3.20 slice 11.1: the Taiwan Stock Exchange's open-data company and closing-price
+    # files as an official exchange directory (listing verification + market cap =
+    # issued shares × close). Open Government Data License v1.0 (any use, attribution).
+    v3_directory_twse_enabled: bool = True
     # V3.20 slice 10.1: the parallel English corpus (spec §3.12). Held non-English
     # document chunks are machine-translated (Azure OpenAI; operator job
     # scripts/translate_corpus.py) into research_chunk_translations, and corpus search
