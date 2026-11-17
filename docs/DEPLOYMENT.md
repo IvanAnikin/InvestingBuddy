@@ -708,6 +708,16 @@ lose them. A retry resumes from the last committed ticker.
   ids in `v3_web.sightings` resolve in `web_search_queries` / `web_search_results` /
   `web_fetch_attempts` (all carry the run id).
 
+### Japan EDINET filings (V3.20 slice 11.2 — V3 line, not deployed)
+
+`EDINET_API_KEY` is a **credential**. It is the owner's free FSA key: set it as a Key
+Vault reference, and never commit or log it. It is sent only as a request header. Without
+it, the EDINET source makes no request. Deploying it also needs migration 059
+(`edinet_filings`, `edinet_index_days`). After the deploy, the operator runs
+`python scripts/edinet_index_backfill.py` once to index the lookback window. Research runs
+read at most `V3_EDINET_INDEX_DAYS_PER_RUN` missing days each. See
+[v3.20-asia.md](v3.20-asia.md).
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

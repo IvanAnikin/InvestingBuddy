@@ -41,9 +41,11 @@ from app.services.sources.disclosures.model import (
     REASON_PRIMARY_DOCUMENT_UNAVAILABLE,
     REASON_VENUE_NOT_COVERED,
     SOURCE_ASX_ANNOUNCEMENTS,
+    SOURCE_EDINET,
     SOURCE_UK_FCA_NSM,
     VENUE_ASX,
     VENUE_LSE,
+    VENUE_TSE,
     DisclosureEvidenceResult,
     DisclosureListing,
     OfficialDocument,
@@ -62,6 +64,7 @@ logger = logging.getLogger(__name__)
 _SOURCE_TYPES = {
     SOURCE_UK_FCA_NSM: "uk_nsm_disclosure",
     SOURCE_ASX_ANNOUNCEMENTS: "asx_announcement",
+    SOURCE_EDINET: "edinet_filing",
 }
 
 #: How much of a fetched document is searched for the issuer's name.
@@ -74,6 +77,8 @@ _IDENTITY_TEXT_CHARS = 40_000
 _VENUE_ALIASES = {
     "LSE": VENUE_LSE, "LON": VENUE_LSE, "L": VENUE_LSE, "LN": VENUE_LSE, "AIM": VENUE_LSE,
     "XLON": VENUE_LSE, "AU": VENUE_ASX, "ASX": VENUE_ASX, "AX": VENUE_ASX, "XASX": VENUE_ASX,
+    "TSE": VENUE_TSE, "TYO": VENUE_TSE, "T": VENUE_TSE, "JP": VENUE_TSE, "XTKS": VENUE_TSE,
+    "JPX": VENUE_TSE,
 }
 
 
@@ -91,6 +96,12 @@ def source_for(company: Any, cfg: Any) -> tuple[str | None, str | None]:
         if not getattr(cfg, "v3_asx_announcements_enabled", False):
             return None, REASON_CONNECTOR_DISABLED
         return SOURCE_ASX_ANNOUNCEMENTS, None
+    if venue == VENUE_TSE:
+        from app.services.sources.disclosures.edinet import is_enabled
+
+        if not is_enabled(cfg):
+            return None, REASON_CONNECTOR_DISABLED
+        return SOURCE_EDINET, None
     return None, REASON_VENUE_NOT_COVERED
 
 
@@ -107,6 +118,10 @@ async def list_disclosures(
 
         return await list_uk_disclosures(session, company, cfg=cfg, fetcher=fetcher,
                                          poster=poster, now=now)
+    if source_id == SOURCE_EDINET:
+        from app.services.sources.disclosures.edinet import list_edinet_disclosures
+
+        return await list_edinet_disclosures(session, company, cfg=cfg, now=now)
     from app.services.sources.disclosures.asx import list_asx_announcements
 
     return await list_asx_announcements(session, company, cfg=cfg, fetcher=fetcher, now=now)
@@ -186,8 +201,18 @@ def document_names_issuer(artifact: Any, issuer: VerifiedIssuer) -> bool:
     full = normalised_name(issuer.name)
     if full and re.search(r"(?<![a-z0-9])" + re.escape(full) + r"(?![a-z0-9])", words):
         return True
+    # A Japanese filing names its filer in Japanese (EDINET's 提出者名, "内海造船株式会社")
+    # on its cover page: the WHOLE official name, compared without spaces after NFKC
+    # (full-width letters and digits fold to their ASCII forms).
+    local = _compact(issuer.local_name or "")
+    if len(local) >= 3 and local in _compact(content_text(artifact)):
+        return True
     ticker = re.escape(issuer.ticker.lower())
     return bool(re.search(r"\b(?:asx|lse|aim)\s*:\s*" + ticker + r"\b", folded))
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
 
 
 # ── Readiness, acquisition, indexing ───────────────────────────────────────── #
@@ -207,6 +232,10 @@ async def _content_url(
         from app.services.sources.disclosures.uk_nsm import NSM_ARTEFACT_HOST
 
         return document.content_url, NSM_ARTEFACT_HOST, None
+    if document.source_id == SOURCE_EDINET:
+        from app.services.sources.disclosures.edinet import EDINET_DL_HOST
+
+        return document.content_url, EDINET_DL_HOST, None
     from app.services.sources.disclosures.asx import (
         ASX_HOST,
         ASX_PDF_HOST,

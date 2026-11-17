@@ -423,7 +423,7 @@ async def _download(
 _VENUE_SUFFIXES = frozenset({
     "PA", "MI", "AS", "BR", "LS", "IR", "OL", "AX", "AU", "TO", "V", "SW", "US", "L", "LN",
     "CO", "DE", "F", "HE", "ST", "MC", "VX", "CN", "NE", "TSX", "LSE", "ASX",
-    "TW", "TWSE", "KS", "KQ", "NS", "BO",
+    "TW", "TWSE", "KS", "KQ", "NS", "BO", "T", "JP", "TYO",
 })
 
 

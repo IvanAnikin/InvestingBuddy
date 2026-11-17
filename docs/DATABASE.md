@@ -1437,6 +1437,22 @@ Checked on PostgreSQL 16:
 - downgrade drops the table;
 - re-upgrade with all seven constraints.
 
+## Migration 059 — EDINET filing index (V3.20 slice 11.2)
+
+Two tables: EDINET filing METADATA by day (never content). EDINET lists filings by
+day only, so the lookback window is indexed here and an issuer's listing is a query on
+its EDINET code. Rules: [docs/v3.20-asia.md](v3.20-asia.md).
+
+| Table | Columns | Rules |
+|---|---|---|
+| `edinet_index_days` | `day` (PK), `fetched_at`, `filings`, `final` | A day read on that same day in Japan is provisional (`final = false`) and is read again. A window day with no row is a hole in the listing. |
+| `edinet_filings` | `doc_id` (PK, EDINET's id), `edinet_code`, `sec_code`, `filer_name`, `doc_type_code`, `ordinance_code`, `form_code`, `doc_description`, `period_start`, `period_end`, `submitted_at`, `parent_doc_id`, `withdrawal_status`, `pdf_flag`, `xbrl_flag`, `csv_flag`, `english_flag`, `index_day`, `created_at`, `updated_at` | Index on (`edinet_code`, `submitted_at`) and on `index_day`. A filing listed again is updated in place (for example, a withdrawal). |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade to 058 drops both tables;
+- re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

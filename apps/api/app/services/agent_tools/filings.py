@@ -112,9 +112,9 @@ async def _get_recent_filings(
         SecRecentFilingsProvider,
     )
     from app.services.exchange_registry import is_sec_eligible, normalize_exchange
-    from app.services.sources.disclosures.model import VENUE_ASX, VENUE_LSE
+    from app.services.sources.disclosures.model import VENUE_ASX, VENUE_LSE, VENUE_TSE
 
-    if normalize_exchange(arguments["exchange"] or "") in (VENUE_LSE, VENUE_ASX):
+    if normalize_exchange(arguments["exchange"] or "") in (VENUE_LSE, VENUE_ASX, VENUE_TSE):
         return await _get_official_disclosures(context, arguments)
 
     ticker, exchange, cik = arguments["ticker"], arguments["exchange"], None
@@ -250,7 +250,7 @@ async def _subject_sec_basis(
 async def _get_official_disclosures(
     context: "ToolContext", arguments: dict[str, Any]
 ) -> dict[str, Any]:
-    """LSE / ASX: the issuer's own official disclosures, and the bridge that makes the
+    """LSE / ASX / TSE (EDINET): the issuer's own official disclosures, and the bridge that makes the
     most relevant unread ones searchable.
 
     The company is the SESSION's subject — resolved by id, never by the ticker the model
@@ -481,8 +481,9 @@ GET_RECENT_FILINGS_SPEC = ToolSpec(
     description=(
         "Filing METADATA from the issuer's own regulator — form type, filing and report "
         "dates, accession number and the regulator's URL. Never the filing's contents. "
-        "For an LSE or ASX issuer: its official disclosures (UK FCA National Storage "
-        "Mechanism / ASX announcements), with the most relevant made searchable in the "
+        "For an LSE, ASX or Tokyo issuer: its official disclosures (UK FCA National "
+        "Storage Mechanism / ASX announcements / Japan FSA EDINET filings), with the most "
+        "relevant made searchable in the "
         "corpus; optional `topics` (short words) prioritise which headlines are read. "
         "Returns an honest empty result, naming the reason, when the flag is off or the "
         "venue is not one the regulator's index covers."

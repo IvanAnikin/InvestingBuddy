@@ -8,6 +8,7 @@ from app.models.discovery import DiscoveryCandidate, DiscoveryRun
 from app.models.discovery_seen import DiscoverySeen
 from app.models.document_ingestion_attempt import DocumentIngestionAttempt
 from app.models.earnings import EarningsResult
+from app.models.edinet_filing import EdinetFiling, EdinetIndexDay
 from app.models.extracted_document import ExtractedDocument, ExtractedFact
 from app.models.field_review import FieldReviewCandidateSummary, FieldReviewRun
 from app.models.grid_plan import GridCapexPlan, GridPlanIngest
@@ -100,6 +101,8 @@ __all__ = [
     "ResearchDocument",
     "ResearchDocumentChunk",
     "ResearchChunkTranslation",
+    "EdinetFiling",
+    "EdinetIndexDay",
     "ResearchDocumentDerivation",
     "ResearchDocumentPage",
     "ResearchDocumentSection",

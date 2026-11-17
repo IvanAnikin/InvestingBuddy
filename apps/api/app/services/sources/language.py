@@ -128,6 +128,13 @@ def detect_language_with_confidence(
     content = _content_language(text)
     if content is not None:
         return content, True
+    # V3.20 slice 11.2: the stopword scan knows Latin-script languages only, so a
+    # Japanese filing (EDINET) fell through to the English default and was never
+    # translated. The writing system is content too — consulted only when the
+    # stopword scan cannot tell, so a confidently English text keeps its label.
+    script = script_language(text)
+    if script is not None:
+        return script, True
 
     if hint:
         code = hint.strip().lower()[:2]

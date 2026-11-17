@@ -54,6 +54,7 @@ CREDENTIAL_SETTING_FIELDS: frozenset[str] = frozenset(
         "azure_document_intelligence_api_key",
         "tavily_api_key",
         "alpha_vantage_api_key",
+        "edinet_api_key",
     }
 )
 
@@ -1140,6 +1141,18 @@ class Settings(BaseSettings):
     # or commercial use, obtain FCA consent and ASX authority or turn these off.
     v3_uk_nsm_disclosures_enabled: bool = False
     v3_asx_announcements_enabled: bool = False
+    # V3.20 slice 11.2 — EDINET (Japan FSA). The issuer's securities reports, half-year
+    # reports and extraordinary reports, listed from EDINET's daily document index and
+    # fetched as the official PDF into the corpus. Needs ``EDINET_API_KEY`` (free,
+    # issued by the FSA to a registered user; sent as a request HEADER, never in a URL);
+    # without a key the source is off whatever this flag says. EDINET data is published
+    # by the FSA for reuse; cite EDINET as the source.
+    v3_edinet_disclosures_enabled: bool = True
+    edinet_api_key: str = Field(default="", repr=False)
+    # Day listings read per research run when the index has gaps in the lookback
+    # window (one request each). ``scripts/edinet_index_backfill.py`` fills the whole
+    # window ahead of time; a run then reads only the days since.
+    v3_edinet_index_days_per_run: int = 40
     # Documents secured per research run before the questions are asked. Each is one
     # fetch and one extraction; the latest annual report alone can be 80 pages.
     v3_disclosure_core_max_documents: int = 5

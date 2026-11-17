@@ -24,8 +24,11 @@ PERIOD_POLICY_TITLE_ONLY = "title_only"
 #: ``ExtractedDocument.source_type`` values written for official announcements.
 SOURCE_TYPE_UK_NSM_DISCLOSURE = "uk_nsm_disclosure"
 SOURCE_TYPE_ASX_ANNOUNCEMENT = "asx_announcement"
+#: V3.20 slice 11.2. The title is composed from EDINET's own listing metadata (type
+#: and fiscal period), never from the body.
+SOURCE_TYPE_EDINET_FILING = "edinet_filing"
 TITLE_ONLY_SOURCE_TYPES: frozenset[str] = frozenset(
-    {SOURCE_TYPE_UK_NSM_DISCLOSURE, SOURCE_TYPE_ASX_ANNOUNCEMENT}
+    {SOURCE_TYPE_UK_NSM_DISCLOSURE, SOURCE_TYPE_ASX_ANNOUNCEMENT, SOURCE_TYPE_EDINET_FILING}
 )
 
 
