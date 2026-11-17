@@ -76,6 +76,7 @@ from app.services.sources.disclosures.model import (
     OfficialDocument,
     VerifiedIssuer,
 )
+from app.services.sources.disclosures.transport import guarded_get
 
 logger = logging.getLogger(__name__)
 
@@ -150,55 +151,7 @@ def is_enabled(cfg: Any) -> bool:
     return bool(getattr(cfg, "v3_edinet_disclosures_enabled", False)) and bool(api_key(cfg))
 
 
-# ── Transport ──────────────────────────────────────────────────────────────── #
-
-
-async def guarded_get(
-    url: str, *, params: dict[str, str] | None = None, headers: dict[str, str] | None = None,
-    cfg: Any, max_bytes: int, allowed_host: str,
-) -> tuple[int | None, bytes | None, str | None]:
-    """One GET to a FIXED EDINET host: SSRF/DNS-guarded, pinned, no redirects followed,
-    body bounded. Never raises; errors are codes, never provider text or a URL."""
-    import httpx
-
-    from app.core.outbound_identity import USER_AGENT_HEADER, research_user_agent
-    from app.services.sources.safe_web_fetcher import (
-        async_check_fetch_url,
-        guarded_client_kwargs,
-        host_of,
-        pinned_transport_for,
-        read_bounded_body,
-    )
-
-    if host_of(url) != allowed_host:
-        return None, None, "host_not_allowed"
-    budget = float(getattr(cfg, "source_document_extraction_timeout_seconds", 60) or 60)
-    try:
-        async with asyncio.timeout(budget * 2):
-            reason, pinned_ip = await async_check_fetch_url(
-                url, (allowed_host,), cfg=cfg, resolve_ip=True)
-            if reason:
-                return None, None, "blocked"
-            sent = {USER_AGENT_HEADER: research_user_agent(cfg), "Accept": "*/*"}
-            sent.update(headers or {})
-            kwargs = guarded_client_kwargs(
-                timeout=budget, headers=sent,
-                transport=pinned_transport_for(cfg, allowed_host, pinned_ip))
-            async with httpx.AsyncClient(**kwargs) as client, client.stream(
-                "GET", url, params=params or None
-            ) as resp:
-                if resp.is_redirect:
-                    return resp.status_code, None, "redirect_refused"
-                if resp.status_code >= 400:
-                    return resp.status_code, None, f"http_{resp.status_code}"
-                body = await read_bounded_body(resp, max_bytes=max_bytes)
-                if body.error or body.truncated:
-                    return resp.status_code, None, body.error or "too_large"
-                return resp.status_code, body.content, None
-    except TimeoutError:
-        return None, None, "timeout"
-    except Exception as exc:  # noqa: BLE001 - the exception text can carry the URL
-        return None, None, type(exc).__name__
+# ── Transport: ``transport.guarded_get`` (shared with OpenDART) ──────────────── #
 
 
 # ── The code list (identity) ───────────────────────────────────────────────── #
@@ -570,7 +523,7 @@ async def resolve_edinet_issuer(
         name=row.name_en or row.name_ja, source_id=SOURCE_EDINET,
         identity_basis=f"EDINET code list: {row.edinet_code}, securities code "
                        f"{row.sec_code} ({row.name_en or row.name_ja})",
-        local_name=row.name_ja or None,
+        local_name=row.name_ja or None, source_ref=row.edinet_code,
     ), row.edinet_code, None
 
 

@@ -35,6 +35,7 @@ from app.models.legal_entity import (
 )
 from app.models.macro import MacroDataset, MacroObservation, MacroSeries
 from app.models.monitoring import MonitoringSignal, Watchlist, WatchlistEntry
+from app.models.opendart_corp_code import OpendartCorpCode
 from app.models.passive_ownership import Fund, FundHoldingsIngest, SecurityPassiveOwnership
 from app.models.precedent_transaction import PrecedentTransaction
 from app.models.report import Report
@@ -102,6 +103,7 @@ __all__ = [
     "ResearchDocumentChunk",
     "ResearchChunkTranslation",
     "EdinetFiling",
+    "OpendartCorpCode",
     "EdinetIndexDay",
     "ResearchDocumentDerivation",
     "ResearchDocumentPage",

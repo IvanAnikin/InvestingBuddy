@@ -55,6 +55,7 @@ CREDENTIAL_SETTING_FIELDS: frozenset[str] = frozenset(
         "tavily_api_key",
         "alpha_vantage_api_key",
         "edinet_api_key",
+        "opendart_api_key",
     }
 )
 
@@ -1153,6 +1154,22 @@ class Settings(BaseSettings):
     # window (one request each). ``scripts/edinet_index_backfill.py`` fills the whole
     # window ahead of time; a run then reads only the days since.
     v3_edinet_index_days_per_run: int = 40
+    # V3.20 slice 11.3 — OpenDART (Korea FSS). A KOSPI / KOSDAQ issuer's business,
+    # half-year and quarterly reports, major-matters reports and exchange disclosures,
+    # listed per company and read from the filing's original document (``document.xml``)
+    # into the corpus. Needs ``OPENDART_API_KEY`` (free, issued by the FSS); OpenDART
+    # accepts it only as a query parameter, so it is passed to the transport as one and
+    # never written into a stored or logged URL. Without a key the source is off.
+    v3_opendart_disclosures_enabled: bool = True
+    opendart_api_key: str = Field(default="", repr=False)
+    # Measured 2026-11-17: OpenDART served this project at ~7 KB/s — a quarterly
+    # report's original document (367 KB) took 52 s, the corp-code list (3.6 MB) 499 s.
+    # A document fetch gets this many seconds (the shared 15 s default would refuse
+    # every one). The corp-code list is HELD (migration 060) and refreshed by
+    # ``scripts/opendart_corp_codes_refresh.py``; a run downloads it only when nothing
+    # is held, and trusts what is held for ``…_MAX_AGE_DAYS``.
+    v3_opendart_fetch_timeout_seconds: int = 240
+    v3_opendart_corp_codes_max_age_days: int = 30
     # Documents secured per research run before the questions are asked. Each is one
     # fetch and one extraction; the latest annual report alone can be 80 pages.
     v3_disclosure_core_max_documents: int = 5

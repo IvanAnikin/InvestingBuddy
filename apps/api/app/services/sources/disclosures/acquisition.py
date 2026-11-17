@@ -42,8 +42,10 @@ from app.services.sources.disclosures.model import (
     REASON_VENUE_NOT_COVERED,
     SOURCE_ASX_ANNOUNCEMENTS,
     SOURCE_EDINET,
+    SOURCE_OPENDART,
     SOURCE_UK_FCA_NSM,
     VENUE_ASX,
+    VENUE_KRX,
     VENUE_LSE,
     VENUE_TSE,
     DisclosureEvidenceResult,
@@ -65,6 +67,7 @@ _SOURCE_TYPES = {
     SOURCE_UK_FCA_NSM: "uk_nsm_disclosure",
     SOURCE_ASX_ANNOUNCEMENTS: "asx_announcement",
     SOURCE_EDINET: "edinet_filing",
+    SOURCE_OPENDART: "opendart_filing",
 }
 
 #: How much of a fetched document is searched for the issuer's name.
@@ -79,6 +82,8 @@ _VENUE_ALIASES = {
     "XLON": VENUE_LSE, "AU": VENUE_ASX, "ASX": VENUE_ASX, "AX": VENUE_ASX, "XASX": VENUE_ASX,
     "TSE": VENUE_TSE, "TYO": VENUE_TSE, "T": VENUE_TSE, "JP": VENUE_TSE, "XTKS": VENUE_TSE,
     "JPX": VENUE_TSE,
+    "KO": VENUE_KRX, "KS": VENUE_KRX, "KRX": VENUE_KRX, "KOSPI": VENUE_KRX, "XKRX": VENUE_KRX,
+    "KQ": VENUE_KRX, "KOSDAQ": VENUE_KRX, "XKOS": VENUE_KRX,
 }
 
 
@@ -102,6 +107,12 @@ def source_for(company: Any, cfg: Any) -> tuple[str | None, str | None]:
         if not is_enabled(cfg):
             return None, REASON_CONNECTOR_DISABLED
         return SOURCE_EDINET, None
+    if venue == VENUE_KRX:
+        from app.services.sources.disclosures.opendart import is_enabled as dart_enabled
+
+        if not dart_enabled(cfg):
+            return None, REASON_CONNECTOR_DISABLED
+        return SOURCE_OPENDART, None
     return None, REASON_VENUE_NOT_COVERED
 
 
@@ -122,6 +133,10 @@ async def list_disclosures(
         from app.services.sources.disclosures.edinet import list_edinet_disclosures
 
         return await list_edinet_disclosures(session, company, cfg=cfg, now=now)
+    if source_id == SOURCE_OPENDART:
+        from app.services.sources.disclosures.opendart import list_opendart_disclosures
+
+        return await list_opendart_disclosures(session, company, cfg=cfg, now=now)
     from app.services.sources.disclosures.asx import list_asx_announcements
 
     return await list_asx_announcements(session, company, cfg=cfg, fetcher=fetcher, now=now)
@@ -236,6 +251,12 @@ async def _content_url(
         from app.services.sources.disclosures.edinet import EDINET_DL_HOST
 
         return document.content_url, EDINET_DL_HOST, None
+    if document.source_id == SOURCE_OPENDART:
+        # The content is read through the API by ``opendart.document_extractor``; the
+        # address passed on is the public viewer page a citation opens.
+        from app.services.sources.disclosures.opendart import DART_VIEWER_HOST
+
+        return document.official_url, DART_VIEWER_HOST, None
     from app.services.sources.disclosures.asx import (
         ASX_HOST,
         ASX_PDF_HOST,
@@ -526,6 +547,10 @@ async def ensure_disclosure_evidence(
 
     from app.services.sources.extracted_fact_validator import IssuerContext
 
+    if extractor is None and document.source_id == SOURCE_OPENDART:
+        from app.services.sources.disclosures.opendart import document_extractor
+
+        extractor = document_extractor(document, issuer)
     if extractor is None:
         from app.services.sources.live_fetchers import live_primary_document_extractor
 

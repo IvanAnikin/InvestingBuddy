@@ -213,8 +213,9 @@ def url_has_document_segment(url: str | None, ref: str) -> bool:
     )
 
 
-#: Query parameters a venue uses for its own document id (the ASX announcement address).
-_DOCUMENT_ID_PARAMS: frozenset[str] = frozenset({"idsId"})
+#: Query parameters a venue uses for its own document id: the ASX announcement address
+#: (``idsId``) and DART's filing viewer (``…/dsaf001/main.do?rcpNo=<receipt no.>``).
+_DOCUMENT_ID_PARAMS: frozenset[str] = frozenset({"idsId", "rcpNo"})
 
 
 #: An official document identifier as it appears inside the transport's canonical URL:

@@ -1453,6 +1453,23 @@ Checked on PostgreSQL 16:
 - downgrade to 058 drops both tables;
 - re-upgrade.
 
+## Migration 060 — OpenDART corp-code list (V3.20 slice 11.3)
+
+One table: the listed companies of OpenDART's corp-code list, the only map from a KRX
+stock code to the eight-digit `corp_code` that OpenDART identifies a filer by. The list
+is one 3.6 MB download, measured at 499 s from this project, so it is held here and
+refreshed by `scripts/opendart_corp_codes_refresh.py`. Rules:
+[docs/v3.20-asia.md](v3.20-asia.md).
+
+| Table | Columns | Rules |
+|---|---|---|
+| `opendart_corp_codes` | `corp_code` (PK), `stock_code`, `name_ko`, `name_en`, `refreshed_at` | Index on `stock_code`. Listed companies only. A refresh replaces the held rows; it does not merge them, so a delisted company leaves. A run trusts the held list for `V3_OPENDART_CORP_CODES_MAX_AGE_DAYS` (30); after that it downloads the list again, and falls back to the stale rows if the download fails. |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade to 059 drops the table;
+- re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

@@ -718,6 +718,23 @@ it, the EDINET source makes no request. Deploying it also needs migration 059
 read at most `V3_EDINET_INDEX_DAYS_PER_RUN` missing days each. See
 [v3.20-asia.md](v3.20-asia.md).
 
+### Korea OpenDART filings (V3.20 slice 11.3 — V3 line, not deployed)
+
+`OPENDART_API_KEY` is a **credential**. It is the owner's free FSS key: set it as a Key
+Vault reference, and never commit or log it.
+- OpenDART accepts the key only as the `crtfc_key` query parameter. The code passes it
+  to the transport as a parameter and never writes it into a stored URL.
+- The `httpx` logger is capped at WARNING, and the log redaction filter scrubs
+  `crtfc_key=` values.
+- Without the key, the OpenDART source makes no request.
+
+Deploying it also needs migration 060 (`opendart_corp_codes`). After the deploy, the
+operator runs `python scripts/opendart_corp_codes_refresh.py` once. The download was
+measured at about 7 KB/s (499 s), and the script allows 900 s. Refresh it monthly
+(`V3_OPENDART_CORP_CODES_MAX_AGE_DAYS`, 30); otherwise a research run pays for the
+download itself. `V3_OPENDART_FETCH_TIMEOUT_SECONDS` (240) is the deadline of each
+OpenDART request; a quarterly report's original document measured 52–59 s.
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on
