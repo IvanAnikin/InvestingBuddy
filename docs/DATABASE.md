@@ -1423,6 +1423,20 @@ Checked on PostgreSQL 16:
 - downgrade drops both tables;
 - re-upgrade.
 
+## Migration 058 — research chunk translations (V3.20 slice 10.1)
+
+One public table: English machine translations of held non-English chunks. The original
+chunk is unchanged and stays the evidence. Rules: [docs/v3.20-translation.md](v3.20-translation.md).
+
+| Table | Columns | Rules |
+|---|---|---|
+| `research_chunk_translations` | FK `research_document_chunks` (`CASCADE`), `chunk_id`, FK `research_document_versions` (`CASCADE`), FK `companies` (`SET NULL`), `source_language`, `target_language`, `status`, `reason`, `translated_text`, `original_sha256`, `provider`, `model`, `prompt_version`, `original_chars`, `translated_chars`, `prompt_tokens`, `completion_tokens`, `usage_estimated`, `created_at`, `updated_at` | unique (`chunk_row_id`, `target_language`); CHECK status ∈ translated/refused/failed; CHECK a translated row has text; index on the version. Refused and failed rows are kept. Only public access classes are translated. |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade drops the table;
+- re-upgrade with all seven constraints.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

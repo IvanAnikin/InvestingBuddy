@@ -370,8 +370,12 @@ class PostgresSearchBackend:
         semantic_enabled: bool = False,
         semantic_candidate_limit: int = DEFAULT_SEMANTIC_CANDIDATE_LIMIT,
         embedding_model: str | None = None,
+        translations_enabled: bool = False,
     ) -> None:
         self._session = session
+        self._translations_enabled = translations_enabled
+        #: chunk_id -> (English text, source language) for this query's lexical rows.
+        self._translations: dict[str, tuple[str, str]] = {}
         self._semantic_enabled = semantic_enabled
         self._semantic_candidate_limit = max(1, semantic_candidate_limit)
         self._embedding_model = embedding_model or None
@@ -562,12 +566,43 @@ class PostgresSearchBackend:
         FY2025 in another.
         """
         C = ResearchDocumentChunk
-        vector = func.to_tsvector(_TS_CONFIG_SQL, C.text)
         tsq = func.to_tsquery(_TS_CONFIG_SQL, bindparam("tsq", tsquery))
-        rank = func.ts_rank_cd(vector, tsq).cast(Float)
         fetch = min(
             MAX_LEXICAL_FETCH, max(query.top_k, query.top_k * LEXICAL_FETCH_MULTIPLIER)
         )
+        self._translations = {}
+        if self._translations_enabled:
+            # V3.20 slice 10.1: the parallel English corpus. The English text is matched
+            # beside the original; the hit is still the ORIGINAL chunk. A translation of
+            # different original text (the chunk changed since) is not used.
+            from sqlalchemy import and_, literal
+
+            from app.models.research_chunk_translation import ResearchChunkTranslation as T
+
+            current = and_(
+                T.chunk_row_id == C.id, T.target_language == "en",
+                T.status == "translated",
+                T.original_sha256 == func.encode(
+                    func.sha256(func.convert_to(C.text, literal("UTF8"))), "hex"),
+            )
+            both = func.to_tsvector(_TS_CONFIG_SQL, C.text).op("||")(
+                func.to_tsvector(_TS_CONFIG_SQL, func.coalesce(T.translated_text, "")))
+            both_rank = func.ts_rank_cd(both, tsq).cast(Float)
+            joined = (
+                select(C, both_rank.label("rank"), T.translated_text, T.source_language)
+                .outerjoin(T, current)
+                .where(C.indexed_at.is_not(None), both.op("@@")(tsq),
+                       *_filter_clauses(query.filters))
+                .order_by(both_rank.desc(), C.chunk_id)
+                .limit(fetch)
+            )
+            joined_rows = (await self._session.execute(joined)).all()
+            for jrow in joined_rows:
+                if jrow[2]:
+                    self._translations[jrow[0].chunk_id] = (str(jrow[2]), str(jrow[3] or ""))
+            return [(jrow[0], float(jrow[1] or 0.0)) for jrow in joined_rows]
+        vector = func.to_tsvector(_TS_CONFIG_SQL, C.text)
+        rank = func.ts_rank_cd(vector, tsq).cast(Float)
         stmt = (
             select(C, rank.label("rank"))
             .where(
@@ -620,11 +655,19 @@ class PostgresSearchBackend:
             row.research_document_version_id
         )
         chunk = _row_to_corpus_chunk(row, canonical_url=canonical_url, title=title, web=web)
+        translated = self._translations.get(row.chunk_id)
+        if translated is not None:
+            from dataclasses import replace as _replace
+
+            chunk = _replace(chunk, translation_text=translated[0],
+                             translation_language=translated[1] or None)
         filters = query.filters
         if filters.subject_company_ids and row.company_id not in set(filters.company_ids):
             chunk = await self._subject_marked(chunk, filters)
         wanted = set(tokenize(query.text))
         present = set(tokenize(row.text))
+        if translated is not None:
+            present |= set(tokenize(translated[0]))
         return CorpusHit(
             chunk=chunk,
             score=score,

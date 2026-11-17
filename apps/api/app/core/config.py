@@ -1489,6 +1489,12 @@ class Settings(BaseSettings):
     # V3.20 slice 7.4: NESO Transmission Entry Capacity register (NESO Open Data Licence,
     # attribution "Supported by National Energy SO Open Data"). Operator ingest only.
     v3_grid_plans_neso_enabled: bool = True
+    # V3.20 slice 10.1: the parallel English corpus (spec §3.12). Held non-English
+    # document chunks are machine-translated (Azure OpenAI; operator job
+    # scripts/translate_corpus.py) into research_chunk_translations, and corpus search
+    # also matches the English text — citations and figure checks stay on the original.
+    v3_translation_enabled: bool = False
+    v3_translation_max_chunks_per_document: int = 400
     # V3.20 slice 7.3: "Demand triangulation" (business_model) — do the named customers
     # publish active grid projects in the subject's technology? A read of the held grid
     # plans (enabled sources only); None for a company outside the electricity stack.

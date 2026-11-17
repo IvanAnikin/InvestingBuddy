@@ -118,7 +118,8 @@ class InMemorySearchBackend:
                 continue
             existed = chunk.chunk_id in self._chunks
             self._chunks[chunk.chunk_id] = chunk
-            self._tokens[chunk.chunk_id] = tokenize(chunk.text)
+            self._tokens[chunk.chunk_id] = tokenize(chunk.text) + (
+                tokenize(chunk.translation_text) if chunk.translation_text else [])
             result = IndexResult(
                 indexed=result.indexed + (0 if existed else 1),
                 updated=result.updated + (1 if existed else 0),

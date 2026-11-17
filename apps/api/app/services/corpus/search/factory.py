@@ -69,6 +69,7 @@ def get_search_backend(
                 getattr(cfg, "v3_corpus_semantic_candidate_limit", 500) or 500
             ),
             embedding_model=getattr(cfg, "v3_corpus_embedding_model", "") or None,
+            translations_enabled=bool(getattr(cfg, "v3_translation_enabled", False)),
         )
     raise UnknownSearchBackendError(
         f"{name!r} is not a search backend. Known: {', '.join(sorted(SEARCH_BACKENDS))}."

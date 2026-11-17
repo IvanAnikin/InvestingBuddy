@@ -153,6 +153,9 @@ class CorpusSearchResult:
     lexical_score: float | None = None
     semantic_score: float | None = None
     matched_terms: tuple[str, ...] = ()
+    #: V3.20 slice 10.1 — the held English machine translation of ``text``, when the
+    #: hit came from a non-English chunk that has one. Never the evidence.
+    translation: "dict[str, Any] | None" = None
 
 
 @dataclass(frozen=True)
@@ -301,9 +304,21 @@ async def search_corpus(
             lexical_score=hit.lexical_score,
             semantic_score=hit.semantic_score,
             matched_terms=hit.matched_terms,
+            translation=_translation_of(hit.chunk),
         )
         for hit in hits
     ]
+
+
+def _translation_of(chunk: Any) -> "dict[str, Any] | None":
+    text = getattr(chunk, "translation_text", None)
+    if not text:
+        return None
+    from app.services.corpus.translation import MACHINE_TRANSLATION_NOTE
+
+    return {"text": text, "source_language": getattr(chunk, "translation_language", None)
+            or getattr(chunk, "language", None), "target_language": "en",
+            "note": MACHINE_TRANSLATION_NOTE}
 
 
 async def newest_published(

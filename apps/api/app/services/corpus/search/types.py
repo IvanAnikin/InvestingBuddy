@@ -162,6 +162,11 @@ class CorpusChunk:
     #: Present only when a semantic leg is configured. ``None`` is the normal case
     #: and a hybrid search degrades to its lexical leg rather than failing.
     embedding: tuple[float, ...] | None = None
+    #: V3.20 slice 10.1 — the held English machine translation of this chunk, when one
+    #: exists and the translation corpus is on. Searchable; NEVER the evidence: the
+    #: citation, the quote and every figure check stay on ``text``.
+    translation_text: str | None = None
+    translation_language: str | None = None
 
 
 @dataclass(frozen=True)

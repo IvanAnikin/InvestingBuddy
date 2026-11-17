@@ -39,6 +39,7 @@ from app.models.precedent_transaction import PrecedentTransaction
 from app.models.report import Report
 from app.models.research_artifact import ResearchArtifact
 from app.models.research_chunk import ResearchDocumentChunk
+from app.models.research_chunk_translation import ResearchChunkTranslation
 from app.models.research_decision import ResearchDecision
 from app.models.research_derivation import (
     ResearchDocumentDerivation,
@@ -98,6 +99,7 @@ __all__ = [
     "ResearchArtifact",
     "ResearchDocument",
     "ResearchDocumentChunk",
+    "ResearchChunkTranslation",
     "ResearchDocumentDerivation",
     "ResearchDocumentPage",
     "ResearchDocumentSection",
