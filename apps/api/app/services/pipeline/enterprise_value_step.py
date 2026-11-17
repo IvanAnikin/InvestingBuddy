@@ -32,7 +32,7 @@ async def load_fact_rows(session: Any, company: Any,
 
     from app.models.extracted_document import ExtractedDocument, ExtractedFact
     from app.services.sources.company_documents import company_documents_clause
-    from app.services.sources.inline_xbrl_facts import EXTRACTION_METHOD_INLINE_XBRL
+    from app.services.sources.inline_xbrl_facts import TAGGED_EXTRACTION_METHODS
 
     stmt = (
         select(ExtractedFact.id, ExtractedFact.label, ExtractedFact.value_numeric,
@@ -46,7 +46,7 @@ async def load_fact_rows(session: Any, company: Any,
             ExtractedFact.label.in_(list(labels)),
             ExtractedFact.value_numeric.is_not(None),
         )
-        .order_by(case((ExtractedFact.extraction_method == EXTRACTION_METHOD_INLINE_XBRL, 0),
+        .order_by(case((ExtractedFact.extraction_method.in_(TAGGED_EXTRACTION_METHODS), 0),
                        else_=1), ExtractedFact.confidence.desc())
         .limit(MAX_FACTS)
     )

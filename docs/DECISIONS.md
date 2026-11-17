@@ -10565,3 +10565,23 @@ Both are right for what they were built against: free text from web pages and LL
 - The vision's portfolio-manager agent exists in a form that keeps trade decisions with the user, as ADR-005 intends.
 - It requires the monitoring of V3.20 slice 9.4 and the research records of 9.1.
 - It falls under the private-use-only condition of ADR-098.
+
+## ADR-101: A DART Filing's XBRL Statements Are Tagged Statement Facts of That Filing
+
+**Date:** 2026-11-17 · **Status:** Accepted (V3.20 slice 11.3b; V3 line, not deployed)
+**Trigger:** slice 11.3 put a Korean issuer's periodic reports into the corpus as text, but DART also holds each report's statements as XBRL. OpenDART serves them per filing (`fnlttSinglAcntAll`). Without them, a Korean issuer's statements view depended on reading Korean tables.
+
+### Decision
+1. **The same store, the same rules as ADR-085.** When `opendart.document_extractor` reads a business, half-year or quarterly report, its consolidated statements become `ValidatedFact` rows of THAT document (`extraction_method = dart_xbrl`, locator `opendart:<concept>@<statement>/<column>`). They are merged with the text reading by `inline_xbrl_facts.merge_with_text_facts`: a text figure the statements cover is dropped.
+2. **This filing only.** Every row must carry the document's own receipt number, the issuer's `corp_code` and the report code asked for, or none is read. An amended report is not read.
+3. **The period from the filing's metadata, the column from DART's layout.** The report name gives the kind and period end, and the issuer's stated fiscal year-end month gives the position. Interim income statements give the three months (and, in a half-year report, H1). Interim cash flows are year to date, so they are read only at Q1 and H1, never as nine months. The prior-year columns get their own periods. The layout was measured on Samsung's real annual, Q1, H1 and Q3 reports.
+4. **Each line from its own statement.** Balances come from BS, cash flows from CF, and other flows from IS or CIS, which must agree. The cash-flow statement's profit line and the equity statement are never read.
+5. **One reviewed DART concept.** `ifrs-full_*` accounts go through the existing map. Of the DART taxonomy, only `dart:OperatingIncomeLoss` (영업이익) is read, as `operating_profit` under its own label "Operating income (loss) (DART taxonomy)". It sits in `DART_STATEMENT_CONCEPTS`, outside the map the SEC companyfacts normalizer reads. Every other `dart_` concept, and every row without a standard code, is skipped.
+6. **The Group only.** Only consolidated statements (`fs_div=CFS`) are read. A filer that publishes only separate statements gets no statement facts from this source.
+7. **A tagged figure downstream.** `xbrl_statement_concepts.tagged_concept` recognizes both `ixbrl:` and `opendart:` locators. So a DART figure is a primary-statement read (ADR-092), carries its concept and taxonomy label, and ranks with inline XBRL wherever tagged figures are preferred (`TAGGED_EXTRACTION_METHODS`).
+
+### Consequences
+- A Korean report adds one request (about 18 s at the measured speed). An interim report adds one more, for the fiscal year-end month.
+- Filings held before this slice are not re-read. Their statement facts arrive with the issuer's next periodic report.
+- Flag `V3_OPENDART_STATEMENTS_ENABLED` (default on; needs `OPENDART_API_KEY`).
+

@@ -1170,6 +1170,11 @@ class Settings(BaseSettings):
     # is held, and trusts what is held for ``…_MAX_AGE_DAYS``.
     v3_opendart_fetch_timeout_seconds: int = 240
     v3_opendart_corp_codes_max_age_days: int = 30
+    # V3.20 slice 11.3b — when a business / half-year / quarterly report is read, its
+    # consolidated statements as DART holds them (``fnlttSinglAcntAll``, the filing's
+    # XBRL) become statement facts of that document, tied to its receipt number. One
+    # extra request per periodic report; off → only the text reading.
+    v3_opendart_statements_enabled: bool = True
     # Documents secured per research run before the questions are asked. Each is one
     # fetch and one extraction; the latest annual report alone can be 80 pages.
     v3_disclosure_core_max_documents: int = 5

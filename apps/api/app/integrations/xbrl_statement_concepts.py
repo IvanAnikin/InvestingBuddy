@@ -256,16 +256,46 @@ def aliases_for(taxonomy: str, normalizer_field: str) -> list[str]:
     return [c.local_name for c in sorted(found, key=lambda c: c.priority)]
 
 
+#: DART-taxonomy (Korea FSS) concepts, read only from a filing's OpenDART statements
+#: (``disclosures.opendart_statements``, V3.20 11.3b) beside the ``ifrs-full`` map above.
+#: K-IFRS filers present operating profit (영업이익) under this concept, not under
+#: ``ifrs-full:ProfitLossFromOperatingActivities``; it keeps its own label. No other
+#: ``dart`` concept is read.
+DART_STATEMENT_CONCEPTS: dict[str, StatementConcept] = {
+    "dart:OperatingIncomeLoss": StatementConcept(
+        concept="dart:OperatingIncomeLoss", statement_field="operating_profit",
+        normalizer_field=None, label="Operating income (loss) (DART taxonomy)",
+        priority=2, kind=KIND_FLOW),
+}
+
+#: Locator prefixes of a TAGGED statement figure: ``ixbrl:<concept>@<context>`` (an SEC
+#: filing's inline XBRL) and ``opendart:<concept>@<statement>/<column>`` (a DART
+#: filing's XBRL statements). Both name the concept before the ``@``.
+TAGGED_LOCATOR_PREFIXES: tuple[str, ...] = ("ixbrl:", "opendart:")
+
+
+def tagged_concept(locator: str | None) -> str | None:
+    """The concept a tagged figure's locator names, else ``None``. Pure."""
+    text = str(locator or "")
+    for prefix in TAGGED_LOCATOR_PREFIXES:
+        if text.startswith(prefix):
+            return text.removeprefix(prefix).split("@", 1)[0] or None
+    return None
+
+
 def taxonomy_label(concept: str) -> str | None:
     """The taxonomy's term for a tagged concept (``prefix:LocalName``), if mapped.
 
     Not the filing's own caption: the filing's label linkbase is not read."""
-    mapped = STATEMENT_CONCEPT_BY_QNAME.get(concept)
+    mapped = STATEMENT_CONCEPT_BY_QNAME.get(concept) or DART_STATEMENT_CONCEPTS.get(concept)
     return mapped.label if mapped else None
 
 
 __all__ = [
     "BANK_MARKER_CONCEPT",
+    "DART_STATEMENT_CONCEPTS",
+    "TAGGED_LOCATOR_PREFIXES",
+    "tagged_concept",
     "IFRS_BORROWINGS",
     "IFRS_CURRENT_BORROWINGS",
     "IFRS_EPS_BASIC",

@@ -940,11 +940,12 @@ def _is_statement_read(fact: dict[str, Any]) -> bool:
     (``line_rank`` 0), or it is an inline XBRL tag. Any other table — a highlights box,
     a parent-company or segment table, a fact persisted before the rank existed — is
     not, and never sets another read aside."""
+    from app.integrations.xbrl_statement_concepts import tagged_concept
     from app.services.sources.statement_line_selector import LINE_RANK_STATEMENT
 
     if fact.get("line_rank") == LINE_RANK_STATEMENT:
         return True
-    return str(fact.get("excerpt_id") or "").startswith("ixbrl:")
+    return tagged_concept(fact.get("excerpt_id")) is not None
 
 
 def _prose_set_aside(
@@ -1049,11 +1050,10 @@ def _period_group(fact: dict[str, Any]) -> str:
 
 
 def _tagged_concept(fact: dict[str, Any]) -> str | None:
-    """The XBRL concept of a tagged figure (``ixbrl:<concept>@<context>``), else None."""
-    locator = str(fact.get("excerpt_id") or "")
-    if not locator.startswith("ixbrl:"):
-        return None
-    return locator.removeprefix("ixbrl:").split("@", 1)[0] or None
+    """The XBRL concept of a tagged figure (``ixbrl:`` / ``opendart:`` locator), else None."""
+    from app.integrations.xbrl_statement_concepts import tagged_concept
+
+    return tagged_concept(fact.get("excerpt_id"))
 
 
 def _conflict_note(group: list[dict[str, Any]]) -> str:

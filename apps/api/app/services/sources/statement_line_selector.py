@@ -383,7 +383,8 @@ LINE_RANK_PROSE = 2
 STATEMENT_MIN_VALUE_ROWS = 8
 STATEMENT_MIN_DISTINCT_LINES = 2
 
-_TABLE_LOCATOR_RE = re.compile(r"^(?:p\d{1,4}:[a-z]\d{1,3}|t\d{1,4}|ixbrl:.{1,300})$", re.I)
+_TABLE_LOCATOR_RE = re.compile(
+    r"^(?:p\d{1,4}:[a-z]\d{1,3}|t\d{1,4}|ixbrl:.{1,300}|opendart:.{1,300})$", re.I)
 
 
 def is_statement_shaped(value_rows: int, distinct_lines: int) -> bool:

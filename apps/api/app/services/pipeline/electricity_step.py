@@ -36,7 +36,7 @@ async def load_inputs(session: Any, company: Any) -> tuple[list[CitedText], list
 
     from app.models.extracted_document import ExtractedDocument, ExtractedFact
     from app.services.sources.company_documents import company_documents_clause
-    from app.services.sources.inline_xbrl_facts import EXTRACTION_METHOD_INLINE_XBRL
+    from app.services.sources.inline_xbrl_facts import TAGGED_EXTRACTION_METHODS
 
     texts: list[CitedText] = []
     description = (getattr(company, "description", None) or "").strip()
@@ -62,7 +62,7 @@ async def load_inputs(session: Any, company: Any) -> tuple[list[CitedText], list
             ExtractedFact.scope_name.is_not(None),
         )
         .order_by(
-            case((ExtractedFact.extraction_method == EXTRACTION_METHOD_INLINE_XBRL, 0),
+            case((ExtractedFact.extraction_method.in_(TAGGED_EXTRACTION_METHODS), 0),
                  else_=1),
             ExtractedFact.confidence.desc(),
         )

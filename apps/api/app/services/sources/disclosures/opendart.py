@@ -678,13 +678,33 @@ def document_extractor(document: OfficialDocument, issuer: VerifiedIssuer, *,
             requested_url=document.official_url, final_url=document.official_url,
             status_code=200, content_type="text/html", document_type="html",
             content=page.encode("utf-8"))
-        return await live_fetchers._artifact_from_fetch(
+        artifact = await live_fetchers._artifact_from_fetch(
             fetched, title=title_hint, original_language="ko",
             issuer_context=issuer_context, cfg=cfg,
             fetch_ms=int((time.perf_counter() - started) * 1000),
             period_policy=period_policy, published_at=published_at)
+        return await with_statement_facts(artifact, document, issuer, cfg=cfg, getter=getter)
 
     return _extract
+
+
+async def with_statement_facts(artifact: Any, document: OfficialDocument,
+                               issuer: VerifiedIssuer, *, cfg: Any,
+                               getter: Getter | None = None) -> Any:
+    """The artifact with its filing's consolidated statements added as facts (slice
+    11.3b, ``opendart_statements``). Only an extracted periodic report; never raises."""
+    from app.services.sources.disclosures.opendart_statements import fetch_statement_facts
+    from app.services.sources.inline_xbrl_facts import merge_with_text_facts
+    from app.services.sources.primary_document_extractor import STATUS_EXTRACTED
+
+    if getattr(artifact, "status", None) != STATUS_EXTRACTED:
+        return artifact
+    facts, outcome = await fetch_statement_facts(document, issuer, cfg=cfg, getter=getter)
+    if facts:
+        artifact.validated_facts = merge_with_text_facts(artifact.validated_facts or [], facts)
+    if outcome not in ("off", "not_periodic"):
+        artifact.warnings.append(f"opendart_statements: {outcome} ({len(facts)} facts)")
+    return artifact
 
 
 __all__ = [
@@ -717,4 +737,5 @@ __all__ = [
     "parse_list_page",
     "resolve_opendart_issuer",
     "store_corp_codes",
+    "with_statement_facts",
 ]

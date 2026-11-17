@@ -735,6 +735,11 @@ measured at about 7 KB/s (499 s), and the script allows 900 s. Refresh it monthl
 download itself. `V3_OPENDART_FETCH_TIMEOUT_SECONDS` (240) is the deadline of each
 OpenDART request; a quarterly report's original document measured 52–59 s.
 
+`V3_OPENDART_STATEMENTS_ENABLED` (default on, slice 11.3b, ADR-101) adds each periodic
+report's consolidated XBRL statements as facts. It costs one more request per report
+(about 18 s measured), plus one for the fiscal year-end month on an interim report. No
+migration is needed.
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

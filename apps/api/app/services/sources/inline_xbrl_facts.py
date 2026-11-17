@@ -83,6 +83,10 @@ from app.services.sources.inline_xbrl import (
 )
 
 EXTRACTION_METHOD_INLINE_XBRL = "inline_xbrl"
+#: Statement facts the issuer TAGGED with a regulator: an SEC filing's inline XBRL and a
+#: DART filing's XBRL statements (``disclosures.opendart_statements``, V3.20 11.3b).
+#: A consumer that prefers tagged figures over text readings ranks all of these first.
+TAGGED_EXTRACTION_METHODS: tuple[str, ...] = (EXTRACTION_METHOD_INLINE_XBRL, "dart_xbrl")
 LOCATOR_PREFIX = "ixbrl:"
 #: Tagged by the issuer in a regulator filing: above every text reading.
 INLINE_XBRL_CONFIDENCE = 0.97
@@ -522,6 +526,7 @@ __all__ = [
     "SCOPE_AXIS_GEOGRAPHIC",
     "SCOPE_AXIS_GROUP",
     "SCOPE_AXIS_PRODUCT",
+    "TAGGED_EXTRACTION_METHODS",
     "scope_label",
     "scope_of",
     "statement_facts_from_inline_xbrl",
