@@ -1530,6 +1530,14 @@ class Settings(BaseSettings):
     # V3.20 slice 7.4: NESO Transmission Entry Capacity register (NESO Open Data Licence,
     # attribution "Supported by National Energy SO Open Data"). Operator ingest only.
     v3_grid_plans_neso_enabled: bool = True
+    # V3.20 slice 11.5: OCCTO's aggregation of Japan's supply plans, chapter 4 main
+    # transmission lines and substations (OCCTO copyright page: free use with the source
+    # credited and edits marked). Operator ingest only.
+    v3_grid_plans_occto_enabled: bool = True
+    # V3.20 slice 11.5: CEA's monthly reports of India's under-construction transmission
+    # projects (TBCB and RTM). CEA's website policy requires prior permission to reproduce;
+    # none has been sought, so private use only and OFF by default (ADR-104).
+    v3_grid_plans_cea_enabled: bool = False
     # V3.20 slice 11.1: the Taiwan Stock Exchange's open-data company and closing-price
     # files as an official exchange directory (listing verification + market cap =
     # issued shares × close). Open Government Data License v1.0 (any use, attribution).

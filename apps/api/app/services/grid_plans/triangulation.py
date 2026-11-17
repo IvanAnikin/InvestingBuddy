@@ -56,7 +56,7 @@ QUEUE_LAYERS = frozenset({"transmission", "distribution_grid_edge",
                           "upstream_electrical_materials"})
 
 #: Versioned aliases: a customer name as filings write it → a promoter name as plans do.
-ALIAS_VERSION = "2026-11-17.1"
+ALIAS_VERSION = "2026-11-17.2"
 ALIASES: dict[str, tuple[str, ...]] = {
     "american electric power": ("aep",),
     "pacific gas and electric": ("pg e", "pgae"),
@@ -77,6 +77,9 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "sp transmission": ("spt", "sp energy networks", "scottish power transmission"),
     "scottish hydro electric transmission": ("shet", "ssen transmission",
                                              "scottish and southern electricity networks"),
+    # CEA's reports name Power Grid Corporation of India "PGCIL"; its SPVs and its own
+    # filings write "POWERGRID" (slice 11.5).
+    "power grid of india": ("pgcil", "powergrid"),
 }
 
 _LEGAL = re.compile(

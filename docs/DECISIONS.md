@@ -10627,3 +10627,34 @@ Both are right for what they were built against: free text from web pages and LL
 - A day on which neither a run nor the operator job read the feed is a hole. A listing never treats absence as evidence.
 - Flag `V3_TWSE_MATERIAL_INFO_ENABLED` (default on). It needs `V3_DIRECTORY_TWSE_ENABLED` for identity.
 - Not covered: TPEx (OTC) companies, which have their own open data, and the directory's English short names that are not acronyms of the company name (`CENE` for Century Energy is refused, as slice 11.1's rule does).
+
+## ADR-104: Asian Grid Plans — OCCTO Is Read Openly, CEA Only Privately, Korea Has No Project File
+
+**Date:** 2026-11-17 · **Status:** Accepted (V3.20 slice 11.5; V3 line, not deployed)
+**Trigger:** slice 11.5 was to add Asian grid plans to the capex tracker (`grid_capex_plans`, Phase 7): OCCTO (Japan), KPX / the Basic Plan (Korea), CEA / PGCIL (India). Each publisher's terms were read first.
+
+### Terms decision
+- **OCCTO: open.** OCCTO's copyright page lets anyone use its content freely, including copying, publishing and editing, provided the source is credited. An edited use must say it was edited and must not present the edit as OCCTO's. Rows are extracted and their company names translated, so the attribution says "extracted and translated (edited) by InvestingBuddy". `open_licence`, flag on.
+- **CEA: private use only.** CEA's website policy allows material to be reproduced only with prior permission, requested by email. No permission has been sought, and none will be sought without the owner. `private_use_permitted`, flag **off** by default. Permission is required before any public use.
+- **Korea: assessed, not built.** No official project-level file was found. The Basic Plan for Electricity Supply and Demand and KEPCO's long-term transmission plan are published as policy documents and press summaries, not as project tables.
+
+### Decision
+1. **OCCTO (`occto_supply_plan`).** The aggregation of the general transmission and distribution companies' supply plans (2026-03-30 PDF), chapter 4: main transmission lines and main substations, under construction (表4-2, 4-5) or preparing to start construction (表4-3, 4-6).
+   - One `project` per filed row.
+   - The promoter is the filing company, with its official English name, so a filing that names "TEPCO Power Grid" can be matched. The region is its service area.
+   - Decommissioning tables (4-4, 4-7) are not read.
+   - Headers are pinned by name. Cells are NFKC-normalised, Japanese wraps are joined and ※ marks are removed.
+   - A first use of 未定 (undecided) has no year.
+   - The plan states no capex.
+2. **CEA (`cea_tbcb_uc`, `cea_rtm_uc`).** The monthly progress reports of under-construction transmission projects, by route (TBCB, RTM).
+   - Columns are found by name, with whitespace removed.
+   - A serial-numbered row is a `project` with its stated cost: Rs crore × 10⁷ = INR, with the stated figure kept in `capex_period`.
+   - The rows under a project are its elements (`investment`: line ckm, transformation MVA, remarks), with no cost of their own.
+   - The SPV a project names is a second promoter, and "PGCIL" carries Power Grid Corporation of India's full name.
+   - The anticipated completion is used, and the original is kept beside it.
+3. **Matching.** A triangulation alias joins "PGCIL", "POWERGRID" and Power Grid Corporation of India (`ALIAS_VERSION` 2026-11-17.2). A Japanese parent and its transmission subsidiary stay separate names (Kansai Electric Power ≠ Kansai Transmission and Distribution).
+
+### Consequences
+- **Measured on the real files:** OCCTO gives 144 projects (70 under construction, 74 planned). CEA TBCB gives 96 projects and 345 elements, Rs 3,22,718 crore. CEA RTM gives 59 projects and 97 elements, Rs 23,462 crore, the report's own total.
+- **Coverage gaps:** Korea is not covered. India's planned (not yet awarded) schemes and Japan's capex are not covered.
+- **Flags:** `V3_GRID_PLANS_OCCTO_ENABLED` (on) and `V3_GRID_PLANS_CEA_ENABLED` (off). No migration.

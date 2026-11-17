@@ -755,6 +755,15 @@ announcement day, so history exists only from the first read: schedule
 only; `--dry-run` reports what is held). Until that is scheduled, only research runs on
 Taiwanese companies read the feed, at most once an hour per process.
 
+### Asian grid plans (V3.20 slice 11.5 — V3 line, not deployed)
+
+Three more `scripts/ingest_grid_plans.py` sources (ADR-104), no migration and no key:
+`occto_supply_plan` (`V3_GRID_PLANS_OCCTO_ENABLED`, default on) and `cea_tbcb_uc` /
+`cea_rtm_uc` (`V3_GRID_PLANS_CEA_ENABLED`, default **off**: CEA requires prior permission
+to reproduce, so keep it off on anything public). The CEA download links change each
+month: pass the new report with `--file` and `--edition YYYY-MM`. OCCTO publishes once a
+year (late March).
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

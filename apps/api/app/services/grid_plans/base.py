@@ -117,6 +117,67 @@ SOURCES: dict[str, GridSource] = {
         # The portal answers 302 with a signed link to its Cloudflare R2 bucket.
         redirect_hosts=(".r2.cloudflarestorage.com",),
     ),
+    "occto_supply_plan": GridSource(
+        key="occto_supply_plan",
+        name="OCCTO 2026年度供給計画の取りまとめ (main transmission lines and substations)",
+        plan_name="Japan supply plans: transmission reinforcement (OCCTO aggregation)",
+        landing_url=("https://www.occto.or.jp/various/kyoukei/torimatome/"
+                     "260330_kyokyukeikaku_torimatome_1.html"),
+        download_url=("https://www.occto.or.jp/assets/various/kyoukei/torimatome/"
+                      "260330_kyokyukeikaku_torimatome/260330_kyokei_torimatome.pdf"),
+        licence=("OCCTO copyright page (chosakuken, read 2026-11-17): content may be used "
+                 "freely, including copying, publishing and editing, provided the source is "
+                 "credited, and an edited use says it was edited and does not present the "
+                 "edit as OCCTO's. Rows here are extracted and their names translated, so "
+                 "the attribution says so."),
+        use_constraint=USE_OPEN_LICENCE,
+        attribution=("Source: Organization for Cross-regional Coordination of Transmission "
+                     "Operators, JAPAN (OCCTO), 2026年度供給計画の取りまとめ (2026-03-30), "
+                     "tables 4-2, 4-3, 4-5, 4-6. Extracted and translated (edited) by "
+                     "InvestingBuddy; not OCCTO's own presentation."),
+        flag="v3_grid_plans_occto_enabled",
+        default_edition="2026-03-30",
+    ),
+    "cea_tbcb_uc": GridSource(
+        key="cea_tbcb_uc",
+        name="CEA monthly progress report: TBCB transmission projects under construction",
+        plan_name="India transmission projects under construction (CEA, TBCB route)",
+        landing_url=("https://cea.nic.in/reports/dashboardView?headingId=107&subHeadingId=1003"
+                     "&subSubHeadingId=10053&title=Transmission%20Schemes&lang=en"),
+        download_url=("https://cea.nic.in/api/dashboardReports/download-pdf/en/"
+                      "5ccd3f26-329c-43bc-adbb-f86f2bc27958"),
+        licence=("Central Electricity Authority website policy (read 2026-11-17): material may "
+                 "be reproduced only with prior permission, requested by email to the "
+                 "webmaster; reproduction must be accurate, not misleading, and name the "
+                 "source. No permission has been sought. Private use only: flag OFF by "
+                 "default, and permission must be obtained before any public use."),
+        use_constraint=USE_PRIVATE_USE_PERMITTED,
+        attribution=("Source: Central Electricity Authority, Government of India, monthly "
+                     "progress report of transmission projects awarded through Tariff Based "
+                     "Competitive Bidding (under construction), October 2026."),
+        flag="v3_grid_plans_cea_enabled",
+        default_edition="2026-10",
+    ),
+    "cea_rtm_uc": GridSource(
+        key="cea_rtm_uc",
+        name="CEA monthly progress report: RTM transmission projects under construction",
+        plan_name="India transmission projects under construction (CEA, RTM route)",
+        landing_url=("https://cea.nic.in/reports/dashboardView?headingId=107&subHeadingId=1003"
+                     "&subSubHeadingId=10053&title=Transmission%20Schemes&lang=en"),
+        download_url=("https://cea.nic.in/api/dashboardReports/download-pdf/en/"
+                      "d429febe-c4bf-42a0-a518-ea3abb4a0e41"),
+        licence=("Central Electricity Authority website policy (read 2026-11-17): material may "
+                 "be reproduced only with prior permission, requested by email to the "
+                 "webmaster; reproduction must be accurate, not misleading, and name the "
+                 "source. No permission has been sought. Private use only: flag OFF by "
+                 "default, and permission must be obtained before any public use."),
+        use_constraint=USE_PRIVATE_USE_PERMITTED,
+        attribution=("Source: Central Electricity Authority, Government of India, monthly "
+                     "progress report of transmission projects under the Regulated Tariff "
+                     "Mechanism (under construction), October 2026."),
+        flag="v3_grid_plans_cea_enabled",
+        default_edition="2026-10",
+    ),
 }
 
 _TAGS: tuple[tuple[str, re.Pattern[str]], ...] = (

@@ -43,6 +43,18 @@ def parser_for(key: str) -> Callable[[bytes], list[dict[str, Any]]]:
         from app.services.grid_plans.neso_tec import parse as parse_neso
 
         return parse_neso
+    if key == "occto_supply_plan":
+        from app.services.grid_plans.occto_supply_plan import parse as parse_occto
+
+        return parse_occto
+    if key == "cea_tbcb_uc":
+        from app.services.grid_plans.cea_transmission import parse_tbcb
+
+        return parse_tbcb
+    if key == "cea_rtm_uc":
+        from app.services.grid_plans.cea_transmission import parse_rtm
+
+        return parse_rtm
     raise KeyError(key)
 
 

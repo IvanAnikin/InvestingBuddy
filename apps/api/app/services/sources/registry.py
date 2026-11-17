@@ -722,6 +722,50 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             ),
         ),
         RegisteredSource(
+            source_id="occto_supply_plan",
+            name="OCCTO supply-plan aggregation (Japan main transmission projects)",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_occto_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_occto_enabled,
+            jurisdiction="JP",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="occto_supply_plan",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid demand signal (V3.20 slice 11.5): OCCTO copyright page, free use with "
+                "the source credited and edits marked. Offline operator job; layout pinned "
+                "on the 2026-03-30 PDF (tables 4-2/4-3/4-5/4-6, main lines and substations "
+                "under construction or preparing to start). One row per filed project, "
+                "promoter = the filing transmission company. No capex stated."
+            ),
+        ),
+        RegisteredSource(
+            source_id="cea_transmission_uc",
+            name="CEA monthly reports: India transmission projects under construction",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_cea_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_cea_enabled,
+            jurisdiction="IN",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="cea_tbcb_uc",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid demand signal (V3.20 slice 11.5): CEA's website policy requires prior "
+                "permission to reproduce; none sought, so private use and OFF by default. "
+                "Offline operator job (sources cea_tbcb_uc, cea_rtm_uc); layout pinned on "
+                "the October 2026 PDFs. One row per project with its stated cost (Rs crore "
+                "-> INR) and one per element (line ckm, transformation MVA)."
+            ),
+        ),
+        RegisteredSource(
             source_id="ishares_holdings",
             name="iShares daily ETF holdings files (US + UCITS)",
             provider_type=ProviderType.fundamentals_aggregator,
