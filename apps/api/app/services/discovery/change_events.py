@@ -225,18 +225,36 @@ def change_events_block(
     *,
     classified: Mapping[str, Any],
     insider: Mapping[str, Any] | None,
+    corporate: Mapping[str, Any] | None = None,
     window_days: int = WINDOW_DAYS,
 ) -> dict[str, Any] | None:
-    """The report block, or ``None`` when there is nothing to show."""
+    """The report block, or ``None`` when there is nothing to show.
+
+    ``corporate`` (V3.20 11.3c, ``opendart_major_matters.corporate_actions``) adds the
+    issuer's typed major-matters decisions as ``corporate_actions``, and its
+    ``maturity_refinanced`` events beside the title-derived ones.
+    """
     clusters = list((insider or {}).get("clusters") or [])
-    events = list(classified.get("events") or [])
-    if not events and not clusters:
+    actions = list((corporate or {}).get("actions") or [])
+    events = list(classified.get("events") or []) + list((corporate or {}).get("events") or [])
+    events.sort(key=lambda r: (r["date"], r["trigger_type"]), reverse=True)
+    if not events and not clusters and not actions:
         return None
     by_type: dict[str, int] = {}
     for e in events:
         by_type[e["trigger_type"]] = by_type.get(e["trigger_type"], 0) + 1
     if clusters:
         by_type["insider_cluster_buy"] = len(clusters)
+    note = (
+        "Change events read from the issuer's own held disclosures (titles, by rule) "
+        "and from SEC Form 4 open-market purchases. A title-derived event is the "
+        "issuer's announcement, not the regulator's register; an event is a reason "
+        "to look, not a conclusion."
+    )
+    if actions:
+        note += (" Corporate actions are the typed fields of the issuer's major-matters "
+                 "reports as OpenDART serves them; amounts and ratios are as the issuer "
+                 "stated them.")
     return {
         "rules_version": RULES_VERSION,
         "window_days": window_days,
@@ -247,12 +265,9 @@ def change_events_block(
         "counts_by_type": by_type,
         "documents_considered": classified.get("considered", 0),
         "documents_undated": classified.get("undated", 0),
-        "note": (
-            "Change events read from the issuer's own held disclosures (titles, by rule) "
-            "and from SEC Form 4 open-market purchases. A title-derived event is the "
-            "issuer's announcement, not the regulator's register; an event is a reason "
-            "to look, not a conclusion."
-        ),
+        "corporate_actions": actions,
+        "corporate_actions_lookup": dict(corporate.get("lookup") or {}) if corporate else None,
+        "note": note,
     }
 
 

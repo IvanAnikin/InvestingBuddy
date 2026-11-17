@@ -740,6 +740,11 @@ report's consolidated XBRL statements as facts. It costs one more request per re
 (about 18 s measured), plus one for the fiscal year-end month on an interim report. No
 migration is needed.
 
+`V3_OPENDART_MAJOR_MATTERS_ENABLED` (default on, slice 11.3c, ADR-102) adds a Korean
+issuer's major-matters decisions to the change-events block. Each run makes one listing
+request plus one per decision type filed (at most 10). It reads held corp codes only, so
+run the corp-code refresh first. No migration is needed.
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

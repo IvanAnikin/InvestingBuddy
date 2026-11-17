@@ -52,6 +52,51 @@ export function ChangeEventsSection({ block }: { block: ChangeEventsBlock | null
           </table>
         </div>
       )}
+      {block.actions.length > 0 && (
+        <div className="mt-3 max-w-full overflow-x-auto" data-testid="corporate-actions">
+          <p className="text-xs font-semibold text-[color:var(--ib-ink-2)]">
+            Corporate actions (major-matters reports)
+          </p>
+          <table className="mt-1 w-full min-w-[560px] text-left text-sm">
+            <thead className={muted}>
+              <tr>
+                <th className={cell}>Filed</th>
+                <th className={cell}>Action</th>
+                <th className={cell}>Terms as stated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {block.actions.map((a, i) => (
+                <tr key={`${a.receiptNo ?? a.kind}-${i}`}
+                    className="border-t border-[color:var(--ib-line)]">
+                  <td className={`${cell} whitespace-nowrap`}>{a.date ?? "—"}</td>
+                  <td className={`${cell} [overflow-wrap:anywhere]`}>
+                    {a.url ? (
+                      <a href={a.url} target="_blank" rel="noopener noreferrer"
+                         className="underline">
+                        {a.label ?? a.kind}
+                      </a>
+                    ) : (
+                      (a.label ?? a.kind)
+                    )}
+                  </td>
+                  <td className={`${cell} min-w-0 [overflow-wrap:anywhere] ${muted}`}>
+                    {a.terms.length > 0
+                      ? a.terms.map((t) => `${t.name}: ${t.value}`).join(" · ")
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {block.actionsSource && (
+            <p className={`mt-1 ${muted}`}>
+              {block.actionsSource}
+              {block.actionsTruncated && " (bounded: not every filing was read)"}.
+            </p>
+          )}
+        </div>
+      )}
       {block.clusters.map((c, i) => (
         <div key={`cluster-${i}`} className="mt-3 text-sm text-[color:var(--ib-ink-2)]"
              data-testid="insider-cluster">

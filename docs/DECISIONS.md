@@ -10585,3 +10585,21 @@ Both are right for what they were built against: free text from web pages and LL
 - Filings held before this slice are not re-read. Their statement facts arrive with the issuer's next periodic report.
 - Flag `V3_OPENDART_STATEMENTS_ENABLED` (default on; needs `OPENDART_API_KEY`).
 
+## ADR-102: Korean Major-Matters Decisions Are Typed Corporate Actions, Not Forced Onto the Event-Trigger Vocabulary
+
+**Date:** 2026-11-17 · **Status:** Accepted (V3.20 slice 11.3c; V3 line, not deployed)
+**Trigger:** the change-events rules (slice 6.2) read English titles, so a Korean issuer's major-matters reports (capital increases, bond issues, buybacks, asset and stake deals, mergers, distress) produced no event. OpenDART serves the typed fields of each decision type from its own endpoint.
+
+### Decision
+1. **Corporate actions are their own list.** The report's change-events block gains `corporate_actions`: the kind, the filing date and receipt, the viewer address, and the decision's typed terms (amounts in won, the ratios the issuer states, ISO dates, English enums). It also gains `corporate_actions_lookup`. None of the ten `event_trigger` types fits a capital increase, a buyback or a merger, so none is forced onto one.
+2. **One faithful mapping.** A bond issue (convertible, with warrants, or exchangeable) whose stated use of funds includes debt repayment is a `maturity_refinanced` change event, beside the title-derived ones. Equity raised to repay debt is not.
+3. **Bounded requests.** One `list.json` request lists the issuer's major-matters filings in the 180-day window. Only the decision types named there are read, one endpoint each, at most 10 per run. Identity comes from HELD corp codes only; this step never downloads the corp-code list.
+4. **Each action cites its own receipt.** A structured row can carry a later receipt than the listed filing, because a decision can be re-filed. A row of another `corp_code` is dropped.
+5. **No private individuals.** A counterparty or target is named only when its name carries a company marker. Otherwise it is `individual_or_unnamed`. A lawsuit's plaintiff is never carried.
+6. **Stated, not derived.** No dilution or ratio is computed. The block passes the report safety gate as it stands, and a test scans every decision type.
+
+### Consequences
+- A Korean issuer's change-events block now shows its financing and capital actions, the main change signals for KOSDAQ small caps.
+- Each run costs one request, plus one per decision type filed (about 5–6 s measured).
+- Flag `V3_OPENDART_MAJOR_MATTERS_ENABLED` (default on). It needs `OPENDART_API_KEY`, a held corp code and `V3_CHANGE_EVENTS_ENABLED`.
+

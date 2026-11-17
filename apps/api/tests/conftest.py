@@ -257,6 +257,12 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
         return Form4Report(cik=cik, notes=["offline test"])
 
     monkeypatch.setattr(change_events_step, "_live_form4", _no_form4)
+
+    # V3.20 slice 11.3c: nor OpenDART's major-matters endpoints.
+    async def _no_dart(url: str, **_kw: object) -> tuple[None, None, str]:
+        return None, None, "offline_test"
+
+    monkeypatch.setattr(change_events_step, "_live_dart_getter", _no_dart)
     # V3.20 slice 8.5: nor SEC companyconcept for the financial-depth block.
     from app.services.pipeline import financial_depth_step
 

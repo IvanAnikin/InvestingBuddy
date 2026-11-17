@@ -8,6 +8,10 @@ Two inputs, each behind its own flag:
 * ``V3_INSIDER_CLUSTERS_ENABLED`` — read the issuer's Form 4 filings from EDGAR (one
   submissions request plus up to ``MAX_FORM4_FILINGS`` documents, research User-Agent,
   SEC rate limiter) and detect open-market purchase clusters. Needs a CIK.
+* ``V3_OPENDART_MAJOR_MATTERS_ENABLED`` (with change events on) — a Korean issuer's
+  typed major-matters decisions from OpenDART (``opendart_major_matters``): one listing
+  request, then one request per decision type the issuer filed. Needs the key and a
+  HELD corp code.
 
 Returns ``None`` when off or when nothing was found, so every other report is
 byte-identical. Never raises.
@@ -22,6 +26,11 @@ from typing import Any
 from app.services.discovery.change_events import change_events_block, events_from_documents
 
 logger = logging.getLogger(__name__)
+
+
+#: The OpenDART transport for major-matters reads (V3.20 11.3c). ``None`` = the real
+#: guarded transport; ``tests/conftest.py`` replaces it with an offline one.
+_live_dart_getter: Any = None
 
 
 async def _live_form4(cik: str, today: date) -> Any:  # pragma: no cover - network seam
@@ -57,9 +66,20 @@ async def insider_section(session: Any, company: Any, *, today: date,
     }
 
 
+async def corporate_section(session: Any, company: Any, *, cfg: Any, today: date,
+                            getter: Any = None) -> dict[str, Any] | None:
+    """A Korean issuer's typed major-matters decisions, or ``None`` when not applicable."""
+    from app.services.discovery.change_events import WINDOW_DAYS
+    from app.services.sources.disclosures.opendart_major_matters import corporate_actions
+
+    return await corporate_actions(session, company, cfg=cfg, today=today,
+                                   window_days=WINDOW_DAYS,
+                                   getter=getter or _live_dart_getter)
+
+
 async def change_events_section(
     session: Any, company: Any, *, cfg: Any, today: date | None = None,
-    form4_lookup: Any = None,
+    form4_lookup: Any = None, dart_getter: Any = None,
 ) -> dict[str, Any] | None:
     """The report's "Change events" block, or ``None`` when off / empty / on failure."""
     docs_on = getattr(cfg, "v3_change_events_enabled", False)
@@ -70,22 +90,29 @@ async def change_events_section(
     classified: dict[str, Any] = {"events": [], "negated": [], "considered": 0,
                                   "undated": 0}
     insider: dict[str, Any] | None = None
+    corporate: dict[str, Any] | None = None
     try:
         if docs_on:
             from app.services.pipeline.document_coverage import current_inventory
 
             inventory = await current_inventory(session, company.id)
             classified = events_from_documents(inventory or [], today=today)
+            try:
+                corporate = await corporate_section(session, company, cfg=cfg, today=today,
+                                                    getter=dart_getter)
+            except Exception:  # noqa: BLE001 - one input, never the block
+                logger.warning("OpenDART major-matters lookup failed")
         if insider_on:
             try:
                 insider = await insider_section(session, company, today=today,
                                                 lookup=form4_lookup)
             except Exception:  # noqa: BLE001 - one input, never the block
                 logger.warning("Form 4 insider lookup failed")
-        return change_events_block(classified=classified, insider=insider)
+        return change_events_block(classified=classified, insider=insider,
+                                   corporate=corporate)
     except Exception:  # noqa: BLE001 - an additive block never costs the report
         logger.warning("change events failed")
         return None
 
 
-__all__ = ["change_events_section", "insider_section"]
+__all__ = ["change_events_section", "corporate_section", "insider_section"]

@@ -1175,6 +1175,12 @@ class Settings(BaseSettings):
     # XBRL) become statement facts of that document, tied to its receipt number. One
     # extra request per periodic report; off → only the text reading.
     v3_opendart_statements_enabled: bool = True
+    # V3.20 slice 11.3c — the issuer's major-matters decisions (capital increases, bond
+    # issues, buybacks, asset / stake deals, mergers, distress) read from OpenDART's typed
+    # endpoints into the report's change-events block as corporate actions. Only the
+    # decision types the issuer's own listing names are read; needs the key, a HELD corp
+    # code and ``V3_CHANGE_EVENTS_ENABLED``.
+    v3_opendart_major_matters_enabled: bool = True
     # Documents secured per research run before the questions are asked. Each is one
     # fetch and one extraction; the latest annual report alone can be 80 pages.
     v3_disclosure_core_max_documents: int = 5
