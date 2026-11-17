@@ -1466,6 +1466,7 @@ async def _run(
             challenges=outcome.challenges or None,
             self_critique_enabled=bool(getattr(cfg, "v3_self_critique_enabled", False)),
             demand_plans=await _demand_plans(session, cfg=cfg, layers_block=electricity_layers),
+            translated_citations_enabled=bool(getattr(cfg, "v3_translation_enabled", False)),
         )
         outcome.professional_research = report
         await _mark_researched(session, company, cfg=cfg, change_events=change_events)
@@ -1947,6 +1948,7 @@ async def _professional_report(
     challenges: dict[str, Any] | None = None,
     self_critique_enabled: bool = False,
     demand_plans: tuple[list[dict[str, Any]], list[str]] | None = None,
+    translated_citations_enabled: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -2194,6 +2196,12 @@ async def _professional_report(
                 report, challenges, report.get("verdict"))
         except Exception:  # noqa: BLE001 - an additive block never costs the report
             logger.warning("self-critique failed")
+    if translated_citations_enabled:
+        # V3.20 slice 10.2: each cited non-English passage, original (the evidence) and
+        # held English translation, for the reader. After the editor; read-only.
+        block = await _translated_citations(session, report)
+        if block:
+            report["translated_citations"] = block
     hits = _report_safety_hits(report)
     if hits:
         # Every component was screened; a hit here is in text this module composed or a
@@ -2205,6 +2213,48 @@ async def _professional_report(
             f"{len(hits)} passage(s) ({where})"
         )
     return report, None
+
+
+def _cited_evidence_ids(report: Any) -> list[str]:
+    """Every ``evidence_id`` / ``evidence_ids`` value in the report, in order."""
+    found: list[str] = []
+    stack: list[Any] = [report]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "evidence_ids" and isinstance(value, list):
+                    found.extend(str(v) for v in value if isinstance(v, str))
+                elif key == "evidence_id" and isinstance(value, str):
+                    found.append(value)
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+    return list(dict.fromkeys(found))
+
+
+async def _translated_citations(session: Any, report: dict[str, Any]) -> list[dict[str, Any]]:
+    """V3.20 slice 10.2 — the cited non-English passages with their translations. The
+    source text is screened like every quote the report carries. Never raises."""
+    try:
+        from app.schemas.catalyst import neutralize_forbidden_terms
+        from app.services.corpus.retrieval import EVIDENCE_ID_PREFIX
+        from app.services.corpus.translation import citation_translations
+
+        ids = [i for i in _cited_evidence_ids(report) if i.startswith(EVIDENCE_ID_PREFIX)]
+        if not ids:
+            return []
+        async with session.begin_nested():
+            block = await citation_translations(session, ids)
+        for row in block:
+            for key in ("original", "translation"):
+                if row.get(key):
+                    row[key] = neutralize_forbidden_terms(row[key])
+        return block
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        logger.warning("translated citations failed")
+        return []
 
 
 #: Top-level report blocks whose typed fields the gate allows by path (ADR-098 §3,

@@ -2085,6 +2085,23 @@ function professionalResearchPayload() {
   business.findings[0].evidence_ids.push(
     "ev:issuer_filing:https://www.sec.gov/Archives/edgar/data/1001838/000100183826000012/scco-20251231x10k.htm#item7-segment-net-sales-by-product",
   );
+  // V3.20 slice 10.2 — the cited passage of F2 is Spanish: the producer
+  // (`corpus/translation.citation_translations`) attaches the original and the held
+  // machine translation, figures in English notation.
+  payload.translated_citations = [
+    {
+      evidence_id: "ev:a",
+      language: "es",
+      language_name: "Spanish",
+      original: "El cobre representó el 78 % de las ventas netas de 2025.",
+      original_truncated: false,
+      page_start: 41,
+      translation: "Copper accounted for 78 % of 2025 net sales.",
+      translation_note:
+        "Machine translation (Azure OpenAI) of the original-language text, for reading and search only. The original is the evidence: quotes and figures are checked against it.",
+      translation_model: "gpt-test",
+    },
+  ];
   return payload;
 }
 

@@ -69,11 +69,96 @@ def _digit_runs(text: str) -> list[str]:
 
 
 def figures_preserved(original: str, translation: str, *, language: str | None) -> bool:
-    """Every number of the original, and no other, appears in the translation."""
+    """Every number of the original, and no other, appears in the translation.
+
+    Slice 10.2: for a decimal-comma language every number must also keep its
+    separators (``1.234,5`` stays ``1.234,5``). The translation is read by the SOURCE
+    language's notation (``normalise_translation_figures``), so a reply that converted
+    ``1.234,5`` to ``1,234.5`` would be read as 1.2345 — it is refused instead."""
+    from app.services.sources.locale_figures import DECIMAL_COMMA_LANGUAGES, number_tokens
+
     a, b = _digit_runs(original), _digit_runs(translation)
+    if language in DECIMAL_COMMA_LANGUAGES:
+        return Counter(a) == Counter(b) and (
+            Counter(number_tokens(original)) == Counter(number_tokens(translation)))
     if Counter(a) == Counter(b):
         return True
     return bool(language in CJK and "".join(a) == "".join(b))
+
+
+#: Characters of each side a report citation carries (the chunk itself is <= 2,000).
+CITATION_CHARS = 2_400
+#: Cited non-English evidence items a report carries.
+MAX_CITATIONS = 60
+
+
+def reading_translation(chunk_or_translation: Any) -> dict[str, Any] | None:
+    """A held translation as an English reader is shown it: figures in English notation
+    (``normalise_translation_figures``) and the note that the original is the evidence.
+    ``None`` when there is no translation."""
+    from app.services.sources.locale_figures import normalise_translation_figures
+
+    text = (getattr(chunk_or_translation, "translation_text", None)
+            or getattr(chunk_or_translation, "translated_text", None))
+    if not text:
+        return None
+    language = (getattr(chunk_or_translation, "translation_language", None)
+                or getattr(chunk_or_translation, "source_language", None)
+                or getattr(chunk_or_translation, "language", None))
+    return {"text": normalise_translation_figures(str(text), language),
+            "source_language": language, "target_language": TARGET,
+            "note": MACHINE_TRANSLATION_NOTE}
+
+
+async def citation_translations(
+    session: Any, evidence_ids: "list[str]", *, limit: int = MAX_CITATIONS,
+) -> list[dict[str, Any]]:
+    """V3.20 slice 10.2 — each cited NON-English corpus chunk: the original passage (the
+    evidence) and, when a current one is held, its English translation.
+
+    Read-only; English chunks and unknown ids are left out. The translation is used only
+    while the original's SHA-256 still matches."""
+    from sqlalchemy import select
+
+    from app.models.research_chunk import ResearchDocumentChunk as C
+    from app.models.research_chunk_translation import STATUS_TRANSLATED
+    from app.models.research_chunk_translation import ResearchChunkTranslation as T
+    from app.services.corpus.retrieval import chunk_id_from_evidence_id, evidence_id_for
+    from app.services.sources.language import language_name
+
+    wanted = list(dict.fromkeys(chunk_id_from_evidence_id(e) for e in evidence_ids if e))
+    if not wanted:
+        return []
+    rows = list((await session.execute(
+        select(C, T).outerjoin(T, (T.chunk_row_id == C.id) & (T.target_language == TARGET)
+                               & (T.status == STATUS_TRANSLATED))
+        .where(C.chunk_id.in_(wanted[:500])))).all())
+    by_chunk: dict[str, tuple[Any, Any]] = {}
+    for chunk, translation in rows:
+        by_chunk.setdefault(chunk.chunk_id, (chunk, translation))
+    out: list[dict[str, Any]] = []
+    for chunk_id in wanted:
+        if len(out) >= limit or chunk_id not in by_chunk:
+            continue
+        chunk, translation = by_chunk[chunk_id]
+        language = (chunk.language or "").lower() or None
+        if language in (None, TARGET):
+            continue
+        if translation is not None and translation.original_sha256 != sha256_text(chunk.text):
+            translation = None  # the original changed since: not a translation of it
+        shown = reading_translation(translation) if translation is not None else None
+        out.append({
+            "evidence_id": evidence_id_for(chunk_id),
+            "language": language,
+            "language_name": language_name(language),
+            "original": (chunk.text or "")[:CITATION_CHARS],
+            "original_truncated": len(chunk.text or "") > CITATION_CHARS,
+            "page_start": chunk.page_start,
+            "translation": (shown["text"][:CITATION_CHARS] if shown else None),
+            "translation_note": MACHINE_TRANSLATION_NOTE if shown else None,
+            "translation_model": getattr(translation, "model", None) if shown else None,
+        })
+    return out
 
 
 def _system(source: str, nonce: str) -> str:
@@ -270,7 +355,18 @@ async def translate_company_documents(
     return [await translate_version(session, r[0], cfg=cfg, client=client) for r in rows]
 
 
-__all__ = ["CJK", "MACHINE_TRANSLATION_NOTE", "PROMPT_VERSION", "PUBLIC_ACCESS_CLASSES",
-           "TARGET",
-           "figures_preserved", "sha256_text", "translate_company_documents",
-           "translate_version"]
+__all__ = [
+    "CITATION_CHARS",
+    "CJK",
+    "MACHINE_TRANSLATION_NOTE",
+    "MAX_CITATIONS",
+    "PROMPT_VERSION",
+    "PUBLIC_ACCESS_CLASSES",
+    "TARGET",
+    "citation_translations",
+    "figures_preserved",
+    "reading_translation",
+    "sha256_text",
+    "translate_company_documents",
+    "translate_version",
+]

@@ -263,7 +263,7 @@ def validate_search_company_corpus(arguments: dict[str, Any]) -> dict[str, Any]:
 def _hit_payload(result: Any) -> dict[str, Any]:
     """One hit, citation-complete, with the text labelled rather than sanitised."""
     reference = result.reference
-    return {
+    payload = {
         # The stable evidence id, so a finding can cite this span and the citation
         # survives a reindex and a reprocess (slice 1.6).
         "evidence_id": reference.evidence_id,
@@ -298,6 +298,17 @@ def _hit_payload(result: Any) -> dict[str, Any]:
         "origin_key": reference.origin_key,
         "injection_suspect": bool(reference.injection_suspect),
     }
+    language = (reference.language or "").lower()
+    if language and language != "en":
+        # V3.20 slice 10.2: a non-English passage says so, and carries the English
+        # reading when one is held (figures in English notation). ``text`` stays the
+        # original: it is what a finding quotes and what is checked. English hits are
+        # unchanged.
+        payload["language"] = language
+        translation = getattr(result, "translation", None)
+        if translation:
+            payload["translation"] = translation
+    return payload
 
 
 #: ADR-094 — the same citation-complete hit shape, for the pipeline's gap re-read.

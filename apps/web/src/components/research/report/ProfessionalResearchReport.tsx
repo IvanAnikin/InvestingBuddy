@@ -1,3 +1,5 @@
+import type { TranslatedCitation } from "@/components/research/translatedCitations";
+import TranslatedCitations from "@/components/research/report/TranslatedCitations";
 import type { ReactNode } from "react";
 import Surface from "@/components/product/Surface";
 import RelationshipSection from "@/components/research/report/RelationshipSection";
@@ -338,11 +340,13 @@ function FindingItem({
   sectionTitle,
   anchored,
   labelsById,
+  translatedCitations,
 }: {
   finding: ProfessionalFinding;
   sectionTitle: string;
   anchored: Set<string>;
   labelsById: Record<string, string>;
+  translatedCitations: Record<string, TranslatedCitation>;
 }) {
   const sources = finding.sourceKinds.map(words).join(", ");
   // Open-web W4: a leading "[single source]" / "[company says]" is the finding's trust
@@ -448,6 +452,7 @@ function FindingItem({
             {finding.calculationIds.length > 0 &&
               ` · calculation ${finding.calculationIds.join(", ")}`}
           </p>
+          <TranslatedCitations evidenceIds={finding.evidenceIds} citations={translatedCitations} />
           {references.length > 0 && (
             <p className="mt-1 text-xs text-[color:var(--ib-ink-3)]">
               Refers to <FindingRefs labels={references} anchored={anchored} />
@@ -774,11 +779,13 @@ function DomainBody({
   anchored,
   labelsById,
   webDevelopments,
+  translatedCitations,
 }: {
   section: DomainSection;
   anchored: Set<string>;
   labelsById: Record<string, string>;
   webDevelopments: CatalystWebItem[];
+  translatedCitations: Record<string, TranslatedCitation>;
 }) {
   return (
     <>
@@ -794,6 +801,7 @@ function DomainBody({
               sectionTitle={section.title}
               anchored={anchored}
               labelsById={labelsById}
+              translatedCitations={translatedCitations}
             />
           ))}
         </ul>
@@ -1236,6 +1244,7 @@ export default function ProfessionalResearchReport({
               anchored={anchored}
               labelsById={report.findingLabels}
               webDevelopments={webDevelopments}
+              translatedCitations={report.translatedCitations}
             />
           )}
         </SectionCard>

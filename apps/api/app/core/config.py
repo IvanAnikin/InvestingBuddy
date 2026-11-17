@@ -1493,7 +1493,10 @@ class Settings(BaseSettings):
     # document chunks are machine-translated (Azure OpenAI; operator job
     # scripts/translate_corpus.py) into research_chunk_translations, and corpus search
     # also matches the English text — citations and figure checks stay on the original.
-    v3_translation_enabled: bool = False
+    # Slice 10.2 turns it on: search, agent hits and the report's translated citations
+    # read the held translations. Nothing schedules the translation job, so on its own
+    # this spends nothing; the operator script is what calls Azure OpenAI.
+    v3_translation_enabled: bool = True
     v3_translation_max_chunks_per_document: int = 400
     # V3.20 slice 7.3: "Demand triangulation" (business_model) — do the named customers
     # publish active grid projects in the subject's technology? A read of the held grid

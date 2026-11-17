@@ -38,6 +38,7 @@ from app.services.corpus.translation import (
     translate_version,
 )
 from app.services.sources.language import detect_document_language
+from app.services.sources.locale_figures import normalise_translation_figures
 from tests.test_v3_postgres_search_backend import (  # noqa: F401 - fixtures by name
     _corpus_chain,
     _corpus_chunk,
@@ -158,9 +159,10 @@ class TestFiguresPreserved:
         assert not figures_preserved(DE_2, EN_2 + " (2024: 400)", language="de")
 
     def test_a_converted_separator_fails(self) -> None:
-        # "1.234" became "1,234": still digits 1 and 234, so the RUNS match — which is
-        # the point: the check is on digits, the separators are 10.2's normaliser.
-        assert figures_preserved("1.234 Mio. EUR", "EUR 1,234 million", language="de")
+        # Slice 10.2: the translation is read by the SOURCE notation, so "1.234" turned
+        # into "1,234" would be read as 1.234 — refused, though the digits match.
+        assert figures_preserved("1.234 Mio. EUR", "EUR 1.234 million", language="de")
+        assert not figures_preserved("1.234 Mio. EUR", "EUR 1,234 million", language="de")
         assert not figures_preserved("1.234 Mio. EUR", "EUR 1234 million", language="de")
 
     def test_cjk_may_regroup_digits_but_not_change_them(self) -> None:
@@ -293,9 +295,10 @@ class TestTranslateVersion:
 
 
 class TestFlag:
-    def test_the_flag_is_off_by_default_and_gives_no_client(self) -> None:
-        cfg = Settings(azure_openai_api_key="k", azure_openai_endpoint="https://e.example")
-        assert cfg.v3_translation_enabled is False
+    def test_the_flag_off_gives_no_client(self) -> None:
+        # Slice 10.2 turned the default on (the read path); off still means no client.
+        cfg = Settings(azure_openai_api_key="k", azure_openai_endpoint="https://e.example",
+                       v3_translation_enabled=False)
         assert translation_client_for(cfg) is None
 
     def test_on_without_azure_settings_still_gives_no_client(self) -> None:
@@ -306,8 +309,8 @@ class TestFlag:
     def test_the_factory_passes_the_flag_to_the_postgres_backend(self, db) -> None:
         on = get_search_backend(Settings(v3_search_backend="postgres",
                                          v3_translation_enabled=True), session=db)
-        off = get_search_backend(Settings(v3_search_backend="postgres"),
-                                 session=db)
+        off = get_search_backend(Settings(v3_search_backend="postgres",
+                                          v3_translation_enabled=False), session=db)
         assert isinstance(on, PostgresSearchBackend) and on._translations_enabled
         assert isinstance(off, PostgresSearchBackend) and not off._translations_enabled
 
@@ -334,7 +337,9 @@ class TestMemorySearch:
         assert hits[0].chunk.text == DE_1  # the evidence is the original
         assert "dividend" in hits[0].matched_terms
         translation = _translation_of(hits[0].chunk)
-        assert translation == {"text": EN_1, "source_language": "de",
+        # Slice 10.2: the reader's copy has its figures in English notation.
+        assert translation == {"text": normalise_translation_figures(EN_1, "de"),
+                               "source_language": "de",
                                "target_language": "en", "note": MACHINE_TRANSLATION_NOTE}
 
     async def test_without_a_translation_english_does_not_find_it(self) -> None:
