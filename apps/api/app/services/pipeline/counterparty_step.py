@@ -35,8 +35,27 @@ MODEL_TIMEOUT = 90
 
 
 async def _model_reply(client: Any, system: str, user: str) -> Any:
-    return await client.complete_json(system, user, max_tokens=MODEL_MAX_TOKENS,
-                                      temperature=0.0, timeout=MODEL_TIMEOUT)
+    """The model's JSON reply, from either client shape the router can hand over.
+
+    Live finding 2026-11-21 (POWL1): the investigator slot resolves to a V3 provider
+    client, which has ``complete(..., json_mode=)`` returning a ``ModelResponse`` and no
+    ``complete_json``. Calling ``complete_json`` unconditionally raised AttributeError on
+    every live run, so no named counterparty was ever read. Same two shapes as the
+    Investigator and the report editor handle.
+    """
+    if client is None:
+        raise RuntimeError("no model client resolved for the investigator slot")
+    if hasattr(client, "complete_json"):
+        return await client.complete_json(system, user, max_tokens=MODEL_MAX_TOKENS,
+                                          temperature=0.0, timeout=MODEL_TIMEOUT)
+    from app.services.agents.investigator import _supports_json_mode
+
+    extra: dict[str, Any] = {"json_mode": True} if _supports_json_mode(client) else {}
+    response = await client.complete(system=system, user=user,
+                                     max_tokens=MODEL_MAX_TOKENS, timeout=MODEL_TIMEOUT,
+                                     **extra)
+    payload = getattr(response, "payload", None)
+    return payload if isinstance(payload, dict) else {}
 
 
 async def _candidate_rows(session: Any, company_id: Any) -> list[Any]:

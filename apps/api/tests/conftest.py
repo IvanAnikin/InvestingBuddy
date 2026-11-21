@@ -223,6 +223,18 @@ def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(relationship_step, "_live_annual_ixbrl", _no_annual)
 
+    # V3.20 live wave A: nor SEC's ticker index or submissions for the identity step. A
+    # test that means to exercise it passes its own ``provider`` and ``fetch``.
+    class _NoSecIndex:
+        async def resolve_cik(self, ticker: str, exchange: object = None) -> str:
+            raise ValueError("offline test")
+
+    async def _no_submissions(url: str, accept: str) -> tuple[int, None]:
+        return 404, None
+
+    monkeypatch.setattr(relationship_step, "_sec_cik_provider", lambda: _NoSecIndex())
+    monkeypatch.setattr(relationship_step, "_sec_fetch", _no_submissions)
+
     # V3.20 slice 2.5: the held-document counterparty step spends a model call, and the
     # pipeline suites script their clients' calls one by one. Off unless a test calls the
     # real function (``tests/test_v3_20_2_5_text_counterparties.py`` imports it directly).

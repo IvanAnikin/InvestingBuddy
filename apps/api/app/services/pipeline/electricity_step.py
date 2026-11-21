@@ -22,6 +22,59 @@ logger = logging.getLogger(__name__)
 
 #: Segment revenue facts read per company.
 MAX_SEGMENT_FACTS = 400
+#: The annual report's business section is read in at most this many prose chunks.
+MAX_BUSINESS_CHUNKS = 12
+_ANNUAL_TYPES = ("annual_report", "sec_filing")
+_PRIMARY_TIER = "T1_primary_filing"
+
+
+async def _business_section_texts(session: Any, company_id: Any) -> list[CitedText]:
+    """The company's latest held annual report, business section first.
+
+    V3.20 live wave A (2026-11-21): the classifier read only ``company.description``
+    and segment-revenue facts. Neither exists for most companies (Powell Industries and
+    Preformed Line Products both had an empty description), so the electricity layer was
+    never assigned. The annual report the run already holds says what the company does,
+    in its own words: chunks whose section heading names the business, else the first
+    chunks of the document. Cited by the document's URL and date.
+    """
+    from sqlalchemy import select
+
+    from app.models.research_chunk import CHUNK_KIND_PROSE, ResearchDocumentChunk
+    from app.models.research_document import ResearchDocumentVersion
+
+    chunk = ResearchDocumentChunk
+    base = (
+        select(chunk.text, chunk.section_path, chunk.ordinal, chunk.published_at,
+               chunk.research_document_version_id,
+               ResearchDocumentVersion.canonical_url, ResearchDocumentVersion.title)
+        .join(ResearchDocumentVersion,
+              ResearchDocumentVersion.id == chunk.research_document_version_id)
+        .where(chunk.company_id == company_id, chunk.source_tier == _PRIMARY_TIER,
+               chunk.kind == CHUNK_KIND_PROSE, chunk.document_type.in_(_ANNUAL_TYPES))
+    )
+    async with session.begin_nested():
+        latest = (await session.execute(
+            base.with_only_columns(chunk.research_document_version_id)
+            .order_by(chunk.published_at.desc().nulls_last()).limit(1)
+        )).scalar_one_or_none()
+        if latest is None:
+            return []
+        in_doc = base.where(chunk.research_document_version_id == latest)
+        rows = (await session.execute(
+            in_doc.where(chunk.section_path.ilike("%business%"))
+            .order_by(chunk.ordinal).limit(MAX_BUSINESS_CHUNKS))).all()
+        if not rows:
+            rows = (await session.execute(
+                in_doc.order_by(chunk.ordinal).limit(MAX_BUSINESS_CHUNKS))).all()
+    return [
+        CitedText(
+            text=str(text), source_kind="annual_report_business_section",
+            source_url=url or None,
+            as_of=published.isoformat()[:10] if published is not None else None,
+            label=str(title or "Annual report") + (f" — {section}" if section else ""))
+        for text, section, _ordinal, published, _version, url, title in rows if text
+    ]
 
 NOTE = (
     "Layers of the electricity stack assigned from the company's own description and "
@@ -47,6 +100,11 @@ async def load_inputs(session: Any, company: Any) -> tuple[list[CitedText], list
             source_url=getattr(company, "website", None) or None,
             as_of=updated.date().isoformat() if updated is not None else None,
             label="Stored company description"))
+
+    try:
+        texts.extend(await _business_section_texts(session, company.id))
+    except Exception:  # noqa: BLE001 - the description and segments still classify
+        logger.warning("electricity business-section read failed")
 
     stmt = (
         select(ExtractedFact.id, ExtractedFact.scope_name, ExtractedFact.value_numeric,

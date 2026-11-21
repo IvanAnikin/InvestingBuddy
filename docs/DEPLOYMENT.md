@@ -729,6 +729,8 @@ The operator entry point is `python scripts/backfill_entity_master.py`.
 - Run it once after a deploy that adds companies, and before any N-PORT or
   issuer-holdings ingest. Their targets are the ISIN identifiers and the LEIs of linked
   entities, which research runs record once a company is linked.
+- Companies created from manual-ticker discovery are new rows, so they need the backfill too. Run it before their first research run; otherwise the run reads `entity_unresolved`.
+  After the backfill, the run's SEC identity step (ADR-105) stores the CIK and replaces a ticker-only name with the SEC registrant name. The run's outcome reports this under `relationships.sec_identity`.
 
 ### Japan EDINET filings (V3.20 slice 11.2 — V3 line, not deployed)
 

@@ -627,9 +627,15 @@ async def _run(
     if getattr(cfg, "v3_entity_master_enabled", False):
         from app.services.pipeline.relationship_step import (
             gleif_parents_step,
+            sec_identity_step,
             sec_relationships_step,
         )
 
+        # V3.20 live wave A — the SEC CIK onto the entity (and the SEC's name in place of
+        # a ticker-only one) BEFORE the GLEIF lookup, which matches on the legal name.
+        identity = await sec_identity_step(session, company, cfg=cfg)
+        if identity:
+            outcome.relationships["sec_identity"] = identity
         gleif = (
             await gleif_parents_step(session, company, cfg=cfg)
             if getattr(cfg, "v3_gleif_parents_enabled", False) else {}

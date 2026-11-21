@@ -51,7 +51,7 @@ from app.services.entities.claims import (
     WithheldFinding,
 )
 from app.services.entities.identifiers import SCHEME_CIK, SCHEME_LEI
-from app.services.entities.master import normalize_entity_name
+from app.services.entities.master import legal_name_key
 
 GLEIF_SOURCE_ID = "gleif"
 SEC_SOURCE_ID = "sec_edgar"
@@ -183,10 +183,12 @@ class GleifIdentifierSource:
             )
             return result
 
-        wanted = normalize_entity_name(legal_name)
-        exact = [h for h in hits if normalize_entity_name(
-            getattr(h, "legal_name", "")
-        ) == wanted]
+        # Exact on the legal-name KEY: EDGAR's "/DE/" tag dropped and a trailing legal
+        # form spelled out on both sides ("... CORP" = "... CORPORATION"), nothing else
+        # (V3.20 live wave A, 2026-11-21). Several records equal after that still
+        # withhold below, exactly as before.
+        wanted = legal_name_key(legal_name)
+        exact = [h for h in hits if legal_name_key(getattr(h, "legal_name", "")) == wanted]
 
         if len(hits) > 1 and len(exact) != 1:
             # THE case this whole slice's protocol amendment exists for. Several
