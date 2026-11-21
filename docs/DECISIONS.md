@@ -10668,3 +10668,44 @@ Both are right for what they were built against: free text from web pages and LL
 - **Measured on the real files:** OCCTO gives 144 projects (70 under construction, 74 planned). CEA TBCB gives 96 projects and 345 elements, Rs 3,22,718 crore. CEA RTM gives 59 projects and 97 elements, Rs 23,462 crore, the report's own total.
 - **Coverage gaps:** Korea is not covered. India's planned (not yet awarded) schemes and Japan's capex are not covered.
 - **Flags:** `V3_GRID_PLANS_OCCTO_ENABLED` (on) and `V3_GRID_PLANS_CEA_ENABLED` (off). No migration.
+
+---
+
+## ADR-105: The SEC CIK Is Recorded During a Run, and an SEC Name Matches Its Registered Form
+
+**Date:** 2026-11-21 · **Status:** Accepted (V3.20 live corrective, wave A)
+**Trigger:** the first live V3.20 acceptance runs, POWL1 (report `749bee17`) and PLPC1 (report `c6479893`), completed, but most V3.20 sections came back empty. The causes were four live-only defects; every slice had been checked only against prepared data.
+
+### Findings
+1. **No step stored a CIK.**
+   - `SecIdentifierSource` was built in V3.2 and called by nothing.
+   - The run's promotion asked GLEIF only, with a query that carried no ticker.
+   - The SEC relationship step resolved a CIK live and never recorded it.
+   - So the earnings step, which reads the entity master, said `no_cik` for POWL in the same run that resolved POWL's CIK (80420).
+2. **Counterparties raised `AttributeError` on every live run.** The investigator slot resolves to a V3 provider client, which has `complete(..., json_mode=)` and no `complete_json`.
+3. **The electricity classifier had no input.**
+   - It read `company.description` (empty for both companies) and segment-revenue facts.
+   - SIC 3613 (switchgear) was unmapped.
+   - So POWL was unclassified, and no electricity playbook, layer section, grid triangulation or peer set applied.
+4. **A company created from a bare ticker kept the ticker as its name** (PLPC, AMSC, BW and PPSI from manual-ticker discovery run `66a35e6c`). The entity's legal name was then "PLPC", and GLEIF's exact-name LEI lookup could never match it.
+
+### Decision
+1. **`sec_identity_step`** runs before the GLEIF step.
+   - For an SEC-eligible listing whose entity holds no CIK, it asks `SecIdentifierSource` with the listing's ticker and exchange, through `promote_entity_identity` and the claims gate, unchanged.
+   - Once a CIK is held, a name that is only the ticker (`is_placeholder_company_name`) is replaced by the SEC's registrant name, on the company and on the entity. The name comes from `data.sec.gov/submissions`, with EDGAR's `/DE/` tag removed.
+   - A sourced name is never overwritten. A CIK already held is never asked for again.
+2. **The counterparty step accepts both client shapes**, the same way the Investigator and the report editor do.
+3. **The classifier also reads the latest held annual report.**
+   - It takes prose chunks whose section heading names the business, else the document's first chunks, at most 12.
+   - Each is cited by URL and date (`source_kind=annual_report_business_section`).
+   - SEC electrical-equipment codes map to "Electrical Equipment": 3357, 3610, 3612, 3613, 3620, 3621, 3640 and 3690. The 367x range stays Semiconductors, and household appliances and audio (3630, 3651) stay unmapped.
+4. **GLEIF's exact-name rule compares a legal-name key.**
+   - The key is the lookup-normalised name with EDGAR's trailing state tag removed and a trailing legal-form abbreviation spelled out on both sides (co, corp, inc, ltd, llc).
+   - The rest of the name must still be equal ("Pandora" ≠ "Pandora Media").
+   - Two records that are equal after folding are still withheld as ambiguous.
+
+### Consequences
+- **Order within a run:** the CIK, and for a stub the SEC name, are stored before GLEIF is asked. So the LEI lookup, passive ownership's denominator and earnings actuals can all succeed in the same run.
+- **CIK format:** the entity master keeps a CIK zero-padded to ten digits. Every consumer normalises it.
+- **No migration and no new flag.** The identity step runs under `V3_SEC_RELATIONSHIPS_ENABLED` and `V3_ENTITY_MASTER_ENABLED`.
+- **Not fixed here:** a non-US company whose name is a stub has no equivalent registrant source yet.

@@ -100,6 +100,35 @@ def normalize_entity_name(raw: str | None) -> str:
     return _WS_RE.sub(" ", text).strip()[:_NAME_MAX]
 
 
+#: EDGAR appends the state or country of incorporation to many conformed names
+#: ("AMERICAN SUPERCONDUCTOR CORP /DE/", "XYZ INC/MD"). It is an EDGAR marker, not a
+#: part of the legal name, and no registry's record contains it.
+_EDGAR_STATE_TAG_RE = re.compile(r"\s*/\s*[A-Za-z]{2,3}\s*/?\s*$")
+
+#: A trailing legal-form abbreviation and its long form. EDGAR abbreviates ("CO",
+#: "CORP"); GLEIF holds the registered form ("COMPANY", "CORPORATION"). Folded on BOTH
+#: sides and only in the LAST position, so "Co" inside a name is never touched.
+_LEGAL_FORM_LONG = {
+    "co": "company", "corp": "corporation", "inc": "incorporated",
+    "ltd": "limited", "llc": "limited liability company",
+}
+
+
+def strip_edgar_state_tag(raw: str | None) -> str:
+    """The name without EDGAR's trailing ``/DE/``-style incorporation marker."""
+    return _EDGAR_STATE_TAG_RE.sub("", (raw or "").strip()).strip()
+
+
+def legal_name_key(raw: str | None) -> str:
+    """A comparison key for two legal names: lookup-normalised, EDGAR tag removed and a
+    trailing legal-form abbreviation spelled out. Still an EXACT comparison of the rest
+    of the name — "Pandora" never equals "Pandora Media" — and never an identity."""
+    words = normalize_entity_name(strip_edgar_state_tag(raw)).split(" ")
+    if words and words[-1] in _LEGAL_FORM_LONG:
+        words[-1] = _LEGAL_FORM_LONG[words[-1]]
+    return " ".join(w for w in words if w)
+
+
 def venue_key_for(exchange: str | None) -> str:
     """The venue component of listing identity: the MIC where one exists.
 

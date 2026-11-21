@@ -67,7 +67,18 @@ _EXACT: dict[str, str] = {
     "3140": "Luxury Goods",       # Footwear (except rubber)
     # ── Electrical / industrial ──────────────────────────────────────────
     "3600": "Electrical Equipment",
-    "3612": "Electrical Equipment",
+    # V3.20 live wave A (2026-11-21): Powell Industries (SIC 3613, switchgear) came out
+    # unclassified, so the electricity playbook never applied. The SEC's electrical-
+    # equipment codes; 3670-3679 (electronic components) stay Semiconductors, and
+    # 3630 / 3651 (household appliances, audio) are deliberately absent.
+    "3357": "Electrical Equipment",  # Drawing & Insulating of Nonferrous Wire (cable)
+    "3610": "Electrical Equipment",  # Electronic & Other Electrical Equipment (No Computer Equip)
+    "3612": "Electrical Equipment",  # Power, Distribution & Specialty Transformers
+    "3613": "Electrical Equipment",  # Switchgear & Switchboard Apparatus
+    "3620": "Electrical Equipment",  # Electrical Industrial Apparatus
+    "3621": "Electrical Equipment",  # Motors & Generators
+    "3640": "Electrical Equipment",  # Electric Lighting & Wiring Equipment
+    "3690": "Electrical Equipment",  # Miscellaneous Electrical Machinery, Equipment & Supplies
     "1600": "Construction & Engineering",
     "1731": "Construction & Engineering",
     # ── Materials / energy ───────────────────────────────────────────────
