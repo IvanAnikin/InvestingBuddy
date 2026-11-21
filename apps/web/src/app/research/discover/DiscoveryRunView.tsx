@@ -70,6 +70,7 @@ const TERMINAL_JOB_STATUSES = new Set([
   "completed_with_warnings",
   "failed",
   "interrupted",
+  "cancelled",
 ]);
 
 function runStateLabel(run: DiscoveryRun): string {
@@ -85,6 +86,8 @@ function runStateLabel(run: DiscoveryRun): string {
       return "Complete, with warnings";
     case "failed":
       return "Failed";
+    case "cancelled":
+      return "Cancelled";
     default:
       return run.status;
   }
@@ -104,6 +107,8 @@ function jobStateLabel(status: string | undefined | null): string {
       return "Failed";
     case "interrupted":
       return "Interrupted";
+    case "cancelled":
+      return "Cancelled";
     default:
       return status ?? "";
   }
