@@ -132,6 +132,10 @@ async def load_statement_facts(session: Any, company_id: Any) -> list[dict[str, 
                 "excerpt_id": fact.table_location,
                 # ADR-092 review — 0 when read from the Group's primary statement.
                 "line_rank": fact.line_rank,
+                # ADR-092 addendum — who read it, so an older table read of a total line
+                # is withheld (see ``_read_before_line_selector``).
+                "document_pipeline_version": document.pipeline_version,
+                "extraction_method": fact.extraction_method,
                 "confidence": _confidence_bucket(float(fact.confidence or 0.0)),
                 "fact_id": str(fact.id),
                 "document_id": str(document.id),
@@ -183,6 +187,11 @@ WITHHELD_PERIOD_NOT_ENDED = "period_not_ended"
 #: issuer's statement tables (which agree among themselves) for the same line and
 #: period. Set aside: it neither fills the slot nor manufactures a conflict.
 WITHHELD_PROSE_DISAGREES_WITH_STATEMENT = "prose_disagrees_with_statement_table"
+#: ADR-092 addendum — a total line (or operating profit) a TABLE read by a pipeline older
+#: than the statement-line selector: it may be a component of the total ("Trade
+#: receivables and other current assets" held as current assets, measured on CFR4). It is
+#: not shown until the document is re-read; missing beats wrong.
+WITHHELD_READ_BEFORE_LINE_SELECTOR = "read_before_line_selector"
 
 _PERIOD_REASONS = frozenset(
     {WITHHELD_ANNUAL_PERIOD_NOT_ENDED, WITHHELD_ANNUAL_PERIOD_UNDATED, WITHHELD_PERIOD_NOT_ENDED}
@@ -708,6 +717,116 @@ def _annual_document_verdict(
     return None
 
 
+def _selector_fields() -> frozenset[str]:
+    from app.services.sources.statement_line_selector import (
+        FIELD_OPERATING_PROFIT,
+        TOTAL_LINE_ALIASES,
+    )
+
+    return frozenset(TOTAL_LINE_ALIASES) | {FIELD_OPERATING_PROFIT}
+
+
+def _read_before_line_selector(fact: dict[str, Any]) -> bool:
+    """A total line (or operating profit) read from a table by a pipeline older than the
+    statement-line selector. Judged only on a fact that carries its reader (the loader's
+    dicts); an inline-XBRL fact is read by its tag, never by a printed label."""
+    if "document_pipeline_version" not in fact:
+        return False
+    from app.services.sources.extraction_pipeline_version import (
+        STATEMENT_LINE_SELECTOR_MIN_VERSION,
+    )
+    from app.services.sources.inline_xbrl_facts import EXTRACTION_METHOD_INLINE_XBRL
+
+    if fact.get("field") not in _selector_fields():
+        return False
+    if fact.get("extraction_method") == EXTRACTION_METHOD_INLINE_XBRL:
+        return False
+    version = fact.get("document_pipeline_version")
+    return version is None or int(version) < STATEMENT_LINE_SELECTOR_MIN_VERSION
+
+
+#: How many held documents one run re-reads because an older pipeline read their totals.
+#: Each is one bounded re-fetch of the document's own address.
+MAX_STALE_STATEMENT_REREADS = 2
+
+
+async def reread_stale_statement_documents(
+    session: Any, company: Any, *, cfg: Any, extractor: Any = None
+) -> list[dict[str, Any]]:
+    """Re-read this company's held documents whose active total-line facts an older
+    pipeline read from a table (ADR-092 addendum), newest first, at most
+    :data:`MAX_STALE_STATEMENT_REREADS`. Uses the reuse path's own revalidation: one
+    re-fetch of the document's address, refused when the content changed, superseding the
+    active facts atomically. Returns one record per document tried. Never raises; a
+    document that cannot be re-read keeps its facts, which the statements view withholds.
+    """
+    company_id = getattr(company, "id", None)
+    if company_id is None or not getattr(cfg, "primary_document_ingestion_enabled", False):
+        return []
+    from sqlalchemy import or_, select
+
+    from app.models.extracted_document import ExtractedDocument, ExtractedFact
+    from app.services.extracted_document_service import _revalidate_document
+    from app.services.sources.company_documents import company_documents_clause
+    from app.services.sources.extracted_fact_validator import IssuerContext
+    from app.services.sources.extraction_pipeline_version import (
+        CURRENT_EXTRACTION_PIPELINE_VERSION,
+        STATEMENT_LINE_SELECTOR_MIN_VERSION,
+    )
+    from app.services.sources.inline_xbrl_facts import EXTRACTION_METHOD_INLINE_XBRL
+
+    try:
+        stale = (
+            await session.execute(
+                select(ExtractedDocument.id, ExtractedDocument.doc_date)
+                .join(ExtractedFact, ExtractedFact.extracted_document_id == ExtractedDocument.id)
+                .where(
+                    company_documents_clause(company_id),
+                    ExtractedDocument.status == "extracted",
+                    or_(ExtractedDocument.pipeline_version.is_(None),
+                        ExtractedDocument.pipeline_version
+                        < STATEMENT_LINE_SELECTOR_MIN_VERSION),
+                    ExtractedFact.is_active.is_(True),
+                    ExtractedFact.label.in_(sorted(_selector_fields())),
+                    ExtractedFact.extraction_method != EXTRACTION_METHOD_INLINE_XBRL,
+                )
+                .distinct()
+                .order_by(ExtractedDocument.doc_date.desc().nulls_last(),
+                          ExtractedDocument.id)
+                .limit(MAX_STALE_STATEMENT_REREADS)
+            )
+        ).all()
+        stale = list(stale)
+    except Exception:  # noqa: BLE001 - a re-read must not end the run; nothing was tried
+        return []
+    context = IssuerContext(
+        company_name=getattr(company, "name", None) or getattr(company, "company_name", None),
+        ticker=getattr(company, "ticker", None),
+    )
+    out: list[dict[str, Any]] = []
+    for doc_id, _date in stale:
+        record: dict[str, Any] = {"document_id": str(doc_id)}
+        try:
+            async with session.begin_nested():
+                doc = await session.get(ExtractedDocument, doc_id)
+                facts = (await session.execute(
+                    select(ExtractedFact).where(
+                        ExtractedFact.extracted_document_id == doc_id,
+                        ExtractedFact.is_active.is_(True),
+                    ))).scalars().all()
+                await _revalidate_document(
+                    session, doc, cfg=cfg, issuer_context=context,
+                    existing_active_facts=facts, primary_document_extractor=extractor,
+                )
+                version = doc.pipeline_version
+            record["outcome"] = ("reread" if version == CURRENT_EXTRACTION_PIPELINE_VERSION
+                                 else "not_reread")
+        except Exception as exc:  # noqa: BLE001
+            record["outcome"] = f"failed ({type(exc).__name__})"
+        out.append(record)
+    return out
+
+
 def _ineligibility(
     fact: dict[str, Any],
     *,
@@ -730,6 +849,8 @@ def _ineligibility(
         # A web article, an aggregator or a trade publication restating a figure is not
         # the issuer's statement, whatever the platform's extractor read from it.
         return WITHHELD_NOT_AN_ISSUER_DOCUMENT
+    if _read_before_line_selector(fact):
+        return WITHHELD_READ_BEFORE_LINE_SELECTOR
     if _not_the_subjects(fact, subject_name, subject_ticker):
         return WITHHELD_NOT_THE_SUBJECT
     if slot_number(fact) is None:
@@ -1778,4 +1899,5 @@ __all__ = [
     "statement_slot_facts",
     "financial_statements_for",
     "load_statement_facts",
+    "reread_stale_statement_documents",
 ]

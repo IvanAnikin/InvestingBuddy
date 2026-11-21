@@ -830,6 +830,12 @@ held document with table-derived facts is fully re-extracted on reuse.
   needed for a code rollback.
 - A parallel batch that also bumps the version must take the next number (25) and keep
   this entry.
+- **Addendum (2026-11-17, ADR-092):** "fully re-extracted on reuse" held only inside the
+  24-hour reuse window. A document read at 23 and never reused again kept serving its
+  component-as-total facts (live: Richemont 1,907 / 3,086 after the version-26 deploy).
+  The statements view now withholds such a total (`read_before_line_selector`), and each
+  run re-reads up to two such held documents of the company first
+  (`financial_statements.stale_rereads`). No migration or setting.
 
 #### Extraction pipeline version 23 — Appendix 5B / 4C items (Research Integrity Closure E2, ADR-087)
 

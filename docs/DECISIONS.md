@@ -9607,6 +9607,16 @@ Replay after the review:
   because the statement row 5,293 is held for that year. However, it can still make a
   conflict.
 
+### Addendum (2026-11-17): a total an older pipeline read is withheld, and the run re-reads its document
+
+**Trigger:** the first live run after deploy (`e8d57c2` with migration 046; CFR4, report `7a7b4c38`) still showed Richemont's current assets as EUR 1,907m and current liabilities as EUR 3,086m. The selector reads the same PDF correctly (28,934 / 9,341, the unlabelled subtotals). The held document had last been read by pipeline version 23, on 2026-11-05. The run never touched it: the V2 reuse path only revalidates documents inside the 24-hour reuse window (`primary_document_reuse_ttl_hours`), and this one was retrieved in August. The statements view (`load_statement_facts`) reads every active fact of the company's documents, so it kept serving the component as the total. The version-24 note "a held document with table-derived facts is fully re-extracted on reuse" was true only for documents reused within that window.
+
+**Decision.**
+1. **Withheld, not served.** `STATEMENT_LINE_SELECTOR_MIN_VERSION = 24`. A fact for a field the selector governs (current assets, current liabilities, non-current assets, total assets, total liabilities, cash, operating profit) is withheld in the statements view with the reason `read_before_line_selector` when its document was read below version 24 (or never stamped) and the fact was not read from inline XBRL. Missing beats wrong. Other fields, inline-XBRL facts and facts without a recorded reader are judged as before.
+2. **Re-read in the run.** Before the statements view is built, `reread_stale_statement_documents` re-reads at most two such held documents per run, newest first. It uses the reuse path's own revalidation (`_revalidate_document`): one re-fetch of the document's own address, refused when the content changed, superseding the active facts atomically. The outcome per document (`reread`, `not_reread`, `failed (…)`) is recorded as `financial_statements.stale_rereads`. A document that cannot be re-read keeps its facts, and point 1 keeps them out of the slots.
+
+**Consequences.** The next CFR run re-reads the FY26 results PDF (its held content hash matches the file Richemont serves today) and shows 28,934 / 9,341. A company with an unreachable old document shows the line as withheld instead of a component. No migration and no new setting. Each re-read is one bounded fetch of an address the platform already read.
+
 ## ADR-093: A Figure Knows Its Segment and Its Duration
 
 **Status:** Accepted (branch `fix/qa-closure-segment-hierarchy-duration`)
