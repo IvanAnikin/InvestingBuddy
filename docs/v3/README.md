@@ -7,11 +7,11 @@ describes deployed behaviour unless a section explicitly says `CURRENT`.
 
 | Ref | Meaning |
 |---|---|
-| `main` | The current **approved** version. Deployed to `ib-stg-rg` (private-use production). V3 must never be merged here without explicit user approval. |
+| `main` | The deployed version (`ib-stg-rg`, private-use production). V3 has shipped from here since 2026-09-08. A merge deploys, so it needs the owner's explicit approval. |
 | `v2-final-pre-v3-2026-09-04` | Annotated tag pinning the V2 baseline commit `4b60e07`. Immutable. |
 | `release/v2-current` | V2 preservation / maintenance branch, pinned to the same `4b60e07`. Emergency V2 fixes go here. |
-| `develop/v3` | V3 integration branch. Unapproved, undeployed. |
-| `feature/v3-*` | PR-sized V3 implementation slices. Merge target is `develop/v3` only. |
+| `develop/v3` | **Retired** (frozen at `d6d6184`, 2026-09-07; superseded when V3 went live on `main`). Kept for history; not a merge target. |
+| `feature/v3-*` | PR-sized V3 slices. They reach `main` by PR, stacked chains through one integration PR (V3.20, 2026-11-21). |
 
 **Where the work stands (2026-09-07).** `develop/v3` carries **all eleven phases**,
 V3.0 through V3.11, every one `IMPLEMENTED` — nothing is deployed and migrations 019-038

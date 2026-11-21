@@ -10,22 +10,23 @@ For a detailed agentic setup reference see `Implementation_docs/AGENTIC_DEVELOPM
 
 ---
 
-## Active Development Line — V3 (opened 2026-09-04)
+## Active Development Line — V3 on `main` (reconciled 2026-11-21)
 
-V3 development runs on `develop/v3` and is **unapproved and undeployed**. `main`
-remains the currently approved version.
+V3 was activated on `main` on 2026-09-08; `main` is the deployed version. The
+`develop/v3` line is retired (frozen at `d6d6184`) and is not a merge target.
 
 Working rules for V3:
 
-- One PR-sized slice per `feature/v3-<phase>-<slice>-<name>` branch.
-- Slices merge into `develop/v3` only — never into `main`.
-- Never implement a substantial slice directly on `develop/v3`.
+- One PR-sized slice per `feature/v3-<phase>-<slice>-<name>` branch. Slices may stack;
+  a stacked chain reaches `main` through one integration PR (V3.20, owner decision
+  2026-11-21).
+- Merging into `main` deploys, so it needs the owner's explicit approval.
 - Every slice runs the real gates (`ruff check .`, `pytest tests/ -v` from
   `apps/api`; `npm run typecheck|lint|build` from `apps/web`) and records the
-  exact commands and results. CI does **not** run automatically on
-  `develop/v3` PRs — the workflows are filtered to `main`.
-- Migrations are created on the V3 branch but **never applied to the live
-  environment** before deployment approval.
+  exact commands and results. CI runs only on PRs into `main`, so a stacked slice is
+  first checked by CI on its integration PR.
+- Migrations are created with the slice but **never applied to the live environment**
+  before the owner approves the deploy.
 
 Read [`docs/v3/README.md`](docs/v3/README.md) first, then the slice register in
 [`docs/v3/IMPLEMENTATION_PLAN.md`](docs/v3/IMPLEMENTATION_PLAN.md).
