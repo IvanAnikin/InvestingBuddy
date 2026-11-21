@@ -708,6 +708,28 @@ lose them. A retry resumes from the last committed ticker.
   ids in `v3_web.sightings` resolve in `web_search_queries` / `web_search_results` /
   `web_fetch_attempts` (all carry the run id).
 
+### Entity master backfill (operator; prerequisite for every entity-based V3.20 step)
+
+`V3_ENTITY_MASTER_ENABLED` alone links nothing. `backfill_entities_from_companies` (V3.2
+slice 2.2) gives each `companies` row a legal entity, security and listing, but it is
+called by nothing in `app/` by design. Until it runs, `companies.legal_entity_id` is NULL,
+so relationships, GLEIF parents, Exhibit 21 / 13D-G, customer concentration, named
+counterparties, earnings actuals and passive ownership all read `entity_unresolved`.
+
+Measured 2026-11-21 after the V3.20 deploy: flag on, 121 companies, 0 legal entities.
+
+The operator entry point is `python scripts/backfill_entity_master.py`.
+
+- Run it with `--dry-run` first: the dry run does one pass and rolls it back.
+- The real run makes passes of `--batch` 200 rows, at most `--max-batches` of them, and
+  commits each one.
+- It is resumable and idempotent.
+- A row whose derived key belongs to a differently named entity is listed and left
+  unlinked; it is never merged.
+- Run it once after a deploy that adds companies, and before any N-PORT or
+  issuer-holdings ingest. Their targets are the ISIN identifiers and the LEIs of linked
+  entities, which research runs record once a company is linked.
+
 ### Japan EDINET filings (V3.20 slice 11.2 — V3 line, not deployed)
 
 `EDINET_API_KEY` is a **credential**. It is the owner's free FSA key: set it as a Key
