@@ -33,6 +33,7 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.structured_logging import log_event
 from app.db.session import get_db
 from app.models.discovery import DiscoveryRun
@@ -242,7 +243,11 @@ def _autofill_from_intent(parsed, intent) -> tuple[str | None, str | None, str |
 )
 async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisResponse:
     parsed = parse_thesis(payload.thesis)
-    intent = build_intent(payload.thesis, parsed=parsed)
+    intent = build_intent(
+        payload.thesis,
+        parsed=parsed,
+        default_max_market_cap_usd=settings.discovery_default_max_market_cap_usd,
+    )
     theme, sector, industry = _autofill_from_intent(parsed, intent)
     return ParseThesisResponse(
         discovery_intent=intent.to_dict(),

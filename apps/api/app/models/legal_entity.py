@@ -479,23 +479,26 @@ class EntityRelationship(Base):
     )
     #: CASCADE both sides: this is composition of the identity graph, and a
     #: relationship missing one of its ends is uninterpretable rather than degraded.
-    subject_entity_id: Mapped[uuid.UUID] = mapped_column(
+    #: V3.20 (migration 047): either end may be UNRESOLVED (NULL) — never both — and the
+    #: unresolved end is then named by ``counterparty_name_raw``. "Customer A, 14% of
+    #: revenue" is a concentration fact even though the customer is anonymous.
+    subject_entity_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid(as_uuid=True),
         sa.ForeignKey(
             "legal_entities.id",
             ondelete="CASCADE",
             name="fk_entity_relationships_subject_legal_entities",
         ),
-        nullable=False,
+        nullable=True,
     )
-    object_entity_id: Mapped[uuid.UUID] = mapped_column(
+    object_entity_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid(as_uuid=True),
         sa.ForeignKey(
             "legal_entities.id",
             ondelete="CASCADE",
             name="fk_entity_relationships_object_legal_entities",
         ),
-        nullable=False,
+        nullable=True,
     )
     #: A member of ``CANONICAL_RELATIONSHIP_TYPES`` only. An alias a caller asserted
     #: is resolved before the write.
@@ -512,6 +515,25 @@ class EntityRelationship(Base):
     effective_from: Mapped[date | None] = mapped_column(sa.Date())
     effective_to: Mapped[date | None] = mapped_column(sa.Date())
     note: Mapped[str | None] = mapped_column(sa.String(500))
+    # ── V3.20 evidence (migration 047) ──────────────────────────────────────
+    #: A ledger finding / extracted fact / filing accession the edge rests on.
+    evidence_ref: Mapped[str | None] = mapped_column(sa.String(200))
+    #: ``gleif`` | ``sec_exhibit_21`` | ``sec_13d_13g`` | ``xbrl`` | ``annual_report`` | …
+    source_kind: Mapped[str | None] = mapped_column(sa.String(40))
+    #: A member of ``vocabulary.EXTRACTION_METHODS``.
+    extraction_method: Mapped[str | None] = mapped_column(sa.String(30))
+    #: The verbatim passage the edge was read from, when it came from text.
+    evidence_excerpt: Mapped[str | None] = mapped_column(sa.String(1000))
+    as_of: Mapped[date | None] = mapped_column(sa.Date())
+    #: The reporting period a disclosed share belongs to (``FY2025``); ``''`` = none.
+    period: Mapped[str] = mapped_column(
+        sa.String(40), nullable=False, default="", server_default=sa.text("''")
+    )
+    disclosed_share_pct: Mapped[float | None] = mapped_column(sa.Float())
+    #: A member of ``vocabulary.SHARE_BASES``.
+    share_basis: Mapped[str | None] = mapped_column(sa.String(30))
+    counterparty_name_raw: Mapped[str | None] = mapped_column(sa.String(300))
+    counterparty_name_key: Mapped[str | None] = mapped_column(sa.String(300))
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
     )
@@ -528,21 +550,120 @@ class EntityRelationship(Base):
             "subject_entity_id",
             "object_entity_id",
             "relationship_type",
+            "period",
             unique=True,
-            postgresql_where=sa.text("effective_to IS NULL"),
-            sqlite_where=sa.text("effective_to IS NULL"),
+            postgresql_where=sa.text(
+                "effective_to IS NULL AND subject_entity_id IS NOT NULL "
+                "AND object_entity_id IS NOT NULL"
+            ),
+            sqlite_where=sa.text(
+                "effective_to IS NULL AND subject_entity_id IS NOT NULL "
+                "AND object_entity_id IS NOT NULL"
+            ),
+        ),
+        sa.Index(
+            "ix_entity_relationships_current_unresolved_object",
+            "subject_entity_id",
+            "relationship_type",
+            "counterparty_name_key",
+            "period",
+            unique=True,
+            postgresql_where=sa.text("effective_to IS NULL AND object_entity_id IS NULL"),
+            sqlite_where=sa.text("effective_to IS NULL AND object_entity_id IS NULL"),
+        ),
+        sa.Index(
+            "ix_entity_relationships_current_unresolved_subject",
+            "object_entity_id",
+            "relationship_type",
+            "counterparty_name_key",
+            "period",
+            unique=True,
+            postgresql_where=sa.text("effective_to IS NULL AND subject_entity_id IS NULL"),
+            sqlite_where=sa.text("effective_to IS NULL AND subject_entity_id IS NULL"),
         ),
         sa.Index("ix_entity_relationships_subject", "subject_entity_id"),
         sa.Index("ix_entity_relationships_object", "object_entity_id"),
         # An entity is not its own parent, and a schema that can hold that can hold
         # a cycle nothing detects.
         sa.CheckConstraint(
-            "subject_entity_id <> object_entity_id",
-            name="ck_entity_relationships_no_self_reference",
+            "subject_entity_id IS NULL OR object_entity_id IS NULL "
+            "OR subject_entity_id <> object_entity_id",
+            name="ck_entity_relationships_no_self_reference_v2",
+        ),
+        sa.CheckConstraint(
+            "subject_entity_id IS NOT NULL OR object_entity_id IS NOT NULL",
+            name="ck_entity_relationships_one_end_resolved",
+        ),
+        sa.CheckConstraint(
+            "(subject_entity_id IS NOT NULL AND object_entity_id IS NOT NULL) "
+            "OR counterparty_name_key IS NOT NULL",
+            name="ck_entity_relationships_unresolved_end_named",
+        ),
+        sa.CheckConstraint(
+            "disclosed_share_pct IS NULL OR "
+            "(disclosed_share_pct >= 0.0 AND disclosed_share_pct <= 100.0)",
+            name="ck_entity_relationships_share_range",
         ),
         sa.CheckConstraint(
             "confidence >= 0.0 AND confidence <= 1.0",
             name="ck_entity_relationships_confidence_range",
+        ),
+    )
+
+
+class EntityRelationshipException(Base):
+    """A registry's stated reason for NOT reporting a relationship (migration 048).
+
+    GLEIF Level 2 files a reporting exception when an entity has no parent to report:
+    ``NATURAL_PERSONS`` (controlled by individuals), ``NON_CONSOLIDATING``,
+    ``NO_KNOWN_PERSON``, ``NON_PUBLIC`` and its successors. That is a FACT with a reason,
+    and it is not "independent" — the report shows it as such. Effective-dated: closed,
+    never deleted, when a parent is later reported.
+    """
+
+    __tablename__ = "entity_relationship_exceptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid(as_uuid=True),
+        sa.ForeignKey(
+            "legal_entities.id",
+            ondelete="CASCADE",
+            name="fk_entity_relationship_exceptions_legal_entities",
+        ),
+        nullable=False,
+    )
+    #: ``parent_of`` | ``ultimate_parent_of`` — the edge type that was NOT reported.
+    relationship_type: Mapped[str] = mapped_column(sa.String(40), nullable=False)
+    #: GLEIF's ``category`` (``DIRECT_ACCOUNTING_CONSOLIDATION_PARENT`` / ``ULTIMATE_…``).
+    category: Mapped[str | None] = mapped_column(sa.String(80))
+    #: GLEIF's ``reason`` as published (``NATURAL_PERSONS``, ``NON_CONSOLIDATING``, …).
+    reason: Mapped[str] = mapped_column(sa.String(60), nullable=False)
+    source: Mapped[str] = mapped_column(sa.String(100), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(sa.String(2000))
+    as_of: Mapped[date | None] = mapped_column(sa.Date())
+    effective_from: Mapped[date | None] = mapped_column(sa.Date())
+    effective_to: Mapped[date | None] = mapped_column(sa.Date())
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=_utcnow, server_default=sa.func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        default=_utcnow,
+        server_default=sa.func.now(),
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "ix_entity_relationship_exceptions_current",
+            "legal_entity_id",
+            "relationship_type",
+            unique=True,
+            postgresql_where=sa.text("effective_to IS NULL"),
+            sqlite_where=sa.text("effective_to IS NULL"),
         ),
     )
 

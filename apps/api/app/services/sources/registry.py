@@ -53,6 +53,7 @@ from app.services.sources.taxonomy import (
     CANONICAL_TIERS,
     T1_PRIMARY_COMPANY_SOURCE,
     T2_REGULATOR_OR_GOV,
+    T3_INDUSTRY_SPECIALIST,
     T4_QUALITY_MEDIA,
     T5_API_AGGREGATOR,
     AccessMode,
@@ -367,6 +368,7 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
     """Construct the default registry from current settings (network-free)."""
     cfg = cfg or default_settings
     eodhd_configured = bool(cfg.eodhd_api_key)
+    alpha_vantage_configured = bool(cfg.alpha_vantage_api_key)
 
     sec_rl = RateLimitPolicy(requests_per_minute=30, min_interval_seconds=0.2)
     gleif_rl = RateLimitPolicy(requests_per_minute=60)
@@ -592,6 +594,196 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             ),
         ),
         RegisteredSource(
+            source_id="alpha_vantage",
+            name="Alpha Vantage (earnings + analyst estimates)",
+            provider_type=ProviderType.fundamentals_aggregator,
+            tier=T5_API_AGGREGATOR,
+            status=SourceStatus.enabled,
+            enabled=True,
+            jurisdiction="US",
+            cost_model=CostModel.freemium,
+            access_mode=AccessMode.rest_api,
+            connector_key="alpha_vantage",
+            connector_implemented=True,
+            capabilities=["consensus_snapshot"],
+            rate_limit="25 requests/day (free tier), counted in vendor_api_calls",
+            reliability_note=(
+                "Aggregator (T5), PRIVATE USE ONLY (ADR-097): third-party analyst "
+                "expectations, labelled as such; US-listed tickers only; EPS on the "
+                "provider's (adjusted) basis. "
+                + ("Configured." if alpha_vantage_configured else "Not configured — idle.")
+            ),
+        ),
+        RegisteredSource(
+            source_id="spdr_holdings",
+            name="SPDR daily ETF holdings files",
+            provider_type=ProviderType.fundamentals_aggregator,
+            tier=T5_API_AGGREGATOR,
+            status=SourceStatus.enabled,
+            enabled=True,
+            jurisdiction="US",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="spdr_holdings",
+            connector_implemented=True,
+            capabilities=["etf_holdings"],
+            reliability_note=(
+                "Sponsor file (D8): private_use_own_risk, redistribution none. Offline "
+                "operator job only (scripts/ingest_issuer_holdings.py); layout pinned on a "
+                "real file; fails closed on drift."
+            ),
+        ),
+        RegisteredSource(
+            source_id="entsoe_tyndp",
+            name="ENTSO-E TYNDP 2026 project portfolio",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_entsoe_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_entsoe_enabled,
+            region="EU",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="entsoe_tyndp",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid plan (V3.20 slice 7.1): PRIVATE USE ONLY — ENTSO-E's site terms allow "
+                "downloads for non-commercial, personal use. Offline operator job "
+                "(scripts/ingest_grid_plans.py), layout pinned on the 2026-02-03 file, fails "
+                "closed on drift. States no capex (CBA results come with the final plan). "
+                + ("ON." if cfg.v3_grid_plans_entsoe_enabled
+                   else "OFF (V3_GRID_PLANS_ENTSOE_ENABLED).")
+            ),
+        ),
+        RegisteredSource(
+            source_id="aemo_tai",
+            name="AEMO NEM Transmission Augmentation Information",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_aemo_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_aemo_enabled,
+            jurisdiction="AU",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="aemo_tai",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid plan (V3.20 slice 7.2): AEMO copyright permissions allow any use with "
+                "attribution. Offline operator job (scripts/ingest_grid_plans.py); layout "
+                "pinned on the August 2026 workbook; states no capex. The aemo.com.au pages "
+                "sit behind a bot challenge, so a server download may be refused — then the "
+                "operator passes the file (--file)."
+            ),
+        ),
+        RegisteredSource(
+            source_id="lbl_queued_up",
+            name="Berkeley Lab Queued Up (US interconnection queues)",
+            provider_type=ProviderType.regulator,
+            tier=T3_INDUSTRY_SPECIALIST,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_lbl_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_lbl_enabled,
+            jurisdiction="US",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="lbl_queued_up",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid demand signal (V3.20 slice 7.2): CC BY 4.0, attribution LBNL + "
+                "GridTracker. Offline operator job; layout pinned on the 2026 edition (data "
+                "through 2025); ACTIVE requests aggregated per transmission provider / utility "
+                "(MW, MW with an executed agreement, MW by type). Not capex."
+            ),
+        ),
+        RegisteredSource(
+            source_id="neso_tec",
+            name="NESO Transmission Entry Capacity (TEC) register",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_neso_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_neso_enabled,
+            jurisdiction="GB",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="neso_tec",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid demand signal (V3.20 slice 7.4): NESO Open Data Licence (OGL-based), "
+                "attribution 'Supported by National Energy SO Open Data'. Offline operator "
+                "job; layout pinned on the 13 November 2026 CSV; one row per TEC contract "
+                "(promoter = the customer) plus one not-yet-built summary per host "
+                "transmission owner (NGET, SPT, SHET). Not capex."
+            ),
+        ),
+        RegisteredSource(
+            source_id="occto_supply_plan",
+            name="OCCTO supply-plan aggregation (Japan main transmission projects)",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_occto_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_occto_enabled,
+            jurisdiction="JP",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="occto_supply_plan",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid demand signal (V3.20 slice 11.5): OCCTO copyright page, free use with "
+                "the source credited and edits marked. Offline operator job; layout pinned "
+                "on the 2026-03-30 PDF (tables 4-2/4-3/4-5/4-6, main lines and substations "
+                "under construction or preparing to start). One row per filed project, "
+                "promoter = the filing transmission company. No capex stated."
+            ),
+        ),
+        RegisteredSource(
+            source_id="cea_transmission_uc",
+            name="CEA monthly reports: India transmission projects under construction",
+            provider_type=ProviderType.regulator,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_grid_plans_cea_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_grid_plans_cea_enabled,
+            jurisdiction="IN",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="cea_tbcb_uc",
+            connector_implemented=True,
+            capabilities=["grid_capex_plans"],
+            reliability_note=(
+                "Grid demand signal (V3.20 slice 11.5): CEA's website policy requires prior "
+                "permission to reproduce; none sought, so private use and OFF by default. "
+                "Offline operator job (sources cea_tbcb_uc, cea_rtm_uc); layout pinned on "
+                "the October 2026 PDFs. One row per project with its stated cost (Rs crore "
+                "-> INR) and one per element (line ckm, transformation MVA)."
+            ),
+        ),
+        RegisteredSource(
+            source_id="ishares_holdings",
+            name="iShares daily ETF holdings files (US + UCITS)",
+            provider_type=ProviderType.fundamentals_aggregator,
+            tier=T5_API_AGGREGATOR,
+            status=SourceStatus.enabled,
+            enabled=True,
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="ishares_holdings",
+            connector_implemented=True,
+            capabilities=["etf_holdings"],
+            reliability_note=(
+                "Sponsor file (D8): private_use_own_risk, redistribution none. Layout NOT "
+                "verified on a real file: the download URL served an HTML page to a plain "
+                "request on 2026-11-16, which the adapter refuses (html_instead_of_file)."
+            ),
+        ),
+        RegisteredSource(
             source_id="stooq",
             name="Stooq (price history)",
             provider_type=ProviderType.price_aggregator,
@@ -745,6 +937,22 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             configured=eodhd_configured,
             needs_credentials=True,
             rate_limit_policy=price_rl,
+        ),
+        "alpha_vantage": WrappedProviderConnector(
+            connector_key="alpha_vantage",
+            source_ids=("alpha_vantage",),
+            configured=alpha_vantage_configured,
+            needs_credentials=True,
+        ),
+        "spdr_holdings": WrappedProviderConnector(
+            connector_key="spdr_holdings",
+            source_ids=("spdr_holdings",),
+            configured=True,
+        ),
+        "ishares_holdings": WrappedProviderConnector(
+            connector_key="ishares_holdings",
+            source_ids=("ishares_holdings",),
+            configured=True,
         ),
         "stooq": WrappedProviderConnector(
             connector_key="stooq",

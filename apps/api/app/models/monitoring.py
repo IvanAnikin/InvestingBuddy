@@ -143,7 +143,9 @@ class MonitoringSignal(Base):
         nullable=True,
     )
     #: ``new_document`` | ``new_ir_event`` | ``transcript_published`` |
-    #: ``research_delta`` | ``open_gap_closable`` | ``macro_revision``.
+    #: ``research_delta`` | ``open_gap_closable`` | ``macro_revision``; V3.20 slice 9.4:
+    #: ``earnings_released`` | ``consensus_revision`` | ``passive_ownership_change`` |
+    #: ``relationship_change`` | ``competitor_capacity_announcement`` | ``change_event``.
     kind: Mapped[str] = mapped_column(sa.String(40), nullable=False)
     #: Derived from WHAT was observed, so re-running the monitor cannot raise the same
     #: signal twice. A monitor that re-raises is a monitor everybody turns off.
@@ -198,7 +200,10 @@ class MonitoringSignal(Base):
         ),
         sa.CheckConstraint(
             "kind IN ('new_document', 'new_ir_event', 'transcript_published', "
-            "'research_delta', 'open_gap_closable', 'macro_revision')",
+            "'research_delta', 'open_gap_closable', 'macro_revision', "
+            # V3.20 slice 9.4 (migration 054).
+            "'earnings_released', 'consensus_revision', 'passive_ownership_change', "
+            "'relationship_change', 'competitor_capacity_announcement', 'change_event')",
             name="ck_monitoring_signals_kind",
         ),
         sa.CheckConstraint(

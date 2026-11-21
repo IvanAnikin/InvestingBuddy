@@ -1,5 +1,23 @@
+import type { TranslatedCitation } from "@/components/research/translatedCitations";
+import TranslatedCitations from "@/components/research/report/TranslatedCitations";
 import type { ReactNode } from "react";
 import Surface from "@/components/product/Surface";
+import RelationshipSection from "@/components/research/report/RelationshipSection";
+import { DemandTriangulationSection } from "@/components/research/report/DemandTriangulationSection";
+import { PassiveOwnershipSection } from "@/components/research/report/PassiveOwnershipSection";
+import { EarningsTrackRecordSection } from "@/components/research/report/EarningsTrackRecordSection";
+import { ElectricityLayersSection } from "@/components/research/report/ElectricityLayersSection";
+import { ChangeEventsSection } from "@/components/research/report/ChangeEventsSection";
+import { EnterpriseValueSection } from "@/components/research/report/EnterpriseValueSection";
+import { LayerPeersSection } from "@/components/research/report/LayerPeersSection";
+import { PrecedentTransactionsSection } from "@/components/research/report/PrecedentTransactionsSection";
+import { MarketImpliedSection } from "@/components/research/report/MarketImpliedSection";
+import { FinancialDepthSection } from "@/components/research/report/FinancialDepthSection";
+import { ObscuritySection } from "@/components/research/report/ObscuritySection";
+import { RealAssetSection } from "@/components/research/report/RealAssetSection";
+import { ResearchVerdictSection } from "@/components/research/report/ResearchVerdictSection";
+import { ValuationRangeSection } from "@/components/research/report/ValuationRangeSection";
+import { SelfCritiqueSection } from "@/components/research/report/SelfCritiqueSection";
 import { sourceTierWord } from "@/components/research/reportSections";
 import type {
   ChangeSection,
@@ -322,11 +340,13 @@ function FindingItem({
   sectionTitle,
   anchored,
   labelsById,
+  translatedCitations,
 }: {
   finding: ProfessionalFinding;
   sectionTitle: string;
   anchored: Set<string>;
   labelsById: Record<string, string>;
+  translatedCitations: Record<string, TranslatedCitation>;
 }) {
   const sources = finding.sourceKinds.map(words).join(", ");
   // Open-web W4: a leading "[single source]" / "[company says]" is the finding's trust
@@ -432,6 +452,7 @@ function FindingItem({
             {finding.calculationIds.length > 0 &&
               ` · calculation ${finding.calculationIds.join(", ")}`}
           </p>
+          <TranslatedCitations evidenceIds={finding.evidenceIds} citations={translatedCitations} />
           {references.length > 0 && (
             <p className="mt-1 text-xs text-[color:var(--ib-ink-3)]">
               Refers to <FindingRefs labels={references} anchored={anchored} />
@@ -758,11 +779,13 @@ function DomainBody({
   anchored,
   labelsById,
   webDevelopments,
+  translatedCitations,
 }: {
   section: DomainSection;
   anchored: Set<string>;
   labelsById: Record<string, string>;
   webDevelopments: CatalystWebItem[];
+  translatedCitations: Record<string, TranslatedCitation>;
 }) {
   return (
     <>
@@ -778,6 +801,7 @@ function DomainBody({
               sectionTitle={section.title}
               anchored={anchored}
               labelsById={labelsById}
+              translatedCitations={translatedCitations}
             />
           ))}
         </ul>
@@ -799,6 +823,19 @@ function DomainBody({
 
       {section.commodityTable.length > 0 && <CommodityTable rows={section.commodityTable} />}
       {section.peerTable.length > 0 && <PeerTable rows={section.peerTable} />}
+      <ElectricityLayersSection block={section.electricityLayers} />
+      <RealAssetSection block={section.realAsset} />
+      <RelationshipSection block={section.relationships} company="This company" />
+      <DemandTriangulationSection block={section.demandTriangulation} />
+      <PassiveOwnershipSection block={section.passiveOwnership} />
+      <EnterpriseValueSection block={section.enterpriseValue} />
+      <LayerPeersSection block={section.layerPeers} />
+      <PrecedentTransactionsSection block={section.precedentTransactions} />
+      <MarketImpliedSection block={section.marketImplied} />
+      <ObscuritySection block={section.obscurity} />
+      <ChangeEventsSection block={section.changeEvents} />
+      <EarningsTrackRecordSection block={section.earningsTrackRecord} />
+      <FinancialDepthSection block={section.financialDepth} />
       {section.peerTable.length === 0 && section.peerSelectionNote && (
         <p
           className="mt-3 max-w-2xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]"
@@ -1190,6 +1227,9 @@ export default function ProfessionalResearchReport({
         </nav>
       </Surface>
 
+      <ResearchVerdictSection block={report.verdict} />
+      <ValuationRangeSection block={report.valuation} />
+
       {report.sections.map((section, i) => (
         <SectionCard key={section.key} section={section} index={i}>
           {section.kind === "synthesis" ? (
@@ -1204,10 +1244,13 @@ export default function ProfessionalResearchReport({
               anchored={anchored}
               labelsById={report.findingLabels}
               webDevelopments={webDevelopments}
+              translatedCitations={report.translatedCitations}
             />
           )}
         </SectionCard>
       ))}
+
+      <SelfCritiqueSection block={report.selfCritique} />
 
       {report.disclaimer && (
         <p

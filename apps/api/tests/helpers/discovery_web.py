@@ -30,6 +30,18 @@ from app.services.web_research.fetch import (
 )
 
 TODAY = date(2026, 10, 4)
+
+
+def fx_csv(series: str, value: float) -> str:
+    """A FRED H.10 CSV with September rows (for stated dates) AND a row from yesterday.
+
+    V3.20 slice 1.2 made an undated lookup reject a stale "latest" observation, so a
+    fixture frozen in September would read as a dead series once the calendar moves on.
+    """
+    from datetime import timedelta
+
+    recent = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+    return f"observation_date,{series}\n2026-09-17,{value}\n2026-09-18,{value}\n{recent},{value}\n"
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
 GALLIUM = "gallium producers in Australia"
 
@@ -204,7 +216,7 @@ async def directory_fetcher(url: str, **_kw: Any) -> DocumentFetchResult:
             status_code=200,
             content_type="text/csv",
             document_type="text",
-            content=b"observation_date,DEXUSAL\n2026-09-17,0.66\n2026-09-18,0.66\n",
+            content=fx_csv("DEXUSAL", 0.66).encode(),
         )
     if "markitdigital" in url:
         return DocumentFetchResult(

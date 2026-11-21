@@ -1308,10 +1308,287 @@ DEVELOPMENT_STAGE_RESOURCE = Playbook(
 )
 
 
+# --------------------------------------------------------------------------- #
+# Electricity value chain — V3.20 slice 5.3 (spec §3.5)
+# --------------------------------------------------------------------------- #
+#
+# The eighth playbook. It applies to the electricity industries the sector taxonomy emits
+# and — through the ``electricity_value_chain`` signal the slice-5.2 layer classifier
+# sets — to any company whose own disclosure places it in a layer of the stack (a cable
+# maker classified as "Industrials", a copper-rod producer classified as "Materials").
+#
+# The spec lists nine questions as blocking. A blocking question stops the Council, and
+# the platform's rule is at most two per playbook (``test_blocking_is_used_sparingly``),
+# so the nine are all mandatory and only two block: revenue visibility (backlog for an
+# equipment maker, contracted/regulated share for an owner-operator — a question every
+# layer can answer) and capacity in its natural unit. Both are cases where proceeding
+# without an answer analyses the wrong thing rather than the right thing more thinly.
+
+_ELEC_ISSUER = _Contract(
+    min_items=2, required_kinds=(_ISSUER,), allow_external=True, max_external_searches=2
+)
+_ELEC_CORROBORATED = _Contract(
+    min_items=2, min_distinct_sources=2, allow_external=True, max_external_searches=2
+)
+
+ELECTRICITY = Playbook(
+    playbook_id="electricity_value_chain",
+    version=1,
+    display_name="Electricity value chain",
+    applies_to=AppliesTo(
+        sectors=("Utilities",),
+        industries=(
+            "Electrical Equipment",
+            "Electrical Components & Equipment",
+            "Heavy Electrical Equipment",
+            "Electric Utilities",
+            "Independent Power Producers & Energy Traders",
+            "Renewable Electricity",
+        ),
+        business_model_signals=("electricity_value_chain",),
+    ),
+    questions=(
+        PlaybookQuestion(
+            key="elec_revenue_visibility",
+            text=(
+                "How much of the next revenue is already secured? For an equipment or "
+                "services company: the order backlog, book-to-bill and the period over "
+                "which the issuer expects to convert the backlog, with the latest figures "
+                "and their period. For an owner-operator: the share of revenue that is "
+                "regulated or contracted (PPAs, capacity payments, framework agreements)."
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_financial_series"}),
+            required_evidence_classes=("public_issuer",),
+            priority=1,
+            blocking=True,
+            domain=_d.GROWTH_PIPELINE,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Grid demand is announced years before it is revenue; without the "
+                "secured share there is no way to tell a capacity story from a hope."
+            ),
+            evidence_contract=_ELEC_ISSUER,
+            search_intents=(
+                "{company} backlog book-to-bill orders received",
+                "{company} contracted revenue power purchase agreement regulated",
+            ),
+        ),
+        PlaybookQuestion(
+            key="elec_backlog_quality",
+            text=(
+                "What is the quality of the backlog: how much is cancellable, how much "
+                "carries price-indexation or escalation clauses, is a margin disclosed on "
+                "it, and are the customer projects behind it financed and permitted?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=1,
+            domain=_d.GROWTH_PIPELINE,
+            owner_role="business_analyst",
+            depends_on=("elec_revenue_visibility",),
+            why_it_matters=(
+                "A fixed-price backlog signed before a copper spike can be a loss book; "
+                "an unfinanced project can disappear from it."
+            ),
+            evidence_contract=_ELEC_ISSUER,
+            search_intents=(
+                "{company} backlog cancellation price escalation clause",
+            ),
+        ),
+        PlaybookQuestion(
+            key="elec_contracted_vs_merchant",
+            text=(
+                "What share of revenue or generation is contracted (PPAs, capacity "
+                "payments, framework agreements, regulated tariffs) versus merchant or "
+                "spot, and when do the main contracts expire?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            priority=1,
+            domain=_d.BUSINESS_MODEL,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "Contracted and merchant revenue respond to the same power price in "
+                "opposite ways."
+            ),
+            evidence_contract=_ELEC_ISSUER,
+            search_intents=(
+                "{company} framework agreement utility contract term expiry",
+            ),
+        ),
+        PlaybookQuestion(
+            key="elec_qualification_evidence",
+            text=(
+                "What qualification evidence does the issuer disclose: type-test "
+                "certificates with dates, grid-code or interconnection approvals, OEM, "
+                "TSO or utility approved-vendor status? Name the certifying body and date "
+                "for each."
+            ),
+            required_tools=frozenset({_CORPUS}),
+            required_evidence_classes=("public_issuer", "public_official"),
+            priority=1,
+            domain=_d.COMPETITIVE_POSITION,
+            owner_role="competitive_analyst",
+            why_it_matters=(
+                "Qualification takes years and is the moat: a supplier that is not on a "
+                "TSO's approved list cannot win that TSO's tender at any price."
+            ),
+            evidence_contract=_ELEC_ISSUER,
+            search_intents=(
+                "{company} type test certificate KEMA qualified supplier TSO",
+                "{company} approved vendor utility qualification grid code",
+            ),
+        ),
+        PlaybookQuestion(
+            key="elec_capacity_natural_unit",
+            text=(
+                "What is the production or asset capacity in its natural unit — MVA or "
+                "GVA of transformers, km of cable or line, tonnes, units per year, MW or "
+                "MWh — with utilisation and any announced expansion (size, cost, date)?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            required_evidence_classes=("public_issuer",),
+            priority=1,
+            blocking=True,
+            domain=_d.OPERATIONS_ASSETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "A shortage industry is valued on capacity; revenue without the capacity "
+                "behind it says nothing about how much more the company can deliver."
+            ),
+            evidence_contract=_ELEC_ISSUER,
+            search_intents=(
+                "{company} production capacity MVA km cable tonnes units per year",
+                "{company} capacity expansion new plant investment",
+            ),
+        ),
+        PlaybookQuestion(
+            key="elec_customer_concentration",
+            text=(
+                "Who are the largest customers (utilities, TSOs, data-centre operators, "
+                "OEMs, EPCs), what share of revenue does each represent where disclosed, "
+                "and how long are the relationships?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_segment_facts"}),
+            priority=1,
+            domain=_d.CUSTOMERS_END_MARKETS,
+            owner_role="business_analyst",
+            why_it_matters=(
+                "One TSO's capex freeze can halve a small supplier's order intake."
+            ),
+            evidence_contract=_ELEC_ISSUER,
+            search_intents=(
+                "{company} largest customer percent of revenue utility",
+            ),
+        ),
+        PlaybookQuestion(
+            key="elec_input_cost_pass_through",
+            text=(
+                "How exposed are margins to copper, aluminium, electrical steel and other "
+                "inputs, and how are costs passed through — indexation, surcharges, "
+                "hedging — with what lag?"
+            ),
+            required_tools=frozenset({_CORPUS, "get_calculated_metrics"}),
+            required_calculations=("gross_margin",),
+            priority=2,
+            domain=_d.INDUSTRY_ECONOMICS,
+            owner_role="financial_analyst",
+            why_it_matters=(
+                "Metal is often most of an electrical product's cost; pass-through "
+                "decides whether a metal price move is a margin event or a revenue event."
+            ),
+            evidence_contract=_ELEC_ISSUER,
+            search_intents=(
+                "{company} copper price pass-through surcharge hedging margin",
+            ),
+        ),
+        PlaybookQuestion(
+            key="elec_capex_cycle_stage",
+            text=(
+                "Where are the company's customers in their investment cycle: published "
+                "grid-investment plans, utility capex guidance, interconnection queues, "
+                "data-centre build-out — and what does the issuer say about it?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"get_macro_series", "get_industry_series",
+                                      "search_web"}),
+            required_evidence_classes=("public_issuer", "public_official"),
+            priority=2,
+            domain=_d.INDUSTRY_ECONOMICS,
+            owner_role="industry_analyst",
+            why_it_matters=(
+                "Equipment demand follows customer capex with a lag; the stage of that "
+                "cycle decides whether today's orders are a peak or a start."
+            ),
+            evidence_contract=_ELEC_CORROBORATED,
+            search_intents=(
+                "{company} customer capital expenditure grid investment plan",
+            ),
+        ),
+        PlaybookQuestion(
+            key="elec_competitor_capacity",
+            text=(
+                "Which competitors have announced capacity additions in the same products, "
+                "of what size and with what timing, according to their own disclosures or "
+                "press releases?"
+            ),
+            required_tools=frozenset({_CORPUS}),
+            optional_tools=frozenset({"search_web"}),
+            priority=2,
+            domain=_d.COMPETITIVE_POSITION,
+            owner_role="competitive_analyst",
+            why_it_matters=(
+                "A shortage ends when competitors' new plants start; their announcements "
+                "date the end of pricing power."
+            ),
+            evidence_contract=_ELEC_CORROBORATED,
+            search_intents=(
+                "{company} competitors new transformer cable factory capacity expansion",
+            ),
+        ),
+    ),
+    required_metrics=(
+        "revenue",
+        "backlog",
+        "gross_margin",
+        "operating_margin",
+        "capex_intensity",
+        "segment_revenue_mix",
+    ),
+    preferred_sources=(
+        "issuer_primary",
+        "sec_edgar",
+        "venue_disclosures",
+        "tso_grid_plans",
+        "interconnection_queues",
+    ),
+    specialist_roles=("industry_analyst", "competitive_analyst", "financial_analyst"),
+    risk_framework=(
+        "customer_capex_cycle",
+        "metal_input_costs",
+        "fixed_price_backlog",
+        "competitor_capacity_additions",
+        "qualification_loss",
+        "grid_policy_and_permitting",
+        "merchant_power_price",
+    ),
+    completion_rules=("all_blocking_questions_answered", "no_council_blocking_gaps"),
+    notes=(
+        "Shortage-industry methodology: secured revenue and capacity in its natural unit "
+        "are blocking; qualification, backlog quality, pass-through, the customer capex "
+        "cycle and competitor capacity are mandatory. Applies by industry and by the "
+        "electricity_value_chain signal from the slice-5.2 layer classifier. TSO grid "
+        "plans and interconnection queues are preferred sources that are not connectors "
+        "yet (phase 7)."
+    ),
+)
+
+
 PLAYBOOKS: tuple[Playbook, ...] = (
     BANKS_FINANCIALS,
     BIOTECH,
     DEVELOPMENT_STAGE_RESOURCE,
+    ELECTRICITY,
     INDUSTRIAL_DEFENSE,
     LUXURY,
     MINING_MATERIALS,
@@ -1339,6 +1616,7 @@ __all__ = [
     "BANKS_FINANCIALS",
     "BIOTECH",
     "DEVELOPMENT_STAGE_RESOURCE",
+    "ELECTRICITY",
     "INDUSTRIAL_DEFENSE",
     "LUXURY",
     "MINING_MATERIALS",

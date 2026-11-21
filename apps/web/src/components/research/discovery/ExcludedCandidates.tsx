@@ -1,6 +1,6 @@
 "use client";
 
-import type { DiscoveryDynamicStage } from "@/types/api";
+import type { DiscoveryCandidateRecord, DiscoveryDynamicStage } from "@/types/api";
 import {
   exclusionReason,
   funnelSteps,
@@ -23,6 +23,11 @@ import { alsoSurfacedReason, surfaceMode } from "./webEvidenceView";
  * better than eight that do not, and the reader should see the difference.
  * When nothing was returned, both lists are open: they ARE the answer.
  */
+function sizeBasis(record: DiscoveryCandidateRecord): string | null {
+  const size = record.constraint_results.find((r) => r.key === "size");
+  return size?.basis || null;
+}
+
 export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicStage | null | undefined }) {
   if (!stage) return null;
   const steps = funnelSteps(stage);
@@ -30,6 +35,7 @@ export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicS
   const rejected = stage.rejected_leads ?? [];
   const banner = webSearchBanner(stage.web);
   const alsoSurfaced = stage.also_surfaced ?? [];
+  const sizeUnverified = stage.size_unverified ?? [];
   const sources = leadSourceLines(stage);
   const nothingReturned = stage.funnel?.returned === 0;
   return (
@@ -80,6 +86,32 @@ export default function ExcludedCandidates({ stage }: { stage: DiscoveryDynamicS
                 </span>{" "}
                 {surfaceMode(record) ? ` · ${surfaceMode(record)?.label}` : ""} —{" "}
                 {alsoSurfacedReason(record)}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {sizeUnverified.length > 0 && (
+        <details className="text-xs text-[color:var(--ib-ink-3)]" data-testid="discovery-size-unverified">
+          <summary className="cursor-pointer underline decoration-dotted underline-offset-4 hover:text-[color:var(--ib-ink-2)]">
+            Size unverified ({sizeUnverified.length}) — not shortlisted under the size mandate
+          </summary>
+          <p className="mt-2">
+            No official market capitalisation could be read for these, so whether they are
+            below the size ceiling is unknown. They met every other requirement checked.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {sizeUnverified.map((record, i) => (
+              <li key={i} className="ib-breakable" data-testid="discovery-size-unverified-item">
+                <span className="text-[color:var(--ib-ink-2)]">
+                  {record.identity.name ?? record.identity.ticker}
+                </span>{" "}
+                {record.identity.ticker && (
+                  <span className="font-mono">
+                    ({[record.identity.ticker, record.identity.exchange].filter(Boolean).join(" · ")})
+                  </span>
+                )}
+                {sizeBasis(record) ? ` — ${sizeBasis(record)}` : ""}
               </li>
             ))}
           </ul>

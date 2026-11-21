@@ -269,7 +269,8 @@ class TestTheRunItself:
     async def test_an_unclassifiable_company_records_why_no_playbook_applied(
         self, session
     ) -> None:
-        company = await _company(session, sector="Utilities", industry=None)
+        # Not "Utilities": since V3.20 slice 5.3 the electricity playbook declares it.
+        company = await _company(session, sector="Real Estate", industry=None)
         outcome = await run_v3_research(session, company, cfg=_cfg())
         assert any("no playbook applied" in d for d in outcome.degraded)
 

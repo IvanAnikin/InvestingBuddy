@@ -153,6 +153,9 @@ class CorpusSearchResult:
     lexical_score: float | None = None
     semantic_score: float | None = None
     matched_terms: tuple[str, ...] = ()
+    #: V3.20 slice 10.1 — the held English machine translation of ``text``, when the
+    #: hit came from a non-English chunk that has one. Never the evidence.
+    translation: "dict[str, Any] | None" = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +171,9 @@ class EvidenceContext:
     text: str
     page_text: str | None = None
     table_rows: list[list[str]] | None = None
+    #: V3.20 slice 10.2 — the held English translation of ``text`` (figures in English
+    #: notation), when current. ``text`` stays the original and the evidence.
+    translation: "dict[str, Any] | None" = None
 
 
 def evidence_id_for(chunk_id: str) -> str:
@@ -301,9 +307,16 @@ async def search_corpus(
             lexical_score=hit.lexical_score,
             semantic_score=hit.semantic_score,
             matched_terms=hit.matched_terms,
+            translation=_translation_of(hit.chunk),
         )
         for hit in hits
     ]
+
+
+def _translation_of(chunk: Any) -> "dict[str, Any] | None":
+    from app.services.corpus.translation import reading_translation
+
+    return reading_translation(chunk)
 
 
 async def newest_published(
@@ -397,11 +410,21 @@ async def resolve_evidence(
         # column→period map is the part that makes a figure checkable.
         table_rows = list(grid.rows_json or []) if grid is not None else None
 
+    translation = None
+    if (row.language or "en").lower() != "en":
+        from app.services.corpus.translation import citation_translations
+
+        cited = await citation_translations(session, [reference.evidence_id], limit=1)
+        if cited and cited[0].get("translation"):
+            translation = {"text": cited[0]["translation"],
+                           "source_language": cited[0]["language"],
+                           "target_language": "en", "note": cited[0]["translation_note"]}
     return EvidenceContext(
         reference=reference,
         text=row.text,
         page_text=page_text,
         table_rows=table_rows,
+        translation=translation,
     )
 
 

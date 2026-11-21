@@ -708,6 +708,62 @@ lose them. A retry resumes from the last committed ticker.
   ids in `v3_web.sightings` resolve in `web_search_queries` / `web_search_results` /
   `web_fetch_attempts` (all carry the run id).
 
+### Japan EDINET filings (V3.20 slice 11.2 — V3 line, not deployed)
+
+`EDINET_API_KEY` is a **credential**. It is the owner's free FSA key: set it as a Key
+Vault reference, and never commit or log it. It is sent only as a request header. Without
+it, the EDINET source makes no request. Deploying it also needs migration 059
+(`edinet_filings`, `edinet_index_days`). After the deploy, the operator runs
+`python scripts/edinet_index_backfill.py` once to index the lookback window. Research runs
+read at most `V3_EDINET_INDEX_DAYS_PER_RUN` missing days each. See
+[v3.20-asia.md](v3.20-asia.md).
+
+### Korea OpenDART filings (V3.20 slice 11.3 — V3 line, not deployed)
+
+`OPENDART_API_KEY` is a **credential**. It is the owner's free FSS key: set it as a Key
+Vault reference, and never commit or log it.
+- OpenDART accepts the key only as the `crtfc_key` query parameter. The code passes it
+  to the transport as a parameter and never writes it into a stored URL.
+- The `httpx` logger is capped at WARNING, and the log redaction filter scrubs
+  `crtfc_key=` values.
+- Without the key, the OpenDART source makes no request.
+
+Deploying it also needs migration 060 (`opendart_corp_codes`). After the deploy, the
+operator runs `python scripts/opendart_corp_codes_refresh.py` once. The download was
+measured at about 7 KB/s (499 s), and the script allows 900 s. Refresh it monthly
+(`V3_OPENDART_CORP_CODES_MAX_AGE_DAYS`, 30); otherwise a research run pays for the
+download itself. `V3_OPENDART_FETCH_TIMEOUT_SECONDS` (240) is the deadline of each
+OpenDART request; a quarterly report's original document measured 52–59 s.
+
+`V3_OPENDART_STATEMENTS_ENABLED` (default on, slice 11.3b, ADR-101) adds each periodic
+report's consolidated XBRL statements as facts. It costs one more request per report
+(about 18 s measured), plus one for the fiscal year-end month on an interim report. No
+migration is needed.
+
+`V3_OPENDART_MAJOR_MATTERS_ENABLED` (default on, slice 11.3c, ADR-102) adds a Korean
+issuer's major-matters decisions to the change-events block. Each run makes one listing
+request plus one per decision type filed (at most 10). It reads held corp codes only, so
+run the corp-code refresh first. No migration is needed.
+
+### TWSE material announcements (V3.20 slice 11.4 — V3 line, not deployed)
+
+`V3_TWSE_MATERIAL_INFO_ENABLED` (default on, ADR-103) reads TWSE's open-data feed of
+material announcements (`t187ap04_L`); it also needs `V3_DIRECTORY_TWSE_ENABLED`. No key.
+Deploying it needs migration 061 (`twse_material_announcements`). The feed states ONE
+announcement day, so history exists only from the first read: schedule
+`python scripts/twse_material_refresh.py` daily after 08:00 Asia/Taipei (it prints counts
+only; `--dry-run` reports what is held). Until that is scheduled, only research runs on
+Taiwanese companies read the feed, at most once an hour per process.
+
+### Asian grid plans (V3.20 slice 11.5 — V3 line, not deployed)
+
+Three more `scripts/ingest_grid_plans.py` sources (ADR-104), no migration and no key:
+`occto_supply_plan` (`V3_GRID_PLANS_OCCTO_ENABLED`, default on) and `cea_tbcb_uc` /
+`cea_rtm_uc` (`V3_GRID_PLANS_CEA_ENABLED`, default **off**: CEA requires prior permission
+to reproduce, so keep it off on anything public). The CEA download links change each
+month: pass the new report with `--file` and `--edition YYYY-MM`. OCCTO publishes once a
+year (late March).
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

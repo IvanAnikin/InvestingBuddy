@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: The ``--timeout`` of the DEPLOYED gunicorn startup command, mirrored here so
@@ -53,6 +53,9 @@ CREDENTIAL_SETTING_FIELDS: frozenset[str] = frozenset(
         "deepseek_api_key",
         "azure_document_intelligence_api_key",
         "tavily_api_key",
+        "alpha_vantage_api_key",
+        "edinet_api_key",
+        "opendart_api_key",
     }
 )
 
@@ -405,6 +408,25 @@ class Settings(BaseSettings):
     # It is NOT a recommendation engine and never runs an uncontrolled scan.
     # Defaults are conservative so a scan stays small and cheap.
     discovery_default_provider: str = "free_real"
+    # V3.20 D1 — the default size mandate: a thesis run that does not ask for a size
+    # only shortlists companies with a VERIFIED market cap below this (USD). A run can
+    # raise or remove it (``max_market_cap_usd``). Set the env value to empty, "none",
+    # "off" or "0" for no default ceiling (see ``_ceiling_or_none``).
+    discovery_default_max_market_cap_usd: float | None = 2_000_000_000.0
+
+    @field_validator("discovery_default_max_market_cap_usd", mode="before")
+    @classmethod
+    def _ceiling_or_none(cls, value: object) -> object:
+        """An empty / "none" / "off" / non-positive env value means NO default ceiling —
+        never a startup crash and never a ceiling of zero that would exclude everything."""
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip().lower() in ("", "none", "null", "off"):
+            return None
+        try:
+            return None if float(value) <= 0 else value  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return value  # let pydantic report a malformed value
     # Hard cap on the number of tickers processed in a single run. A run above
     # this size is rejected — protecting against an accidental full-market scan.
     discovery_max_universe_size: int = 15
@@ -1069,6 +1091,10 @@ class Settings(BaseSettings):
     # question asked of somebody else and start spending on a path nobody
     # approved. With the flag off, a detection pass observes nothing and says so.
     v3_monitoring_enabled: bool = False
+    # V3.20 slice 9.4: the six record-derived kinds (earnings, consensus revision,
+    # passive ownership, relationships, competitor capacity, change events). Read only
+    # when V3_MONITORING_ENABLED is on; no network call, nothing scheduled (#15).
+    v3_monitoring_research_signals_enabled: bool = True
 
     # ── V3.10: the V3 research pipeline at the real front door ──────────────
     # OFF by default. With it off the company-research entry point behaves
@@ -1116,6 +1142,45 @@ class Settings(BaseSettings):
     # or commercial use, obtain FCA consent and ASX authority or turn these off.
     v3_uk_nsm_disclosures_enabled: bool = False
     v3_asx_announcements_enabled: bool = False
+    # V3.20 slice 11.2 — EDINET (Japan FSA). The issuer's securities reports, half-year
+    # reports and extraordinary reports, listed from EDINET's daily document index and
+    # fetched as the official PDF into the corpus. Needs ``EDINET_API_KEY`` (free,
+    # issued by the FSA to a registered user; sent as a request HEADER, never in a URL);
+    # without a key the source is off whatever this flag says. EDINET data is published
+    # by the FSA for reuse; cite EDINET as the source.
+    v3_edinet_disclosures_enabled: bool = True
+    edinet_api_key: str = Field(default="", repr=False)
+    # Day listings read per research run when the index has gaps in the lookback
+    # window (one request each). ``scripts/edinet_index_backfill.py`` fills the whole
+    # window ahead of time; a run then reads only the days since.
+    v3_edinet_index_days_per_run: int = 40
+    # V3.20 slice 11.3 — OpenDART (Korea FSS). A KOSPI / KOSDAQ issuer's business,
+    # half-year and quarterly reports, major-matters reports and exchange disclosures,
+    # listed per company and read from the filing's original document (``document.xml``)
+    # into the corpus. Needs ``OPENDART_API_KEY`` (free, issued by the FSS); OpenDART
+    # accepts it only as a query parameter, so it is passed to the transport as one and
+    # never written into a stored or logged URL. Without a key the source is off.
+    v3_opendart_disclosures_enabled: bool = True
+    opendart_api_key: str = Field(default="", repr=False)
+    # Measured 2026-11-17: OpenDART served this project at ~7 KB/s — a quarterly
+    # report's original document (367 KB) took 52 s, the corp-code list (3.6 MB) 499 s.
+    # A document fetch gets this many seconds (the shared 15 s default would refuse
+    # every one). The corp-code list is HELD (migration 060) and refreshed by
+    # ``scripts/opendart_corp_codes_refresh.py``; a run downloads it only when nothing
+    # is held, and trusts what is held for ``…_MAX_AGE_DAYS``.
+    v3_opendart_fetch_timeout_seconds: int = 240
+    v3_opendart_corp_codes_max_age_days: int = 30
+    # V3.20 slice 11.3b — when a business / half-year / quarterly report is read, its
+    # consolidated statements as DART holds them (``fnlttSinglAcntAll``, the filing's
+    # XBRL) become statement facts of that document, tied to its receipt number. One
+    # extra request per periodic report; off → only the text reading.
+    v3_opendart_statements_enabled: bool = True
+    # V3.20 slice 11.3c — the issuer's major-matters decisions (capital increases, bond
+    # issues, buybacks, asset / stake deals, mergers, distress) read from OpenDART's typed
+    # endpoints into the report's change-events block as corporate actions. Only the
+    # decision types the issuer's own listing names are read; needs the key, a HELD corp
+    # code and ``V3_CHANGE_EVENTS_ENABLED``.
+    v3_opendart_major_matters_enabled: bool = True
     # Documents secured per research run before the questions are asked. Each is one
     # fetch and one extraction; the latest annual report alone can be 80 pages.
     v3_disclosure_core_max_documents: int = 5
@@ -1351,6 +1416,182 @@ class Settings(BaseSettings):
     # research run is 261-451s, so an uncontrolled universe is not a slow feature,
     # it is an outage.
     v3_universe_providers_enabled: bool = False
+    # V3.20 slice 1.3: re-read the exchange's own market cap at ANALYSIS time for the
+    # report's size check (market caps move between discovery and research). Off = the
+    # discovery snapshot is used, dated and flagged when older than 30 days.
+    v3_size_recheck_enabled: bool = True
+
+    # V3.20 slice 2.2: GLEIF Level 2 (direct / ultimate parent, reporting exceptions) is
+    # looked up for the company's verified LEI during research and written to the
+    # relationship graph. CC0, free, no key; ~4 requests per company. Needs the entity
+    # master (V3_ENTITY_MASTER_ENABLED).
+    v3_gleif_parents_enabled: bool = True
+    # When the entity master holds no LEI for the company, ask GLEIF for one by EXACT
+    # legal name through the gated identifier promotion (an ambiguous or partial name
+    # match is withheld, never guessed). Off = only an LEI already on file is used.
+    v3_gleif_lei_promotion_enabled: bool = True
+    # V3.20 slice 2.3: for an SEC registrant, research reads the latest 10-K Exhibit 21
+    # (20-F Exhibit 8) subsidiary list and the newest structured Schedule 13D/13G filings
+    # (≤ 12, XML since 2024-12) into the relationship graph. Free, ~15 EDGAR requests.
+    v3_sec_relationships_enabled: bool = True
+    # V3.20 slice 2.4: inside that step, the newest 10-K's inline XBRL is read ONCE per
+    # filing for customer concentration (ConcentrationRiskPercentage1 × MajorCustomersAxis)
+    # → supplier_of edges with % of revenue / receivables. One 2–15 MB download per 10-K.
+    v3_xbrl_concentration_enabled: bool = True
+    # V3.20 slice 2.5: research reads ONE unread held primary document per run (annual
+    # report / filing first) with the investigator-slot model for named customers,
+    # suppliers, offtakers and framework partners. Every claim must pass the verbatim,
+    # figure, role, framing, ADR-083 attribution and period gates before an edge is
+    # written. One model call per run when an unread document exists; none otherwise.
+    v3_text_counterparties_enabled: bool = True
+    # V3.20 slice 3.4: the report's "Passive ownership" block, read from the stored
+    # N-PORT aggregates (offline ingest, scripts/ingest_nport.py). One SEC request (the
+    # cover-page share count) per report, and only when a US-registered fund holds it.
+    v3_passive_ownership_enabled: bool = True
+    # V3.20 slice 3.6: show the ETF sponsors' daily holdings files (offline ingest,
+    # scripts/ingest_issuer_holdings.py; private use, own risk — D8) beside N-PORT: US
+    # funds as dated figures never added to N-PORT totals, UCITS funds listed separately.
+    # Turn OFF before any public launch unless the files are licensed.
+    v3_issuer_holdings_enabled: bool = True
+    # V3.20 slice 4.1: quarterly revenue and diluted EPS per fiscal quarter from SEC XBRL
+    # (companyconcept + submissions; ~6 requests per SEC filer per run) into
+    # earnings_results. Non-SEC issuers are skipped (state no_cik).
+    v3_earnings_actuals_enabled: bool = True
+    # V3.20 slice 4.3: compare ledger guidance findings (statement_kind=guidance) with the
+    # stored actuals and write earnings_results.guidance_* / vs_guidance. No external call.
+    v3_earnings_guidance_enabled: bool = True
+    # V3.20 slice 4.2: Alpha Vantage EARNINGS + EARNINGS_ESTIMATES snapshots into
+    # consensus_snapshots (2 calls per US-listed company per UTC day; free-tier budget 25
+    # calls/day counted in vendor_api_calls). Private use only (ADR-097, registry
+    # ``alpha_vantage``). With no key the step makes no call (state no_api_key).
+    v3_consensus_snapshots_enabled: bool = True
+    # V3.20 slice 4.4: fill earnings_results consensus / surprise columns from dated
+    # pre-report snapshots and add the "Earnings track record" block to the report
+    # (financial_capacity section). No external call.
+    v3_earnings_track_record_enabled: bool = True
+    # V3.20 slice 5.2: classify the company into the electricity taxonomy's layers from
+    # its held description and segment revenue facts, and add the "Electricity layers"
+    # block to the report (business_model section). No external call.
+    v3_electricity_classifier_enabled: bool = True
+    # V3.20 slice 6.3: the obscurity score block (valuation_context section) from held
+    # data — analyst count, N-PORT passive %, theme-fund holders, sector mis-tag, filing
+    # language. No external call unless the news-volume component is switched on.
+    v3_obscurity_score_enabled: bool = True
+    # V3.20 slice 6.3: add GDELT's English article count (3-month window) as a component.
+    # One GDELT DOC API call per company research run. Off by default.
+    v3_obscurity_news_volume_enabled: bool = False
+    # V3.20 slice 6.2: label the titles of the company's held primary disclosures with the
+    # report schema's event_trigger vocabulary (growth_and_catalysts "Change events"
+    # block). No external call.
+    v3_change_events_enabled: bool = True
+    # V3.20 slice 6.2: read the issuer's SEC Form 4 filings (submissions + up to 40 raw
+    # XML documents, research User-Agent, SEC rate limiter) and detect open-market
+    # insider purchase clusters (>= 3 insiders within 30 days). Needs a CIK.
+    v3_insider_clusters_enabled: bool = True
+    # V3.20 slice 6.4: record every name a discovery run evaluates in ``discovery_seen``
+    # (and stamp it when company research runs). Bookkeeping only.
+    v3_discovery_seen_enabled: bool = True
+    # V3.20 slice 6.4: hold back from the shortlist a name researched within the window
+    # unless a held disclosure carries a change event newer than that research.
+    v3_discovery_novelty_gate_enabled: bool = True
+    v3_discovery_novelty_window_days: int = 90
+    # V3.20 slice 6.4: at most N shortlisted names per electricity layer x driver x
+    # regime before the rest move behind (reorders, never shrinks). 0 = off. Names with
+    # no electricity-layer hint are never moved.
+    v3_discovery_diversity_max_per_cell: int = 2
+    # V3.20 slice 8.1: enterprise value (dated market cap + filed net debt, same currency,
+    # no FX) and EV/EBIT, EV per capacity unit (valuation_context section). No external
+    # call: the market cap is the run's own analysis-time observation.
+    v3_enterprise_value_enabled: bool = True
+    # V3.20 slice 8.1: without a thesis observation, re-read the exchange's market cap for
+    # the EV block (one exchange-directory read). Off by default.
+    v3_enterprise_value_recheck_enabled: bool = False
+    # V3.20 slice 9.1: write one comparable-set record per completed research run
+    # (``company_research_records``, migration 053), read from the report's own blocks.
+    v3_research_records_enabled: bool = True
+    # V3.20 slice 8.2: "Layer peers" block (valuation_context) — the newest research record
+    # of every other company in the subject's electricity layer. No external call.
+    v3_layer_peers_enabled: bool = True
+    # V3.20 slice 8.3: "Precedent transactions" block (valuation_context) — admin-APPROVED
+    # deals in the subject's electricity layer (``precedent_transactions``, migration 056),
+    # and, with at least three on an EV basis, a precedent EV/EBIT method for the engine.
+    # A database read only; an empty table leaves every report unchanged.
+    v3_precedent_transactions_enabled: bool = True
+    # V3.20 slice 7.1: ENTSO-E TYNDP 2026 project portfolio in ``grid_capex_plans``
+    # (migration 057). ENTSO-E's site terms allow downloads for non-commercial, personal
+    # use only (owner decision 2026-11-16: private use, OFF by default). Gates both the
+    # operator ingest (scripts/ingest_grid_plans.py) and every read of its rows.
+    v3_grid_plans_entsoe_enabled: bool = False
+    # V3.20 slice 7.2: AEMO NEM Transmission Augmentation Information (AEMO copyright
+    # permissions: any purpose, with attribution) and Berkeley Lab "Queued Up" (CC BY 4.0,
+    # attribution LBNL + GridTracker) in ``grid_capex_plans``. Operator ingest only.
+    v3_grid_plans_aemo_enabled: bool = True
+    v3_grid_plans_lbl_enabled: bool = True
+    # V3.20 slice 7.4: NESO Transmission Entry Capacity register (NESO Open Data Licence,
+    # attribution "Supported by National Energy SO Open Data"). Operator ingest only.
+    v3_grid_plans_neso_enabled: bool = True
+    # V3.20 slice 11.5: OCCTO's aggregation of Japan's supply plans, chapter 4 main
+    # transmission lines and substations (OCCTO copyright page: free use with the source
+    # credited and edits marked). Operator ingest only.
+    v3_grid_plans_occto_enabled: bool = True
+    # V3.20 slice 11.5: CEA's monthly reports of India's under-construction transmission
+    # projects (TBCB and RTM). CEA's website policy requires prior permission to reproduce;
+    # none has been sought, so private use only and OFF by default (ADR-104).
+    v3_grid_plans_cea_enabled: bool = False
+    # V3.20 slice 11.1: the Taiwan Stock Exchange's open-data company and closing-price
+    # files as an official exchange directory (listing verification + market cap =
+    # issued shares × close). Open Government Data License v1.0 (any use, attribution).
+    v3_directory_twse_enabled: bool = True
+    # V3.20 slice 11.4: TWSE material announcements (重大訊息) from the OpenAPI open-data
+    # feed t187ap04_L (Open Government Data License v1.0; attribution). The feed covers
+    # one announcement day, so its rows are HELD (twse_material_announcements, migration
+    # 061) by research runs and scripts/twse_material_refresh.py; a TWSE company's
+    # disclosure listing reads the held rows. Needs V3_DIRECTORY_TWSE_ENABLED (identity).
+    v3_twse_material_info_enabled: bool = True
+    # V3.20 slice 10.1: the parallel English corpus (spec §3.12). Held non-English
+    # document chunks are machine-translated (Azure OpenAI; operator job
+    # scripts/translate_corpus.py) into research_chunk_translations, and corpus search
+    # also matches the English text — citations and figure checks stay on the original.
+    # Slice 10.2 turns it on: search, agent hits and the report's translated citations
+    # read the held translations. Nothing schedules the translation job, so on its own
+    # this spends nothing; the operator script is what calls Azure OpenAI.
+    v3_translation_enabled: bool = True
+    v3_translation_max_chunks_per_document: int = 400
+    # V3.20 slice 7.3: "Demand triangulation" (business_model) — do the named customers
+    # publish active grid projects in the subject's technology? A read of the held grid
+    # plans (enabled sources only); None for a company outside the electricity stack.
+    v3_demand_triangulation_enabled: bool = True
+    # V3.20 slice 8.4: "What today's price implies" block (valuation_context) — peer
+    # position, implied margin at the peer median, implied perpetual growth on a named
+    # discount-rate grid, observed discount characteristics. Filed facts only; no call.
+    v3_market_implied_enabled: bool = True
+    # V3.20 slice 8.5: "Financial depth" block (financial_capacity) — debt maturity ladder,
+    # diluted share series, contract assets/liabilities from SEC XBRL (nine companyconcept
+    # reads per company with a CIK; research User-Agent, SEC rate limiter).
+    v3_financial_depth_enabled: bool = True
+    # V3.20 slice 9.2 (ADR-098): the eight-pillar rubric and the computed verdict
+    # (PASS / WATCHLIST / SHORTLIST) at ``professional_research.verdict``. Deterministic;
+    # no call. Off by default: it is an investment-research opinion, private use only.
+    v3_research_verdict_enabled: bool = False
+    # V3.20 slice 8.6 wiring (ADR-099): the deterministic valuation engine on this run's
+    # cited blocks → ``professional_research.valuation`` (a per-share range beside a dated
+    # price). Off by default: an investment-research opinion, private use only.
+    v3_valuation_engine_enabled: bool = False
+    # Fetch the newest FRED DGS10 observation (one CSV read, no key) as the cited USD
+    # risk-free rate. Read only when the engine is on.
+    v3_valuation_risk_free_fetch_enabled: bool = True
+    # The equity risk premium, entered by the owner WITH its publication, as JSON:
+    # {"value": 0.045, "source_url": "https://…", "as_of": "2026-11-01"}. Empty (the
+    # default) leaves the DCF ``insufficient_evidence``: no ERP is ever made up.
+    v3_equity_risk_premium_json: str = ""
+    # V3.20 slice 9.3: the report's mandatory ``self_critique`` (bear case, weakest links,
+    # data-quality warnings, disconfirming search), assembled from the Red Team round and
+    # the report's own adverse evidence. Deterministic; no call.
+    v3_self_critique_enabled: bool = True
+    # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Consumer:
+    # ``integrations/alpha_vantage.py`` (query parameter ``apikey``; never stored — every
+    # recorded URL omits it). Key Vault reference in a deployed environment.
+    alpha_vantage_api_key: str = Field(default="", repr=False)
 
     # ── V3.3: Agent tools ───────────────────────────────────────────────────
     # Master switch for the agent tool surface. OFF by default, and with it off

@@ -189,6 +189,15 @@ def resolve_routing(
 
 
 
+def translation_client_for(cfg: "Settings") -> Any:
+    """V3.20 slice 10.1 — the client that translates held documents (spec §3.12: the
+    existing Azure OpenAI deployment), or ``None``. Its own instance, so translation
+    usage is never attributed to a research slot."""
+    if not getattr(cfg, "v3_translation_enabled", False):
+        return None
+    return _azure_client(cfg)
+
+
 def research_provider_for(cfg: "Settings") -> Any:
     """The external research provider, or ``None`` unless enabled AND credentialed.
 

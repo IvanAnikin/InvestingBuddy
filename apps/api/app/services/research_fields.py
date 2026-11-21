@@ -411,7 +411,11 @@ _CAPACITY_RE = re.compile(
     r"tpa|tpy|t/y(?:r)?|t/a|t/d|tpd|mtpa|ktpa|mtpy|mt/y|"
     r"(?:mt|kt|t|tonnes?|tons?|oz|ounces?|lbs?|pounds?|units?|barrels?)\s+"
     r"(?:of\s+[a-z][a-z\s-]{0,30}?\s+)?(?:per|a|an)\s+(?:annum|year|day)|"
-    r"mw|gw|mwh|gwh|oz/y(?:r)?|lb/y(?:r)?|bpd)\b",
+    r"mw|gw|mwh|gwh|oz/y(?:r)?|lb/y(?:r)?|bpd|"
+    # V3.20 slice 5.4 — electrical ratings and network length. A bare distance is not
+    # capacity: km must be OF cable, line or conductor.
+    r"mva|gva|kva|mvar|"
+    r"(?:circuit[\s-])?km\s+(?:of\s+)?(?:[a-z-]+\s+){0,3}?(?:cables?|lines?|conductors?))\b",
     re.IGNORECASE,
 )
 #: Output in a ramp-up or a first year is not nameplate capacity.

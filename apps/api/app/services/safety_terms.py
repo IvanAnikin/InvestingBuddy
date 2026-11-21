@@ -3,7 +3,8 @@ Shared forbidden-output scanner.
 
 ONE definition of prohibited investment-action language, used by every safety
 gate so they cannot drift. The platform must never emit a rating, price target,
-fair value conclusion, or upside/downside claim.
+fair value conclusion, or upside/downside claim — except in the few TYPED report
+fields a caller explicitly allows by path (``FieldAllowance``, ADR-098/099).
 
 DESIGN — three tiers, because a naive substring match (or even a naive ``\\b``
 word-boundary match) produces false positives on ordinary English and on real
@@ -194,23 +195,163 @@ def scan_text(text: str, *, path: str | None = None) -> list[SafetyHit]:
     return hits
 
 
+# ---------------------------------------------------------------------------
+# Path-scoped allowances (ADR-098 §3)
+# ---------------------------------------------------------------------------
+#
+# A few TYPED report fields may hold a value the gate otherwise bans: the
+# research verdict (ADR-098) and the valuation position (ADR-099). The
+# exemption is deliberately narrow:
+#
+#   * keyed by an EXACT report path (list indices may be written ``[*]``);
+#   * the field's WHOLE value must equal one of a closed set of strings — a
+#     free-text field can never be allowed, because "SHORTLIST, buy now" is
+#     not a member of any set;
+#   * no allowed value may contain a term in ``NEVER_ALLOWED_TERMS``
+#     (checked at construction, so a bad allowance cannot even be built);
+#   * opt-in per call: ``scan_value`` applies none unless the caller passes
+#     them, so every existing gate behaves exactly as before.
+
+#: Terms no allowance may ever admit, on any path (ADR-098 §3, ADR-099 §5).
+NEVER_ALLOWED_TERMS: frozenset[str] = frozenset(
+    {
+        "BUY",
+        "SELL",
+        "HOLD",
+        "REJECT",
+        "OUTPERFORM",
+        "UNDERPERFORM",
+        "OVERWEIGHT",
+        "UNDERWEIGHT",
+        "price target",
+        "target price",
+        "strong buy",
+        "buy signal",
+        "sell signal",
+        "guaranteed return",
+        "will go up",
+        "will go down",
+        "personalized advice",
+        "tailored recommendation",
+    }
+)
+
+_INDEX_RE = re.compile(r"\[\d+\]")
+
+
+def _normalise_path(path: str) -> str:
+    """``a.b[3].c`` -> ``a.b[*].c`` so an allowance can name a list field."""
+    return _INDEX_RE.sub("[*]", path)
+
+
+@dataclass(frozen=True)
+class FieldAllowance:
+    """One typed report field and the exact values it may hold."""
+
+    path: str
+    allowed_values: frozenset[str]
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not self.path or "*" in self.path.replace("[*]", ""):
+            raise ValueError(
+                f"allowance path must be exact (only [*] list indices): {self.path!r}"
+            )
+        if not self.allowed_values:
+            raise ValueError(f"allowance for {self.path!r} names no values")
+        for value in self.allowed_values:
+            # Stricter than the gate on purpose: a never-allowed term in ANY
+            # case ("Hold", "buy signal") disqualifies the value, and so does
+            # any rating-context (Tier 2) phrasing.
+            hits = scan_text(value)
+            banned = {
+                t
+                for t in NEVER_ALLOWED_TERMS
+                if re.search(rf"\b{re.escape(t)}\b", value, re.IGNORECASE)
+            }
+            if banned or any(h.tier == TIER_RATING_CONTEXT for h in hits):
+                raise ValueError(
+                    f"allowance for {self.path!r} would admit a never-allowed "
+                    f"term in {value!r}: {sorted(banned) or 'rating context'}"
+                )
+
+
+def build_allowances(
+    *allowances: FieldAllowance,
+) -> dict[str, frozenset[str]]:
+    """Index allowances by normalised path; duplicate paths are an error."""
+    index: dict[str, frozenset[str]] = {}
+    for allowance in allowances:
+        key = _normalise_path(allowance.path)
+        if key in index:
+            raise ValueError(f"duplicate allowance for path {key!r}")
+        index[key] = allowance.allowed_values
+    return index
+
+
+#: ADR-098: the research verdict. Exact match on the whole field value.
+VERDICT_ALLOWANCE = FieldAllowance(
+    path="verdict.recommendation",
+    allowed_values=frozenset({"PASS", "WATCHLIST", "SHORTLIST"}),
+    reason="ADR-098 research verdict (typed enum field)",
+)
+
+#: ADR-099: the valuation position versus the computed fair-value range.
+VALUATION_POSITION_ALLOWANCE = FieldAllowance(
+    path="valuation.relative_position",
+    allowed_values=frozenset({"undervalued", "in_line", "overvalued"}),
+    reason="ADR-099 position vs the fair-value range (typed enum field)",
+)
+
+#: ADR-098/100: the same verdict, shown per holding in the portfolio review (slice 9.2).
+#: Paths are relative to the review payload root.
+PORTFOLIO_REVIEW_ALLOWANCES: dict[str, frozenset[str]] = build_allowances(
+    FieldAllowance(
+        path="holdings[*].entry_verdict.recommendation",
+        allowed_values=VERDICT_ALLOWANCE.allowed_values,
+        reason="ADR-098 verdict of the research record at the entry date",
+    ),
+    FieldAllowance(
+        path="holdings[*].current_verdict.recommendation",
+        allowed_values=VERDICT_ALLOWANCE.allowed_values,
+        reason="ADR-098 verdict of the newest research record",
+    ),
+)
+
+#: The allowances the V3.20 report gate passes to ``scan_value`` (from slice 9.2,
+#: ``v3_pipeline._report_safety_hits``).
+V320_REPORT_ALLOWANCES: dict[str, frozenset[str]] = build_allowances(
+    VERDICT_ALLOWANCE,
+    VALUATION_POSITION_ALLOWANCE,
+)
+
+
 def scan_value(
     value: Any,
     *,
     path: str = "",
     exempt_keys: frozenset[str] = frozenset(),
+    allowances: dict[str, frozenset[str]] | None = None,
 ) -> list[SafetyHit]:
     """
     Recursively scan a str/dict/list tree, skipping ``exempt_keys`` leaves.
 
     Exempt keys exist because some fields enumerate what is *not* produced
     (e.g. ``disallowed_outputs``); scanning them is guaranteed false positives.
+
+    ``allowances`` (from ``build_allowances``) lets a string leaf at an exact
+    path pass when its WHOLE value is one of that path's allowed values. Any
+    other value at that path, and every value elsewhere, is scanned as usual.
     """
     leaf_key = path.rsplit(".", 1)[-1].split("[")[0]
     if leaf_key and leaf_key in exempt_keys:
         return []
 
     if isinstance(value, str):
+        if allowances:
+            allowed = allowances.get(_normalise_path(path))
+            if allowed is not None and value in allowed:
+                return []
         return scan_text(value, path=path or None)
 
     hits: list[SafetyHit] = []
@@ -223,6 +364,7 @@ def scan_value(
                     sub,
                     path=f"{path}.{key}" if path else str(key),
                     exempt_keys=exempt_keys,
+                    allowances=allowances,
                 )
             )
     elif isinstance(value, list):
@@ -232,6 +374,7 @@ def scan_value(
                     item,
                     path=f"{path}[{index}]",
                     exempt_keys=exempt_keys,
+                    allowances=allowances,
                 )
             )
     return hits

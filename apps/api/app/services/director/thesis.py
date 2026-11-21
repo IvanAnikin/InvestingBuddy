@@ -112,6 +112,12 @@ class ThesisContext:
     #: The size the candidate was matched at, from the discovery snapshot, with its date.
     market_cap_usd: float | None = None
     market_cap_as_of: str | None = None
+    #: V3.20 slice 1.3 — the numeric size mandate the run applied (USD), and the
+    #: discovery observation in its own currency, so analysis can re-convert it.
+    size_max_usd: float | None = None
+    size_min_usd: float | None = None
+    market_cap_native: dict[str, Any] | None = None
+    market_cap_method: str | None = None
 
     @property
     def present(self) -> bool:
@@ -133,6 +139,9 @@ class ThesisContext:
             "dimensions": list(self.dimensions),
             "market_cap_usd": self.market_cap_usd,
             "market_cap_as_of": self.market_cap_as_of,
+            "size_max_usd": self.size_max_usd,
+            "size_min_usd": self.size_min_usd,
+            "market_cap_method": self.market_cap_method,
         }
 
 
@@ -249,6 +258,9 @@ async def resolve_thesis(
     )
     if intent_size and intent_size.get("requested"):
         context.size_hints = list(intent_size["requested"])
+    if intent_size:
+        context.size_max_usd = _float_or_none(intent_size.get("max_usd"))
+        context.size_min_usd = _float_or_none(intent_size.get("min_usd"))
     context.matched_theme = match.get("theme")
     context.relevance_reason = match.get("relevance_reason")
     context.score_explanation = getattr(candidate, "score_explanation", None)
@@ -260,6 +272,10 @@ async def resolve_thesis(
     if verified.get("market_cap_usd"):
         context.market_cap_usd = float(verified["market_cap_usd"])
         context.market_cap_as_of = (verified.get("market_cap") or {}).get("as_of")
+        native = verified.get("market_cap") or {}
+        if native.get("amount") and native.get("currency"):
+            context.market_cap_native = dict(native)
+        context.market_cap_method = verified.get("market_cap_method")
         return context
     market_cap_mln = getattr(candidate, "market_cap_mln", None)
     from app.services.exchange_registry import is_sec_eligible
@@ -326,38 +342,123 @@ def thesis_questions(context: ThesisContext) -> list[Any]:
     return questions
 
 
-def size_fit(context: ThesisContext, market_cap_usd: float | None) -> dict[str, Any] | None:
-    """Deterministic: does the company's size match the size the thesis asked for?"""
-    wanted = [h for h in context.size_hints if h in SIZE_BANDS]
-    if not wanted:
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
         return None
+
+
+def size_fit(
+    context: ThesisContext,
+    market_cap_usd: float | None,
+    *,
+    observation: Any = None,
+    previous: Any = None,
+) -> dict[str, Any] | None:
+    """Deterministic: does the company's size match the size the thesis asked for?
+
+    V3.20 slice 1.3: the numeric mandate (``size_max_usd`` / ``size_min_usd``) is applied
+    as well as the bands, and — when ``observation`` (a ``SizeObservation``) is given — the
+    result states the figure's as-of, origin and method, flags a snapshot older than
+    ``SNAPSHOT_STALE_AFTER_DAYS``, and never lets a lower bound (the 10-K public float)
+    prove that a company is below a ceiling. ``previous`` is the discovery snapshot when
+    the figure was re-read at analysis time, so a reader sees the size move.
+    """
+    from app.services.discovery.size_recheck import SNAPSHOT_STALE_AFTER_DAYS, age_days
+
+    wanted = [h for h in context.size_hints if h in SIZE_BANDS]
+    low, high = context.size_min_usd, context.size_max_usd
+    has_mandate = low is not None or high is not None
+    if not wanted and not has_mandate:
+        return None
+    mandate = {"min_usd": low, "max_usd": high} if has_mandate else None
+    provenance: dict[str, Any] = {}
+    if observation is not None:
+        age = age_days(observation.as_of)
+        provenance = {
+            "market_cap_as_of": observation.as_of,
+            "market_cap_origin": observation.origin,
+            "market_cap_method": observation.method,
+            "market_cap_source_url": observation.source_url,
+            "market_cap_age_days": age,
+            "stale": age is not None and age > SNAPSHOT_STALE_AFTER_DAYS,
+            "fx": getattr(observation, "fx", None),
+        }
+        if previous is not None:
+            provenance["market_cap_at_discovery"] = previous.to_dict()
     if market_cap_usd is None:
         return {
             "requested": wanted,
+            "mandate": mandate,
             "market_cap_usd": None,
             "fits": None,
+            **provenance,
             "note": (
                 "No verified market capitalisation is available (a non-US listing is "
                 "converted only from a verified figure at an official FX rate), so size "
                 "fit is unknown."
             ),
         }
-    fits = any(
-        (low is None or market_cap_usd >= low) and (high is None or market_cap_usd < high)
-        for low, high in (SIZE_BANDS[h] for h in wanted)
+    in_band = not wanted or any(
+        (lo is None or market_cap_usd >= lo) and (hi is None or market_cap_usd < hi)
+        for lo, hi in (SIZE_BANDS[h] for h in wanted)
     )
-    return {
+    in_mandate = (low is None or market_cap_usd >= low) and (
+        high is None or market_cap_usd < high
+    )
+    lower_bound = observation is not None and getattr(observation, "is_lower_bound", False)
+    fits: bool | None
+    if lower_bound:
+        # A floor can show a company is TOO LARGE, never that it is small enough.
+        fits = False if (high is not None and market_cap_usd >= high) else None
+    else:
+        fits = in_band and in_mandate
+    if fits is None:
+        note = (
+            "Only a lower bound on the market capitalisation is available (the 10-K "
+            "public float), which cannot show the company is below the size ceiling."
+        )
+    elif fits:
+        note = "Within the size band the thesis names."
+        if mandate:
+            note = "Within the size band and the size mandate."
+    elif not in_mandate or (lower_bound and high is not None):
+        note = (
+            "OUTSIDE the size mandate (USD "
+            + (f"{low / 1e9:g}bn – " if low is not None else "below ")
+            + (f"{high / 1e9:g}bn" if high is not None else "no ceiling")
+            + ") — the thesis does not describe this company on size, whatever its "
+            "exposure."
+        )
+    else:
+        note = (
+            "OUTSIDE the size band the thesis names — the thesis does not describe "
+            "this company on size, whatever its exposure."
+        )
+    if provenance.get("stale"):
+        note += (
+            f" The market capitalisation is {provenance['market_cap_age_days']} days old "
+            "and could not be re-read at analysis time."
+        )
+    if previous is not None and previous.market_cap_usd:
+        change = market_cap_usd / previous.market_cap_usd - 1.0
+        note += (
+            f" Size moved {change:+.0%} since discovery "
+            f"(USD {previous.market_cap_usd / 1e9:.2f}bn on {previous.as_of} → "
+            f"USD {market_cap_usd / 1e9:.2f}bn on {provenance.get('market_cap_as_of')})."
+        )
+    out: dict[str, Any] = {
         "requested": wanted,
         "market_cap_usd": market_cap_usd,
         "fits": fits,
         "bands_usd": {h: SIZE_BANDS[h] for h in wanted},
-        "note": (
-            "Within the size band the thesis names."
-            if fits
-            else "OUTSIDE the size band the thesis names — the thesis does not describe "
-            "this company on size, whatever its exposure."
-        ),
+        "note": note,
     }
+    if mandate:
+        out["mandate"] = mandate
+    out.update(provenance)
+    return out
 
 
 __all__ = [

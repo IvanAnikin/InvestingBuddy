@@ -36,6 +36,29 @@ import {
   type WebEvidenceBlock,
   type WebResearchQuality,
 } from "./webEvidence";
+import {
+  readPassiveOwnershipBlock,
+  type PassiveOwnershipBlock,
+} from "./passiveOwnership";
+import {
+  readEarningsTrackRecordBlock,
+  type EarningsTrackRecordBlock,
+} from "./earningsTrackRecord";
+import { type ElectricityLayersBlock, readElectricityLayersBlock } from "./electricityLayers";
+import { type ChangeEventsBlock, readChangeEventsBlock } from "./changeEvents";
+import { type EnterpriseValueBlock, readEnterpriseValueBlock } from "./enterpriseValue";
+import { type LayerPeersBlock, readLayerPeersBlock } from "./layerPeers";
+import { type PrecedentTransactionsBlock, readPrecedentTransactionsBlock } from "./precedentTransactions";
+import { type MarketImpliedBlock, readMarketImpliedBlock } from "./marketImplied";
+import { type ResearchVerdictBlock, readResearchVerdictBlock } from "./researchVerdict";
+import { type ValuationRangeBlock, readValuationRangeBlock } from "./valuationRange";
+import { type SelfCritiqueBlock, readSelfCritiqueBlock } from "./selfCritique";
+import { type TranslatedCitation, readTranslatedCitations } from "./translatedCitations";
+import { type FinancialDepthBlock, readFinancialDepthBlock } from "./financialDepth";
+import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
+import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
+import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
+import { type DemandTriangulationBlock, readDemandTriangulationBlock } from "./demandTriangulation";
 
 /** One statement the ledger holds, with the ids that make it citable. */
 export type V3Finding = {
@@ -466,6 +489,46 @@ export type DomainSection = SectionHead & {
       industry_and_market, growth_and_catalysts, risks_and_counter_thesis). Null on every
       report written before open-web research. */
   webEvidence: WebEvidenceBlock | null;
+  /** V3.20 slice 2.6 (business_model): customers, suppliers, parent & group, each with
+      its citations and a disclosed / not disclosed / not researched state. Null when the
+      relationship graph is off, and on older reports. */
+  relationships: RelationshipBlock | null;
+  /** V3.20 slice 7.3 (business_model): named customers vs published grid plans. Null outside
+      the electricity stack, and on older reports. */
+  demandTriangulation: DemandTriangulationBlock | null;
+  /** V3.20 slice 3.4 (valuation_context): US-registered funds / ETFs holding the
+      company (SEC N-PORT). Null when off, and on older reports. */
+  passiveOwnership: PassiveOwnershipBlock | null;
+  /** V3.20 slice 4.4 (financial_capacity): filed quarterly results vs the pre-report
+      third-party expectation and guidance. Null when off, and on older reports. */
+  earningsTrackRecord: EarningsTrackRecordBlock | null;
+  /** V3.20 slice 5.2 (business_model): layers of the electricity stack with revenue share
+      and quoted evidence. Null when off, and on older reports. */
+  electricityLayers: ElectricityLayersBlock | null;
+  /** V3.20 slice 5.4 (operations): capacity in its natural unit, expansions, utilisation
+      and certificates from cited findings. Null unless the company is in the electricity
+      stack, and on older reports. */
+  realAsset: RealAssetBlock | null;
+  /** V3.20 slice 6.3 (valuation_context): the obscurity score with its components.
+      Null when off, and on older reports. */
+  obscurity: ObscurityBlock | null;
+  /** V3.20 slice 6.2 (growth_and_catalysts): change events in held disclosures and
+      Form 4 insider purchase clusters. Null when off or nothing found, and on older
+      reports. */
+  changeEvents: ChangeEventsBlock | null;
+  /** V3.20 slice 8.1 (valuation_context): enterprise value and multiples over dated,
+      cited inputs. Null when off or no input, and on older reports. */
+  enterpriseValue: EnterpriseValueBlock | null;
+  /** V3.20 slice 8.2 (valuation_context): companies researched in the same electricity
+      layer, from the comparable-set store. Null when none, and on older reports. */
+  layerPeers: LayerPeersBlock | null;
+  /** V3.20 slice 8.3 (valuation_context): admin-approved deals in the same electricity
+      layer, each cited. Null when none, and on older reports. */
+  precedentTransactions: PrecedentTransactionsBlock | null;
+  marketImplied: MarketImpliedBlock | null;
+  /** V3.20 slice 8.5 (financial_capacity): debt maturity ladder, diluted shares, contract
+      balances from SEC XBRL. Null when off / nothing tagged, and on older reports. */
+  financialDepth: FinancialDepthBlock | null;
 };
 
 /** Refers to findings by label; it never restates them. */
@@ -528,6 +591,18 @@ export type ProfessionalResearch = {
   councilConvened: boolean | null;
   editor: ProfessionalEditor | null;
   disclaimer: string | null;
+  /** V3.20 slice 9.2 (ADR-098): the computed research verdict. Null when off, and on
+      older reports. */
+  verdict: ResearchVerdictBlock | null;
+  /** V3.20 slice 8.6 wiring (ADR-099): the computed valuation range beside a dated price.
+      Null when the engine is off, and on older reports. */
+  valuation: ValuationRangeBlock | null;
+  /** V3.20 slice 9.3: the report's self-critique (bear case, weakest links). Null when
+      off, and on older reports. */
+  selfCritique: SelfCritiqueBlock | null;
+  /** V3.20 slice 10.2: cited non-English passages by evidence id — the original and
+      its machine translation. Empty when off, and on older reports. */
+  translatedCitations: Record<string, TranslatedCitation>;
 };
 
 export type V3Research = {
@@ -1065,6 +1140,19 @@ function readDomainSection(
     peerSelectionNote: isRecord(r.peer_selection) ? str(r.peer_selection.note) : null,
     metricsNote: str(r.metrics_note),
     webEvidence: readWebEvidenceBlock(r.web_evidence),
+    relationships: readRelationshipBlock(r.relationships),
+    demandTriangulation: readDemandTriangulationBlock(r.demand_triangulation),
+    passiveOwnership: readPassiveOwnershipBlock(r.passive_ownership),
+    earningsTrackRecord: readEarningsTrackRecordBlock(r.earnings_track_record),
+    electricityLayers: readElectricityLayersBlock(r.electricity_layers),
+    realAsset: readRealAssetBlock(r.real_asset),
+    obscurity: readObscurityBlock(r.obscurity),
+    changeEvents: readChangeEventsBlock(r.change_events),
+    enterpriseValue: readEnterpriseValueBlock(r.enterprise_value),
+    layerPeers: readLayerPeersBlock(r.layer_peers),
+    precedentTransactions: readPrecedentTransactionsBlock(r.precedent_transactions),
+    marketImplied: readMarketImpliedBlock(r.market_implied),
+    financialDepth: readFinancialDepthBlock(r.financial_depth),
   };
 }
 
@@ -1221,6 +1309,10 @@ export function readProfessionalResearch(v3Payload: unknown): ProfessionalResear
     councilConvened: bool(raw.council_convened),
     editor,
     disclaimer: str(raw.disclaimer),
+    verdict: readResearchVerdictBlock(raw.verdict),
+    valuation: readValuationRangeBlock(raw.valuation),
+    selfCritique: readSelfCritiqueBlock(raw.self_critique),
+    translatedCitations: readTranslatedCitations(raw.translated_citations),
   };
 }
 

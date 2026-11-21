@@ -128,6 +128,13 @@ def detect_language_with_confidence(
     content = _content_language(text)
     if content is not None:
         return content, True
+    # V3.20 slice 11.2: the stopword scan knows Latin-script languages only, so a
+    # Japanese filing (EDINET) fell through to the English default and was never
+    # translated. The writing system is content too — consulted only when the
+    # stopword scan cannot tell, so a confidently English text keeps its label.
+    script = script_language(text)
+    if script is not None:
+        return script, True
 
     if hint:
         code = hint.strip().lower()[:2]
@@ -203,7 +210,94 @@ def language_name(code: str | None) -> str:
     return LANGUAGE_NAMES.get(key, key.upper() or "Unknown")
 
 
+# ── V3.20 slice 10.1 — document-level detection for the translation corpus ──────── #
+#
+# A SEPARATE function so ``detect_language`` (and every Phase-30 caller that relies on
+# its FR/DE/IT/DA-or-English behaviour) is unchanged. Spec §3.12 languages: DE IT FR ES
+# NL SV NO DA FI PL CS (Latin script: distinctive function words + letters) and JA KO
+# ZH (writing system, ``script_language``).
+
+#: Languages a held document is translated FROM (spec §3.12, D6).
+TRANSLATABLE_LANGUAGES: frozenset[str] = frozenset(
+    {"de", "it", "fr", "es", "nl", "sv", "no", "da", "fi", "pl", "cs", "ja", "ko", "zh"})
+
+_DOC_HINTS: dict[str, tuple[str, ...]] = {
+    "en": (" the ", " and ", " of ", " to ", " is ", " for ", " with ", " that ",
+           " which ", " were ", " has been "),
+    "de": (" der ", " die ", " und ", " das ", " nicht ", " wird ", " mit ", " für ",
+           " geschäftsjahr", " umsatz", " gesellschaft", " konzern"),
+    "fr": (" le ", " les ", " des ", " et ", " est ", " pour ", " dans ", " une ",
+           " société", " exercice", " chiffre d'affaires", " qui "),
+    "it": (" il ", " gli ", " che ", " della ", " delle ", " sono ", " per ", " ricavi",
+           " società", " esercizio", " anche ", " nel "),
+    "es": (" el ", " los ", " las ", " del ", " que ", " por ", " una ", " ingresos",
+           " sociedad", " ejercicio", " según ", " también "),
+    "nl": (" het ", " een ", " van ", " voor ", " niet ", " zijn ", " wordt ", " omzet",
+           " vennootschap", " boekjaar", " deze ", " onze "),
+    "sv": (" och ", " är ", " för ", " att ", " som ", " inte ", " av ", " till ",
+           " bolaget", " omsättning", " under ", " också "),
+    "no": (" og ", " er ", " av ", " på ", " ikke ", " til ", " for ", " selskapet",
+           " omsetning", " driftsinntekter", " konsernet", " også "),
+    "da": (" og ", " er ", " af ", " på ", " ikke ", " til ", " for ", " selskabet",
+           " omsætning", " årsrapport", " koncernen", " også "),
+    "fi": (" ja ", " on ", " oli ", " että ", " vuonna", " liikevaihto", " yhtiö",
+           " miljoonaa", " euroa", " sekä ", " kanssa", " mukaan"),
+    "pl": (" się ", " jest ", " oraz ", " przez ", " spółka", " spółki", " przychody",
+           " roku", " który ", " które ", " na ", " w "),
+    "cs": (" se ", " je ", " jsou ", " které ", " společnost", " tržby", " roce", " pro ",
+           " byla ", " bylo ", " na ", " v "),
+}
+#: Letters that only (or overwhelmingly) one of the candidates uses: one point each.
+_DOC_LETTERS: dict[str, str] = {
+    "de": "ß", "pl": "łąęśźżń", "cs": "řěůťď", "sv": "", "da": "", "no": "",
+    "es": "ñ¿¡", "fr": "çœ", "it": "", "nl": "ĳ", "fi": "",
+}
+_DOC_MIN_HITS = 4
+
+
+def detect_document_language(text: str) -> str | None:
+    """The language of a held DOCUMENT (or chunk), or ``None`` when it cannot tell.
+
+    Writing system first (JA/KO/ZH and other non-Latin scripts), then distinctive
+    function words and letters over the first ``_SCAN_CHARS`` characters. ``None`` —
+    never a guess — when the text is short or no language clears ``_DOC_MIN_HITS`` with
+    a margin over the runner-up: an unknown language is not translated.
+    """
+    script = script_language(text)
+    if script is not None:
+        return script
+    stripped = (text or "").strip()
+    if len(stripped) < _MIN_CONTENT_CHARS_FOR_DETECTION:
+        return None
+    low = f" {' '.join(stripped[:_SCAN_CHARS].lower().split())} "
+    scores: dict[str, int] = {}
+    for lang, hints in _DOC_HINTS.items():
+        score = sum(low.count(h) for h in hints)
+        letters = _DOC_LETTERS.get(lang, "")
+        if letters:
+            score += min(10, sum(low.count(ch) for ch in letters))
+        scores[lang] = score
+    # Scandinavian: å/ø/æ/ä/ö split the three (Swedish ä ö; Danish/Norwegian æ ø).
+    sv_letters = low.count("ä") + low.count("ö")
+    dano_letters = low.count("æ") + low.count("ø")
+    if sv_letters > dano_letters:
+        scores["sv"] += min(10, sv_letters)
+    elif dano_letters:
+        scores["da"] += min(10, dano_letters)
+        scores["no"] += min(10, dano_letters)
+    if "ä" in low and "ö" in low and ("y" in low) and scores["fi"] >= _DOC_MIN_HITS:
+        scores["fi"] += 2
+    ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    best, best_score = ranked[0]
+    runner_up = ranked[1][1] if len(ranked) > 1 else 0
+    if best_score < _DOC_MIN_HITS or best_score <= runner_up:
+        return None
+    return best
+
+
 __all__ = [
+    "TRANSLATABLE_LANGUAGES",
+    "detect_document_language",
     "detect_language",
     "language_name",
     "script_language",

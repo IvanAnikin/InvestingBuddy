@@ -195,6 +195,11 @@ class _Evidence:
     #: When the SOURCE published it (the corpus chunk's ``published_at``, a filing's
     #: ``filing_date``). What orders two statements of the same guidance in time.
     published_at: date | None = None
+    #: V3.20 slice 10.2 — for a NON-English corpus passage, its figures in English
+    #: notation (``locale_figures``), read from the raw passage, plus its held
+    #: translation's. What the figure checks read; ``text`` is what the model reads.
+    #: ``None`` for every English item (the checks then read ``text`` as before).
+    figure_text: str | None = None
     # -- Open-web W4 (spec §13.1, §14.2, §17.1) ---------------------------------
     #: Open-web text: a web corpus chunk or a verified external lead.
     web: bool = False
@@ -607,6 +612,10 @@ _PASSAGE_OPENING_CHARS = 240
 _WEB_CORPUS_EVIDENCE_KEYS: tuple[str, ...] = (
     "evidence_id",
     "text",
+    # V3.20 slice 10.2: a non-English passage's language and English reading (rendered
+    # like every other untrusted string). Absent on English passages.
+    "language",
+    "translation",
     "source_class",
     "origin",
     "published_at",
@@ -764,6 +773,7 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
     # ADR-084 — the metrics the record carries, read from its RAW fields: the prompt
     # copy below is JSON-escaped (a newline becomes ``\n``) and cut (review H1).
     metrics = _raw_metrics(tool, item)
+    figure_text = _figure_text(tool, item)
     if untrusted:
         item = _render_untrusted(item)
     if tool in _CORPUS_TOOLS and trust.get("web"):
@@ -833,7 +843,9 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
         kind=tool,
         # A corpus chunk reaches the prompt WHOLE (review H1): its text is serialised
         # second and the cut sits past the chunker's hard maximum plus its envelope.
-        text=text[: _CORPUS_ITEM_PROMPT_CHARS if tool in _CORPUS_TOOLS else _ITEM_PROMPT_CHARS],
+        text=text[: (_CORPUS_ITEM_PROMPT_CHARS
+                     + (_TRANSLATION_PROMPT_CHARS if item.get("translation") else 0))
+                  if tool in _CORPUS_TOOLS else _ITEM_PROMPT_CHARS],
         untrusted=untrusted,
         # Carried from the tool's own typed result, never read out of prose.
         period_key=_period_key_of(item),
@@ -842,8 +854,33 @@ def _evidence_of(tool: str, item: dict[str, Any], untrusted: bool) -> _Evidence 
         published_at=_published_at_of(item),
         url=url,
         title=title,
+        figure_text=figure_text,
         **trust,
     )
+
+
+#: V3.20 slice 10.2 — extra prompt room for a passage that carries its translation:
+#: the original is serialised first and stays whole; the translation follows it.
+_TRANSLATION_PROMPT_CHARS = 3_000
+
+
+def _figure_text(tool: str, item: dict[str, Any]) -> str | None:
+    """The figures of a non-English corpus passage in English notation, or ``None``.
+
+    Read from the RAW passage (the prompt copy is JSON-escaped: ``億`` becomes
+    ``\\u5104``), with the language the corpus recorded for it."""
+    if tool not in _CORPUS_TOOLS:
+        return None
+    language = str(item.get("language") or "").lower()
+    if not language or language == "en":
+        return None
+    from app.services.sources.locale_figures import normalise_figures
+
+    parts = [normalise_figures(str(item.get("text") or ""), language)]
+    translation = item.get("translation")
+    if isinstance(translation, dict) and translation.get("text"):
+        parts.append(str(translation["text"]))  # already in English notation
+    return "\n".join(p for p in parts if p)
 
 
 #: Where a tool states when its source was published, in order of preference.
@@ -1130,7 +1167,8 @@ def _ytd_rekey(
     from app.services.ledger.period_duration import rekey_for_duration
 
     by_id = {item.citation_id: item for item in evidence}
-    texts = [by_id[c].text for c in cited if c in by_id and by_id[c].text]
+    texts = [by_id[c].figure_text or by_id[c].text for c in cited
+             if c in by_id and (by_id[c].figure_text or by_id[c].text)]
     return rekey_for_duration(period_key, statement, texts,
                               calendar_fiscal_year=calendar_fiscal_year)
 
@@ -1149,7 +1187,7 @@ def _segment_scope(
     by_id = {item.citation_id: item for item in evidence}
     items = [by_id[c] for c in cited if c in by_id]
     sectioned = [(hierarchy.section_of(chunk_id_from_evidence_id(item.citation_id)),
-                  item.text or "") for item in items]
+                  item.figure_text or item.text or "") for item in items]
     amounts = [f for f in claim_checks.figures(statement, 8) if f.kind == "amt"]
     figure_found = any(
         claim_checks.same_figure(fig, found)

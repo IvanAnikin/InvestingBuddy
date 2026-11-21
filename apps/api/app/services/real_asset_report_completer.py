@@ -46,6 +46,14 @@ from app.services.data_provenance import (
     derive_data_provenance,
     normalise_provenance,
 )
+from app.services.discovery.laddering import distance as ladder_distance
+from app.services.electricity.real_asset import ASSET_TYPE_BY_LAYER
+from app.services.electricity.taxonomy import (
+    LAYER_KEYS,
+    TAXONOMY_VERSION,
+    UNCLASSIFIED_THEME_TAG,
+    theme_tags_for,
+)
 
 # Provenance enums from report_schema.json ($defs.sourceTier / $defs.dataQuality)
 _VALID_SOURCE_TIERS = frozenset(
@@ -72,9 +80,11 @@ _Q_WEAK = "D_weak_or_stale"  # not-sourced stand-in (surfaced as a data-quality 
 _MILLION_SCALE_OK = frozenset({"million", "millions", "mln", "m"})
 
 # A single theme_tag is structurally required (minItems 1) with no neutral enum
-# member. We emit one deterministic umbrella tag and disclose in report_meta /
-# self_critique that it is a structural stand-in, not a researched classification.
-_DEFAULT_THEME_TAG = "reshoring_supply_chain"
+# member. V3.20 slice 5.1: the tags come from the electricity taxonomy when the
+# draft carries a layer classification (``electricity_classification``, slice 5.2).
+# Without one we emit the taxonomy's declared umbrella stand-in and disclose in
+# report_meta that it is a structural stand-in, not a researched classification.
+_DEFAULT_THEME_TAG = UNCLASSIFIED_THEME_TAG
 
 
 @dataclass
@@ -304,19 +314,49 @@ class _ReportCompleter:
 
     # ── section builders ─────────────────────────────────────────────────────
 
+    def _classified_layers(self) -> tuple[list[str], list[str]]:
+        """The draft's electricity layers (primary first) and sub-segments, if any."""
+        cls = self._admin.get("electricity_classification")
+        if not isinstance(cls, dict):
+            return [], []
+        layers = [k for k in (cls.get("layers") or []) if k in LAYER_KEYS]
+        primary = cls.get("primary_layer")
+        if primary in LAYER_KEYS:
+            layers = [primary] + [k for k in layers if k != primary]
+        subs = [str(k) for k in (cls.get("sub_segments") or []) if isinstance(k, str)]
+        return layers, subs
+
+    def _theme_tags(self) -> list[str]:
+        layers, subs = self._classified_layers()
+        if not layers:
+            return [_DEFAULT_THEME_TAG]
+        return theme_tags_for(layers, subs)
+
+    def _emerged_from(self) -> str:
+        layers, _ = self._classified_layers()
+        if not layers:
+            return (
+                "Assembled by the deterministic Phase 26 schema-completion layer "
+                "from an internal analysis draft. The original discovery path is "
+                "not fully recorded in this draft; the theme tag and entry path "
+                "are structural stand-ins pending human research, not researched "
+                "classifications."
+            )
+        return (
+            "Assembled by the deterministic Phase 26 schema-completion layer "
+            "from an internal analysis draft. The theme tags come from the "
+            f"electricity taxonomy {TAXONOMY_VERSION} layer classification "
+            f"(primary layer: {layers[0]}), made from cited disclosure text; the "
+            "entry path is a structural stand-in pending human research."
+        )
+
     def _report_meta(self) -> dict[str, Any]:
         return {
             "schema_version": "1.0.0",
             "report_id": str(self._report_id),
             "generated_at": self._gen_dt.isoformat(),
             "agent_pipeline_version": "phase26_schema_completion_v1",
-            "candidate_emerged_from": (
-                "Assembled by the deterministic Phase 26 schema-completion layer "
-                "from an internal analysis draft. The original discovery path is "
-                "not fully recorded in this draft; the theme tag and entry path "
-                "are structural stand-ins pending human research, not researched "
-                "classifications."
-            ),
+            "candidate_emerged_from": self._emerged_from(),
             "core_target_profile": (
                 "INTERNAL-ONLY, RESEARCH-INCOMPLETE draft. No physical chokepoint, "
                 "structural flow, or mispricing has been sourced or asserted. This "
@@ -324,7 +364,7 @@ class _ReportCompleter:
                 "incompleteness; it is not an investment thesis and not a "
                 "recommendation."
             ),
-            "theme_tags": [_DEFAULT_THEME_TAG],
+            "theme_tags": self._theme_tags(),
             "conviction": "PASS",
         }
 
@@ -381,10 +421,20 @@ class _ReportCompleter:
             )
         return out
 
+    def _laddering(self) -> dict[str, Any] | None:
+        """V3.20 slice 6.1 — how a laddered candidate was reached, when the draft says."""
+        lad = self._admin.get("supply_chain_laddering")
+        if not isinstance(lad, dict) or not isinstance(lad.get("hops"), int):
+            return None
+        return lad
+
     def _discovery_profile(self) -> dict[str, Any]:
+        lad = self._laddering()
         return {
-            "entry_path": "other",
-            "supply_chain_distance_from_obvious": 0,
+            # V3.20 slice 6.1: a candidate reached by walking supplier_of edges carries its
+            # real hop count; otherwise the stand-in below is unchanged.
+            "entry_path": "supply_chain_laddering" if lad else "other",
+            "supply_chain_distance_from_obvious": ladder_distance(lad["hops"]) if lad else 0,
             "coverage_metrics": {
                 "sell_side_estimate_count": self._missing_dp(
                     "discovery_profile.analyst_estimate_count"
@@ -542,8 +592,11 @@ class _ReportCompleter:
         }
 
     def _real_asset_block(self) -> dict[str, Any]:
+        layers, _ = self._classified_layers()
         return {
-            "asset_type": "mixed",
+            # V3.20 slice 5.4: the classified primary layer decides the asset type;
+            # unclassified stays "mixed".
+            "asset_type": ASSET_TYPE_BY_LAYER.get(layers[0], "mixed") if layers else "mixed",
             "asset_quality_summary": (
                 "not_applicable_or_not_sourced: this internal draft has no sourced "
                 "real-asset data. If the subject is not a real-asset issuer this "

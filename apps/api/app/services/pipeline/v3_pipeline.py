@@ -197,6 +197,15 @@ class V3ResearchOutcome:
     #: vocabulary (``gap_resolution.RESULTS``), with the counts. EMPTY — and absent from
     #: ``to_dict()`` — when the step did not run.
     gap_resolution: dict[str, Any] = field(default_factory=dict)
+    #: V3.20 slices 2.2–2.3 — the relationship steps: ``gleif_parents``
+    #: (``ParentWriteResult.to_dict()``) and ``sec_filings``
+    #: (``SecRelationshipWriteResult.to_dict()``). EMPTY — and absent from ``to_dict()``
+    #: — when the steps are off.
+    relationships: dict[str, Any] = field(default_factory=dict)
+    #: V3.20 slice 4.1 — the earnings-actuals step (``earnings_step.
+    #: earnings_actuals_step``): state, quarters written, the newest quarter. EMPTY — and
+    #: absent from ``to_dict()`` — when the step is off.
+    earnings: dict[str, Any] = field(default_factory=dict)
     #: Why the run produced less than a full one. Never empty on a degraded run: a
     #: pipeline that narrowed silently is one nobody can widen.
     degraded: list[str] = field(default_factory=list)
@@ -226,6 +235,10 @@ class V3ResearchOutcome:
             payload["segment_hierarchy"] = dict(self.segment_hierarchy)
         if self.gap_resolution:
             payload["gap_resolution"] = dict(self.gap_resolution)
+        if self.relationships:
+            payload["relationships"] = dict(self.relationships)
+        if self.earnings:
+            payload["earnings"] = dict(self.earnings)
         return payload
 
     def _base_dict(self) -> dict[str, Any]:
@@ -609,6 +622,36 @@ async def _run(
                 f"corpus ({item.get('reason')})"
             )
 
+    # V3.20 slice 2.2 — who owns the company: its direct and ultimate parent (or GLEIF's
+    # stated reason there is none) from GLEIF Level 2, into the relationship graph.
+    if getattr(cfg, "v3_entity_master_enabled", False):
+        from app.services.pipeline.relationship_step import (
+            gleif_parents_step,
+            sec_relationships_step,
+        )
+
+        gleif = (
+            await gleif_parents_step(session, company, cfg=cfg)
+            if getattr(cfg, "v3_gleif_parents_enabled", False) else {}
+        )
+        if gleif:
+            outcome.relationships["gleif_parents"] = gleif
+        if gleif.get("state") == "error":
+            outcome.degraded.append(
+                "the company's parent companies could not be read from GLEIF ("
+                + "; ".join(gleif.get("errors") or ["unknown error"]) + ")"
+            )
+        # V3.20 slice 2.3 — subsidiaries (Exhibit 21) and 5 %+ holders (13D/13G XML).
+        sec = await sec_relationships_step(session, company, cfg=cfg)
+        if sec:
+            outcome.relationships["sec_filings"] = sec
+            if sec.get("state") == "error":
+                outcome.degraded.append(
+                    "the company's subsidiaries and major holders could not be read from "
+                    "its SEC filings (" + "; ".join(sec.get("errors") or ["unknown error"])
+                    + ")"
+                )
+
     # Item 21 — the statements those documents yielded, read the way the V2 snapshot
     # reads its own facts. The V2 report was assembled before any of this was acquired,
     # so without it an acquired annual report still rendered as "Not reported".
@@ -668,6 +711,14 @@ async def _run(
     )
     if stage.signals or stage.basis or stage.commercial_stage:
         outcome.stage = stage.to_dict()
+    # V3.20 slice 5.3 — a company whose own disclosure places it in a layer of the
+    # electricity stack (slice 5.2 classifier) gets the ``electricity_value_chain``
+    # signal, so the electricity playbook reaches a cable maker classified "Industrials"
+    # or a copper-rod producer classified "Materials". No signal, no change.
+    selection_signals: tuple[str, ...] = tuple(stage.signals)
+    from app.services.pipeline.electricity_step import electricity_selection_signals
+
+    selection_signals += await electricity_selection_signals(session, company, cfg=cfg)
     # ADR-088 (LIN-1) — positively shown, or None (then no synthesis gate applies).
     commercial_stage = stage.commercial_stage
     if stage.is_development_stage:
@@ -724,6 +775,45 @@ async def _run(
             "no model provider resolved; investigations run tools and report gaps"
         )
 
+    # V3.20 slice 2.5 — named customers / suppliers / offtakers from the company's own
+    # held documents: one unread document, one model call, every claim verified.
+    if getattr(cfg, "v3_entity_master_enabled", False):
+        from app.services.pipeline.counterparty_step import text_counterparties_step
+
+        named = await text_counterparties_step(
+            session, company, cfg=cfg, client=model_routing.client_for(SLOT_INVESTIGATOR))
+        if named:
+            outcome.relationships["document_counterparties"] = named
+            if named.get("state") == "error":
+                outcome.degraded.append(
+                    "named customers and suppliers could not be read from the company's "
+                    "documents (" + "; ".join(named.get("errors") or ["unknown error"]) + ")"
+                )
+
+    # V3.20 slice 4.1 — quarterly revenue / diluted EPS from SEC XBRL into
+    # ``earnings_results`` (actual columns only; consensus and guidance are never touched).
+    if getattr(cfg, "v3_entity_master_enabled", False) and getattr(
+            cfg, "v3_earnings_actuals_enabled", False):
+        from app.services.pipeline.earnings_step import earnings_actuals_step
+
+        earnings = await earnings_actuals_step(session, company, cfg=cfg)
+        outcome.earnings = earnings
+        if earnings.get("state") == "error":
+            outcome.degraded.append(
+                "quarterly earnings actuals could not be read from SEC XBRL ("
+                + str(earnings.get("error") or "unknown error") + ")")
+        # V3.20 slice 4.2 — today's third-party consensus snapshot (Alpha Vantage,
+        # private use). Stores ``consensus_snapshots`` only; no key → no call.
+        if getattr(cfg, "v3_consensus_snapshots_enabled", False):
+            from app.services.pipeline.consensus_step import consensus_snapshot_step
+
+            consensus = await consensus_snapshot_step(session, company, cfg=cfg)
+            outcome.earnings = {**outcome.earnings, "consensus": consensus}
+            if consensus.get("state") == "error":
+                outcome.degraded.append(
+                    "the consensus snapshot could not be stored ("
+                    + str(consensus.get("error") or "unknown error") + ")")
+
     # 1. Prior research — the "before" a delta compares against, and the gaps that
     #    become this run's questions.
     prior = await memory.recall(session, company_id=company.id)
@@ -732,7 +822,7 @@ async def _run(
     selection = select_playbooks(
         sector=classification.matching_sector,
         industry=classification.industry,
-        signals=stage.signals,
+        signals=selection_signals,
     )
     if selection.is_empty:
         outcome.degraded.append(f"no playbook applied: {selection.reason}")
@@ -782,7 +872,7 @@ async def _run(
         selection,
         sector=classification.matching_sector,
         industry=classification.industry,
-        signals=stage.signals,
+        signals=selection_signals,
     )
     outcome.not_meaningful_metrics = applicability.to_dict()
     # ADR-088 — what every model in the run is told about the company (PYPL-4, LIN-1):
@@ -816,15 +906,21 @@ async def _run(
 
     thesis = await resolve_thesis(session, discovery_candidate_id=discovery_candidate_id)
     thesis_size = None
+    size_observation = None
     if thesis.present:
-        market_cap = thesis.market_cap_usd
+        # V3.20 slice 1.3 — size is RE-CHECKED at analysis time (market caps move), from
+        # the exchange's own figure; the discovery snapshot is the fallback, with its age.
+        observation, previous = await analysis_time_size(thesis, company, cfg=cfg)
+        size_observation = observation
+        market_cap = observation.market_cap_usd if observation is not None else None
         if (
             market_cap is None
             and getattr(company, "market_cap", None) is not None
             and str(getattr(company, "currency", "") or "").upper() == "USD"
         ):
             market_cap = float(company.market_cap)
-        thesis_size = size_fit(thesis, market_cap)
+        thesis_size = size_fit(thesis, market_cap, observation=observation,
+                               previous=previous)
         outcome.thesis = {**thesis.to_dict(), "size_fit": thesis_size}
         # V3.19.1 — "is it a critical mineral?" is answered by the OFFICIAL list, for the
         # commodities the company's own documents are about. Never by its wording.
@@ -1283,10 +1379,64 @@ async def _run(
     tool_units = await _tool_call_consumption(session, run, company)
     outcome.external_research = await _external_research(session, run, company)
     outcome.external_research["reused_verifications"] = list(investigator.reused.values())[:40]
+    # V3.20 slice 4.3 — guidance (this and earlier runs' ledger findings) vs the actuals
+    # in ``earnings_results``; writes the guidance columns only. After the ledger is
+    # written, before the report reads it.
+    if getattr(cfg, "v3_entity_master_enabled", False) and getattr(
+            cfg, "v3_earnings_guidance_enabled", False):
+        from app.services.pipeline.guidance_step import guidance_step
+
+        guided = await guidance_step(session, company, cfg=cfg)
+        outcome.earnings = {**outcome.earnings, "guidance": guided}
+        if guided.get("state") == "error":
+            outcome.degraded.append(
+                "guidance could not be compared with actuals ("
+                + str(guided.get("error") or "unknown error") + ")")
+    # V3.20 slice 4.4 — consensus / surprise columns from the dated pre-report snapshots
+    # (slice 4.2). No external call.
+    if getattr(cfg, "v3_entity_master_enabled", False) and getattr(
+            cfg, "v3_earnings_track_record_enabled", False):
+        from app.services.pipeline.earnings_track_record import earnings_surprise_step
+
+        surprises = await earnings_surprise_step(session, company, cfg=cfg)
+        outcome.earnings = {**outcome.earnings, "surprises": surprises}
+        if surprises.get("state") == "error":
+            outcome.degraded.append(
+                "earnings surprises could not be computed ("
+                + str(surprises.get("error") or "unknown error") + ")")
     # 11. V3.18.8 — the professional report, from the ledger. Never costs the run.
     #     BEFORE consumption is read: the editor's model call is spend on the chair's
     #     client, and `_consumption` takes each client's usage once.
     try:
+        electricity_layers = await _electricity_layers_section(session, company, cfg=cfg)
+        passive_ownership = await _passive_ownership_section(session, company, cfg=cfg)
+        change_events = await _change_events_section(session, company, cfg=cfg)
+        real_asset = await _real_asset_section(session, run, electricity_layers)
+        enterprise_value = await _enterprise_value_section(
+            session, company, cfg=cfg, observation=size_observation, real_asset=real_asset)
+        relationships = await _relationship_section(
+            session, company, cfg=cfg, steps=outcome.relationships)
+        earnings_track_record = await _earnings_track_record_section(
+            session, company, cfg=cfg)
+        financial_depth = await _financial_depth_section(session, company, cfg=cfg)
+        layer_peers = await _layer_peers_section(
+            session, company, cfg=cfg, layers_block=electricity_layers,
+            ev_block=enterprise_value, size_fit=thesis_size)
+        obscurity = await _obscurity_section(
+            session, company, cfg=cfg, passive_block=passive_ownership,
+            layers_block=electricity_layers)
+        precedent_transactions = await _precedent_transactions_section(
+            session, cfg=cfg, layers_block=electricity_layers)
+        market_implied = await _market_implied_section(
+            session, company, cfg=cfg, ev_block=enterprise_value, peers_block=layer_peers,
+            size_fit=thesis_size, blocks={
+                "valuation_context.layer_peers": layer_peers,
+                "financial_capacity.financial_depth": financial_depth,
+                "valuation_context.obscurity": obscurity,
+                "valuation_context.passive_ownership": passive_ownership,
+                "business_model.relationships": relationships,
+                "financial_capacity.earnings_track_record": earnings_track_record,
+            })
         report, withheld_reason = await _professional_report(
             session,
             run,
@@ -1304,8 +1454,35 @@ async def _run(
             not_meaningful_calculations=applicability.calculations,
             not_meaningful_note=applicability.reader_note or None,
             commercial_stage=commercial_stage,
+            relationships=relationships,
+            passive_ownership=passive_ownership,
+            earnings_track_record=earnings_track_record,
+            electricity_layers=electricity_layers,
+            real_asset=real_asset,
+            enterprise_value=enterprise_value,
+            financial_depth=financial_depth,
+            layer_peers=layer_peers,
+            precedent_transactions=precedent_transactions,
+            market_implied=market_implied,
+            obscurity=obscurity,
+            change_events=change_events,
+            verdict_enabled=bool(getattr(cfg, "v3_research_verdict_enabled", False)),
+            valuation=await _valuation_section(
+                session, company, cfg=cfg, ev_block=enterprise_value, peers_block=layer_peers,
+                depth_block=financial_depth, size_fit=thesis_size,
+                precedents_block=precedent_transactions),
+            challenges=outcome.challenges or None,
+            self_critique_enabled=bool(getattr(cfg, "v3_self_critique_enabled", False)),
+            demand_plans=await _demand_plans(session, cfg=cfg, layers_block=electricity_layers),
+            translated_citations_enabled=bool(getattr(cfg, "v3_translation_enabled", False)),
         )
         outcome.professional_research = report
+        await _mark_researched(session, company, cfg=cfg, change_events=change_events)
+        # V3.20 slice 9.1 — the comparable-set record, read from this report's blocks.
+        from app.services.research_records import write_record
+
+        await write_record(session, company=company, research_run_id=outcome.research_run_id,
+                           report=report, size_fit=thesis_size, cfg=cfg)
         if withheld_reason:
             outcome.degraded.append(withheld_reason)
     except Exception as exc:  # noqa: BLE001 - a report failure costs the report block only
@@ -1469,6 +1646,281 @@ MAX_REPORT_FINDINGS = 200
 LADDER_CALLS_PER_QUESTION = 9
 
 
+async def _relationship_section(
+    session: Any, company: Any, *, cfg: Any, steps: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 2.6 — the report's Customers / Suppliers / Parent & group block, from
+    the relationship graph and what this run's relationship steps read. ``None`` when the
+    graph is off or unreadable: the report is then unchanged. Never raises."""
+    if not getattr(cfg, "v3_entity_master_enabled", False):
+        return None
+    try:
+        from app.services.entities.relationship_view import company_relationships
+        from app.services.pipeline.relationship_report import relationship_block
+
+        async with session.begin_nested():
+            view = await company_relationships(session, company=company, cfg=cfg)
+        return relationship_block(view.model_dump(mode="json"), steps or {})
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        return None
+
+
+async def _earnings_track_record_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 4.4 — the "Earnings track record" block; None when off (report unchanged)."""
+    if not getattr(cfg, "v3_entity_master_enabled", False):
+        return None
+    from app.services.pipeline.earnings_track_record import earnings_track_record_section
+
+    return await earnings_track_record_section(session, company, cfg=cfg)
+
+
+async def _electricity_layers_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 5.2 — the "Electricity layers" block; None when off (report unchanged)."""
+    from app.services.pipeline.electricity_step import electricity_layers_section
+
+    return await electricity_layers_section(session, company, cfg=cfg)
+
+
+async def _obscurity_section(
+    session: Any, company: Any, *, cfg: Any,
+    passive_block: dict[str, Any] | None, layers_block: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 6.3 — the obscurity score block; None when off (report unchanged)."""
+    from app.services.pipeline.obscurity_step import obscurity_section
+
+    return await obscurity_section(session, company, cfg=cfg, passive_block=passive_block,
+                                   layers_block=layers_block)
+
+
+async def _enterprise_value_section(
+    session: Any, company: Any, *, cfg: Any, observation: Any,
+    real_asset: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.1 — the EV + multiples block; None when off or no input (unchanged)."""
+    from app.services.pipeline.enterprise_value_step import enterprise_value_section
+
+    return await enterprise_value_section(session, company, cfg=cfg, observation=observation,
+                                          real_asset=real_asset)
+
+
+async def _layer_peers_section(
+    session: Any, company: Any, *, cfg: Any, layers_block: dict[str, Any] | None,
+    ev_block: dict[str, Any] | None, size_fit: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.2 — peers in the same electricity layer from the comparable-set
+    store; None when off, unclassified or no other record (report unchanged)."""
+    if not getattr(cfg, "v3_layer_peers_enabled", False):
+        return None
+    if not layers_block or layers_block.get("status") != "classified":
+        return None
+    layer = layers_block.get("primary_layer")
+    if not layer:
+        return None
+    try:
+        from app.services.research_records import comparable_set
+        from app.services.valuation.layer_peers import layer_peers_block, subject_inputs
+
+        records = await comparable_set(session, str(layer), exclude_company_id=company.id)
+        cap, ev_to_ebit = subject_inputs(ev_block, size_fit)
+        return layer_peers_block(layer=str(layer), subject_market_cap_usd=cap,
+                                 subject_ev_to_ebit=ev_to_ebit, records=records)
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        logger.warning("layer peers block failed")
+        return None
+
+
+async def _market_implied_section(
+    session: Any, company: Any, *, cfg: Any, ev_block: dict[str, Any] | None,
+    peers_block: dict[str, Any] | None, size_fit: dict[str, Any] | None,
+    blocks: dict[str, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.4 — what today's EV implies; None when off or no EV (report unchanged)."""
+    from app.services.pipeline.market_implied_step import market_implied_section
+
+    return await market_implied_section(session, company, cfg=cfg, ev_block=ev_block,
+                                        peers_block=peers_block, blocks=blocks,
+                                        size_fit=size_fit)
+
+
+async def _valuation_section(
+    session: Any, company: Any, *, cfg: Any, ev_block: dict[str, Any] | None,
+    peers_block: dict[str, Any] | None, depth_block: dict[str, Any] | None,
+    size_fit: dict[str, Any] | None, precedents_block: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.6 wiring — the engine's range; None when off or no EV (unchanged)."""
+    from app.services.pipeline.valuation_step import valuation_section
+
+    return await valuation_section(session, company, cfg=cfg, ev_block=ev_block,
+                                   peers_block=peers_block, depth_block=depth_block,
+                                   size_fit=size_fit, precedents_block=precedents_block)
+
+
+async def _demand_plans(
+    session: Any, *, cfg: Any, layers_block: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[str]] | None:
+    """V3.20 slice 7.3 — the held grid plans (enabled sources, newest edition each), read
+    only for a company classified into the electricity stack; None otherwise. Never raises."""
+    if not getattr(cfg, "v3_demand_triangulation_enabled", False):
+        return None
+    if not layers_block or layers_block.get("status") != "classified":
+        return None
+    try:
+        from app.services.grid_plans.triangulation import held_plans
+
+        async with session.begin_nested():
+            return await held_plans(session, cfg)  # type: ignore[no-any-return]
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        logger.warning("grid plans read failed")
+        return None
+
+
+async def _precedent_transactions_section(
+    session: Any, *, cfg: Any, layers_block: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.3 — admin-approved deals in the subject's primary electricity layer;
+    None when off, unclassified or no approved deal (report unchanged). Never raises."""
+    if not getattr(cfg, "v3_precedent_transactions_enabled", False):
+        return None
+    if not layers_block or layers_block.get("status") != "classified":
+        return None
+    layer = layers_block.get("primary_layer")
+    if not layer:
+        return None
+    try:
+        from datetime import date as _date
+
+        from app.services.valuation.precedents import approved_in_layer, precedent_block
+
+        rows = await approved_in_layer(session, str(layer))
+        return precedent_block(rows, layer=str(layer), today=_date.today())
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        logger.warning("precedent transactions block failed")
+        return None
+
+
+async def _financial_depth_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 8.5 — the financial-depth block; None when off / no CIK (unchanged)."""
+    from app.services.pipeline.financial_depth_step import financial_depth_section
+
+    return await financial_depth_section(session, company, cfg=cfg)
+
+
+async def _mark_researched(
+    session: Any, company: Any, *, cfg: Any, change_events: dict[str, Any] | None,
+) -> None:
+    """V3.20 slice 6.4 — stamp ``discovery_seen.last_researched_at`` and the newest change
+    event this research knew of, so the novelty gate can tell a re-run from a change."""
+    if not getattr(cfg, "v3_discovery_seen_enabled", False):
+        return
+    from datetime import date as _date
+
+    from app.services.discovery.novelty import mark_researched
+
+    dates: list[_date] = []
+    for event in (change_events or {}).get("events") or []:
+        try:
+            dates.append(_date.fromisoformat(str(event.get("date"))[:10]))
+        except ValueError:
+            continue
+    for cluster in (change_events or {}).get("insider_clusters") or []:
+        try:
+            dates.append(_date.fromisoformat(str(cluster.get("end_date"))[:10]))
+        except ValueError:
+            continue
+    await mark_researched(session, company, newest_event=max(dates) if dates else None)
+
+
+async def _change_events_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 6.2 — the change-events block; None when off or empty (unchanged)."""
+    from app.services.pipeline.change_events_step import change_events_section
+
+    return await change_events_section(session, company, cfg=cfg)
+
+
+async def _real_asset_section(
+    session: Any, run: Any, electricity_layers: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.20 slice 5.4 — the electricity real-asset block from this run's findings.
+
+    ``None`` unless the company was classified into the electricity stack (so every
+    other report is unchanged). Never raises.
+    """
+    if not electricity_layers or electricity_layers.get("status") != "classified":
+        return None
+    try:
+        from sqlalchemy import select
+
+        from app.models.ledger import ResearchFinding
+        from app.services.electricity.real_asset import real_asset_block
+
+        async with session.begin_nested():
+            rows = (await session.execute(
+                select(ResearchFinding).where(ResearchFinding.research_run_id == run.id)
+            )).scalars().all()
+        findings = [{
+            "finding_id": str(r.id), "statement": r.statement,
+            "evidence_ids": list(r.evidence_ids_json or []),
+            "verification_status": r.verification_status,
+            "superseded_by": str(r.superseded_by_finding_id)
+            if r.superseded_by_finding_id else None,
+            "source_published_at": r.source_published_at.isoformat()
+            if r.source_published_at else None,
+        } for r in rows]
+        return real_asset_block(findings, electricity_layers)
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        return None
+
+
+async def _passive_ownership_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.20 slice 3.4 — the report's "Passive ownership" block from the stored N-PORT
+    aggregates. ``None`` when off or unreadable: the report is then unchanged. When no
+    N-PORT period has ever been ingested the block says so, rather than "none found".
+    Never raises."""
+    if not (getattr(cfg, "v3_entity_master_enabled", False)
+            and getattr(cfg, "v3_passive_ownership_enabled", False)):
+        return None
+    try:
+        from sqlalchemy import func, select
+
+        from app.models.passive_ownership import (
+            INGEST_COMPLETE,
+            SOURCE_NPORT,
+            FundHoldingsIngest,
+        )
+        from app.services.passive_ownership.view import company_passive_ownership
+        from app.services.pipeline.passive_ownership_report import (
+            issuer_block,
+            not_ingested_block,
+            passive_ownership_block,
+        )
+
+        async with session.begin_nested():
+            # Only an N-PORT ingest makes "none found" meaningful; issuer-file logs
+            # (slice 3.5) share the table under ``issuer_file:<sponsor>:<ticker>``.
+            ingested = await session.scalar(
+                select(func.count()).select_from(FundHoldingsIngest).where(
+                    FundHoldingsIngest.status == INGEST_COMPLETE,
+                    FundHoldingsIngest.source_kind == SOURCE_NPORT))
+            view = await company_passive_ownership(session, company=company, cfg=cfg)
+        if not ingested:
+            block = not_ingested_block()
+            issuer = issuer_block((view or {}).get("issuer_files"))
+            return block | {"issuer_files": issuer} if issuer else block
+        return passive_ownership_block(view)
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        return None
+
+
 async def _professional_report(
     session: Any,
     run: Any,
@@ -1487,6 +1939,24 @@ async def _professional_report(
     not_meaningful_calculations: "frozenset[str]" = frozenset(),
     not_meaningful_note: str | None = None,
     commercial_stage: str | None = None,
+    relationships: dict[str, Any] | None = None,
+    passive_ownership: dict[str, Any] | None = None,
+    earnings_track_record: dict[str, Any] | None = None,
+    electricity_layers: dict[str, Any] | None = None,
+    real_asset: dict[str, Any] | None = None,
+    obscurity: dict[str, Any] | None = None,
+    change_events: dict[str, Any] | None = None,
+    enterprise_value: dict[str, Any] | None = None,
+    layer_peers: dict[str, Any] | None = None,
+    precedent_transactions: dict[str, Any] | None = None,
+    market_implied: dict[str, Any] | None = None,
+    financial_depth: dict[str, Any] | None = None,
+    verdict_enabled: bool = False,
+    valuation: dict[str, Any] | None = None,
+    challenges: dict[str, Any] | None = None,
+    self_critique_enabled: bool = False,
+    demand_plans: tuple[list[dict[str, Any]], list[str]] | None = None,
+    translated_citations_enabled: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -1494,7 +1964,6 @@ async def _professional_report(
 
     from app.models.ledger import ResearchFinding, ResearchGap, ResearchQuestion
     from app.schemas.catalyst import neutralize_forbidden_terms
-    from app.services import safety_terms
     from app.services.pipeline import professional_research as pr
 
     async with session.begin_nested():
@@ -1678,11 +2147,70 @@ async def _professional_report(
         web_support=web_support,
         web_context=web_context or None,
         not_meaningful_note=not_meaningful_note,
+        relationships=relationships,
+        passive_ownership=passive_ownership,
+        earnings_track_record=earnings_track_record,
+        electricity_layers=electricity_layers,
+        real_asset=real_asset,
+        obscurity=obscurity,
+        change_events=change_events,
+        enterprise_value=enterprise_value,
+        layer_peers=layer_peers,
+        precedent_transactions=precedent_transactions,
+        market_implied=market_implied,
+        financial_depth=financial_depth,
     )
     report = pr.assemble(inputs)
     report = await pr.edit(report, editor_client)
     report["withheld_for_safety"] = withheld
-    hits = safety_terms.scan_value(report, path="professional_research")
+    if valuation:
+        # V3.20 slice 8.6 wiring (ADR-099): engine output, attached after the editor so no
+        # model reads or restates it; only when the engine ran, so other reports are
+        # byte-identical.
+        report["valuation"] = valuation
+    if demand_plans is not None:
+        # V3.20 slice 7.3: do the named customers publish active grid projects in this
+        # technology? Computed after the editor from the report's own blocks.
+        try:
+            from datetime import date as _date
+
+            from app.services.grid_plans.triangulation import triangulation_block
+
+            business = next((s for s in report.get("sections") or []
+                             if s.get("key") == "business_model"), None)
+            block = triangulation_block(
+                relationships=(business or {}).get("relationships"), layers=electricity_layers,
+                plans=demand_plans[0], sources_read=demand_plans[1], today=_date.today(),
+                report=report)
+            if block is not None and business is not None:
+                business["demand_triangulation"] = block
+        except Exception:  # noqa: BLE001 - an additive block never costs the report
+            logger.warning("demand triangulation failed")
+    if verdict_enabled:
+        # V3.20 slice 9.2 (ADR-098): computed AFTER the editor, from the report itself —
+        # no model sees or chooses the label. Failure costs the block, not the report.
+        try:
+            from app.services.research_verdict import verdict_block
+
+            report["verdict"] = verdict_block(report, valuation=report.get("valuation"))
+        except Exception:  # noqa: BLE001 - an additive block never costs the report
+            logger.warning("research verdict failed")
+    if self_critique_enabled:
+        # V3.20 slice 9.3: the report argues against itself, from what the run recorded.
+        try:
+            from app.services.pipeline.self_critique import self_critique_block
+
+            report["self_critique"] = self_critique_block(
+                report, challenges, report.get("verdict"))
+        except Exception:  # noqa: BLE001 - an additive block never costs the report
+            logger.warning("self-critique failed")
+    if translated_citations_enabled:
+        # V3.20 slice 10.2: each cited non-English passage, original (the evidence) and
+        # held English translation, for the reader. After the editor; read-only.
+        cited = await _translated_citations(session, report)
+        if cited:
+            report["translated_citations"] = cited
+    hits = _report_safety_hits(report)
     if hits:
         # Every component was screened; a hit here is in text this module composed or a
         # question text. It is not shown — an unscreened report is worse than none —
@@ -1693,6 +2221,67 @@ async def _professional_report(
             f"{len(hits)} passage(s) ({where})"
         )
     return report, None
+
+
+def _cited_evidence_ids(report: Any) -> list[str]:
+    """Every ``evidence_id`` / ``evidence_ids`` value in the report, in order."""
+    found: list[str] = []
+    stack: list[Any] = [report]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "evidence_ids" and isinstance(value, list):
+                    found.extend(str(v) for v in value if isinstance(v, str))
+                elif key == "evidence_id" and isinstance(value, str):
+                    found.append(value)
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+    return list(dict.fromkeys(found))
+
+
+async def _translated_citations(session: Any, report: dict[str, Any]) -> list[dict[str, Any]]:
+    """V3.20 slice 10.2 — the cited non-English passages with their translations. The
+    source text is screened like every quote the report carries. Never raises."""
+    try:
+        from app.schemas.catalyst import neutralize_forbidden_terms
+        from app.services.corpus.retrieval import EVIDENCE_ID_PREFIX
+        from app.services.corpus.translation import citation_translations
+
+        ids = [i for i in _cited_evidence_ids(report) if i.startswith(EVIDENCE_ID_PREFIX)]
+        if not ids:
+            return []
+        async with session.begin_nested():
+            block = await citation_translations(session, ids)
+        for row in block:
+            for key in ("original", "translation"):
+                if row.get(key):
+                    row[key] = neutralize_forbidden_terms(row[key])
+        return block
+    except Exception:  # noqa: BLE001 - an additive block never costs the report
+        logger.warning("translated citations failed")
+        return []
+
+
+#: Top-level report blocks whose typed fields the gate allows by path (ADR-098 §3,
+#: ADR-099 §5). Each is scanned at its own root, so ``verdict.recommendation`` is the
+#: exact path the allowance names; everything else is scanned with no allowance.
+_ALLOWANCE_ROOTS: tuple[str, ...] = ("verdict", "valuation")
+
+
+def _report_safety_hits(report: dict[str, Any]) -> list[Any]:
+    from app.services import safety_terms
+
+    rest = {k: v for k, v in report.items() if k not in _ALLOWANCE_ROOTS}
+    hits = list(safety_terms.scan_value(rest, path="professional_research"))
+    for root in _ALLOWANCE_ROOTS:
+        if root in report:
+            hits.extend(safety_terms.scan_value(
+                report[root], path=root,
+                allowances=safety_terms.V320_REPORT_ALLOWANCES))
+    return hits
 
 
 async def _ledger_findings(session: Any, run: Any, *, limit: int) -> list[dict[str, Any]]:
@@ -2538,9 +3127,48 @@ def _label_v2(
     )
 
 
+async def analysis_time_size(thesis: Any, company: Any, *, cfg: Any) -> tuple[Any, Any]:
+    """``(observation, discovery_snapshot_if_superseded)`` for the report's size check.
+
+    V3.20 slice 1.3. The exchange's own market cap is re-read for the company being
+    analysed (``V3_SIZE_RECHECK_ENABLED``); failing that, the discovery snapshot is used
+    as it was — dated, so ``size_fit`` can say how old it is. Never raises.
+    """
+    from app.services.discovery.size_recheck import SizeObservation, recheck_market_cap
+
+    snapshot = None
+    if thesis.market_cap_usd is not None:
+        snapshot = SizeObservation(
+            market_cap_usd=float(thesis.market_cap_usd),
+            as_of=str(thesis.market_cap_as_of)[:10] if thesis.market_cap_as_of else None,
+            method=thesis.market_cap_method or "discovery_verified",
+            source_url=None,
+            origin="discovery_snapshot",
+            native_amount=(thesis.market_cap_native or {}).get("amount"),
+            native_currency=(thesis.market_cap_native or {}).get("currency"),
+        )
+    if not getattr(cfg, "v3_size_recheck_enabled", True):
+        return snapshot, None
+    try:
+        fresh, _reason = await recheck_market_cap(
+            name=getattr(company, "name", None),
+            ticker=getattr(company, "ticker", None),
+            venue=getattr(company, "exchange", None),
+            isin=getattr(company, "isin", None),
+            cfg=cfg,
+        )
+    except Exception:  # noqa: BLE001 - a re-check that fails leaves the snapshot
+        fresh = None
+    if fresh is None:
+        return snapshot, None
+    return fresh, snapshot
+
+
 __all__ = [
+    "analysis_time_size",
     "SOURCE_SUMMARY_KEY",
     "V3ResearchOutcome",
     "attach_to_report",
     "run_v3_research",
 ]
+

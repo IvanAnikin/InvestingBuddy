@@ -224,6 +224,16 @@ REL_JOINT_VENTURE_WITH = "joint_venture_with"
 #: instrument-level link (``securities.underlying_security_id``), because a
 #: depositary receipt represents underlying SHARES at a ratio, not a company.
 REL_DEPOSITARY_FOR = "depositary_for"
+# ── V3.20 relationship graph (spec §3.2) ──
+#: ``subject`` is the ULTIMATE parent of ``object`` (GLEIF Level 2 "ultimate-parent").
+REL_ULTIMATE_PARENT_OF = "ultimate_parent_of"
+#: ``subject`` holds a significant stake in ``object`` (13D/13G, PSC, TR-1), with the
+#: share in ``disclosed_share_pct`` (``share_basis`` = voting_rights / capital).
+REL_SIGNIFICANT_HOLDER_OF = "significant_holder_of"
+#: ``subject`` SUPPLIES ``object``. "Customer A is 14% of our revenue" is stored as
+#: ``supplier_of(us, Customer A)``; "X is our key supplier" as ``supplier_of(X, us)``.
+#: ``customer_of`` is its alias, so one fact is never two rows.
+REL_SUPPLIER_OF = "supplier_of"
 
 #: The relationship types actually stored. Every other direction is a QUERY.
 #:
@@ -236,6 +246,9 @@ CANONICAL_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
         REL_PREDECESSOR_OF,
         REL_JOINT_VENTURE_WITH,
         REL_DEPOSITARY_FOR,
+        REL_ULTIMATE_PARENT_OF,
+        REL_SIGNIFICANT_HOLDER_OF,
+        REL_SUPPLIER_OF,
     }
 )
 
@@ -249,6 +262,12 @@ RELATIONSHIP_ALIASES: dict[str, tuple[str, bool]] = {
     REL_JOINT_VENTURE_WITH: (REL_JOINT_VENTURE_WITH, False),
     REL_DEPOSITARY_FOR: (REL_DEPOSITARY_FOR, False),
     "depositary_receipt_of": (REL_DEPOSITARY_FOR, True),
+    REL_ULTIMATE_PARENT_OF: (REL_ULTIMATE_PARENT_OF, False),
+    "ultimately_controlled_by": (REL_ULTIMATE_PARENT_OF, True),
+    REL_SIGNIFICANT_HOLDER_OF: (REL_SIGNIFICANT_HOLDER_OF, False),
+    "significantly_held_by": (REL_SIGNIFICANT_HOLDER_OF, True),
+    REL_SUPPLIER_OF: (REL_SUPPLIER_OF, False),
+    "customer_of": (REL_SUPPLIER_OF, True),
 }
 
 #: Types where the direction carries no meaning, so a query must look both ways.
@@ -260,7 +279,43 @@ RELATIONSHIP_INVERSE_LABEL: dict[str, str] = {
     REL_PREDECESSOR_OF: "successor_of",
     REL_JOINT_VENTURE_WITH: REL_JOINT_VENTURE_WITH,
     REL_DEPOSITARY_FOR: "depositary_receipt_of",
+    REL_ULTIMATE_PARENT_OF: "ultimately_controlled_by",
+    REL_SIGNIFICANT_HOLDER_OF: "significantly_held_by",
+    REL_SUPPLIER_OF: "customer_of",
 }
+
+# ── Relationship evidence (V3.20 slice 2.1, migration 047) ─────────────────── #
+
+#: What a disclosed share is a share OF.
+SHARE_BASES: frozenset[str] = frozenset(
+    # ``share_class`` = % of the class of securities named in the filing (13D / 13G).
+    {"revenue", "receivables", "purchases", "voting_rights", "capital", "backlog",
+     "share_class"}
+)
+
+#: How an edge was extracted. ``text_llm_verified`` = read from document text by a
+#: model AND confirmed verbatim against the source (the ADR-083 firewall).
+EXTRACTION_METHODS: frozenset[str] = frozenset(
+    {"gleif_api", "filing_xml", "exhibit_21", "xbrl_dimension", "text_llm_verified",
+     "registry", "manual"}
+)
+
+
+def require_share_basis(value: str | None) -> str | None:
+    return None if value is None else _require(value, SHARE_BASES, "share basis")
+
+
+def require_extraction_method(value: str | None) -> str | None:
+    return None if value is None else _require(value, EXTRACTION_METHODS, "extraction method")
+
+
+def counterparty_key(name: str | None) -> str | None:
+    """A stable key for an unresolved counterparty's name: casefolded, single-spaced,
+    punctuation-trimmed. ``"Customer A."`` and ``"customer  a"`` are one counterparty."""
+    import re
+
+    text = re.sub(r"[^\w&]+", " ", (name or "").casefold()).strip()
+    return re.sub(r"\s+", " ", text)[:300] or None
 
 
 # ── Reporting scope types (V3.2 Slice 2.4) ───────────────────────────────── #

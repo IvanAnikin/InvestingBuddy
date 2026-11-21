@@ -226,6 +226,24 @@ export interface ThesisDiscoveryInput {
   maxCandidates?: number;
   lookbackDays?: number;
   providerName?: string;
+  /**
+   * V3.20 size mandate. `undefined` = omit the field (platform default, USD 2bn, only when
+   * the thesis names no size); a number = explicit USD ceiling; `null` = no ceiling.
+   */
+  maxMarketCapUsd?: number | null;
+}
+
+/** V3.20 — the size-mandate choices the discovery form offers (owner decision D1). */
+export const SIZE_MANDATE_OPTIONS: { value: string; label: string; usd: number | null | undefined }[] = [
+  { value: "default", label: "Platform default (below USD 2bn unless the text names a size)", usd: undefined },
+  { value: "300m", label: "Below USD 300m", usd: 300_000_000 },
+  { value: "2bn", label: "Below USD 2bn", usd: 2_000_000_000 },
+  { value: "10bn", label: "Below USD 10bn", usd: 10_000_000_000 },
+  { value: "none", label: "No ceiling", usd: null },
+];
+
+export function sizeMandateUsd(value: string): number | null | undefined {
+  return SIZE_MANDATE_OPTIONS.find((o) => o.value === value)?.usd;
 }
 
 /** Build the `POST /api/v1/market-discovery/thesis-runs` payload. */
@@ -247,6 +265,8 @@ export function buildThesisDiscoveryRequest(
     max_candidates: input.maxCandidates ?? DISCOVERY_DEFAULTS.maxCandidates,
     lookback_days: input.lookbackDays ?? DISCOVERY_DEFAULTS.lookbackDays,
     provider_name: input.providerName ?? DISCOVERY_DEFAULTS.providerName,
+    // `undefined` leaves the key out entirely, so the platform default applies.
+    ...(input.maxMarketCapUsd !== undefined ? { max_market_cap_usd: input.maxMarketCapUsd } : {}),
   };
 }
 

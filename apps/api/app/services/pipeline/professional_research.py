@@ -184,6 +184,47 @@ class ReportInputs:
     #: ADR-069 — the playbook's reader note when generic metrics are not meaningful for
     #: this company (a deposit-taking bank). Shown beside the financials and the peers.
     not_meaningful_note: str | None = None
+    #: V3.20 slice 2.6 — Customers / Suppliers / Parent & group
+    #: (``relationship_report.relationship_block``); ``None`` when the relationship graph
+    #: is off, and then the report is unchanged.
+    relationships: Mapping[str, Any] | None = None
+    #: V3.20 slice 3.4 — passive / ETF ownership
+    #: (``passive_ownership_report.passive_ownership_block``); ``None`` leaves the report
+    #: unchanged.
+    passive_ownership: Mapping[str, Any] | None = None
+    #: V3.20 slice 4.4 — "Earnings track record"
+    #: (``earnings_track_record.earnings_track_record_block``); ``None`` leaves the report
+    #: unchanged.
+    earnings_track_record: Mapping[str, Any] | None = None
+    #: V3.20 slice 5.2 — the electricity layer classification
+    #: (``electricity_step.electricity_layers_section``); ``None`` leaves the report
+    #: unchanged.
+    electricity_layers: Mapping[str, Any] | None = None
+    #: V3.20 slice 5.4 — the electricity real-asset block (``electricity.real_asset``);
+    #: ``None`` leaves the report unchanged.
+    real_asset: Mapping[str, Any] | None = None
+    #: V3.20 slice 6.3 — the obscurity score (``obscurity_step.obscurity_section``);
+    #: ``None`` leaves the report unchanged.
+    obscurity: Mapping[str, Any] | None = None
+    #: V3.20 slice 6.2 — change events (``change_events_step.change_events_section``);
+    #: ``None`` leaves the report unchanged.
+    change_events: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.1 — enterprise value and multiples
+    #: (``enterprise_value_step.enterprise_value_section``); ``None`` leaves the report
+    #: unchanged.
+    enterprise_value: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.2 — peers in the same electricity layer (``valuation.layer_peers``);
+    #: ``None`` leaves the report unchanged.
+    layer_peers: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.3 — admin-approved deals in the subject's layer
+    #: (``valuation.precedents.precedent_block``); ``None`` leaves the report unchanged.
+    precedent_transactions: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.4 — what today's EV implies (``market_implied_step``); ``None`` leaves
+    #: the report unchanged.
+    market_implied: Mapping[str, Any] | None = None
+    #: V3.20 slice 8.5 — debt ladder, dilution, contract balances
+    #: (``financial_depth_step.financial_depth_section``); ``None`` leaves the report unchanged.
+    financial_depth: Mapping[str, Any] | None = None
 
 
 
@@ -812,6 +853,54 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
     industry["commodity_table"] = [dict(row) for row in inputs.commodity_rows]
     competitive = next(s for s in sections if s["key"] == "competitive_position")
     competitive["peer_table"] = [dict(row) for row in inputs.peer_rows]
+    if inputs.relationships:
+        # Only when the graph is on, so every other report is byte-identical.
+        business = next(s for s in sections if s["key"] == "business_model")
+        business["relationships"] = dict(inputs.relationships)
+    if inputs.electricity_layers:
+        # Only when the classifier is on, so every other report is byte-identical.
+        business_section = next(s for s in sections if s["key"] == "business_model")
+        business_section["electricity_layers"] = dict(inputs.electricity_layers)
+    if inputs.real_asset:
+        # Only for a company classified into the electricity stack.
+        operations = next(s for s in sections if s["key"] == "operations")
+        operations["real_asset"] = dict(inputs.real_asset)
+    if inputs.obscurity:
+        # Only when the score is on, so every other report is byte-identical.
+        valuation_section = next(s for s in sections if s["key"] == "valuation_context")
+        valuation_section["obscurity"] = dict(inputs.obscurity)
+    if inputs.enterprise_value:
+        # Only when the block is on and had an input, so other reports are byte-identical.
+        ev_section = next(s for s in sections if s["key"] == "valuation_context")
+        ev_section["enterprise_value"] = dict(inputs.enterprise_value)
+    if inputs.layer_peers:
+        # Only when another company holds a record in the layer.
+        peers_section = next(s for s in sections if s["key"] == "valuation_context")
+        peers_section["layer_peers"] = dict(inputs.layer_peers)
+    if inputs.precedent_transactions:
+        # Only when an approved deal exists in the layer, so other reports are unchanged.
+        deals_section = next(s for s in sections if s["key"] == "valuation_context")
+        deals_section["precedent_transactions"] = dict(inputs.precedent_transactions)
+    if inputs.market_implied:
+        # Only when an EV was computed, so every other report is byte-identical.
+        implied_section = next(s for s in sections if s["key"] == "valuation_context")
+        implied_section["market_implied"] = dict(inputs.market_implied)
+    if inputs.change_events:
+        # Only when an event was found, so every other report is byte-identical.
+        growth = next(s for s in sections if s["key"] == "growth_and_catalysts")
+        growth["change_events"] = dict(inputs.change_events)
+    if inputs.passive_ownership:
+        # Only when the block is on, so every other report is byte-identical.
+        valuation = next(s for s in sections if s["key"] == "valuation_context")
+        valuation["passive_ownership"] = dict(inputs.passive_ownership)
+    if inputs.financial_depth:
+        # Only when something was tagged, so every other report is byte-identical.
+        depth = next(s for s in sections if s["key"] == "financial_capacity")
+        depth["financial_depth"] = dict(inputs.financial_depth)
+    if inputs.earnings_track_record:
+        # Only when the block is on, so every other report is byte-identical.
+        capacity = next(s for s in sections if s["key"] == "financial_capacity")
+        capacity["earnings_track_record"] = dict(inputs.earnings_track_record)
     if inputs.peer_selection:
         # Only when a peer set ran, so every other report is byte-identical.
         competitive["peer_selection"] = dict(inputs.peer_selection)

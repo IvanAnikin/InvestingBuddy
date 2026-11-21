@@ -55,12 +55,32 @@ def size_bucket(usd: float) -> str:
     return "mega_cap"  # pragma: no cover - the bands are exhaustive
 
 
-def _borderline(usd: float) -> bool:
+def _borderline(usd: float, extra_edges: Iterable[float | None] = ()) -> bool:
     for low, high in SIZE_BANDS_USD.values():
         for edge in (low, high):
             if edge and abs(usd - edge) <= edge * BORDERLINE_FRACTION:
                 return True
-    return False
+    return any(edge and abs(usd - edge) <= edge * BORDERLINE_FRACTION for edge in extra_edges)
+
+
+def _numeric_bounds(constraint: Constraint | None) -> tuple[float | None, float | None]:
+    """The V3.20 numeric (min, max) USD bounds of a size constraint, if any."""
+    if constraint is None:
+        return None, None
+    return constraint.min_usd, constraint.max_usd
+
+
+def _fits_numeric(usd: float, low: float | None, high: float | None) -> bool:
+    return (low is None or usd >= low) and (high is None or usd < high)
+
+
+def _bounds_words(low: float | None, high: float | None) -> str:
+    parts = []
+    if low is not None:
+        parts.append(f"≥ ${low / 1e9:,.2f}bn")
+    if high is not None:
+        parts.append(f"< ${high / 1e9:,.2f}bn")
+    return " and ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -275,7 +295,17 @@ def verify_size(
             basis=f"verified size {bucket.replace('_', '-')}", sources=sources,
             borderline=_borderline(usd),
         )
-    fits = bucket in constraint.requested
+    low, high = _numeric_bounds(constraint)
+    in_band = bucket in constraint.requested
+    in_bounds = _fits_numeric(usd, low, high)
+    fits = in_band and in_bounds
+    if low is not None or high is not None:
+        value["mandate"] = {"min_usd": low, "max_usd": high}
+    why_not = ""
+    if not in_band:
+        why_not = f"; requested {', '.join(constraint.requested)}"
+    elif not in_bounds:
+        why_not = f"; outside the size mandate ({_bounds_words(low, high)})"
     return ConstraintResult(
         "size",
         requested,
@@ -284,11 +314,10 @@ def verify_size(
         value=value,
         basis=(
             f"market cap {observation.amount:,.0f} {observation.currency} ≈ "
-            f"${usd / 1e9:,.2f}bn → {bucket.replace('_', '-')}"
-            + ("" if fits else f"; requested {', '.join(constraint.requested)}")
+            f"${usd / 1e9:,.2f}bn → {bucket.replace('_', '-')}" + why_not
         ),
         sources=sources,
-        borderline=_borderline(usd),
+        borderline=_borderline(usd, (low, high)),
     )
 
 
@@ -323,8 +352,13 @@ def _verify_size_floor(
                                 basis=stated, sources=sources)
     bands = [SIZE_BANDS_USD[b] for b in constraint.requested if b in SIZE_BANDS_USD]
     ceilings = [high for _low, high in bands]
-    if bands and None not in ceilings:
-        ceiling = max(c for c in ceilings if c is not None)
+    band_ceiling = (
+        max(c for c in ceilings if c is not None) if bands and None not in ceilings else None
+    )
+    _mandate_low, mandate_high = _numeric_bounds(constraint)
+    candidates = [c for c in (band_ceiling, mandate_high) if c is not None]
+    if candidates:
+        ceiling = min(candidates)
         if floor_usd / FLOAT_FLOOR_MARGIN >= ceiling:
             return ConstraintResult(
                 "size", requested, hardness, FAIL, value=value,
@@ -332,6 +366,8 @@ def _verify_size_floor(
                 sources=sources,
             )
     for low, high in bands:
+        if mandate_high is not None:
+            break  # a lower bound can never prove a company is BELOW a numeric ceiling
         if high is None and low is not None and floor_usd / FLOAT_FLOOR_MARGIN >= low:
             return ConstraintResult("size", requested, hardness, PASS, value=value,
                                     basis=f"{stated}; within the open-ended requested band",
@@ -633,6 +669,7 @@ def verified_attributes(results: Sequence[ConstraintResult]) -> dict[str, Any]:
                 k: r.value.get(k) for k in ("amount", "currency", "as_of", "as_of_basis")
             }
             out["size_borderline"] = r.borderline
+            out["market_cap_method"] = r.value.get("method")
         elif r.key == "growth" and r.value and r.value.get("growth_status"):
             out["growth_status"] = r.value["growth_status"]
             if r.value.get("metric"):

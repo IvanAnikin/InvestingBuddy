@@ -184,6 +184,118 @@ def _no_live_filing_acquisition(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_gleif_parents(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V3.20 slices 2.2–2.3: research never reaches GLEIF Level 2 or EDGAR's relationship
+    documents from the unit suite.
+
+    The lookup answers "nothing reported" and LEI promotion is a no-op. A test that means
+    to exercise either patches ``relationship_step._live_lookup`` / ``_live_promote``.
+    """
+    from app.integrations.gleif_level2 import ParentReport
+    from app.services.pipeline import relationship_step
+
+    async def _nothing(lei: str) -> ParentReport:
+        return ParentReport(lei=lei, not_reported=["direct", "ultimate"])
+
+    async def _no_promotion(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return None
+
+    monkeypatch.setattr(relationship_step, "_live_lookup", _nothing)
+    monkeypatch.setattr(relationship_step, "_live_promote", _no_promotion)
+
+    # V3.20 slice 2.3: nor EDGAR's Exhibit 21 / 13D / 13G documents.
+    from app.integrations.sec_relationships import SecRelationshipReport
+
+    async def _no_sec(cik: str, registrant_name: object = None) -> SecRelationshipReport:
+        return SecRelationshipReport(cik=cik, notes=["offline test"])
+
+    async def _no_cik(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return None
+
+    monkeypatch.setattr(relationship_step, "_live_sec_lookup", _no_sec)
+    monkeypatch.setattr(relationship_step, "_live_cik", _no_cik)
+
+    # V3.20 slice 2.4: nor a 10-K body for its inline XBRL.
+    from app.integrations.sec_relationships import AnnualInlineXbrl
+
+    async def _no_annual(cik: str, annual: object) -> AnnualInlineXbrl:
+        return AnnualInlineXbrl(url=None, error="offline test")
+
+    monkeypatch.setattr(relationship_step, "_live_annual_ixbrl", _no_annual)
+
+    # V3.20 slice 2.5: the held-document counterparty step spends a model call, and the
+    # pipeline suites script their clients' calls one by one. Off unless a test calls the
+    # real function (``tests/test_v3_20_2_5_text_counterparties.py`` imports it directly).
+    from app.services.pipeline import counterparty_step
+
+    async def _no_counterparties(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return {}
+
+    monkeypatch.setattr(counterparty_step, "text_counterparties_step", _no_counterparties)
+
+    # V3.20 slice 4.1: nor SEC XBRL for quarterly earnings actuals. A test that means to
+    # exercise the step imports and calls it directly with its own ``fetch``.
+    from app.services.pipeline import earnings_step
+
+    async def _no_earnings(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return {"state": "offline_test"}
+
+    monkeypatch.setattr(earnings_step, "earnings_actuals_step", _no_earnings)
+    # V3.20 slice 4.2: nor Alpha Vantage, even when a developer's .env holds a key.
+    from app.services.pipeline import consensus_step
+
+    async def _no_consensus(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
+        return {"state": "offline_test"}
+
+    monkeypatch.setattr(consensus_step, "consensus_snapshot_step", _no_consensus)
+    # V3.20 slice 6.2: nor EDGAR's Form 4 filings. A test that means to exercise the
+    # lookup passes its own ``form4_lookup`` / ``fetch``.
+    from app.integrations.sec_form4 import Form4Report
+    from app.services.pipeline import change_events_step
+
+    async def _no_form4(cik: str, today: object) -> Form4Report:
+        return Form4Report(cik=cik, notes=["offline test"])
+
+    monkeypatch.setattr(change_events_step, "_live_form4", _no_form4)
+
+    # V3.20 slice 11.3c: nor OpenDART's major-matters endpoints.
+    async def _no_dart(url: str, **_kw: object) -> tuple[None, None, str]:
+        return None, None, "offline_test"
+
+    monkeypatch.setattr(change_events_step, "_live_dart_getter", _no_dart)
+    # V3.20 slice 11.4: nor TWSE's material-information feed. A test that means to read
+    # it passes its own ``getter``.
+    from app.services.sources.disclosures import twse_material
+
+    monkeypatch.setattr(twse_material, "guarded_get", _no_dart)
+    twse_material._last_refresh.clear()
+    # V3.20 slice 8.5: nor SEC companyconcept for the financial-depth block.
+    from app.services.pipeline import financial_depth_step
+
+    async def _no_concepts(url: str, accept: str) -> tuple[int, None]:
+        return 404, None
+
+    monkeypatch.setattr(financial_depth_step, "_live_fetch", _no_concepts)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_size_recheck(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the V3.20 analysis-time size re-check read no exchange directory by default.
+
+    ``analysis_time_size`` re-reads the exchange's own market cap for the company being
+    analysed — a live download in production, and an offline-hostile one in a unit suite.
+    Tests that mean to exercise it call ``recheck_market_cap`` with their own fetcher, or
+    patch it in the test body (which wins over this fixture).
+    """
+    from app.services.discovery import size_recheck
+
+    async def _inert(**_kw):  # noqa: ANN003, ANN202
+        return None, "size re-check disabled in tests"
+
+    monkeypatch.setattr(size_recheck, "recheck_market_cap", _inert)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_6k_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make ADR-077's results-6-K selector read nothing from the SEC by default.
 

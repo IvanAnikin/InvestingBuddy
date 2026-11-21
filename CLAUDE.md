@@ -19,28 +19,30 @@ Read these files before planning significant changes:
 
 ---
 
-## Branch Discipline — V3 Development Line (opened 2026-09-04)
+## Branch Discipline — V3 Ships From `main` (reconciled 2026-11-21)
 
-`main` is the **currently approved, deployed** version. V3 is a separate,
-unapproved development line.
+V3 was activated on `main` on 2026-09-08 with the owner's approval; `main` is the
+deployed version and the only branch that deploys. The separate `develop/v3` line is
+retired (frozen at `d6d6184`, 2026-09-07). Owner decision 2026-11-21: V3.20 lands on
+`main` through one integration PR.
 
 | Ref | Rule |
 |---|---|
-| `main` | Receives **no V3 commits**. Never merge V3 here without explicit user approval. |
+| `main` | The deployed version. A push that touches `apps/api` or `apps/web` deploys automatically. Merge only with the owner's explicit approval. |
 | `v2-final-pre-v3-2026-09-04` | Immutable annotated tag on the V2 baseline `4b60e07`. Never overwrite or delete. |
 | `release/v2-current` | V2 preservation / maintenance branch at the same SHA. Never delete. |
-| `develop/v3` | V3 integration branch. Every V3 slice merges here and nowhere else. |
-| `feature/v3-<phase>-<slice>-<name>` | One PR-sized V3 slice. Never implement a slice directly on `develop/v3`. |
+| `develop/v3` | Retired, kept for history. Not a merge target. Never delete. |
+| `feature/v3-<phase>-<slice>-<name>` | One PR-sized slice. Slices may stack (each PR based on the previous slice's branch); the chain reaches `main` through a PR into `main`. |
 
-Also forbidden until the user explicitly approves V3:
+Forbidden without the owner's explicit approval, each time:
 
-- deploying V3;
-- running V3 migrations against the live environment;
-- switching the deployed app to the V3 branch;
-- deleting V2 compatibility, the V2 branch, or the V2 tag.
+- merging into `main` (which deploys);
+- running migrations against the live environment;
+- changing Azure app settings;
+- deleting V2 compatibility, the V2 branch, the V2 tag or `develop/v3`.
 
 V3 architecture, provider strategy and the slice register live in
-[`docs/v3/`](docs/v3/README.md). Read `docs/v3/README.md` before any V3 work.
+[`docs/v3/`](docs/v3/README.md); V3.20 in `docs/v3.20-*.md`.
 
 ---
 

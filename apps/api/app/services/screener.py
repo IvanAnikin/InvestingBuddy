@@ -22,8 +22,11 @@ Constraints:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from app.services.discovery.fx import USD_IDENTITY as _USD_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +369,7 @@ class CompanyScreener:
         market_cap_max: float | None = None,
         keyword_search: str | None = None,
         eodhd_search_results: list[dict[str, Any]] | None = None,
+        fx_rates: Mapping[str, Any] | None = None,
     ) -> list[CandidateInput]:
         """
         Run the screen and return a list of CandidateInput objects.
@@ -375,19 +379,17 @@ class CompanyScreener:
         of the mock universe.  This allows offline tests with fixture data.
 
         Returns at most max_candidates candidates.
+
+        V3.20 slice 1.3: ``market_cap_min`` / ``market_cap_max`` are in USD (in the same
+        unit as the provider's ``market_cap``). ``fx_rates`` maps a currency to an
+        official ``FxRate``; a candidate whose size cannot be put in USD does not pass
+        a bounded screen (see ``_build_candidate``).
         """
-        if provider_name == "eodhd" and eodhd_search_results is not None:
-            raw_candidates = self._from_eodhd_results(
-                eodhd_search_results, theme, sector, region, exchange
-            )
-            source_tier = SOURCE_TIER_T5
-            data_quality = DATA_QUALITY_B
-        else:
-            raw_candidates = self._from_mock_universe(
-                theme, sector, region, exchange, keyword_search
-            )
-            source_tier = SOURCE_TIER_T6
-            data_quality = DATA_QUALITY_D
+        raw_candidates, source_tier, data_quality = self._raw_candidates(
+            region=region, exchange=exchange, sector=sector, theme=theme,
+            provider_name=provider_name, keyword_search=keyword_search,
+            eodhd_search_results=eodhd_search_results,
+        )
 
         results: list[CandidateInput] = []
         for raw in raw_candidates[:max_candidates]:
@@ -398,10 +400,40 @@ class CompanyScreener:
                 data_quality=data_quality,
                 market_cap_min=market_cap_min,
                 market_cap_max=market_cap_max,
+                fx_rates=fx_rates,
             )
             results.append(candidate)
 
         return results
+
+    def _raw_candidates(
+        self,
+        *,
+        region: str | None,
+        exchange: str | None,
+        sector: str | None,
+        theme: str | None,
+        provider_name: str,
+        keyword_search: str | None,
+        eodhd_search_results: list[dict[str, Any]] | None,
+    ) -> tuple[list[dict[str, Any]], str, str]:
+        if provider_name == "eodhd" and eodhd_search_results is not None:
+            return (
+                self._from_eodhd_results(eodhd_search_results, theme, sector, region, exchange),
+                SOURCE_TIER_T5,
+                DATA_QUALITY_B,
+            )
+        return (
+            self._from_mock_universe(theme, sector, region, exchange, keyword_search),
+            SOURCE_TIER_T6,
+            DATA_QUALITY_D,
+        )
+
+    def candidate_currencies(self, **kwargs: Any) -> list[str | None]:
+        """The quoted currencies of the raw candidates ``screen`` would see (same kwargs
+        as ``_raw_candidates``), so a caller can resolve official FX rates first."""
+        raw, _tier, _quality = self._raw_candidates(**kwargs)
+        return [r.get("currency") or None for r in raw]
 
     # ── Private helpers ──────────────────────────────────────────────────────
 
@@ -520,9 +552,15 @@ class CompanyScreener:
         data_quality: str,
         market_cap_min: float | None,
         market_cap_max: float | None,
+        fx_rates: Mapping[str, Any] | None = None,
     ) -> CandidateInput:
         """
         Build a CandidateInput from a raw company dict.
+
+        The market-cap bounds are USD. The raw figure is converted with ``fx_rates``
+        (USD needs none). A bounded screen never passes a size it cannot verify: an
+        absent cap or a missing rate gives ``needs_data`` with the reason — never the
+        old silent pass-through, and never a comparison across currencies.
         """
         ticker = raw.get("ticker", "")
         exchange = raw.get("exchange") or None
@@ -536,9 +574,29 @@ class CompanyScreener:
             f"{ticker}.{exchange}" if exchange else ticker
         )
 
-        # ── Market cap filter ────────────────────────────────────────────────
-        if market_cap is not None:
-            if market_cap_min is not None and market_cap < market_cap_min:
+        # ── Market cap filter (USD) ──────────────────────────────────────────
+        bounded = market_cap_min is not None or market_cap_max is not None
+        market_cap_usd, size_reason = _usd_market_cap(market_cap, currency, fx_rates)
+        if bounded and market_cap_usd is None:
+            return CandidateInput(
+                ticker=ticker,
+                exchange=exchange,
+                name=name,
+                country=country,
+                sector=sector,
+                provider_symbol=provider_symbol,
+                market_cap=market_cap,
+                currency=currency,
+                candidate_status="needs_data",
+                discovery_reasons=["Market cap filter could not be applied"],
+                available_data=["market_cap"] if market_cap is not None else [],
+                missing_data=["market_cap_usd"],
+                source_tier=source_tier,
+                data_quality=data_quality,
+                warnings=[f"Size not verified against the USD market-cap filter: {size_reason}."],
+            )
+        if bounded and market_cap_usd is not None:
+            if market_cap_min is not None and market_cap_usd < market_cap_min:
                 return CandidateInput(
                     ticker=ticker,
                     exchange=exchange,
@@ -549,14 +607,14 @@ class CompanyScreener:
                     market_cap=market_cap,
                     currency=currency,
                     candidate_status="rejected_by_screen",
-                    discovery_reasons=["Market cap below minimum filter"],
+                    discovery_reasons=["Market cap below minimum filter (USD)"],
                     available_data=["market_cap"],
                     missing_data=[],
                     source_tier=source_tier,
                     data_quality=data_quality,
                     warnings=[],
                 )
-            if market_cap_max is not None and market_cap > market_cap_max:
+            if market_cap_max is not None and market_cap_usd > market_cap_max:
                 return CandidateInput(
                     ticker=ticker,
                     exchange=exchange,
@@ -567,7 +625,7 @@ class CompanyScreener:
                     market_cap=market_cap,
                     currency=currency,
                     candidate_status="rejected_by_screen",
-                    discovery_reasons=["Market cap above maximum filter"],
+                    discovery_reasons=["Market cap above maximum filter (USD)"],
                     available_data=["market_cap"],
                     missing_data=[],
                     source_tier=source_tier,
@@ -658,6 +716,25 @@ class CompanyScreener:
             data_quality=data_quality,
             warnings=warnings,
         )
+
+
+def _usd_market_cap(
+    market_cap: float | None, currency: str | None, fx_rates: Mapping[str, Any] | None
+) -> tuple[float | None, str]:
+    """``(USD amount, reason)``. ``None`` when the cap or an official rate is missing."""
+    from app.services.discovery.fx import normalise_currency, to_usd
+
+    if market_cap is None:
+        return None, "the provider gives no market cap"
+    major, _divisor = normalise_currency(currency)
+    if major is None:
+        return None, "the market cap has no currency"
+    if major == "USD":
+        return to_usd(float(market_cap), currency, _USD_RATE), ""
+    rate = (fx_rates or {}).get(major)
+    if rate is None:
+        return None, f"no official FX rate for {major}"
+    return to_usd(float(market_cap), currency, rate), ""
 
 
 def _build_discovery_reasons(

@@ -294,6 +294,23 @@ export default async function ResearchReportPage({
 
       {statusStrip}
 
+      {professional && (
+        <div className="flex flex-wrap gap-4 text-sm" data-testid="report-print-links">
+          <Link
+            href={`/research/reports/${encodeURIComponent(id)}/print`}
+            className="text-[color:var(--ib-accent)] underline underline-offset-4"
+          >
+            Print / save as PDF
+          </Link>
+          <Link
+            href={`/research/reports/${encodeURIComponent(id)}/print?format=memo`}
+            className="text-[color:var(--ib-accent)] underline underline-offset-4"
+          >
+            One-page memo
+          </Link>
+        </div>
+      )}
+
       {/* A report the pipeline never wrote structured content for cannot be
           rendered as structured research. It keeps its own honest view rather
           than being forced through a renderer that would show empty sections. */}

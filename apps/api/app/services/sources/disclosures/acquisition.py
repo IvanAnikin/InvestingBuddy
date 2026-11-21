@@ -41,9 +41,15 @@ from app.services.sources.disclosures.model import (
     REASON_PRIMARY_DOCUMENT_UNAVAILABLE,
     REASON_VENUE_NOT_COVERED,
     SOURCE_ASX_ANNOUNCEMENTS,
+    SOURCE_EDINET,
+    SOURCE_OPENDART,
+    SOURCE_TWSE_MATERIAL,
     SOURCE_UK_FCA_NSM,
     VENUE_ASX,
+    VENUE_KRX,
     VENUE_LSE,
+    VENUE_TSE,
+    VENUE_TWSE,
     DisclosureEvidenceResult,
     DisclosureListing,
     OfficialDocument,
@@ -62,6 +68,9 @@ logger = logging.getLogger(__name__)
 _SOURCE_TYPES = {
     SOURCE_UK_FCA_NSM: "uk_nsm_disclosure",
     SOURCE_ASX_ANNOUNCEMENTS: "asx_announcement",
+    SOURCE_EDINET: "edinet_filing",
+    SOURCE_OPENDART: "opendart_filing",
+    SOURCE_TWSE_MATERIAL: "twse_material_info",
 }
 
 #: How much of a fetched document is searched for the issuer's name.
@@ -74,6 +83,11 @@ _IDENTITY_TEXT_CHARS = 40_000
 _VENUE_ALIASES = {
     "LSE": VENUE_LSE, "LON": VENUE_LSE, "L": VENUE_LSE, "LN": VENUE_LSE, "AIM": VENUE_LSE,
     "XLON": VENUE_LSE, "AU": VENUE_ASX, "ASX": VENUE_ASX, "AX": VENUE_ASX, "XASX": VENUE_ASX,
+    "TSE": VENUE_TSE, "TYO": VENUE_TSE, "T": VENUE_TSE, "JP": VENUE_TSE, "XTKS": VENUE_TSE,
+    "JPX": VENUE_TSE,
+    "KO": VENUE_KRX, "KS": VENUE_KRX, "KRX": VENUE_KRX, "KOSPI": VENUE_KRX, "XKRX": VENUE_KRX,
+    "KQ": VENUE_KRX, "KOSDAQ": VENUE_KRX, "XKOS": VENUE_KRX,
+    "TW": VENUE_TWSE, "TWSE": VENUE_TWSE, "TPE": VENUE_TWSE, "XTAI": VENUE_TWSE,
 }
 
 
@@ -91,6 +105,24 @@ def source_for(company: Any, cfg: Any) -> tuple[str | None, str | None]:
         if not getattr(cfg, "v3_asx_announcements_enabled", False):
             return None, REASON_CONNECTOR_DISABLED
         return SOURCE_ASX_ANNOUNCEMENTS, None
+    if venue == VENUE_TSE:
+        from app.services.sources.disclosures.edinet import is_enabled
+
+        if not is_enabled(cfg):
+            return None, REASON_CONNECTOR_DISABLED
+        return SOURCE_EDINET, None
+    if venue == VENUE_KRX:
+        from app.services.sources.disclosures.opendart import is_enabled as dart_enabled
+
+        if not dart_enabled(cfg):
+            return None, REASON_CONNECTOR_DISABLED
+        return SOURCE_OPENDART, None
+    if venue == VENUE_TWSE:
+        from app.services.sources.disclosures.twse_material import is_enabled as twse_enabled
+
+        if not twse_enabled(cfg):
+            return None, REASON_CONNECTOR_DISABLED
+        return SOURCE_TWSE_MATERIAL, None
     return None, REASON_VENUE_NOT_COVERED
 
 
@@ -107,6 +139,19 @@ async def list_disclosures(
 
         return await list_uk_disclosures(session, company, cfg=cfg, fetcher=fetcher,
                                          poster=poster, now=now)
+    if source_id == SOURCE_EDINET:
+        from app.services.sources.disclosures.edinet import list_edinet_disclosures
+
+        return await list_edinet_disclosures(session, company, cfg=cfg, now=now)
+    if source_id == SOURCE_OPENDART:
+        from app.services.sources.disclosures.opendart import list_opendart_disclosures
+
+        return await list_opendart_disclosures(session, company, cfg=cfg, now=now)
+    if source_id == SOURCE_TWSE_MATERIAL:
+        from app.services.sources.disclosures.twse_material import list_twse_announcements
+
+        return await list_twse_announcements(session, company, cfg=cfg, fetcher=fetcher,
+                                             now=now)
     from app.services.sources.disclosures.asx import list_asx_announcements
 
     return await list_asx_announcements(session, company, cfg=cfg, fetcher=fetcher, now=now)
@@ -186,8 +231,18 @@ def document_names_issuer(artifact: Any, issuer: VerifiedIssuer) -> bool:
     full = normalised_name(issuer.name)
     if full and re.search(r"(?<![a-z0-9])" + re.escape(full) + r"(?![a-z0-9])", words):
         return True
+    # A Japanese filing names its filer in Japanese (EDINET's 提出者名, "内海造船株式会社")
+    # on its cover page: the WHOLE official name, compared without spaces after NFKC
+    # (full-width letters and digits fold to their ASCII forms).
+    local = _compact(issuer.local_name or "")
+    if len(local) >= 3 and local in _compact(content_text(artifact)):
+        return True
     ticker = re.escape(issuer.ticker.lower())
     return bool(re.search(r"\b(?:asx|lse|aim)\s*:\s*" + ticker + r"\b", folded))
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
 
 
 # ── Readiness, acquisition, indexing ───────────────────────────────────────── #
@@ -207,6 +262,22 @@ async def _content_url(
         from app.services.sources.disclosures.uk_nsm import NSM_ARTEFACT_HOST
 
         return document.content_url, NSM_ARTEFACT_HOST, None
+    if document.source_id == SOURCE_EDINET:
+        from app.services.sources.disclosures.edinet import EDINET_DL_HOST
+
+        return document.content_url, EDINET_DL_HOST, None
+    if document.source_id == SOURCE_OPENDART:
+        # The content is read through the API by ``opendart.document_extractor``; the
+        # address passed on is the public viewer page a citation opens.
+        from app.services.sources.disclosures.opendart import DART_VIEWER_HOST
+
+        return document.official_url, DART_VIEWER_HOST, None
+    if document.source_id == SOURCE_TWSE_MATERIAL:
+        # The content is the HELD row (``twse_material.document_extractor``); the address
+        # passed on is the open-data feed the citation names.
+        from app.services.sources.disclosures.twse_material import TWSE_OPENAPI_HOST
+
+        return document.official_url, TWSE_OPENAPI_HOST, None
     from app.services.sources.disclosures.asx import (
         ASX_HOST,
         ASX_PDF_HOST,
@@ -497,6 +568,16 @@ async def ensure_disclosure_evidence(
 
     from app.services.sources.extracted_fact_validator import IssuerContext
 
+    if extractor is None and document.source_id == SOURCE_OPENDART:
+        from app.services.sources.disclosures.opendart import document_extractor
+
+        extractor = document_extractor(document, issuer)
+    if extractor is None and document.source_id == SOURCE_TWSE_MATERIAL:
+        from app.services.sources.disclosures.twse_material import (
+            document_extractor as twse_extractor,
+        )
+
+        extractor = twse_extractor(document, issuer, session=session)
     if extractor is None:
         from app.services.sources.live_fetchers import live_primary_document_extractor
 

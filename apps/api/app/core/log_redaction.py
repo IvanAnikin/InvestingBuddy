@@ -148,9 +148,11 @@ def redact_mapping(data: Mapping[str, Any], *, _depth: int = 0) -> dict[str, Any
 # neutralise the secret VALUE while leaving the surrounding line readable.
 
 # Query-param / key=value secrets: <name>=<value-up-to & space quote < >>.
+# ``crtfc_key`` is OpenDART's key parameter (V3.20 slice 11.3): the ``_`` before
+# ``key`` is a word character, so ``\bkey=`` alone would let it through.
 _QUERY_SECRET_RE = re.compile(
     r"(?i)(\b(?:api[_-]?token|api[_-]?key|apikey|access[_-]?token|token|secret"
-    r"|password|passwd|signature|sig|auth[_-]?token|key)=)([^&\s\"'<>]+)"
+    r"|password|passwd|signature|sig|auth[_-]?token|crtfc[_-]?key|key)=)([^&\s\"'<>]+)"
 )
 # Authorization header echoed into a log line (Bearer/Basic or any scheme).
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization:\s*)(\S+)(\s+\S+)?")

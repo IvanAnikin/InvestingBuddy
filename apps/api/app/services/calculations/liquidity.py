@@ -123,13 +123,10 @@ def _factor(fact: dict[str, Any]) -> Decimal | None:
 
 
 def _view(field: str, fact: dict[str, Any], role: str) -> dict[str, Any]:
+    from app.integrations.xbrl_statement_concepts import tagged_concept
     from app.services.pipeline.issuer_financials import slot_number
 
-    locator = str(fact.get("excerpt_id") or "")
-    concept = (
-        locator.removeprefix("ixbrl:").split("@", 1)[0] if locator.startswith("ixbrl:")
-        else None
-    )
+    concept = tagged_concept(fact.get("excerpt_id"))
     return {
         "component": field,
         "label": COMPONENT_LABELS.get(field, field.replace("_", " ")),

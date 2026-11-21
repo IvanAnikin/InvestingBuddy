@@ -1,4 +1,5 @@
-"""Non-US primary disclosures — UK (FCA National Storage Mechanism) and ASX.
+"""Non-US primary disclosures — UK (FCA National Storage Mechanism), ASX and, from
+V3.20 slice 11.2, Japan (the FSA's EDINET).
 
 The chain this package exists for::
 

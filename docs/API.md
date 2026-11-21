@@ -136,6 +136,187 @@ Response `200 OK`:
 Response `200 OK`: company object
 Error `404 Not Found`: company does not exist
 
+**GET /api/v1/companies/{company_id}/relationships** — Relationship graph (V3.20 slice 2.1)
+
+The company's parents, ultimate parents, subsidiaries, customers, suppliers and significant holders, each edge read from this company's point of view, with its evidence.
+
+```json
+{
+  "company_id": "uuid",
+  "legal_entity_id": "uuid",
+  "state": "ok",
+  "groups": {
+    "customers": [{
+      "label": "supplier_of", "canonical_type": "supplier_of",
+      "counterparty_entity_id": null, "counterparty_name": "Customer A",
+      "counterparty_resolved": false,
+      "disclosed_share_pct": 14.0, "share_basis": "revenue", "period": "FY2025",
+      "source": "10-K FY2025", "source_kind": "xbrl", "extraction_method": "xbrl_dimension",
+      "source_url": "https://www.sec.gov/…", "evidence_ref": null, "evidence_excerpt": null,
+      "confidence": 1.0, "as_of": "2026-02-20", "effective_from": null
+    }],
+    "parents": [], "ultimate_parents": [], "subsidiaries": [], "suppliers": [],
+    "significant_holders": [], "holdings": [], "other": []
+  },
+  "total": 1,
+  "reporting_exceptions": [{
+    "relationship_type": "parent_of", "group": "parents",
+    "reason": "NATURAL_PERSONS",
+    "reason_label": "controlled by one or more natural persons (no parent company)",
+    "category": "DIRECT_ACCOUNTING_CONSOLIDATION_PARENT", "source": "gleif",
+    "source_url": "https://api.gleif.org/api/v1/lei-records/…/direct-parent-reporting-exception",
+    "as_of": "2026-11-15"
+  }],
+  "note": "… An empty group means nothing was found in the sources read — not that the company has none."
+}
+```
+
+- `reporting_exceptions` (V3.20 slice 2.2): GLEIF's stated reason for reporting no direct or ultimate parent. This is a fact with a reason, not "independent". An empty `parents` group with no exception means unknown.
+- Parents come from GLEIF Level 2 during company research. Each is written as a `parent_of` or `ultimate_parent_of` edge with `source: "gleif"`, `extraction_method: "gleif_api"`, the GLEIF URL, and `effective_from` set to the relationship start date. Confidence follows GLEIF's corroboration level: fully 1.0, partially 0.9, entity-supplied only 0.8.
+- Subsidiaries and holders (V3.20 slice 2.3) come from SEC registrants:
+  - **Subsidiaries:** the latest 10-K's Exhibit 21 (a 20-F's Exhibit 8), written as `parent_of` with `extraction_method: "exhibit_21"`. The child is unresolved: named, with its jurisdiction in the note.
+  - **Minority stakes:** a listed entity with a stated holding under 50 % appears under `holdings` with its % of capital. Rows under a "Joint ventures" heading are not counted as subsidiaries.
+  - **Holders:** the newest structured SCHEDULE 13D / 13G per holder, written as `significant_holder_of` with `share_basis: "share_class"`, `as_of` set to the event date, and `source_kind` `sec_13d` (active) or `sec_13g` (passive). Joint filers report one holding, not a sum. A filing at or below 5 % closes the holder's edge.
+  - **Not read:** pre-2025 free-text SC 13D/13G filings; the count is stated.
+- Customers (V3.20 slice 2.4) come from the newest 10-K's own inline XBRL: `us-gaap:ConcentrationRiskPercentage1` on `srt:MajorCustomersAxis`, with a revenue or receivables benchmark.
+  - **Edge:** `supplier_of(company → customer)`, read by the company under `customers`. The customer is unresolved, named by the filer's member. Its kind is named, anonymous ("One customer") or aggregate ("Three major customers"), stated in the note.
+  - **Share:** `disclosed_share_pct` is the tagged % with `share_basis` `revenue` or `receivables`. `period` is the fact's own fiscal period; a receivables share is a year-end balance (`FY2025 year-end`). Older years tagged in the filing are kept as their own rows.
+  - **Skipped:** a fact on any other axis (a segment, a product, a timing axis).
+  - **Once per filing:** the 10-K is read once.
+  - **Not tagged ≠ none:** `none_tagged` means the filing has no such tag, not that the company has no concentration.
+- Named customers, suppliers, offtakers and framework partners (V3.20 slice 2.5) come from the company's own held primary documents (`T1_primary_filing` chunks: annual reports, 10-K Item 1/1A, NSM/ASX releases). Per run, the investigator-slot model reads one unread document (annual first, then newest), at most 10 passages.
+  - **Model output:** the model only proposes claims. A claim is written only if every check passes:
+    - the quote is verbatim in the cited chunk;
+    - the counterparty's name is in the quote;
+    - the counterparty is not the company itself;
+    - a word of the role is in the quote;
+    - the role is framed to the company ("we", "our", "the Company", its name). Another company's possessive ("X's largest customer", "its sales") is refused;
+    - any share appears in the quote as a % with a word of its basis;
+    - the ADR-083 passage firewall says the sentence is the company's;
+    - a period is stated (the quote's own fiscal year, else the document's; a share with several years in its sentence must name which).
+  - **Edges:** customer / offtaker / framework partner → `supplier_of(company → counterparty)` (under `customers`); supplier → `supplier_of(counterparty → company)` (under `suppliers`). `extraction_method: "text_llm_verified"`, `source_kind: "document_text"`, `evidence_ref: "chunk:<chunk_id>"`, the quote as `evidence_excerpt`, confidence 0.8.
+  - **Overlap with XBRL:** where an XBRL edge already holds the same counterparty and period, the XBRL row is kept.
+  - **Anonymous names:** an anonymous counterparty ("Customer A") is written only with its share.
+  - **Run outcome:** `relationships.document_counterparties` carries `state` (`written` / `none_verified` / `already_read` / `no_candidates` / `no_model` / `entity_unresolved` / `error`), the document, the claim count, the accepted edges and the rejection counts by reason. A failed model call does not mark the document read.
+- The report (V3.20 slice 2.6): `professional_research.sections[business_model].relationships` is present when `V3_ENTITY_MASTER_ENABLED` is on, and absent otherwise, so other reports are unchanged. It is built by `pipeline/relationship_report.relationship_block` from the view above plus this run's `outcome.relationships`.
+  - **Groups:** `customers {state, rows, note}`, `suppliers {state, rows, note}`, and `parent_and_group {state, direct_parents, ultimate_parents, reporting_exceptions, significant_holders, subsidiaries, holdings, note}`.
+  - **States:** `disclosed` (a cited row, or a GLEIF reporting exception for the group); `not_disclosed` (a step read the source and found nothing, said as "not disclosed in the sources read"); `not_researched` (no step read a source; the note says which step and why).
+  - **Rows:** `{name, resolved, share_pct, share_basis, period, as_of, source_name, source_kind, extraction_method, source_url, evidence_ref, excerpt, confidence}`. A row without a citation is dropped. An excerpt the safety scan flags is dropped (`excerpt_withheld: true`, the link stays); a name it flags drops the row. Both are counted in `withheld_for_safety`. Rows are capped per group, and the overflow is counted in `omitted`.
+  - **`customer_concentration`:** the contract's `business.customer_concentration` datapoint. `{value, unit: "%", as_of, period, source_name, source_url, evidence_ref, note}` is the largest disclosed SINGLE-customer share of revenue in the newest fiscal year. An aggregate ("three customers 76 %") is named in the note but is never the value. `null` when no single customer's revenue share is disclosed.
+  - **Web:** `RelationshipSection.tsx` renders the three groups and a small map (parents above, suppliers left, customers right, subsidiaries below). Each node links to its https citation, with the excerpt as its title. `tests/test_v3_20_2_6_relationship_report.py` pins every key the reader reads (`relationships.ts`) to the producer.
+- `state`: `ok`; `entity_unresolved` (the company has no entity-master row); or `disabled` (`V3_ENTITY_MASTER_ENABLED` is off).
+- Within a group, edges are ordered by largest disclosed share first.
+
+Error `404 Not Found`: company does not exist.
+
+**GET /api/v1/companies/{company_id}/passive-ownership** — US-registered funds / ETFs holding the company (V3.20 slice 3.3)
+
+Read from the stored SEC Form N-PORT aggregates, which the offline ingest writes (`scripts/ingest_nport.py`, slice 3.2). The only live call is the denominator: SEC `companyconcept` `dei:EntityCommonStockSharesOutstanding` (research User-Agent). It is made only when there is something to divide.
+
+```json
+{
+  "company_id": "uuid", "legal_entity_id": "uuid", "state": "ok",
+  "period": "2026Q3", "previous_period": "2026Q2",
+  "securities": [{
+    "identifier_kind": "isin", "identifier": "US7391281067", "security_type": "ordinary_share",
+    "counted_in_pct": true, "not_counted_reason": null,
+    "fund_count": 212, "etf_count": 41, "etf_unknown_count": 9, "index_fund_count": 120,
+    "shares_held": 3643256.0, "etf_shares_held": 1800000.0, "value_usd": 0.0,
+    "non_share_holdings": 0, "report_date_min": "2026-05-31", "report_date_max": "2026-06-30",
+    "top_funds": [{"series_id": "S000004310", "name": "…", "sponsor": "…", "unit": "shares",
+                   "is_etf": true, "shares": 0.0, "value_usd": 0.0, "pct_of_fund": 0.0,
+                   "report_date": "2026-06-30"}],
+    "source_url": "https://www.sec.gov/files/dera/data/form-n-port-data-sets/2026q3_nport.zip",
+    "period": "2026Q3",
+    "previous": {"period": "2026Q2", "fund_count": 205, "shares_held": 3000000.0,
+                 "change_shares": 643256.0, "change_pct": 21.44, "change_fund_count": 7}
+  }],
+  "shares_held": 3643256.0, "etf_shares_held": 1800000.0,
+  "pct_of_shares_outstanding": 10.0, "etf_pct_of_shares_outstanding": 4.94,
+  "pct_label": "Held by US-registered funds and ETFs only (SEC Form N-PORT). UCITS and other non-US funds are not included.",
+  "pct_withheld_reason": null,
+  "denominator": {"shares": 36432564.0, "as_of": "2026-08-03", "accession": "0000080420-26-000107",
+                  "form": "10-Q", "filed": "2026-08-04", "classes": 1,
+                  "source_url": "https://data.sec.gov/api/xbrl/companyconcept/CIK0000080420/dei/EntityCommonStockSharesOutstanding.json",
+                  "concept": "dei:EntityCommonStockSharesOutstanding"},
+  "holdings_as_of": "2026-06-30",
+  "concentration": {"top3_share_of_passive_pct": 31.2, "basis": "…"},
+  "source": "SEC Form N-PORT data sets (US-registered funds)",
+  "freshness_note": "N-PORT holdings are as of each fund's report date; …"
+}
+```
+(The figures are illustrative; the denominator is Powell Industries' real cover-page count, read 2026-11-15.)
+
+- **Which rows:**
+  - rows are found by the issuer's securities' ISINs (and the CUSIP a US / CA ISIN embeds) and by the issuer's LEI (ADR-061: an LEI names the issuer);
+  - only `ordinary_share` / `class_share` rows count toward the %;
+  - a depositary receipt (`security_type_adr`) or an LEI-only match (`matched_by_issuer_lei_only`) is listed, never added.
+- **The %:** `pct_of_shares_outstanding` is shown only with `pct_label` and with `denominator.as_of`. The denominator sums all classes on the newest cover page (`classes` says how many).
+- **When the % is withheld,** it is null and `pct_withheld_reason` says why:
+  - `no_ordinary_share_holdings`;
+  - `no_sec_cik_for_cover_page_share_count` (a non-SEC issuer);
+  - `no_cover_page_share_count`;
+  - `denominator_http_<status>` or `denominator_fetch_failed: …`;
+  - `exceeds_100_pct_data_error` (never shown).
+- **QoQ:** `previous` compares with the newest earlier period stored for the same identifier.
+- **ETF status:** `etf_unknown_count` counts funds whose ETF status the N-CEN data sets do not state. It is not "not an ETF".
+- **Concentration:** `concentration.top3_share_of_passive_pct` is the top three fund positions divided by the shares held by all US-registered funds (counted rows, share units only).
+- **`period`** is the data set's filing quarter. The holdings are as of `holdings_as_of`, which is 2–5 months before the data set.
+- **`state`:**
+  - `ok`;
+  - `disabled` (`V3_ENTITY_MASTER_ENABLED` off);
+  - `entity_unresolved`;
+  - `no_identifiers` (no ISIN or LEI known);
+  - `not_held_or_not_ingested` (no stored row: either no US-registered fund held it, or the period has not been ingested).
+- **The report (V3.20 slice 3.4):** `professional_research.sections[valuation_context].passive_ownership` is present when both `V3_ENTITY_MASTER_ENABLED` and `V3_PASSIVE_OWNERSHIP_ENABLED` are on; otherwise it is absent and the report is unchanged. It is built by `pipeline/passive_ownership_report.passive_ownership_block` from the view above.
+  - **`state`:**
+    - `held`;
+    - `none_found` (data sets were ingested, but none showed a position; the note says this is not a statement that no fund owns the company);
+    - `not_researched`, with a `reason`: `no_data_set_ingested` (no N-PORT period has ever been ingested), `entity_unresolved`, or `no_identifiers`.
+  - **Fields:** the %, ETF %, `pct_label`, `denominator` (shares, as-of, form, accession, classes, SEC URL) or `pct_withheld_reason`, fund / ETF / ETF-not-stated / index-fund counts, `change` since the previous data set, top-3 `concentration`, and `funds[]`.
+  - **`funds[]`:** up to 15, merged across the counted share lines, largest first. Each has `{name, sponsor, is_etf: yes|no|not_stated, shares, value_usd, pct_of_fund, report_date, theme_flags[]}`.
+  - **Theme flags:** `grid_and_electrification`, `clean_energy`, `nuclear`, `materials_for_electrification`, `small_cap`. They are fund-NAME matches, and `theme_flag_basis` says so.
+  - **Other fields:** `other_lines[]` (ADR / LEI-only lines, not added), `source_urls[]`, `freshness_note`.
+  - **Safety:** a fund name the shared language check flags drops that fund (counted in `withheld_for_safety`), never the report.
+  - **Web:** `PassiveOwnershipSection.tsx` shows the % only with its label and denominator date. `tests/test_v3_20_3_4_passive_ownership_report.py` pins every key `passiveOwnership.ts` reads to the producer.
+- **Sponsor files (V3.20 slices 3.5–3.6):** when `V3_ISSUER_HOLDINGS_ENABLED` is on and sponsor files were ingested (`scripts/ingest_issuer_holdings.py`, private use, own risk), the view and the report block carry `issuer_files` = `{as_of, source, precedence, us_funds[], ucits_funds[], ucits_shares_held}`. Each fund is `{fund_ticker, name, sponsor, as_of, shares, weight_pct, source_url}`, plus `theme_flags[]` in the report.
+  - **Precedence: N-PORT wins.** A US fund's sponsor file is a newer dated figure, shown but never added to `shares_held`, the fund counts or the %. UCITS funds are not in N-PORT. They are listed apart and never enter the %, which stays labelled "US-registered funds only".
+  - **Without N-PORT:** the block is `not_researched` / `no_data_set_ingested`, counted on N-PORT ingests only, and still carries `issuer_files`.
+
+Error `404 Not Found`: company does not exist.
+
+**Earnings actuals (V3.20 slice 4.1)** — no endpoint yet; the report section is slice 4.4. During company research, each SEC filer's quarterly (newest 12) and full-year (newest 3) revenue and diluted EPS are written to `earnings_results` (docs/DATABASE.md, migration 050). The V3 run outcome carries `earnings`:
+
+```json
+{"state": "written", "cik": "80420", "quarters": 12, "years": 3, "newest": "2026-Q3",
+ "newest_report_date": "2026-08-03", "restated_eps_quarters": ["2025-Q3", "2025-Q2"]}
+```
+
+- **`state`:** `written`, `no_quarters` (the filer tags no quarterly revenue or diluted EPS), `no_cik` (not an SEC filer), `error` (also added to `degraded`), or `disabled`.
+- **Restatements:** `restated_eps_quarters` names the quarters whose diluted EPS as first reported differs from the latest filing's (a split or a restatement). Both values are stored.
+- **Guidance (V3.20 slice 4.3):** `earnings.guidance` reports what `pipeline/guidance_step.py` did. It compares this and earlier runs' ledger findings with `statement_kind = "guidance"` (not withdrawn) with the stored actuals. Flag `V3_EARNINGS_GUIDANCE_ENABLED`; no external call. The result: `{"state": "matched", "matched": [{"period": "2026", "metric": "revenue", "vs": "within"}], "candidates": 3, "skipped": {"guidance_published_on_or_after_the_result": 1}}`.
+  - **`state`:** `matched`, `none_matched`, `no_guidance_figures`, `no_actuals`, `error`, or `disabled`.
+  - **Figures:** `sources/guidance_figures.py` reads one unambiguous revenue or EPS range or point per clause, with currency and scale. A clause that names two metrics, another metric (EBITDA, margin, orders …) or only percentages gives nothing.
+  - **Period:** the finding's `period_key` must equal the row's label.
+  - **Timing:** only guidance whose cited evidence was published before the row's `report_date` counts, and the newest such guidance wins. An undated finding is skipped and counted.
+  - **Currency:** the guided currency must equal the actual's. An unsigned figure is accepted only for EPS.
+  - **Metric:** revenue is compared first, EPS only when revenue was not guided.
+  - **Written:** `guidance_metric`, `guidance_low` / `guidance_high` / `guidance_mid`, `guidance_evidence_ref` (`finding:<id>`), and `vs_guidance`: `within` / `above` / `below` a range, or `above_point` / `below_point` / `at_point`. An "approximately" figure is a point, and its % difference from the point is stated in `detail_json.guidance`, never rounded into "in line".
+- **Consensus snapshot (V3.20 slice 4.2):** `earnings.consensus` reports what `pipeline/consensus_step.py` did: `{"state": "stored", "symbol": "POWL", "as_of": "2026-11-16", "estimates": 4, "pre_report": 3, "post_report": 1, "undetermined": 0, "reported_quarters": 12}`. Rows go to `consensus_snapshots` (docs/DATABASE.md, migration 051); `earnings_results` is not touched (slice 4.4 computes surprises).
+  - **`state`:** `stored`, `cached` (already read today, no call), `no_api_key` (no `ALPHA_VANTAGE_API_KEY`, no call), `not_us_listed` (the provider covers US-listed tickers only), `budget_exhausted` (25 calls/day used, no call), `vendor_error` with a key-free `reason` (`vendor_rate_limited`, `vendor_premium_only`, `vendor_rejected_request`, `vendor_key_refused`, `vendor_http_error`, `vendor_unreachable`, `unreadable_response`, `no_coverage`), `error` (also added to `degraded`), or `disabled` (`V3_CONSENSUS_SNAPSHOTS_ENABLED=false`).
+  - **Third-party data, private use:** Alpha Vantage is in the source registry as `alpha_vantage` (T5, "PRIVATE USE ONLY"). The key is never stored or logged: every recorded URL omits it.
+- **Surprises (V3.20 slice 4.4):** `earnings.surprises` = `{"state": "applied", "rows": 15, "consensus_status": {"available": 6, "none": 9}, "revenue_surprises": 6, "eps_surprises": 8, "covered": true}` (or `no_actuals`, `disabled` via `V3_EARNINGS_TRACK_RECORD_ENABLED=false`, `error`). It fills the consensus and surprise columns of `earnings_results` (docs/DATABASE.md, migration 050). No external call.
+  - **Report block:** `sections[financial_capacity].earnings_track_record` = `{state: held | not_researched, title, quarters[8], years[3], eps_streak, revenue_streak, expectations_available, note}`. Each period gives the filed revenue and diluted EPS with their filing links. It also gives `expectation` (source, `as_of`, EPS / revenue average, high and low, analyst counts), or null when no dated pre-report snapshot exists. Then `revenue_vs_expectation`, `eps_vs_provider_estimate` (provider basis, `eps_basis_difference`) and `guidance` (slice 4.3).
+  - **Safety:** the block has typed values only. The safety gate finds nothing in it (no estimate wording is redacted), so the ADR-097 §4 path allow-list (slice 0.3) is not needed for this section. Web: `components/research/earningsTrackRecord.ts` + `report/EarningsTrackRecordSection.tsx`.
+- **Electricity layers (V3.20 slice 5.2):** `sections[business_model].electricity_layers` = `{taxonomy_version, status: classified | excluded | not_electricity | no_evidence, primary_layer, primary_basis: segment_revenue | text_anchors, layers[], candidate_layers[], sub_segments[], revenue_by_layer, exclusion, theme_tags[], rules, note}`. Each layer has `{layer, display_name, sub_segments, revenue_share, text_anchor_count, segments, evidence[{anchor, matched, quote, source_kind, source_url, as_of, label}]}`. `revenue_by_layer` = `{axis, period, currency, total_revenue, shares{layer: fraction}, sub_segments, mapped_share, segments[{segment, layer, revenue, currency, period, share, anchors, source_url, fact_id}]}` or null. `exclusion` = `{rule, display_name, anchor, power_share, threshold, override_passed, other_rules}` or null. Present only with `V3_ELECTRICITY_CLASSIFIER_ENABLED` (default on). No external call. Rules: docs/v3.20-electricity-vertical-core.md.
+- **Real assets (V3.20 slice 5.4):** `sections[operations].real_asset` = `{asset_type, primary_layer, capacity, expansions, utilisation: {state: disclosed | not_disclosed, readings[{value, unit, unit_family, matched, finding_id, evidence_ids, as_of, quote}]}, certifications: {state, items[{certification, standard, body, date, date_state, finding_id, evidence_ids, as_of, quote}]}, replacement_value: {state, statements[]}, note}`. Only for a company classified into the electricity stack; read from the run's cited, non-withdrawn, non-superseded findings. No conversion or estimate.
+- **Enterprise value (V3.20 slice 8.1):** `sections[valuation_context].enterprise_value` = `{version, market_cap{value, currency, as_of, source_url, method, lower_bound}, net_debt{state, value, currency, period, filed, total_debt, cash_and_equivalents, sources[{label, source_url, fact_id}], formula | reason}, enterprise_value{state: computed | refused, value, currency, as_of, lower_bound, balance_sheet_age_days, formula | reason, detail}, multiples[{key: ev_to_ebit | ev_per_capacity_unit | ev_to_backlog, state: computed | refused | not_meaningful | not_available, value, unit, …, reason}], own_history{state: not_available, reason}, note}`. Native currency only, no FX. Flags `V3_ENTERPRISE_VALUE_ENABLED` (default on), `V3_ENTERPRISE_VALUE_RECHECK_ENABLED` (off). Rules: docs/v3.20-valuation.md.
+- **Layer peers (V3.20 slice 8.2):** `sections[valuation_context].layer_peers` = `{layer, size_band[0.2, 5.0], peers[{ticker, exchange, as_of, market_cap_usd, market_cap_as_of, ev_to_ebit, ev_currency, obscurity_score, size_ratio, comparable_size, research_record_id}], peer_count, subject_ev_to_ebit, median_ev_to_ebit | null, median_basis, median_reason, note}`. From `company_research_records` (migration 053). Flag `V3_LAYER_PEERS_ENABLED` (default on). Rules: docs/v3.20-valuation.md.
+- **Market implied (V3.20 slice 8.4):** `sections[valuation_context].market_implied` = `{version, peer_position{state, position, subject_ev_to_ebit, peer_median_ev_to_ebit, ratio, peer_count, bands | reason}, implied_margin{state, implied_ebit_margin, filed_ebit_margin, revenue, revenue_period, revenue_source_url, currency, formula | reason}, implied_growth{state, free_cash_flow, operating_cash_flow, capital_expenditure, period, currency, sources[], grid[{discount_rate, implied_perpetual_growth}], discount_rate_assumption{kind, values, rationale}, formula, fcf_basis | reason}, discount_characteristics: null | [{key, label, source_block, observed, threshold}], note}`. Only when an EV was computed. Flag `V3_MARKET_IMPLIED_ENABLED` (default on). Rules: docs/v3.20-valuation.md.
+- **Financial depth (V3.20 slice 8.5):** `sections[financial_capacity].financial_depth` = `{source, retrieved_at, note, debt_maturity_ladder{state, as_of, buckets[{bucket, concept, value | null, currency, accession, filed, source_url, state?}], buckets_tagged, total | null, currency, total_note}, dilution{state, concept, years[{period_start, period_end, shares, as_first_filed, latest_filing_restated, change_pct?, accession, filed, source_url}], note}, contract_assets / contract_liabilities{state, concept, series[{as_of, value, currency, accession, filed, source_url}]}}`. US filers with a CIK; flag `V3_FINANCIAL_DEPTH_ENABLED` (default on). Rules: docs/v3.20-valuation.md.
+- **Change events (V3.20 slice 6.2):** `sections[growth_and_catalysts].change_events` = `{rules_version, window_days, events[{trigger_type, label, date, title, document_type, source_url, source_tier, source_kind: issuer_disclosure, rule, members?}], negated[…same], insider_clusters[{trigger_type: insider_cluster_buy, start_date, end_date, distinct_insiders, purchases, shares, value_usd | null, currency: USD, insiders[{name, relationship}], transactions[{insider_key, insider_name, relationship, transaction_date, code, acquired_disposed, shares, price_usd, security_title, accession, filing_date, source_url}], rule}], insider_lookup{source, cik, filings_available, filings_read, truncated, open_market_purchases, retrieved_at, notes[]} | null, counts_by_type, documents_considered, documents_undated, note}`. Present only when an event or cluster was found. Flags `V3_CHANGE_EVENTS_ENABLED` (held-disclosure titles, no external call) and `V3_INSIDER_CLUSTERS_ENABLED` (SEC Form 4), both default on. Rules: docs/v3.20-vertical-discovery.md.
+- **Obscurity (V3.20 slice 6.3):** `sections[valuation_context].obscurity` = `{version, score (0–100) | null, components_available, components_total, components[{key, value, points, state: available | not_available, source, as_of, basis, note}], note}`. Components: `analyst_count`, `passive_ownership_pct`, `theme_fund_holders`, `english_news_volume` (GDELT, 3 months, only with `V3_OBSCURITY_NEWS_VOLUME_ENABLED`), `sector_mis_tag`, `primary_disclosure_language`. Unavailable components are left out of the mean; fewer than 3 → no score. Present with `V3_OBSCURITY_SCORE_ENABLED` (default on). Rules: docs/v3.20-vertical-discovery.md.
+
 ---
 
 ### Workflows
@@ -1361,6 +1542,8 @@ Response `201 Created`:
 }
 ```
 
+`market_cap_min` / `market_cap_max` are **USD**, in the provider's unit (V3.20 slice 1.3). A non-USD figure is converted at an official rate (FRED H.10, else ECB). With a bound set, a candidate whose size cannot be put in USD (no market cap, no currency, or no rate) gets `needs_data` and a "Size not verified" warning; it never passes the filter silently.
+
 Response `201 Created`:
 ```json
 {
@@ -2409,12 +2592,41 @@ publish, or recommendation change.
   "industry": "Aerospace & Defense",  // optional
   "industry_keywords": ["defense"],   // optional
   "market_cap_bucket": "large_cap",   // optional
+  "max_market_cap_usd": 2000000000,   // optional, V3.20 size mandate (see below)
   "max_universe_size": 25,            // hard cap ≤ 50 (default 25)
   "max_candidates": 10,
   "provider_name": "free_real",
   "lookback_days": 90
 }
 ```
+
+**Size mandate (`max_market_cap_usd`, V3.20 slice 1.1, owner decision D1).**
+- **Omitted** → the platform default `DISCOVERY_DEFAULT_MAX_MARKET_CAP_USD` (USD 2bn). It applies only when the thesis and `market_cap_bucket` name no size, so a "mid-cap" thesis is never silently capped.
+- **A number** → an explicit ceiling (`> 0`, `≤ 1e13`). It narrows any size the thesis names, or becomes the size constraint on its own.
+- **`null`** → no ceiling.
+
+The ceiling is a **hard** constraint, and it is checked on the verified market cap converted to USD:
+- below the ceiling → `pass`;
+- at or above it → `fail` (excluded);
+- within 15% of it → `borderline`, shown but not decisive.
+
+A US public float (a lower bound) can only *fail* a ceiling, never pass it.
+
+**FX for the size check (V3.20 slice 1.2).** A non-USD market cap is converted with an official rate, and the rate (`publisher`, `series`, `rate_date`, `source_url`) travels with the size result:
+- FRED H.10 first, for the 19 currencies it quotes;
+- the ECB euro reference rates (`data-api.ecb.europa.eu`, cross `USD/EUR ÷ CCY/EUR` on one shared date) for currencies H.10 lacks (PLN, CZK, HUF, RON, ISK, TRY, ILS, IDR, PHP, MYR, THB, BGN) and when H.10 is unreachable or stale.
+
+A rate more than **5 business days** before the market-cap date is stale. A stale rate, or no rate from either source, gives `size: unknown` with both reasons — under a mandate the issuer then lands in `size_unverified[]`.
+
+**Size at analysis time (V3.20 slice 1.3).** Deep research re-checks size: the report's `thesis.size_fit` re-reads the exchange's own market cap (`V3_SIZE_RECHECK_ENABLED`, default on) and applies the run's numeric mandate as well as the bands. It adds `mandate`, `market_cap_as_of`, `market_cap_origin` (`analysis_time` | `discovery_snapshot`), `market_cap_method`, `market_cap_age_days`, `stale` (snapshot > 30 days) and `fx`; when the figure was re-read, `market_cap_at_discovery` shows the old one and the note states how much size moved. A US 10-K public float is a lower bound: it can fail a ceiling, never pass it (`fits: null`).
+
+**Universe generation.** Universe members carry no market cap, so the size mandate is enforced by the dynamic stage that verifies each one; the universe is not pre-filtered on an unverified figure.
+
+**Unverified size under a mandate.** If the market cap cannot be verified, the issuer is **not shortlisted**. It is returned in the dynamic stage's `size_unverified[]`, together with a `funnel.size_unverified` count and a warning. A size named only in words keeps the V3.19 behaviour: unverified names are ranked last but stay on the shortlist.
+
+**Anti-convergence (V3.20 slice 6.4).** After eligibility and before the cap: a name researched within `V3_DISCOVERY_NOVELTY_WINDOW_DAYS` (90) with no change event in its held disclosures newer than that research is **held back** (not shortlisted, not excluded) with a warning; then at most `V3_DISCOVERY_DIVERSITY_MAX_PER_CELL` (2) names per layer × driver × regime cell come before the rest (reorders, never shrinks; names with no electricity-layer hint are never moved). Only when either acted, the dynamic stage carries `anti_convergence: {novelty_held[candidate + novelty{state, last_researched_at, rule}], diversity_moved[{exchange, ticker, cell}]}`. Every evaluated name is recorded in `discovery_seen` (migration 052). Flags: `V3_DISCOVERY_SEEN_ENABLED`, `V3_DISCOVERY_NOVELTY_GATE_ENABLED` (both default on).
+
+The applied ceiling is stored in `config_json.max_market_cap_usd`, and `config_json.size_mandate_source` records where it came from (`default` | `explicit` | `none`). It is also stored on the size constraint in `parsed_thesis_json.discovery_intent` (`max_usd`). `POST /parse-thesis` previews the default the same way.
 
 **Rejections (422, before any background work):**
 - A **vague thesis** that cannot bound a universe (e.g. "best stocks to buy",
@@ -3858,3 +4070,71 @@ That is deliberate. A corpus search endpoint would need its own auth, its own
 rate limiting and its own answer to "which entity may this caller see", and none
 of those questions has an owner yet. Nothing about the corpus is reachable from
 the public API, and `V3_CORPUS_ENABLED` is off by default in any case.
+
+## Research verdict (V3.20 slice 9.2, ADR-098)
+
+`source_summary_json.v3_research.professional_research.verdict` is present only when
+`V3_RESEARCH_VERDICT_ENABLED` is on. Shape: `{version, recommendation (PASS | WATCHLIST |
+SHORTLIST), meaning, composite_score, confidence {value, band, coverage, primary_share},
+pillars[{key, label, weight, state (scored | insufficient_evidence), score, evidence[],
+thin_share, rule}], caps[{key, reason}], capped, thresholds, missing_information[],
+watchlist_triggers[], rationale, note}`. Rules: [v3.20-output.md §9.2](v3.20-output.md).
+
+## Valuation range (V3.20 slice 8.6 wiring, ADR-099)
+
+`source_summary_json.v3_research.professional_research.valuation` is present only when
+`V3_VALUATION_ENGINE_ENABLED` is on and the run has a computed EV. It carries the engine
+output (`valuation_range`, `methods`, `floors?`, `sensitivity_fcff_dcf`,
+`inputs{cited, assumptions}`, `note`) plus `block_version`,
+`price_reference{per_share, currency, market_cap_as_of, market_cap_source_url,
+shares_period, formula}`, `relative_position` (`undervalued | in_line | overvalued | null`)
+and `upside_downside_pct{low, mid, high} | null`. Rules: [v3.20-valuation.md
+§8.6](v3.20-valuation.md).
+
+## Self-critique (V3.20 slice 9.3)
+
+`source_summary_json.v3_research.professional_research.self_critique` is present when
+`V3_SELF_CRITIQUE_ENABLED` is on (the default). Shape: `{version, state (complete |
+incomplete), reason, publication_ready, bear_case[{kind, label, section?, weakness_class?,
+statement?, author?}], bear_case_total, challenges_withheld_for_safety,
+weakest_links[{kind, key, text}], data_quality_warnings[{label, section, reason}],
+platform_evidence_gaps, red_team{…}, disconfirming_search{…, statement}, note}`. The web
+print view and memo are pages (`/research/reports/{id}/print[?format=memo]`), not API
+routes. Rules: [v3.20-output.md §9.3](v3.20-output.md).
+
+## Private portfolios (V3.20 slice 12.1, ADR-100)
+
+Owner-scoped: every route resolves the owner from `request.state.admin_email` (set by the
+Basic Auth middleware from the admin proxy's `X-IB-Admin-Email`; in `APP_ENV`
+development/test, where there is no Basic Auth layer, from the header directly). No owner →
+**403**. Another owner's portfolio → **404** (existence is not revealed). Reached from the
+web only through the admin proxy (`/api/v1/portfolios` is on its allow-list).
+
+| Method | Path | Body / response |
+|---|---|---|
+| GET | `/api/v1/portfolios` | `[{id, name, note, created_at, position_count, weight_pct_total}]` |
+| POST | `/api/v1/portfolios` | `{name, note?}` → 201 summary; 409 on a duplicate name |
+| GET | `/api/v1/portfolios/{id}` | summary + `positions[{id, company_id, ticker, exchange, entry_date, entry_price, entry_currency, weight_pct, note, created_at}]` |
+| DELETE | `/api/v1/portfolios/{id}` | 204; the positions go with it |
+| POST | `/api/v1/portfolios/{id}/positions` | `{ticker, exchange?, entry_date (not future), entry_price? + entry_currency? (both or neither), weight_pct? (0–100], note?}` → 201; 409 on the same ticker/exchange/date; 422 on invalid input |
+| DELETE | `/api/v1/portfolios/{id}/positions/{position_id}` | 204 |
+| GET | `/api/v1/portfolios/{id}/review` | slice 12.2: `{portfolio_id, name, rules_version, holdings[{position_id, ticker, exchange, entry_date, thesis_status, reason, entry_record, current_record, weakening[{kind, summary, source_url, detail}], context[…], proposed_research[], entry_verdict, current_verdict}], status_counts, thresholds, note}` — rules: docs/v3.20-portfolio.md |
+
+No route imports from a broker, places an order or computes a size.
+
+## Precedent transactions (V3.20 slice 8.3, admin only)
+
+These routes need a signed-in admin: `request.state.admin_email`, or the `X-IB-Admin-Email`
+header in development/test only. Without one they return **403**. From the web they are
+reachable only through the admin proxy (`/api/v1/admin/precedent-transactions` is on its
+allow-list). Nothing here fetches a URL.
+
+| Method | Path | Body / response |
+|---|---|---|
+| GET | `/api/v1/admin/precedent-transactions?status_filter=&layer=` | `[PrecedentRead]` (≤ 500, newest first) |
+| POST | `/api/v1/admin/precedent-transactions` | `{acquirer_name, target_name, announced_date (not future), currency, enterprise_value > 0, value_basis?, metric_key?, metric_value?, metric_period?, layer?, source_url (https), source_title?, source_excerpt?}` → 201, `status: proposed`, `entry_method: curated`; 409 on the same acquirer/target/date |
+| POST | `/api/v1/admin/precedent-transactions/scan` | `{company_id}` → `{chunks_read, deals_found, proposed, skipped_undated}`. Proposes deals from the company's held document chunks and never approves them. |
+| POST | `/api/v1/admin/precedent-transactions/{id}/approve` | `{layer?, metric_key?, metric_value?, metric_period?, value_basis?, note?}` → approved row; 422 if layer, metric or EV is still missing |
+| POST | `/api/v1/admin/precedent-transactions/{id}/reject` | `{note}` (required) → rejected row; the row is kept |
+
+`PrecedentRead` returns every column plus the computed `multiple`.

@@ -691,6 +691,9 @@ export interface DiscoveryIntentConstraint {
   hardness_basis: string;
   phrase: string;
   verification_required: boolean;
+  /** V3.20 — the numeric size mandate, USD (size constraint only). */
+  max_usd?: number | null;
+  min_usd?: number | null;
 }
 
 export interface DiscoveryIntent {
@@ -754,6 +757,8 @@ export interface VerifiedAttributes {
   market_cap_usd?: number;
   market_cap?: { amount?: number; currency?: string; as_of?: string; as_of_basis?: string };
   size_borderline?: boolean;
+  /** `exchange_directory` | `admitted_shares_x_price` | `public_float_floor` | … */
+  market_cap_method?: string | null;
   growth_status?: "established" | "declining" | "mixed" | "not_established";
   growth_basis?: string;
   geography?: Record<string, unknown>;
@@ -982,6 +987,8 @@ export interface DiscoveryDynamicStage {
   // W6b — present only for a run that used live web search.
   web?: DiscoveryWebSummary | null;
   also_surfaced?: DiscoveryCandidateRecord[];
+  /** V3.20 — under a numeric size mandate, names whose size could not be verified. */
+  size_unverified?: DiscoveryCandidateRecord[];
 }
 
 export interface ResearchFreshness {
@@ -1033,6 +1040,11 @@ export interface ThesisDiscoveryRunCreate {
   industry?: string;
   industry_keywords?: string[];
   market_cap_bucket?: string;
+  /**
+   * V3.20 size mandate (USD). Omit = the platform default (USD 2bn, applied only when the
+   * thesis names no size); a number = an explicit ceiling; null = no ceiling.
+   */
+  max_market_cap_usd?: number | null;
   max_universe_size?: number;
   max_candidates?: number;
   provider_name?: string;

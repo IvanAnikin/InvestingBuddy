@@ -1205,6 +1205,287 @@ There are no schema changes. The new values live in existing columns:
 | `research_gaps` | `reconciliation_json.gap_status` | The report's gap status: `OPEN` / `PARTIALLY_CLOSED` / `CLOSED` / `SUPERSEDED` / `NONCOMPARABLE` / `EXTRACTION_FAILED`. `reconciliation_status` keeps its four CHECK-constrained values (`NONCOMPARABLE` is stored as `partially_closed`, `EXTRACTION_FAILED` as `still_open`). `reconciliation_json.superseded_by_finding_id` names the later balance that superseded an older-dated balance gap. |
 | `research_findings` | `period_type` | `text_stated` when `period_key` was read from a web finding's own statement (ADR-080 framing) rather than inherited from its evidence. It is NULL otherwise. |
 
+## Migration 047 — relationship evidence (V3.20 slice 2.1)
+
+`entity_relationships` becomes the company relationship graph: parent, ultimate parent,
+significant holder, supplier/customer (spec §3.2).
+
+| Change | Why |
+|---|---|
+| `subject_entity_id`, `object_entity_id` nullable | One end may be unresolved: "Customer A, 14% of revenue" is a concentration fact; a GLEIF parent may not be in the entity master yet. |
+| `counterparty_name_raw`, `counterparty_name_key` | Name the unresolved end. The key is casefolded and punctuation-trimmed (`vocabulary.counterparty_key`). |
+| `evidence_ref`, `source_kind`, `extraction_method`, `evidence_excerpt`, `as_of` | Every V3.20 edge carries its citation. The writer refuses a `supplier_of`, `ultimate_parent_of` or `significant_holder_of` edge, or any unresolved edge, with neither `source_url` nor `evidence_ref`. |
+| `disclosed_share_pct` (0–100), `share_basis` | The disclosed share and what it is a share of (`revenue`, `receivables`, `purchases`, `voting_rights`, `capital`, `backlog`). |
+| `period` NOT NULL default `''` | Part of the identity: FY2024 and FY2025 shares for one customer are two rows. |
+
+New canonical types: `ultimate_parent_of` (alias `ultimately_controlled_by`), `significant_holder_of` (alias `significantly_held_by`) and `supplier_of` (alias `customer_of`). One fact is never two rows.
+
+Checks: no self-reference when both ends are set; at least one end resolved; an unresolved end has a name key; share within 0–100. `ix_entity_relationships_current` is rebuilt with `period`, and two partial unique indexes cover an unresolved object and an unresolved subject.
+
+Downgrade deletes rows with an unresolved end, and any period-split duplicates (they cannot exist under 028), then restores 028 exactly. Checked on PostgreSQL: upgrade, constraint violations, downgrade, re-upgrade. **Apply 047 before deploying the code**, because the ORM maps the new columns.
+
+## Migration 048 — relationship reporting exceptions (V3.20 slice 2.2)
+
+New table `entity_relationship_exceptions`. It holds a registry's stated reason for NOT reporting a parent.
+
+GLEIF Level 2 answers "who is the parent?" in one of three ways:
+- a parent LEI record, stored as an `entity_relationships` edge;
+- a **reporting exception** (`NATURAL_PERSONS`, `NON_CONSOLIDATING`, `NO_KNOWN_PERSON`, `NON_PUBLIC` and its successors), stored as a row here;
+- nothing at all, stored as no row (unknown).
+
+A reporting exception is a fact about the company, and it is not "independent". The report shows it with GLEIF's reason.
+
+| Column | Meaning |
+|---|---|
+| `legal_entity_id` | The entity that has no reported parent (FK `legal_entities`, cascade). |
+| `relationship_type` | The edge that was not reported: `parent_of` or `ultimate_parent_of`. |
+| `category`, `reason` | GLEIF's own values, as published. |
+| `source`, `source_url`, `as_of` | The GLEIF URL and the retrieval date. |
+| `effective_from`, `effective_to` | Effective-dated. A row is closed, never deleted, when GLEIF later reports a parent. |
+
+There is one current row per (entity, relationship type), enforced by the partial unique index `ix_entity_relationship_exceptions_current`.
+
+Downgrade drops the table. Checked on PostgreSQL: upgrade, downgrade, re-upgrade.
+
+## Migration 049 — passive / ETF ownership (V3.20 slices 3.1–3.2)
+
+Three new tables, filled by the offline N-PORT ingest (`scripts/ingest_nport.py`). Nothing in a research request writes them. The source facts are in `docs/v3.20-passive-ownership-spike.md`.
+
+| Table | Holds |
+|---|---|
+| `funds` | One row per EDGAR series (`series_id`, unique): name, series LEI, registrant CIK and name, net assets with their report date, and `is_etf` / `is_index` with `fund_type_source` (`ncen`) and `fund_type_as_of`. |
+| `security_passive_ownership` | Per (`identifier_kind`, `identifier`, `period`, `source_kind`), unique: what US-registered funds held of one security in one data-set period. Since slice 3.5 also `source_kind = issuer_file`: the curated ETFs' sponsor files, `period` = the newest file date (`2026-11-13`), `top_funds_json` one entry per fund with its own `as_of`, `domicile` (US / UCITS), `sponsor` and `match_basis` (`cusip` / `isin` / `ticker_us_exchange`). |
+| `fund_holdings_ingests` | One row per (`source_kind`, `period`), unique: the status (`running` / `complete` / `failed`), the counts written, the error, and the timings. It makes the ingest idempotent per quarter. Issuer files log one row per file: `source_kind = issuer_file:<sponsor>:<ticker>`, `period` = the file date (the run date when the file was refused), `error` = the adapter's fail-closed reason. |
+
+Columns of `security_passive_ownership`:
+
+| Column | Meaning |
+|---|---|
+| `identifier_kind`, `identifier` | The security's ISIN, else its CUSIP, else the issuer LEI (ADR-061: an LEI names the issuer, so an LEI-only row covers every security of that issuer). |
+| `period` | The DERA data set's quarter, e.g. `2026Q3`. It is a FILING quarter; the holdings are as of `report_date_min`–`report_date_max`. |
+| `source_kind` | `nport` (SEC data sets) or `issuer_file` (an issuer's own holdings file, D8, slices 3.5–3.6). |
+| `fund_count`, `etf_count`, `etf_unknown_count`, `index_fund_count` | Distinct series holding it. `etf_unknown_count` counts funds with no N-CEN type: never shown as "not an ETF". |
+| `shares_held`, `etf_shares_held` | Sum of `BALANCE` where `UNIT = 'NS'` only. |
+| `non_share_holdings` | Holdings in another unit (principal amount, contracts): counted, never added. |
+| `value_usd` | Sum of `CURRENCY_VALUE` for USD-reported holdings. |
+| `top_funds_json` | Up to 20 funds `{series_id, name, sponsor, unit, is_etf, shares, value_usd, pct_of_fund, report_date}`; share holdings first. |
+| `source_url` | The DERA data-set URL, cited on every row. |
+
+`is_etf` is three-valued (true / false / null) because the N-CEN data sets omit filings in schema 3.1 (EDGAR 25.2). Raw holdings and the ZIPs are not stored.
+
+Downgrade drops the three tables. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches the migrated columns, nullability, indexes and unique constraints.
+
+## Migration 050 — earnings results (V3.20 slice 4.1)
+
+New table `earnings_results`: one row per company × fiscal quarter (`2026-Q3`, `fiscal_quarter` 1–4) or full fiscal year (`2026`, `fiscal_quarter` 0, CHECK 0–4), unique on (`company_id`, `fiscal_period_label`). The label is the filer's own fiscal calendar (ADR-091; the `ExtractedFact.period` form). Annual rows are the 10-K's own full year; they are what annual guidance is compared with (slice 4.3). The table is written during company research by `pipeline/earnings_step.py` from SEC XBRL (`sources/sec_actuals.py`).
+
+| Columns | Meaning |
+|---|---|
+| `period_start`, `period_end` | The quarter's own dates. |
+| `report_date`, `report_date_source`, `report_date_accession` | The 8-K Item 2.02 release between the quarter end and the periodic report; else the periodic report's filing date. The source column says which. |
+| `actual_revenue`, `actual_eps` | As **first reported** in the quarter's own 10-Q / 10-K: what a consensus of the time was compared with. |
+| `actual_revenue_latest`, `actual_eps_latest` | The newest filing's value for the same dates. A split or restatement makes them differ (Powell 2025-Q3 diluted EPS: 3.96 as filed, 1.32 after its 2026 split). |
+| `revenue_basis` | `reported_quarter`, or `derived_fy_minus_9m`: the 10-K tags no three-month Q4, so Q4 = full year minus the Q3 10-Q's nine-month figure. **Q4 EPS is never derived**; it is stated only when the 10-K tags a three-month value. |
+| `*_currency`, `*_concept`, `*_accession`, `*_source_url` | Where each figure came from: the us-gaap concept, and the EDGAR filing index URL. |
+| `actuals_source`, `actuals_as_of` | `sec_xbrl`, and when the actuals were read. |
+| `consensus_*`, `analyst_count_*`, `consensus_source`, `consensus_as_of`, `consensus_status` | Filled by slice 4.4 from `consensus_snapshots` (migration 051; third-party expectation data, ADR-097). NULL = not looked up, never zero. `consensus_as_of` must precede `report_date`. |
+| `surprise_*` | Slice 4.4 (`pipeline/earnings_track_record.py`). Revenue: filed revenue as first reported − the latest snapshot with `is_pre_report` and `as_of` strictly before `report_date`. EPS: the provider's own surprise, stored as given on the provider's basis (`detail_json.surprise.eps_surprise`, with `eps_basis_difference` when the provider's reported EPS and the filed diluted EPS differ by more than one cent). `consensus_status`: `available` (≥ 3 analysts), `thin` (1–2 or not stated), `none` (covered, no dated pre-report estimate), `source_unavailable` (no provider data). |
+| `guidance_*`, `vs_guidance` | Slice 4.3. |
+| `detail_json` | `actuals`: strategy, notes (e.g. `q4_eps_not_tagged_as_a_quarter`), restated flags, periodic form and filing date. |
+
+Re-running the actuals rewrites only the actual and report-date columns; consensus, guidance and surprise columns are never touched. FK `companies` cascade; index on `report_date`; CHECK `ck_earnings_results_fiscal_quarter`. Downgrade drops the table. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches.
+
+## Migration 051 — consensus snapshots + vendor call budget (V3.20 slice 4.2)
+
+Two new tables (ADR-097). Written during company research by `pipeline/consensus_step.py` and by the operator job `scripts/snapshot_consensus.py`; the source is Alpha Vantage (`integrations/alpha_vantage.py`, private use only).
+
+**`consensus_snapshots`** — what the provider said, on one date (`as_of`), about one company period. Unique on (`company_id`, `source`, `horizon`, `period_end`, `as_of`): one row per period per day; a same-day re-read updates it.
+
+| Columns | Meaning |
+|---|---|
+| `horizon` | `fiscal_quarter` / `fiscal_year` (an `EARNINGS_ESTIMATES` row), or `reported_quarter` (the provider's own `EARNINGS` record of a reported quarter). |
+| `period_end`, `as_of`, `symbol`, `source` | The period, the day it was read, the provider symbol, `alpha_vantage`. |
+| `is_pre_report` | True when the period's results were not announced on `as_of` (the period had not ended, or the report date is later); False when they were; NULL when it cannot be told. **Only True is an expectation** (ADR-097 §2). The report date is the SEC one from `earnings_results` when known, else the provider's. |
+| `eps_avg/high/low`, `eps_analyst_count`, `revenue_avg/high/low`, `revenue_analyst_count` | The estimate. NULL = not given, never zero. |
+| `eps_avg_7d/30d/60d/90d_ago`, `eps_revisions_up_30d`, `eps_revisions_down_30d` | The provider's revision history as of `as_of`. |
+| `vendor_reported_date`, `vendor_reported_eps`, `vendor_surprise`, `vendor_surprise_pct`, `vendor_report_time` | `reported_quarter` rows only (with `eps_avg` = the provider's estimate). **Provider EPS basis** (usually adjusted): never subtracted from the filed diluted EPS. |
+| `source_url` | The request URL **without** the key. |
+| `detail_json` | Strategy, `eps_basis: provider`, the report date used for `is_pre_report`. |
+
+**`vendor_api_calls`** — calls per vendor per UTC day, unique on (`vendor`, `day`). The step takes its two calls with one conditional `UPDATE … WHERE calls + n <= 25` in its own short transaction, so concurrent runs share one budget and a long research run never holds the row lock.
+
+FK `companies` cascade; index (`company_id`, `period_end`). Downgrade drops both tables. Checked on PostgreSQL: upgrade, downgrade, re-upgrade; the ORM matches.
+
+## Migration 052 — discovery anti-convergence store (V3.20 slice 6.4)
+
+One new table, `discovery_seen` (`app/models/discovery_seen.py`), written by the discovery
+stage (`services/discovery/pipeline.py`, `_record_seen`) and by company research
+(`v3_pipeline._mark_researched`); read by the novelty gate. A summary over research
+history — the history itself is never deleted.
+
+| Columns | Meaning |
+|---|---|
+| `issuer_key` | `EXCHANGE:TICKER`, unique. |
+| `company_id` | The platform company when known (FK `companies`, `ON DELETE SET NULL`; indexed). |
+| `first_seen_at`, `last_seen_at`, `times_seen` | Discovery sightings (a name evaluated against the requirements). `times_seen` is 0 for a row created by research alone. |
+| `times_shortlisted`, `last_shortlisted_at` | Sightings that made the shortlist. |
+| `last_researched_at`, `last_event_date` | When company research last ran, and the newest change-event date (slice 6.2) that research knew of. The gate re-admits a recently researched name only on a NEWER event. |
+| `last_discovery_run_id`, `cell_json` | The last run that saw it, and its diversity cell `{layer, driver, regime}` (NULL outside the electricity vertical). |
+
+Additive; downgrade drops the table.
+
+## Migration 053 — comparable-set store (V3.20 slice 9.1)
+
+One new table, `company_research_records` (`app/models/research_record.py`), written once
+per completed company research run by `services/research_records.write_record`
+(`V3_RESEARCH_RECORDS_ENABLED`, default on). Every value is **read from the run's own
+report blocks**, so the memo, the report and the record cannot disagree; a missing block
+is NULL, never zero. Rows are never updated and never deleted.
+
+| Columns | Meaning |
+|---|---|
+| `company_id`, `research_run_id` | FK `companies` (cascade), FK `research_runs` (`SET NULL`, unique). |
+| `as_of`, `record_version` | The run date and the record builder's version. |
+| `ticker`, `exchange`, `sector`, `industry` | The company's labels at the time. |
+| `layer` | Electricity primary layer (slice 5.2) when classified; NULL otherwise. Indexed. |
+| `market_cap_usd`, `market_cap_as_of` | From the run's size check. |
+| `enterprise_value`, `ev_currency`, `ev_to_ebit` | From the 8.1 block, only when computed. |
+| `obscurity_score` | From the 6.3 block. |
+| `rubric_json` | Slice 9.2: the report's `verdict` block (rubric + computed verdict), when `V3_RESEARCH_VERDICT_ENABLED`; NULL otherwise. No schema change. |
+| `record_json` | `{record_version, report_version, size_fit, blocks{"section.block": …}, valuation?}` — the blocks verbatim; `valuation` (slice 8.6 wiring) = `{block_version, valuation_range, price_reference, relative_position, upside_downside_pct}` when the engine ran. |
+
+Index (`company_id`, `as_of`). `comparable_set(layer)` returns the newest record per
+company in one layer (window function). Checked on PostgreSQL: upgrade, downgrade,
+re-upgrade; the comparable-set query runs.
+
+## Migration 054 — six more monitoring signal kinds (V3.20 slice 9.4)
+
+No new table. `ck_monitoring_signals_kind` (migration 038) is dropped and recreated wider:
+`earnings_released`, `consensus_revision`, `passive_ownership_change`,
+`relationship_change`, `competitor_capacity_announcement`, `change_event` join the six
+V3.9 kinds. The vocabulary stays closed (`monitoring/detector.SIGNAL_KINDS`, a test pins
+it to the migration). Downgrade restores the narrower constraint and **refuses** while any
+signal of a new kind exists — signals are history and a downgrade never deletes them.
+Checked on PostgreSQL 16: upgrade, refused downgrade with a new-kind row, downgrade,
+re-upgrade.
+
+## Migration 055 — private, hand-entered portfolios (V3.20 slice 12.1, ADR-100)
+
+Two **private** tables (CLAUDE.md rule 10). No public table references them, and the
+portfolio review (12.2) only reads public research records — it never writes a holding
+into them. A test pins that no other table has a foreign key to either.
+
+| Table | Columns | Rules |
+|---|---|---|
+| `user_portfolios` | `owner_key` (SHA-256 of the signed-in admin's lower-cased e-mail — never the address), `name`, `note`, timestamps | unique (`owner_key`, `name`) |
+| `user_portfolio_positions` | FK `user_portfolios` (cascade; the API also deletes explicitly), FK `companies` (`SET NULL`; linked only when the ticker[+exchange] matches exactly one company), `ticker`, `exchange`, `entry_date`, `entry_price` + `entry_currency` (both or neither), `weight_pct` (0 < w ≤ 100, as typed — never computed), `note` | unique (`portfolio_id`, `ticker`, `exchange`, `entry_date`); CHECKs for price > 0, the weight range and price/currency pairing |
+
+Entered by hand only: no broker import, credential or account link. Checked on PostgreSQL
+16: upgrade, the CHECKs reject a price without currency and a weight of 150, the cascade
+removes positions, downgrade, re-upgrade.
+
+## Migration 056 — precedent transactions (V3.20 slice 8.3)
+
+One public table: `precedent_transactions`. Deals are public facts, and no user data is stored.
+
+| Column(s) | Rule |
+|---|---|
+| `acquirer_name`, `target_name`, `announced_date` | unique together |
+| `target_company_id` | FK `companies`, `SET NULL` |
+| `layer` | an electricity layer key (validated by the API) |
+| `currency`, `enterprise_value` | EV > 0; `value_basis` is `enterprise_value` or `consideration` |
+| `metric_key`, `metric_value`, `metric_period` | `metric_key` ∈ ebit/ebitda/revenue/capacity_mw |
+| `source_url`, `source_title`, `source_excerpt`, `retrieved_at` | URL and retrieval time NOT NULL |
+| `entry_method` | `extracted` or `curated` |
+| `status` | `proposed`, `approved` or `rejected` |
+| `reviewed_by`, `reviewed_at`, `review_note` | |
+
+A CHECK requires an approved row to carry EV, metric > 0 and layer. Index (`layer`, `status`).
+
+Checked on PostgreSQL 16:
+- upgrade;
+- the CHECK rejects an approved row without a metric;
+- downgrade drops the table;
+- re-upgrade.
+
+## Migration 057 — grid capex plans (V3.20 slice 7.1)
+
+Two public tables (published grid plans; no user data). Rules: [docs/v3.20-grid-plans.md](v3.20-grid-plans.md).
+
+| Table | Columns | Rules |
+|---|---|---|
+| `grid_plan_ingests` | `source_key`, `plan_edition`, `status`, `source_url`, `file_sha256`, `rows_read`, `rows_written`, `detail_json`, `error`, `retrieved_at`, `finished_at` | status ∈ running/complete/failed; a failed ingest is kept |
+| `grid_capex_plans` | FK `grid_plan_ingests` (`SET NULL`), `source_key`, `plan_name`, `plan_edition`, `record_kind` (project/investment/queue_summary), `external_id`, `parent_external_id`, `project_name`, `promoters_text`, `promoters_json`, `region`, `category`, `technology_tags_json`, `voltage_kv`, `description`, `capex_amount` + `capex_currency` + `capex_period`, `capacity_text`, `capacity_mw`, `commissioning_text`, `commissioning_year`, `status_text`, `status_class`, `source_url`, `source_title`, `retrieved_at`, `use_constraint`, `attribution` | unique (`source_key`, `plan_edition`, `record_kind`, `external_id`); CHECK capex amount > 0 with its currency, or neither; CHECK on `status_class`; index (`source_key`, `plan_edition`) |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- the capex-pair CHECK rejects an amount without a currency;
+- downgrade drops both tables;
+- re-upgrade.
+
+## Migration 058 — research chunk translations (V3.20 slice 10.1)
+
+One public table: English machine translations of held non-English chunks. The original
+chunk is unchanged and stays the evidence. Rules: [docs/v3.20-translation.md](v3.20-translation.md).
+
+| Table | Columns | Rules |
+|---|---|---|
+| `research_chunk_translations` | FK `research_document_chunks` (`CASCADE`), `chunk_id`, FK `research_document_versions` (`CASCADE`), FK `companies` (`SET NULL`), `source_language`, `target_language`, `status`, `reason`, `translated_text`, `original_sha256`, `provider`, `model`, `prompt_version`, `original_chars`, `translated_chars`, `prompt_tokens`, `completion_tokens`, `usage_estimated`, `created_at`, `updated_at` | unique (`chunk_row_id`, `target_language`); CHECK status ∈ translated/refused/failed; CHECK a translated row has text; index on the version. Refused and failed rows are kept. Only public access classes are translated. |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade drops the table;
+- re-upgrade with all seven constraints.
+
+## Migration 059 — EDINET filing index (V3.20 slice 11.2)
+
+Two tables: EDINET filing METADATA by day (never content). EDINET lists filings by
+day only, so the lookback window is indexed here and an issuer's listing is a query on
+its EDINET code. Rules: [docs/v3.20-asia.md](v3.20-asia.md).
+
+| Table | Columns | Rules |
+|---|---|---|
+| `edinet_index_days` | `day` (PK), `fetched_at`, `filings`, `final` | A day read on that same day in Japan is provisional (`final = false`) and is read again. A window day with no row is a hole in the listing. |
+| `edinet_filings` | `doc_id` (PK, EDINET's id), `edinet_code`, `sec_code`, `filer_name`, `doc_type_code`, `ordinance_code`, `form_code`, `doc_description`, `period_start`, `period_end`, `submitted_at`, `parent_doc_id`, `withdrawal_status`, `pdf_flag`, `xbrl_flag`, `csv_flag`, `english_flag`, `index_day`, `created_at`, `updated_at` | Index on (`edinet_code`, `submitted_at`) and on `index_day`. A filing listed again is updated in place (for example, a withdrawal). |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade to 058 drops both tables;
+- re-upgrade.
+
+## Migration 060 — OpenDART corp-code list (V3.20 slice 11.3)
+
+One table: the listed companies of OpenDART's corp-code list, the only map from a KRX
+stock code to the eight-digit `corp_code` that OpenDART identifies a filer by. The list
+is one 3.6 MB download, measured at 499 s from this project, so it is held here and
+refreshed by `scripts/opendart_corp_codes_refresh.py`. Rules:
+[docs/v3.20-asia.md](v3.20-asia.md).
+
+| Table | Columns | Rules |
+|---|---|---|
+| `opendart_corp_codes` | `corp_code` (PK), `stock_code`, `name_ko`, `name_en`, `refreshed_at` | Index on `stock_code`. Listed companies only. A refresh replaces the held rows; it does not merge them, so a delisted company leaves. A run trusts the held list for `V3_OPENDART_CORP_CODES_MAX_AGE_DAYS` (30); after that it downloads the list again, and falls back to the stale rows if the download fails. |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade to 059 drops the table;
+- re-upgrade.
+
+## Migration 061 — TWSE material announcements (V3.20 slice 11.4)
+
+One table: every material announcement (重大訊息) TWSE's open-data feed `t187ap04_L` was
+read to state. The feed covers one announcement day, so rows are held as they are read,
+by research runs and `scripts/twse_material_refresh.py`. Public exchange data about
+listed companies; no user data. Rules: [docs/v3.20-asia.md](v3.20-asia.md), ADR-103.
+
+| Table | Columns | Rules |
+|---|---|---|
+| `twse_material_announcements` | `ref` (PK, `<code>-<yyyymmdd>-<hhmmss>-<digest10>`), `company_code`, `company_name`, `announced_at`, `clause`, `fact_date`, `subject`, `body`, `content_sha256`, `fetched_at` | Index on (`company_code`, `announced_at`). Rows are never rewritten: a re-read of the same announcement adds nothing, a corrected one is a new row. `announced_at` is the feed's Taipei time stored in UTC. |
+
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade to 060 drops the table;
+- re-upgrade.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

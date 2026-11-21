@@ -10,10 +10,20 @@ from typing import Any
 # ── Sources (stable ids — never renamed) ───────────────────────────────────── #
 SOURCE_UK_FCA_NSM = "uk_fca_nsm"
 SOURCE_ASX_ANNOUNCEMENTS = "asx_announcements"
+#: V3.20 slice 11.2 — the Japan FSA's EDINET.
+SOURCE_EDINET = "edinet"
+#: V3.20 slice 11.3 — Korea's FSS OpenDART.
+SOURCE_OPENDART = "opendart"
+#: V3.20 slice 11.4 — TWSE's material-information open data (上市公司每日重大訊息).
+SOURCE_TWSE_MATERIAL = "twse_material_info"
 
 #: Venue codes (``exchange_registry.normalize_exchange``) each source covers.
 VENUE_LSE = "LSE"
 VENUE_ASX = "AU"
+VENUE_TSE = "TSE"
+#: KOSPI; KOSDAQ (``KQ``) is covered by the same source.
+VENUE_KRX = "KO"
+VENUE_TWSE = "TW"
 
 # ── Why a disclosure is not in the corpus — CLOSED ─────────────────────────── #
 REASON_CONNECTOR_DISABLED = "connector_disabled"
@@ -64,12 +74,18 @@ class VerifiedIssuer:
     identity_basis: str
     isin: str | None = None
     lei: str | None = None
+    #: The issuer's official name in its home script (EDINET's 提出者名), when the
+    #: source states one: a Japanese filing names its filer in Japanese.
+    local_name: str | None = None
+    #: The issuer's own id at the source (EDINET code, DART corp_code) when it has one.
+    source_ref: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ticker": self.ticker, "venue": self.venue, "name": self.name,
             "source_id": self.source_id, "identity_basis": self.identity_basis,
-            "isin": self.isin, "lei": self.lei,
+            "isin": self.isin, "lei": self.lei, "local_name": self.local_name,
+            "source_ref": self.source_ref,
         }
 
 

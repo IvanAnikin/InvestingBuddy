@@ -10440,3 +10440,231 @@ findings did not contain, and 41 impossible combinations of state across the pay
   topic the gap queue LOCATED.
 - The 9M latest-period and DOCUMENT_NOT_PARSED checks are proven in tests only; the
   stored payloads predate ADR-093/094.
+
+---
+
+## ADR-097: Analyst Consensus Is Labelled Third-Party Expectation Data, Shown Only Where Earnings Are Compared With It
+
+**Date:** 2026-11-14 · **Status:** Accepted (decision; not implemented)
+**Trigger:** owner decisions D2 and D3 of the [V3.20 spec](v3.20-electricity-vertical-spec.md#2-owner-decisions--resolved-2026-11-14). The owner asked for one specific output: how far each quarter's results came in above or below what the market expected.
+
+### Context
+The platform keeps analyst estimates out of the record at two points:
+- `services/statement_kind.py` (`_ESTIMATE_RE`) classifies "consensus", "analysts expect" and "street estimates" as an estimate and withholds the statement.
+- `services/safety_terms.py` replaces "price target" / "target price" with `analyst estimate [redacted]`.
+
+Both are right for what they were built against: free text from web pages and LLM output that presents an unverifiable forecast as a fact. An earnings surprise, though, cannot be computed without the expectation. The expectation is itself an observable, dated, attributable fact: *provider X reported, on date D, that N analysts expected EPS of E for period P*.
+
+### Decision
+1. **A consensus figure enters the record only as structured provider data.** It is stored in `earnings_results` (V3.20 slice 4.1) with `consensus_source`, `consensus_as_of`, `analyst_count`, avg/high/low, and the period it refers to.
+   - It never comes from free text. A web page or filing that says "beat consensus" is still withheld by `statement_kind`, unchanged.
+   - It is never produced by an LLM.
+2. **It is an expectation only if it predates the result.** `consensus_as_of` must be strictly before `report_date`. A snapshot taken after the report is stored as `post_report_snapshot` and is never used for a surprise.
+3. **No expectation is a state, not a zero.** `consensus_status ∈ {available, thin (n ≤ 2), none, source_unavailable}`. A vendor with no coverage gives `source_unavailable`, never "0 analysts".
+4. **Field-scoped exemption.** The estimate redaction is lifted only for the report path of the earnings section (`earnings_track_record.*`) and the `earnings_results` API. The mechanism is the path-keyed allow-list of ADR-098 §3. Every rendered consensus value shows its source, date and analyst count beside it.
+5. **The platform never states its own forecast.** The exemption covers a third party's expectation of a past or current period. It does not cover a projection made by the platform, a price target, or a recommendation. "Price target" / "target price" stay banned everywhere, including this section.
+6. **Revenue surprise is computed, EPS surprise may be vendor-given.** Revenue surprise is `actual (from the issuer's filing, cited) − pre-report revenue consensus snapshot`. EPS surprise from the vendor is stored as given, labelled with the vendor's name, and reconciled with the filed EPS where possible; a difference above 1 cent is flagged as a basis difference (adjusted vs GAAP).
+7. **Source.** Alpha Vantage free key (D2), in the source registry as `private_use`. For names it does not cover, the section compares guidance with actuals from held filings and needs no exemption.
+
+### Consequences
+- The owner's "beat/miss vs expectations" output becomes possible without loosening the free-text guards.
+- Alpha Vantage data is private-use only and must be licensed or switched off before any public launch.
+- The allow-list is a new attack surface: a payload placed under `earnings_track_record` bypasses one redaction. ADR-098 §3 mitigates this: the allow-list holds typed fields only, with no free-text fields.
+
+---
+
+## ADR-098: The Research Verdict Is PASS / WATCHLIST / SHORTLIST, Computed Deterministically, and Allowed Only in Its Own Field
+
+**Date:** 2026-11-14 · **Status:** Accepted (decision; not implemented)
+**Trigger:** owner decision D4 of the V3.20 spec. The owner chose the vision's own vocabulary over the neutral research-priority enum the spec recommended. Supersedes ADR-041's "no BUY/SELL/HOLD analogue" rule **for the single field named below**; ADR-041 still governs everything else.
+
+### Context
+- `services/safety_terms.py:42-54` bans `WATCH`, `SHORTLIST` and `SHORTLIST_HIGH` as rating tokens.
+- `packages/research-contracts/real_asset_equity/v1/report_schema.json` defines a verdict enum `SHORTLIST_HIGH | SHORTLIST | WATCHLIST | PASS` that the gate makes unusable. That is why `real_asset_report_completer._verdict` always emits `PASS` with every pillar scored 3.
+- The 2026-09 vision wants an eight-pillar rubric mapping to PASS / WATCHLIST / SHORTLIST.
+
+### Decision
+1. **Vocabulary.** `PASS`, `WATCHLIST` and `SHORTLIST` are the verdict values. `SHORTLIST_HIGH` is dropped. Their meaning, stated on every rendering:
+   - `SHORTLIST`: the evidence supports this candidate enough to justify further work and a decision by the reader.
+   - `WATCHLIST`: the thesis is plausible but the evidence is incomplete; monitor it for the named missing items and catalysts.
+   - `PASS`: not pursued further on current evidence.
+   The verdict says what to research next. It is not an instruction to trade.
+2. **The verdict is computed, not written.** A deterministic function of three inputs gives the label:
+   - the eight pillar scores, each citing the findings it rests on;
+   - evidence confidence;
+   - the valuation range position (ADR-099).
+   The thresholds are versioned config. The LLM writes the rationale and never chooses the label. The same stored inputs always give the same verdict. **Thin evidence caps the verdict:** if any of the key pillars (financial quality, competitive position, valuation) rests mainly on D-quality data, or valuation is `insufficient_evidence`, the verdict cannot be `SHORTLIST`.
+3. **The gate allow-list is scoped by path.** `scan_text(text, path=…)` already takes a path. A new allow-list maps exact report paths to the tokens or phrases allowed there:
+   - `verdict.recommendation` → {`PASS`, `WATCHLIST`, `SHORTLIST`}, exact match on the whole field value only;
+   - ADR-097 and ADR-099 add their own entries.
+   An entry may name only a **typed** field (an enum or a number), never a free-text field. A free-text field such as `verdict.rationale` or `memo.body` keeps the full ban. `BUY`, `SELL`, `HOLD`, `REJECT`, `OUTPERFORM`, `UNDERPERFORM`, `OVERWEIGHT` and `UNDERWEIGHT` are banned on every path, including the allowed ones.
+4. **Tests prove the ban still holds.** The gate's test suite asserts three things:
+   - each allowed token outside its path is still a hit;
+   - `SHORTLIST` inside `verdict.rationale` is a hit;
+   - `neutralize_text` is unchanged for every non-allowed path.
+5. **Disclaimer.** Every web, PDF or memo rendering that shows a verdict carries the existing not-financial-advice disclaimer (CLAUDE.md rule 13).
+
+### Consequences
+- The rubric and verdict become real (V3.20 slice 9.2) instead of a constant `PASS`.
+- Combined with ADR-099 and ADR-100, the product now emits investment-research opinions. That is accepted **for private use only**; a public or commercial launch requires a regulatory review (MiFID II investment research / advice classification) first. A flag flip is not enough. This condition is recorded in `docs/v3/OPEN_DECISIONS.md`, resolution round 2026-11-14.
+
+---
+
+## ADR-099: Full Valuation — a Fair-Value Range From Cited Inputs and Named Assumptions, Allowed Only in the Valuation Section
+
+**Date:** 2026-11-14 · **Status:** Accepted (decision; not implemented)
+**Trigger:** owner decision D5 of the V3.20 spec. It resolves Open Decision #16 as option (c), a DCF / fair-value engine; the spec had recommended (b+), multiples plus implied growth.
+
+### Context
+- `agents/analysis_council/valuation_guard_agent.py` and the safety gate's phrase tier (`fair value`, `intrinsic value`, `upside of/to`, `undervalued`, `overvalued`) keep every valuation number out of the record.
+- The 2026-09 vision makes relative valuation the primary lens, and uses reverse DCF, contracted-cashflow DCF, regulated asset base (RAB), sum-of-the-parts (SOTP) and replacement cost as cross-checks and floors.
+- The failure mode the vision names for thin, under-covered names is confident hallucination. A fair-value number is the easiest place for it to hide.
+
+### Decision
+1. **A deterministic engine produces the number; the LLM does not.** The engine lives in `services/calculations/` (V3.20 slices 8.6–8.7).
+   - LLM agents may propose assumptions, such as the growth path, margins and a WACC component, each with a rationale.
+   - The engine computes the result.
+   - A number that comes from model text is never a valuation.
+2. **Every input is either cited or named.**
+   - A *cited input* is a finding with source, period and currency.
+   - A *named assumption* carries its value, its rationale and a sensitivity row.
+   - The report lists every assumption explicitly. Cited inputs include the WACC components wherever possible (risk-free rate from FRED/ECB; equity risk premium from a cited publication). A size premium or illiquidity premium is always a named assumption.
+3. **A range, never a point.** The engine gives a bear / base / bull value per method, plus a triangulated range across methods:
+   - FCFF DCF;
+   - contracted-cashflow DCF, where PPAs or frameworks are disclosed;
+   - RAB, for network utilities;
+   - SOTP;
+   - replacement-cost floor;
+   - peer- and precedent-multiple implied values.
+   "Upside/downside" is shown only beside the range and is computed against a price whose date is shown with it.
+4. **It fails closed.** With no audited period, an unknown share count, unknown net debt, or fewer than two methods computable, the engine returns `insufficient_evidence` and shows no number. For ADR-098, `insufficient_evidence` caps the verdict below `SHORTLIST`.
+5. **The phrase allow-list is scoped by path** (mechanism: ADR-098 §3).
+   - `valuation.fair_value_range.*`, `valuation.upside_downside_pct` and `valuation.relative_position` (enum `undervalued | in_line | overvalued` versus the computed range) may hold the value or the term.
+   - The ban stays on every other path: council free text, the memo body, chair synthesis, web findings and `valuation.rationale`.
+   - `price target` / `target price` stay banned everywhere. This is a fair-value **range**, not a target.
+6. **Accounting usage is unaffected.** IFRS 13 / ASC 820 "fair value" in a cited filing passage is an accounting term. Its handling does not change here; any change to that is a separate decision.
+
+### Consequences
+- The four-leg analysis in the vision (relative valuation first, absolute methods as cross-checks) becomes buildable.
+- Open Decision #16 is closed. `valuation_guard_agent` changes its role: it stops forbidding numbers and starts checking that every number traces to the engine.
+- The private-use-only condition of ADR-098 applies here too.
+- The risk is that thin evidence still produces a confident-looking range. Mitigations: fail-closed minimums, ranges instead of points, every assumption shown, and the verdict cap.
+
+---
+
+## ADR-100: Portfolio Review — a Research Review of a Hand-Entered Portfolio; Never Orders, Sizing or Broker Access
+
+**Date:** 2026-11-14 · **Status:** Accepted (decision; not implemented)
+**Trigger:** owner decision D9 of the V3.20 spec. The 2026-09 vision asks for "a portfolio-manager sparring agent that reviews open positions and proposes changes", and the owner chose a bounded version of it. This ADR **narrows ADR-005** for that use; ADR-005 stays in force otherwise.
+
+### Context
+- ADR-005 rules out automatic trade execution. CLAUDE.md rule 12 rules out broker integration, and rule 10 requires personalized data to stay apart from public research.
+- "Proposes changes" to open positions sits right at that line.
+
+### Decision
+1. **Input is entered by hand.** The user types the portfolio: issuer, entry date, and optionally entry price and weight. It is stored in user-scoped private tables (`user_portfolios`, `user_portfolio_positions`; V3.20 slice 12.1). It never goes into public research tables, and it is never imported from a broker. No broker API, credential or account linkage of any kind is built.
+2. **The agent reports, per holding:**
+   - the thesis status, `intact | weakened | broken | insufficient_evidence`, citing the evidence that changed since the position's entry date (monitoring signals, earnings vs expectations, relationship changes, competitor capacity, valuation-range drift);
+   - the ADR-098 verdict at entry beside the current one;
+   - the open research questions.
+3. **"Proposes changes" means research changes, never trades.** The agent may propose a change to the *research*: re-run the analysis, investigate a named gap, or review the thesis because pillar X broke. It does not propose buying, selling, adding, trimming or rebalancing. It gives no position sizes, target weights or orders. It never emits BUY/SELL/HOLD.
+   The gate scans the agent's whole output with no allow-list entries, so the ADR-098 verdict tokens appear only in the typed `current_verdict` / `entry_verdict` fields. A dedicated test fixture asserts there are no sizing or action phrases ("increase the position", "reduce exposure to", "rebalance").
+4. **Private data never leaves its scope.** The portfolio is personal data. It is never sent to an external search provider, and it reaches a model provider only as permitted by per-document rights metadata (ADR-049) and the private-data policy (Open Decision #11). The review reads public research records; it does not write the user's holdings into them.
+
+### Consequences
+- The vision's portfolio-manager agent exists in a form that keeps trade decisions with the user, as ADR-005 intends.
+- It requires the monitoring of V3.20 slice 9.4 and the research records of 9.1.
+- It falls under the private-use-only condition of ADR-098.
+
+## ADR-101: A DART Filing's XBRL Statements Are Tagged Statement Facts of That Filing
+
+**Date:** 2026-11-17 · **Status:** Accepted (V3.20 slice 11.3b; V3 line, not deployed)
+**Trigger:** slice 11.3 put a Korean issuer's periodic reports into the corpus as text, but DART also holds each report's statements as XBRL. OpenDART serves them per filing (`fnlttSinglAcntAll`). Without them, a Korean issuer's statements view depended on reading Korean tables.
+
+### Decision
+1. **The same store, the same rules as ADR-085.** When `opendart.document_extractor` reads a business, half-year or quarterly report, its consolidated statements become `ValidatedFact` rows of THAT document (`extraction_method = dart_xbrl`, locator `opendart:<concept>@<statement>/<column>`). They are merged with the text reading by `inline_xbrl_facts.merge_with_text_facts`: a text figure the statements cover is dropped.
+2. **This filing only.** Every row must carry the document's own receipt number, the issuer's `corp_code` and the report code asked for, or none is read. An amended report is not read.
+3. **The period from the filing's metadata, the column from DART's layout.** The report name gives the kind and period end, and the issuer's stated fiscal year-end month gives the position. Interim income statements give the three months (and, in a half-year report, H1). Interim cash flows are year to date, so they are read only at Q1 and H1, never as nine months. The prior-year columns get their own periods. The layout was measured on Samsung's real annual, Q1, H1 and Q3 reports.
+4. **Each line from its own statement.** Balances come from BS, cash flows from CF, and other flows from IS or CIS, which must agree. The cash-flow statement's profit line and the equity statement are never read.
+5. **One reviewed DART concept.** `ifrs-full_*` accounts go through the existing map. Of the DART taxonomy, only `dart:OperatingIncomeLoss` (영업이익) is read, as `operating_profit` under its own label "Operating income (loss) (DART taxonomy)". It sits in `DART_STATEMENT_CONCEPTS`, outside the map the SEC companyfacts normalizer reads. Every other `dart_` concept, and every row without a standard code, is skipped.
+6. **The Group only.** Only consolidated statements (`fs_div=CFS`) are read. A filer that publishes only separate statements gets no statement facts from this source.
+7. **A tagged figure downstream.** `xbrl_statement_concepts.tagged_concept` recognizes both `ixbrl:` and `opendart:` locators. So a DART figure is a primary-statement read (ADR-092), carries its concept and taxonomy label, and ranks with inline XBRL wherever tagged figures are preferred (`TAGGED_EXTRACTION_METHODS`).
+
+### Consequences
+- A Korean report adds one request (about 18 s at the measured speed). An interim report adds one more, for the fiscal year-end month.
+- Filings held before this slice are not re-read. Their statement facts arrive with the issuer's next periodic report.
+- Flag `V3_OPENDART_STATEMENTS_ENABLED` (default on; needs `OPENDART_API_KEY`).
+
+## ADR-102: Korean Major-Matters Decisions Are Typed Corporate Actions, Not Forced Onto the Event-Trigger Vocabulary
+
+**Date:** 2026-11-17 · **Status:** Accepted (V3.20 slice 11.3c; V3 line, not deployed)
+**Trigger:** the change-events rules (slice 6.2) read English titles, so a Korean issuer's major-matters reports (capital increases, bond issues, buybacks, asset and stake deals, mergers, distress) produced no event. OpenDART serves the typed fields of each decision type from its own endpoint.
+
+### Decision
+1. **Corporate actions are their own list.** The report's change-events block gains `corporate_actions`: the kind, the filing date and receipt, the viewer address, and the decision's typed terms (amounts in won, the ratios the issuer states, ISO dates, English enums). It also gains `corporate_actions_lookup`. None of the ten `event_trigger` types fits a capital increase, a buyback or a merger, so none is forced onto one.
+2. **One faithful mapping.** A bond issue (convertible, with warrants, or exchangeable) whose stated use of funds includes debt repayment is a `maturity_refinanced` change event, beside the title-derived ones. Equity raised to repay debt is not.
+3. **Bounded requests.** One `list.json` request lists the issuer's major-matters filings in the 180-day window. Only the decision types named there are read, one endpoint each, at most 10 per run. Identity comes from HELD corp codes only; this step never downloads the corp-code list.
+4. **Each action cites its own receipt.** A structured row can carry a later receipt than the listed filing, because a decision can be re-filed. A row of another `corp_code` is dropped.
+5. **No private individuals.** A counterparty or target is named only when its name carries a company marker. Otherwise it is `individual_or_unnamed`. A lawsuit's plaintiff is never carried.
+6. **Stated, not derived.** No dilution or ratio is computed. The block passes the report safety gate as it stands, and a test scans every decision type.
+
+### Consequences
+- A Korean issuer's change-events block now shows its financing and capital actions, the main change signals for KOSDAQ small caps.
+- Each run costs one request, plus one per decision type filed (about 5–6 s measured).
+- Flag `V3_OPENDART_MAJOR_MATTERS_ENABLED` (default on). It needs `OPENDART_API_KEY`, a held corp code and `V3_CHANGE_EVENTS_ENABLED`.
+
+
+## ADR-103: TWSE Material Announcements Are Held As They Are Read; TDnet and BSE Are Excluded on Their Terms
+
+**Date:** 2026-11-17 · **Status:** Accepted (V3.20 slice 11.4; V3 line, not deployed)
+**Trigger:** slice 11.4 was to read Asian exchange announcements: TDnet (Japan), TWSE/MOPS (Taiwan), BSE/NSE (India). Each source's terms were read first.
+
+### Terms decision
+- **TDnet (JPX): excluded.** JPX's site terms prohibit collecting data or making secondary use of it for commercial purposes without permission or a paid contract. They also prohibit generative-AI use that runs against the site's purpose or operational policy. Bulk access is JPX's paid TDnet API, and the public service keeps 31 days. A Japanese issuer's statutory filings already come from EDINET (slice 11.2).
+- **BSE: excluded.** BSE's website disclaimer prohibits any reproduction, redistribution or transmission of its information, and its pages need a browser session.
+- **NSE: excluded.** Its terms prohibit automated collection (already recorded in slice 11.1).
+- **TWSE: read.** The OpenAPI is TWSE's published machine interface. Its swagger names the data.gov.tw Open Government Data License v1.0: any use, royalty-free, attribution required. MOPS pages themselves are not read.
+
+### Decision
+1. **The feed is `t187ap04_L` (上市公司每日重大訊息).** Each row is a complete announcement: code, short name, date and time (ROC calendar, Taipei), the clause it was filed under, the fact date, subject and body. The text is the row; there is no document to fetch.
+2. **Held as it is read.** The feed states one announcement day (measured: 115 rows, all one date). Every read is stored in `twse_material_announcements` (migration 061), keyed by code, time and a content digest, so a re-read adds nothing and a corrected announcement is a second row. A listing reads the held rows. One process reads the feed at most once an hour. History starts with the first read, and `scripts/twse_material_refresh.py` is the daily operator job.
+3. **Identity on TWSE's own directory.** The company must match TWSE's listed-company directory (`t187ap03_L`, slice 11.1) on its code and an agreeing name. Rows are attributed by the feed's own `公司代號` only. The extractor refuses a held row whose code differs from the verified issuer's.
+4. **Content rendered, not invented.** The held row becomes a two-paragraph HTML page (stated fields with the subject, then the whole body), with every field escaped. It goes through the shared acquisition bridge as `twse_material_info` (title-only period), labelled `zh`.
+5. **The citation names the announcement.** `…/t187ap04_L?announcement=<ref>`, a new named document-id parameter of the corpus readiness check. After its day the feed no longer shows the row, so the held row and the raw artifact are the record.
+
+### Consequences
+- A TWSE issuer's material announcements reach the corpus and the official-disclosures tool, and history accumulates from the first read.
+- A day on which neither a run nor the operator job read the feed is a hole. A listing never treats absence as evidence.
+- Flag `V3_TWSE_MATERIAL_INFO_ENABLED` (default on). It needs `V3_DIRECTORY_TWSE_ENABLED` for identity.
+- Not covered: TPEx (OTC) companies, which have their own open data, and the directory's English short names that are not acronyms of the company name (`CENE` for Century Energy is refused, as slice 11.1's rule does).
+
+## ADR-104: Asian Grid Plans — OCCTO Is Read Openly, CEA Only Privately, Korea Has No Project File
+
+**Date:** 2026-11-17 · **Status:** Accepted (V3.20 slice 11.5; V3 line, not deployed)
+**Trigger:** slice 11.5 was to add Asian grid plans to the capex tracker (`grid_capex_plans`, Phase 7): OCCTO (Japan), KPX / the Basic Plan (Korea), CEA / PGCIL (India). Each publisher's terms were read first.
+
+### Terms decision
+- **OCCTO: open.** OCCTO's copyright page lets anyone use its content freely, including copying, publishing and editing, provided the source is credited. An edited use must say it was edited and must not present the edit as OCCTO's. Rows are extracted and their company names translated, so the attribution says "extracted and translated (edited) by InvestingBuddy". `open_licence`, flag on.
+- **CEA: private use only.** CEA's website policy allows material to be reproduced only with prior permission, requested by email. No permission has been sought, and none will be sought without the owner. `private_use_permitted`, flag **off** by default. Permission is required before any public use.
+- **Korea: assessed, not built.** No official project-level file was found. The Basic Plan for Electricity Supply and Demand and KEPCO's long-term transmission plan are published as policy documents and press summaries, not as project tables.
+
+### Decision
+1. **OCCTO (`occto_supply_plan`).** The aggregation of the general transmission and distribution companies' supply plans (2026-03-30 PDF), chapter 4: main transmission lines and main substations, under construction (表4-2, 4-5) or preparing to start construction (表4-3, 4-6).
+   - One `project` per filed row.
+   - The promoter is the filing company, with its official English name, so a filing that names "TEPCO Power Grid" can be matched. The region is its service area.
+   - Decommissioning tables (4-4, 4-7) are not read.
+   - Headers are pinned by name. Cells are NFKC-normalised, Japanese wraps are joined and ※ marks are removed.
+   - A first use of 未定 (undecided) has no year.
+   - The plan states no capex.
+2. **CEA (`cea_tbcb_uc`, `cea_rtm_uc`).** The monthly progress reports of under-construction transmission projects, by route (TBCB, RTM).
+   - Columns are found by name, with whitespace removed.
+   - A serial-numbered row is a `project` with its stated cost: Rs crore × 10⁷ = INR, with the stated figure kept in `capex_period`.
+   - The rows under a project are its elements (`investment`: line ckm, transformation MVA, remarks), with no cost of their own.
+   - The SPV a project names is a second promoter, and "PGCIL" carries Power Grid Corporation of India's full name.
+   - The anticipated completion is used, and the original is kept beside it.
+3. **Matching.** A triangulation alias joins "PGCIL", "POWERGRID" and Power Grid Corporation of India (`ALIAS_VERSION` 2026-11-17.2). A Japanese parent and its transmission subsidiary stay separate names (Kansai Electric Power ≠ Kansai Transmission and Distribution).
+
+### Consequences
+- **Measured on the real files:** OCCTO gives 144 projects (70 under construction, 74 planned). CEA TBCB gives 96 projects and 345 elements, Rs 3,22,718 crore. CEA RTM gives 59 projects and 97 elements, Rs 23,462 crore, the report's own total.
+- **Coverage gaps:** Korea is not covered. India's planned (not yet awarded) schemes and Japan's capex are not covered.
+- **Flags:** `V3_GRID_PLANS_OCCTO_ENABLED` (on) and `V3_GRID_PLANS_CEA_ENABLED` (off). No migration.

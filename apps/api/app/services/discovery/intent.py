@@ -26,7 +26,7 @@ company only in ``discovery.constraints``, from evidence.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from app.services.exchange_registry import COUNTRY_TO_REGION, region_for_country
@@ -204,6 +204,10 @@ class Constraint:
     #: What the user EXCLUDED ("non-US", "not large cap"). A candidate matching an
     #: excluded value fails the constraint; it is never read as a request for it.
     excluded: tuple[str, ...] = ()
+    #: V3.20 size mandate (D1): a numeric USD market-cap ceiling / floor, applied ON TOP
+    #: of ``requested`` bands. ``None`` = no numeric bound. Size constraints only.
+    max_usd: float | None = None
+    min_usd: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -621,8 +625,15 @@ def build_intent(
     industry: str | None = None,
     industry_keywords: list[str] | None = None,
     market_cap_bucket: str | None = None,
+    max_market_cap_usd: float | None = None,
+    default_max_market_cap_usd: float | None = None,
 ) -> DiscoveryIntent:
-    """The Discovery Intent for a thesis. Deterministic, network-free, never raises."""
+    """The Discovery Intent for a thesis. Deterministic, network-free, never raises.
+
+    ``max_market_cap_usd`` is an explicit ceiling the run asked for;
+    ``default_max_market_cap_usd`` is the size mandate applied only when nothing else
+    requested a size (V3.20 D1, ``apply_size_ceiling``).
+    """
     from app.services.director.thesis import dimensions_in
 
     parsed = parsed or parse_thesis(
@@ -738,6 +749,12 @@ def build_intent(
                 "size", (bucket,), HARD, "an explicit size selector is a hard filter",
                 market_cap_bucket,
             )
+    size, ceiling_notes = apply_size_ceiling(
+        size,
+        max_market_cap_usd=max_market_cap_usd,
+        default_max_market_cap_usd=default_max_market_cap_usd,
+    )
+    warnings.extend(ceiling_notes)
     growth, growth_notes = _growth_constraint(text)
     profitability, profit_notes = _profitability_constraint(text)
     warnings.extend([*growth_notes, *profit_notes])
@@ -813,6 +830,79 @@ def build_intent(
     )
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _usd_words(amount: float) -> str:
+    if amount >= 1e9:
+        return f"USD {amount / 1e9:g}bn"
+    return f"USD {amount / 1e6:g}m"
+
+
+def buckets_below(max_usd: float) -> tuple[str, ...]:
+    """The size bands a company under ``max_usd`` can fall in (band lower edge < max)."""
+    from app.services.discovery.constraints import SIZE_BANDS_USD
+
+    return tuple(
+        b for b in SIZE_BUCKETS
+        if (SIZE_BANDS_USD[b][0] or 0.0) < max_usd
+    )
+
+
+def apply_size_ceiling(
+    size: Constraint | None,
+    *,
+    max_market_cap_usd: float | None,
+    default_max_market_cap_usd: float | None,
+) -> tuple[Constraint | None, list[str]]:
+    """V3.20 D1 — the numeric market-cap ceiling on a size constraint.
+
+    * An EXPLICIT ceiling (the run asked for one) always applies: it narrows a size the
+      thesis words already requested, or becomes the size constraint by itself.
+    * The DEFAULT ceiling applies only when nothing else asked for a size — a thesis that
+      says "mid-cap" is not silently capped at USD 2bn.
+    """
+    notes: list[str] = []
+    if max_market_cap_usd is not None:
+        ceiling, basis = max_market_cap_usd, "an explicit market-cap ceiling is a hard filter"
+    elif size is None and default_max_market_cap_usd is not None:
+        ceiling, basis = (
+            default_max_market_cap_usd,
+            "the default size mandate: market cap below "
+            f"{_usd_words(default_max_market_cap_usd)} unless the run changes it",
+        )
+    else:
+        return size, notes
+    phrase = f"market cap < {_usd_words(ceiling)}"
+    if size is None:
+        return (
+            Constraint("size", buckets_below(ceiling), HARD, basis, phrase, max_usd=ceiling),
+            notes,
+        )
+    requested = tuple(b for b in size.requested if b in buckets_below(ceiling))
+    if not requested:
+        notes.append(
+            f"the requested size ({', '.join(size.requested)}) lies entirely above the "
+            f"{_usd_words(ceiling)} ceiling, so no company can match"
+        )
+        requested = size.requested
+    return (
+        replace(
+            size,
+            requested=requested,
+            hardness=HARD,
+            hardness_basis=f"{size.hardness_basis}; {basis}",
+            phrase=f"{size.phrase}, {phrase}" if size.phrase else phrase,
+            max_usd=ceiling,
+        ),
+        notes,
+    )
+
+
 def intent_from_dict(data: dict[str, Any] | None) -> DiscoveryIntent | None:
     """Rebuild a stored intent. ``None`` for a legacy run that has none."""
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
@@ -825,6 +915,8 @@ def intent_from_dict(data: dict[str, Any] | None) -> DiscoveryIntent | None:
             hardness_basis=str(c.get("hardness_basis") or ""),
             phrase=str(c.get("phrase") or ""),
             excluded=tuple(c.get("excluded") or ()),
+            max_usd=_float_or_none(c.get("max_usd")),
+            min_usd=_float_or_none(c.get("min_usd")),
         )
         for c in data.get("constraints") or []
         if isinstance(c, dict)
@@ -862,7 +954,9 @@ __all__ = [
     "SCHEMA",
     "SIZE_BUCKETS",
     "SOFT",
+    "apply_size_ceiling",
     "build_intent",
+    "buckets_below",
     "hardness_for",
     "intent_from_dict",
 ]

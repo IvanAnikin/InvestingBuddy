@@ -3,6 +3,7 @@ import {
   readProfessionalResearch,
   readV3Research,
 } from "../../src/components/research/v3Research";
+import { readTranslatedCitations } from "../../src/components/research/translatedCitations";
 import producerPayload from "../fixtures/professional-research-payload.json";
 
 /**
@@ -630,5 +631,43 @@ test.describe("the professional report on the report page", () => {
       overflowX: getComputedStyle(el).overflowX,
     }));
     expect(frame).toEqual({ scrolls: true, overflowX: "auto" });
+  });
+});
+
+// V3.20 slice 10.2 — a finding whose source is not in English shows the original (the
+// evidence) and, labelled, its machine translation.
+test.describe("translated citations", () => {
+  test("the reader keeps rows with an id, a language and an original only", () => {
+    const read = readTranslatedCitations([
+      { evidence_id: "ev:x", language: "de", language_name: "German", original: "Umsatz",
+        original_truncated: true, page_start: 3, translation: null },
+      { evidence_id: "ev:y", language: "de" },
+      { language: "de", original: "x" },
+      "not a row",
+    ]);
+    expect(Object.keys(read)).toEqual(["ev:x"]);
+    expect(read["ev:x"]).toMatchObject({ languageName: "German", originalTruncated: true,
+                                         pageStart: 3, translation: null });
+    expect(readTranslatedCitations(undefined)).toEqual({});
+    expect(readProfessionalResearch({ professional_research: producerPayload })
+      ?.translatedCitations).toEqual({});
+  });
+
+  test("the original and its machine translation sit under the finding", async ({ page }) => {
+    await page.goto(PRO_REPORT);
+    const finding = page.locator("#finding-F2");
+    const cited = finding.getByTestId("translated-citations");
+    await expect(cited).toContainText("Source in Spanish (page 41)");
+    await expect(cited).toContainText("original and machine translation");
+    await cited.locator("summary").click();
+    await expect(cited.locator('blockquote[lang="es"]')).toHaveText(
+      "El cobre representó el 78 % de las ventas netas de 2025.",
+    );
+    await expect(cited.locator('blockquote[lang="en"]')).toHaveText(
+      "Copper accounted for 78 % of 2025 net sales.",
+    );
+    await expect(cited).toContainText("The original is the evidence");
+    // A finding citing only English sources shows nothing extra.
+    await expect(page.locator("#finding-F1").getByTestId("translated-citations")).toHaveCount(0);
   });
 });

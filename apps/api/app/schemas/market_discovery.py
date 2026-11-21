@@ -89,6 +89,16 @@ class ThesisDiscoveryRunCreate(BaseModel):
         default=None, description="Optional explicit industry/theme keywords."
     )
     market_cap_bucket: str | None = Field(default=None, max_length=30)
+    max_market_cap_usd: float | None = Field(
+        default=None,
+        gt=0,
+        le=1e13,
+        description=(
+            "V3.20 size mandate: only companies with a verified market cap below this USD "
+            "amount are shortlisted. Omit the field for the platform default (USD 2bn when "
+            "the thesis names no size); send null for no ceiling."
+        ),
+    )
     max_universe_size: int = Field(
         default=25, ge=1, le=50, description="Hard cap on generated universe size."
     )

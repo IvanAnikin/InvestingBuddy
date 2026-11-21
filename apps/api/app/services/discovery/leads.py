@@ -205,6 +205,10 @@ def plan_lead_queries(intent: DiscoveryIntent, *, max_queries: int) -> list[Lead
                 + " or ".join(bands)
                 + "."
             )
+        if intent.size.max_usd is not None:
+            size_clause += (
+                f" Market capitalisation below USD {intent.size.max_usd / 1e9:g} billion."
+            )
     context = ""
     if intent.end_markets:
         context += " End markets of interest: " + ", ".join(

@@ -481,3 +481,37 @@ body:has([data-ib-surface="product"]) .ib-bg-grid {
      its content and defeats the wrap above. */
   min-width: 0;
 }
+
+/* V3.20 slice 9.3 — the print view (/research/reports/[id]/print): the browser's
+   "Save as PDF" is the PDF export. Only the report prints, dark ink on white paper. */
+@media print {
+  body:has([data-print-root]) {
+    background: #fff !important;
+    color: #111 !important;
+  }
+  body:has([data-print-root]) [data-ib-surface="product"] {
+    --ib-surface: transparent;
+    --ib-surface-raised: transparent;
+    --ib-line: #d0d5dc;
+    --ib-line-strong: #9aa3ae;
+    --ib-ink: #111;
+    --ib-ink-2: #222;
+    --ib-ink-3: #555;
+    --ib-accent: #0b4f8a;
+    --ib-accent-quiet: transparent;
+  }
+  body:has([data-print-root]) nav,
+  body:has([data-print-root]) footer,
+  body:has([data-print-root]) .ib-bg-blob,
+  body:has([data-print-root]) .ib-bg-grid,
+  [data-print-hide] {
+    display: none !important;
+  }
+  body:has([data-print-root]) main {
+    max-width: none;
+    padding: 0;
+  }
+  [data-print-root] section {
+    break-inside: avoid-page;
+  }
+}
