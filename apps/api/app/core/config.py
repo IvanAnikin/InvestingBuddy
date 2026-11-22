@@ -56,6 +56,7 @@ CREDENTIAL_SETTING_FIELDS: frozenset[str] = frozenset(
         "alpha_vantage_api_key",
         "edinet_api_key",
         "opendart_api_key",
+        "eia_api_key",
     }
 )
 
@@ -1105,6 +1106,30 @@ class Settings(BaseSettings):
     # when V3_MONITORING_ENABLED is on; no network call. Run by the daily monitoring
     # pass (V3.21.2, ADR-109).
     v3_monitoring_research_signals_enabled: bool = True
+
+    # ── V3.21.4 (ADR-111): live industry data into the macro store ──────────
+    # Ember yearly electricity data (CC BY 4.0, one bounded CSV), IRENA IRENASTAT
+    # (PxWeb, attribution), and the US EIA API v2 (public domain; needs a key). Fetched
+    # by the WEEKLY `industry_data_refresh` periodic task and by
+    # `scripts/ingest_industry_data.py`; a report only READS the store (the
+    # `industry_context` block in industry_and_market) and makes no network call.
+    # All three off -> no block, report unchanged.
+    v3_industry_data_ember_enabled: bool = True
+    v3_industry_data_irena_enabled: bool = True
+    # On, but INERT without EIA_API_KEY: the source says so and fetches nothing.
+    v3_industry_data_eia_enabled: bool = True
+    # The weekly refresh task's own switch (master: V3_PERIODIC_TASKS_ENABLED).
+    v3_industry_data_refresh_enabled: bool = True
+    # ISO-3166 alpha-3 codes refreshed weekly. A modest OECD + key Asian list; a company
+    # listed or domiciled elsewhere gets an explicit "not refreshed" state, never a zero.
+    v3_industry_data_countries: str = (
+        "USA,CAN,MEX,BRA,GBR,IRL,FRA,DEU,ITA,ESP,PRT,NLD,BEL,AUT,CHE,DNK,NOR,SWE,FIN,"
+        "POL,JPN,KOR,CHN,TWN,IND,AUS,NZL,ZAF"
+    )
+    # Credential. `repr=False` and listed in CREDENTIAL_SETTING_FIELDS. Free registration
+    # at eia.gov/opendata. Sent ONLY as the `api_key` query parameter on api.eia.gov; every
+    # stored or logged URL omits it. Empty (the default) leaves the EIA source inert.
+    eia_api_key: str = Field(default="", repr=False)
 
     # ── V3.10: the V3 research pipeline at the real front door ──────────────
     # OFF by default. With it off the company-research entry point behaves

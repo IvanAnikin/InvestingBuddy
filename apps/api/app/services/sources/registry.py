@@ -765,6 +765,68 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
                 "-> INR) and one per element (line ckm, transformation MVA)."
             ),
         ),
+        # V3.21.4 (ADR-111) — live industry statistics into the macro store, refreshed
+        # weekly; a report reads the store only. The reference-only `eia` / `irena`
+        # entries (29C.2) stay as they are: these are the fetching sources.
+        RegisteredSource(
+            source_id="ember_electricity",
+            name="Ember Yearly Electricity Data (generation, capacity, demand)",
+            provider_type=ProviderType.commodity,
+            tier=T3_INDUSTRY_SPECIALIST,
+            status=(SourceStatus.enabled if cfg.v3_industry_data_ember_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_industry_data_ember_enabled,
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="ember_electricity",
+            connector_implemented=True,
+            capabilities=["fetch_macro_context"],
+            reliability_note=(
+                "CC BY 4.0, attribution 'Ember'. One keyless CSV from files.ember-energy.org "
+                "(~16 MB, capped at 30 MB, a truncated file refused), weekly. Vintage = the "
+                "file's Last-Modified. Generation by fuel, share, capacity, demand by country."
+            ),
+        ),
+        RegisteredSource(
+            source_id="irena_irenastat",
+            name="IRENA IRENASTAT electricity statistics (PxWeb API)",
+            provider_type=ProviderType.commodity,
+            tier=T3_INDUSTRY_SPECIALIST,
+            status=(SourceStatus.enabled if cfg.v3_industry_data_irena_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_industry_data_irena_enabled,
+            cost_model=CostModel.free,
+            access_mode=AccessMode.rest_api,
+            connector_key="irena_irenastat",
+            connector_implemented=True,
+            capabilities=["fetch_macro_context"],
+            reliability_note=(
+                "IRENA terms: free use with attribution. pxweb.irena.org, keyless; three "
+                "bounded requests weekly (listing, metadata, one json-stat2 query). "
+                "Renewable capacity (MW) and generation (GWh) by country and technology."
+            ),
+        ),
+        RegisteredSource(
+            source_id="eia_api_v2",
+            name="US EIA API v2 (electricity sales, generation, capacity)",
+            provider_type=ProviderType.commodity,
+            tier=T2_REGULATOR_OR_GOV,
+            status=(SourceStatus.enabled if cfg.v3_industry_data_eia_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_industry_data_eia_enabled,
+            jurisdiction="US",
+            region="North America",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.rest_api,
+            connector_key="eia_api_v2",
+            connector_implemented=True,
+            capabilities=["fetch_macro_context"],
+            reliability_note=(
+                "Public domain (US Government work). Needs EIA_API_KEY (free registration); "
+                "INERT without it. The key is a query parameter on api.eia.gov only; no "
+                "stored or logged URL carries it. Three aggregated annual US routes weekly."
+            ),
+        ),
         RegisteredSource(
             source_id="ishares_holdings",
             name="iShares daily ETF holdings files (US + UCITS)",

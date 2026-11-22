@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import Surface from "@/components/product/Surface";
 import RelationshipSection from "@/components/research/report/RelationshipSection";
 import { DemandTriangulationSection } from "@/components/research/report/DemandTriangulationSection";
+import { IndustryContextSection } from "@/components/research/report/IndustryContextSection";
 import { PassiveOwnershipSection } from "@/components/research/report/PassiveOwnershipSection";
 import { EarningsTrackRecordSection } from "@/components/research/report/EarningsTrackRecordSection";
 import { ElectricityLayersSection } from "@/components/research/report/ElectricityLayersSection";
@@ -823,6 +824,7 @@ function DomainBody({
       )}
 
       {section.commodityTable.length > 0 && <CommodityTable rows={section.commodityTable} />}
+      <IndustryContextSection block={section.industryContext} />
       {section.peerTable.length > 0 && <PeerTable rows={section.peerTable} />}
       <ElectricityLayersSection block={section.electricityLayers} />
       <RealAssetSection block={section.realAsset} />

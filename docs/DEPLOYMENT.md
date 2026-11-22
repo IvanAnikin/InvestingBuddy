@@ -850,6 +850,30 @@ out with `auto_report: false` on `POST /thesis-runs`. To check it, read the run'
 `auto_report_json` (`GET /api/v1/market-discovery/runs/{id}`) or the "Automatic report"
 line on the run detail.
 
+### Live industry data: Ember, IRENA, EIA (V3.21 slice 21.4, ADR-111, not yet deployed)
+
+No migration. The data goes into the existing macro store (migration 033). A WEEKLY periodic task, `industry_data_refresh`, does the fetching. A report reads the store only.
+
+| Flag / setting | Default | Effect |
+|---|---|---|
+| `V3_INDUSTRY_DATA_EMBER_ENABLED` | `true` | Ember yearly electricity CSV (`files.ember-energy.org`, CC BY 4.0). One download a week: about 16 MB, capped at 30 MB, and a truncated file is refused. |
+| `V3_INDUSTRY_DATA_IRENA_ENABLED` | `true` | IRENASTAT PxWeb (`pxweb.irena.org`, attribution required). Three small JSON requests a week. |
+| `V3_INDUSTRY_DATA_EIA_ENABLED` | `true` | EIA API v2 (`api.eia.gov`, public domain). **Inert without `EIA_API_KEY`.** With a key, three small requests a week. |
+| `EIA_API_KEY` | empty | Optional credential (free registration at eia.gov/opendata). Store it as a Key Vault reference. It is sent only as a query parameter. No stored or logged URL carries it, and the `httpx` logger is capped at WARNING. |
+| `V3_INDUSTRY_DATA_REFRESH_ENABLED` | `true` | The weekly task's own switch. It also needs `V3_PERIODIC_TASKS_ENABLED` and `V3_DURABLE_JOBS_ENABLED`. |
+| `V3_INDUSTRY_DATA_COUNTRIES` | 28 ISO-3 codes (OECD + key Asian markets) | The countries refreshed. A company outside the list gets an explicit "not in the refreshed countries" state. |
+
+**Network and cost:** about 17 MB of egress and at most 9 HTTPS requests a week, to three pinned hosts. There is no paid API and no model call. Outbound hosts are `files.ember-energy.org`, `pxweb.irena.org` and `api.eia.gov`.
+
+**Operator run:**
+
+```
+python scripts/ingest_industry_data.py --list
+python scripts/ingest_industry_data.py --source ember --dry-run
+```
+
+To check a run, `source_poll_state.industry_data_refresh` gets one `last_started_at` per ISO week.
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

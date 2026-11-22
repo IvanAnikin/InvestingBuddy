@@ -1,0 +1,273 @@
+Area,ISO 3 code,Year,Area type,Electricity source,Is aggregated source,Generation (TWh),Generation YoY change (TWh),Generation YoY change (%),Share of generation (%),Share of generation YoY change (% points),Capacity (GW),Emissions (MtCO2e),Emissions YoY change (MtCO2e),Emissions YoY change (%),Share of emissions (%),Emissions intensity (gCO2e/kWh),Continent,Ember region,EU member,OECD member,G20 member,G7 member,ASEAN member
+ASEAN,,2024,Region,Solar,False,60.538,11.615,23.741,3.952,0.543,31.52,2.877,0.552,23.742,0.321,47.524,,,False,False,False,False,False
+France,FRA,2024,Country or economy,Solar,False,25.06,2.47,10.934,4.439,0.084,25.46,1.191,0.118,10.997,5.231,47.526,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Solar,False,45.22,0.9,2.031,7.536,0.526,48.91,2.149,0.043,2.042,0.912,47.523,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Wind,False,125.89,15.94,14.497,20.979,3.59,60.74,1.568,0.201,14.704,0.666,12.455,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Hydro,False,19.73,2.04,11.532,3.288,0.49,5.38,0.469,0.049,11.667,0.199,23.771,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Bioenergy,False,50.13,-0.66,-1.299,8.354,0.321,8.91,10.838,-0.143,-1.302,4.602,216.198,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Other renewables,False,0.2,0.02,11.111,0.033,0.005,1.09,0.008,0.001,14.286,0.003,40.0,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Nuclear,False,75.07,-0.93,-1.224,12.51,0.49,9.52,0.362,-0.005,-1.362,0.154,4.822,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Coal,False,171.45,-56.71,-24.855,28.571,-7.514,46.13,166.585,-54.835,-24.765,70.729,971.624,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Gas,False,90.0,8.44,10.348,14.998,2.099,27.47,38.808,3.639,10.347,16.477,431.2,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Other fossil,False,22.4,-1.23,-5.205,3.733,-0.004,4.02,14.739,-0.81,-5.209,6.258,657.991,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Net imports,False,-32.67,16.07,-32.971,-5.444,2.265,,0.0,0.0,,0.0,0.0,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Wind and solar,True,171.11,16.84,10.916,28.514,4.115,109.65,3.717,0.244,7.026,1.578,21.723,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,"Hydro, bioenergy and other renewables",True,70.06,1.4,2.039,11.675,0.816,15.379999999999999,11.314,-0.094,-0.824,4.804,161.49,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Renewables,True,241.17,18.24,8.182,40.189,4.931,125.03,15.031,0.15,1.008,6.382,62.325,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Clean,True,316.24,17.31,5.791,52.699,5.421,134.55,15.393,0.145,0.951,6.536,48.675,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Fossil,True,283.85,-49.5,-14.849,47.301,-5.421,77.61999999999999,220.132,-52.005,-19.11,93.464,775.522,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Total generation,True,600.09,-32.19,-5.091,100.0,0.0,212.17000000000002,235.526,-51.859,-18.045,100.0,392.484,Europe,Europe,True,True,True,True,False
+Germany,DEU,2019,Country or economy,Demand,True,567.42,-16.12,-2.762,94.556,2.265,,,,,,,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Solar,False,49.5,4.28,9.465,8.734,1.198,53.67,2.352,0.203,9.446,1.167,47.515,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Wind,False,132.11,6.22,4.941,23.31,2.331,62.2,1.646,0.078,4.974,0.817,12.459,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Hydro,False,18.72,-1.01,-5.119,3.303,0.015,5.45,0.445,-0.024,-5.117,0.221,23.771,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Bioenergy,False,50.93,0.8,1.596,8.986,0.632,9.29,11.011,0.173,1.596,5.463,216.199,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Other renewables,False,0.23,0.03,15.0,0.041,0.008,1.03,0.009,0.001,12.5,0.004,39.13,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Nuclear,False,64.38,-10.69,-14.24,11.36,-1.15,8.11,0.311,-0.051,-14.088,0.154,4.831,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Coal,False,134.6,-36.85,-21.493,23.749,-4.822,46.39,130.813,-35.772,-21.474,64.903,971.865,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Gas,False,95.0,5.0,5.556,16.762,1.764,28.17,40.964,2.156,5.556,20.324,431.2,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Other fossil,False,21.28,-1.12,-5.0,3.755,0.022,4.08,14.002,-0.737,-5.0,6.947,657.989,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Net imports,False,-19.03,13.64,-41.751,-3.358,2.086,,0.0,0.0,,0.0,0.0,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Wind and solar,True,181.61,10.5,6.136,32.044,3.53,115.87,3.999,0.282,7.587,1.984,22.02,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,"Hydro, bioenergy and other renewables",True,69.88,-0.18,-0.257,12.33,0.655,15.769999999999998,11.465,0.151,1.335,5.688,164.067,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Renewables,True,251.49,10.32,4.279,44.374,4.185,131.64,15.463,0.432,2.874,7.672,61.486,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Clean,True,315.87,-0.37,-0.117,55.734,3.035,139.75,15.774,0.381,2.475,7.826,49.938,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Fossil,True,250.88,-32.97,-11.615,44.266,-3.035,78.64,185.779,-34.353,-15.606,92.174,740.509,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Total generation,True,566.75,-33.34,-5.556,100.0,0.0,218.39,201.552,-33.974,-14.425,100.0,355.628,Europe,Europe,True,True,True,True,False
+Germany,DEU,2020,Country or economy,Demand,True,547.72,-19.7,-3.472,96.642,2.086,,,,,,,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Solar,False,49.34,-0.16,-0.323,8.524,-0.21,60.04,2.345,-0.007,-0.298,1.027,47.527,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Wind,False,114.16,-17.95,-13.587,19.723,-3.587,63.71,1.423,-0.223,-13.548,0.623,12.465,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Hydro,False,19.66,0.94,5.021,3.397,0.094,5.49,0.467,0.022,4.944,0.204,23.754,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Bioenergy,False,49.1,-1.83,-3.593,8.483,-0.503,8.72,10.615,-0.396,-3.596,4.647,216.191,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Other renewables,False,0.24,0.01,4.348,0.041,0.0,1.07,0.009,0.0,0.0,0.004,37.5,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Nuclear,False,69.13,4.75,7.378,11.943,0.583,8.11,0.334,0.023,7.395,0.146,4.831,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Coal,False,164.65,30.05,22.325,28.445,4.696,39.71,159.668,28.855,22.058,69.896,969.742,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Gas,False,90.31,-4.69,-4.937,15.602,-1.16,28.31,38.941,-2.023,-4.938,17.047,431.193,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Other fossil,False,22.24,0.96,4.511,3.842,0.087,3.83,14.634,0.632,4.514,6.406,658.004,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Net imports,False,-18.58,0.45,-2.365,-3.21,0.148,,0.0,0.0,,0.0,0.0,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Wind and solar,True,163.5,-18.11,-9.972,28.247,-3.797,123.75,3.768,-0.231,-5.776,1.649,23.046,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,"Hydro, bioenergy and other renewables",True,69.0,-0.88,-1.259,11.921,-0.409,15.280000000000001,11.092,-0.373,-3.253,4.856,160.754,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Renewables,True,232.5,-18.99,-7.551,40.167,-4.207,139.03,14.86,-0.603,-3.9,6.505,63.914,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Clean,True,301.63,-14.24,-4.508,52.11,-3.624,147.14000000000001,15.193,-0.581,-3.683,6.651,50.37,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Fossil,True,277.2,26.32,10.491,47.89,3.624,71.85,213.243,27.464,14.783,93.349,769.275,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Total generation,True,578.83,12.08,2.131,100.0,0.0,218.98999999999998,228.436,26.884,13.338,100.0,394.651,Europe,Europe,True,True,True,True,False
+Germany,DEU,2021,Country or economy,Demand,True,560.25,12.53,2.288,96.79,0.148,,,,,,,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Solar,False,60.3,10.96,22.213,10.637,2.113,61.19,2.865,0.52,22.175,1.204,47.512,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Wind,False,124.81,10.65,9.329,22.017,2.294,66.2,1.555,0.132,9.276,0.654,12.459,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Hydro,False,17.62,-2.04,-10.376,3.108,-0.289,5.57,0.419,-0.048,-10.278,0.176,23.78,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Bioenergy,False,48.6,-0.5,-1.018,8.573,0.09,8.77,10.507,-0.108,-1.017,4.416,216.193,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Other renewables,False,0.21,-0.03,-12.5,0.037,-0.004,1.06,0.008,-0.001,-11.111,0.003,38.095,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Nuclear,False,34.71,-34.42,-49.79,6.123,-5.82,4.2,0.167,-0.167,-50.0,0.07,4.811,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Coal,False,179.93,15.28,9.28,31.74,3.295,39.18,174.07,14.402,9.02,73.162,967.432,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Gas,False,79.05,-11.26,-12.468,13.945,-1.657,30.05,34.086,-4.855,-12.468,14.326,431.195,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Other fossil,False,21.65,-0.59,-2.653,3.819,-0.023,3.83,14.246,-0.388,-2.651,5.988,658.014,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Net imports,False,-27.26,-8.68,46.717,-4.809,-1.599,,0.0,0.0,,0.0,0.0,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Wind and solar,True,185.11,21.61,13.217,32.654,4.407,127.39,4.42,0.652,17.304,1.858,23.878,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,"Hydro, bioenergy and other renewables",True,66.43,-2.57,-3.725,11.719,-0.202,15.4,10.934,-0.158,-1.424,4.596,164.594,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Renewables,True,251.54,19.04,8.189,44.373,4.206,142.79000000000002,15.354,0.494,3.324,6.453,61.04,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Clean,True,286.25,-15.38,-5.099,50.496,-1.614,146.99,15.522,0.329,2.165,6.524,54.225,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Fossil,True,280.63,3.43,1.237,49.504,1.614,73.06,222.402,9.159,4.295,93.476,792.51,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Total generation,True,566.88,-11.95,-2.065,100.0,0.0,220.05,237.924,9.488,4.153,100.0,419.708,Europe,Europe,True,True,True,True,False
+Germany,DEU,2022,Country or economy,Demand,True,539.62,-20.63,-3.682,95.191,-1.599,,,,,,,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Solar,False,63.87,3.57,5.92,12.605,1.968,75.52,3.035,0.17,5.934,1.647,47.518,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Wind,False,140.54,15.73,12.603,27.735,5.718,69.44,1.747,0.192,12.347,0.948,12.431,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Hydro,False,21.24,3.62,20.545,4.192,1.084,5.61,0.505,0.086,20.525,0.274,23.776,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Bioenergy,False,51.26,2.66,5.473,10.116,1.543,8.82,11.082,0.575,5.473,6.015,216.192,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Other renewables,False,0.19,-0.02,-9.524,0.037,0.0,1.04,0.007,-0.001,-12.5,0.004,36.842,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Nuclear,False,7.22,-27.49,-79.199,1.425,-4.698,0.0,0.035,-0.132,-79.042,0.019,4.848,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Coal,False,124.78,-55.15,-30.651,24.625,-7.115,39.07,120.979,-53.091,-30.5,65.665,969.538,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Gas,False,76.66,-2.39,-3.023,15.129,1.184,31.9,33.056,-1.03,-3.022,17.942,431.203,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Other fossil,False,20.96,-0.69,-3.187,4.136,0.317,3.83,13.792,-0.454,-3.187,7.486,658.015,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Net imports,False,9.22,36.48,-133.822,1.82,6.629,,0.0,0.0,,0.0,0.0,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Wind and solar,True,204.41,19.3,10.426,40.34,7.686,144.95999999999998,4.782,0.362,8.19,2.596,23.394,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,"Hydro, bioenergy and other renewables",True,72.69,6.26,9.423,14.345,2.626,15.469999999999999,11.594,0.66,6.036,6.293,159.499,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Renewables,True,277.1,25.56,10.161,54.685,10.312,160.43,16.376,1.022,6.656,8.889,59.098,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Clean,True,284.32,-1.93,-0.674,56.11,5.614,160.43,16.411,0.889,5.727,8.908,57.72,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Fossil,True,222.4,-58.23,-20.75,43.89,-5.614,74.8,167.826,-54.576,-24.539,91.093,754.613,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Total generation,True,506.72,-60.16,-10.612,100.0,0.0,235.23,184.237,-53.687,-22.565,100.0,363.587,Europe,Europe,True,True,True,True,False
+Germany,DEU,2023,Country or economy,Demand,True,515.94,-23.68,-4.388,101.82,6.629,,,,,,,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Solar,False,74.13,10.26,16.064,15.073,2.468,91.2,3.523,0.488,16.079,2.108,47.525,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Wind,False,137.429,-3.111,-2.214,27.943,0.208,72.74,1.711,-0.036,-2.061,1.024,12.45,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Hydro,False,23.83,2.59,12.194,4.845,0.653,5.5,0.566,0.061,12.079,0.339,23.752,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Bioenergy,False,51.08,-0.18,-0.351,10.386,0.27,8.88,11.043,-0.039,-0.352,6.606,216.19,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Other renewables,False,0.22,0.03,15.789,0.045,0.008,1.06,0.008,0.001,14.286,0.005,36.364,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Nuclear,False,0.0,-7.22,-100.0,0.0,-1.425,0.0,0.0,-0.035,-100.0,0.0,,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Coal,False,106.33,-18.45,-14.786,21.62,-3.005,32.34,103.078,-17.901,-14.797,61.666,969.416,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Gas,False,78.41,1.75,2.283,15.943,0.814,32.33,33.81,0.754,2.281,20.227,431.195,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Other fossil,False,20.39,-0.57,-2.719,4.146,0.01,4.13,13.417,-0.375,-2.719,8.027,658.019,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Net imports,False,26.27,17.05,184.924,5.341,3.521,,0.0,0.0,,0.0,0.0,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Wind and solar,True,211.559,7.149,3.497,43.016,2.676,163.94,5.233,0.451,9.431,3.131,24.735,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,"Hydro, bioenergy and other renewables",True,75.13,2.44,3.357,15.276,0.931,15.440000000000001,11.618,0.024,0.207,6.95,154.639,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Renewables,True,286.689,9.589,3.46,58.292,3.607,179.38,16.851,0.475,2.901,10.081,58.778,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Clean,True,286.689,2.369,0.833,58.292,2.182,179.38,16.851,0.44,2.681,10.081,58.778,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Fossil,True,205.13,-17.27,-7.765,41.708,-2.182,68.8,150.305,-17.521,-10.44,89.919,732.73,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Total generation,True,491.819,-14.901,-2.941,100.0,0.0,248.18,167.156,-17.081,-9.271,100.0,339.873,Europe,Europe,True,True,True,True,False
+Germany,DEU,2024,Country or economy,Demand,True,518.089,2.149,0.417,105.341,3.521,,,,,,,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Solar,False,89.704,15.574,21.009,18.048,2.975,106.27,4.263,0.74,21.005,2.567,47.523,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Wind,False,132.272,-5.157,-3.752,26.612,-1.331,77.81,1.648,-0.063,-3.682,0.992,12.459,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Hydro,False,18.278,-5.552,-23.298,3.677,-1.168,5.69,0.434,-0.132,-23.322,0.261,23.744,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Bioenergy,False,50.089,-0.991,-1.94,10.078,-0.308,8.98,10.829,-0.214,-1.938,6.521,216.195,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Other renewables,False,0.227,0.007,3.182,0.046,0.001,1.09,0.009,0.001,12.5,0.005,39.648,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Nuclear,False,0.0,0.0,,0.0,0.0,,0.0,0.0,,0.0,,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Coal,False,104.262,-2.068,-1.945,20.977,-0.643,31.97,100.573,-2.505,-2.43,60.561,964.618,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Gas,False,83.498,5.088,6.489,16.799,0.856,32.44,36.004,2.194,6.489,21.68,431.196,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Other fossil,False,18.705,-1.685,-8.264,3.763,-0.383,4.13,12.308,-1.109,-8.266,7.411,658.006,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Net imports,False,19.49,-6.78,-25.809,3.921,-1.42,,0.0,0.0,,0.0,0.0,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Wind and solar,True,221.976,10.417,4.924,44.66,1.644,184.07999999999998,5.91,0.677,12.937,3.559,26.624,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,"Hydro, bioenergy and other renewables",True,68.594,-6.536,-8.7,13.801,-1.475,15.760000000000002,11.272,-0.346,-2.978,6.788,164.329,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Renewables,True,290.57,3.881,1.354,58.461,0.169,199.84,17.182,0.331,1.964,10.346,59.132,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Clean,True,290.57,3.881,1.354,58.461,0.169,,17.182,0.331,1.964,10.346,59.132,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Fossil,True,206.465,1.335,0.651,41.539,-0.169,68.53999999999999,148.885,-1.42,-0.945,89.653,721.115,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Total generation,True,497.035,5.216,1.061,100.0,0.0,,166.068,-1.088,-0.651,100.0,334.117,Europe,Europe,True,True,True,True,False
+Germany,DEU,2025,Country or economy,Demand,True,516.525,-1.564,-0.302,103.921,-1.42,,,,,,,Europe,Europe,True,True,True,True,False
+Japan,JPN,2024,Country or economy,Solar,False,96.789,0.431,0.447,9.536,-0.035,89.6,4.599,0.02,0.437,0.936,47.516,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Wind,False,11.051,1.094,10.987,1.089,0.1,5.86,0.127,0.013,11.404,0.026,11.492,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Hydro,False,79.482,4.951,6.643,7.831,0.428,28.23,1.888,0.117,6.606,0.384,23.754,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Bioenergy,False,43.602,1.594,3.795,4.296,0.123,5.06,9.427,0.345,3.799,1.918,216.206,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Nuclear,False,84.906,7.445,9.611,8.365,0.671,33.08,0.445,0.039,9.606,0.091,5.241,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Coal,False,327.465,0.539,0.165,32.263,-0.211,55.25,270.163,0.285,0.106,54.957,825.013,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Gas,False,346.979,0.001,0.0,34.186,-0.28,81.48,188.69,0.0,0.0,38.383,543.808,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Other fossil,False,24.701,-7.801,-24.002,2.434,-0.794,20.98,16.253,-5.133,-24.002,3.306,657.99,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Net imports,False,0.0,0.0,,0.0,0.0,,0.0,0.0,,0.0,,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Wind and solar,True,107.84,1.525,1.434,10.625,0.064,95.46,4.727,0.034,0.724,0.962,43.833,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,"Hydro, bioenergy and other renewables",True,123.083,6.543,5.614,12.127,0.551,33.29,11.315,0.462,4.257,2.302,91.93,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Renewables,True,230.924,8.07,3.621,22.752,0.615,128.75,16.042,0.496,3.191,3.263,69.469,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Clean,True,315.829,15.514,5.166,31.117,1.286,161.83,16.487,0.535,3.354,3.354,52.202,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Fossil,True,699.145,-7.262,-1.028,68.883,-1.286,157.71,475.106,-4.848,-1.01,96.646,679.553,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Total generation,True,1014.974,8.252,0.82,100.0,0.0,319.54,491.593,-4.313,-0.87,100.0,484.34,Asia,Asia,False,True,True,True,False
+Japan,JPN,2024,Country or economy,Demand,True,1014.974,8.252,0.82,100.0,0.0,,,,,,,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Solar,False,110.787,13.998,14.462,10.784,1.248,92.21,5.265,0.666,14.481,1.082,47.524,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Wind,False,12.837,1.786,16.161,1.25,0.161,6.24,0.148,0.021,16.535,0.03,11.529,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Hydro,False,74.253,-5.229,-6.579,7.228,-0.603,28.3,1.764,-0.124,-6.568,0.362,23.757,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Bioenergy,False,47.585,3.983,9.135,4.632,0.336,6.06,10.288,0.861,9.133,2.114,216.203,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Nuclear,False,94.065,9.159,10.787,9.156,0.791,33.08,0.493,0.048,10.787,0.101,5.241,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Coal,False,327.011,-0.454,-0.139,31.83,-0.433,54.58,269.727,-0.436,-0.161,55.42,824.825,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Gas,False,336.347,-10.632,-3.064,32.739,-1.447,82.36,182.909,-5.781,-3.064,37.582,543.81,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Other fossil,False,24.467,-0.234,-0.947,2.382,-0.052,20.08,16.099,-0.154,-0.948,3.308,657.988,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Net imports,False,0.0,0.0,,0.0,0.0,,0.0,0.0,,0.0,,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Wind and solar,True,123.624,15.784,14.636,12.033,1.408,98.44999999999999,5.412,0.685,14.491,1.112,43.778,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,"Hydro, bioenergy and other renewables",True,121.838,-1.245,-1.012,11.859,-0.268,34.36,12.052,0.737,6.513,2.476,98.918,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Renewables,True,245.462,14.538,6.296,23.893,1.141,132.81,17.465,1.423,8.87,3.589,71.152,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Clean,True,339.527,23.698,7.503,33.049,1.932,165.89,17.957,1.47,8.916,3.69,52.888,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Fossil,True,687.826,-11.319,-1.619,66.951,-1.932,157.01999999999998,468.736,-6.37,-1.341,96.31,681.475,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Total generation,True,1027.353,12.379,1.22,100.0,0.0,322.90999999999997,486.693,-4.9,-0.997,100.0,473.735,Asia,Asia,False,True,True,True,False
+Japan,JPN,2025,Country or economy,Demand,True,1027.353,12.379,1.22,100.0,0.0,,,,,,,Asia,Asia,False,True,True,True,False
+United States,USA,2019,Country or economy,Solar,False,106.89,13.53,14.492,2.57,0.348,60.83,5.131,0.65,14.506,0.281,48.003,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Wind,False,295.88,23.21,8.512,7.115,0.625,103.67,2.517,0.197,8.491,0.138,8.507,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Hydro,False,282.61,-4.01,-1.399,6.796,-0.026,83.62,6.783,-0.096,-1.396,0.371,24.001,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Bioenergy,False,57.51,-4.32,-6.987,1.383,-0.089,11.0,13.227,-0.994,-6.99,0.724,229.995,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Other renewables,False,17.87,-0.82,-4.387,0.43,-0.015,1.06,0.679,-0.031,-4.366,0.037,37.997,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Nuclear,False,809.41,2.33,0.289,19.465,0.256,98.12,4.382,0.013,0.298,0.24,5.414,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Coal,False,964.96,-184.53,-16.053,23.205,-4.154,245.5,916.401,-175.142,-16.045,50.148,949.678,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Gas,False,1585.81,116.68,7.942,38.135,3.169,518.21,852.059,62.693,7.942,46.627,537.302,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Other fossil,False,37.44,-5.24,-12.277,0.9,-0.116,35.01,26.208,-3.668,-12.277,1.434,700.0,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Net imports,False,39.04,-5.42,-12.191,0.939,-0.119,,0.0,0.0,,0.0,0.0,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Wind and solar,True,402.77,36.74,10.037,9.686,0.974,164.5,7.648,0.847,12.454,0.419,18.989,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,"Hydro, bioenergy and other renewables",True,357.99,-9.15,-2.492,8.609,-0.129,95.68,20.689,-1.121,-5.14,1.132,57.792,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Renewables,True,760.76,27.59,3.763,18.295,0.845,260.18,28.337,-0.274,-0.958,1.551,37.248,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Clean,True,1570.17,29.92,1.943,37.759,1.1,358.3,32.719,-0.262,-0.794,1.79,20.838,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Fossil,True,2588.21,-73.09,-2.746,62.241,-1.1,798.72,1794.668,-116.118,-6.077,98.21,693.401,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Total generation,True,4158.38,-43.17,-1.027,100.0,0.0,1157.02,1827.387,-116.379,-5.987,100.0,439.447,North America,North America,False,True,True,True,False
+United States,USA,2019,Country or economy,Demand,True,4197.42,-48.59,-1.144,100.939,-0.119,,,,,,,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Solar,False,130.72,23.83,22.294,3.233,0.663,75.79,6.275,1.144,22.296,0.377,48.003,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Wind,False,337.94,42.06,14.215,8.358,1.243,118.48,2.875,0.358,14.223,0.173,8.507,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Hydro,False,279.95,-2.66,-0.941,6.924,0.128,83.81,6.719,-0.064,-0.944,0.404,24.001,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Bioenergy,False,54.7,-2.81,-4.886,1.353,-0.03,10.83,12.581,-0.646,-4.884,0.756,230.0,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Other renewables,False,18.09,0.22,1.231,0.447,0.017,1.06,0.687,0.008,1.178,0.041,37.977,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Nuclear,False,789.88,-19.53,-2.413,19.536,0.071,96.5,4.276,-0.106,-2.419,0.257,5.413,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Coal,False,773.39,-191.57,-19.853,19.128,-4.077,233.84,734.577,-181.824,-19.841,44.127,949.814,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Gas,False,1624.17,38.36,2.419,40.171,2.036,522.56,872.67,20.611,2.419,52.422,537.302,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Other fossil,False,34.34,-3.1,-8.28,0.849,-0.051,31.17,24.038,-2.17,-8.28,1.444,700.0,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Net imports,False,47.31,8.27,21.183,1.17,0.231,,0.0,0.0,,0.0,0.0,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Wind and solar,True,468.66,65.89,16.359,11.591,1.905,194.27,9.15,1.502,19.639,0.55,19.524,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,"Hydro, bioenergy and other renewables",True,352.74,-5.25,-1.467,8.724,0.115,95.7,19.987,-0.702,-3.393,1.201,56.662,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Renewables,True,821.4,60.64,7.971,20.316,2.021,289.97,29.137,0.8,2.823,1.75,35.472,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Clean,True,1611.28,41.11,2.618,39.852,2.093,386.47,33.413,0.694,2.121,2.007,20.737,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Fossil,True,2431.9,-156.31,-6.039,60.148,-2.093,787.5699999999999,1631.284,-163.384,-9.104,97.993,670.786,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Total generation,True,4043.18,-115.2,-2.77,100.0,0.0,1174.04,1664.698,-162.689,-8.903,100.0,411.73,North America,North America,False,True,True,True,False
+United States,USA,2020,Country or economy,Demand,True,4090.49,-106.93,-2.548,101.17,0.231,,,,,,,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Solar,False,164.42,33.7,25.78,3.958,0.725,94.79,7.892,1.617,25.769,0.448,47.999,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Wind,False,378.2,40.26,11.913,9.105,0.747,132.85,3.218,0.343,11.93,0.183,8.509,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Hydro,False,246.47,-33.48,-11.959,5.934,-0.99,84.25,5.915,-0.804,-11.966,0.336,23.999,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Bioenergy,False,54.25,-0.45,-0.823,1.306,-0.047,10.28,12.478,-0.103,-0.819,0.709,230.009,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Other renewables,False,18.24,0.15,0.829,0.439,-0.008,1.06,0.693,0.006,0.873,0.039,37.993,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Nuclear,False,779.65,-10.23,-1.295,18.77,-0.766,95.55,4.221,-0.055,-1.286,0.24,5.414,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Coal,False,898.0,124.61,16.112,21.62,2.492,225.14,852.66,118.083,16.075,48.441,949.51,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Gas,False,1579.19,-44.98,-2.769,38.02,-2.151,529.28,848.502,-24.168,-2.769,48.204,537.302,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Other fossil,False,35.2,0.86,2.504,0.847,-0.002,31.82,24.64,0.602,2.504,1.4,700.0,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Net imports,False,39.31,-8.0,-16.91,0.946,-0.224,,0.0,0.0,,0.0,0.0,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Wind and solar,True,542.62,73.96,15.781,13.064,1.473,227.64,11.11,1.96,21.421,0.631,20.475,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,"Hydro, bioenergy and other renewables",True,318.96,-33.78,-9.576,7.679,-1.045,95.59,19.086,-0.901,-4.508,1.084,59.838,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Renewables,True,861.58,40.18,4.892,20.743,0.427,323.23,30.196,1.059,3.635,1.715,35.047,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Clean,True,1641.23,29.95,1.859,39.513,-0.339,418.78,34.417,1.004,3.005,1.955,20.97,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Fossil,True,2512.39,80.49,3.31,60.487,0.339,786.24,1725.802,94.518,5.794,98.045,686.916,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Total generation,True,4153.62,110.44,2.732,100.0,0.0,1205.0199999999998,1760.219,95.521,5.738,100.0,423.779,North America,North America,False,True,True,True,False
+United States,USA,2021,Country or economy,Demand,True,4192.93,102.44,2.504,100.946,-0.224,,,,,,,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Solar,False,205.07,40.65,24.723,4.784,0.826,112.84,9.843,1.951,24.721,0.559,47.998,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Wind,False,434.3,56.1,14.833,10.131,1.026,141.5,3.695,0.477,14.823,0.21,8.508,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Hydro,False,248.76,2.29,0.929,5.803,-0.131,84.39,5.97,0.055,0.93,0.339,23.999,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Bioenergy,False,51.85,-2.4,-4.424,1.21,-0.096,10.08,11.926,-0.552,-4.424,0.678,230.01,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Other renewables,False,18.16,-0.08,-0.439,0.424,-0.015,1.03,0.69,-0.003,-0.433,0.039,37.996,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Nuclear,False,771.54,-8.11,-1.04,17.998,-0.772,94.66,4.177,-0.044,-1.042,0.237,5.414,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Coal,False,831.51,-66.49,-7.404,19.397,-2.223,209.97,789.472,-63.188,-7.411,44.875,949.444,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Gas,False,1687.06,107.87,6.831,39.354,1.334,536.05,906.461,57.959,6.831,51.524,537.302,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Other fossil,False,38.64,3.44,9.773,0.901,0.054,34.41,27.048,2.408,9.773,1.537,700.0,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Net imports,False,41.21,1.9,4.833,0.961,0.015,,0.0,0.0,,0.0,0.0,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Wind and solar,True,639.37,96.75,17.83,14.915,1.851,254.34,13.538,2.428,21.854,0.77,21.174,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,"Hydro, bioenergy and other renewables",True,318.77,-0.19,-0.06,7.436,-0.243,95.5,18.586,-0.5,-2.62,1.056,58.305,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Renewables,True,958.14,96.56,11.207,22.35,1.607,349.84000000000003,32.124,1.928,6.385,1.826,33.527,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Clean,True,1729.68,88.45,5.389,40.348,0.835,444.5,36.301,1.884,5.474,2.063,20.987,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Fossil,True,2557.21,44.82,1.784,59.652,-0.835,780.43,1722.981,-2.821,-0.163,97.937,673.774,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Total generation,True,4286.89,133.27,3.209,100.0,0.0,1224.9299999999998,1759.282,-0.937,-0.053,100.0,410.387,North America,North America,False,True,True,True,False
+United States,USA,2022,Country or economy,Demand,True,4328.1,135.17,3.224,100.961,0.015,,,,,,,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Solar,False,238.94,33.87,16.516,5.617,0.833,139.93,11.469,1.626,16.519,0.686,47.999,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Wind,False,421.14,-13.16,-3.03,9.9,-0.231,147.52,3.583,-0.112,-3.031,0.214,8.508,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Hydro,False,239.01,-9.75,-3.919,5.619,-0.184,84.3,5.736,-0.234,-3.92,0.343,23.999,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Bioenergy,False,47.2,-4.65,-8.968,1.11,-0.1,9.85,10.856,-1.07,-8.972,0.65,230.0,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Other renewables,False,18.45,0.29,1.597,0.434,0.01,0.99,0.701,0.011,1.594,0.042,37.995,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Nuclear,False,774.87,3.33,0.432,18.215,0.217,95.71,4.195,0.018,0.431,0.251,5.414,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Coal,False,675.11,-156.4,-18.809,15.87,-3.527,199.77,641.232,-148.24,-18.777,38.366,949.819,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Gas,False,1806.06,119.0,7.054,42.456,3.102,543.15,970.4,63.939,7.054,58.06,537.302,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Other fossil,False,33.13,-5.51,-14.26,0.779,-0.122,33.28,23.191,-3.857,-14.26,1.388,700.0,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Net imports,False,18.9,-22.31,-54.137,0.444,-0.517,,0.0,0.0,,0.0,0.0,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Wind and solar,True,660.08,20.71,3.239,15.517,0.602,287.45000000000005,15.052,1.514,11.183,0.901,22.803,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,"Hydro, bioenergy and other renewables",True,304.66,-14.11,-4.426,7.162,-0.274,95.13999999999999,17.293,-1.293,-6.957,1.035,56.762,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Renewables,True,964.74,6.6,0.689,22.679,0.329,382.59000000000003,32.346,0.222,0.691,1.935,33.528,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Clean,True,1739.61,9.93,0.574,40.894,0.546,478.29999999999995,36.541,0.24,0.661,2.186,21.005,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Fossil,True,2514.3,-42.91,-1.678,59.106,-0.546,776.1999999999999,1634.822,-88.159,-5.117,97.814,650.21,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Total generation,True,4253.91,-32.98,-0.769,100.0,0.0,1254.5,1671.363,-87.919,-4.997,100.0,392.9,North America,North America,False,True,True,True,False
+United States,USA,2023,Country or economy,Demand,True,4272.81,-55.29,-1.277,100.444,-0.517,,,,,,,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Solar,False,303.75,64.81,27.124,6.918,1.301,177.59,14.58,3.111,27.125,0.865,48.0,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Wind,False,451.9,30.76,7.304,10.291,0.391,152.65,3.846,0.263,7.34,0.228,8.511,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Hydro,False,237.04,-1.97,-0.824,5.398,-0.221,84.15,5.689,-0.047,-0.819,0.338,24.0,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Bioenergy,False,46.42,-0.78,-1.653,1.057,-0.053,9.87,10.677,-0.179,-1.649,0.634,230.009,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Other renewables,False,17.52,-0.93,-5.041,0.399,-0.035,0.89,0.666,-0.035,-4.993,0.04,38.014,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Nuclear,False,781.86,6.99,0.902,17.806,-0.409,96.83,4.233,0.038,0.906,0.251,5.414,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Coal,False,652.16,-22.95,-3.399,14.852,-1.018,192.74,619.596,-21.636,-3.374,36.764,950.067,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Gas,False,1869.9,63.84,3.535,42.585,0.129,546.01,1004.701,34.301,3.535,59.615,537.302,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Other fossil,False,30.47,-2.66,-8.029,0.694,-0.085,33.07,21.329,-1.862,-8.029,1.266,700.0,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Net imports,False,13.81,-5.09,-26.931,0.315,-0.129,,0.0,0.0,,0.0,0.0,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Wind and solar,True,755.65,95.57,14.479,17.209,1.692,330.24,18.426,3.374,22.416,1.093,24.384,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,"Hydro, bioenergy and other renewables",True,300.98,-3.68,-1.208,6.854,-0.308,94.91000000000001,17.031,-0.262,-1.515,1.011,56.585,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Renewables,True,1056.63,91.89,9.525,24.063,1.384,425.15,35.457,3.111,9.618,2.104,33.557,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Clean,True,1838.49,98.88,5.684,41.869,0.975,521.98,39.69,3.149,8.618,2.355,21.588,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Fossil,True,2552.53,38.23,1.521,58.131,-0.975,771.82,1645.626,10.804,0.661,97.645,644.704,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Total generation,True,4391.02,137.11,3.223,100.0,0.0,1293.8000000000002,1685.316,13.953,0.835,100.0,383.81,North America,North America,False,True,True,True,False
+United States,USA,2024,Country or economy,Demand,True,4404.83,132.02,3.09,100.315,-0.129,,,,,,,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Solar,False,388.82,85.07,28.007,8.603,1.685,211.61,18.663,4.083,28.004,1.074,47.999,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Wind,False,464.39,12.49,2.764,10.275,-0.016,158.83,3.952,0.106,2.756,0.227,8.51,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Hydro,False,241.7,4.66,1.966,5.348,-0.05,84.15,5.801,0.112,1.969,0.334,24.001,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Bioenergy,False,46.19,-0.23,-0.495,1.022,-0.035,9.72,10.624,-0.053,-0.496,0.611,230.006,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Other renewables,False,17.7,0.18,1.027,0.392,-0.007,0.89,0.673,0.007,1.051,0.039,38.023,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Nuclear,False,784.78,2.92,0.373,17.363,-0.443,96.89,4.249,0.016,0.378,0.245,5.414,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Coal,False,737.15,84.99,13.032,16.309,1.457,188.86,700.17,80.574,13.004,40.299,949.834,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Gas,False,1807.34,-62.56,-3.346,39.987,-2.598,549.79,971.087,-33.614,-3.346,55.892,537.302,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Other fossil,False,31.72,1.25,4.102,0.702,0.008,32.51,22.204,0.875,4.102,1.278,700.0,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Net imports,False,12.352,-1.458,-10.558,0.273,-0.042,,0.0,0.0,,0.0,0.0,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Wind and solar,True,853.21,97.56,12.911,18.877,1.668,370.44000000000005,22.616,4.19,22.74,1.302,26.507,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,"Hydro, bioenergy and other renewables",True,305.59,4.61,1.532,6.761,-0.093,94.76,17.097,0.066,0.388,0.984,55.948,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Renewables,True,1158.8,102.17,9.669,25.638,1.575,465.20000000000005,39.713,4.256,12.003,2.286,34.271,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Clean,True,1943.58,105.09,5.716,43.002,1.133,562.09,43.962,4.272,10.763,2.53,22.619,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Fossil,True,2576.21,23.68,0.928,56.998,-1.133,771.16,1693.462,47.836,2.907,97.47,657.346,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Total generation,True,4519.79,128.77,2.933,100.0,0.0,1333.25,1737.423,52.107,3.092,100.0,384.403,North America,North America,False,True,True,True,False
+United States,USA,2025,Country or economy,Demand,True,4532.142,127.312,2.89,100.273,-0.042,,,,,,,North America,North America,False,True,True,True,False
