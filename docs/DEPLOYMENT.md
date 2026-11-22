@@ -814,9 +814,8 @@ year (late March).
 
 ### Periodic tasks and the monitoring pass (V3.21 slice 21.2, ADR-109 — not yet deployed)
 
-Needs migration **063** (`source_poll_state`, two more `monitoring_signals` kinds, and
-`watchlist_entries.added_by_hash` / `source`). Integration note: 063 is written on
-`down_revision = "061"` and is re-pointed to `"062"` when slice 21.3 lands.
+Needs migration **062** (`source_poll_state`, two more `monitoring_signals` kinds, and
+`watchlist_entries.added_by_hash` / `source`).
 
 | Flag | Default | Effect |
 |---|---|---|

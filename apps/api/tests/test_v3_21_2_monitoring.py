@@ -599,17 +599,17 @@ class TestApi:
         assert "periodic_task_key" not in job.payload_json
 
 
-def test_watchlist_model_has_the_063_columns() -> None:
+def test_watchlist_model_has_the_062_columns() -> None:
     cols = set(WatchlistEntry.__table__.columns.keys())
     assert {"added_by_hash", "source"} <= cols
     assert Watchlist.__tablename__ == "watchlists"
 
 
-def test_migration_063_shape() -> None:
+def test_migration_062_shape() -> None:
     from pathlib import Path
 
-    text = Path("alembic/versions/063_add_periodic_tasks_and_team_lists.py").read_text()
-    assert 'revision: str = "063"' in text
+    text = Path("alembic/versions/062_add_periodic_tasks_and_team_lists.py").read_text()
+    assert 'revision: str = "062"' in text
     for needle in ("source_poll_state", "missing_information", "catalyst_window",
                    "added_by_hash", "ck_watchlist_entries_source", "def downgrade"):
         assert needle in text, needle

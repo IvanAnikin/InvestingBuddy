@@ -68,7 +68,7 @@ class Watchlist(Base):
 
     __table_args__ = (
         sa.Index("ix_watchlists_owner_name", "owner", "name", unique=True),
-        # V3.21.2 (migration 063): one TEAM list (owner NULL) per name — the index above
+        # V3.21.2 (migration 062): one TEAM list (owner NULL) per name — the index above
         # does not hold for NULL owners on PostgreSQL, where NULLs are distinct.
         sa.Index("ux_watchlists_team_name", "name", unique=True,
                  postgresql_where=sa.text("owner IS NULL"),
@@ -118,11 +118,11 @@ class WatchlistEntry(Base):
     added_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, default=_utcnow
     )
-    #: V3.21.2 (migration 063) — who added it: SHA-256 of the proxied admin e-mail, the
-    #: same hash portfolios use. Never the address. NULL for rows from before 063.
+    #: V3.21.2 (migration 062) — who added it: SHA-256 of the proxied admin e-mail, the
+    #: same hash portfolios use. Never the address. NULL for rows from before 062.
     added_by_hash: Mapped[str | None] = mapped_column(sa.Text)
     #: Where it was added from: ``manual`` | ``discovery_candidate`` | ``report`` |
-    #: ``auto_report``. NULL for rows from before 063.
+    #: ``auto_report``. NULL for rows from before 062.
     source: Mapped[str | None] = mapped_column(sa.Text)
 
     __table_args__ = (
@@ -221,7 +221,7 @@ class MonitoringSignal(Base):
             # V3.20 slice 9.4 (migration 054).
             "'earnings_released', 'consensus_revision', 'passive_ownership_change', "
             "'relationship_change', 'competitor_capacity_announcement', 'change_event', "
-            # V3.21.2 (migration 063).
+            # V3.21.2 (migration 062).
             "'missing_information', 'catalyst_window')",
             name="ck_monitoring_signals_kind",
         ),

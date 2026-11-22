@@ -288,7 +288,7 @@ class TestSignalsAreObservationsNotConclusions:
             DetectedSignal(kind="feels_important", signal_key="k", summary="x")
 
     def test_the_kind_vocabulary_is_closed_at_fourteen(self) -> None:
-        # six from V3.9, six from V3.20 slice 9.4, two from V3.21.2 (migration 063)
+        # six from V3.9, six from V3.20 slice 9.4, two from V3.21.2 (migration 062)
         assert len(SIGNAL_KINDS) == 14
 
     async def test_a_signal_summary_says_what_changed_not_what_it_means(

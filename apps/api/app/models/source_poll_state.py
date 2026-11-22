@@ -1,4 +1,4 @@
-"""Periodic-task and source poll state — V3.21.2 (migration 063, ADR-109).
+"""Periodic-task and source poll state — V3.21.2 (migration 062, ADR-109).
 
 One row per periodic task (``task_key``). The registry in
 ``services/scheduling/periodic.py`` reads ``last_started_at`` to decide whether a task is

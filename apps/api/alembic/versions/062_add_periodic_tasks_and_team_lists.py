@@ -28,8 +28,7 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "063"
-# integration: re-point to 062 when slice 21.3 lands
+revision: str = "062"
 down_revision: str | None = "061"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

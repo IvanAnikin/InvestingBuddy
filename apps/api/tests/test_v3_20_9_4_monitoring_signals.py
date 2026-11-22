@@ -237,13 +237,13 @@ async def test_a_detection_pass_raises_each_kind_once(session, monkeypatch) -> N
         KIND_EARNINGS_RELEASED, KIND_CHANGE_EVENT, KIND_COMPETITOR_CAPACITY}
 
 
-def test_the_vocabulary_and_migrations_054_and_063_agree() -> None:
+def test_the_vocabulary_and_migrations_054_and_062_agree() -> None:
     versions = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
     text = (versions / "054_widen_monitoring_signal_kinds.py").read_text()
-    later = (versions / "063_add_periodic_tasks_and_team_lists.py").read_text()
+    later = (versions / "062_add_periodic_tasks_and_team_lists.py").read_text()
     assert 'revision: str = "054"' in text and 'down_revision: str | None = "053"' in text
     for kind in SIGNAL_KINDS:
-        # V3.21.2 (migration 063) widened the CHECK with two more kinds.
+        # V3.21.2 (migration 062) widened the CHECK with two more kinds.
         assert f'"{kind}"' in text or f'"{kind}"' in later, kind
     assert "DELETE FROM" not in text.upper()  # signals are history
     assert "DELETE FROM" not in later.upper()

@@ -10841,7 +10841,7 @@ Both are right for what they were built against: free text from web pages and LL
    - A task is `PeriodicTask(key, interval, job_type, flag_attr, payload_fn)`.
    - The interval is one of DAILY, WEEKLY or SIX_HOURLY. Each maps to a UTC bucket: `2026-11-22`, `2026-W47` or `2026-11-22T06`.
 2. **A task runs at most once per bucket.** Two guards:
-   - the bucket is claimed in `source_poll_state` (migration 063) with a guarded UPDATE (`last_started_at IS NULL OR last_started_at < bucket_start`). Only one process sees `rowcount = 1`;
+   - the bucket is claimed in `source_poll_state` (migration 062) with a guarded UPDATE (`last_started_at IS NULL OR last_started_at < bucket_start`). Only one process sees `rowcount = 1`;
    - the job's idempotency key is `<task key>:<bucket>`, and a job already on record for that key, in any status, is never enqueued again.
 
    So two worker restarts on the same day, or two processes, give one pass. This was checked on PostgreSQL, including two concurrent sweeps. If the enqueue fails, the claim is released and the error type is recorded in `last_error`.
@@ -10870,5 +10870,4 @@ Both are right for what they were built against: free text from web pages and LL
 ### Consequences
 - Open Decision #15 is resolved for monitoring: daily. Event-driven triggers, such as reacting to a new filing the moment it is held, remain possible later as another periodic task or an observer.
 - `source_poll_state` gives the later source pollers somewhere to keep an ETag, a Last-Modified value and a small cursor.
-- Migration 063 is additive and reversible. Its downgrade refuses while any signal of a new kind exists, because signals are history.
-- **Integration note:** 063 is written with `down_revision = "061"`. It must be re-pointed to `"062"` when slice 21.3 (migration 062) lands.
+- Migration 062 is additive and reversible. Its downgrade refuses while any signal of a new kind exists, because signals are history.
