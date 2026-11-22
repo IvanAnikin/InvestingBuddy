@@ -56,6 +56,10 @@ import { type SelfCritiqueBlock, readSelfCritiqueBlock } from "./selfCritique";
 import { type TranslatedCitation, readTranslatedCitations } from "./translatedCitations";
 import { type FinancialDepthBlock, readFinancialDepthBlock } from "./financialDepth";
 import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
+import {
+  type IndependentResearchBlock,
+  readIndependentResearchBlock,
+} from "./independentResearch";
 import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
 import {
   type QualificationEvidenceBlock,
@@ -572,6 +576,9 @@ export type EvidenceSection = SectionHead & {
   /** Open-web W5: what the web stage did, including the sources it found but could not
       read. Null on every report written before open-web research. */
   webResearch: WebResearchQuality | null;
+  /** V3.21 slice 21.7: sponsored / independent research coverage pages, with absence
+      stated as what was looked at. Null when off, and on older reports. */
+  independentResearch: IndependentResearchBlock | null;
 };
 
 export type ProfessionalSection =
@@ -1211,6 +1218,7 @@ function readEvidenceSection(
       .map(([domain, raw]) => ({ domain, counts: counts(raw) }))
       .filter((d) => Object.keys(d.counts).length > 0),
     webResearch: readWebResearchQuality(r.web_research),
+    independentResearch: readIndependentResearchBlock(r.independent_research),
   };
 }
 

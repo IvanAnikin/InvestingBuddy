@@ -715,6 +715,23 @@ cover-page share count (latest 10-Q / 10-K, `data.sec.gov`) × the latest EODHD 
 already set on staging; without a key nothing changes. No migration. Each discovery candidate costs one more SEC read and
 one EODHD `/eod` call. Rollback: set the flag to `false`, and the float floor is used alone, as before.
 
+### Research coverage index (V3.21 slice 21.7, ADR-114)
+
+`V3_RESEARCH_COVERAGE_ENABLED` (default `true`). **Migration 064** (`research_coverage_pages`; additive, reversible;
+`down_revision` `063`). Network:
+- weekly periodic task `research_coverage_refresh` (needs `V3_DURABLE_JOBS_ENABLED` and `V3_PERIODIC_TASKS_ENABLED`): one GET of
+  `https://www.edisongroup.com/robots.txt` and, when it allows `/sitemap.xml`, one GET of the sitemap (≈ 1.1 MB; refused above
+  8 MB; host pinned to `www.edisongroup.com` / `edisongroup.com`). Robots refusal, a network failure or a layout with no
+  `/equity/` page leaves the table untouched and records `last_error`;
+- first fill (or a check) by hand: `python scripts/refresh_research_coverage.py [--dry-run]`;
+- with `V3_WEB_SEARCH_ENABLED`, at most one `include_domains` search per company per 30 days on `redeye.se`,
+  `researchtree.co.uk`, `research-hub.de`, `mwb-research.com` (Redeye and Research Tree are never fetched in bulk). With
+  search off or out of quota (staging today) the block says "not searched" / "search unavailable";
+- with `V3_WEB_FETCH_ENABLED`, at most one Edison company page per run through the open-web fetcher (robots, TDM) into the
+  corpus as a T5 document.
+
+Rollback: set the flag to `false`; reports and the obscurity block are as before (the table may stay).
+
 ### Certification bodies (V3.21 slice 21.5, ADR-112)
 
 `V3_CERTIFICATION_BODIES_ENABLED` (default `true`) gives every certificate in the real-asset block a verification state and
@@ -821,6 +838,7 @@ Needs migration **062** (`source_poll_state`, two more `monitoring_signals` kind
 |---|---|---|
 | `V3_PERIODIC_TASKS_ENABLED` | `true` | Master switch for the periodic-task registry on the durable worker's sweep (every 300 s). Inert unless `V3_DURABLE_JOBS_ENABLED`. |
 | `V3_MONITORING_PASS_ENABLED` | `true` | The daily `monitoring_pass` task over the team Shortlist / Watchlist (≤ 200 companies × 25 signals; never starts research). |
+| `V3_RESEARCH_COVERAGE_ENABLED` | `true` | The weekly `research_coverage_refresh` task (Edison sitemap), the report's `independent_research` block and the obscurity coverage component (V3.21.7, ADR-114). |
 | `V3_MONITORING_ENABLED` | `false` in code | The pass writes signals only when this is on. |
 
 **Staging step:** set `V3_MONITORING_ENABLED=true` on `ib-stg-api` (durable jobs are

@@ -877,6 +877,32 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
             ),
         ),
         RegisteredSource(
+            source_id="research_coverage_index",
+            name="Independent research coverage index (Edison sitemap; Redeye, Research "
+                 "Tree, mwb research by search)",
+            provider_type=ProviderType.fundamentals_aggregator,
+            tier=T5_API_AGGREGATOR,
+            status=(SourceStatus.enabled if cfg.v3_research_coverage_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_research_coverage_enabled,
+            region="Europe",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.bulk_download,
+            connector_key="research_coverage_index",
+            connector_implemented=True,
+            capabilities=["research_coverage"],
+            rate_limit=("Edison sitemap: one GET a week; search-only providers: one "
+                        "host-restricted search per company per 30 days"),
+            reliability_note=(
+                "V3.21 slice 21.7 (ADR-114): sponsored research, paid for by the issuer "
+                "(T5). URLs and titles only; a page's claims are never company facts. "
+                "Edison robots.txt allows the sitemap; Redeye and Research Tree are never "
+                "fetched in bulk. "
+                + ("ON." if cfg.v3_research_coverage_enabled
+                   else "OFF (V3_RESEARCH_COVERAGE_ENABLED).")
+            ),
+        ),
+        RegisteredSource(
             source_id="local_language_business_press",
             name="Local-language business press",
             provider_type=ProviderType.news,
@@ -1024,6 +1050,11 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
         "gdelt": WrappedProviderConnector(
             connector_key="gdelt",
             source_ids=("gdelt",),
+            configured=True,
+        ),
+        "research_coverage_index": WrappedProviderConnector(
+            connector_key="research_coverage_index",
+            source_ids=("research_coverage_index",),
             configured=True,
         ),
     }

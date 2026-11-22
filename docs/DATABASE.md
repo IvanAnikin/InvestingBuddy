@@ -1522,6 +1522,22 @@ The candidate side needs no column: the candidate's existing analysis-job envelo
 
 Downgrade drops the column; the research job it points at (`research_jobs`) is untouched.
 
+## Migration 064 — research coverage index (V3.21 slice 21.7, ADR-114)
+
+Written on `down_revision = "063"`. No user data; no page body; no claim.
+
+| Change | Columns / constraint | Rules |
+|---|---|---|
+| new `research_coverage_pages` | `id` (uuid PK), `provider` (`edison` \| `redeye` \| `research_tree` \| `mwb_research`), `url` (text, `uq_research_coverage_pages_url`), `page_kind` (`ck_research_coverage_pages_page_kind`: `equity` \| `note`), `company_slug`, `name_key` (normalised, indexed), `title`, `lastmod`, `first_seen_at`, `last_seen_at`, `discovered_via` (`ck_research_coverage_pages_discovered_via`: `sitemap` \| `search`) | One row per research-provider page. Edison rows come from the weekly sitemap refresh (upsert by URL; never deleted; a page that leaves the sitemap keeps its old `last_seen_at`). Search rows come from at most one host-restricted search per company per 30 days. `name_key` is NULL for an Edison note (its slug is a headline). Index `ix_research_coverage_pages_provider_last_seen` on (`provider`, `last_seen_at`). |
+
+The search throttle needs no new table: it is a `source_poll_state` row keyed
+`research_coverage_search.<company id>` (`last_ok_at` = last executed search,
+`last_started_at` = last attempt). The weekly refresh writes its counts to the
+`research_coverage_refresh` row's `detail_json`.
+
+Downgrade drops the table and its indexes; the next weekly refresh rebuilds the Edison
+rows, so no research history is lost.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

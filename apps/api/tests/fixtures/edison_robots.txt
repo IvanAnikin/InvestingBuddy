@@ -1,0 +1,9 @@
+User-agent: *
+Disallow: /wp-admin/
+
+# Limit Semrush crawler frequency
+# https://www.semrush.com/bot/
+User-agent: SemrushBot-BA
+Crawl-delay: 2
+
+Sitemap: https://www.edisongroup.com/sitemap.xml

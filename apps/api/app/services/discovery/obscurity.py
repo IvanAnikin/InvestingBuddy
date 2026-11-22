@@ -14,6 +14,11 @@ Components (each 0–1 points; 1 = most obscure)
 * ``sector_mis_tag`` — the layer classifier (5.2) places the company in a layer its
   sector / industry label does not describe.
 * ``primary_disclosure_language`` — the listing country's regulatory-filing language.
+* ``independent_research_coverage`` (V3.21 slice 21.7, ADR-114) — research providers with
+  a coverage page for the company in the coverage index (Edison sitemap; search-only
+  providers when searched): 0 → 1.0, 1 → 0.5, 2+ → 0.1. UNKNOWN (left out) until the
+  index has been refreshed once. Only when ``V3_RESEARCH_COVERAGE_ENABLED`` passes an
+  input; without one the component is absent and the block keeps the previous version.
 
 **Unavailable is not zero.** A component with no data is ``not_available`` and is left
 out of the average; the score states how many components it rests on. With fewer than
@@ -32,7 +37,11 @@ AVAILABLE = "available"
 NOT_AVAILABLE = "not_available"
 
 MIN_COMPONENTS = 3
-SCORE_VERSION = "2026-11-16.1"
+#: 2026-11-22.1 adds ``independent_research_coverage`` (V3.21 slice 21.7).
+SCORE_VERSION = "2026-11-22.1"
+#: The version of a block built without the coverage component (flag off): the formula
+#: is then the earlier one, and saying so keeps such a block byte-identical to before.
+PREVIOUS_SCORE_VERSION = "2026-11-16.1"
 
 #: Industries / sectors whose label already says "electricity" (the electricity
 #: playbook's own declaration, slice 5.3). Classified into a layer while labelled as
@@ -109,6 +118,16 @@ def news_points(count: int | None) -> float | None:
     return 0.0
 
 
+def coverage_points(provider_count: int | None) -> float | None:
+    if provider_count is None or provider_count < 0:
+        return None
+    if provider_count == 0:
+        return 1.0
+    if provider_count == 1:
+        return 0.5
+    return 0.1
+
+
 def disclosure_language(country: str | None) -> tuple[str | None, float | None]:
     if not country:
         return None, None
@@ -144,8 +163,14 @@ def obscurity_block(
     sector: str | None,
     industry: str | None,
     listing_country: str | None,
+    coverage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The obscurity block (pure). ``analyst`` / ``news`` are ``{count, as_of, source…}``."""
+    """The obscurity block (pure). ``analyst`` / ``news`` are ``{count, as_of, source…}``.
+
+    ``coverage`` is ``research_coverage.coverage.obscurity_input`` (``{state: known |
+    unknown, provider_count, providers, as_of, source, looked_at}``); ``None`` leaves the
+    component out and the block exactly as before slice 21.7.
+    """
     comps: list[dict[str, Any]] = []
     a_count = (analyst or {}).get("count")
     comps.append(_component(
@@ -180,12 +205,25 @@ def obscurity_block(
     comps.append(_component(
         "primary_disclosure_language", lang, lang_points, source="exchange registry",
         basis=f"listing country {listing_country}" if listing_country else None))
+    if coverage is not None:
+        known = coverage.get("state") == "known"
+        count = coverage.get("provider_count") if known else None
+        count_i = int(count) if isinstance(count, int) else None
+        names = [str(n) for n in coverage.get("providers") or [] if n]
+        comps.append(_component(
+            "independent_research_coverage", count_i, coverage_points(count_i),
+            source=coverage.get("source"), as_of=coverage.get("as_of"),
+            basis="research providers with a coverage page (" + str(
+                coverage.get("looked_at") or "coverage index") + ")",
+            note=(", ".join(names) if names else
+                  ("none found in the indexed providers" if known else
+                   "unknown: the coverage index has never been refreshed"))))
 
     available = [c for c in comps if c["state"] == AVAILABLE]
     score = (round(100 * sum(c["points"] for c in available) / len(available))
              if len(available) >= MIN_COMPONENTS else None)
     return {
-        "version": SCORE_VERSION,
+        "version": SCORE_VERSION if coverage is not None else PREVIOUS_SCORE_VERSION,
         "score": score,
         "components_available": len(available),
         "components_total": len(comps),
@@ -204,8 +242,10 @@ __all__ = [
     "AVAILABLE",
     "MIN_COMPONENTS",
     "NOT_AVAILABLE",
+    "PREVIOUS_SCORE_VERSION",
     "SCORE_VERSION",
     "analyst_points",
+    "coverage_points",
     "disclosure_language",
     "mis_tag",
     "news_points",

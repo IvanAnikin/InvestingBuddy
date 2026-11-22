@@ -210,6 +210,10 @@ class ReportInputs:
     #: V3.20 slice 6.3 — the obscurity score (``obscurity_step.obscurity_section``);
     #: ``None`` leaves the report unchanged.
     obscurity: Mapping[str, Any] | None = None
+    #: V3.21 slice 21.7 — independent / sponsored research coverage
+    #: (``research_coverage.coverage.independent_research_block``), shown in
+    #: evidence_quality_and_gaps; ``None`` leaves the report unchanged.
+    independent_research: Mapping[str, Any] | None = None
     #: V3.20 slice 6.2 — change events (``change_events_step.change_events_section``);
     #: ``None`` leaves the report unchanged.
     change_events: Mapping[str, Any] | None = None
@@ -1014,6 +1018,9 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         ),
         "domain_cost": dict(inputs.domain_cost),
     }
+    if inputs.independent_research:
+        # Only when the coverage index is on, so every other report is byte-identical.
+        evidence["independent_research"] = dict(inputs.independent_research)
     if inputs.web_context:
         evidence["web_research"] = web_research_block(
             inputs.web_context,
