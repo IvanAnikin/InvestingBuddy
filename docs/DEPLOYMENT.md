@@ -732,6 +732,12 @@ one EODHD `/eod` call. Rollback: set the flag to `false`, and the float floor is
 
 Rollback: set the flag to `false`; reports and the obscurity block are as before (the table may stay).
 
+### Growth from SEC XBRL (V3.21, ADR-117)
+
+`V3_DISCOVERY_SEC_REVENUE_GROWTH_ENABLED` (default `true`): when a thesis asks for growth and nothing else verified it, a US
+listing's annual revenue pair is read from `data.sec.gov` companyconcept (at most three small reads per candidate, no key).
+Rollback: set it to `false`, and growth stays `unknown` as before.
+
 ### Certification bodies (V3.21 slice 21.5, ADR-112)
 
 `V3_CERTIFICATION_BODIES_ENABLED` (default `true`) gives every certificate in the real-asset block a verification state and

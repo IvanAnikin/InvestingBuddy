@@ -136,13 +136,18 @@ def is_eligible(candidate: DiscoveryCandidate, held_back: set[tuple[str, str]]) 
     return True
 
 
+#: Hard checks a research report verifies itself, so a candidate with only these
+#: ``unknown`` may be auto-reported as a fallback (ADR-115, widened at V3.21 acceptance).
+_REPORT_VERIFIES = frozenset({"industry", "growth"})
+
+
 def is_industry_fallback(candidate: DiscoveryCandidate, held_back: set[tuple[str, str]]) -> bool:
     """V3.21.1b (ADR-115) — a candidate the report may verify itself.
 
     Dynamic-stage ``eligible_unverified``, not held back (size unverified, novelty held),
     a HARD size requirement that PASSED with evidence, and every other hard requirement
-    passed except the industry, which is ``unknown``. An industry ``fail`` (a verified
-    denial) excludes the name; it is never this.
+    passed except the industry and/or growth, which are ``unknown``. A ``fail`` (a
+    verified denial) excludes the name; it is never this.
     """
     if _listing_key(candidate.exchange, candidate.ticker) in held_back:
         return False
@@ -153,12 +158,17 @@ def is_industry_fallback(candidate: DiscoveryCandidate, held_back: set[tuple[str
             if isinstance(r, dict) and r.get("hardness") == "hard"
             and r.get("status") != "not_requested"]
     size = [r for r in hard if r.get("key") == "size"]
-    industry = [r for r in hard if r.get("key") == "industry"]
     if not size or any(r.get("status") != "pass" for r in size):
         return False
-    if not industry or any(r.get("status") != "unknown" for r in industry):
+    # V3.21 live finding (run 09567859): "growing recurring revenue" made growth a hard
+    # check that discovery could not verify, so verified-size, verified-exposure names
+    # were never reported. Industry and growth are what the report verifies itself;
+    # listing, geography and size never fall back.
+    open_checks = [r for r in hard if r.get("status") != "pass"]
+    if not open_checks:
         return False
-    return all(r.get("status") == "pass" for r in hard if r.get("key") != "industry")
+    return all(r.get("key") in _REPORT_VERIFIES and r.get("status") == "unknown"
+               for r in open_checks)
 
 
 def pick_candidate(
