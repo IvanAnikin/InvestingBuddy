@@ -718,7 +718,7 @@ one EODHD `/eod` call. Rollback: set the flag to `false`, and the float floor is
 ### Research coverage index (V3.21 slice 21.7, ADR-114)
 
 `V3_RESEARCH_COVERAGE_ENABLED` (default `true`). **Migration 064** (`research_coverage_pages`; additive, reversible;
-`down_revision` is re-pointed to `063` at integration). Network:
+`down_revision` `063`). Network:
 - weekly periodic task `research_coverage_refresh` (needs `V3_DURABLE_JOBS_ENABLED` and `V3_PERIODIC_TASKS_ENABLED`): one GET of
   `https://www.edisongroup.com/robots.txt` and, when it allows `/sitemap.xml`, one GET of the sitemap (≈ 1.1 MB; refused above
   8 MB; host pinned to `www.edisongroup.com` / `edisongroup.com`). Robots refusal, a network failure or a layout with no
