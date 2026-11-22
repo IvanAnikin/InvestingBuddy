@@ -5,6 +5,7 @@
  */
 
 import type { ReadingGroup, RealAssetBlock } from "@/components/research/realAsset";
+import { VerificationBadge } from "@/components/research/report/QualificationEvidenceSection";
 
 const muted = "text-xs leading-relaxed text-[color:var(--ib-ink-3)]";
 
@@ -52,6 +53,7 @@ export function RealAssetSection({ block }: { block: RealAssetBlock | null }) {
                 {c.standard && <> · {c.standard}</>}
                 {c.body && <> · {c.body}</>}
                 <span className={muted}> · {c.date ?? "date not disclosed"}</span>
+                {c.verification && <VerificationBadge state={c.verification.state} />}
                 {c.quote && <div className={muted}>“{c.quote}”</div>}
               </li>
             ))}

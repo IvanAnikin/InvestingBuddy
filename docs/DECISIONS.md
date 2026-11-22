@@ -10744,3 +10744,39 @@ Both are right for what they were built against: free text from web pages and LL
 - **Not fixed here:**
   - European venues without an official directory (XETRA, SIX) still need a stated market cap on a fetched page.
   - Japanese listings (no JPX directory) still need the same.
+
+---
+
+## ADR-112: A Certificate Gets a Verification State Against STL Members and a Curated Lab List
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 slice 21.5, spec §6)
+**Trigger:** requirements audit finding F7. Certification bodies (KEMA, STL…) were only names matched in the run's own findings (`electricity/real_asset.py`). A company's own "KEMA-tested" read the same as a certificate a third party confirms.
+
+### Findings
+- The STL members page (`stl-liaison.org/web/03_Members.php`, read 2026-11-22) lists 11 members as "Name, Country" cells, each with a form button carrying the member code: CESI, CPRI, ESEF ASEFA, JSTC, KEMA, KERI, PEHLA, SATS, STLNA, VEIKI, ZKU (Membership Directory Issue 59, 2026-06-01).
+- No certificate database is public in bulk. Individual body sites show some certificates.
+- Web search is out of quota on staging, so any check must work from held documents alone.
+
+### Decision
+1. **Registry** (`services/certification/bodies.py`):
+   - STL members parsed from the page, with attribution "Short-Circuit Testing Liaison (STL), stl-liaison.org". The parser fails closed (marker, "Name, Country" cells, a member code beside each, at least 5) and the last good list, or the bundled snapshot, is kept.
+   - A curated list: KEMA Labs, CESI, IPH Berlin (via PEHLA), KERI, TÜBİTAK MAM, CPRI, DNV, TÜV SÜD, TÜV Rheinland, TÜV (unnamed), UL Solutions, Intertek, CSA Group, Bureau Veritas, SGS, and STL itself. Each has hosts, country, scope and aliases ("KEMA", "DNV KEMA" → KEMA Labs; "UL" never matches a standard such as "UL 1741").
+   - STL membership is read from the list, not hard-coded on the curated row.
+2. **States** (`services/certification/verification.py`), one per certificate:
+   - `third_party_corroborated`: a T1–T3 document not published by the company, or a page on the body's host, names the same body, standard and company;
+   - `issuer_claim`: every document behind the finding is the company's own;
+   - `body_unrecognised`: the named body is in neither list;
+   - `unverified`: anything else.
+3. **Sources of corroboration:** the finding's own evidence, other held chunks (bounded at 25), and, only with `V3_WEB_SEARCH_ENABLED`, one `include_domains` search on the body's hosts per (body, standard), at most 5 per run, with one page read of the top on-host result. A snippet is never evidence.
+4. **Summary:** `competitive_position.qualification_evidence` lists certificates by body and date, the corroborated share, whether any body is an STL member, and what could not be verified.
+5. **Refresh:** monthly, lazily from the report step, into a `MemberListStore` (in-process default). Slice 21.2's periodic-task registry and `source_poll_state` replace this (`PERIODIC_TASK_KEY`). No migration here.
+6. Flag `V3_CERTIFICATION_BODIES_ENABLED`, default **on**. Off: the report is byte-identical.
+
+### Consequences
+- A reader can tell a company's own claim from a certificate another party confirms.
+- "Not corroborated" is never "false"; the block says what was not checked.
+- **Limits:**
+  - The product is not matched: body + standard + company name stand for "the same certificate".
+  - STL members without a curated entry (JSTC, PEHLA, SATS, STLNA, VEIKI, ZKU, ESEF ASEFA) have no host, so they are checked against held documents only.
+  - The in-process store is lost on restart; the bundled snapshot covers that until 21.2 lands.
+

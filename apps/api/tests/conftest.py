@@ -85,6 +85,21 @@ def _no_live_sec_directory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_stl_members(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V3.21 slice 21.5 — the report step's monthly refresh of the STL members page
+    answers "fetch failed" (no network) and every test starts from a fresh in-process
+    store, so the bundled snapshot is the register. Tests of the refresh pass their own
+    fetcher and store."""
+    from app.services.certification import bodies
+
+    async def _unread() -> None:
+        return None
+
+    monkeypatch.setattr(bodies, "fetch_stl_members_page", _unread)
+    monkeypatch.setattr(bodies, "DEFAULT_STORE", bodies.InMemoryMemberListStore())
+
+
+@pytest.fixture(autouse=True)
 def _no_live_fiscal_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
     """ADR-088 — the investigator's fiscal-calendar read (SEC company facts) answers
     "unknown" for every test, so fiscal periods are judged leniently exactly as without
