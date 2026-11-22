@@ -30,6 +30,8 @@ const REASON_WORDS: Record<string, string> = {
   durable_jobs_off: "durable research jobs are off on this server",
   daily_cap: "the daily limit on automatic reports was reached",
   joined_in_flight_job: "research for this company was already running; this run joined it",
+  industry_unverified_fallback:
+    "no candidate was fully eligible; the best size-verified one was queued and the report itself checks its segment exposure",
 };
 
 export function autoReportReasonWords(reason?: string | null): string | null {

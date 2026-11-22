@@ -749,6 +749,13 @@ provider is configured and enabled (`research_provider_for`); a failed call mean
 completion (≤400 output tokens) per segment run. No migration. Rollback: set the flag to `false` (terms only). The size
 rule of ADR-108 (size words under a ceiling) has no flag; it is a corrective to the D1 mandate.
 
+`V3_DISCOVERY_SEC_BUSINESS_EXPOSURE_ENABLED` (default `true`, V3.21.1b, ADR-115): during screening, a US SEC filer whose
+own website gave no verified exposure statement has its latest 10-K / 10-K405 / 10-KT (or 20-F) primary document read
+from EDGAR — `data.sec.gov` submissions, then the `www.sec.gov/Archives` document, first 3 MB, through the guarded fetcher
+with the platform User-Agent — and its "Item 1. Business" section (20-F "Item 4") is checked for the segment terms as
+`T1_primary_filing` evidence. At most two GETs per screened issuer, cached per CIK per UTC day; counted in the run's URL
+fetch consumption. No secret and no migration. Rollback: set the flag to `false` (issuer pages and web evidence only).
+
 ### Entity master backfill (operator; prerequisite for every entity-based V3.20 step)
 
 `V3_ENTITY_MASTER_ENABLED` alone links nothing. `backfill_entities_from_companies` (V3.2

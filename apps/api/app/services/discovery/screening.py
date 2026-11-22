@@ -677,6 +677,15 @@ async def screen_issuer(
                                                          fetcher=fetcher)
         fetches += site_fetches
         result.exposures.extend(site)
+    if not any(e.verified and e.exposure != EXPOSURE_DENIED for e in result.exposures):
+        # V3.21.1b (ADR-115) — a US SEC filer says what it does in its 10-K "Item 1.
+        # Business": read by the platform from EDGAR when its own site gave no statement.
+        from app.services.discovery.sec_business import sec_business_exposures
+
+        filed, sec_fetches = await sec_business_exposures(issuer, terms, cfg=cfg,
+                                                          fetcher=fetcher)
+        fetches += sec_fetches
+        result.exposures.extend(filed)
 
     # Two verified ANNUAL revenues for consecutive fiscal years, same currency → a pair.
     if revenues and not any(g.metric != "revenue_pair" for g in result.growth):

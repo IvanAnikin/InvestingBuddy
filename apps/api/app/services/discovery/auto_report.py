@@ -10,6 +10,13 @@ candidate's existing analysis-job envelope points at the job, so the pages that 
 show a candidate's research progress show this one. The company is added to the team
 Shortlist with ``source=auto_report``.
 
+FALLBACK (V3.21.1b, ADR-115)
+============================
+When no candidate is eligible, the best-ranked candidate that is ``eligible_unverified``
+with its hard size PASSED, not held back, and whose ONLY open hard check is the industry
+(``unknown``; a verified denial is ``fail`` and never qualifies) is queued with reason
+``industry_unverified_fallback``: the report itself verifies the segment exposure.
+
 BOUNDS
 ======
 * One per run: ``auto_report_json`` on the run is the idempotency record
@@ -59,6 +66,11 @@ REASON_FRESH_REPORT = "fresh_report"
 REASON_DURABLE_OFF = "durable_jobs_off"
 REASON_DAILY_CAP = "daily_cap"
 REASON_JOINED = "joined_in_flight_job"
+#: V3.21.1b (ADR-115) — no candidate was fully eligible; the best size-verified one whose
+#: only open hard check is the industry (``unknown``, never ``fail``) was queued, so the
+#: report itself verifies the exposure.
+REASON_INDUSTRY_FALLBACK = "industry_unverified_fallback"
+SELECTION_ELIGIBLE = "eligible"
 
 _COMPLETED = frozenset({"completed", "completed_with_warnings"})
 _MODES = frozenset({"quick", "standard", "deep"})
@@ -124,6 +136,31 @@ def is_eligible(candidate: DiscoveryCandidate, held_back: set[tuple[str, str]]) 
     return True
 
 
+def is_industry_fallback(candidate: DiscoveryCandidate, held_back: set[tuple[str, str]]) -> bool:
+    """V3.21.1b (ADR-115) — a candidate the report may verify itself.
+
+    Dynamic-stage ``eligible_unverified``, not held back (size unverified, novelty held),
+    a HARD size requirement that PASSED with evidence, and every other hard requirement
+    passed except the industry, which is ``unknown``. An industry ``fail`` (a verified
+    denial) excludes the name; it is never this.
+    """
+    if _listing_key(candidate.exchange, candidate.ticker) in held_back:
+        return False
+    v319 = (candidate.thesis_match_json or {}).get("v319") or {}
+    if (v319.get("eligibility") or {}).get("status") != "eligible_unverified":
+        return False
+    hard = [r for r in v319.get("constraint_results") or []
+            if isinstance(r, dict) and r.get("hardness") == "hard"
+            and r.get("status") != "not_requested"]
+    size = [r for r in hard if r.get("key") == "size"]
+    industry = [r for r in hard if r.get("key") == "industry"]
+    if not size or any(r.get("status") != "pass" for r in size):
+        return False
+    if not industry or any(r.get("status") != "unknown" for r in industry):
+        return False
+    return all(r.get("status") == "pass" for r in hard if r.get("key") != "industry")
+
+
 def pick_candidate(
     run: DiscoveryRun, candidates: Sequence[DiscoveryCandidate]
 ) -> DiscoveryCandidate | None:
@@ -132,6 +169,19 @@ def pick_candidate(
     ranked = sorted(candidates, key=lambda c: (c.rank is None, c.rank or 0))
     for candidate in ranked:
         if is_eligible(candidate, held_back):
+            return candidate
+    return None
+
+
+def pick_fallback_candidate(
+    run: DiscoveryRun, candidates: Sequence[DiscoveryCandidate]
+) -> DiscoveryCandidate | None:
+    """The best-ranked industry-unverified fallback (:func:`is_industry_fallback`), or
+    None. Used only when :func:`pick_candidate` found nothing."""
+    held_back = _held_back_keys(run)
+    ranked = sorted(candidates, key=lambda c: (c.rank is None, c.rank or 0))
+    for candidate in ranked:
+        if is_industry_fallback(candidate, held_back):
             return candidate
     return None
 
@@ -234,8 +284,11 @@ def _point_candidate_at_job(candidate: DiscoveryCandidate, envelope: dict[str, A
     candidate.updated_at = now
 
 
-async def _shortlist(db: AsyncSession, company: Company, run: DiscoveryRun) -> str | None:
+async def _shortlist(db: AsyncSession, company: Company, run: DiscoveryRun, *,
+                     selection: str = SELECTION_ELIGIBLE) -> str | None:
     """Add to the team Shortlist; returns an error note, never raises."""
+    what = ("best size-verified candidate, segment exposure not yet verified"
+            if selection == REASON_INDUSTRY_FALLBACK else "best eligible candidate")
     try:
         from app.services.monitoring.team_lists import (
             SHORTLIST,
@@ -248,7 +301,7 @@ async def _shortlist(db: AsyncSession, company: Company, run: DiscoveryRun) -> s
         async with db.begin_nested():
             await add_to_team_list(
                 db, SHORTLIST, company.id, source=SOURCE_AUTO_REPORT,
-                note=f"Auto-report: best eligible candidate of discovery run {run.id}")
+                note=f"Auto-report: {what} of discovery run {run.id}")
         return None
     except Exception as exc:  # noqa: BLE001 - the shortlist is never fatal
         log_event(logger, "discovery_auto_report_shortlist_failed", level=logging.WARNING,
@@ -275,12 +328,16 @@ async def _decide(
     if run.status not in _COMPLETED:
         return _record(STATE_SKIPPED, REASON_RUN_NOT_COMPLETED, run=run, now=now)
     candidate = pick_candidate(run, candidates)
+    selection = SELECTION_ELIGIBLE
+    if candidate is None:
+        candidate = pick_fallback_candidate(run, candidates)
+        selection = REASON_INDUSTRY_FALLBACK
     if candidate is None:
         return _record(STATE_SKIPPED, REASON_NO_ELIGIBLE, run=run, now=now)
     company = await _company_for(db, candidate)
     if company is None:
         return _record(STATE_SKIPPED, REASON_COMPANY_NOT_FOUND, run=run, now=now,
-                       candidate=candidate)
+                       candidate=candidate, selection=selection)
 
     fresh_days = int(getattr(cfg, "v3_auto_report_fresh_days", 14) or 0)
     existing = await fresh_report(db, company.id, fresh_days=fresh_days, now=now)
@@ -288,21 +345,22 @@ async def _decide(
         record = _record(STATE_LINKED, REASON_FRESH_REPORT, run=run, now=now,
                          candidate=candidate, company=company,
                          report_id=str(existing.id),
-                         report_created_at=_iso(existing.created_at))
+                         report_created_at=_iso(existing.created_at), selection=selection)
         if candidate.analysis_report_id is None:
             candidate.analysis_report_id = existing.id
-        note = await _shortlist(db, company, run)
+        note = await _shortlist(db, company, run, selection=selection)
         if note:
             record["note"] = note
         return record
 
     if not _durable_on(cfg):
         return _record(STATE_SKIPPED, REASON_DURABLE_OFF, run=run, now=now,
-                       candidate=candidate, company=company)
+                       candidate=candidate, company=company, selection=selection)
     cap = int(getattr(cfg, "v3_auto_report_max_per_day", 5) or 0)
     if await queued_today(db, now=now, exclude_run_id=run.id) >= cap:
         return _record(STATE_SKIPPED, REASON_DAILY_CAP, run=run, now=now,
-                       candidate=candidate, company=company, daily_cap=cap)
+                       candidate=candidate, company=company, daily_cap=cap,
+                       selection=selection)
 
     mode = research_mode(cfg)
     try:
@@ -314,13 +372,18 @@ async def _decide(
                   run_id=run.id, candidate_id=candidate.id, company_id=company.id,
                   error_type=type(exc).__name__)
         return _record(STATE_FAILED, f"submit_error:{type(exc).__name__}", run=run,
-                       now=now, candidate=candidate, company=company)
-    record = _record(STATE_QUEUED, None if created else REASON_JOINED, run=run, now=now,
+                       now=now, candidate=candidate, company=company, selection=selection)
+    fallback = selection == REASON_INDUSTRY_FALLBACK
+    reason = (REASON_INDUSTRY_FALLBACK if fallback
+              else None if created else REASON_JOINED)
+    record = _record(STATE_QUEUED, reason, run=run, now=now,
                      candidate=candidate, company=company,
                      job_id=str(envelope.get("job_id")) if envelope.get("job_id") else None,
-                     research_mode=mode)
+                     research_mode=mode, selection=selection)
+    if fallback and not created:
+        record["joined_in_flight_job"] = True
     _point_candidate_at_job(candidate, envelope, mode=mode, now=now)
-    note = await _shortlist(db, company, run)
+    note = await _shortlist(db, company, run, selection=selection)
     if note:
         record["note"] = note
     return record
@@ -384,6 +447,7 @@ __all__ = [
     "REASON_DAILY_CAP",
     "REASON_DURABLE_OFF",
     "REASON_FRESH_REPORT",
+    "REASON_INDUSTRY_FALLBACK",
     "REASON_JOINED",
     "REASON_NO_ELIGIBLE",
     "REASON_OPTED_OUT",
@@ -397,7 +461,9 @@ __all__ = [
     "fresh_report",
     "idempotency_key",
     "is_eligible",
+    "is_industry_fallback",
     "pick_candidate",
+    "pick_fallback_candidate",
     "queued_today",
     "research_mode",
 ]

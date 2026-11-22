@@ -10899,6 +10899,7 @@ Both are right for what they were built against: free text from web pages and LL
 - Every completed thesis run says what happened to its best candidate, on the run detail of both Discovery pages, with a link to the job or the report.
 - Up to five paid research runs a day can start without a click. The cap and the fresh-report link are the spend controls. Setting the flag off stops it entirely.
 - The output is still an internal draft: human review and the publication gate are unchanged.
+- **Amended by ADR-115 (V3.21.1b).** When no candidate is fully eligible, the best-ranked candidate whose hard size is `pass`, that is not size-unverified or novelty-held, and whose only non-pass hard constraint is industry `unknown` (never `fail`) is queued with reason `industry_unverified_fallback` (`selection` on the record). The report then verifies the segment exposure itself. Every other bound is unchanged.
 
 ## ADR-111: Live Industry Data From Ember, IRENA and EIA Into the Macro Store; IEA and FERC Assessed, Not Built
 
@@ -11006,6 +11007,36 @@ A grid company's report had no quantified view of its market. The registry's `ei
 - Licence: all outlets are copyright publishers. The platform holds only what each syndicates in its feed, capped; the report links to the article.
 
 ---
+
+## ADR-115: Segment Precision and the 10-K Business Section as Exposure Evidence
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 corrective slice 21.1b)
+**Trigger:** staging run 914e8362 (2026-11-22), thesis "US small-cap cybersecurity software companies with growing recurring revenue, under-followed by analysts", web search off, model recall on.
+
+### Findings
+- `segment_terms` came out `['cybersecurity', 'recurring', 'followed', 'analysts']`: the last three are words of the qualifier clauses. The industry constraint is hard on `requested = segment_terms` and `verify_industry` passes on ANY verified term, so "recurring revenue" on an issuer page would have passed a non-cyber company.
+- `segment_synonyms` kept "enterprise software": the expansion filter anchored on the raw text, and "software" is a generic noun.
+- Six US small caps (OSPN, RPD, INTZ, TLS, REKR, AUID) passed size from their SEC cover page, but their industry stayed `unknown`: exposure evidence was only the issuer's own pages (from a recall lead URL) or web search. Every one stayed `eligible_unverified`, and the auto-report was `skipped / no_eligible_candidate`.
+
+### Decision
+1. **Qualifier cut.** `extract_segment_terms` cuts the text at the first qualifier connective (`with`, `having`, `that`, `which`, `who`, `whose`, `where`, `showing`, `benefiting`/`benefitting`, `driven by`, `thanks to`, `due to`, `exposed to`, and hyphen forms such as `under-followed`, `under-researched`, `well-covered`, `under-the-radar`) once a specific content word precedes it. With none before it ("companies with exposure to cybersecurity"), it is not a cut. `in`, `on`, `for` and `focused on` never cut ("OT security for utilities").
+2. **Descriptor words** are dropped like size and style words: recurring, followed, analyst(s), coverage, covered, researched, overlooked, neglected, ignored, obscure, lesser, known, unknown, mispriced, tailwind(s), headwind(s), spending, demand, backlog(s) and similar. "pipeline" and "government" are not on the list ("gas pipeline", "government IT services" are segments); the clause cut covers them.
+3. **Synonym anchor.** A proposal is kept only when it shares a word with the segment TERMS, never the raw text, and neither side counts a generic noun, a descriptor or a stop-word (`SEGMENT_NON_ANCHOR_WORDS`). The containment rule at ≥4 letters and the bare-fragment rule stay. "enterprise software" is dropped for "cybersecurity". "information security", "network security" and "it security" are kept. A term made only of generic words anchors on those words.
+4. **10-K business section** (`app/services/discovery/sec_business.py`, flag `V3_DISCOVERY_SEC_BUSINESS_EXPOSURE_ENABLED`, default on). In screening, after the issuer-site step, an identity with an SEC CIK (directory row or issuer record) and still no affirmative verified exposure gets:
+   - the newest 10-K / 10-K405 / 10-KT / 20-F from `data.sec.gov/submissions` (no amendments, filed within 800 days);
+   - its primary document from `www.sec.gov/Archives`, first 3 MB;
+   - both through `safe_fetch_document`, pinned to the one SEC host with the platform's declared User-Agent;
+   - the "Item 1. Business" section (20-F: "Item 4. Information on the Company"): the heading with the longest span to the next item, so the table of contents is skipped, cut to its first 15,000 characters. Without a heading, the 40,000 characters after the cover;
+   - `exposures_from_text`, tier `T1_primary_filing`, verified.
+   40-F is skipped (its business description is an exhibit). At most two GETs per screened issuer, cached per CIK per UTC day, counted in the run's URL fetch consumption.
+5. **Auto-report fallback.** See the ADR-110 amendment: `industry_unverified_fallback`, never for an industry `fail` or an unverified size.
+
+### Consequences
+- A qualifier no longer becomes a hard industry term, and the model cannot widen a segment through a generic noun.
+- US small caps can pass the segment check from their own annual report without web search. This is the registrant's statement to its regulator, which is the strongest description of the business the platform has.
+- The 15,000-character bound is a trade-off. Item 1 later describes regulation and human capital, where nearly every company names "cybersecurity". Reading only the overview and products lowers that false-pass risk. It also means a company whose segment is named only deep in Item 1 stays `unknown`.
+- The term cut is still a word list, not a grammar. The chips in the preview show the owner what will be checked.
+- No migration. The flag off restores the issuer-pages-and-web behaviour.
 
 ## ADR-116: The Electricity Classifier Reads the 10-K's Business Section, Not Its Header
 
