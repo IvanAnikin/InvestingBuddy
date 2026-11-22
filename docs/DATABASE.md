@@ -1524,8 +1524,7 @@ Downgrade drops the column; the research job it points at (`research_jobs`) is u
 
 ## Migration 064 — research coverage index (V3.21 slice 21.7, ADR-114)
 
-Written on `down_revision = "062"`. **Integration:** it is re-pointed to `"063"` when
-slice 21.3 (migration 063) lands. No user data; no page body; no claim.
+Written on `down_revision = "063"`. No user data; no page body; no claim.
 
 | Change | Columns / constraint | Rules |
 |---|---|---|

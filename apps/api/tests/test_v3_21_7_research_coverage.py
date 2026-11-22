@@ -663,8 +663,7 @@ def test_migration_064_shape_and_single_head() -> None:
 
     text = Path("alembic/versions/064_add_research_coverage_pages.py").read_text()
     assert 'revision: str = "064"' in text
-    assert 'down_revision: str | None = "062"' in text
-    assert '# integration: re-point to "063" when slice 21.3 lands' in text
+    assert 'down_revision: str | None = "063"' in text
     for needle in ("research_coverage_pages", "uq_research_coverage_pages_url",
                    "ck_research_coverage_pages_page_kind",
                    "ck_research_coverage_pages_discovered_via", "name_key", "lastmod",
