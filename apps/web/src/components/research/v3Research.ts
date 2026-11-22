@@ -57,6 +57,10 @@ import { type TranslatedCitation, readTranslatedCitations } from "./translatedCi
 import { type FinancialDepthBlock, readFinancialDepthBlock } from "./financialDepth";
 import { type ObscurityBlock, readObscurityBlock } from "./obscurity";
 import { type RealAssetBlock, readRealAssetBlock } from "./realAsset";
+import {
+  type QualificationEvidenceBlock,
+  readQualificationEvidenceBlock,
+} from "./qualificationEvidence";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
 import { type DemandTriangulationBlock, readDemandTriangulationBlock } from "./demandTriangulation";
 
@@ -509,6 +513,10 @@ export type DomainSection = SectionHead & {
       and certificates from cited findings. Null unless the company is in the electricity
       stack, and on older reports. */
   realAsset: RealAssetBlock | null;
+  /** V3.21 slice 21.5 (competitive_position): certificates by body with their
+      verification states and STL membership. Null when off, outside the electricity
+      stack, and on older reports. */
+  qualificationEvidence: QualificationEvidenceBlock | null;
   /** V3.20 slice 6.3 (valuation_context): the obscurity score with its components.
       Null when off, and on older reports. */
   obscurity: ObscurityBlock | null;
@@ -1146,6 +1154,7 @@ function readDomainSection(
     earningsTrackRecord: readEarningsTrackRecordBlock(r.earnings_track_record),
     electricityLayers: readElectricityLayersBlock(r.electricity_layers),
     realAsset: readRealAssetBlock(r.real_asset),
+    qualificationEvidence: readQualificationEvidenceBlock(r.qualification_evidence),
     obscurity: readObscurityBlock(r.obscurity),
     changeEvents: readChangeEventsBlock(r.change_events),
     enterpriseValue: readEnterpriseValueBlock(r.enterprise_value),

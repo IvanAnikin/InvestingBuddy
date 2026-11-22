@@ -15,6 +15,7 @@ import { MarketImpliedSection } from "@/components/research/report/MarketImplied
 import { FinancialDepthSection } from "@/components/research/report/FinancialDepthSection";
 import { ObscuritySection } from "@/components/research/report/ObscuritySection";
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
+import { QualificationEvidenceSection } from "@/components/research/report/QualificationEvidenceSection";
 import { ResearchVerdictSection } from "@/components/research/report/ResearchVerdictSection";
 import { ValuationRangeSection } from "@/components/research/report/ValuationRangeSection";
 import { SelfCritiqueSection } from "@/components/research/report/SelfCritiqueSection";
@@ -825,6 +826,7 @@ function DomainBody({
       {section.peerTable.length > 0 && <PeerTable rows={section.peerTable} />}
       <ElectricityLayersSection block={section.electricityLayers} />
       <RealAssetSection block={section.realAsset} />
+      <QualificationEvidenceSection block={section.qualificationEvidence} />
       <RelationshipSection block={section.relationships} company="This company" />
       <DemandTriangulationSection block={section.demandTriangulation} />
       <PassiveOwnershipSection block={section.passiveOwnership} />

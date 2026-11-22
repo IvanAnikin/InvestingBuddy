@@ -1480,6 +1480,13 @@ class Settings(BaseSettings):
     # its held description and segment revenue facts, and add the "Electricity layers"
     # block to the report (business_model section). No external call.
     v3_electricity_classifier_enabled: bool = True
+    # V3.21 slice 21.5 (ADR-112): give each certificate in the real-asset block a
+    # verification state (issuer_claim / third_party_corroborated / body_unrecognised /
+    # unverified) against the STL members list and a curated list of labs, and add the
+    # "Qualification evidence" block (competitive_position section). Reads held documents;
+    # refreshes the STL members page at most monthly (one GET, stl-liaison.org); with
+    # V3_WEB_SEARCH_ENABLED, at most 5 body-host searches per run. Off -> report unchanged.
+    v3_certification_bodies_enabled: bool = True
     # V3.20 slice 6.3: the obscurity score block (valuation_context section) from held
     # data — analyst count, N-PORT passive %, theme-fund holders, sector mis-tag, filing
     # language. No external call unless the news-volume component is switched on.

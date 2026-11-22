@@ -715,6 +715,15 @@ cover-page share count (latest 10-Q / 10-K, `data.sec.gov`) × the latest EODHD 
 already set on staging; without a key nothing changes. No migration. Each discovery candidate costs one more SEC read and
 one EODHD `/eod` call. Rollback: set the flag to `false`, and the float floor is used alone, as before.
 
+### Certification bodies (V3.21 slice 21.5, ADR-112)
+
+`V3_CERTIFICATION_BODIES_ENABLED` (default `true`) gives every certificate in the real-asset block a verification state and
+adds `competitive_position.qualification_evidence`. No migration, no key. Network: at most one GET of
+`https://stl-liaison.org/web/03_Members.php` per API process per 30 days (a failed read is retried after a day; a changed
+layout keeps the last good list or the bundled Issue 59 snapshot). With `V3_WEB_SEARCH_ENABLED`, at most 5 `include_domains`
+searches per run on the bodies' own hosts plus one page read each; with web search off (staging today) only held documents
+are checked and the block says so. Rollback: set the flag to `false`; reports are as before.
+
 ### Entity master backfill (operator; prerequisite for every entity-based V3.20 step)
 
 `V3_ENTITY_MASTER_ENABLED` alone links nothing. `backfill_entities_from_companies` (V3.2

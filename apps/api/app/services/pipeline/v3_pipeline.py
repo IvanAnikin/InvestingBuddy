@@ -1418,6 +1418,8 @@ async def _run(
         passive_ownership = await _passive_ownership_section(session, company, cfg=cfg)
         change_events = await _change_events_section(session, company, cfg=cfg)
         real_asset = await _real_asset_section(session, run, electricity_layers)
+        real_asset, qualification_evidence = await _certification_section(
+            session, company, cfg=cfg, real_asset=real_asset)
         enterprise_value = await _enterprise_value_section(
             session, company, cfg=cfg, observation=size_observation, real_asset=real_asset)
         relationships = await _relationship_section(
@@ -1465,6 +1467,7 @@ async def _run(
             earnings_track_record=earnings_track_record,
             electricity_layers=electricity_layers,
             real_asset=real_asset,
+            qualification_evidence=qualification_evidence,
             enterprise_value=enterprise_value,
             financial_depth=financial_depth,
             layer_peers=layer_peers,
@@ -1885,6 +1888,19 @@ async def _real_asset_section(
         return None
 
 
+async def _certification_section(
+    session: Any, company: Any, *, cfg: Any, real_asset: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """V3.21 slice 21.5 — verification states on the real-asset certificates and the
+    competitive_position "Qualification evidence" block. Flag off or no real-asset block:
+    ``(real_asset, None)`` and the report is unchanged. Never raises."""
+    if real_asset is None or not getattr(cfg, "v3_certification_bodies_enabled", False):
+        return real_asset, None
+    from app.services.certification.verification import certification_step
+
+    return await certification_step(session, company, real_asset, cfg=cfg)
+
+
 async def _passive_ownership_section(
     session: Any, company: Any, *, cfg: Any,
 ) -> dict[str, Any] | None:
@@ -1950,6 +1966,7 @@ async def _professional_report(
     earnings_track_record: dict[str, Any] | None = None,
     electricity_layers: dict[str, Any] | None = None,
     real_asset: dict[str, Any] | None = None,
+    qualification_evidence: dict[str, Any] | None = None,
     obscurity: dict[str, Any] | None = None,
     change_events: dict[str, Any] | None = None,
     enterprise_value: dict[str, Any] | None = None,
@@ -2158,6 +2175,7 @@ async def _professional_report(
         earnings_track_record=earnings_track_record,
         electricity_layers=electricity_layers,
         real_asset=real_asset,
+        qualification_evidence=qualification_evidence,
         obscurity=obscurity,
         change_events=change_events,
         enterprise_value=enterprise_value,

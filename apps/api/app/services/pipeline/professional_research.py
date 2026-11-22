@@ -203,6 +203,10 @@ class ReportInputs:
     #: V3.20 slice 5.4 — the electricity real-asset block (``electricity.real_asset``);
     #: ``None`` leaves the report unchanged.
     real_asset: Mapping[str, Any] | None = None
+    #: V3.21 slice 21.5 — certificates by body with their verification states
+    #: (``certification.verification.qualification_evidence_block``); ``None`` leaves the
+    #: report unchanged.
+    qualification_evidence: Mapping[str, Any] | None = None
     #: V3.20 slice 6.3 — the obscurity score (``obscurity_step.obscurity_section``);
     #: ``None`` leaves the report unchanged.
     obscurity: Mapping[str, Any] | None = None
@@ -865,6 +869,9 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only for a company classified into the electricity stack.
         operations = next(s for s in sections if s["key"] == "operations")
         operations["real_asset"] = dict(inputs.real_asset)
+    if inputs.qualification_evidence:
+        # Only when the certification check is on, so every other report is unchanged.
+        competitive["qualification_evidence"] = dict(inputs.qualification_evidence)
     if inputs.obscurity:
         # Only when the score is on, so every other report is byte-identical.
         valuation_section = next(s for s in sections if s["key"] == "valuation_context")
