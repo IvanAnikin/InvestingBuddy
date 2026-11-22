@@ -68,6 +68,10 @@ const ALLOWED_PREFIXES = [
   "/api/v1/portfolios",
   // V3.20 slice 8.3 — precedent transactions review queue.
   "/api/v1/admin/precedent-transactions",
+  // V3.21.2 — team Shortlist / Watchlist and the monitoring signal feed (ADR-109).
+  // Two routers, two prefixes: segment matching is exact.
+  "/api/v1/watchlists",
+  "/api/v1/monitoring",
 ];
 
 function isAllowed(backendPath: string): boolean {

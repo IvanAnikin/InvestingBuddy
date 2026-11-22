@@ -10830,3 +10830,44 @@ Both are right for what they were built against: free text from web pages and LL
   - STL members without a curated entry (JSTC, PEHLA, SATS, STLNA, VEIKI, ZKU, ESEF ASEFA) have no host, so they are checked against held documents only.
   - The in-process store is lost on restart; the bundled snapshot covers that until 21.2 lands.
 
+## ADR-109: Periodic Tasks on the Durable Worker; a Daily Monitoring Pass over the Team Lists
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 slice 21.2; resolves [Open Decision #15](v3/OPEN_DECISIONS.md#15-monitoring-cadence) for monitoring)
+**Trigger:** live finding F4 (spec `docs/v3.21-spec.md` §0, §3): monitoring was engine-only. `detect_for_company` had no caller, nothing scheduled it, and there was no watchlist API or UI. The owner asked for a shortlist and a watchlist that are watched.
+
+### Decision
+1. **A periodic-task registry rides the durable worker's existing sweep hook** (every 300 s, `worker.register_sweep_hook`). Code: `app/services/scheduling/periodic.py`.
+   - No new process, cron or scheduler dependency.
+   - A task is `PeriodicTask(key, interval, job_type, flag_attr, payload_fn)`.
+   - The interval is one of DAILY, WEEKLY or SIX_HOURLY. Each maps to a UTC bucket: `2026-11-22`, `2026-W47` or `2026-11-22T06`.
+2. **A task runs at most once per bucket.** Two guards:
+   - the bucket is claimed in `source_poll_state` (migration 062) with a guarded UPDATE (`last_started_at IS NULL OR last_started_at < bucket_start`). Only one process sees `rowcount = 1`;
+   - the job's idempotency key is `<task key>:<bucket>`, and a job already on record for that key, in any status, is never enqueued again.
+
+   So two worker restarts on the same day, or two processes, give one pass. This was checked on PostgreSQL, including two concurrent sweeps. If the enqueue fails, the claim is released and the error type is recorded in `last_error`.
+3. **A due task is enqueued as an ordinary durable job.** It runs under a lease, is retried on transient failures and shows in `research_jobs`. `periodic_job_handler(job_type)` registers the handler and stamps `last_ok_at` or `last_error` (the exception type only, never a payload).
+4. **Switches.**
+   - `V3_PERIODIC_TASKS_ENABLED` (default on) is the master switch. Each task also has its own flag.
+   - Nothing runs unless `V3_DURABLE_JOBS_ENABLED` is on, because otherwise there is no worker.
+   - Later slices register their own tasks with `register_periodic_task`: trade press (6-hourly), coverage refresh (weekly), industry data (weekly).
+5. **Monitoring cadence: daily.** The `monitoring_pass` task (flag `V3_MONITORING_PASS_ENABLED`, default on) covers every company on an active list, at most 200 companies and 25 signals per company. For each company it runs:
+   - `detect_for_company` + `persist_signals`;
+   - two new kinds read from the latest `company_research_records` row:
+     - `missing_information`: a verdict cap that still blocks `SHORTLIST`. `relates_to_question_key` is the cap key, and the signal is keyed on the record.
+     - `catalyst_window`: a dated item in the record within 30 days, keyed on the item and its date.
+
+   These two kinds are raised once per key in any status, so an acknowledged gap is not raised again every morning. The handler lives in the `monitoring` package, and the guard test still asserts that nothing outside that package calls the detector.
+6. **The pass never starts research.** A material signal shows a "Re-run research" link for a human (spec §11).
+7. **The two team lists, `Shortlist` and `Watchlist`, are created on first use with `owner` NULL.** They are one research space for the allow-listed admins.
+   - A partial unique index (`ux_watchlists_team_name`) keeps one list per name. The `(owner, name)` index does not hold for NULL owners on PostgreSQL.
+   - Each entry records `added_by_hash` (SHA-256 of the proxied admin e-mail, as for portfolios) and `source` (`manual` | `discovery_candidate` | `report` | `auto_report`).
+   - `ensure_team_list` and `add_to_team_list` are idempotent. Slice 21.3 uses them for the auto-report.
+8. **API.** The admin-only routes are `/api/v1/watchlists` and `/api/v1/monitoring`. They sit behind backend Basic Auth, the admin-allowlisted proxy and the proxied admin identity, and are never public. `POST /monitoring/run` is bounded:
+   - with durable jobs on, it enqueues a job;
+   - otherwise it runs inline.
+9. **`V3_MONITORING_ENABLED` stays `false` in code and is set `true` in staging.** The pass only reads held records and makes no network call. It is still a new write path into `monitoring_signals`, so it is switched on per environment, like the other V3 flags. With the flag off, the pass observes nothing and says so.
+
+### Consequences
+- Open Decision #15 is resolved for monitoring: daily. Event-driven triggers, such as reacting to a new filing the moment it is held, remain possible later as another periodic task or an observer.
+- `source_poll_state` gives the later source pollers somewhere to keep an ETag, a Last-Modified value and a small cursor.
+- Migration 062 is additive and reversible. Its downgrade refuses while any signal of a new kind exists, because signals are history.

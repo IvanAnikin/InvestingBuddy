@@ -3507,6 +3507,137 @@ function handleMockGithub(req, res, url, path) {
   return false;
 }
 
+// ── V3.21.2 — team watchlists and monitoring signals ─────────────────────
+const WATCHLIST_REPORT_ID = "00000000-0000-0000-0000-0000000021a2";
+const WL_SHORTLIST_ID = "21a20000-0000-4000-8000-000000000001";
+const WL_WATCHLIST_ID = "21a20000-0000-4000-8000-000000000002";
+const WL_COMPANY_ID = "21a20000-0000-4000-8000-0000000000c1";
+const WL_ENTRY_ID = "21a20000-0000-4000-8000-0000000000e1";
+const WL_SIGNAL_GAP = "21a20000-0000-4000-8000-0000000000a1";
+const WL_SIGNAL_DOC = "21a20000-0000-4000-8000-0000000000b2";
+
+function wlSignal(id, kind, summary, extra = {}) {
+  return {
+    id,
+    company_id: WL_COMPANY_ID,
+    kind,
+    summary,
+    status: "open",
+    relates_to_question_key: null,
+    relates_to_run_id: null,
+    source_ref: null,
+    detail: {},
+    observed_at: "2026-11-22T03:00:00Z",
+    acknowledged_at: null,
+    material: true,
+    ...extra,
+  };
+}
+
+const WL_SIGNALS = [
+  wlSignal(
+    WL_SIGNAL_GAP,
+    "missing_information",
+    "The latest research record (as of 2026-11-01) still lists a blocking gap: no computed valuation range (ADR-099 fails closed).",
+    { relates_to_question_key: "valuation_insufficient" },
+  ),
+  wlSignal(
+    WL_SIGNAL_DOC,
+    "new_document",
+    "A document not seen at the last run was retrieved: https://www.sec.gov/Archives/powl-10q.htm",
+    { material: false },
+  ),
+];
+
+function wlSummary(id, name, entries, open) {
+  return {
+    id,
+    name,
+    description: `Team ${name.toLowerCase()}.`,
+    is_active: true,
+    is_team_list: true,
+    created_at: "2026-11-22T00:00:00Z",
+    entry_count: entries,
+    open_signal_count: open,
+  };
+}
+
+function handleWatchlists(req, res, url, path) {
+  if (path === "/api/v1/watchlists" && req.method === "GET") {
+    return send(res, 200, [
+      wlSummary(WL_SHORTLIST_ID, "Shortlist", 1, 2),
+      wlSummary(WL_WATCHLIST_ID, "Watchlist", 0, 0),
+    ]);
+  }
+  const detail = /^\/api\/v1\/watchlists\/([^/]+)$/.exec(path);
+  if (detail && req.method === "GET") {
+    if (detail[1] === WL_SHORTLIST_ID) {
+      return send(res, 200, {
+        ...wlSummary(WL_SHORTLIST_ID, "Shortlist", 1, 2),
+        entries: [
+          {
+            id: WL_ENTRY_ID,
+            company_id: WL_COMPANY_ID,
+            company: { id: WL_COMPANY_ID, ticker: "POWL", exchange: "NASDAQ", name: "Powell Industries" },
+            note: "rank 1 of the grid run",
+            source: "discovery_candidate",
+            added_at: "2026-11-20T10:00:00Z",
+            added_by_hash: "0".repeat(64),
+            latest_record: {
+              id: "21a20000-0000-4000-8000-0000000000d1",
+              research_run_id: null,
+              as_of: "2026-11-01",
+              verdict: "WATCHLIST",
+              verdict_meaning: "The thesis is plausible but the evidence is incomplete.",
+              composite_score: 3.2,
+            },
+            open_signals: WL_SIGNALS,
+          },
+        ],
+      });
+    }
+    if (detail[1] === WL_WATCHLIST_ID) {
+      return send(res, 200, { ...wlSummary(WL_WATCHLIST_ID, "Watchlist", 0, 0), entries: [] });
+    }
+    return send(res, 404, { detail: "watchlist not found" });
+  }
+  const entries = /^\/api\/v1\/watchlists\/([^/]+)\/entries$/.exec(path);
+  if (entries && req.method === "POST") {
+    readJsonBody(req).then((body) =>
+      send(res, 201, {
+        entry_id: "21a20000-0000-4000-8000-0000000000e9",
+        watchlist_id: entries[1],
+        company_id: body.company_id ?? WL_COMPANY_ID,
+        created: true,
+      }),
+    );
+    return;
+  }
+  if (/^\/api\/v1\/watchlists\/[^/]+\/entries\/[^/]+$/.test(path) && req.method === "DELETE") {
+    res.writeHead(204);
+    return res.end();
+  }
+  if (path === "/api/v1/monitoring/signals" && req.method === "GET") {
+    const status = url.searchParams.get("status") ?? "open";
+    return send(res, 200, status === "open" || status === "all" ? WL_SIGNALS : []);
+  }
+  const ack = /^\/api\/v1\/monitoring\/signals\/([^/]+)\/acknowledge$/.exec(path);
+  if (ack && req.method === "POST") {
+    const sig = WL_SIGNALS.find((s) => s.id === ack[1]);
+    if (!sig) return send(res, 404, { detail: "signal not found" });
+    return send(res, 200, { ...sig, status: "acknowledged", acknowledged_at: "2026-11-22T09:00:00Z" });
+  }
+  if (path === "/api/v1/monitoring/run" && req.method === "POST") {
+    return send(res, 200, {
+      mode: "inline",
+      job_id: null,
+      created: null,
+      result: { companies: 1, persisted: 2, reason: null },
+    });
+  }
+  return send(res, 404, { detail: "Not found (mock backend)" });
+}
+
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -3520,6 +3651,13 @@ const server = createServer((req, res) => {
     );
     if (handled) return;
     return send(res, 404, { message: "Not Found (mock github)" });
+  }
+
+  // V3.21.2 — team watchlists and monitoring (apps/api watchlists.py). STATELESS
+  // fixtures: the suite runs fully parallel, so a spec asserts on the request the
+  // page sent (page.route + fallback) rather than on state held here.
+  if (path.startsWith("/api/v1/watchlists") || path.startsWith("/api/v1/monitoring")) {
+    return handleWatchlists(req, res, url, path);
   }
 
   if (path === "/health") {
@@ -3749,6 +3887,11 @@ const server = createServer((req, res) => {
     }
     if (rid === MARKDOWN_REPORT_ID) {
       return send(res, 200, mockMarkdownReport(rid));
+    }
+    if (rid === WATCHLIST_REPORT_ID) {
+      // V3.21.2 — a report that names its company, so the header offers the
+      // "Add to shortlist / watchlist" buttons.
+      return send(res, 200, { ...mockReport(rid), company_id: WL_COMPANY_ID });
     }
     return send(res, 200, mockReport(rid));
   }

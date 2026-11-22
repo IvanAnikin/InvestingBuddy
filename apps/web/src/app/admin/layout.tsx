@@ -16,6 +16,7 @@ const navLinks: NavLink[] = [
   { href: "/admin/companies/new", label: "Add Company" },
   { href: "/admin/analysis", label: "Run Analysis" },
   { href: "/admin/discovery", label: "Discovery" },
+  { href: "/admin/watchlists", label: "Shortlist & watchlist" },
   { href: "/admin/reports", label: "Draft Reports" },
   { href: "/admin/backtesting", label: "Backtesting" },
   { href: "/admin/sources", label: "Sources" },

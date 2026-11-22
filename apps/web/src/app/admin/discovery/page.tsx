@@ -46,6 +46,7 @@ import {
 import SegmentTermChips from "@/components/research/discovery/SegmentTermChips";
 import GlassCard from "@/components/ui/GlassCard";
 import SafetyBanner from "@/components/ui/SafetyBanner";
+import AddToListButtons from "@/components/watchlists/AddToListButtons";
 import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 
 // Mirrors the backend DISCOVERY_MAX_UNIVERSE_SIZE default (client-side preview
@@ -3370,6 +3371,7 @@ export default function DiscoveryPage() {
                     <th className="px-3 py-2.5 text-left font-medium">Source</th>
                     <th className="px-3 py-2.5 text-left font-medium">Missing</th>
                     <th className="px-3 py-2.5 text-left font-medium">Review</th>
+                    <th className="px-3 py-2.5 text-left font-medium">Lists</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -3466,11 +3468,21 @@ export default function DiscoveryPage() {
                             <StatusPill label="required" color="red" />
                           )}
                         </td>
+                        <td className="px-3 py-3">
+                          <AddToListButtons
+                            ticker={c.ticker}
+                            exchange={c.exchange}
+                            source="discovery_candidate"
+                            note={`Discovery run ${c.discovery_run_id}`}
+                            compact
+                            testIdPrefix="candidate-add"
+                          />
+                        </td>
                       </tr>
                       {expandedId === c.id && (
                         <tr>
                           <td
-                            colSpan={selectedRun.mode === "thesis" ? 15 : 13}
+                            colSpan={selectedRun.mode === "thesis" ? 16 : 14}
                             className="bg-black/20 p-0"
                           >
                             <CandidateDetailPanel candidateId={c.id} />

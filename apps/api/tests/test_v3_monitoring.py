@@ -2,9 +2,9 @@
 
 TWO THINGS THIS PHASE MUST NOT DO
 =================================
-1. **Schedule itself.** How often to check is OPEN DECISION #15, user-owned and
-   unresolved. Guessing a cadence would answer a question asked of somebody else *and*
-   start spending on a path nobody approved.
+1. **Schedule itself.** The detector imports no scheduler. Since V3.21.2 (ADR-109,
+   resolving OPEN DECISION #15 for monitoring) its only caller is the daily
+   ``monitoring_pass`` in the same package; nothing outside the package calls it.
 2. **Become a feed.** "Pandora filed something" is a feed. An issuer with no prior
    research therefore produces **no signals**: there is nothing for a change to be
    relative to.
@@ -128,8 +128,9 @@ async def _document(session, company, *, retrieved: datetime, content_hash: str)
 
 class TestNothingSchedulesIt:
     def test_no_scheduler_references_the_detector(self) -> None:
-        """OPEN DECISION #15 is user-owned. Guessing a cadence would answer a question
-        asked of somebody else and start spending on a path nobody approved."""
+        """V3.21.2 (ADR-109) resolved OPEN DECISION #15 for monitoring with ONE caller:
+        the daily ``monitoring_pass`` inside the ``monitoring`` package. Nothing else —
+        no API route, no generic scheduler, no other domain — may call the detector."""
         from pathlib import Path
 
         root = Path("app")
@@ -286,8 +287,9 @@ class TestSignalsAreObservationsNotConclusions:
         with pytest.raises(ValueError, match="filter a watchlist on"):
             DetectedSignal(kind="feels_important", signal_key="k", summary="x")
 
-    def test_the_kind_vocabulary_is_closed_at_twelve(self) -> None:
-        assert len(SIGNAL_KINDS) == 12  # six from V3.9, six from V3.20 slice 9.4
+    def test_the_kind_vocabulary_is_closed_at_fourteen(self) -> None:
+        # six from V3.9, six from V3.20 slice 9.4, two from V3.21.2 (migration 062)
+        assert len(SIGNAL_KINDS) == 14
 
     async def test_a_signal_summary_says_what_changed_not_what_it_means(
         self, session

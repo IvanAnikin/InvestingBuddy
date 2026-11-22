@@ -812,6 +812,23 @@ to reproduce, so keep it off on anything public). The CEA download links change 
 month: pass the new report with `--file` and `--edition YYYY-MM`. OCCTO publishes once a
 year (late March).
 
+### Periodic tasks and the monitoring pass (V3.21 slice 21.2, ADR-109 — not yet deployed)
+
+Needs migration **062** (`source_poll_state`, two more `monitoring_signals` kinds, and
+`watchlist_entries.added_by_hash` / `source`).
+
+| Flag | Default | Effect |
+|---|---|---|
+| `V3_PERIODIC_TASKS_ENABLED` | `true` | Master switch for the periodic-task registry on the durable worker's sweep (every 300 s). Inert unless `V3_DURABLE_JOBS_ENABLED`. |
+| `V3_MONITORING_PASS_ENABLED` | `true` | The daily `monitoring_pass` task over the team Shortlist / Watchlist (≤ 200 companies × 25 signals; never starts research). |
+| `V3_MONITORING_ENABLED` | `false` in code | The pass writes signals only when this is on. |
+
+**Staging step:** set `V3_MONITORING_ENABLED=true` on `ib-stg-api` (durable jobs are
+already on there). No process, cron or key is added. To check it, look at
+`source_poll_state`: `monitoring_pass` gets one `last_started_at` per UTC day, and
+`last_ok_at` or `last_error` (an exception type only). A manual pass is
+`POST /api/v1/monitoring/run` (admin only).
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

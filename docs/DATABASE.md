@@ -1486,6 +1486,28 @@ Checked on PostgreSQL 16:
 - downgrade to 060 drops the table;
 - re-upgrade.
 
+## Migration 062 — periodic-task state, two signal kinds, entry provenance (V3.21 slice 21.2, ADR-109)
+
+Written on `down_revision = "061"`. **Integration:** it is re-pointed to `"062"` when
+slice 21.3 (migration 062) lands. No user data beyond an e-mail hash.
+
+| Change | Columns / constraint | Rules |
+|---|---|---|
+| new `source_poll_state` | `task_key` (text PK), `last_started_at`, `last_ok_at`, `last_error` (text), `etag`, `last_modified`, `detail_json` (JSONB), `updated_at` | One row per periodic task. The registry claims a UTC bucket with a guarded UPDATE on `last_started_at`, so a task runs once per bucket across restarts and processes. `last_error` holds an exception type, never a payload. `etag` / `last_modified` / `detail_json` are for later source pollers. |
+| `monitoring_signals.kind` | `ck_monitoring_signals_kind` widened with `missing_information`, `catalyst_window` | 14 kinds, still closed (`detector.SIGNAL_KINDS`). |
+| `watchlist_entries` | `added_by_hash` (text, NULL), `source` (text, NULL; `ck_watchlist_entries_source`: `manual` \| `discovery_candidate` \| `report` \| `auto_report`) | `added_by_hash` is the SHA-256 of the proxied admin e-mail (as for portfolios), never the address. NULL for rows from before 062. |
+| `watchlists` | `ux_watchlists_team_name` unique on `name` WHERE `owner IS NULL` | One team list per name. The `(owner, name)` index does not hold for NULL owners on PostgreSQL. |
+
+Downgrade drops the index, the two columns and the table, and restores the 12-kind CHECK.
+It **refuses** while any signal of a new kind exists: signals are history.
+Checked on PostgreSQL 16:
+- upgrade;
+- downgrade to 061;
+- re-upgrade;
+- a refused downgrade with a `missing_information` row;
+- the team-name index and the source CHECK refusing bad rows;
+- two concurrent sweeps enqueueing one job.
+
 ## Rules
 
 - Every schema change requires an Alembic migration — no exceptions.

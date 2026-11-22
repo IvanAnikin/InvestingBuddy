@@ -111,6 +111,24 @@ def test_deep_field_review_paths_are_allowed() -> None:
         assert _is_allowed(path, prefixes), path
 
 
+def test_watchlist_and_monitoring_paths_are_allowed() -> None:
+    """V3.21.2 — the team lists and the signal feed, two separate routers."""
+    prefixes = _allowed_prefixes()
+    wid = "2f1c4a3e-0000-4000-8000-000000000000"
+    for path in (
+        "/api/v1/watchlists",
+        f"/api/v1/watchlists/{wid}",
+        f"/api/v1/watchlists/{wid}/entries",
+        f"/api/v1/watchlists/{wid}/entries/{wid}",
+        "/api/v1/monitoring/signals",
+        "/api/v1/monitoring/signals?status=open",
+        f"/api/v1/monitoring/signals/{wid}/acknowledge",
+        "/api/v1/monitoring/run",
+    ):
+        assert _is_allowed(path, prefixes), path
+    assert not _is_allowed("/api/v1/watchlists-export", prefixes)
+
+
 def test_a_sibling_prefix_does_not_cover_a_hyphenated_route() -> None:
     """Why the bug happened: "/api/v1/discovery" is NOT a prefix match here."""
     assert not _is_allowed("/api/v1/discovery-runs/x/field-review", ["/api/v1/discovery"])

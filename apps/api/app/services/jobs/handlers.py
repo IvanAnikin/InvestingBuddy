@@ -27,4 +27,10 @@ from app.services.jobs import (
     discovery_research_job,  # noqa: F401
 )
 
-__all__ = ["company_research_job", "discovery_research_job", "job_hook"]
+# V3.21.2 (ADR-109) — the periodic-task registry rides the worker's sweep; importing it
+# registers the sweep hook. The monitoring pass registers its handler and its DAILY task.
+from app.services.monitoring import pass_job  # noqa: F401
+from app.services.scheduling import periodic  # noqa: F401
+
+__all__ = ["company_research_job", "discovery_research_job", "job_hook", "pass_job",
+           "periodic"]

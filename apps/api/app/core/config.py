@@ -1086,14 +1086,24 @@ class Settings(BaseSettings):
     v3_issuer_traversal_enabled: bool = False
 
     # ── V3.9: monitoring, watchlists and change detection ───────────────────
-    # OFF by default, and NOTHING SCHEDULES IT. How often to check is OPEN
-    # DECISION #15, user-owned and unresolved: guessing a cadence would answer a
-    # question asked of somebody else and start spending on a path nobody
-    # approved. With the flag off, a detection pass observes nothing and says so.
+    # OFF by default in code. With the flag off, a detection pass observes nothing
+    # and says so. V3.21.2 (ADR-109) resolves OPEN DECISION #15 for monitoring: a
+    # DAILY monitoring pass runs on the durable worker's periodic-task registry
+    # (below). Staging turns this flag on (`V3_MONITORING_ENABLED=true`, see
+    # docs/DEPLOYMENT.md); the pass reads only what the platform already holds —
+    # no network call, and it never starts research by itself.
     v3_monitoring_enabled: bool = False
+    # V3.21.2 (ADR-109) — the periodic-task registry on the durable worker's sweep
+    # hook (`services/scheduling/periodic.py`). Master switch for every periodic
+    # task; each task also has its own flag. Inert unless V3_DURABLE_JOBS_ENABLED.
+    v3_periodic_tasks_enabled: bool = True
+    # V3.21.2 — the daily `monitoring_pass` periodic task over the team Shortlist and
+    # Watchlist. Writes signals only when V3_MONITORING_ENABLED is also on.
+    v3_monitoring_pass_enabled: bool = True
     # V3.20 slice 9.4: the six record-derived kinds (earnings, consensus revision,
     # passive ownership, relationships, competitor capacity, change events). Read only
-    # when V3_MONITORING_ENABLED is on; no network call, nothing scheduled (#15).
+    # when V3_MONITORING_ENABLED is on; no network call. Run by the daily monitoring
+    # pass (V3.21.2, ADR-109).
     v3_monitoring_research_signals_enabled: bool = True
 
     # ── V3.10: the V3 research pipeline at the real front door ──────────────

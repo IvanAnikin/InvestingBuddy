@@ -67,12 +67,13 @@ anything now.
 | [11](#11-private-data-external-model-policy) | open (judgement) | **RESOLVED → per-document rights metadata decides; fail closed when unknown** ([ADR-049](../DECISIONS.md)) |
 | [13](#13-model-cost-thresholds) / [14](#14-research-mode-budgets) | open (budget) | **RESOLVED → bounded technical defaults per research mode; no business budget now** ([ADR-052](../DECISIONS.md)) |
 | [16](#16-future-valuation-scope) | open | **RESOLVED → factual context and deterministic multiples only** |
+| [15](#15-monitoring-cadence) | open | **RESOLVED (monitoring) → a daily monitoring pass on the durable worker's periodic-task registry** ([ADR-109](../DECISIONS.md)) |
 
 Four remain open, and **none blocks any remaining work**:
 [10](#10-openfigi-usage-and-licensing) (OpenFIGI — FIGI stays representable, not
 obtainable), [12](#12-raw-page-and-document-retention) (retention TTL — the primitive
-ships unconfigured), [15](#15-monitoring-cadence) (V3.9 scheduling),
-[17](#17-ci-coverage-for-the-v3-branch) and [18](#18-fate-of-docsdata_source_inventorymd--xlsx).
+ships unconfigured), [17](#17-ci-coverage-for-the-v3-branch) and
+[18](#18-fate-of-docsdata_source_inventorymd--xlsx).
 
 ---
 
@@ -399,7 +400,10 @@ ships unconfigured), [15](#15-monitoring-cadence) (V3.9 scheduling),
 
 ## 15. Monitoring cadence
 
-- **Status:** OPEN — V3.9, far out
+- **Status:** **RESOLVED 2026-11-22 for monitoring → daily** (V3.21 slice 21.2,
+  [ADR-109](../DECISIONS.md)). A `monitoring_pass` periodic task runs once per UTC day on
+  the durable worker's sweep, over the team Shortlist and Watchlist, bounded at 200
+  companies × 25 signals, and never starts research. Was: OPEN — V3.9, far out.
 - **Options:** daily; weekly; event-driven on new filings; user-configured.
 - **Recommendation:** event-driven on new filings, plus a user-configurable
   scheduled refresh. Polling on a timer mostly re-reads unchanged documents.
