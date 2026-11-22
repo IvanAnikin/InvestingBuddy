@@ -11053,3 +11053,24 @@ At most 20 chunks are read, from the first 400 of the document.
 
 ### Consequences
 On the real POWL rows the reader selects chunks 14–33 and the layer classifier returns `distribution_grid_edge`. The electricity playbook, the real-asset block and the qualification-evidence block (ADR-112) now apply to POWL. No migration and no flag: this is a correction to ADR-105 §3.
+
+---
+
+## ADR-117: Growth From a US Filer's Own Annual XBRL; the Auto-Report Fallback Covers Growth
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 acceptance corrective)
+**Trigger:** Staging run `09567859` ("US small-cap cybersecurity software companies with growing recurring revenue"). Rapid7 and OneSpan had a verified size (`sec_shares_x_price`) and verified cybersecurity exposure, but "growing" was a hard growth check that nothing could verify. Both stayed `eligible_unverified`, and the run was not auto-reported.
+
+### Decision
+1. **Revenue pair from the issuer's own XBRL.** When the intent asks for growth and nothing verified it, a US listing gets a `revenue_pair` from `data.sec.gov` companyconcept:
+   - concepts, in this order: `RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`, `SalesRevenueNet`;
+   - only 10-K facts with a 350–380-day duration count;
+   - for each year, the latest filing wins;
+   - the two years must be consecutive;
+   - a newest year older than 550 days gives nothing (lapsed filer);
+   - tier T1, verified.
+   - Flag: `V3_DISCOVERY_SEC_REVENUE_GROWTH_ENABLED`, on by default. At most three small reads per candidate.
+2. **Auto-report fallback (ADR-115) also covers growth.** A candidate may fall back when industry and/or growth are `unknown`, size passed, and every other hard check passed. A report verifies both itself. A `fail` never falls back, and neither do listing, geography or size.
+
+### Consequences
+A "growing" thesis now uses the company's own reported revenue. A flat year counts against growth: on the real OneSpan payload, FY2025 against FY2024 is about 0%. No migration.

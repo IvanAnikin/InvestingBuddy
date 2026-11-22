@@ -397,6 +397,23 @@ async def growth_from_held_facts(session: Any, company_id: Any) -> list[cons.Gro
     return [observation] if observation is not None else []
 
 
+async def _sec_growth(identity: IdentityOutcome, *, cfg: Any, fetcher: Any) -> list[Any]:
+    """A US filer's annual revenue growth from its own XBRL when nothing else verified it."""
+    row = identity.directory_listing or {}
+    if row.get("directory") != "sec" or not _sec_growth_enabled(cfg):
+        return []
+    from app.services.discovery.directories import sec_revenue_growth
+
+    observation = await sec_revenue_growth(row.get("cik"), cfg=cfg, fetcher=fetcher)
+    return [observation] if observation is not None else []
+
+
+def _sec_growth_enabled(cfg: Any) -> bool:
+    if cfg is None:
+        from app.core.config import settings as cfg  # noqa: PLW0127
+    return bool(getattr(cfg, "v3_discovery_sec_revenue_growth_enabled", False))
+
+
 def _shares_x_price_enabled(cfg: Any) -> bool:
     if cfg is None:
         from app.core.config import settings as cfg  # noqa: PLW0127
@@ -506,6 +523,8 @@ async def evaluate(
     growth = list(screening.growth) if screening else []
     if session is not None and identity.company_id:
         growth.extend(await growth_from_held_facts(session, identity.company_id))
+    if intent.growth is not None and not any(g.verified for g in growth):
+        growth.extend(await _sec_growth(identity, cfg=cfg, fetcher=fx_fetcher))
     results.append(cons.verify_growth(intent.growth, growth))
     if intent.profitability is not None:
         results.append(

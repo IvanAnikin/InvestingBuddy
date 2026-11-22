@@ -706,6 +706,89 @@ async def sec_public_float(
     return float(latest["val"]), as_of.isoformat(), url
 
 
+#: V3.21 acceptance (run 09567859): a thesis that says "growing" makes growth a hard
+#: check, and a US small cap with no held filings had no revenue pair to verify it.
+#: The issuer's own annual XBRL revenue is on data.sec.gov. Concepts in order of use.
+_REVENUE_CONCEPTS = (
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "Revenues",
+    "SalesRevenueNet",
+)
+#: An annual figure covers 350–380 days; anything else is a quarter or a stub period.
+_ANNUAL_DAYS = (350, 380)
+
+
+def annual_revenue_pair(payload: dict[str, Any]) -> tuple[dict, dict] | None:
+    """The newest two consecutive fiscal-year USD revenues from one companyconcept payload.
+
+    Only 10-K (or 10-K/A) facts with a one-year duration count. For a period filed more
+    than once, the latest filing wins. The pair must be consecutive: the prior year ends
+    within 380 days before the newer one.
+    """
+    facts = (payload.get("units") or {}).get("USD") or []
+    by_end: dict[str, dict] = {}
+    for fact in facts:
+        if not isinstance(fact, dict) or not str(fact.get("form", "")).startswith("10-K"):
+            continue
+        try:
+            start = date.fromisoformat(str(fact["start"])[:10])
+            end = date.fromisoformat(str(fact["end"])[:10])
+            value = float(fact["val"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (_ANNUAL_DAYS[0] <= (end - start).days <= _ANNUAL_DAYS[1]) or value <= 0:
+            continue
+        key = end.isoformat()
+        if key not in by_end or str(fact.get("filed") or "") > str(by_end[key].get("filed") or ""):
+            by_end[key] = {**fact, "_end": end, "_val": value}
+    ends = sorted(by_end, reverse=True)
+    if len(ends) < 2:
+        return None
+    newer, older = by_end[ends[0]], by_end[ends[1]]
+    if not (300 <= (newer["_end"] - older["_end"]).days <= 380):
+        return None
+    return newer, older
+
+
+async def sec_revenue_growth(
+    cik: str | None, *, cfg: Any = None, fetcher: Any = None, today: date | None = None,
+) -> Any:
+    """A verified ``revenue_pair`` growth observation from the issuer's annual XBRL, or None.
+
+    Never raises. At most one read per concept, stopping at the first concept with a pair.
+    A newest fiscal year that ended more than 550 days ago is a lapsed filer: no figure.
+    """
+    from app.services.discovery import constraints as cons
+    from app.services.sources.document_fetcher import safe_fetch_document
+
+    if not cik or not str(cik).isdigit():
+        return None
+    now = today or datetime.now(timezone.utc).date()
+    for concept in _REVENUE_CONCEPTS:
+        url = (f"https://{SEC_DATA_HOST}/api/xbrl/companyconcept/CIK{int(cik):010d}"
+               f"/us-gaap/{concept}.json")
+        try:
+            result = await (fetcher or safe_fetch_document)(
+                url, allowed_domains=(SEC_DATA_HOST,), cfg=cfg, resolve_ip=True,
+                extra_text_content_types=("application/json",),
+            )
+            content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+            pair = annual_revenue_pair(json.loads(content)) if content else None
+        except Exception:  # noqa: BLE001 - an unreadable concept is an absent figure
+            pair = None
+        if pair is None:
+            continue
+        newer, older = pair
+        if (now - newer["_end"]).days > 550:
+            return None
+        return cons.growth_from_revenue_pair(
+            newer["_val"], older["_val"], period=f"FY ending {newer['_end'].isoformat()}",
+            base_period=f"FY ending {older['_end'].isoformat()}", source_url=url,
+            source_tier="T1_primary_filing", verified=True,
+        )
+    return None
+
+
 #: V3.20 slice 1.5 (live finding 2026-11-22). A current filer restates its cover-page
 #: share count on every 10-Q and 10-K, at most ~135 days apart; older than this belongs
 #: to a lapsed or late filer and is not today's share count.

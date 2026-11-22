@@ -1489,6 +1489,10 @@ class Settings(BaseSettings):
     # every US small cap ended "size unverified" unless a web page stated its cap. Off =
     # the float floor only, as before. Needs EODHD_API_KEY; without one nothing changes.
     v3_discovery_shares_x_price_enabled: bool = True
+    # V3.21 acceptance (run 09567859): a thesis that asks for growth gets a verified
+    # revenue_pair from a US filer's own annual XBRL (data.sec.gov companyconcept, at most
+    # three small reads per candidate) when nothing else verified growth. Off = unknown.
+    v3_discovery_sec_revenue_growth_enabled: bool = True
     # V3.21.1b (ADR-115, live finding 2026-11-22): a US SEC filer whose own website gave no
     # verified exposure statement has its latest 10-K (or 20-F) "Item 1. Business" section
     # read from EDGAR (data.sec.gov + www.sec.gov only, first 3 MB, one filing per issuer,
