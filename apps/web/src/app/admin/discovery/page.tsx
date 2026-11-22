@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import AutoReportPanel from "@/components/research/discovery/AutoReportPanel";
 import {
   createDiscoveryRun,
   createThesisDiscoveryRun,
@@ -3204,6 +3205,15 @@ export default function DiscoveryPage() {
           disabled={fieldReviewDisabled}
           candidateCount={candidates.length}
           onRun={handleRunFieldReview}
+        />
+      )}
+
+      {/* V3.21.3 — the automatic report on the run's best eligible candidate. */}
+      {selectedRun?.auto_report_json && (
+        <AutoReportPanel
+          record={selectedRun.auto_report_json}
+          reportHref={(id) => `/admin/reports/${id}`}
+          testId="discovery-auto-report"
         />
       )}
 

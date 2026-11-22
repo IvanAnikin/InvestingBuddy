@@ -793,6 +793,8 @@ async def create_pending_thesis_run(
             "max_market_cap_usd": (intent.size.max_usd if intent.size else None),
             "size_mandate_source": size_mandate["source"],
             "notes": payload.notes,
+            # V3.21.3 — None follows the flag; False opts this run out of auto-report.
+            "auto_report": getattr(payload, "auto_report", None),
         },
         safety_notes={
             "internal_only": True,
@@ -1197,6 +1199,13 @@ async def process_run(
         warning_count=len(warnings),
         duration_ms=duration_ms,
     )
+
+    # V3.21.3 (ADR-110) — the automatic report on the best eligible candidate. AFTER the
+    # final commit and never raising, so it can neither fail nor roll back the run. One
+    # call for both the durable and the BackgroundTasks path.
+    from app.services.discovery.auto_report import auto_report_for_run
+
+    await auto_report_for_run(db, run, created)
     return run
 
 
@@ -1969,8 +1978,12 @@ ANALYSIS_STATUS_INTERRUPTED = research_job.STATUS_INTERRUPTED
 def describe_analysis_job(envelope: dict[str, Any] | None) -> dict[str, Any]:
     """The envelope a HUMAN should see, with abandonment made explicit.
 
-    Delegates to the shared lifecycle module — see ``research_job.describe``.
+    Delegates to the shared lifecycle module — see ``research_job.describe``. A
+    durable job's envelope (V3.21.3) is returned as is: the durable contract, not
+    this process's boot time, decides whether it is alive.
     """
+    if envelope and envelope.get("durable_job_id"):
+        return dict(envelope)
     return research_job.describe(envelope)
 
 
@@ -2046,8 +2059,83 @@ def get_analysis_job_envelope(
 
 
 def _analysis_job_is_stale(envelope: dict[str, Any]) -> bool:
-    """True when a ``running`` job has clearly been abandoned by a dead worker."""
+    """True when a ``running`` job has clearly been abandoned by a dead worker.
+
+    Never for a durable job (V3.21.3 auto-report): its liveness is the durable
+    contract's, read through ``refresh_durable_analysis_job``, not this process's.
+    """
+    if envelope.get("durable_job_id"):
+        return False
     return research_job.is_stale(envelope)
+
+
+#: Durable statuses a candidate envelope shows as ``failed`` (with the status as error).
+_DURABLE_ENDED_WITHOUT_RESULT = frozenset({"failed", "dead_letter", "cancelled",
+                                           "interrupted"})
+
+
+async def refresh_durable_analysis_job(
+    db: AsyncSession, candidate: DiscoveryCandidate
+) -> dict[str, Any] | None:
+    """The candidate's analysis-job envelope, overlaid with its durable job's state.
+
+    V3.21.3 — an auto-report points the candidate's envelope at a durable
+    ``company_research`` job (``durable_job_id``). While that job is in flight its
+    status and stage are read from the job; once it ends, the terminal state (and the
+    report it produced) is written back to the candidate once, so the candidate reads
+    like any analysed candidate. Any other envelope is returned unchanged. Never raises.
+    """
+    envelope = get_analysis_job_envelope(candidate)
+    if (
+        not envelope
+        or not envelope.get("durable_job_id")
+        or envelope.get("status") not in _ANALYSIS_IN_FLIGHT
+    ):
+        return envelope
+    try:
+        from app.services.jobs import company_research_job
+
+        durable = await company_research_job.get_envelope(
+            uuid.UUID(str(envelope["durable_job_id"]))
+        )
+    except Exception:  # noqa: BLE001 - the stored envelope is still an answer
+        logger.warning("Durable job lookup failed for candidate %s.", candidate.id)
+        return envelope
+    if durable is None:
+        return envelope
+    status = str(durable.get("status") or "pending")
+    merged = dict(envelope)
+    for key in ("agent_run_id", "analysis_report_id", "legacy_draft_report_id",
+                "workflow_status"):
+        if durable.get(key):
+            merged[key] = str(durable[key])
+    merged["warnings"] = list(durable.get("warnings") or [])
+    merged["stage"] = durable.get("stage")
+    if status in _ANALYSIS_IN_FLIGHT:
+        merged["status"] = status
+        return merged
+    merged["completed_at"] = durable.get("completed_at") or datetime.now(
+        timezone.utc).isoformat()
+    if status in _ANALYSIS_HAS_RESULT and merged.get("analysis_report_id"):
+        merged["status"] = status
+        if isinstance(durable.get("report"), dict):
+            merged["report"] = durable["report"]
+    else:
+        merged["status"] = "failed"
+        merged["error"] = durable.get("error") or (
+            status if status in _DURABLE_ENDED_WITHOUT_RESULT else "no_report_produced"
+        )
+    try:
+        _store_analysis_job_envelope(candidate, merged)
+        if merged["status"] in _ANALYSIS_HAS_RESULT and candidate.analysis_report_id is None:
+            candidate.analysis_report_id = uuid.UUID(str(merged["analysis_report_id"]))
+        candidate.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+    except Exception:  # noqa: BLE001 - a read must not fail on the write-back
+        logger.warning("Could not persist the durable job state for candidate %s.",
+                       candidate.id)
+        await db.rollback()
+    return merged
 
 
 async def start_candidate_analysis(
@@ -2067,7 +2155,7 @@ async def start_candidate_analysis(
       * A completed job and not ``force`` → return it, ``scheduled=False``.
       * Otherwise write a fresh ``pending`` envelope and return ``scheduled=True``.
     """
-    envelope = get_analysis_job_envelope(candidate)
+    envelope = await refresh_durable_analysis_job(db, candidate)
     status = (envelope or {}).get("status")
 
     if status in _ANALYSIS_IN_FLIGHT and not _analysis_job_is_stale(envelope or {}):

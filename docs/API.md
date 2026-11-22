@@ -2600,11 +2600,36 @@ publish, or recommendation change.
   "max_universe_size": 25,            // hard cap ≤ 50 (default 25)
   "max_candidates": 10,
   "provider_name": "free_real",
-  "lookback_days": 90
+  "lookback_days": 90,
+  "auto_report": null                 // optional, V3.21.3 (see below)
 }
 ```
 
 **Free-form segments (V3.21.1, ADR-107).** A thesis outside the 11 fixed themes ("US small-cap cybersecurity software companies") is accepted. The parser extracts up to 6 sanitised **segment terms** (3–40 chars, letters/digits/spaces/hyphens; stop-words, geography, size and style words removed), plus any `industry_keywords` (sanitised the same way, listed first). They are stored as `parsed_thesis_json.segment_terms` and `parsed_thesis_json.discovery_intent.segment_terms` / `segment_synonyms`, and become the **hard** industry constraint (`constraints[industry].requested`): a candidate passes only on a verified exposure passage, is `unknown` (listed apart, not shortlisted) without one, and is excluded on a denial. Recall and web queries use only the terms, never the raw text; the curated universe skips the sector-wide fallback. With `V3_SEGMENT_EXPANSION_ENABLED` and the research model configured, one JSON call proposes synonyms; the record is `parsed_thesis_json.segment_expansion` (`status` completed | failed | disabled | unavailable, `prompt_version`, `model`, `synonyms`, `adjacent_industries`, `dropped`, token counts). Purely vague text still returns 422 `needs_narrowing`. A segment run with no curated match while dynamic discovery is off returns 422 naming the segment and pointing at `GET /supported-themes`.
+
+**Automatic report (`auto_report`, V3.21 slice 21.3, ADR-110).** When a thesis run completes, its best-ranked **eligible** candidate gets one durable `company_research` job. Eligible means: dynamic-stage `eligible`, any hard size requirement `pass`, and not size-unverified or novelty-held. The job is linked to the candidate (`discovery_candidate_id`) at `V3_AUTO_REPORT_MODE` depth (default `standard`), and the company is added to the team Shortlist with `source=auto_report`.
+- `auto_report` omitted or `null` → follow `V3_DISCOVERY_AUTO_REPORT_ENABLED` (default on); `false` → this run is not auto-reported. `true` cannot override the flag, the cap or a fresh report.
+- Bounds: one per run (`auto_report:{run_id}`); at most `V3_AUTO_REPORT_MAX_PER_DAY` (5) queued per UTC day; a final report newer than `V3_AUTO_REPORT_FRESH_DAYS` (14) is **linked** instead; ticker runs are never auto-reported; durable jobs only.
+- The run read (`GET /runs/{run_id}`, `GET /thesis-runs/{run_id}`, `GET /runs`) carries `auto_report_json`, NULL when it does not apply:
+
+```json
+{
+  "state": "queued",            // queued | skipped | linked | failed
+  "reason": null,               // e.g. opted_out, no_eligible_candidate, company_not_found,
+                                //  fresh_report, durable_jobs_off, daily_cap,
+                                //  joined_in_flight_job, submit_error:<ExceptionType>
+  "idempotency_key": "auto_report:<run_id>",
+  "candidate_id": "…", "ticker": "ABCD", "exchange": "NASDAQ", "rank": 1,
+  "company_id": "…",
+  "job_id": "…",                // the durable job (GET /company-research/jobs/{job_id})
+  "report_id": null,            // set when state = linked
+  "research_mode": "standard",
+  "at": "2026-11-22T12:00:00+00:00"
+}
+```
+
+- The candidate's `GET /candidates/{id}/analysis-job` follows the durable job: `pending`/`running` while it runs, then the terminal state and `analysis_report_id`, written back once. A job that ended without a report (`failed`, `dead_letter`, `cancelled`, `interrupted`) reads `failed` with that word as `error`. A manual `run-analysis` while the job is in flight joins it instead of starting a second run.
+- The run's own status never depends on the auto-report: errors are recorded as `state: failed` with an exception type, never a message.
 
 **Size mandate (`max_market_cap_usd`, V3.20 slice 1.1, owner decision D1).**
 - **Omitted** → the platform default `DISCOVERY_DEFAULT_MAX_MARKET_CAP_USD` (USD 2bn). It applies when the thesis and `market_cap_bucket` name no size, and (V3.21.1, ADR-108) when the size words name only bands entirely below it ("small-cap"). A "mid-cap" thesis is never silently capped; a warning says the default was not applied.

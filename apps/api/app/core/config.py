@@ -1235,6 +1235,17 @@ class Settings(BaseSettings):
     v3_discovery_max_screened: int = 16
     v3_discovery_screening_concurrency: int = 4
     v3_discovery_max_verifications_per_issuer: int = 5
+    # V3.21.3 (ADR-110) — one durable company-research job for the best eligible
+    # candidate of each completed THESIS run. ON by default (an owner request); spend is
+    # bounded by the per-day cap below, a fresh report is linked instead of re-run, and
+    # it needs V3_DURABLE_JOBS_ENABLED (it is recorded as skipped otherwise).
+    v3_discovery_auto_report_enabled: bool = True
+    # Research depth of the auto-queued job: quick | standard | deep.
+    v3_auto_report_mode: str = "standard"
+    # At most this many auto-reports are QUEUED per UTC day, across all runs.
+    v3_auto_report_max_per_day: int = 5
+    # A completed final report newer than this is linked instead of re-researched.
+    v3_auto_report_fresh_days: int = 14
     # V3.18.5 — fetch commodity statistics (IMF prices via FRED, USGS Mineral Commodity
     # Summaries) into the macro store and expose them as `get_industry_series`. Public,
     # keyless publishers through the guarded fetcher; off by default like every source.

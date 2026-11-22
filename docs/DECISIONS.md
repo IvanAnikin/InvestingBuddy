@@ -10871,3 +10871,31 @@ Both are right for what they were built against: free text from web pages and LL
 - Open Decision #15 is resolved for monitoring: daily. Event-driven triggers, such as reacting to a new filing the moment it is held, remain possible later as another periodic task or an observer.
 - `source_poll_state` gives the later source pollers somewhere to keep an ETag, a Last-Modified value and a small cursor.
 - Migration 062 is additive and reversible. Its downgrade refuses while any signal of a new kind exists, because signals are history.
+
+---
+
+## ADR-110: Auto-Report on the Best Eligible Candidate of Each Thesis Run, Bounded
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 slice 21.3)
+**Trigger:** live finding F5 (spec `docs/v3.21-spec.md` §0, §4). A thesis run ended with a ranked shortlist and nothing else: a report on its most promising name needed a click per run. The owner asked for "one report on the most promising candidate from each run".
+
+### Decision
+1. **When a thesis run completes, the best-ranked eligible candidate gets one durable `company_research` job.** Code: `app/services/discovery/auto_report.py`, called once from the end of `process_run`, so the durable and the BackgroundTasks path share it.
+   - "Eligible" means all of these: dynamic-stage `eligible`; any hard `size` requirement `pass` (with evidence); not listed as `size_unverified`; not novelty-held.
+   - The job is linked to the candidate (`discovery_candidate_id`) and runs at `V3_AUTO_REPORT_MODE` depth (default `standard`).
+2. **Bounds.**
+   - **One per run.** `discovery_runs.auto_report_json` (migration 063) is the idempotency record `auto_report:{run_id}`. A run that already has one is never auto-reported again. The job store also joins an in-flight job for the same company (`company_research:{company_id}`).
+   - **At most `V3_AUTO_REPORT_MAX_PER_DAY` (default 5) queued per UTC day**, counted from the day's `queued` records.
+   - **A fresh report is linked, not re-run.** A final report for the company newer than `V3_AUTO_REPORT_FRESH_DAYS` (default 14) is recorded as `linked` and set as the candidate's `analysis_report_id`.
+   - **Not applied** to ticker runs, to a request with `auto_report=false`, or with the flag off (nothing is recorded).
+   - **Durable only.** With `V3_DURABLE_JOBS_ENABLED` off the record is `skipped` / `durable_jobs_off`. A process-local task would die with the process, unseen.
+3. **The record.** `{state: queued | skipped | linked | failed, reason, candidate_id, ticker, exchange, rank, company_id, job_id, report_id, research_mode, note, at}`. Errors carry the exception type only, never a message.
+4. **The candidate reads the job.** The candidate's existing analysis-job envelope gets `durable_job_id`. `GET /candidates/{id}/analysis-job` reads that job's live status. When the job ends, the terminal state and the report are written back once. A durable envelope is never declared abandoned by this process's boot time. A manual analysis already running or done is never overwritten.
+5. **Shortlist.** The company is added to the team Shortlist with `source=auto_report`, inside a savepoint. A failure there is logged and noted on the record, never fatal.
+6. **Never fatal.** The hook runs after the run's final commit and never raises. An error is recorded as `failed`, and the run keeps its status.
+7. Flag `V3_DISCOVERY_AUTO_REPORT_ENABLED`, default **on** (owner request). Spend is bounded by the daily cap.
+
+### Consequences
+- Every completed thesis run says what happened to its best candidate, on the run detail of both Discovery pages, with a link to the job or the report.
+- Up to five paid research runs a day can start without a click. The cap and the fresh-report link are the spend controls. Setting the flag off stops it entirely.
+- The output is still an internal draft: human review and the publication gate are unchanged.

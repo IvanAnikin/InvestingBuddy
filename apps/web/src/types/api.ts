@@ -1062,6 +1062,11 @@ export interface ThesisDiscoveryRunCreate {
   lookback_days?: number;
   created_by?: string;
   notes?: string;
+  /**
+   * V3.21.3 — omit/null follows the server flag (V3_DISCOVERY_AUTO_REPORT_ENABLED);
+   * false opts this run out of the automatic report on its best eligible candidate.
+   */
+  auto_report?: boolean | null;
 }
 
 /**
@@ -1122,7 +1127,31 @@ export interface DiscoveryRun {
   // W6b — additive; null/absent for a run that never tried live web search.
   web_search_state?: string | null;
   web_search_label?: string | null;
+  // V3.21.3 — the automatic report on the best eligible candidate (thesis runs only;
+  // null for ticker runs, older runs and with the server flag off).
+  auto_report_json?: DiscoveryAutoReport | null;
   disclaimer: string;
+}
+
+// V3.21.3 (ADR-110) — what the automatic report did for one run. `state` is a
+// workflow state, never an investment action.
+export type DiscoveryAutoReportState = "queued" | "skipped" | "linked" | "failed";
+
+export interface DiscoveryAutoReport {
+  state: DiscoveryAutoReportState | string;
+  reason?: string | null;
+  idempotency_key?: string | null;
+  candidate_id?: string | null;
+  ticker?: string | null;
+  exchange?: string | null;
+  rank?: number | null;
+  company_id?: string | null;
+  job_id?: string | null;
+  report_id?: string | null;
+  research_mode?: string | null;
+  daily_cap?: number | null;
+  note?: string | null;
+  at?: string | null;
 }
 
 export interface DiscoveryRunJob {

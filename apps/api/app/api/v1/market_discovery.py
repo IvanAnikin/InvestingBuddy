@@ -594,7 +594,8 @@ async def get_candidate_analysis_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Discovery candidate {candidate_id} not found",
         )
-    envelope = svc.get_analysis_job_envelope(candidate)
+    # V3.21.3 — an auto-report's durable job is read through to its live state.
+    envelope = await svc.refresh_durable_analysis_job(db, candidate)
     if envelope is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

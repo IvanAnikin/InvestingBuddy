@@ -1489,7 +1489,7 @@ Checked on PostgreSQL 16:
 ## Migration 062 — periodic-task state, two signal kinds, entry provenance (V3.21 slice 21.2, ADR-109)
 
 Written on `down_revision = "061"`. **Integration:** it is re-pointed to `"062"` when
-slice 21.3 (migration 062) lands. No user data beyond an e-mail hash.
+slice 21.3 (migration 063) lands. No user data beyond an e-mail hash.
 
 | Change | Columns / constraint | Rules |
 |---|---|---|
@@ -1507,6 +1507,20 @@ Checked on PostgreSQL 16:
 - a refused downgrade with a `missing_information` row;
 - the team-name index and the source CHECK refusing bad rows;
 - two concurrent sweeps enqueueing one job.
+
+## Migration 063 — auto-report record on a discovery run (V3.21 slice 21.3, ADR-110)
+
+Written on `down_revision = "062"`. No user data.
+
+| Change | Columns | Rules |
+|---|---|---|
+| `discovery_runs` | `auto_report_json` (JSONB, NULL) | What the automatic report on the run's best eligible candidate did: `{state: queued \| skipped \| linked \| failed, reason, idempotency_key, candidate_id, ticker, exchange, rank, company_id, job_id, report_id, research_mode, note, at}`. The per-run idempotency record (`auto_report:{run_id}`); the daily cap counts the day's `queued` records. NULL for existing rows, ticker runs and with `V3_DISCOVERY_AUTO_REPORT_ENABLED` off. Errors carry an exception type, never a message. |
+
+The candidate side needs no column: the candidate's existing analysis-job envelope
+(`discovery_candidates.raw_signal_json.analysis_job`) gains `durable_job_id`,
+`source: "auto_report"` and `research_mode`.
+
+Downgrade drops the column; the research job it points at (`research_jobs`) is untouched.
 
 ## Rules
 

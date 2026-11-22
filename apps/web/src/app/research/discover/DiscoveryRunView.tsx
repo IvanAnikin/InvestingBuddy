@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Surface from "@/components/product/Surface";
+import AutoReportPanel from "@/components/research/discovery/AutoReportPanel";
 import CandidateCard from "@/components/research/discovery/CandidateCard";
 import CandidateComparison from "@/components/research/discovery/CandidateComparison";
 import DiscoveryCouncilPanel from "@/components/research/discovery/DiscoveryCouncilPanel";
@@ -433,6 +434,8 @@ export default function DiscoveryRunView({
               testId="run-intent"
             />
             <ExcludedCandidates stage={run.universe_json?.dynamic} />
+            {/* V3.21.3 — the automatic report on the best eligible candidate. */}
+            <AutoReportPanel record={run.auto_report_json} testId="run-auto-report" />
           </div>
         </Surface>
       )}
