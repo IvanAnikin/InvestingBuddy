@@ -1101,6 +1101,18 @@ class Settings(BaseSettings):
     # V3.21.2 — the daily `monitoring_pass` periodic task over the team Shortlist and
     # Watchlist. Writes signals only when V3_MONITORING_ENABLED is also on.
     v3_monitoring_pass_enabled: bool = True
+    # V3.21.6 (ADR-113) — trade press by electricity layer: the 6-hourly `trade_press_poll`
+    # periodic task over nine RSS feeds (robots-checked, conditional GET, host-pinned,
+    # 2 MB cap), stored as T4 theme documents (title + 600-char feed summary + link only);
+    # the `trade_press` change-events input and the report's `trade_press_mentions`
+    # block; layer-routed include_domains for the trade-press web queries. Off -> no
+    # poll, and reports and plans unchanged.
+    v3_trade_press_feeds_enabled: bool = True
+    # V3.21.6 — press leads in discovery: recent (90-day) press items matching a run's
+    # segment terms or electricity layers; ONE bounded research-model JSON call per run
+    # extracts up to 20 company names, which go through normal identity / venue / size
+    # verification. Inert (with a warning) without a configured research provider.
+    v3_press_leads_enabled: bool = True
     # V3.20 slice 9.4: the six record-derived kinds (earnings, consensus revision,
     # passive ownership, relationships, competitor capacity, change events). Read only
     # when V3_MONITORING_ENABLED is on; no network call. Run by the daily monitoring

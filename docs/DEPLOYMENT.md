@@ -892,6 +892,25 @@ python scripts/ingest_industry_data.py --source ember --dry-run
 
 To check a run, `source_poll_state.industry_data_refresh` gets one `last_started_at` per ISO week.
 
+### Trade press by layer (V3.21 slice 21.6, ADR-113 — not yet deployed)
+
+No migration (per-feed state is in `source_poll_state`, migration 062).
+
+| Flag | Default | Effect |
+|---|---|---|
+| `V3_TRADE_PRESS_FEEDS_ENABLED` | `true` | The 6-hourly `trade_press_poll` periodic task (needs `V3_PERIODIC_TASKS_ENABLED` and `V3_DURABLE_JOBS_ENABLED`); the `trade_press` change-events input; the report's `trade_press_mentions` block; layer-routed `include_domains` for trade-press web queries. |
+| `V3_PRESS_LEADS_ENABLED` | `true` | Press leads in Discovery: one bounded research-model JSON call per run (titles + summaries only); inert with a warning without a research provider. |
+
+**Network:** nine outbound HTTPS feeds, each polled once every 6 hours with a conditional
+GET (robots.txt checked first, host-pinned, at most 2 MB, 30 s): `www.utilitydive.com/feeds/news/`,
+`www.energy-storage.news/feed/`, `www.pv-magazine.com/feed/`, `www.world-nuclear-news.org/rss`,
+`www.datacenterdynamics.com/en/rss/`, `www.powerelectronicsnews.com/feed/`,
+`www.offshorewind.biz/feed`, `www.power-eng.com/feed/`, `wysokienapiecie.pl/feed/`. No key.
+To check it: `source_poll_state` has `trade_press_poll` (one `last_started_at` per 6-hour UTC
+bucket) and one `trade_press_feed:<key>` row per feed (`etag`, `last_modified`, `last_ok_at`
+or `last_error`, and the last poll's counts in `detail_json`). A manual run:
+`python scripts/poll_trade_press.py [--dry-run] [--feed <key>]`.
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on

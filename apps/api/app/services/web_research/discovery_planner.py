@@ -201,6 +201,11 @@ class DiscoveryFacts:
     materials_role: str | None = None
     segment_terms: tuple[str, ...] = ()
     segment_synonyms: tuple[str, ...] = ()
+    #: V3.21.6 (ADR-113) — the electricity layers the intent names (``trade_press.leads.
+    #: intent_layers``), when ``V3_TRADE_PRESS_FEEDS_ENABLED``. Only routes the trade-press
+    #: sweep's ``include_domains`` to the layers' outlets; never sent to a model and not
+    #: part of :meth:`intent` (the expansion cache key is unchanged).
+    layers: tuple[str, ...] = ()
 
     def intent(self) -> dict[str, Any]:
         """What the model expansion may see, and what its cache key is made of."""
@@ -249,7 +254,15 @@ class DiscoveryFacts:
 def facts_from_intent(intent: Any) -> DiscoveryFacts:
     """:class:`DiscoveryFacts` from a ``DiscoveryIntent`` (closed values only)."""
     size = getattr(intent, "size", None)
+    from app.core.config import settings
+
+    layers: tuple[str, ...] = ()
+    if getattr(settings, "v3_trade_press_feeds_enabled", False):
+        from app.services.trade_press.leads import intent_layers
+
+        layers = intent_layers(intent)
     return DiscoveryFacts(
+        layers=layers,
         themes=tuple(getattr(intent, "themes", ()) or ()),
         materials=tuple(getattr(intent, "materials", ()) or ()),
         industries=tuple(getattr(intent, "industries", ()) or ()),
@@ -736,6 +749,19 @@ def _make_request(
     )
 
 
+def _include_domains(template: DTemplate, facts: DiscoveryFacts) -> tuple[str, ...]:
+    """V3.21.6 — layer routing: the trade-press sweep restricted to the outlets that cover
+    the intent's electricity layers (``trade_press.feeds.hosts_for_layers``); every other
+    template, and an intent naming no layer, keeps its own list."""
+    if template.key == "entity_trade_press" and facts.layers:
+        from app.services.trade_press.feeds import hosts_for_layers
+
+        routed = hosts_for_layers(facts.layers)
+        if routed:
+            return routed
+    return template.include_domains
+
+
 def _geographies(facts: DiscoveryFacts) -> list[str]:
     geos = [*facts.countries, *facts.regions]
     return geos[:MAX_GEOGRAPHIES] or [""]
@@ -921,7 +947,7 @@ def build_discovery_plan(
                 version=f"{DISCOVERY_TEMPLATE_VERSION}:{key}",
                 pdf=template.pdf,
                 topic=template.topic,
-                include_domains=template.include_domains,
+                include_domains=_include_domains(template, facts),
             )
             if request is None:
                 plan.refused.append((key, refusal or "refused"))

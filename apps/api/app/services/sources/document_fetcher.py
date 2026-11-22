@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin
@@ -104,6 +105,25 @@ def classify_content_type(content_type: str | None, url: str | None = None) -> s
     return None
 
 
+#: V3.21.6 — the only request headers a caller may add: a conditional GET's validators.
+_CONDITIONAL_HEADERS = {"if-none-match": "If-None-Match",
+                        "if-modified-since": "If-Modified-Since"}
+
+
+def conditional_request_headers(conditional: Mapping[str, str] | None) -> dict[str, str]:
+    """``If-None-Match`` / ``If-Modified-Since`` from ``conditional``; nothing else.
+
+    A value with a line break or over 512 characters is dropped (no header injection).
+    """
+    out: dict[str, str] = {}
+    for name, value in (conditional or {}).items():
+        canonical = _CONDITIONAL_HEADERS.get(str(name).strip().lower())
+        clean = str(value or "").strip()
+        if canonical and clean and len(clean) <= 512 and not any(c in clean for c in "\r\n"):
+            out[canonical] = clean
+    return out
+
+
 #: Response headers that carry a rights / robots signal (open-web W3, review S-M4).
 RIGHTS_HEADERS: tuple[str, ...] = (
     "x-robots-tag",
@@ -144,6 +164,11 @@ class DocumentFetchResult:
     # A statistical publisher's bulk file states its release time only here, and a
     # vintage must be the publisher's time, never the time we fetched it.
     last_modified: str | None = None
+    #: V3.21.6 — the cache validators of a 2xx answer (``etag``, ``last-modified``), for a
+    #: caller that polls with a conditional GET. Empty otherwise.
+    validators: dict[str, str] = field(default_factory=dict)
+    #: V3.21.6 — True when a conditional GET answered ``304 Not Modified`` (no body).
+    not_modified: bool = False
 
     @property
     def status_class(self) -> str | None:
@@ -193,8 +218,15 @@ async def safe_fetch_document(
     extra_text_content_types: tuple[str, ...] = (),
     max_bytes: int | None = None,
     total_deadline_seconds: float | None = None,
+    conditional: Mapping[str, str] | None = None,
 ) -> DocumentFetchResult:
     """Fetch one allowlisted HTTPS document (bounded, guarded, never raising).
+
+    ``conditional`` (V3.21.6) makes it a conditional GET: only ``If-None-Match`` and
+    ``If-Modified-Since`` are read from it (any other header is ignored, so no caller can
+    add a credential or a cookie this way). A ``304`` answer returns with
+    ``not_modified=True``, ``status_code=304`` and no content; a 2xx answer carries its
+    ``validators``.
 
     ``extra_text_content_types`` (V3.18.5) admits additional TEXT content types for this
     one call only — a statistical publisher's CSV (``application/csv``, ``text/csv``) —
@@ -258,12 +290,14 @@ async def safe_fetch_document(
     # When an address was validated, connect ONLY to it (Slice 5B.1 pinning).
     transport = pinned_transport_for(cfg, host_of(url), pinned_ip)
     result.pinned = transport is not None
+    request_headers = {
+        USER_AGENT_HEADER: crawler_user_agent(cfg),
+        "Accept": "application/pdf,text/html,text/plain,*/*",
+    }
+    request_headers.update(conditional_request_headers(conditional))
     client_kwargs = guarded_client_kwargs(
         timeout=timeout,
-        headers={
-            USER_AGENT_HEADER: crawler_user_agent(cfg),
-            "Accept": "application/pdf,text/html,text/plain,*/*",
-        },
+        headers=request_headers,
         transport=transport,
     )
     try:
@@ -300,6 +334,9 @@ async def safe_fetch_document(
                             transport.pin(host_of(nxt), next_ip)
                         current = nxt
                         continue
+                    if resp.status_code == 304 and conditional:
+                        result.not_modified = True
+                        return result
                     if resp.status_code >= 400:
                         result.error = f"http {resp.status_code}"
                         result.failure_code = (
@@ -360,6 +397,11 @@ async def safe_fetch_document(
                         return result
                     result.truncated = read.truncated
                     result.content = read.content
+                    result.validators = {
+                        name: str(resp.headers.get(name))[:512]
+                        for name in ("etag", "last-modified")
+                        if resp.headers.get(name) is not None
+                    }
                     if result.truncated:
                         result.warnings.append(
                             "Document exceeded the max-bytes cap and was truncated; "

@@ -20,7 +20,11 @@
  *                                                 {<purpose>: number}}}   (V3.20 11.3c),
  *      corporate_actions_lookup {source, corp_code, filings_listed, decision_types[],
  *                                endpoints_read, endpoints_failed, truncated,
- *                                retrieved_at, notes[]} | null}
+ *                                retrieved_at, notes[]} | null,
+ *      trade_press_events[] of {trigger_type, label, date, title, source_url, outlet,
+ *                               layers[], source_kind: "trade_press", reported_as,
+ *                               weight, rule}                          (V3.21.6),
+ *      trade_press_window_days, trade_press_items_considered}
  *
  * Every string stays a plain text node; a URL is a link only when it is https.
  */
@@ -48,6 +52,8 @@ export type ChangeEvent = {
   url: string | null;
   sourceKind: string | null;
   rule: string | null;
+  /** V3.21.6 — the outlet, for an event reported by trade press. */
+  outlet: string | null;
 };
 
 export type InsiderCluster = {
@@ -86,6 +92,10 @@ export type ChangeEventsBlock = {
   actions: CorporateAction[];
   actionsSource: string | null;
   actionsTruncated: boolean;
+  /** V3.21.6 — events in trade-press headlines naming the company: an outlet reporting
+      them, never the issuer disclosing them. */
+  pressEvents: ChangeEvent[];
+  pressWindowDays: number | null;
   note: string | null;
 };
 
@@ -147,6 +157,7 @@ function readEvent(r: Record<string, unknown>): ChangeEvent | null {
     url: httpsUrl(r.source_url),
     sourceKind: str(r.source_kind),
     rule: str(r.rule),
+    outlet: str(r.outlet),
   };
 }
 
@@ -178,7 +189,16 @@ export function readChangeEventsBlock(raw: unknown): ChangeEventsBlock | null {
   const actions = records(raw.corporate_actions)
     .map(readAction)
     .filter((a): a is CorporateAction => a !== null);
-  if (events.length === 0 && clusters.length === 0 && actions.length === 0) return null;
+  const pressEvents = records(raw.trade_press_events)
+    .map(readEvent)
+    .filter((e): e is ChangeEvent => e !== null);
+  if (
+    events.length === 0 &&
+    clusters.length === 0 &&
+    actions.length === 0 &&
+    pressEvents.length === 0
+  )
+    return null;
   const lookup = isRecord(raw.insider_lookup) ? raw.insider_lookup : null;
   const actionsLookup = isRecord(raw.corporate_actions_lookup)
     ? raw.corporate_actions_lookup
@@ -197,6 +217,8 @@ export function readChangeEventsBlock(raw: unknown): ChangeEventsBlock | null {
     actions,
     actionsSource: actionsLookup ? str(actionsLookup.source) : null,
     actionsTruncated: actionsLookup ? actionsLookup.truncated === true : false,
+    pressEvents,
+    pressWindowDays: num(raw.trade_press_window_days),
     note: str(raw.note),
   };
 }

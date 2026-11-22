@@ -217,6 +217,10 @@ class ReportInputs:
     #: V3.20 slice 6.2 — change events (``change_events_step.change_events_section``);
     #: ``None`` leaves the report unchanged.
     change_events: Mapping[str, Any] | None = None
+    #: V3.21.6 — recent trade-press mentions
+    #: (``change_events_step.trade_press_mentions_section``); ``None`` leaves the report
+    #: unchanged.
+    trade_press_mentions: Mapping[str, Any] | None = None
     #: V3.20 slice 8.1 — enterprise value and multiples
     #: (``enterprise_value_step.enterprise_value_section``); ``None`` leaves the report
     #: unchanged.
@@ -900,6 +904,10 @@ def assemble(inputs: ReportInputs) -> dict[str, Any]:
         # Only when an event was found, so every other report is byte-identical.
         growth = next(s for s in sections if s["key"] == "growth_and_catalysts")
         growth["change_events"] = dict(inputs.change_events)
+    if inputs.trade_press_mentions:
+        # Only when a trade-press item names the company, so other reports are unchanged.
+        growth = next(s for s in sections if s["key"] == "growth_and_catalysts")
+        growth["trade_press_mentions"] = dict(inputs.trade_press_mentions)
     if inputs.passive_ownership:
         # Only when the block is on, so every other report is byte-identical.
         valuation = next(s for s in sections if s["key"] == "valuation_context")

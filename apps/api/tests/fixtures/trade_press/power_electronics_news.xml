@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:atom="http://www.w3.org/2005/Atom"
+	xmlns:sy="http://purl.org/rss/1.0/modules/syndication/"
+	xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+	>
+
+<channel>
+	<title>Power Electronics News</title>
+	<atom:link href="https://www.powerelectronicsnews.com/feed/" rel="self" type="application/rss+xml" />
+	<link>https://www.powerelectronicsnews.com/</link>
+	<description></description>
+	<lastBuildDate>Thu, 19 Nov 2026 14:49:56 +0000</lastBuildDate>
+	<language>en-US</language>
+	<sy:updatePeriod>
+	hourly	</sy:updatePeriod>
+	<sy:updateFrequency>
+	1	</sy:updateFrequency>
+	<generator>https://wordpress.org/?v=7.1.5</generator>
+
+<image>
+	<url>https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2021/08/power-electronics-icon.png?fit=32%2C32</url>
+	<title>Power Electronics News</title>
+	<link>https://www.powerelectronicsnews.com/</link>
+	<width>32</width>
+	<height>32</height>
+</image> 
+<site xmlns="com-wordpress:feed-additions:1">167792603</site>	<item>
+		<title>Toshiba Introduces TCR5FF LDO Regulators in SOT-25 Package</title>
+		<link>https://www.powerelectronicsnews.com/toshiba-introduces-tcr5ff-ldo-regulators-in-sot-25-package/</link>
+					<comments>https://www.powerelectronicsnews.com/toshiba-introduces-tcr5ff-ldo-regulators-in-sot-25-package/#respond</comments>
+		<dc:creator><![CDATA[Christa Paul]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 13:00:00 +0000</pubDate>
+				<category><![CDATA[News]]></category>
+		<category><![CDATA[Components & Devices]]></category>
+		<category><![CDATA[Industrial]]></category>
+		<category><![CDATA[LDOs]]></category>
+		<category><![CDATA[Power Supplies & Energy Storage]]></category>
+		<category><![CDATA[Regulators]]></category>
+		<guid isPermaLink="false">https://www.powerelectronicsnews.com/?p=90826</guid>
+					<description><![CDATA[<img width="2100" height="1500" src="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/7707_HR.jpg?fit=2100%2C1500" class="webfeedsFeaturedVisual wp-post-image" alt="Toshiba Introduces TCR5FF LDO Regulators in SOT-25 Package." style="display: block; margin-bottom: 5px; clear:both;max-width: 100%;" link_thumbnail="" decoding="async" fetchpriority="high" srcset="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/7707_HR.jpg?w=2100 2100w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/7707_HR.jpg?w=500 500w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/7707_HR.jpg?w=768 768w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/7707_HR.jpg?w=1024 1024w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/7707_HR.jpg?w=1536 1536w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/7707_HR.jpg?w=2048 2048w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/7707_HR.jpg?w=1930 1930w" sizes="(max-width: 2100px) 100vw, 2100px" /><p>The new 35-device TCR5FF LDO family delivers 91 dB ripple rejection and improved transient response for noise-sensitive circuits.</p>
+<p>The post <a href="https://www.powerelectronicsnews.com/toshiba-introduces-tcr5ff-ldo-regulators-in-sot-25-package/">Toshiba Introduces TCR5FF LDO Regulators in SOT-25 Package</a> appeared first on <a href="https://www.powerelectronicsnews.com">Power Electronics News</a>.</p>
+]]></description>
+					<wfw:commentRss>https://www.powerelectronicsnews.com/toshiba-introduces-tcr5ff-ldo-regulators-in-sot-25-package/feed/</wfw:commentRss>
+			<slash:comments>0</slash:comments>
+		<post-id xmlns="com-wordpress:feed-additions:1">90826</post-id>	</item>
+<item>
+		<title>Electronica 2026: Nexperia’s Sub-Milliohm GaN Targets the Low-Voltage End of AI Power</title>
+		<link>https://www.powerelectronicsnews.com/electronica-2026-nexperias-sub-milliohm-gan-targets-the-low-voltage-end-of-ai-power/</link>
+					<comments>https://www.powerelectronicsnews.com/electronica-2026-nexperias-sub-milliohm-gan-targets-the-low-voltage-end-of-ai-power/#respond</comments>
+		<dc:creator><![CDATA[Aalyia Shaukat]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 13:00:00 +0000</pubDate>
+				<category><![CDATA[Electronica]]></category>
+		<category><![CDATA[Videos]]></category>
+		<category><![CDATA[AI]]></category>
+		<category><![CDATA[Data Centers]]></category>
+		<category><![CDATA[E-Mode]]></category>
+		<category><![CDATA[GaN]]></category>
+		<category><![CDATA[Packaging]]></category>
+		<guid isPermaLink="false">https://www.powerelectronicsnews.com/?p=90846</guid>
+					<description><![CDATA[<img width="1280" height="720" src="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Roberto_Crisafulli_Nexperia_thumbnail.png?fit=1280%2C720" class="webfeedsFeaturedVisual wp-post-image" alt="" style="display: block; margin-bottom: 5px; clear:both;max-width: 100%;" link_thumbnail="" decoding="async" srcset="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Roberto_Crisafulli_Nexperia_thumbnail.png?w=1280 1280w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Roberto_Crisafulli_Nexperia_thumbnail.png?w=500 500w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Roberto_Crisafulli_Nexperia_thumbnail.png?w=768 768w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Roberto_Crisafulli_Nexperia_thumbnail.png?w=1024 1024w" sizes="(max-width: 1280px) 100vw, 1280px" /><p>Nexperia’s Roberto Crisafulli discusses sub-milliohm GaN FETs for AI power, robotics, packaging bottlenecks, and co-packaged drivers.</p>
+<p>The post <a href="https://www.powerelectronicsnews.com/electronica-2026-nexperias-sub-milliohm-gan-targets-the-low-voltage-end-of-ai-power/">Electronica 2026: Nexperia’s Sub-Milliohm GaN Targets the Low-Voltage End of AI Power</a> appeared first on <a href="https://www.powerelectronicsnews.com">Power Electronics News</a>.</p>
+]]></description>
+					<wfw:commentRss>https://www.powerelectronicsnews.com/electronica-2026-nexperias-sub-milliohm-gan-targets-the-low-voltage-end-of-ai-power/feed/</wfw:commentRss>
+			<slash:comments>0</slash:comments>
+		<post-id xmlns="com-wordpress:feed-additions:1">90846</post-id>	</item>
+<item>
+		<title>Electronica 2026: Nexperia Moves From Planar to Trench With 750-V SiC MOSFETs</title>
+		<link>https://www.powerelectronicsnews.com/electronica-2026-nexperia-moves-from-planar-to-trench-with-750-v-sic-mosfets/</link>
+					<comments>https://www.powerelectronicsnews.com/electronica-2026-nexperia-moves-from-planar-to-trench-with-750-v-sic-mosfets/#respond</comments>
+		<dc:creator><![CDATA[Aalyia Shaukat]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 13:00:00 +0000</pubDate>
+				<category><![CDATA[Electronica]]></category>
+		<category><![CDATA[Videos]]></category>
+		<category><![CDATA[Data Centers]]></category>
+		<category><![CDATA[Packaging]]></category>
+		<category><![CDATA[SiC]]></category>
+		<category><![CDATA[Top-Side Cooling]]></category>
+		<category><![CDATA[Trench MOSFET]]></category>
+		<category><![CDATA[Wide Bandgap]]></category>
+		<guid isPermaLink="false">https://www.powerelectronicsnews.com/?p=90849</guid>
+					<description><![CDATA[<img width="1280" height="720" src="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Sebastian_Fahlbusch_Nexperia_thumbnail.png?fit=1280%2C720" class="webfeedsFeaturedVisual wp-post-image" alt="" style="display: block; margin-bottom: 5px; clear:both;max-width: 100%;" link_thumbnail="" decoding="async" loading="lazy" srcset="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Sebastian_Fahlbusch_Nexperia_thumbnail.png?w=1280 1280w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Sebastian_Fahlbusch_Nexperia_thumbnail.png?w=500 500w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Sebastian_Fahlbusch_Nexperia_thumbnail.png?w=768 768w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Sebastian_Fahlbusch_Nexperia_thumbnail.png?w=1024 1024w" sizes="auto, (max-width: 1280px) 100vw, 1280px" /><p>Nexperia’s Sebastian Fahlbusch explains its shift to trench SiC and why 750-V MOSFETs suit TOLL packaging.</p>
+<p>The post <a href="https://www.powerelectronicsnews.com/electronica-2026-nexperia-moves-from-planar-to-trench-with-750-v-sic-mosfets/">Electronica 2026: Nexperia Moves From Planar to Trench With 750-V SiC MOSFETs</a> appeared first on <a href="https://www.powerelectronicsnews.com">Power Electronics News</a>.</p>
+]]></description>
+					<wfw:commentRss>https://www.powerelectronicsnews.com/electronica-2026-nexperia-moves-from-planar-to-trench-with-750-v-sic-mosfets/feed/</wfw:commentRss>
+			<slash:comments>0</slash:comments>
+		<post-id xmlns="com-wordpress:feed-additions:1">90849</post-id>	</item>
+<item>
+		<title>Vishay Adds 550-V and 600-V Capacitors to 259 PHM-SI Series</title>
+		<link>https://www.powerelectronicsnews.com/vishay-adds-550-v-and-600-v-capacitors-to-259-phm-si-series/</link>
+					<comments>https://www.powerelectronicsnews.com/vishay-adds-550-v-and-600-v-capacitors-to-259-phm-si-series/#respond</comments>
+		<dc:creator><![CDATA[Christa Paul]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 11:00:00 +0000</pubDate>
+				<category><![CDATA[News]]></category>
+		<category><![CDATA[Aluminum Electrolytic]]></category>
+		<category><![CDATA[Capacitors]]></category>
+		<category><![CDATA[Components & Devices]]></category>
+		<category><![CDATA[High Voltage]]></category>
+		<guid isPermaLink="false">https://www.powerelectronicsnews.com/?p=90834</guid>
+					<description><![CDATA[<img width="1600" height="1067" src="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Vishay_Caps_PR.png?fit=1600%2C1067" class="webfeedsFeaturedVisual wp-post-image" alt="Vishay Adds 550-V and 600-V Capacitors to 259 PHM-SI Series." style="display: block; margin-bottom: 5px; clear:both;max-width: 100%;" link_thumbnail="" decoding="async" loading="lazy" srcset="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Vishay_Caps_PR.png?w=1600 1600w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Vishay_Caps_PR.png?w=500 500w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Vishay_Caps_PR.png?w=768 768w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Vishay_Caps_PR.png?w=1024 1024w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Vishay_Caps_PR.png?w=1536 1536w, https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Vishay_Caps_PR.png?w=675 675w" sizes="auto, (max-width: 1600px) 100vw, 1600px" /><p>The 259 PHM-SI series gains 550 V and 600 V options to simplify DC bus designs and reduce component count in power converters.</p>
+<p>The post <a href="https://www.powerelectronicsnews.com/vishay-adds-550-v-and-600-v-capacitors-to-259-phm-si-series/">Vishay Adds 550-V and 600-V Capacitors to 259 PHM-SI Series</a> appeared first on <a href="https://www.powerelectronicsnews.com">Power Electronics News</a>.</p>
+]]></description>
+					<wfw:commentRss>https://www.powerelectronicsnews.com/vishay-adds-550-v-and-600-v-capacitors-to-259-phm-si-series/feed/</wfw:commentRss>
+			<slash:comments>0</slash:comments>
+		<post-id xmlns="com-wordpress:feed-additions:1">90834</post-id>	</item>
+<item>
+		<title>Power Corner: Synopsys on How Data Movement is Taking a Growing Share of Power</title>
+		<link>https://www.powerelectronicsnews.com/power-corner-synopsys-on-how-data-movement-is-taking-a-growing-share-of-power/</link>
+					<comments>https://www.powerelectronicsnews.com/power-corner-synopsys-on-how-data-movement-is-taking-a-growing-share-of-power/#respond</comments>
+		<dc:creator><![CDATA[Aalyia Shaukat]]></dc:creator>
+		<pubDate>Thu, 19 Nov 2026 13:00:00 +0000</pubDate>
+				<category><![CDATA[Power Corner]]></category>
+		<category><![CDATA[Videos]]></category>
+		<category><![CDATA[800 VDC]]></category>
+		<category><![CDATA[AI]]></category>
+		<category><![CDATA[Chiplets]]></category>
+		<category><![CDATA[Data Centers]]></category>
+		<category><![CDATA[Power Delivery]]></category>
+		<category><![CDATA[Scale-out]]></category>
+		<category><![CDATA[Scale-up]]></category>
+		<category><![CDATA[SerDes]]></category>
+		<category><![CDATA[UCIe]]></category>
+		<guid isPermaLink="false">https://www.powerelectronicsnews.com/?p=90817</guid>
+					<description><![CDATA[<img width="853" height="480" src="https://www.powerelectronicsnews.com/wp-content/uploads/sites/3/2026/11/Synopsys_Thumbnail.gif?fit=853%2C480" class="webfeedsFeaturedVisual wp-post-image" alt="" style="display: block; margin-bottom: 5px; clear:both;max-width: 100%;" link_thumbnail="" decoding="async" loading="lazy" /><p>Synopsys’ Neeraj Paliwal explains why data movement, not faster chips, limits scaling AI toward 1-MW racks.</p>
+<p>The post <a href="https://www.powerelectronicsnews.com/power-corner-synopsys-on-how-data-movement-is-taking-a-growing-share-of-power/">Power Corner: Synopsys on How Data Movement is Taking a Growing Share of Power</a> appeared first on <a href="https://www.powerelectronicsnews.com">Power Electronics News</a>.</p>
+]]></description>
+					<wfw:commentRss>https://www.powerelectronicsnews.com/power-corner-synopsys-on-how-data-movement-is-taking-a-growing-share-of-power/feed/</wfw:commentRss>
+			<slash:comments>0</slash:comments>
+		<post-id xmlns="com-wordpress:feed-additions:1">90817</post-id>	</item>
+</channel>
+</rss>

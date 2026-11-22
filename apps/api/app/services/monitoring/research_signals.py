@@ -16,7 +16,8 @@ already HOLDS — no vendor call, no network:
   researched is unknown, never "lost").
 * ``change_event`` — an event in the newest record's change-events block that the previous
   record did not hold, and an event classified from a held disclosure retrieved since the
-  last run (same key, so the two paths cannot raise one event twice).
+  last run (same key, so the two paths cannot raise one event twice); and (V3.21.6) an
+  event in a trade-press item naming the company, labelled "reported by trade press".
 * ``competitor_capacity_announcement`` — a same-layer peer researched AFTER this company's
   newest record whose disclosed capacity (same unit) rose by at least
   ``CAPACITY_RISE_MIN`` against the peer's own previous record.
@@ -222,13 +223,18 @@ def _event_signal(e: Mapping[str, Any], *, company_id: uuid.UUID,
     label = e.get("label") or str(e.get("trigger_type") or "").replace("_", " ")
     when = e.get("date") or e.get("end_date")
     title = f": {e.get('title')}" if e.get("title") else ""
-    return _signal(
-        KIND_CHANGE_EVENT, company_id, run_id,
-        f"{label} ({when}){title}", _event_parts(e),
-        {"origin": origin, **{k: e.get(k) for k in (
-            "trigger_type", "label", "date", "start_date", "end_date", "title",
-            "source_url", "document_type", "rule", "distinct_insiders", "purchases")
-            if e.get(k) is not None}})
+    detail = {"origin": origin, **{k: e.get(k) for k in (
+        "trigger_type", "label", "date", "start_date", "end_date", "title",
+        "source_url", "document_type", "rule", "distinct_insiders", "purchases")
+        if e.get(k) is not None}}
+    summary = f"{label} ({when}){title}"
+    if e.get("source_kind") == "trade_press":
+        # V3.21.6 — an outlet reporting it, never the issuer disclosing it.
+        outlet = f" in {e.get('outlet')}" if e.get("outlet") else ""
+        summary = f"{label}, reported by trade press{outlet} ({when}){title}"
+        detail.update({k: e.get(k) for k in ("source_kind", "reported_as", "outlet",
+                                             "weight") if e.get(k) is not None})
+    return _signal(KIND_CHANGE_EVENT, company_id, run_id, summary, _event_parts(e), detail)
 
 
 def change_event_signals(prev: Mapping[str, Any], cur: Mapping[str, Any], *,
@@ -239,7 +245,8 @@ def change_event_signals(prev: Mapping[str, Any], cur: Mapping[str, Any], *,
     if old is None:  # the previous run did not look; everything would look new
         return []
     def every(block: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-        return [*(block.get("events") or []), *(block.get("insider_clusters") or [])]
+        return [*(block.get("events") or []), *(block.get("insider_clusters") or []),
+                *(block.get("trade_press_events") or [])]
     seen = {_event_parts(e) for e in every(old)}
     return [_event_signal(e, company_id=company_id, run_id=run_id, origin="research_record")
             for e in every(new) if _event_parts(e) not in seen]
@@ -252,6 +259,16 @@ def fresh_event_signals(classified: Mapping[str, Any], *, cutoff: datetime | Non
     floor = cutoff.date().isoformat() if cutoff else ""
     return [_event_signal(e, company_id=company_id, run_id=run_id, origin="held_disclosure")
             for e in classified.get("events") or [] if (e.get("date") or "") > floor]
+
+
+def fresh_trade_press_signals(press: Mapping[str, Any], *, cutoff: datetime | None,
+                              company_id: uuid.UUID, run_id: uuid.UUID | None
+                              ) -> list[DetectedSignal]:
+    """V3.21.6 — events in trade-press items naming the company, dated after the last
+    run. Labelled "reported by trade press"; never "disclosed"."""
+    floor = cutoff.date().isoformat() if cutoff else ""
+    return [_event_signal(e, company_id=company_id, run_id=run_id, origin="trade_press")
+            for e in press.get("events") or [] if (e.get("date") or "") > floor]
 
 
 # ── competitor capacity ───────────────────────────────────────────────────── #
@@ -353,6 +370,21 @@ async def research_signals(
                                            company_id=company_id, run_id=prior_run_id))
     except Exception:  # noqa: BLE001
         logger.warning("held-disclosure change events failed")
+    try:
+        from app.core.config import settings as cfg
+
+        if getattr(cfg, "v3_trade_press_feeds_enabled", False):
+            from app.services.discovery.change_events import events_from_trade_press
+            from app.services.trade_press.store import recent_mentions
+
+            day = today or date.today()
+            items = await recent_mentions(session, company_id, today=day, limit=50)
+            if items:
+                signals.extend(fresh_trade_press_signals(
+                    events_from_trade_press(items, today=day), cutoff=cutoff,
+                    company_id=company_id, run_id=prior_run_id))
+    except Exception:  # noqa: BLE001
+        logger.warning("trade-press change events failed")
     unique: dict[str, DetectedSignal] = {}
     for s in signals:
         unique.setdefault(s.signal_key, s)
@@ -366,6 +398,7 @@ __all__ = [
     "change_event_signals",
     "earnings_signals",
     "fresh_event_signals",
+    "fresh_trade_press_signals",
     "passive_signals",
     "relationship_signals",
     "research_signals",

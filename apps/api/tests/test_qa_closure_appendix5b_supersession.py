@@ -9,6 +9,7 @@ a rotated watermark, footers, a footnote marker glued to a value). No network.
 from __future__ import annotations
 
 import asyncio
+import gc
 import re
 import time
 import uuid
@@ -446,12 +447,19 @@ def _patterns(module) -> list[re.Pattern[str]]:  # noqa: ANN001
 def test_every_pattern_is_linear(module) -> None:  # noqa: ANN001
     patterns = _patterns(module)
     assert len(patterns) >= 10
-    for pattern in patterns:
-        for text in _ADVERSARIAL:
-            started = time.process_time()
-            pattern.search(text)
-            list(pattern.finditer(text))
-            assert time.process_time() - started < 0.2, pattern.pattern
+    # A garbage-collection pause inside the timed window is not the pattern's cost: on a
+    # large test heap it measured 0.9 s of CPU for `[A-Za-z]\.[A-Za-z]` (CI, 2026-11-22).
+    gc.collect()
+    gc.disable()
+    try:
+        for pattern in patterns:
+            for text in _ADVERSARIAL:
+                started = time.process_time()
+                pattern.search(text)
+                list(pattern.finditer(text))
+                assert time.process_time() - started < 0.2, pattern.pattern
+    finally:
+        gc.enable()
 
 
 @pytest.mark.parametrize("text", _ADVERSARIAL)

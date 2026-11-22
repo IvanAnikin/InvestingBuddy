@@ -52,6 +52,47 @@ export function ChangeEventsSection({ block }: { block: ChangeEventsBlock | null
           </table>
         </div>
       )}
+      {block.pressEvents.length > 0 && (
+        <div className="mt-3 max-w-full overflow-x-auto" data-testid="trade-press-events">
+          <p className="text-xs font-semibold text-[color:var(--ib-ink-2)]">
+            Reported by trade press
+            {block.pressWindowDays !== null && <> (last {block.pressWindowDays} days)</>}
+          </p>
+          <table className="mt-1 w-full min-w-[560px] text-left text-sm">
+            <thead className={muted}>
+              <tr>
+                <th className={cell}>Date</th>
+                <th className={cell}>Event</th>
+                <th className={cell}>Headline</th>
+              </tr>
+            </thead>
+            <tbody>
+              {block.pressEvents.map((e, i) => (
+                <tr key={`press-${e.triggerType}-${e.date}-${i}`}
+                    className="border-t border-[color:var(--ib-line)]">
+                  <td className={`${cell} whitespace-nowrap`}>{e.date ?? "—"}</td>
+                  <td className={cell}>{e.label ?? e.triggerType}</td>
+                  <td className={`${cell} [overflow-wrap:anywhere]`}>
+                    {e.url ? (
+                      <a href={e.url} target="_blank" rel="noopener noreferrer"
+                         className="underline">
+                        {e.title ?? "article"}
+                      </a>
+                    ) : (
+                      (e.title ?? "—")
+                    )}
+                    {e.outlet && <span className={muted}> · {e.outlet}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className={`mt-1 ${muted}`}>
+            An outlet reporting an event, not the issuer disclosing it; weighted below a
+            disclosure.
+          </p>
+        </div>
+      )}
       {block.actions.length > 0 && (
         <div className="mt-3 max-w-full overflow-x-auto" data-testid="corporate-actions">
           <p className="text-xs font-semibold text-[color:var(--ib-ink-2)]">

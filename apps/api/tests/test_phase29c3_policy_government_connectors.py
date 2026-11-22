@@ -269,7 +269,7 @@ def test_registry_summary_counts_after_policy_layer():
     # + 5 policy / government (29C.3) + 2 procurement / tender events (29D.1)
     # + 3 patent office / index events (29D.2) + 3 permit / regulatory-event
     # sources (29D.3) = 34 enabled.
-    assert summary["enabled"] == 47  # +3: Ember, IRENA, EIA industry data (V3.21.4, ADR-111); +1: OCCTO supply plan (11.5; CEA is disabled); +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E) +1: research coverage index (V3.21.7)
+    assert summary["enabled"] == 48  # +3: Ember, IRENA, EIA industry data (V3.21.4, ADR-111); +1: OCCTO supply plan (11.5; CEA is disabled); +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E) +1: research coverage index (V3.21.7) +1: electricity trade press (V3.21.6)
     assert summary["scaffolded"] == 2
     assert summary["planned"] == 1  # only OpenBB remains planned (Phase 30B)
     assert summary["total"] == len(reg.all_sources())

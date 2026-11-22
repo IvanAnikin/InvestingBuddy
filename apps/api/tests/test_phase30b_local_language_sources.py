@@ -220,10 +220,10 @@ def test_5_registry_promotes_local_language_press_to_enabled():
     # The regulator-layer promotions (11) + 29C/29D reference sources (23) + this
     # local-language press promotion => 35 enabled; OpenBB is the last planned row.
     summary = reg.summary()
-    assert summary["enabled"] == 47  # +3: Ember, IRENA, EIA industry data (V3.21.4, ADR-111); +1: OCCTO supply plan (11.5; CEA is disabled); +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: Italian regulated disclosures (readiness PR-E) +1: research coverage index (V3.21.7)
+    assert summary["enabled"] == 48  # +3: Ember, IRENA, EIA industry data (V3.21.4, ADR-111); +1: OCCTO supply plan (11.5; CEA is disabled); +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: Italian regulated disclosures (readiness PR-E) +1: research coverage index (V3.21.7) +1: electricity trade press (V3.21.6)
     assert summary["planned"] == 1
     assert summary["scaffolded"] == 2
-    assert summary["total"] == 52  # +3: Ember, IRENA, EIA industry data (V3.21.4); +2: OCCTO + CEA (11.5, CEA disabled); +1: NESO TEC (7.4), +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default), +2: AEMO TAI + LBL Queued Up (7.2) +1: research coverage index (V3.21.7)
+    assert summary["total"] == 53  # +3: Ember, IRENA, EIA industry data (V3.21.4); +2: OCCTO + CEA (11.5, CEA disabled); +1: NESO TEC (7.4), +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default), +2: AEMO TAI + LBL Queued Up (7.2) +1: research coverage index (V3.21.7) +1: electricity trade press (V3.21.6)
     assert summary["total"] == len(reg.all_sources())
 
 
