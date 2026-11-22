@@ -221,24 +221,96 @@ def events_from_documents(
             "undated": undated}
 
 
+#: V3.21.6 (ADR-113) — the trade-press input. An outlet reporting an event is weaker than
+#: the issuer disclosing it: its events are kept apart (``trade_press_events``), weighted
+#: below an issuer disclosure, never counted in ``counts_by_type`` or by the verdict's
+#: catalyst pillar, and never reopen a name in the novelty gate.
+TRADE_PRESS_WINDOW_DAYS = 90
+TRADE_PRESS_WEIGHT = 0.5
+SOURCE_KIND_TRADE_PRESS = "trade_press"
+REPORTED_BY_TRADE_PRESS = "reported by trade press"
+
+
+def events_from_trade_press(
+    items: Iterable[Mapping[str, Any]],
+    *,
+    today: date,
+    window_days: int = TRADE_PRESS_WINDOW_DAYS,
+) -> dict[str, Any]:
+    """The same title rules over trade-press items that mention the company. Pure.
+
+    ``items`` are ``trade_press.store.recent_mentions`` rows (``title``, ``url``,
+    ``published_at``, ``outlet``, ``layers``). A patent grant reported by the press is
+    not counted: a ``patent_cluster`` needs the grants themselves. Returns ``{events,
+    negated, considered}``; every row is labelled ``source_kind="trade_press"`` and
+    "reported by trade press".
+    """
+    from app.schemas.catalyst import neutralize_forbidden_terms
+
+    since = today - timedelta(days=window_days)
+    events: list[dict[str, Any]] = []
+    negated: list[dict[str, Any]] = []
+    considered = 0
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        published = _date(item.get("published_at"))
+        if published is None or published < since or published > today:
+            continue
+        considered += 1
+        hit = classify_title(item.get("title"))
+        if hit is None or hit[0] == "patent_cluster":
+            continue
+        trigger, rule = hit
+        title = (neutralize_forbidden_terms(str(item.get("title"))) or "")[:300] or None
+        marker = (trigger, " ".join((title or "").lower().split()))
+        if marker in seen:  # the same story syndicated by two outlets is one event
+            continue
+        seen.add(marker)
+        row = {
+            "trigger_type": trigger,
+            "label": LABELS.get(trigger),
+            "date": published.isoformat(),
+            "title": title,
+            "document_type": "trade_press_item",
+            "source_url": item.get("url"),
+            "source_tier": item.get("source_tier"),
+            "outlet": item.get("outlet"),
+            "layers": list(item.get("layers") or [])[:4],
+            "source_kind": SOURCE_KIND_TRADE_PRESS,
+            "reported_as": REPORTED_BY_TRADE_PRESS,
+            "weight": TRADE_PRESS_WEIGHT,
+            "rule": rule,
+        }
+        (negated if trigger == "negated" else events).append(row)
+    events.sort(key=lambda r: (r["date"], r["trigger_type"]), reverse=True)
+    return {"events": events, "negated": negated, "considered": considered}
+
+
 def change_events_block(
     *,
     classified: Mapping[str, Any],
     insider: Mapping[str, Any] | None,
     corporate: Mapping[str, Any] | None = None,
     window_days: int = WINDOW_DAYS,
+    trade_press: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """The report block, or ``None`` when there is nothing to show.
 
     ``corporate`` (V3.20 11.3c, ``opendart_major_matters.corporate_actions``) adds the
     issuer's typed major-matters decisions as ``corporate_actions``, and its
     ``maturity_refinanced`` events beside the title-derived ones.
+
+    ``trade_press`` (V3.21.6, :func:`events_from_trade_press`) adds
+    ``trade_press_events``: kept apart from ``events``, labelled "reported by trade
+    press", weighted :data:`TRADE_PRESS_WEIGHT`. Absent when it found nothing, so every
+    other block is unchanged.
     """
     clusters = list((insider or {}).get("clusters") or [])
     actions = list((corporate or {}).get("actions") or [])
+    press_events = list((trade_press or {}).get("events") or [])
     events = list(classified.get("events") or []) + list((corporate or {}).get("events") or [])
     events.sort(key=lambda r: (r["date"], r["trigger_type"]), reverse=True)
-    if not events and not clusters and not actions:
+    if not events and not clusters and not actions and not press_events:
         return None
     by_type: dict[str, int] = {}
     for e in events:
@@ -255,7 +327,7 @@ def change_events_block(
         note += (" Corporate actions are the typed fields of the issuer's major-matters "
                  "reports as OpenDART serves them; amounts and ratios are as the issuer "
                  "stated them.")
-    return {
+    block = {
         "rules_version": RULES_VERSION,
         "window_days": window_days,
         "events": events,
@@ -269,16 +341,30 @@ def change_events_block(
         "corporate_actions_lookup": dict(corporate.get("lookup") or {}) if corporate else None,
         "note": note,
     }
+    if press_events:
+        block["trade_press_events"] = press_events
+        block["trade_press_window_days"] = TRADE_PRESS_WINDOW_DAYS
+        block["trade_press_items_considered"] = (trade_press or {}).get("considered", 0)
+        block["note"] = note + (
+            " Events under 'reported by trade press' come from T4 trade-publication "
+            "headlines that name the company, by the same rules: an outlet reporting an "
+            "event, not the issuer disclosing it, and weighted below a disclosure.")
+    return block
 
 
 __all__ = [
     "LABELS",
     "MIN_PATENT_GRANTS",
+    "REPORTED_BY_TRADE_PRESS",
     "RULES",
     "RULES_VERSION",
+    "SOURCE_KIND_TRADE_PRESS",
+    "TRADE_PRESS_WEIGHT",
+    "TRADE_PRESS_WINDOW_DAYS",
     "TRIGGER_TYPES",
     "WINDOW_DAYS",
     "change_events_block",
     "classify_title",
     "events_from_documents",
+    "events_from_trade_press",
 ]

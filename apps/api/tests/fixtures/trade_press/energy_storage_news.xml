@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:atom="http://www.w3.org/2005/Atom"
+	xmlns:sy="http://purl.org/rss/1.0/modules/syndication/"
+	xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+	xmlns:inf="https://informa.com/ns/feed/1.0/"
+>
+
+<channel>
+	<title>Energy-Storage.News</title>
+	<atom:link href="https://www.energy-storage.news/feed/" rel="self" type="application/rss+xml" />
+	<link>https://www.energy-storage.news/</link>
+	<description>Global news, analysis and opinion on energy storage innovation and technologies</description>
+	<lastBuildDate>Fri, 20 Nov 2026 12:53:39 +0000</lastBuildDate>
+	<language>en-US</language>
+	<sy:updatePeriod>
+	hourly	</sy:updatePeriod>
+	<sy:updateFrequency>
+	1	</sy:updateFrequency>
+	
+
+<image>
+	<url>https://www.energy-storage.news/wp-content/uploads/2021/04/cropped-esn-icon-32x32.png</url>
+	<title>Energy-Storage.News</title>
+	<link>https://www.energy-storage.news/</link>
+	<width>32</width>
+	<height>32</height>
+</image> 
+	<item>
+		<title>&#8216;Sodium is a chance for us to lean forward and win&#8217;: Alsym Energy at RE+ on why US battery policy needs to shift upstream</title>
+		<link>https://www.energy-storage.news/sodium-is-a-chance-for-us-to-lean-forward-and-win-alsym-energy-at-re-on-why-us-battery-policy-needs-to-shift-upstream/</link>
+		<dc:creator><![CDATA[April Bonner]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 12:53:38 +0000</pubDate>
+				<category><![CDATA[Interviews]]></category>
+		<category><![CDATA[News]]></category>
+		<category><![CDATA[alsym energy]]></category>
+		<category><![CDATA[feoc]]></category>
+		<category><![CDATA[lfp]]></category>
+		<category><![CDATA[na-ion]]></category>
+		<category><![CDATA[RE+]]></category>
+		<category><![CDATA[sodium ion]]></category>
+		<category><![CDATA[sodium-ion]]></category>
+		<category><![CDATA[supply chain]]></category>
+		<category><![CDATA[usa]]></category>
+		<guid isPermaLink="false">https://www.energy-storage.news/?p=110728</guid>
+					<description><![CDATA[Sodium-ion (Na-ion) is continuing to gain traction as a legitimate "major chemistry" — with CATL, BYD, and GM all committing to it — some developers, within and outside the US Na-ion space have argued that greater policy support should be directed toward advancing the technology.]]></description>
+		<enclosure url="https://www.energy-storage.news/wp-content/uploads/2026/11/D3A6DFCC-539A-4EA7-8F08-B5E906D116E3-768x576.jpeg" />	</item>
+<item>
+		<title>Who’s gaining geopolitical advantage in the energy transition? </title>
+		<link>https://www.energy-storage.news/whos-gaining-geopolitical-advantage-in-the-energy-transition/</link>
+		<dc:creator><![CDATA[Andy Colthorpe]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 12:01:59 +0000</pubDate>
+				<category><![CDATA[Analysis]]></category>
+		<category><![CDATA[Features]]></category>
+		<category><![CDATA[electric vehicle]]></category>
+		<category><![CDATA[electrification]]></category>
+		<category><![CDATA[energy transition]]></category>
+		<category><![CDATA[fossil fuel]]></category>
+		<category><![CDATA[geopolitics]]></category>
+		<category><![CDATA[infrastructure]]></category>
+		<category><![CDATA[solar pv]]></category>
+		<category><![CDATA[supply chain]]></category>
+		<guid isPermaLink="false">https://www.energy-storage.news/?p=110598</guid>
+					<description><![CDATA[Energy transition expert Chris Nelder looks at which countries are leading the way in the geopolitical race for clean energy supremacy.]]></description>
+		<enclosure url="https://www.energy-storage.news/wp-content/uploads/2026/11/BYD-Car-factory-2-768x431.png" />	</item>
+<item>
+		<title>Germany: operators progress over 4GWh of BESS towards construction ahead of year-end FID deadline</title>
+		<link>https://www.energy-storage.news/germany-operators-4gwh-large-scale-bess-construction-fid-deadline/</link>
+		<dc:creator><![CDATA[Cameron Murray]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 11:55:25 +0000</pubDate>
+				<category><![CDATA[News]]></category>
+		<category><![CDATA[developers]]></category>
+		<category><![CDATA[dispatch]]></category>
+		<category><![CDATA[Elements Green]]></category>
+		<category><![CDATA[enbw]]></category>
+		<category><![CDATA[EnergyStorageEurope]]></category>
+		<category><![CDATA[FID]]></category>
+		<category><![CDATA[flower]]></category>
+		<category><![CDATA[germany]]></category>
+		<category><![CDATA[storagegermany]]></category>
+		<guid isPermaLink="false">https://www.energy-storage.news/?p=110757</guid>
+					<description><![CDATA[Large-scale BESS projects in Germany have been progressed towards construction by Elements Green, Voltwise, EnBW, Green Flexibility, Flower and Dispatch totalling over 4GWh of capacity.]]></description>
+		<enclosure url="https://www.energy-storage.news/wp-content/uploads/2026/11/Screenshot-2026-11-20-104951-768x509.png" />	</item>
+<item>
+		<title>BESS Industry Buzz: RE+, EU-made premiums, European revenue variability</title>
+		<link>https://www.energy-storage.news/bess-industry-buzz-re-eu-made-premiums-european-revenue-variability/</link>
+		<dc:creator><![CDATA[Cameron Murray]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 11:34:56 +0000</pubDate>
+				<category><![CDATA[Editor's blog]]></category>
+		<category><![CDATA[Features]]></category>
+		<category><![CDATA[australia]]></category>
+		<category><![CDATA[BESS Industry Buzz]]></category>
+		<category><![CDATA[eu]]></category>
+		<category><![CDATA[poland]]></category>
+		<category><![CDATA[RE+]]></category>
+		<category><![CDATA[spain]]></category>
+		<category><![CDATA[uk]]></category>
+		<guid isPermaLink="false">https://www.energy-storage.news/?p=110687</guid>
+					<description><![CDATA[Another BESS Industry Buzz, looking at what people are discussing in the industry plus some of the most notable quotes from the RE+ trade show, which concluded yesterday.]]></description>
+		<enclosure url="https://www.energy-storage.news/wp-content/uploads/2026/11/RE-768x512.jpg" />	</item>
+<item>
+		<title>&#8216;Close proximity to key grid infrastructure&#8217;: EDF buys 1GWh battery storage system in Australia</title>
+		<link>https://www.energy-storage.news/edf-acquires-250mw-holloway-battery-storage-project-new-south-wales-australia/</link>
+		<dc:creator><![CDATA[George Heynes]]></dc:creator>
+		<pubDate>Fri, 20 Nov 2026 10:00:04 +0000</pubDate>
+				<category><![CDATA[News]]></category>
+		<category><![CDATA[australia]]></category>
+		<category><![CDATA[battery energy storage]]></category>
+		<category><![CDATA[battery storage]]></category>
+		<category><![CDATA[bess]]></category>
+		<category><![CDATA[edf]]></category>
+		<category><![CDATA[edf power solutions]]></category>
+		<category><![CDATA[energystorageaus]]></category>
+		<category><![CDATA[nem]]></category>
+		<category><![CDATA[new south wales]]></category>
+		<category><![CDATA[nsw]]></category>
+		<category><![CDATA[StorageAus]]></category>
+		<guid isPermaLink="false">https://www.energy-storage.news/?p=110719</guid>
+					<description><![CDATA[EDF power solutions Australia has acquired the 250MW Holloway BESS project in New South Wales (NSW) from developer SynCo Global.]]></description>
+		<enclosure url="https://www.energy-storage.news/wp-content/uploads/2023/10/EDF-Battery-2-1024x683@2x-768x512.jpg" />	</item>
+</channel>
+</rss>

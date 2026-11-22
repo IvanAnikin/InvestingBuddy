@@ -46,6 +46,10 @@ import {
 } from "./earningsTrackRecord";
 import { type ElectricityLayersBlock, readElectricityLayersBlock } from "./electricityLayers";
 import { type ChangeEventsBlock, readChangeEventsBlock } from "./changeEvents";
+import {
+  readTradePressMentionsBlock,
+  type TradePressMentionsBlock,
+} from "./tradePressMentions";
 import { type EnterpriseValueBlock, readEnterpriseValueBlock } from "./enterpriseValue";
 import { type LayerPeersBlock, readLayerPeersBlock } from "./layerPeers";
 import { type PrecedentTransactionsBlock, readPrecedentTransactionsBlock } from "./precedentTransactions";
@@ -533,6 +537,9 @@ export type DomainSection = SectionHead & {
       Form 4 insider purchase clusters. Null when off or nothing found, and on older
       reports. */
   changeEvents: ChangeEventsBlock | null;
+  /** V3.21.6 (growth_and_catalysts): recent trade-press headlines naming the company.
+      Null when off or none, and on older reports. */
+  tradePressMentions: TradePressMentionsBlock | null;
   /** V3.20 slice 8.1 (valuation_context): enterprise value and multiples over dated,
       cited inputs. Null when off or no input, and on older reports. */
   enterpriseValue: EnterpriseValueBlock | null;
@@ -1170,6 +1177,7 @@ function readDomainSection(
     qualificationEvidence: readQualificationEvidenceBlock(r.qualification_evidence),
     obscurity: readObscurityBlock(r.obscurity),
     changeEvents: readChangeEventsBlock(r.change_events),
+    tradePressMentions: readTradePressMentionsBlock(r.trade_press_mentions),
     enterpriseValue: readEnterpriseValueBlock(r.enterprise_value),
     layerPeers: readLayerPeersBlock(r.layer_peers),
     precedentTransactions: readPrecedentTransactionsBlock(r.precedent_transactions),

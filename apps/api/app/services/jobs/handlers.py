@@ -38,5 +38,8 @@ from app.services.monitoring import pass_job  # noqa: F401
 from app.services.research_coverage import refresh_job  # noqa: F401
 from app.services.scheduling import periodic  # noqa: F401
 
+# V3.21.6 (ADR-113) — the 6-hourly trade-press poll registers its handler and its task.
+from app.services.trade_press import job as trade_press_job  # noqa: F401
+
 __all__ = ["company_research_job", "discovery_research_job", "industry_data_refresh",
-           "job_hook", "pass_job", "periodic", "refresh_job"]
+           "job_hook", "pass_job", "periodic", "refresh_job", "trade_press_job"]

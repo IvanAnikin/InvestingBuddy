@@ -137,6 +137,9 @@ class StageResult:
     #: screening investigation. ``external_discovery`` is the union, so "unavailable" is
     #: said only when NO source beyond the registries ran. Web-on runs only.
     lead_sources: dict[str, Any] | None = None
+    #: V3.21.6 — what the press-lead source did (``trade_press.leads``); ``None`` when it
+    #: did not apply, so every other run persists the same shape.
+    trade_press: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = self._base_dict()
@@ -157,6 +160,8 @@ class StageResult:
             # V3.20 D1 — only present when a size mandate left names unverified, so a
             # run without one persists exactly the V3.19 shape.
             out["size_unverified"] = [c.to_dict() for c in self.size_unverified][:40]
+        if self.trade_press is not None:
+            out["trade_press_leads"] = dict(self.trade_press)
         if self.novelty_held or self.diversity_moved:
             # V3.20 slice 6.4 — only when the gate or the quota acted.
             from app.services.discovery.novelty import issuer_key
@@ -206,11 +211,14 @@ class StageResult:
 
 
 def lead_origin(lead: CompanyLead) -> str:
-    """``web_search`` | ``model_recall`` | ``curated_registry`` | ``platform_registry``."""
+    """``web_search`` | ``model_recall`` | ``trade_press`` | ``curated_registry`` |
+    ``platform_registry``."""
     if lead.discovery_mode == "search":
         return "web_search"
     if lead.discovery_mode == "model_recall":
         return "model_recall"
+    if lead.discovery_mode == "trade_press":
+        return "trade_press"
     return str(lead.source or "unknown")
 
 
@@ -571,6 +579,21 @@ async def run_dynamic_stage(
         )
         stage.web = dict(web_result.summary)
         web_leads = list(web_result.leads)
+    # V3.21.6 (ADR-113) — press leads: names in recent trade-press items matching the
+    # segment terms or layers, extracted by ONE bounded model call, verified below like
+    # every external lead. Nothing changes when the source does not apply.
+    press_leads: list[CompanyLead] = []
+    press_units: list[Any] = []
+    if external:
+        from app.services.trade_press.leads import press_leads as _press_leads
+
+        press = await _press_leads(
+            session, intent, cfg=cfg, provider=provider, today=plan_date,
+            known_names=[x.name for x in [*leads, *web_leads]])
+        press_leads = list(press.leads)
+        press_units = list(press.consumption)
+        stage.warnings.extend(press.warnings)
+        stage.trade_press = press.summary
     external_leads: list[CompanyLead] = []
     recall_available = False
     if external:
@@ -588,6 +611,7 @@ async def run_dynamic_stage(
         units = list(found.consumption)
     else:
         units = []
+    units.extend(press_units)
     if web_result is not None and web_result.ran:
         units.append(web_result.units)
     recall_live = web_result is not None and web_result.state in _LIVE_SEARCH_STATES
@@ -630,7 +654,7 @@ async def run_dynamic_stage(
         for x in to_check:
             if x.lead_id in recall_corroborated:
                 x.web = recall_corroborated[x.lead_id]
-    raw_count = len(leads) + len(web_leads) + len(external_leads)
+    raw_count = len(leads) + len(web_leads) + len(press_leads) + len(external_leads)
 
     # 2. Dedup — cheap, before any fetch. A lead matching a HELD company inherits its
     #    identity (reference data on record) and is not re-verified.
@@ -649,7 +673,7 @@ async def run_dynamic_stage(
         (web_result.executed_query_ids if web_result is not None else frozenset())
         | recall_executed
     )
-    for lead in [*leads, *web_leads, *external_leads]:
+    for lead in [*leads, *web_leads, *press_leads, *external_leads]:
         venue = normalise_venue(lead.exchange_raw) or (lead.exchange_raw or None)
         key = dedup_key(lead.ticker, venue)
         # ADR-061 — a lead naming several listings of one issuer duplicates a lead on ANY
@@ -1025,6 +1049,8 @@ async def run_dynamic_stage(
     }
     if mandate:
         stage.funnel["size_unverified"] = len(stage.size_unverified)
+    if press_leads:
+        stage.funnel["press_leads"] = len(press_leads)
     if web_on:
         stage.also_surfaced = also_surfaced
         stage.lead_sources = _lead_sources(

@@ -426,6 +426,21 @@ def _label(summary: Mapping[str, Any]) -> str | None:
     return STATE_LABELS.get(str(state))
 
 
+def _press_domains(company: Any, run_ctx: Any, cfg: Any) -> tuple[str, ...]:
+    """V3.21.6 (ADR-113) — the trade-press outlets for the company's electricity layers,
+    read from its classification and themes (taxonomy anchors). Empty when off or when
+    no layer is named, so the plan is unchanged."""
+    if not getattr(cfg, "v3_trade_press_feeds_enabled", False):
+        return ()
+    from app.services.electricity.taxonomy import match_layers
+    from app.services.trade_press.feeds import hosts_for_layers
+
+    text = " ".join(str(t) for t in (getattr(run_ctx, "industry", None),
+                                     getattr(company, "industry", None),
+                                     *(getattr(run_ctx, "themes", ()) or ())) if t)
+    return hosts_for_layers({h.layer for h in match_layers(text)})
+
+
 async def _execute(
     session: Any,
     company: Any,
@@ -456,6 +471,7 @@ async def _execute(
     facts = facts_from_company(
         company, industry=run_ctx.industry, themes=run_ctx.themes,
         development_stage=run_ctx.development_stage, official_domains=issuer_domains,
+        press_domains=_press_domains(company, run_ctx, cfg),
     )
     profile = web_profile_for(run_ctx.mode)
     summary["profile"] = profile

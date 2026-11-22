@@ -164,6 +164,11 @@ _TRADE_PUBLICATIONS: tuple[str, ...] = (
     "mining-technology.com", "miningweekly.com", "mineweb.com", "miningmx.com",
     "australianmining.com.au", "news.metal.com", "panorama-minero.com",
     "rareearthexchanges.com",
+    # V3.21.6 (ADR-113) — the electricity trade-press outlets (``trade_press.feeds``): the
+    # eight feed hosts not already above, and energate (search only, no reachable feed).
+    "energy-storage.news", "pv-magazine.com", "world-nuclear-news.org",
+    "datacenterdynamics.com", "powerelectronicsnews.com", "offshorewind.biz",
+    "power-eng.com", "wysokienapiecie.pl", "energate-messenger.de",
 )
 _RESEARCH_CONSULTANCIES: tuple[str, ...] = (
     "mckinsey.com", "bcg.com", "bain.com", "deloitte.com", "pwc.com", "ey.com",

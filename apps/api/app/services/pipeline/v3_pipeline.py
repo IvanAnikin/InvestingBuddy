@@ -1417,6 +1417,7 @@ async def _run(
         electricity_layers = await _electricity_layers_section(session, company, cfg=cfg)
         passive_ownership = await _passive_ownership_section(session, company, cfg=cfg)
         change_events = await _change_events_section(session, company, cfg=cfg)
+        trade_press_mentions = await _trade_press_mentions_section(session, company, cfg=cfg)
         real_asset = await _real_asset_section(session, run, electricity_layers)
         real_asset, qualification_evidence = await _certification_section(
             session, company, cfg=cfg, real_asset=real_asset)
@@ -1478,6 +1479,7 @@ async def _run(
             obscurity=obscurity,
             independent_research=independent_research,
             change_events=change_events,
+            trade_press_mentions=trade_press_mentions,
             verdict_enabled=bool(getattr(cfg, "v3_research_verdict_enabled", False)),
             valuation=await _valuation_section(
                 session, company, cfg=cfg, ev_block=enterprise_value, peers_block=layer_peers,
@@ -1883,6 +1885,15 @@ async def _change_events_section(
     return await change_events_section(session, company, cfg=cfg)
 
 
+async def _trade_press_mentions_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> dict[str, Any] | None:
+    """V3.21.6 — recent trade-press mentions; None when off or none (report unchanged)."""
+    from app.services.pipeline.change_events_step import trade_press_mentions_section
+
+    return await trade_press_mentions_section(session, company, cfg=cfg)
+
+
 async def _real_asset_section(
     session: Any, run: Any, electricity_layers: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -1999,6 +2010,7 @@ async def _professional_report(
     obscurity: dict[str, Any] | None = None,
     independent_research: dict[str, Any] | None = None,
     change_events: dict[str, Any] | None = None,
+    trade_press_mentions: dict[str, Any] | None = None,
     enterprise_value: dict[str, Any] | None = None,
     layer_peers: dict[str, Any] | None = None,
     precedent_transactions: dict[str, Any] | None = None,
@@ -2210,6 +2222,7 @@ async def _professional_report(
         obscurity=obscurity,
         independent_research=independent_research,
         change_events=change_events,
+        trade_press_mentions=trade_press_mentions,
         enterprise_value=enterprise_value,
         layer_peers=layer_peers,
         precedent_transactions=precedent_transactions,

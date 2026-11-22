@@ -138,6 +138,10 @@ class CompanyFacts:
     #: A development-stage issuer (track C stage signals).
     development_stage: bool = False
     company_id: uuid.UUID | None = None
+    #: V3.21.6 (ADR-113) — the trade-press outlet hosts for the company's electricity
+    #: layers (``trade_press.feeds.hosts_for_layers``). When set, ONE catalyst query is
+    #: restricted to them (``include_domains``). Not part of :meth:`intent`.
+    press_domains: tuple[str, ...] = ()
 
     def intent(self) -> dict[str, Any]:
         """What the model expansion may see, and what its cache key is made of."""
@@ -187,6 +191,7 @@ def facts_from_company(
     themes: Iterable[str] = (),
     development_stage: bool = False,
     official_domains: Iterable[str] = (),
+    press_domains: Iterable[str] = (),
 ) -> CompanyFacts:
     """:class:`CompanyFacts` from a ``Company`` row and what the pipeline already knows."""
     from app.services.discovery.identity import normalise_venue
@@ -205,6 +210,7 @@ def facts_from_company(
         themes=tuple(dict.fromkeys(t.strip() for t in themes if t and t.strip()))[:3],
         development_stage=bool(development_stage),
         company_id=getattr(company, "id", None),
+        press_domains=tuple(dict.fromkeys(d.lower() for d in press_domains if d)),
     )
 
 
@@ -514,6 +520,7 @@ def _request(
     language: str | None = None,
     country: str | None = None,
     site_domains: Sequence[str] = (),
+    include_domains: tuple[str, ...] = (),
 ) -> tuple[SearchRequest | None, str | None]:
     clean = sanitise_query(text, site_domains=site_domains, private_tokens=private_tokens)
     if not clean.ok:
@@ -528,12 +535,20 @@ def _request(
             date_to=today,
             country=country,
             language=language,
+            include_domains=include_domains,
             topic="news" if template.topic == "news" else "general",  # type: ignore[arg-type]
             origin=origin,
             template_version=version[:40],
         ),
         None,
     )
+
+
+#: V3.21.6 — the layer-routed trade-press query (only with ``CompanyFacts.press_domains``).
+TRADE_PRESS_TEMPLATE = Template(
+    QueryFamily.CATALYST, "trade_press_layer", "{company} news", 1, topic="news",
+    terms=("contract", "order", "project", "awarded"),
+)
 
 
 def build_plan(
@@ -625,6 +640,22 @@ def build_plan(
                              WAVE_OF[template.family], template.priority, terms,
                              locale=locale[0]),
             )
+
+    if facts.press_domains:
+        # V3.21.6 — one catalyst query restricted to the company's layer outlets.
+        press = TRADE_PRESS_TEMPLATE
+        request, refusal = _request(
+            _fill(press.pattern, slots), press, family=press.family, key=press.key,
+            mode=mode, today=today, private_tokens=private_tokens, origin=ORIGIN_TEMPLATE,
+            version=f"{QUERY_TEMPLATE_VERSION}:{press.key}",
+            include_domains=tuple(facts.press_domains),
+        )
+        if request is None:
+            plan.refused.append((press.key, refusal or "refused"))
+        else:
+            add(pools[press.family.value],
+                PlannedQuery(request, press.family, press.key, WAVE_OF[press.family],
+                             press.priority, press.terms))
 
     # Model proposals: built apart from the template pools and appended AFTER the
     # templates are trimmed, so they spend the budget's expansion share (spec §19.1:

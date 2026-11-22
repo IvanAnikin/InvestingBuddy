@@ -928,6 +928,31 @@ def build_registry(cfg: Settings | None = None) -> SourceRegistry:
                 "confidence)."
             ),
         ),
+        RegisteredSource(
+            source_id="electricity_trade_press",
+            name="Electricity trade press feeds (9 outlets, by layer)",
+            provider_type=ProviderType.news,
+            tier=T4_QUALITY_MEDIA,
+            status=(SourceStatus.enabled if cfg.v3_trade_press_feeds_enabled
+                    else SourceStatus.disabled),
+            enabled=cfg.v3_trade_press_feeds_enabled,
+            region="global",
+            language="mixed",
+            cost_model=CostModel.free,
+            access_mode=AccessMode.rss_atom,
+            connector_key="electricity_trade_press",
+            connector_implemented=True,
+            capabilities=["fetch_events"],
+            rate_limit="one conditional GET per feed every 6 hours",
+            reliability_note=(
+                "V3.21.6 (ADR-113): Utility Dive, Energy-Storage.news, pv magazine, World "
+                "Nuclear News, Data Center Dynamics, Power Electronics News, offshoreWIND.biz, "
+                "Power Engineering, WysokieNapiecie.pl (Polish), mapped to electricity "
+                "layers. Publisher copyright: only the feed's title, a 600-character "
+                "summary and the link are kept (excerpt, not republish). T4; a mention is "
+                "'reported by trade press', never 'disclosed'."
+            ),
+        ),
     ]
 
     # -- Scaffolded filing / regulator connectors (Phase 29B) --------------

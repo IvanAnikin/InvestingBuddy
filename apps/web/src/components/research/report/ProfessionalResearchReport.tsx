@@ -9,6 +9,7 @@ import { PassiveOwnershipSection } from "@/components/research/report/PassiveOwn
 import { EarningsTrackRecordSection } from "@/components/research/report/EarningsTrackRecordSection";
 import { ElectricityLayersSection } from "@/components/research/report/ElectricityLayersSection";
 import { ChangeEventsSection } from "@/components/research/report/ChangeEventsSection";
+import { TradePressMentionsSection } from "@/components/research/report/TradePressMentionsSection";
 import { EnterpriseValueSection } from "@/components/research/report/EnterpriseValueSection";
 import { LayerPeersSection } from "@/components/research/report/LayerPeersSection";
 import { PrecedentTransactionsSection } from "@/components/research/report/PrecedentTransactionsSection";
@@ -839,6 +840,7 @@ function DomainBody({
       <MarketImpliedSection block={section.marketImplied} />
       <ObscuritySection block={section.obscurity} />
       <ChangeEventsSection block={section.changeEvents} />
+      <TradePressMentionsSection block={section.tradePressMentions} />
       <EarningsTrackRecordSection block={section.earningsTrackRecord} />
       <FinancialDepthSection block={section.financialDepth} />
       {section.peerTable.length === 0 && section.peerSelectionNote && (

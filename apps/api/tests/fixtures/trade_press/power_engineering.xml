@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:atom="http://www.w3.org/2005/Atom"
+	xmlns:sy="http://purl.org/rss/1.0/modules/syndication/"
+	xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+	 xmlns:media="http://search.yahoo.com/mrss/">
+
+<channel>
+	<title>Power Engineering</title>
+	<atom:link href="https://www.power-eng.com/feed/" rel="self" type="application/rss+xml" />
+	<link>https://www.power-eng.com/</link>
+	<description>The Latest in Power Generation News</description>
+	<lastBuildDate>Wed, 18 Nov 2026 22:05:53 +0000</lastBuildDate>
+	<language>en-US</language>
+	<sy:updatePeriod>
+	hourly	</sy:updatePeriod>
+	<sy:updateFrequency>
+	1	</sy:updateFrequency>
+	<generator>https://wordpress.org/?v=7.1.5</generator>
+
+<image>
+	<url>https://www.power-eng.com/wp-content/uploads/2024/12/PowerEngIcon.svg</url>
+	<title>Power Engineering</title>
+	<link>https://www.power-eng.com/</link>
+	<width>32</width>
+	<height>32</height>
+</image> 
+	<item>
+		<title>The U.S. gas turbine fleet may have a lot left on the table</title>
+		<link>https://www.power-eng.com/gas/turbines/the-u-s-gas-turbine-fleet-may-have-a-lot-left-on-the-table/</link>
+		<dc:creator><![CDATA[Kevin Clark]]></dc:creator>
+		<pubDate>Thu, 19 Nov 2026 11:00:00 +0000</pubDate>
+				<category><![CDATA[Combined Cycle]]></category>
+		<category><![CDATA[Gas]]></category>
+		<category><![CDATA[Gas Turbines]]></category>
+		<category><![CDATA[News]]></category>
+		<category><![CDATA[POWERGEN News]]></category>
+		<category><![CDATA[Turbine Logic]]></category>
+		<guid isPermaLink="false">https://www.power-eng.com/?p=137534</guid>
+					<description><![CDATA[With new turbines years away, Turbine Logic’s Chris Perullo previews his POWERGEN 2027 analysis showing the existing fleet could add as much as 600 TWh a year through maintenance and upgrades.]]></description>
+		<media:content url="https://www.power-eng.com/wp-content/uploads/2026/11/image-8.png" type="image/png" fileSize="968936" width="1884" height="1023"></media:content>
+<media:thumbnail url="https://www.power-eng.com/wp-content/uploads/2026/11/image-8.png" width="1884" height="1023" />
+<enclosure url="https://www.power-eng.com/wp-content/uploads/2026/11/image-8.png" length="968936" type="image/png" />
+	</item>
+<item>
+		<title>First turbine delivery completed at largest natural gas plant under construction in the U.S.</title>
+		<link>https://www.power-eng.com/gas/turbines/first-turbine-delivery-completed-at-largest-natural-gas-plant-under-construction-in-the-u-s/</link>
+		<dc:creator><![CDATA[Sean Wolfe]]></dc:creator>
+		<pubDate>Wed, 18 Nov 2026 22:04:47 +0000</pubDate>
+				<category><![CDATA[Business]]></category>
+		<category><![CDATA[Gas]]></category>
+		<category><![CDATA[Gas Turbines]]></category>
+		<category><![CDATA[News]]></category>
+		<category><![CDATA[GE Vernova]]></category>
+		<guid isPermaLink="false">https://www.power-eng.com/?p=137533</guid>
+					<description><![CDATA[Homer City Generation completed the delivery of two GE Vernova turbines to the Homer City Energy Campus in September 2026, marking progress toward a 4.5 GW gas plant for data centers.]]></description>
+		<media:content url="https://www.power-eng.com/wp-content/uploads/2026/11/image-6-1.png" type="image/png" fileSize="565275" width="704" height="517"></media:content>
+<media:thumbnail url="https://www.power-eng.com/wp-content/uploads/2026/11/image-6-1.png" width="704" height="517" />
+<enclosure url="https://www.power-eng.com/wp-content/uploads/2026/11/image-6-1.png" length="565275" type="image/png" />
+	</item>
+<item>
+		<title>Appalachian Power to invest almost $25B in new gas, coal uprates</title>
+		<link>https://www.power-eng.com/gas/appalachian-power-to-invest-almost-25b-in-new-gas-coal-uprates/</link>
+		<dc:creator><![CDATA[Sean Wolfe]]></dc:creator>
+		<pubDate>Wed, 18 Nov 2026 06:00:00 +0000</pubDate>
+				<category><![CDATA[Coal]]></category>
+		<category><![CDATA[Gas]]></category>
+		<category><![CDATA[News]]></category>
+		<guid isPermaLink="false">https://www.power-eng.com/?p=137527</guid>
+					<description><![CDATA[Appalachian Power is investing $17 billion in new natural gas generation and $7.5 billion to upgrade coal plants in West Virginia, creating 2,150 jobs by 2031, as announced by Governor Morrisey.]]></description>
+		<media:content url="https://www.power-eng.com/wp-content/uploads/2024/07/coal-emissions.png" type="image/png" fileSize="375321" width="516" height="606"></media:content>
+<media:thumbnail url="https://www.power-eng.com/wp-content/uploads/2024/07/coal-emissions.png" width="516" height="606" />
+<enclosure url="https://www.power-eng.com/wp-content/uploads/2024/07/coal-emissions.png" length="375321" type="image/png" />
+	</item>
+<item>
+		<title>TVA retains Mike Skaggs as CEO, promotes Tom Rice to president</title>
+		<link>https://www.power-eng.com/business/people/tva-ceo-mike-skaggs-tom-rice-president/</link>
+		<dc:creator><![CDATA[Bethany Bashioum]]></dc:creator>
+		<pubDate>Mon, 16 Nov 2026 11:02:07 +0000</pubDate>
+				<category><![CDATA[News]]></category>
+		<category><![CDATA[People]]></category>
+		<category><![CDATA[IRP]]></category>
+		<category><![CDATA[MIKE SKAGGS]]></category>
+		<category><![CDATA[NRC]]></category>
+		<category><![CDATA[PRESIDENT]]></category>
+		<category><![CDATA[SMR]]></category>
+		<category><![CDATA[TENNESSEE VALLEY]]></category>
+		<category><![CDATA[TOM RICE]]></category>
+		<category><![CDATA[TVA]]></category>
+		<guid isPermaLink="false">https://www.power-eng.com/?p=137483</guid>
+					<description><![CDATA[TVA is retaining Mike Skaggs as CEO and promoting Tom Rice to president as the utility restructures leadership amid rising electricity demand and a $13 billion capital investment program.]]></description>
+		<media:content url="https://www.power-eng.com/wp-content/uploads/2026/11/tva-chattanooga-office-thumb.jpg" type="image/jpeg" fileSize="208275" width="1920" height="1080"></media:content>
+<media:thumbnail url="https://www.power-eng.com/wp-content/uploads/2026/11/tva-chattanooga-office-thumb.jpg" width="1920" height="1080" />
+<enclosure url="https://www.power-eng.com/wp-content/uploads/2026/11/tva-chattanooga-office-thumb.jpg" length="208275" type="image/jpeg" />
+	</item>
+<item>
+		<title>OPG says Darlington SMR won’t meet 2030 start date or cost target</title>
+		<link>https://www.power-eng.com/nuclear/smrs/darlington-smr-opg-delay-budget/</link>
+		<dc:creator><![CDATA[Bethany Bashioum]]></dc:creator>
+		<pubDate>Fri, 13 Nov 2026 12:58:42 +0000</pubDate>
+				<category><![CDATA[News]]></category>
+		<category><![CDATA[Nuclear]]></category>
+		<category><![CDATA[SMRs]]></category>
+		<category><![CDATA[DARLINGTON]]></category>
+		<category><![CDATA[DNNP]]></category>
+		<category><![CDATA[GE Vernova]]></category>
+		<category><![CDATA[GEVH]]></category>
+		<category><![CDATA[HITACHI]]></category>
+		<category><![CDATA[nuclear]]></category>
+		<category><![CDATA[nuclear energy]]></category>
+		<category><![CDATA[Ontario Power Generation]]></category>
+		<category><![CDATA[OPG]]></category>
+		<category><![CDATA[SMR]]></category>
+		<guid isPermaLink="false">https://www.power-eng.com/?p=137465</guid>
+					<description><![CDATA[Ontario Power Generation's flagship Darlington SMR project will miss its October 2030 commercial operation target and exceed its C$7.7 billion budget, raising questions about the economics of first-of-a-kind nuclear technology.]]></description>
+		<media:content url="https://www.power-eng.com/wp-content/uploads/2026/11/Darlington-New-Nuclear-Project.jpg" type="image/jpeg" fileSize="88534" width="640" height="640"></media:content>
+<media:thumbnail url="https://www.power-eng.com/wp-content/uploads/2026/11/Darlington-New-Nuclear-Project.jpg" width="640" height="640" />
+<enclosure url="https://www.power-eng.com/wp-content/uploads/2026/11/Darlington-New-Nuclear-Project.jpg" length="88534" type="image/jpeg" />
+	</item>
+</channel>
+</rss>
