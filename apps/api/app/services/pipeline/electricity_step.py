@@ -14,6 +14,7 @@ unchanged.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from app.services.electricity.classifier import CitedText, SegmentRevenue, classify
@@ -23,7 +24,50 @@ logger = logging.getLogger(__name__)
 #: Segment revenue facts read per company.
 MAX_SEGMENT_FACTS = 400
 #: The annual report's business section is read in at most this many prose chunks.
-MAX_BUSINESS_CHUNKS = 12
+MAX_BUSINESS_CHUNKS = 20
+#: How far into the document the business section is looked for.
+MAX_SCANNED_CHUNKS = 400
+
+# V3.21 live finding (2026-11-22, POWL 10-K): the held 10-K has no section paths, its
+# first nine chunks are the hidden inline-XBRL header ("us-gaap:...Member 2025-10-01 ...")
+# and the next ones are the cover page and the forward-looking-statements notice. The
+# first twelve chunks named no product, so a switchgear maker read "not_electricity".
+_XBRL_TOKEN_RE = re.compile(r"\b[a-z][a-z0-9-]*:[A-Za-z][A-Za-z0-9]+")
+_BOILERPLATE_RE = re.compile(
+    r"indicate by check mark|exact name of registrant|securities registered pursuant|"
+    r"aggregate market value of the common|forward-looking statements?\W+within the meaning|"
+    r"documents incorporated by reference|table of contents",
+    re.IGNORECASE,
+)
+_ITEM1_RE = re.compile(r"\bitem\s*1\s*[.:\-\u2013\u2014]?\s*business\b", re.IGNORECASE)
+_TOC_RE = re.compile(r"\bitem\s*1a\b.{0,400}\bitem\s*2\b", re.IGNORECASE | re.DOTALL)
+
+
+def _is_noise(text: str) -> bool:
+    """Inline-XBRL header chunks and cover-page boilerplate say nothing about the business."""
+    if len(_XBRL_TOKEN_RE.findall(text)) >= 5 or text.count("Member") >= 3:
+        return True
+    return bool(_BOILERPLATE_RE.search(text))
+
+
+def business_section_rows(rows: list[Any]) -> list[Any]:
+    """The business section of one annual report, from its prose chunks in order.
+
+    A chunk whose section path names the business wins. Otherwise the section starts at
+    the ``Item 1. Business`` heading (a table-of-contents chunk that also lists Item 1A
+    and Item 2 is not the start); with no heading, it is the first chunks that are not
+    inline-XBRL header or cover-page boilerplate. Each row is ``(text, section_path, ...)``.
+    """
+    by_path = [r for r in rows if "business" in str(r[1] or "").lower() and r[0]]
+    if by_path:
+        return by_path[:MAX_BUSINESS_CHUNKS]
+    start = next(
+        (i for i, r in enumerate(rows)
+         if r[0] and _ITEM1_RE.search(str(r[0])) and not _TOC_RE.search(str(r[0]))),
+        None,
+    )
+    candidates = rows[start:] if start is not None else rows
+    return [r for r in candidates if r[0] and not _is_noise(str(r[0]))][:MAX_BUSINESS_CHUNKS]
 _ANNUAL_TYPES = ("annual_report", "sec_filing")
 _PRIMARY_TIER = "T1_primary_filing"
 
@@ -35,8 +79,9 @@ async def _business_section_texts(session: Any, company_id: Any) -> list[CitedTe
     and segment-revenue facts. Neither exists for most companies (Powell Industries and
     Preformed Line Products both had an empty description), so the electricity layer was
     never assigned. The annual report the run already holds says what the company does,
-    in its own words: chunks whose section heading names the business, else the first
-    chunks of the document. Cited by the document's URL and date.
+    in its own words: chunks whose section heading names the business, else the section
+    from the ``Item 1. Business`` heading, else the first chunks that are neither inline-
+    XBRL header nor cover-page boilerplate (V3.21 live finding). Cited by URL and date.
     """
     from sqlalchemy import select
 
@@ -61,12 +106,8 @@ async def _business_section_texts(session: Any, company_id: Any) -> list[CitedTe
         if latest is None:
             return []
         in_doc = base.where(chunk.research_document_version_id == latest)
-        rows = (await session.execute(
-            in_doc.where(chunk.section_path.ilike("%business%"))
-            .order_by(chunk.ordinal).limit(MAX_BUSINESS_CHUNKS))).all()
-        if not rows:
-            rows = (await session.execute(
-                in_doc.order_by(chunk.ordinal).limit(MAX_BUSINESS_CHUNKS))).all()
+        rows = business_section_rows(list((await session.execute(
+            in_doc.order_by(chunk.ordinal).limit(MAX_SCANNED_CHUNKS))).all()))
     return [
         CitedText(
             text=str(text), source_kind="annual_report_business_section",
