@@ -1,0 +1,169 @@
+{
+ "title": "Electricity statistics by Country/area, Technology, Data Type, Grid connection and Year",
+ "variables": [
+  {
+   "code": "Country/area",
+   "text": "Country/area",
+   "values": [
+    "FRA",
+    "DEU",
+    "JPN",
+    "GBR",
+    "USA"
+   ],
+   "valueTexts": [
+    "France",
+    "Germany",
+    "Japan",
+    "UK",
+    "USA"
+   ]
+  },
+  {
+   "code": "Technology",
+   "text": "Technology",
+   "values": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25"
+   ],
+   "valueTexts": [
+    "Total Non-Renewable",
+    "Total Renewable",
+    "Oil",
+    "Renewable hydropower",
+    "Solar photovoltaic",
+    "Onshore wind energy",
+    "Natural gas",
+    "Coal",
+    "Renewable waste",
+    "Solar thermal energy",
+    "Solid biofuels",
+    "Other fossil fuels",
+    "Gas biofuels",
+    "Mechanical storage (Pumped hydro)",
+    "Nuclear energy",
+    "Geothermal energy",
+    "Mixed hydropower",
+    "Marine energy",
+    "Other non-renewable energy",
+    "Non-renewable waste",
+    "Liquid biofuels",
+    "Offshore wind energy",
+    "Oil shale-sands",
+    "Peat and peat products",
+    "Non-renewable energy",
+    "Pure hydropower"
+   ]
+  },
+  {
+   "code": "Data Type",
+   "text": "Data Type",
+   "values": [
+    "0",
+    "1"
+   ],
+   "valueTexts": [
+    "Electricity Generation (GWh)",
+    "Electrical Installed Capacity (MW)"
+   ]
+  },
+  {
+   "code": "Grid connection",
+   "text": "Grid connection",
+   "values": [
+    "0",
+    "1",
+    "2"
+   ],
+   "valueTexts": [
+    "All",
+    "On-grid",
+    "Off-grid"
+   ]
+  },
+  {
+   "code": "Year",
+   "text": "Year",
+   "values": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25"
+   ],
+   "valueTexts": [
+    "2000",
+    "2001",
+    "2002",
+    "2003",
+    "2004",
+    "2005",
+    "2006",
+    "2007",
+    "2008",
+    "2009",
+    "2010",
+    "2011",
+    "2012",
+    "2013",
+    "2014",
+    "2015",
+    "2016",
+    "2017",
+    "2018",
+    "2019",
+    "2020",
+    "2021",
+    "2022",
+    "2023",
+    "2024",
+    "2025"
+   ]
+  }
+ ]
+}

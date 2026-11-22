@@ -17,6 +17,9 @@ trying again.
 # completes them and silently strands every decision it touched.
 from app.services.escalation import job_hook  # noqa: F401
 
+# V3.21.4 (ADR-111) — the WEEKLY `industry_data_refresh` task and its handler.
+from app.services.industry_data import refresh as industry_data_refresh  # noqa: F401
+
 # W6a — ``discovery_research_job`` (Discovery scans) is registered UNCONDITIONALLY,
 # not behind ``V3_DISCOVERY_DURABLE_ENABLED``: the flag decides whether NEW runs
 # are enqueued, but a job enqueued before the flag was turned off must still
@@ -32,5 +35,5 @@ from app.services.jobs import (
 from app.services.monitoring import pass_job  # noqa: F401
 from app.services.scheduling import periodic  # noqa: F401
 
-__all__ = ["company_research_job", "discovery_research_job", "job_hook", "pass_job",
-           "periodic"]
+__all__ = ["company_research_job", "discovery_research_job", "industry_data_refresh",
+           "job_hook", "pass_job", "periodic"]

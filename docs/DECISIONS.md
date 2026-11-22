@@ -10899,3 +10899,59 @@ Both are right for what they were built against: free text from web pages and LL
 - Every completed thesis run says what happened to its best candidate, on the run detail of both Discovery pages, with a link to the job or the report.
 - Up to five paid research runs a day can start without a click. The cap and the fresh-report link are the spend controls. Setting the flag off stops it entirely.
 - The output is still an internal draft: human review and the publication gate are unchanged.
+
+## ADR-111: Live Industry Data From Ember, IRENA and EIA Into the Macro Store; IEA and FERC Assessed, Not Built
+
+**Date:** 2026-11-22
+**Status:** Accepted (V3.21 slice 21.4; not yet deployed)
+
+### Context
+A grid company's report had no quantified view of its market. The registry's `eia`, `iea` and `irena` entries are reference-only links (Phase 29C.2). Spec §5 (F6) asks for numeric, dated, attributed series, chosen by the company's country and electricity layer.
+
+### Decision
+1. **Three fetching sources, each with its own registry row and flag (all default on):**
+   - `ember_electricity` (`V3_INDUSTRY_DATA_EMBER_ENABLED`):
+     - Ember's yearly electricity CSV, CC BY 4.0, keyless.
+     - Generation by fuel (TWh), share (%), capacity (GW) and demand (TWh), by country.
+   - `irena_irenastat` (`V3_INDUSTRY_DATA_IRENA_ENABLED`):
+     - IRENASTAT through its PxWeb API, IRENA terms (free use with attribution).
+     - Renewable capacity (MW) and generation (GWh) by country and technology, pumped hydro storage included.
+   - `eia_api_v2` (`V3_INDUSTRY_DATA_EIA_ENABLED`):
+     - EIA API v2, public domain.
+     - US retail sales and price, net generation by fuel, and net summer capacity by source, batteries included.
+     - It needs `EIA_API_KEY` and is **inert without it, and says so**. No probing key is a default.
+
+   The 29C.2 reference rows stay as they are. Registry counts: enabled 43 → 46, total 48 → 51.
+2. **Into the existing macro store, append-only.** Every observation carries its unit, period, source ref, retrieval time and vintage. The dataset carries the licence, and each source module carries the attribution line. Vintages come from the publisher wherever the publisher states one:
+   - Ember: the file's `Last-Modified` header;
+   - IRENA: the table listing's `updated` field;
+   - EIA states no release time, so its vintage is the day the value was first seen, and the basis is recorded.
+
+   A re-run writes nothing. A re-publication with the same value (compared at the store's NUMERIC(30,10) precision) writes nothing. A changed value is a new row, and the old row stays readable through `as_of`. A published "not available" is stored as NULL, never as 0.
+3. **Bounded and pinned.** Every request goes through the guarded fetcher (`safe_fetch_document` / `safe_post_json`), with the host allowlisted, DNS checked and the connection pinned:
+   - The Ember CSV is capped at 30 MB, and a truncated file is refused rather than parsed.
+   - The IRENA table id read from the listing must match a strict pattern before it goes into a URL.
+   - The EIA key is put only in the request URL. The stored `source_ref` is built from the same parameters without it. Errors name exception types or HTTP statuses, never URLs.
+
+   The fetcher now also records `Last-Modified` (additive).
+4. **Refresh.** A WEEKLY `industry_data_refresh` periodic task (ADR-109 registry, flag `V3_INDUSTRY_DATA_REFRESH_ENABLED`) covers `V3_INDUSTRY_DATA_COUNTRIES`, 28 OECD and key Asian markets by default. It uses one transaction per source, so one publisher failing costs only that source. `scripts/ingest_industry_data.py` (`--source`, `--countries`, `--dry-run`, `--list`) runs the same refresh.
+5. **Report block `industry_and_market.industry_context`.** It reads the store only and makes no network call. It is attached after the editor and scanned by the final safety scan.
+   - **Countries:** the listing venue's country, then the stated domicile. The platform keeps no operating-country list, and the block says so.
+   - **Focus by primary electricity layer:**
+     - storage: battery capacity (EIA, US only), IRENA pumped hydro, Ember wind and solar capacity, and demand;
+     - generation_fuel: Ember generation shares, total generation, and IRENA solar and wind capacity;
+     - transmission, distribution and utilities: demand and generation growth;
+     - otherwise: demand.
+   - Changes over 1 and 5 years are computed deterministically from two cited observations.
+   - An absent series is listed with its reason: source off, no key, country not refreshed, not yet stored, or not published (battery capacity outside the US). It is never shown as zero.
+   - The block is `None` only when all three sources are off, so such a report is byte-identical.
+6. **Assessed, not built:**
+   - **IEA.** Most datasets need a login, and the IEA terms restrict redistribution. It stays reference-only.
+   - **FERC.** Form 1 bulk data is XBRL served through eLibrary (or PUDL), which is a separate ingestion build. It is recorded as a gap.
+   - **EIA Form 860M planned additions** (`operating-generator-capacity`). These are generator-level rows with no server-side aggregation, so a national total means paging tens of thousands of rows. Not built.
+
+### Consequences
+- A grid company's report shows dated Ember and IRENA figures with their sources, and EIA figures once a key is set.
+- `get_industry_series` (commodities) is unchanged. Exposing these electricity series to agents through the tool is a follow-up.
+- No migration. The cost is about 17 MB and at most 9 requests a week.
+

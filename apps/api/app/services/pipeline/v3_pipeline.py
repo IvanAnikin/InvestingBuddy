@@ -1484,6 +1484,8 @@ async def _run(
             self_critique_enabled=bool(getattr(cfg, "v3_self_critique_enabled", False)),
             demand_plans=await _demand_plans(session, cfg=cfg, layers_block=electricity_layers),
             translated_citations_enabled=bool(getattr(cfg, "v3_translation_enabled", False)),
+            industry_context=await _industry_context_section(
+                session, company, cfg=cfg, layers_block=electricity_layers),
         )
         outcome.professional_research = report
         await _mark_researched(session, company, cfg=cfg, change_events=change_events)
@@ -1692,6 +1694,16 @@ async def _electricity_layers_section(
     from app.services.pipeline.electricity_step import electricity_layers_section
 
     return await electricity_layers_section(session, company, cfg=cfg)
+
+
+async def _industry_context_section(
+    session: Any, company: Any, *, cfg: Any, layers_block: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """V3.21.4 (ADR-111) — the ``industry_context`` block; None when every industry data
+    source is off (report unchanged). Reads the macro store only; no network call."""
+    from app.services.industry_data.context import industry_context_block
+
+    return await industry_context_block(session, company, cfg=cfg, layers_block=layers_block)
 
 
 async def _obscurity_section(
@@ -1980,6 +1992,7 @@ async def _professional_report(
     self_critique_enabled: bool = False,
     demand_plans: tuple[list[dict[str, Any]], list[str]] | None = None,
     translated_citations_enabled: bool = False,
+    industry_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Screen, assemble, edit, rescan. ``(None, reason)`` only when the final scan fails
     — and then the reason is on the run, never a silent absence."""
@@ -2192,6 +2205,14 @@ async def _professional_report(
         # model reads or restates it; only when the engine ran, so other reports are
         # byte-identical.
         report["valuation"] = valuation
+    if industry_context is not None:
+        # V3.21.4 (ADR-111): dated, attributed market statistics from the macro store,
+        # attached after the editor so no model restates a figure; only when a source is
+        # on, so every other report is byte-identical.
+        market = next((s for s in report.get("sections") or []
+                       if s.get("key") == "industry_and_market"), None)
+        if market is not None:
+            market["industry_context"] = industry_context
     if demand_plans is not None:
         # V3.20 slice 7.3: do the named customers publish active grid projects in this
         # technology? Computed after the editor from the report's own blocks.

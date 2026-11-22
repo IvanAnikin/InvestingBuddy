@@ -221,7 +221,7 @@ def test_8_registry_promotes_euronext_to_enabled_reference_connector():
     # index event sources (Phase 29D.2) plus 3 reference-only permit /
     # regulatory-event sources (Phase 29D.3).
     summary = reg.summary()
-    assert summary["enabled"] == 43  # +1: OCCTO supply plan (11.5; CEA is disabled); +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E)
+    assert summary["enabled"] == 46  # +3: Ember, IRENA, EIA industry data (V3.21.4, ADR-111); +1: OCCTO supply plan (11.5; CEA is disabled); +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E)
     assert summary["scaffolded"] == 2
 
 

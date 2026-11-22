@@ -63,6 +63,7 @@ import {
 } from "./qualificationEvidence";
 import { readRelationshipBlock, type RelationshipBlock } from "./relationships";
 import { type DemandTriangulationBlock, readDemandTriangulationBlock } from "./demandTriangulation";
+import { type IndustryContextBlock, readIndustryContextBlock } from "./industryContext";
 
 /** One statement the ledger holds, with the ids that make it citable. */
 export type V3Finding = {
@@ -479,6 +480,10 @@ export type DomainSection = SectionHead & {
   sizeFit: SizeFit | null;
   /** industry_and_market only. */
   commodityTable: CommodityRow[];
+  /** V3.21.4 (industry_and_market): dated, attributed market statistics (Ember, IRENA,
+      EIA) for the listing / domicile country, chosen by electricity layer. Null when every
+      industry data source is off, and on older reports. */
+  industryContext: IndustryContextBlock | null;
   /** competitive_position only. */
   peerTable: PeerRow[];
   /** ADR-089 (competitive_position): why no peer comparison is shown when no held
@@ -1142,6 +1147,7 @@ function readDomainSection(
     commodityTable: records(r.commodity_table)
       .map(readCommodityRow)
       .filter((row): row is CommodityRow => row !== null),
+    industryContext: readIndustryContextBlock(r.industry_context),
     peerTable: records(r.peer_table)
       .map(readPeerRow)
       .filter((row): row is PeerRow => row !== null),

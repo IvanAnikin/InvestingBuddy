@@ -140,6 +140,10 @@ class DocumentFetchResult:
     # this path can be checked for a TDM reservation before it is stored. Never cookies,
     # never credentials.
     headers: dict[str, str] = field(default_factory=dict)
+    # V3.21.4 (ADR-111): the final hop's ``Last-Modified`` header, verbatim and capped.
+    # A statistical publisher's bulk file states its release time only here, and a
+    # vintage must be the publisher's time, never the time we fetched it.
+    last_modified: str | None = None
 
     @property
     def status_class(self) -> str | None:
@@ -316,6 +320,8 @@ async def safe_fetch_document(
                         for name in RIGHTS_HEADERS
                         if resp.headers.get(name) is not None
                     }
+                    modified = resp.headers.get("last-modified")
+                    result.last_modified = str(modified)[:64] if modified else None
                     doc_type = classify_content_type(content_type, current)
                     ct_prefix = (content_type or "").split(";")[0].strip().lower()
                     if doc_type is None and ct_prefix in {
