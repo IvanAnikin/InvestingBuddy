@@ -107,6 +107,15 @@ class ThesisDiscoveryRunCreate(BaseModel):
     lookback_days: int | None = Field(default=None, ge=1, le=365)
     created_by: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=2000)
+    auto_report: bool | None = Field(
+        default=None,
+        description=(
+            "V3.21.3: queue one durable research job for the run's best eligible "
+            "candidate when it completes. Omit (null) to follow "
+            "V3_DISCOVERY_AUTO_REPORT_ENABLED; false opts this run out. true cannot "
+            "override the flag being off, the daily cap or a fresh report."
+        ),
+    )
 
 
 class DiscoveryRunJob(BaseModel):
@@ -153,6 +162,10 @@ class DiscoveryRunRead(BaseModel):
     warning_raw_count: int = 0
     config_json: dict | None
     safety_notes: dict | None
+    # V3.21.3 (ADR-110) — the automatic rank-1 report: {state: queued | skipped |
+    # linked | failed, reason, candidate_id, company_id, job_id, report_id, at}. NULL
+    # for ticker runs, older runs and with the flag off.
+    auto_report_json: dict | None = None
     created_by: str | None
     human_review_required: bool
     started_at: datetime | None

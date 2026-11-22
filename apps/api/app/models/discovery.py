@@ -139,6 +139,10 @@ class DiscoveryRun(Base):
     warnings: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     config_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     safety_notes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # V3.21.3 (ADR-110, migration 063) — what the automatic rank-1 report did for this
+    # run: {state: queued|skipped|linked|failed, reason, candidate_id, company_id, job_id,
+    # report_id, at}. NULL for ticker runs, runs before 063 and with the flag off.
+    auto_report_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     created_by: Mapped[str | None] = mapped_column(sa.String(200), nullable=True)
 

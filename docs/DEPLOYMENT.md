@@ -829,6 +829,27 @@ already on there). No process, cron or key is added. To check it, look at
 `last_ok_at` or `last_error` (an exception type only). A manual pass is
 `POST /api/v1/monitoring/run` (admin only).
 
+### Auto-report on the best candidate of each thesis run (V3.21 slice 21.3, ADR-110 — not yet deployed)
+
+Needs migration **063** (`discovery_runs.auto_report_json`).
+
+| Flag | Default | Effect |
+|---|---|---|
+| `V3_DISCOVERY_AUTO_REPORT_ENABLED` | `true` | A completed thesis run queues one durable `company_research` job for its best eligible candidate and adds the company to the team Shortlist. Off = nothing is queued or recorded. |
+| `V3_AUTO_REPORT_MODE` | `standard` | Research depth of the queued job (`quick` \| `standard` \| `deep`). |
+| `V3_AUTO_REPORT_MAX_PER_DAY` | `5` | At most this many auto-reports queued per UTC day, across all runs; further runs record `skipped` / `daily_cap`. |
+| `V3_AUTO_REPORT_FRESH_DAYS` | `14` | A final report for the company newer than this is linked instead of re-researched. |
+
+Needs `V3_DURABLE_JOBS_ENABLED` (on in staging). Without it each run records `skipped` /
+`durable_jobs_off` and nothing is queued.
+
+**Cost note.** Each queued auto-report is one full paid research run at the configured
+depth: with the defaults, at most five `standard` runs a day without a click. Lower
+`V3_AUTO_REPORT_MAX_PER_DAY` or set the flag off to reduce or stop the spend. A run can opt
+out with `auto_report: false` on `POST /thesis-runs`. To check it, read the run's
+`auto_report_json` (`GET /api/v1/market-discovery/runs/{id}`) or the "Automatic report"
+line on the run detail.
+
 ### UK / ASX primary documents (non-US primary documents, 2026-09-28)
 
 `V3_UK_NSM_DISCLOSURES_ENABLED=true` and `V3_ASX_ANNOUNCEMENTS_ENABLED=true` are set on
