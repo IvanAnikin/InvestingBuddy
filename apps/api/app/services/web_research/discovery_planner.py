@@ -182,7 +182,12 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
 
 @dataclass(frozen=True)
 class DiscoveryFacts:
-    """The closed-vocabulary view of a Discovery Intent. Nothing here is user free text."""
+    """The closed-vocabulary view of a Discovery Intent. Nothing here is user free text.
+
+    V3.21.1 (ADR-107): ``segment_terms`` / ``segment_synonyms`` are derived from the text,
+    but only as SANITISED terms (letters, digits, spaces, hyphens; 3–40 chars, at most six)
+    — never the text itself.
+    """
 
     themes: tuple[str, ...] = ()
     materials: tuple[str, ...] = ()
@@ -194,6 +199,8 @@ class DiscoveryFacts:
     size_bands: tuple[str, ...] = ()
     #: ``input`` when the materials are consumed (not produced) by the wanted companies.
     materials_role: str | None = None
+    segment_terms: tuple[str, ...] = ()
+    segment_synonyms: tuple[str, ...] = ()
 
     def intent(self) -> dict[str, Any]:
         """What the model expansion may see, and what its cache key is made of."""
@@ -206,6 +213,8 @@ class DiscoveryFacts:
             "end_markets": list(self.end_markets),
             "catalysts": list(self.catalysts),
             "size_bands": list(self.size_bands),
+            "segment_terms": list(self.segment_terms),
+            "segment_synonyms": list(self.segment_synonyms),
         }
 
     def nouns(self) -> list[tuple[str, str]]:
@@ -218,6 +227,10 @@ class DiscoveryFacts:
             if self.materials and theme in ("mining_materials", "critical_materials"):
                 continue
             out.append(("theme", theme))
+        if not out:
+            # V3.21.1 — a free-form segment names the thesis when no theme does.
+            for term in self.segment_terms:
+                out.append(("segment", term))
         if not out:
             # Industries only name the thesis when nothing narrower does.
             for industry in self.industries:
@@ -246,6 +259,8 @@ def facts_from_intent(intent: Any) -> DiscoveryFacts:
         catalysts=tuple(getattr(intent, "catalysts", ()) or ()),
         size_bands=tuple(size.requested) if size is not None else (),
         materials_role=getattr(intent, "materials_role", None),
+        segment_terms=tuple(getattr(intent, "segment_terms", ()) or ()),
+        segment_synonyms=tuple(getattr(intent, "segment_synonyms", ()) or ()),
     )
 
 
@@ -263,6 +278,9 @@ def theme_terms(facts: DiscoveryFacts) -> tuple[str, ...]:
         terms.extend(noun_text(kind, key).split())
         for syn in SYNONYMS.get(key, ()):
             terms.extend(syn.split())
+        if kind == "segment":
+            for syn in facts.segment_synonyms:
+                terms.extend(syn.split())
     return tuple(dict.fromkeys(t.lower() for t in terms if len(t) >= 3))
 
 
@@ -360,6 +378,9 @@ def theme_vocabulary_phrases(facts: DiscoveryFacts) -> tuple[str, ...]:
             phrases.extend(SYNONYMS.get(theme, ()))
         for industry in facts.industries:
             phrases.extend(w for w in industry.lower().split() if len(w) >= 6)
+        if not facts.themes:
+            phrases.extend(facts.segment_terms)
+            phrases.extend(facts.segment_synonyms)
 
     if facts.materials:
         material_phrases()
@@ -734,6 +755,8 @@ def _synonyms(facts: DiscoveryFacts) -> list[str]:
     out: list[str] = []
     for key in (*facts.materials, *facts.themes):
         out.extend(SYNONYMS.get(key, ()))
+    if not facts.materials and not facts.themes:
+        out.extend(facts.segment_synonyms)
     return list(dict.fromkeys(out))[:3]
 
 

@@ -10747,6 +10747,56 @@ Both are right for what they were built against: free text from web pages and LL
 
 ---
 
+## ADR-107: Free-Form Segment Terms, and the Hard Industry Check on Them
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 slice 21.1, live finding F1/F2)
+**Trigger:** live validation on staging (2026-11-22). The thesis "US small-cap cybersecurity software companies" was refused with 422 "Thesis needs narrowing". With an explicit sector it was accepted, but the universe fell back to every curated "Technology" name (NVDA, AMD …) and nothing checked cybersecurity exposure.
+
+### Findings
+- `market_thesis_parser.parse_thesis` set `needs_narrowing` whenever no fixed theme, sector or industry matched (`has_structured_filter`), so any segment outside the 11 themes was refused.
+- With no theme, `DiscoveryIntent.industry` was `None`: no industry constraint, so no candidate was ever checked for the segment.
+- `leads.plan_lead_queries` built recall queries only from the closed vocabulary ("never from the user's raw text"), so the segment never reached recall or the web planner.
+- `market_universe_builder._select_registry_entries` fell back to a sector-wide registry match.
+
+### Decision
+1. **Segment terms.** When no fixed theme matches, `extract_segment_terms` reads the content-word runs of the text after stop-words, geography, size and style words, matched tokens and excluded words are removed. Generic category nouns ("software", "suppliers") are dropped beside a more specific word; runs over three words are split into pairs. At most 6 terms, each 3–40 characters of letters, digits, spaces and hyphens (`sanitise_segment_term`). Explicit `industry_keywords` come first, through the same sanitiser.
+2. A thesis with segment terms is **not** `needs_narrowing`. Text that is only vague words ("good companies", "growth", "best stocks to buy") still is.
+3. **Intent.** `DiscoveryIntent.segment_terms` and `segment_synonyms` are persisted in `parsed_thesis_json.discovery_intent`. With no fixed theme and no material, the industry constraint is `requested = segment_terms`, **hard**.
+4. **Exposure check.** `screening._terms` adds one word-boundary pattern per term (`segment_term_patterns`); each synonym joins the term it shares a word with (else the first term), so a synonym hit is reported under a requested term and `verify_industry` is unchanged. No verified exposure passage → `unknown` (listed apart, never shortlisted); a denial → excluded.
+5. **Recall and web.** Lead queries, the screening question and the web planner (`DiscoveryFacts.segment_terms`, noun kind `segment`) use the sanitised terms as their focus. The rule "never the raw text" stands: only sanitised terms travel.
+6. **Universe.** With segment terms the sector-wide registry fallback is skipped. A curated entry enters only when its registry industry names a term (word-bounded).
+7. **Optional model expansion** (`V3_SEGMENT_EXPANSION_ENABLED`, default on, inert without the research provider): one JSON call (`segment_expansion/1`, sent only the terms) proposes ≤8 synonyms and ≤3 adjacent industries. Each proposal is sanitised; kept only if it shares a word with the terms or the text (equal, or containment at ≥4 letters); a bare fragment of a term ("security" for "cybersecurity") is dropped. The record (status, prompt version, model, kept/dropped, tokens) is stored as `parsed_thesis_json.segment_expansion`. A failed call means terms only, never a failed run.
+8. The fixed themes are untouched: segment terms are computed only when no theme matched, and the intent drops them when a theme or material is present.
+
+### Consequences
+- Any typed segment is accepted and drives recall and the exposure check. A run with no curated match and dynamic discovery off is still refused (422), now naming the segment and pointing at `supported-themes`.
+- Single unmatched words are now segments: "Swatch" or "silver lining stocks" are read as segments checked as themselves, never widened to a theme or a metal (two pinned tests updated deliberately).
+- The term extractor is a word list, not a grammar: an odd phrase can become a term. It is shown as chips in the preview, so the owner sees what will be checked before the run.
+
+---
+
+## ADR-108: A Numeric Ceiling Decides Size; Size Words Are Display
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 slice 21.1, live finding F3)
+**Trigger:** under the USD 2bn mandate, "small-cap" in the text set a hard 300m–2bn band, so micro caps under the ceiling (EGAN 0.14bn, SMSI 0.01bn) were excluded.
+
+### Findings
+- `apply_size_ceiling` intersected the word bands with `buckets_below(ceiling)`: "small-cap" under 2bn kept only `small_cap`.
+- The default ceiling was skipped whenever the words named any size, even a band entirely below it.
+- Recall's size phrase named the band ("USD 300 million to 2 billion").
+
+### Decision
+1. Under a numeric ceiling (explicit, or the platform default), size **words** naming small sizes (any band of micro or small: "small-cap", "smaller", "small and mid", "micro-cap") no longer cut the bands: `requested = buckets_below(ceiling)` (minus any band the words exclude). The words are kept as `size.words`.
+2. The default ceiling also applies when the words name only bands lying **entirely** below it ("small-cap" under 2bn → ≤ 2bn including micro). "smaller" (micro…mid) is not entirely below 2bn, so the default is not applied to it.
+3. Words naming a band above the ceiling ("mid-cap", "large-cap") keep today's behaviour: the default is not applied (a warning now says so), and an explicit ceiling that excludes them warns "entirely above".
+4. An explicit `market_cap_bucket` stays a hard band (it is a choice, not prose).
+5. Recall's size phrase under a ceiling is "market capitalisation under USD {ceiling}".
+
+### Consequences
+- With the 2bn mandate EGAN and SMSI pass size, AGYS (3.1bn) fails.
+- Stored intents gain `constraints[size].words`; older stored intents read with `words=[]`.
+- Pinned tests that asserted `("small_cap",)` under a ceiling were updated to `("micro_cap", "small_cap")`.
+
 ## ADR-112: A Certificate Gets a Verification State Against STL Members and a Curated Lab List
 
 **Date:** 2026-11-22 · **Status:** Accepted (V3.21 slice 21.5, spec §6)

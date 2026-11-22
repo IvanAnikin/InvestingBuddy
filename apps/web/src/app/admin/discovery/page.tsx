@@ -39,7 +39,11 @@ import type {
   SupportedThemesResponse,
   ThesisDiscoveryRunCreate,
 } from "@/types/api";
-import { buildThesisDiscoveryRequest } from "@/lib/workflows";
+import {
+  buildThesisDiscoveryRequest,
+  parseSegmentKeywords,
+} from "@/lib/workflows";
+import SegmentTermChips from "@/components/research/discovery/SegmentTermChips";
 import GlassCard from "@/components/ui/GlassCard";
 import SafetyBanner from "@/components/ui/SafetyBanner";
 import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
@@ -2031,6 +2035,8 @@ export default function DiscoveryPage() {
   const [thesisRegion, setThesisRegion] = useState("");
   const [thesisSector, setThesisSector] = useState("");
   const [thesisCountry, setThesisCountry] = useState("");
+  // V3.21.1 — optional segment keywords, sent as `industry_keywords`.
+  const [thesisSegmentKeywords, setThesisSegmentKeywords] = useState("");
   const [thesisMaxUniverse, setThesisMaxUniverse] = useState("25");
   const [thesisMaxCandidates, setThesisMaxCandidates] = useState("10");
   const [thesisLookback, setThesisLookback] = useState("90");
@@ -2131,7 +2137,10 @@ export default function DiscoveryPage() {
         return;
       }
       try {
-        const d = await parseThesis(text);
+        const d = await parseThesis(
+          text,
+          parseSegmentKeywords(thesisSegmentKeywords),
+        );
         if (cancelled) return;
         setDetected(d);
         if (!regionEdited.current) setThesisRegion(d.region ?? "");
@@ -2145,7 +2154,7 @@ export default function DiscoveryPage() {
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [thesisText]);
+  }, [thesisText, thesisSegmentKeywords]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2428,6 +2437,7 @@ export default function DiscoveryPage() {
       region: thesisRegion,
       country: thesisCountry,
       sector: thesisSector,
+      segmentKeywords: thesisSegmentKeywords,
       maxUniverseSize: parseInt(thesisMaxUniverse, 10) || undefined,
       maxCandidates: parseInt(thesisMaxCandidates, 10) || undefined,
       lookbackDays: parseInt(thesisLookback, 10) || undefined,
@@ -2710,6 +2720,34 @@ export default function DiscoveryPage() {
                   placeholder="Any sector"
                 />
               </div>
+
+              {/* V3.21.1 — optional segment keywords (sent as industry_keywords). */}
+              <div className="flex flex-col gap-1">
+                <label
+                  className="text-sm font-medium text-slate-300"
+                  htmlFor="thesis-segment-keywords"
+                >
+                  Segment keywords (optional)
+                </label>
+                <input
+                  id="thesis-segment-keywords"
+                  className={inputCls}
+                  value={thesisSegmentKeywords}
+                  onChange={(e) => setThesisSegmentKeywords(e.target.value)}
+                  placeholder="cybersecurity, OT security"
+                  maxLength={300}
+                  data-testid="thesis-segment-keywords"
+                />
+                <p className="text-xs text-slate-500">
+                  Comma-separated. For a segment outside the supported themes: each
+                  candidate must show verified exposure to one of these terms.
+                </p>
+              </div>
+
+              <SegmentTermChips
+                terms={detected?.segment_terms}
+                synonyms={detected?.segment_synonyms}
+              />
 
               {/* Prompt-derived detection preview + reset action. */}
               {detected &&

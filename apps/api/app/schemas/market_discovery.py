@@ -497,6 +497,12 @@ class ParseThesisRequest(BaseModel):
         max_length=2000,
         description="Natural-language thesis text to parse for autofill.",
     )
+    # V3.21.1 — the form's optional "Segment keywords", previewed exactly as a run reads
+    # them (``ThesisDiscoveryRunCreate.industry_keywords``).
+    industry_keywords: list[str] | None = Field(
+        default=None, max_length=12,
+        description="Optional explicit segment / industry keywords.",
+    )
 
 
 class ParseThesisResponse(BaseModel):
@@ -524,6 +530,11 @@ class ParseThesisResponse(BaseModel):
     # Which sources beyond the registries would run: ``web_search:<provider>`` and/or
     # ``model_recall``. Empty → only the registries are screened, whatever the flag says.
     open_discovery_sources: list[str] = Field(default_factory=list)
+    # V3.21.1 (ADR-107) — the free-form segment the thesis names when no fixed theme
+    # matches: sanitised terms (the hard industry filter) and synonyms. The preview never
+    # calls the model, so ``segment_synonyms`` is empty here; a run fills it.
+    segment_terms: list[str] = Field(default_factory=list)
+    segment_synonyms: list[str] = Field(default_factory=list)
     disclaimer: str = INTERNAL_DISCLAIMER
 
 

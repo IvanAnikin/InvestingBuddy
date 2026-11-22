@@ -398,10 +398,16 @@ export async function listSupportedFilters(): Promise<SupportedFiltersResponse> 
 // pure preview/autofill of the detected Region/Country/Sector.
 export async function parseThesis(
   thesis: string,
+  industryKeywords?: string[],
 ): Promise<ParseThesisResponse> {
+  // V3.21.1 — the "Segment keywords" are previewed exactly as a run reads them.
+  const body =
+    industryKeywords && industryKeywords.length
+      ? { thesis, industry_keywords: industryKeywords }
+      : { thesis };
   return apiFetch<ParseThesisResponse>(
     "/api/v1/market-discovery/parse-thesis",
-    { method: "POST", body: JSON.stringify({ thesis }) },
+    { method: "POST", body: JSON.stringify(body) },
   );
 }
 

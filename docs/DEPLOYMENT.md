@@ -724,6 +724,14 @@ layout keeps the last good list or the bundled Issue 59 snapshot). With `V3_WEB_
 searches per run on the bodies' own hosts plus one page read each; with web search off (staging today) only held documents
 are checked and the block says so. Rollback: set the flag to `false`; reports are as before.
 
+### Free-form segment discovery (V3.21.1, ADR-107 / ADR-108)
+
+`V3_SEGMENT_EXPANSION_ENABLED` (default `true`) lets a thesis run with free-form segment terms make one bounded JSON call
+to the research model (`segment_expansion/1`, sent only the sanitised terms) for synonyms. It is inert unless the research
+provider is configured and enabled (`research_provider_for`); a failed call means terms only. Cost: at most one small
+completion (≤400 output tokens) per segment run. No migration. Rollback: set the flag to `false` (terms only). The size
+rule of ADR-108 (size words under a ceiling) has no flag; it is a corrective to the D1 mandate.
+
 ### Entity master backfill (operator; prerequisite for every entity-based V3.20 step)
 
 `V3_ENTITY_MASTER_ENABLED` alone links nothing. `backfill_entities_from_companies` (V3.2

@@ -1215,6 +1215,10 @@ class Settings(BaseSettings):
     v3_dynamic_discovery_enabled: bool = False
     # V3.19.7 — externally discovered, listing-verified peers in get_peer_set.
     v3_dynamic_peer_discovery_enabled: bool = False
+    # V3.21.1 (ADR-107) — one bounded JSON call to the research model proposing synonyms
+    # for a free-form segment's terms. Inert without a configured research provider; a
+    # failed call means terms only, never a failed run.
+    v3_segment_expansion_enabled: bool = True
     v3_discovery_max_lead_queries: int = 4
     v3_discovery_max_raw_leads: int = 60
     v3_discovery_max_verified: int = 30

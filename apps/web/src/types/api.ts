@@ -624,6 +624,12 @@ export interface ParseThesisResponse {
   dynamic_discovery_enabled?: boolean;
   /** Sources beyond the registries a run would use: `web_search:<provider>`, `model_recall`. */
   open_discovery_sources?: string[];
+  /**
+   * V3.21.1 — the free-form segment (no fixed theme matched): sanitised terms, the hard
+   * industry filter. The preview never calls the model, so synonyms are empty here.
+   */
+  segment_terms?: string[];
+  segment_synonyms?: string[];
   disclaimer?: string;
 }
 
@@ -694,6 +700,8 @@ export interface DiscoveryIntentConstraint {
   /** V3.20 — the numeric size mandate, USD (size constraint only). */
   max_usd?: number | null;
   min_usd?: number | null;
+  /** V3.21.1 — the size WORDS the thesis used, shown when a ceiling decides the bands. */
+  words?: string[];
 }
 
 export interface DiscoveryIntent {
@@ -714,6 +722,9 @@ export interface DiscoveryIntent {
   unmatched_terms: string[];
   warnings: string[];
   needs_narrowing: boolean;
+  /** V3.21.1 — the free-form segment terms and their (model-proposed, sanitised) synonyms. */
+  segment_terms?: string[];
+  segment_synonyms?: string[];
 }
 
 export type ConstraintStatus = "pass" | "fail" | "unknown" | "not_requested";

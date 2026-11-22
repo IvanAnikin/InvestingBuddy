@@ -64,7 +64,10 @@ def test_default_ceiling_does_not_override_a_size_the_thesis_names():
 
 def test_explicit_ceiling_narrows_a_named_size():
     intent = build_intent("small-cap grid equipment makers", max_market_cap_usd=1e9)
-    assert intent.size.requested == ("small_cap",)
+    # V3.21.1 (ADR-108): under a ceiling a small-size word no longer cuts the bands; the
+    # ceiling decides (micro caps under USD 1bn are in), and the words are kept.
+    assert intent.size.requested == ("micro_cap", "small_cap")
+    assert intent.size.words == ("small-cap",)
     assert intent.size.max_usd == 1e9
 
 

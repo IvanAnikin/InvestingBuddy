@@ -168,7 +168,10 @@ async def test_thesis_run_persists_the_intent_beside_the_legacy_parse():
     stored = run.parsed_thesis_json["discovery_intent"]
     assert stored["schema"] == SCHEMA
     keys = {c["key"]: c for c in stored["constraints"]}
-    assert keys["size"]["requested"] == ["small_cap"]
+    # V3.21.1 (ADR-108): under the USD 2bn default mandate the number decides the bands;
+    # "small cap" is kept as the words, and micro caps under the ceiling are not cut.
+    assert keys["size"]["requested"] == ["micro_cap", "small_cap"]
+    assert keys["size"]["words"] == ["small cap"]
     # Legacy readers still find their keys.
     assert run.parsed_thesis_json["themes"] == ["luxury_goods"]
 
@@ -281,7 +284,11 @@ def test_latin_american_is_not_the_united_states():
 
 def test_a_commodity_idiom_is_not_a_material():
     intent = build_intent("silver lining stocks")
-    assert intent.materials == () and intent.needs_narrowing
+    assert intent.materials == ()
+    # V3.21.1 (ADR-107): the phrase is now read as a free-form SEGMENT, checked as the
+    # whole phrase — never as the metal silver.
+    assert intent.segment_terms == ("silver lining",)
+    assert intent.industry is not None and intent.industry.requested == ("silver lining",)
 
 
 def test_soft_cue_softens_geography():

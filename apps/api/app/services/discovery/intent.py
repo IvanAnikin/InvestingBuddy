@@ -208,11 +208,15 @@ class Constraint:
     #: of ``requested`` bands. ``None`` = no numeric bound. Size constraints only.
     max_usd: float | None = None
     min_usd: float | None = None
+    #: V3.21.1 (ADR-108) — the size WORDS the thesis used ("small-cap"), kept for display
+    #: when a numeric ceiling, not the words, decides the bands. Size constraints only.
+    words: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["requested"] = list(self.requested)
         out["excluded"] = list(self.excluded)
+        out["words"] = list(self.words)
         return out
 
 
@@ -241,6 +245,12 @@ class DiscoveryIntent:
     warnings: tuple[str, ...] = ()
     needs_narrowing: bool = False
     schema: str = SCHEMA
+    #: V3.21.1 (ADR-107) — the free-form segment, when no fixed theme or material names
+    #: the thesis: sanitised terms (``market_thesis_parser.extract_segment_terms``) and the
+    #: sanitised, token-checked synonyms of the optional model expansion. Only these travel
+    #: to recall and the web planner; the hard industry constraint is built from the terms.
+    segment_terms: tuple[str, ...] = ()
+    segment_synonyms: tuple[str, ...] = ()
 
     #: The listing constraint is always hard: discovery returns listed securities only.
     @property
@@ -286,6 +296,8 @@ class DiscoveryIntent:
             "unmatched_terms": list(self.unmatched_terms),
             "warnings": list(self.warnings),
             "needs_narrowing": self.needs_narrowing,
+            "segment_terms": list(self.segment_terms),
+            "segment_synonyms": list(self.segment_synonyms),
         }
 
     def universe_filter(self) -> dict[str, Any]:
@@ -318,6 +330,9 @@ class DiscoveryIntent:
             "exclusion_keywords": list(self.exclusions),
             "needs_narrowing": self.needs_narrowing,
             "warnings": list(self.warnings),
+            # V3.21.1 — always present, so it overrides the legacy parse's own list (a
+            # materials thesis has parser terms but no segment).
+            "segment_terms": list(self.segment_terms),
         }
 
 
@@ -740,6 +755,7 @@ def build_intent(
 
     size, size_notes = _size_constraint(text)
     warnings.extend(size_notes)
+    size_from_words = size is not None
     if size is None and market_cap_bucket:
         bucket = market_cap_bucket.strip().lower().replace("-", "_").replace(" ", "_")
         if not bucket.endswith("_cap"):
@@ -753,6 +769,7 @@ def build_intent(
         size,
         max_market_cap_usd=max_market_cap_usd,
         default_max_market_cap_usd=default_max_market_cap_usd,
+        from_words=size_from_words,
     )
     warnings.extend(ceiling_notes)
     growth, growth_notes = _growth_constraint(text)
@@ -783,6 +800,20 @@ def build_intent(
             hardness[1],
             ", ".join(industry_terms),
         )
+    # V3.21.1 (ADR-107) — no fixed theme and no material: the segment terms ARE the
+    # industry the user asked for, and a candidate must be shown to have exposure to one.
+    segment_terms: tuple[str, ...] = ()
+    if not industry_terms and not themes and not materials:
+        segment_terms = _dedup(list(parsed.segment_terms))
+    if segment_terms:
+        industry_constraint = Constraint(
+            "industry",
+            segment_terms,
+            HARD,
+            "segment terms the thesis names are a hard industry filter: a candidate passes "
+            "only on a verified statement of exposure to one of them",
+            ", ".join(segment_terms),
+        )
 
     consumed = set()
     for phrase in [*themes, *materials, *regions, *countries, *catalysts, *end_markets]:
@@ -802,7 +833,7 @@ def build_intent(
                      "catalysts", "catalyst", "other", "hardware", "evs", "ai"})
     unmatched = tuple(t for t in parsed.unmatched_terms if t not in consumed)
 
-    needs_narrowing = parsed.needs_narrowing and not (materials or themes)
+    needs_narrowing = parsed.needs_narrowing and not (materials or themes or segment_terms)
     if not needs_narrowing and parsed.needs_narrowing:
         warnings = [w for w in warnings if "did not match any known theme" not in w]
 
@@ -827,6 +858,7 @@ def build_intent(
         unmatched_terms=unmatched,
         warnings=tuple(warnings),
         needs_narrowing=needs_narrowing,
+        segment_terms=segment_terms,
     )
 
 
@@ -853,34 +885,87 @@ def buckets_below(max_usd: float) -> tuple[str, ...]:
     )
 
 
+#: Size words that name SMALL companies: their bands include micro or small cap. Under a
+#: numeric ceiling these are a direction, and the number decides the bands (ADR-108).
+_SMALL_BANDS = frozenset({"micro_cap", "small_cap"})
+
+
+def _bands_entirely_below(bands: tuple[str, ...], ceiling: float) -> bool:
+    """True when every band's UPPER edge is at or below ``ceiling``."""
+    from app.services.discovery.constraints import SIZE_BANDS_USD
+
+    uppers = [SIZE_BANDS_USD[b][1] for b in bands]
+    return bool(uppers) and all(u is not None and u <= ceiling for u in uppers)
+
+
 def apply_size_ceiling(
     size: Constraint | None,
     *,
     max_market_cap_usd: float | None,
     default_max_market_cap_usd: float | None,
+    from_words: bool = False,
 ) -> tuple[Constraint | None, list[str]]:
-    """V3.20 D1 — the numeric market-cap ceiling on a size constraint.
+    """The numeric market-cap ceiling on a size constraint (V3.20 D1, V3.21.1 ADR-108).
 
     * An EXPLICIT ceiling (the run asked for one) always applies: it narrows a size the
-      thesis words already requested, or becomes the size constraint by itself.
-    * The DEFAULT ceiling applies only when nothing else asked for a size — a thesis that
-      says "mid-cap" is not silently capped at USD 2bn.
+      thesis already requested, or becomes the size constraint by itself.
+    * The DEFAULT ceiling applies when nothing else asked for a size, and — since V3.21.1
+      — when the size WORDS name only bands lying entirely below it ("small-cap" under the
+      USD 2bn mandate). A thesis that says "mid-cap" is still not silently capped.
+    * ``from_words``: the size came from the thesis WORDS. Under a ceiling, words that
+      name small sizes ("small-cap", "smaller", "small and mid", "micro-cap") no longer
+      cut the bands: ``requested = buckets_below(ceiling)``, so the number decides, and
+      the words are kept in ``words`` for display. An explicit ``market_cap_bucket``
+      (``from_words=False``) stays a hard band.
     """
     notes: list[str] = []
+    words_size = size is not None and from_words
+    small_words = bool(size is not None and from_words and set(size.requested) & _SMALL_BANDS)
     if max_market_cap_usd is not None:
         ceiling, basis = max_market_cap_usd, "an explicit market-cap ceiling is a hard filter"
-    elif size is None and default_max_market_cap_usd is not None:
+    elif default_max_market_cap_usd is not None and (
+        size is None
+        or (words_size and _bands_entirely_below(size.requested, default_max_market_cap_usd))
+    ):
         ceiling, basis = (
             default_max_market_cap_usd,
             "the default size mandate: market cap below "
             f"{_usd_words(default_max_market_cap_usd)} unless the run changes it",
         )
     else:
+        if words_size and size is not None and default_max_market_cap_usd is not None:
+            notes.append(
+                f"the thesis names a size ({size.phrase}) that is not entirely below the "
+                f"{_usd_words(default_max_market_cap_usd)} default mandate, so the default "
+                "ceiling is not applied; set a ceiling on the run to cap it"
+            )
         return size, notes
     phrase = f"market cap < {_usd_words(ceiling)}"
     if size is None:
         return (
             Constraint("size", buckets_below(ceiling), HARD, basis, phrase, max_usd=ceiling),
+            notes,
+        )
+    words = tuple(w.strip() for w in size.phrase.split(",") if w.strip()) if from_words else ()
+    if small_words:
+        # The number decides: every band a company under the ceiling can fall in, minus
+        # any band the words EXCLUDED ("not micro-cap").
+        requested = tuple(b for b in buckets_below(ceiling) if b not in size.excluded)
+        if not requested:
+            requested = buckets_below(ceiling)
+        return (
+            replace(
+                size,
+                requested=requested,
+                hardness=HARD,
+                hardness_basis=(
+                    f"{basis}; the size words ({size.phrase}) are a direction, so the "
+                    "ceiling decides the bands"
+                ),
+                phrase=f"{size.phrase}, {phrase}" if size.phrase else phrase,
+                max_usd=ceiling,
+                words=words,
+            ),
             notes,
         )
     requested = tuple(b for b in size.requested if b in buckets_below(ceiling))
@@ -898,6 +983,7 @@ def apply_size_ceiling(
             hardness_basis=f"{size.hardness_basis}; {basis}",
             phrase=f"{size.phrase}, {phrase}" if size.phrase else phrase,
             max_usd=ceiling,
+            words=words,
         ),
         notes,
     )
@@ -917,6 +1003,7 @@ def intent_from_dict(data: dict[str, Any] | None) -> DiscoveryIntent | None:
             excluded=tuple(c.get("excluded") or ()),
             max_usd=_float_or_none(c.get("max_usd")),
             min_usd=_float_or_none(c.get("min_usd")),
+            words=tuple(c.get("words") or ()),
         )
         for c in data.get("constraints") or []
         if isinstance(c, dict)
@@ -943,6 +1030,8 @@ def intent_from_dict(data: dict[str, Any] | None) -> DiscoveryIntent | None:
         unmatched_terms=tuple(data.get("unmatched_terms") or ()),
         warnings=tuple(data.get("warnings") or ()),
         needs_narrowing=bool(data.get("needs_narrowing")),
+        segment_terms=tuple(data.get("segment_terms") or ()),
+        segment_synonyms=tuple(data.get("segment_synonyms") or ()),
     )
 
 

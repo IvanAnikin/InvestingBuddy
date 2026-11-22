@@ -25,8 +25,11 @@ aggregator, a news article, the model's recall — because nothing here is trust
 WHAT IS SENT OUT
 ================
 Queries are built from the intent's CLOSED vocabulary (theme labels, material names,
-region names, size words) — never from the user's raw text, the same rule V3.18 applied to
-thesis questions: what a user typed is theirs.
+region names, size words) and, for a free-form segment (V3.21.1, ADR-107), from its
+SANITISED segment terms and synonyms only — never from the user's raw text, the same rule
+V3.18 applied to thesis questions: what a user typed is theirs. A segment term is a
+bounded string of letters, digits, spaces and hyphens extracted deterministically
+(``market_thesis_parser.extract_segment_terms``); the free text itself never travels.
 """
 
 from __future__ import annotations
@@ -170,6 +173,12 @@ def _bounded(value: Any, default: int, hard: int) -> int:
     return max(1, min(n, hard))
 
 
+def _usd_amount(amount: float) -> str:
+    if amount >= 1e9:
+        return f"USD {amount / 1e9:g} billion"
+    return f"USD {amount / 1e6:g} million"
+
+
 def plan_lead_queries(intent: DiscoveryIntent, *, max_queries: int) -> list[LeadQuery]:
     """Bounded queries from the intent's closed vocabulary. Deterministic."""
     focus_parts: list[str] = []
@@ -187,6 +196,15 @@ def plan_lead_queries(intent: DiscoveryIntent, *, max_queries: int) -> list[Lead
             words = _THEME_WORDS.get(theme)
             if words and "companies in " + words not in focus_parts:
                 focus_parts.append("companies in " + words)
+        # V3.21.1 — a free-form segment: its sanitised terms are the focus, one query
+        # per term, synonyms named as alternative wording.
+        if not focus_parts and intent.segment_terms:
+            synonyms = list(intent.segment_synonyms[:4])
+            for term in intent.segment_terms:
+                part = "companies in " + term
+                if synonyms:
+                    part += " (also described as " + ", ".join(synonyms) + ")"
+                focus_parts.append(part)
         if not focus_parts and intent.industries:
             focus_parts.append("companies in " + ", ".join(intent.industries[:3]))
     if not focus_parts:
@@ -196,7 +214,11 @@ def plan_lead_queries(intent: DiscoveryIntent, *, max_queries: int) -> list[Lead
     # Several geographies: one query each (a single "Europe or Australia" query answers
     # with the most famous names of the first). One geography: split by focus instead.
     size_clause = ""
-    if intent.size is not None:
+    if intent.size is not None and intent.size.max_usd is not None:
+        # V3.21.1 (ADR-108) — under a ceiling the NUMBER decides the size; naming bands
+        # ("USD 300 million to 2 billion") would cut the micro caps under it.
+        size_clause = f" Size: market capitalisation under {_usd_amount(intent.size.max_usd)}."
+    elif intent.size is not None:
         bands = [_SIZE_WORDS[b] for b in intent.size.requested if b in _SIZE_WORDS]
         if bands:
             size_clause = (
@@ -204,10 +226,6 @@ def plan_lead_queries(intent: DiscoveryIntent, *, max_queries: int) -> list[Lead
                 + ("preferably " if intent.size.hardness == SOFT else "")
                 + " or ".join(bands)
                 + "."
-            )
-        if intent.size.max_usd is not None:
-            size_clause += (
-                f" Market capitalisation below USD {intent.size.max_usd / 1e9:g} billion."
             )
     context = ""
     if intent.end_markets:
