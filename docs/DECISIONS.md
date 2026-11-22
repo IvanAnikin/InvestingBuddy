@@ -11004,3 +11004,21 @@ A grid company's report had no quantified view of its market. The registry's `ei
 - No migration: per-feed state uses `source_poll_state` (migration 062).
 - A trade-press event is weaker evidence by construction: it never fills a disclosure's place in the verdict or reopens a name in the novelty gate.
 - Licence: all outlets are copyright publishers. The platform holds only what each syndicates in its feed, capped; the report links to the article.
+
+---
+
+## ADR-116: The Electricity Classifier Reads the 10-K's Business Section, Not Its Header
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 live corrective)
+**Trigger:** On staging, Powell Industries (a switchgear maker) was still `not_electricity` after ADR-105. The held 10-K had no section paths. Its first nine prose chunks were the hidden inline-XBRL header, and the next ones were the cover page and the forward-looking-statements notice. The classifier read the first twelve chunks, which name no product.
+
+### Decision
+`business_section_rows` (`pipeline/electricity_step.py`) chooses the chunks to read, in this order:
+1. Chunks whose section path names the business, as before.
+2. Otherwise, the section from the `Item 1. Business` heading onwards. A table-of-contents chunk that also lists Item 1A and Item 2 is not taken as the start.
+3. Otherwise, the first chunks that are neither inline-XBRL header (five or more `prefix:Name` tokens, or repeated `Member`) nor cover-page boilerplate.
+
+At most 20 chunks are read, from the first 400 of the document.
+
+### Consequences
+On the real POWL rows the reader selects chunks 14–33 and the layer classifier returns `distribution_grid_edge`. The electricity playbook, the real-asset block and the qualification-evidence block (ADR-112) now apply to POWL. No migration and no flag: this is a correction to ADR-105 §3.
