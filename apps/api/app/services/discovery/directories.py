@@ -706,6 +706,137 @@ async def sec_public_float(
     return float(latest["val"]), as_of.isoformat(), url
 
 
+#: V3.20 slice 1.5 (live finding 2026-11-22). A current filer restates its cover-page
+#: share count on every 10-Q and 10-K, at most ~135 days apart; older than this belongs
+#: to a lapsed or late filer and is not today's share count.
+MAX_COVER_SHARES_AGE_DAYS = 200
+#: The close multiplied must be recent: a week covers weekends and market holidays.
+MAX_PRICE_AGE_DAYS = 7
+#: Domestic filers' periodic reports. A 20-F / 40-F filer's cover counts ORDINARY shares
+#: while its US line may be an ADS at a ratio, so their product is not a market cap.
+_DOMESTIC_COVER_FORMS = ("10-K", "10-Q", "10-KT", "10-QT")
+
+
+@dataclass(frozen=True)
+class SharesTimesPrice:
+    """A US domestic filer's market cap: its own cover-page share count × a dated close."""
+
+    amount: float
+    shares: float
+    shares_as_of: str
+    shares_form: str
+    shares_url: str
+    price: float
+    price_date: str
+    price_url: str
+    price_tier: str
+
+    def components(self) -> dict[str, Any]:
+        return {
+            "shares": self.shares, "shares_as_of": self.shares_as_of,
+            "shares_form": self.shares_form, "shares_source_url": self.shares_url,
+            "shares_concept": "dei:EntityCommonStockSharesOutstanding",
+            "price": self.price, "price_currency": "USD", "price_date": self.price_date,
+            "price_source_url": self.price_url, "price_source_tier": self.price_tier,
+        }
+
+
+async def eodhd_last_close(
+    ticker: str, *, today: date | None = None
+) -> tuple[float, str, str, str] | None:
+    """(close USD, its date, source URL, tier) of a US listing's latest close, or None.
+
+    The key stays inside the provider (a query parameter it adds itself), so no URL here
+    or in an error carries it. No key, an unknown symbol or any failure is None.
+    """
+    from datetime import timedelta
+
+    from app.integrations.financial_data_provider import ProviderStatus
+    from app.integrations.providers.eodhd_price_only_provider import EodhdPriceOnlyProvider
+
+    provider = EodhdPriceOnlyProvider()
+    if provider.get_provider_status() != ProviderStatus.ok:
+        return None
+    end = today or datetime.now(timezone.utc).date()
+    try:
+        history = await provider.get_price_history(
+            ticker, "US", start_date=(end - timedelta(days=MAX_PRICE_AGE_DAYS + 3)).isoformat(),
+            end_date=end.isoformat(),
+        )
+    except Exception:  # noqa: BLE001 - an unreadable price is an absent figure
+        return None
+    points = [p for p in history.price_points if p.close and p.close > 0]
+    if not points:
+        return None
+    last = max(points, key=lambda p: str(p.date))
+    return (float(last.close), str(last.date)[:10], str(history.source_url),
+            provider.source_tier.value)
+
+
+async def sec_shares_x_price(
+    cik: str | None,
+    ticker: str | None,
+    *,
+    cfg: Any = None,
+    fetcher: Any = None,
+    price_loader: Any = None,
+    today: date | None = None,
+) -> tuple[SharesTimesPrice | None, str]:
+    """``(figure, basis)`` or ``(None, reason)``. Never raises.
+
+    The issuer's own cover-page ``dei:EntityCommonStockSharesOutstanding`` (latest 10-Q
+    or 10-K) × the latest close of its US line. Refused for a foreign private issuer's
+    cover (ADS ratio), for more than one share class (one line's price does not value the
+    others), and for a share count or a close older than the limits above.
+    """
+    from app.services.passive_ownership.view import cover_shares_url, parse_cover_shares
+    from app.services.sources.document_fetcher import safe_fetch_document
+
+    if not cik or not str(cik).isdigit() or not ticker:
+        return None, "no CIK and ticker to read the share count and price by"
+    url = cover_shares_url(str(cik))
+    try:
+        result = await (fetcher or safe_fetch_document)(
+            url, allowed_domains=(SEC_DATA_HOST,), cfg=cfg, resolve_ip=True,
+            extra_text_content_types=("application/json",),
+        )
+        content = getattr(result, "content", None) if getattr(result, "ok", False) else None
+        cover = parse_cover_shares(json.loads(content or b"{}"), source_url=url)
+    except Exception:  # noqa: BLE001 - an unreadable filing is an absent figure
+        return None, "the cover-page share count could not be read"
+    if cover is None:
+        return None, "no cover-page share count is filed"
+    form = str(cover.form or "")
+    if form.split("/")[0] not in _DOMESTIC_COVER_FORMS:
+        return None, f"the share count is from a {form or 'non-periodic'} cover, not a 10-Q/10-K"
+    if cover.classes != 1:
+        return None, f"{cover.classes} share classes: one line's price does not value them all"
+    now = today or datetime.now(timezone.utc).date()
+    if (now - cover.as_of).days > MAX_COVER_SHARES_AGE_DAYS:
+        return None, f"the newest cover-page share count is dated {cover.as_of.isoformat()}"
+    try:
+        price = await (price_loader or eodhd_last_close)(str(ticker), today=now)
+    except Exception:  # noqa: BLE001
+        price = None
+    if not price:
+        return None, "no recent close price for the US listing"
+    close, price_date, price_url, price_tier = price
+    try:
+        age = (now - date.fromisoformat(price_date[:10])).days
+    except ValueError:
+        return None, "the close price carries no date"
+    if age > MAX_PRICE_AGE_DAYS or age < 0:
+        return None, f"the newest close price is dated {price_date}"
+    shares = float(cover.shares)
+    figure = SharesTimesPrice(
+        amount=shares * close, shares=shares, shares_as_of=cover.as_of.isoformat(),
+        shares_form=form, shares_url=url, price=close, price_date=price_date[:10],
+        price_url=price_url, price_tier=price_tier,
+    )
+    return figure, (f"cover-page shares {shares:,.0f} ({form}, {figure.shares_as_of}) × "
+                    f"close {close:g} USD on {figure.price_date}")
+
+
 #: CIK → (country, url) or None, for today: one submissions read per registrant per day.
 @dataclass(frozen=True)
 class RegistrantDomicile:

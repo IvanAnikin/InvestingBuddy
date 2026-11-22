@@ -10709,3 +10709,38 @@ Both are right for what they were built against: free text from web pages and LL
 - **CIK format:** the entity master keeps a CIK zero-padded to ten digits. Every consumer normalises it.
 - **No migration and no new flag.** The identity step runs under `V3_SEC_RELATIONSHIPS_ENABLED` and `V3_ENTITY_MASTER_ENABLED`.
 - **Not fixed here:** a non-US company whose name is a stub has no equivalent registrant source yet.
+
+---
+
+## ADR-106: A US Filer's Market Cap Is Its Cover-Page Shares × a Dated Close, Before the Float Floor
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.20 slice 1.5, live finding)
+**Trigger:** the first thesis discovery runs after the V3.20 deploy (staging, 2026-11-22). Under the default USD 2bn mandate, run `e7bd3ebf` listed ASUR, SMSI and EGAN as `size_unverified`, with public floats of USD 0.25bn, 0.01bn and 0.18bn. None was shortlisted. Live web search was out of quota, so no page stated their market cap.
+
+### Findings
+- For a US listing the only official figure was `dei:EntityPublicFloat`. That is a **lower bound** (affiliates' shares are excluded) and can be up to ~21 months old.
+- ADR-089 and slice 1.1 rightly let a lower bound *fail* a ceiling, never *pass* one.
+- So under a numeric ceiling, every US company below it could only pass if a fetched web page stated its market cap. That is the opposite of what the mandate is for (owner ask N6).
+
+### Decision
+1. For an SEC-directory listing, the size check **first** computes the market cap from two figures:
+   - the cover-page `dei:EntityCommonStockSharesOutstanding` of the newest 10-Q / 10-K, read from `data.sec.gov` (the issuer's own statement, T1);
+   - the latest close of its US line from EODHD (T5, dated).
+   The method is `sec_shares_x_price`.
+2. **Each component is shown with its own date and source.** It is kept in `value.components`, and both sources are listed in the size result's `sources[]`. The as-of date of the figure is the price date.
+3. **Refused, falling back to the float floor unchanged**, in these cases:
+   - a 20-F / 40-F cover: it counts ordinary shares, while the US line may be an ADS at a ratio;
+   - more than one share class: one line's close does not value an unlisted class;
+   - a share count older than 200 days, or a close older than 7 days;
+   - no EODHD key, or any read failure.
+4. The figure is an actual value, not a bound, so it can pass or fail the ceiling. It is subject to the usual ±15% borderline flag.
+5. The analysis-time size re-check (slice 1.3) calls the same `_official_cap`, so the report's `size_fit` uses the same figure.
+6. Flag `V3_DISCOVERY_SHARES_X_PRICE_ENABLED`, default **on**: this is a corrective to an accepted owner mandate (D1), like ADR-105. With the flag off, the behaviour is as before.
+
+### Consequences
+- A US small cap can now be shortlisted under the mandate without a web page.
+- A large US company that has no float on file now fails on an actual figure instead of being `size_unverified`.
+- The price is third-party data and is labelled `T5_api_aggregator`. A market cap is still never inferred from a price alone.
+- **Not fixed here:**
+  - European venues without an official directory (XETRA, SIX) still need a stated market cap on a fetched page.
+  - Japanese listings (no JPX directory) still need the same.
