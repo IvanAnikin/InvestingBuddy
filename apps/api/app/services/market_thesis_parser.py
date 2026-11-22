@@ -524,6 +524,9 @@ class ParsedThesis:
     industry: str | None = None
     theme: str | None = None
     extraction_source: str = "prompt_text"
+    #: V3.21.1 (ADR-107) — the segment a thesis names when no fixed theme matches:
+    #: sanitised terms only, never the free text. Empty when a theme matched.
+    segment_terms: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -566,6 +569,196 @@ def _extract_exclusions(text: str) -> list[str]:
                 exclusions.append(words[0])
             idx = lowered.find(connective, idx + len(connective))
     return _dedup(exclusions)
+
+
+# ---------------------------------------------------------------------------
+# V3.21.1 — free-form segment terms (ADR-107)
+#
+# A thesis outside the fixed themes ("US small-cap cybersecurity software companies")
+# still names a segment. The segment is the run of content words left once stop-words,
+# geography, size and style words are removed. Deterministic, bounded and sanitised:
+# only these terms ever travel to recall, the web planner or the exposure check —
+# never the free text itself.
+# ---------------------------------------------------------------------------
+
+MAX_SEGMENT_TERMS = 6
+SEGMENT_TERM_MIN_CHARS = 3
+SEGMENT_TERM_MAX_CHARS = 40
+_SEGMENT_TERM_OK = re.compile(r"^[a-z0-9][a-z0-9 -]*[a-z0-9]$")
+
+#: Words that never name a segment: grammar, request verbs, generic company nouns.
+_SEGMENT_STOP_WORDS = frozenset(
+    """
+    the and or with for from that this these those such as on by to in of a an at into
+    onto about over under below above between within across via per plus also both either
+    is are be been being was were has have having their they them its it which who whose
+    what where when how than then there here some any all every each other more most less
+    few many much very just only strictly must preferably ideally possibly perhaps maybe
+    find finding look looking search searching show list give want need wanted interested
+    me my we our us you your i like including include includes etc focused focus focusing
+    based headquartered domiciled operating operate active exposure exposed exposures
+    benefiting benefit benefitting related relating linked tied supply chain
+    developing producing supplying providing offering serving using used making building
+    doing working selling sell sells
+    company companies firm firms business businesses names name player players stock stocks
+    share shares equity equities issuer issuers listed listing listings public publicly
+    traded trading exchange exchanges ticker tickers securities
+    sector sectors industry industries market markets segment segments space niche theme
+    themes area areas field fields universe opportunity opportunities idea ideas thing things
+    stuff investment investments invest investing investor investors portfolio portfolios
+    buy buying selling hold holding returns return money profit profits upside
+    no not none nothing something anything everything whatever word words term terms
+    unrelated random various general generic misc miscellaneous different similar same
+    kind kinds type types sort sorts example examples
+    """.split()
+)
+#: Generic category nouns. Dropped when a more specific word names the segment
+#: ("cybersecurity software" → "cybersecurity"); kept when they are all there is.
+_SEGMENT_GENERIC_NOUNS = frozenset(
+    """
+    software services service solutions solution technology technologies tech products
+    product equipment systems system providers provider vendors vendor makers maker
+    manufacturers manufacturer suppliers supplier producers producer developers developer
+    platforms platform tools tool hardware operators operator contractors contractor
+    specialists specialist group groups
+    """.split()
+)
+#: Size and style words: they are constraints, never the segment.
+_SEGMENT_SIZE_STYLE_WORDS = frozenset(
+    """
+    small smaller smallest micro mid middle large larger largest mega big bigger tiny
+    cap caps capitalisation capitalization microcap microcaps smallcap smallcaps midcap
+    midcaps largecap largecaps megacap megacaps smid sized size nano nanocap
+    growth growing grow fast faster rapid rapidly quickly strongly high hyper expanding
+    value cheap undervalued overvalued valuation quality dividend dividends income yield
+    momentum profitable profitability unprofitable cash generative revenue revenues sales
+    margin margins earnings catalyst catalysts positive negative recent recently
+    good great best top strong leading leader leaders emerging innovative promising
+    attractive interesting new established mature young early stage late
+    """.split()
+)
+#: Geography words beyond the parser's own region/country tables.
+_SEGMENT_GEO_WORDS = frozenset(
+    """
+    global worldwide international domestic regional local western eastern northern
+    southern central developed emerging nordics scandinavia scandinavian dach cee emea
+    apac latam europe european eurozone asia asian america american americas north south
+    east west african africa oceania australasia norway norwegian finland finnish belgium
+    belgian austria austrian ireland irish portugal portuguese poland polish spanish
+    mexico mexican brazil brazilian korea korean zealand israel israeli singapore
+    country countries region regions
+    """.split()
+)
+
+
+def _geography_tokens() -> frozenset[str]:
+    from app.services.exchange_registry import COUNTRY_TO_REGION
+
+    words: set[str] = set(_SEGMENT_GEO_WORDS)
+    for phrase in [*_COUNTRY_TABLE, *(p for ps in _REGION_TABLE.values() for p in ps)]:
+        words.update(t for t in _WORD_SPLIT_RE.split(phrase.lower()) if t)
+    for country in COUNTRY_TO_REGION:
+        words.update(t for t in _WORD_SPLIT_RE.split(country.lower()) if t)
+    return frozenset(words)
+
+
+def sanitise_segment_term(value: Any) -> str | None:
+    """A segment term in canonical form, or ``None``.
+
+    Lower case, single spaces; letters, digits, spaces and hyphens only; 3–40 characters.
+    Anything else (quotes, URLs, punctuation, markup) is refused, never repaired into a
+    different string.
+    """
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r"\s+", " ", value).strip().lower()
+    if not (SEGMENT_TERM_MIN_CHARS <= len(text) <= SEGMENT_TERM_MAX_CHARS):
+        return None
+    if not _SEGMENT_TERM_OK.match(text):
+        return None
+    if not re.search(r"[a-z]", text):
+        return None
+    return text
+
+
+def _segment_runs(original: str, skip: set[str]) -> list[list[str]]:
+    """Runs of contiguous content tokens, in text order."""
+    runs: list[list[str]] = []
+    current: list[str] = []
+    for match in re.finditer(r"[A-Za-z0-9]+|[^A-Za-z0-9\s-]+|\s+|-", original):
+        piece = match.group(0)
+        if piece.isspace() or piece == "-":
+            continue
+        token = piece.lower()
+        keep = (
+            token[0].isalnum()
+            and token not in skip
+            and not token.isdigit()
+            and (len(token) > 2 or (len(piece) == 2 and piece.isupper()))
+        )
+        if keep:
+            current.append(token)
+            continue
+        if current:
+            runs.append(current)
+        current = []
+    if current:
+        runs.append(current)
+    return runs
+
+
+def extract_segment_terms(
+    thesis_text: str,
+    *,
+    matched_tokens: set[str] | None = None,
+    exclusion_keywords: list[str] | None = None,
+    industry_keywords: list[str] | None = None,
+) -> list[str]:
+    """V3.21.1 — the segment a thesis names, as at most six sanitised terms.
+
+    Deterministic: content-word runs of the text after stop-words, geography, size and
+    style words, matched theme/region tokens and excluded words are removed. Generic
+    category nouns ("software", "suppliers") are dropped beside a more specific word.
+    A run longer than three words is split into pairs. Explicit ``industry_keywords``
+    come first. An empty list means the text names no segment.
+    """
+    skip: set[str] = set(_SEGMENT_STOP_WORDS | _SEGMENT_SIZE_STYLE_WORDS | _geography_tokens())
+    skip.update(matched_tokens or ())
+    for phrase in exclusion_keywords or []:
+        skip.update(t for t in _WORD_SPLIT_RE.split(phrase.lower()) if t)
+    for phrase in [*_VAGUE_PHRASES, *_SOURCE_INTENT_PHRASES, *_CATALYST_INTENT_PHRASES,
+                   *_RISK_INTENT_PHRASES]:
+        skip.update(t for t in _WORD_SPLIT_RE.split(phrase) if t)
+
+    # Words following an exclusion connective are what the user does NOT want.
+    excluded_text = (thesis_text or "")
+    for connective in _EXCLUSION_CONNECTIVES:
+        excluded_text = re.sub(
+            rf"\b{re.escape(connective)}\b(?:\s+(?:the|a|an|any))?\s+[A-Za-z0-9-]+",
+            " , ", excluded_text, flags=re.IGNORECASE,
+        )
+    excluded_text = re.sub(r"\bnon-[A-Za-z0-9]+", " , ", excluded_text, flags=re.IGNORECASE)
+
+    terms: list[str] = []
+    for keyword in industry_keywords or []:
+        clean = sanitise_segment_term(keyword)
+        if clean and clean not in terms:
+            terms.append(clean)
+
+    for run in _segment_runs(excluded_text, skip):
+        specific = [t for t in run if t not in _SEGMENT_GENERIC_NOUNS]
+        words = specific or run
+        if len(words) <= 3:
+            chunks = [words]
+        else:
+            chunks = [words[i : i + 2] for i in range(0, len(words), 2)]
+            if len(chunks[-1]) == 1:
+                chunks[-2] = [*chunks[-2], *chunks.pop()]
+        for chunk in chunks:
+            clean = sanitise_segment_term(" ".join(chunk))
+            if clean and clean not in terms:
+                terms.append(clean)
+    return terms[:MAX_SEGMENT_TERMS]
 
 
 def parse_thesis(
@@ -794,6 +987,16 @@ def parse_thesis(
         if tok not in matched_tokens and tok not in stop and len(tok) > 2
     ]
 
+    # ── V3.21.1 — segment terms, only when no fixed theme matched ─────────
+    segment_terms: list[str] = []
+    if not themes:
+        segment_terms = extract_segment_terms(
+            normalized,
+            matched_tokens=matched_tokens,
+            exclusion_keywords=exclusion_keywords,
+            industry_keywords=industry_keywords,
+        )
+
     # ── Confidence + needs_narrowing ──────────────────────────────────────
     signal_count = (
         len(themes) * 2
@@ -809,6 +1012,7 @@ def parse_thesis(
     vague = any(_contains(padded, p) for p in _VAGUE_PHRASES)
     has_structured_filter = bool(
         themes or sector or industry or industry_keywords or (sectors and sectors != [sector])
+        or segment_terms
     )
     # Too vague when: an explicitly vague phrase is present, OR no theme and no
     # sector/industry filter of any kind could be derived (nothing to search on).
@@ -857,4 +1061,5 @@ def parse_thesis(
         industry=eff_industry,
         theme=detected_theme,
         extraction_source="prompt_text",
+        segment_terms=segment_terms,
     )

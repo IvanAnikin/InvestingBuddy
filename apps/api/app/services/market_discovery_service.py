@@ -719,6 +719,14 @@ async def create_pending_thesis_run(
             "Thesis needs narrowing before a bounded universe can be built: "
             + " ".join(intent.warnings or parsed.warnings)
         )
+    # V3.21.1 (ADR-107) — a free-form segment may be widened with model-proposed synonyms
+    # (sanitised, token-checked). Never fails the run; the record is stored on the run.
+    segment_expansion: dict[str, Any] | None = None
+    if intent.segment_terms:
+        from app.services.discovery.segment_expansion import expand_intent
+
+        intent, expansion = await expand_intent(intent, cfg=settings)
+        segment_expansion = expansion.to_dict()
 
     universe = build_universe(
         {**parsed.to_dict(), **intent.universe_filter()},
@@ -734,6 +742,14 @@ async def create_pending_thesis_run(
         raise ValueError(
             "No companies matched this thesis in the curated registry. "
             + " ".join(universe.warnings)
+            # V3.21.1 — a free-form segment needs dynamic discovery to find companies.
+            + (
+                f" The segment ({', '.join(intent.segment_terms)}) is outside the fixed "
+                "themes, and dynamic discovery is off. Supported themes and example "
+                "queries are listed at GET /api/v1/market-discovery/supported-themes."
+                if intent.segment_terms
+                else ""
+            )
         )
 
     lookback_days = payload.lookback_days or settings.discovery_lookback_days
@@ -748,7 +764,11 @@ async def create_pending_thesis_run(
         universe_count=len(tickers),
         requested_tickers=tickers,
         thesis_text=payload.thesis_text,
-        parsed_thesis_json={**parsed.to_dict(), "discovery_intent": intent.to_dict()},
+        parsed_thesis_json={
+            **parsed.to_dict(),
+            "discovery_intent": intent.to_dict(),
+            **({"segment_expansion": segment_expansion} if segment_expansion else {}),
+        },
         universe_json=universe.to_dict(),
         processed_count=0,
         candidate_count=0,

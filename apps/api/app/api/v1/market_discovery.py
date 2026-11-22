@@ -242,10 +242,11 @@ def _autofill_from_intent(parsed, intent) -> tuple[str | None, str | None, str |
     ),
 )
 async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisResponse:
-    parsed = parse_thesis(payload.thesis)
+    parsed = parse_thesis(payload.thesis, industry_keywords=payload.industry_keywords)
     intent = build_intent(
         payload.thesis,
         parsed=parsed,
+        industry_keywords=payload.industry_keywords,
         default_max_market_cap_usd=settings.discovery_default_max_market_cap_usd,
     )
     theme, sector, industry = _autofill_from_intent(parsed, intent)
@@ -263,6 +264,8 @@ async def parse_thesis_preview(payload: ParseThesisRequest) -> ParseThesisRespon
         extraction_source=parsed.extraction_source,
         needs_narrowing=intent.needs_narrowing,
         warnings=list(intent.warnings),
+        segment_terms=list(intent.segment_terms),
+        segment_synonyms=list(intent.segment_synonyms),
     )
 
 

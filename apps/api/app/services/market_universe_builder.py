@@ -31,6 +31,7 @@ search space only; every downstream candidate is human-review-required.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -254,6 +255,22 @@ def _select_registry_entries(parsed: dict[str, Any]) -> list[tuple[str, dict[str
         for theme in themes:
             for entry in THEME_COMPANY_REGISTRY.get(theme, []):
                 selected.append((theme, entry))
+        return selected
+
+    # V3.21.1 (ADR-107) — a free-form segment ("cybersecurity") is NOT its sector: the
+    # sector-wide fallback would fill a cybersecurity run with every curated "Technology"
+    # name (NVDA, AMD …). Curated names enter only when the registry's own keywords — the
+    # entry's industry classification — names a segment term (word-bounded).
+    segment_terms = [t for t in parsed.get("segment_terms") or [] if t]
+    if segment_terms:
+        patterns = [
+            re.compile(rf"(?<![a-z0-9]){re.escape(t.lower())}(?:s|es)?(?![a-z0-9])")
+            for t in segment_terms
+        ]
+        for theme, entries in THEME_COMPANY_REGISTRY.items():
+            for entry in entries:
+                if any(p.search(entry["industry"].lower()) for p in patterns):
+                    selected.append((theme, entry))
         return selected
 
     # Fallback: no theme, but a sector/industry filter can still drive

@@ -2604,8 +2604,11 @@ publish, or recommendation change.
 }
 ```
 
+**Free-form segments (V3.21.1, ADR-107).** A thesis outside the 11 fixed themes ("US small-cap cybersecurity software companies") is accepted. The parser extracts up to 6 sanitised **segment terms** (3–40 chars, letters/digits/spaces/hyphens; stop-words, geography, size and style words removed), plus any `industry_keywords` (sanitised the same way, listed first). They are stored as `parsed_thesis_json.segment_terms` and `parsed_thesis_json.discovery_intent.segment_terms` / `segment_synonyms`, and become the **hard** industry constraint (`constraints[industry].requested`): a candidate passes only on a verified exposure passage, is `unknown` (listed apart, not shortlisted) without one, and is excluded on a denial. Recall and web queries use only the terms, never the raw text; the curated universe skips the sector-wide fallback. With `V3_SEGMENT_EXPANSION_ENABLED` and the research model configured, one JSON call proposes synonyms; the record is `parsed_thesis_json.segment_expansion` (`status` completed | failed | disabled | unavailable, `prompt_version`, `model`, `synonyms`, `adjacent_industries`, `dropped`, token counts). Purely vague text still returns 422 `needs_narrowing`. A segment run with no curated match while dynamic discovery is off returns 422 naming the segment and pointing at `GET /supported-themes`.
+
 **Size mandate (`max_market_cap_usd`, V3.20 slice 1.1, owner decision D1).**
-- **Omitted** → the platform default `DISCOVERY_DEFAULT_MAX_MARKET_CAP_USD` (USD 2bn). It applies only when the thesis and `market_cap_bucket` name no size, so a "mid-cap" thesis is never silently capped.
+- **Omitted** → the platform default `DISCOVERY_DEFAULT_MAX_MARKET_CAP_USD` (USD 2bn). It applies when the thesis and `market_cap_bucket` name no size, and (V3.21.1, ADR-108) when the size words name only bands entirely below it ("small-cap"). A "mid-cap" thesis is never silently capped; a warning says the default was not applied.
+- **Size words under a ceiling (V3.21.1, ADR-108).** Under any ceiling, words naming small sizes ("small-cap", "smaller", "small and mid", "micro-cap") no longer cut the bands: `requested` is every band below the ceiling, so micro caps under USD 2bn pass. The words are kept as `constraints[size].words`. An explicit `market_cap_bucket` stays a hard band.
 - **A number** → an explicit ceiling (`> 0`, `≤ 1e13`). It narrows any size the thesis names, or becomes the size constraint on its own.
 - **`null`** → no ceiling.
 
@@ -2817,8 +2820,9 @@ purely parser, validation, and two read/preview endpoints.
 
 **`POST /parse-thesis` request:**
 ```json
-{ "thesis": "Swiss watch companies" }
+{ "thesis": "Swiss watch companies", "industry_keywords": ["optional"] }
 ```
+`industry_keywords` (optional, V3.21.1) previews the form's "Segment keywords" exactly as a run reads them.
 
 **`POST /parse-thesis` response:**
 ```json
@@ -2833,9 +2837,12 @@ purely parser, validation, and two read/preview endpoints.
   "extraction_source": "prompt_text",
   "needs_narrowing": false,
   "warnings": [],
+  "segment_terms": [],
+  "segment_synonyms": [],
   "disclaimer": "INTERNAL ADMIN USE ONLY. NOT INVESTMENT ADVICE. …"
 }
 ```
+`segment_terms` (V3.21.1, ADR-107) are the free-form segment when no fixed theme matched, e.g. `["cybersecurity"]` for "US small-cap cybersecurity software companies". The preview never calls the model, so `segment_synonyms` is empty here.
 
 Detection examples: `"European watch producers"` → Region `Europe`, Sector
 `Consumer Discretionary` (Country empty); `"Danish jewelry companies"` → Country

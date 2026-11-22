@@ -16,6 +16,7 @@ import {
   DISCOVERY_DEFAULTS,
   SIZE_MANDATE_OPTIONS,
   buildThesisDiscoveryRequest,
+  parseSegmentKeywords,
   sizeMandateUsd,
 } from "@/lib/workflows";
 import type {
@@ -69,6 +70,8 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
   const [country, setCountry] = useState("");
   const [sector, setSector] = useState("");
   const [industry, setIndustry] = useState("");
+  // V3.21.1 — optional segment keywords, sent as `industry_keywords`.
+  const [segmentKeywords, setSegmentKeywords] = useState("");
   // V3.20 — the size mandate. "default" omits the field (USD 2bn unless the text names a size).
   const [sizeMandate, setSizeMandate] = useState("default");
   const [maxUniverse, setMaxUniverse] = useState(
@@ -163,7 +166,7 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
     let cancelled = false;
     const handle = window.setTimeout(async () => {
       try {
-        const d = await parseThesis(text);
+        const d = await parseThesis(text, parseSegmentKeywords(segmentKeywords));
         if (cancelled) return;
         setDetected(d);
         setParseFailed(false);
@@ -183,7 +186,7 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [thesis]);
+  }, [thesis, segmentKeywords]);
 
   // Hand every filter back to inference. Used by the "reset to detected scope"
   // control, which is what makes a sticky manual edit correctable instead of
@@ -284,6 +287,7 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
           country: countryEdited.current ? country : undefined,
           sector: sectorEdited.current ? sector : undefined,
           industry,
+          segmentKeywords,
           maxUniverseSize: parseInt(maxUniverse, 10) || undefined,
           maxCandidates: parseInt(maxCandidates, 10) || undefined,
           maxMarketCapUsd: sizeMandateUsd(sizeMandate),
@@ -509,6 +513,21 @@ export default function DiscoveryWorkbench({ runId }: { runId?: string }) {
                       </option>
                     ))}
                 </select>
+              </label>
+
+              <label className="text-xs text-[color:var(--ib-ink-3)]">
+                Segment keywords{" "}
+                <span className="text-[color:var(--ib-ink-3)]">
+                  — optional, comma-separated; candidates must show exposure
+                </span>
+                <input
+                  className={`${inputCls} mt-1`}
+                  data-testid="segment-keywords"
+                  value={segmentKeywords}
+                  onChange={(e) => setSegmentKeywords(e.target.value)}
+                  placeholder="cybersecurity, OT security"
+                  maxLength={300}
+                />
               </label>
 
               <label className="text-xs text-[color:var(--ib-ink-3)]">

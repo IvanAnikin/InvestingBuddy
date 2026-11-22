@@ -93,7 +93,15 @@ export function intentChips(intent: DiscoveryIntent | null | undefined): IntentC
     chips.push({ label: "Where", value: constraintValue(geo), hardness: geo.hardness });
   }
   const industry = constraintOf(intent, "industry");
-  if (industry) {
+  if (industry && intent.segment_terms?.length) {
+    // V3.21.1 — a free-form segment: checked on verified exposure, never on a sector.
+    chips.push({
+      label: "Segment",
+      value: industry.requested.join(", "),
+      hardness: industry.hardness,
+      note: "each candidate must show verified exposure to one of these terms",
+    });
+  } else if (industry) {
     chips.push({
       label: "Industry",
       value: industry.requested.map(humanise).join(", "),

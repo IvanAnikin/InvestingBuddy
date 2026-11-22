@@ -231,6 +231,36 @@ export interface ThesisDiscoveryInput {
    * the thesis names no size); a number = explicit USD ceiling; `null` = no ceiling.
    */
   maxMarketCapUsd?: number | null;
+  /**
+   * V3.21.1 — optional "Segment keywords", comma-separated ("cybersecurity, OT security").
+   * Sent as `industry_keywords`; the backend sanitises them into segment terms.
+   */
+  segmentKeywords?: string;
+}
+
+/** V3.21.1 — at most this many segment keywords are sent (the backend keeps six terms). */
+export const MAX_SEGMENT_KEYWORDS = 6;
+
+/**
+ * Split the "Segment keywords" field into clean keywords: comma/semicolon separated,
+ * trimmed, de-duplicated (case-insensitive), 3–40 characters, letters, digits, spaces
+ * and hyphens only. The backend applies the same rule; anything else is dropped here.
+ */
+export function parseSegmentKeywords(value: string | undefined): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of (value ?? "").split(/[,;\n]/)) {
+    const kw = raw.replace(/\s+/g, " ").trim();
+    if (kw.length < 3 || kw.length > 40 || !/^[A-Za-z0-9][A-Za-z0-9 -]*[A-Za-z0-9]$/.test(kw)) {
+      continue;
+    }
+    const key = kw.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(kw);
+    if (out.length >= MAX_SEGMENT_KEYWORDS) break;
+  }
+  return out;
 }
 
 /** V3.20 — the size-mandate choices the discovery form offers (owner decision D1). */
@@ -254,6 +284,7 @@ export function buildThesisDiscoveryRequest(
     const v = (value ?? "").trim();
     return v ? v : undefined;
   };
+  const keywords = parseSegmentKeywords(input.segmentKeywords);
 
   return {
     thesis_text: input.thesisText.trim(),
@@ -267,6 +298,7 @@ export function buildThesisDiscoveryRequest(
     provider_name: input.providerName ?? DISCOVERY_DEFAULTS.providerName,
     // `undefined` leaves the key out entirely, so the platform default applies.
     ...(input.maxMarketCapUsd !== undefined ? { max_market_cap_usd: input.maxMarketCapUsd } : {}),
+    ...(keywords.length ? { industry_keywords: keywords } : {}),
   };
 }
 

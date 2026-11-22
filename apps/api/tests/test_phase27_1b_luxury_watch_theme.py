@@ -102,7 +102,10 @@ def test_04b_swatch_alone_does_not_match_via_watch() -> None:
     """Phrase matching is whole-word: "Swatch" must not trigger "watch"."""
     parsed = parse_thesis("Swatch")
     assert "luxury_goods" not in parsed.themes
-    assert parsed.needs_narrowing is True
+    # V3.21.1 (ADR-107): an unmatched word is now a free-form segment term, checked as
+    # itself ("swatch"), never widened to the watch theme.
+    assert parsed.segment_terms == ["swatch"]
+    assert parsed.needs_narrowing is False
 
 
 def test_04c_theme_phrase_sets_are_pairwise_disjoint() -> None:

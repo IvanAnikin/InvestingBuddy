@@ -78,7 +78,7 @@ def screening_question(issuer: IdentityOutcome, intent: DiscoveryIntent) -> str:
     vocabulary; the user's own text is never sent (spec §5.2)."""
     focus = [m.replace("_", " ") for m in intent.materials] or [
         t.replace("_", " ") for t in intent.themes
-    ]
+    ] or list(intent.segment_terms)
     # The name came from an external lead: quoted, bounded, and declared as data.
     name = re.sub(r"[\"\n\r`]", " ", str(issuer.name or ""))[:80].strip()
     return (
@@ -243,7 +243,48 @@ def _terms(intent: DiscoveryIntent) -> dict[str, re.Pattern[str]]:
             out[theme] = re.compile(
                 r"\b(?:" + "|".join(re.escape(p) for p in phrases) + r")\b", re.I
             )
+    out.update(segment_term_patterns(intent.segment_terms, intent.segment_synonyms))
     return out
+
+
+def _phrase_pattern(phrase: str) -> str:
+    """Word-boundary regex for a sanitised phrase: space or hyphen between words, and an
+    optional plural ending ("vessel" matches "vessels")."""
+    words = [re.escape(w) for w in re.split(r"[\s-]+", phrase.strip()) if w]
+    return r"[\s-]+".join(words) + r"(?:s|es)?"
+
+
+def segment_term_patterns(
+    terms: tuple[str, ...] | list[str], synonyms: tuple[str, ...] | list[str] = ()
+) -> dict[str, re.Pattern[str]]:
+    """V3.21.1 (ADR-107) — term → pattern for the free-form segment.
+
+    One word-boundary pattern per term. Each synonym joins the term it shares a word
+    with (else the first term), so an exposure found through a synonym is reported under
+    a REQUESTED term and ``verify_industry`` works unchanged.
+    """
+    clean_terms = [t for t in dict.fromkeys(terms) if t]
+    if not clean_terms:
+        return {}
+    phrases: dict[str, list[str]] = {t: [t] for t in clean_terms}
+    for synonym in dict.fromkeys(synonyms):
+        if not synonym:
+            continue
+        syn_words = set(re.split(r"[\s-]+", synonym))
+        owner = next(
+            (t for t in clean_terms if syn_words & set(re.split(r"[\s-]+", t))),
+            clean_terms[0],
+        )
+        if synonym not in phrases[owner]:
+            phrases[owner].append(synonym)
+    return {
+        term: re.compile(
+            r"(?<![A-Za-z0-9])(?:" + "|".join(_phrase_pattern(p) for p in group)
+            + r")(?![A-Za-z0-9])",
+            re.I,
+        )
+        for term, group in phrases.items()
+    }
 
 
 _INDIRECT = re.compile(
@@ -743,6 +784,7 @@ async def screen_issuers(
 __all__ = [
     "ScreeningResult",
     "exposures_from_text",
+    "segment_term_patterns",
     "screen_issuer",
     "screen_issuers",
     "screening_question",

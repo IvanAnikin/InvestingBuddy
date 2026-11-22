@@ -1,6 +1,7 @@
 "use client";
 
 import type { DiscoveryIntent } from "@/types/api";
+import SegmentTermChips from "./SegmentTermChips";
 import { hardnessWord, intentChips, openDiscoveryLine } from "./v319View";
 
 /**
@@ -55,6 +56,13 @@ export default function DiscoveryIntentPanel({
           </div>
         ))}
       </dl>
+      <div className="mt-2">
+        <SegmentTermChips
+          terms={intent.segment_terms}
+          synonyms={intent.segment_synonyms}
+          testId={`${testId}-segment-terms`}
+        />
+      </div>
       {openLine && (
         <p className="mt-2 text-xs text-[color:var(--ib-ink-3)]" data-testid="intent-open-discovery">
           {openLine}
