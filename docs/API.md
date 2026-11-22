@@ -4135,6 +4135,31 @@ web only through the admin proxy (`/api/v1/portfolios` is on its allow-list).
 
 No route imports from a broker, places an order or computes a size.
 
+## Team watchlists and monitoring (V3.21 slice 21.2, ADR-109, admin only)
+
+Admin only. Routes resolve the admin from `request.state.admin_email` (or the
+`X-IB-Admin-Email` header in development/test only). Without one they return **403**.
+From the web they are reachable only through the admin proxy: `/api/v1/watchlists` and
+`/api/v1/monitoring` are both on its allow-list. They are never public.
+
+The team lists `Shortlist` and `Watchlist` (owner NULL) are created on the first `GET
+/watchlists`. No route starts research or fetches a URL.
+
+| Method | Path | Body / response |
+|---|---|---|
+| GET | `/api/v1/watchlists` | `[{id, name, description, is_active, is_team_list, created_at, entry_count, open_signal_count}]` |
+| GET | `/api/v1/watchlists/{id}` | summary + `entries[{id, company_id, company{id, ticker, exchange, name}, note, source, added_at, added_by_hash, latest_record{id, research_run_id, as_of, verdict, verdict_meaning, composite_score} \| null, open_signals[Signal]}]`; 404 for an unknown list |
+| POST | `/api/v1/watchlists/{id}/entries` | `{company_id \| ticker + exchange?, note?, source: manual \| discovery_candidate \| report \| auto_report}` → **201** `{entry_id, watchlist_id, company_id, created: true}`; **200** with `created: false` when the company is already on the list; 404 for an unknown list or company; 409 when a ticker matches more than one company; 422 on invalid input |
+| DELETE | `/api/v1/watchlists/{id}/entries/{entry_id}` | 204; the company's signals stay (history); 404 for an unknown entry |
+| GET | `/api/v1/monitoring/signals?status=open\|acknowledged\|superseded\|all&company_id=&limit=` | `[Signal]`, newest first (≤ 500) |
+| POST | `/api/v1/monitoring/signals/{id}/acknowledge` | `Signal` with `status: acknowledged`, `acknowledged_at`; 404 for an unknown signal |
+| POST | `/api/v1/monitoring/run` | `{watchlist_id}` or `{company_id}` (exactly one) → `{mode: enqueued, job_id, created}` with durable jobs on (a second request joins the live job), else `{mode: inline, result{companies, persisted, duplicates_suppressed, failed, truncated, reason, per_company[]}}`. Bounded at 200 companies × 25 signals. |
+
+`Signal` = `{id, company_id, kind, summary, status, relates_to_question_key,
+relates_to_run_id, source_ref, detail, observed_at, acknowledged_at, material}`.
+- `material: true` marks the kinds shown with a "Re-run research" link. That research is proposed, never started.
+- A summary says what changed, never what it means.
+
 ## Precedent transactions (V3.20 slice 8.3, admin only)
 
 These routes need a signed-in admin: `request.state.admin_email`, or the `X-IB-Admin-Email`

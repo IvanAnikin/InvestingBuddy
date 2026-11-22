@@ -49,6 +49,7 @@ import {
 } from "@/components/research/reportResolution";
 import { fetchReport, fetchReports, fetchReportPrimaryDocuments } from "@/lib/api";
 import type { Report, ReportPrimaryDocumentsResponse } from "@/types/api";
+import AddToListButtons from "@/components/watchlists/AddToListButtons";
 
 export const dynamic = "force-dynamic";
 
@@ -293,6 +294,15 @@ export default async function ResearchReportPage({
       />
 
       {statusStrip}
+
+      {report.company_id && (
+        <AddToListButtons
+          companyId={report.company_id}
+          source="report"
+          note={`Report ${report.id}`}
+          testIdPrefix="report-add"
+        />
+      )}
 
       {professional && (
         <div className="flex flex-wrap gap-4 text-sm" data-testid="report-print-links">

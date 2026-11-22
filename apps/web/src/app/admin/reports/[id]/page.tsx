@@ -14,6 +14,7 @@ import type {
 import FinalReportActions from "./FinalReportActions";
 import ReviewPanel from "./ReviewPanel";
 import GlassCard from "@/components/ui/GlassCard";
+import AddToListButtons from "@/components/watchlists/AddToListButtons";
 import SafetyBanner from "@/components/ui/SafetyBanner";
 import StatusPill, { type PillColor } from "@/components/ui/StatusPill";
 import MarkdownReportPreview from "@/components/reports/MarkdownReportPreview";
@@ -342,6 +343,16 @@ export default async function ReportDetailPage({
         </h1>
         {report.summary && (
           <p className="mt-2 text-sm text-slate-400">{report.summary}</p>
+        )}
+        {report.company_id && (
+          <div className="mt-3">
+            <AddToListButtons
+              companyId={report.company_id}
+              source="report"
+              note={`Report ${report.id}`}
+              testIdPrefix="report-add"
+            />
+          </div>
         )}
       </div>
 

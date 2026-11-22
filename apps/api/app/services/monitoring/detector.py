@@ -1,12 +1,13 @@
 """Change detection — V3.9 Slice 9.1.
 
-NOTHING CALLS THIS ON A TIMER
-=============================
-[OPEN DECISION #15](../../../docs/v3/OPEN_DECISIONS.md#15-monitoring-cadence) — how often
-to check — is **user-owned and unresolved**. So this module ships behind
-``V3_MONITORING_ENABLED`` (default off), with no cron, no worker job and no scheduler, and
-a test asserts that nothing in the codebase schedules it. Guessing a cadence would answer a
-question asked of somebody else *and* start spending on a path nobody approved.
+WHO CALLS THIS (V3.21.2, ADR-109)
+=================================
+[OPEN DECISION #15](../../../docs/v3/OPEN_DECISIONS.md#15-monitoring-cadence) was resolved
+for monitoring in V3.21: a daily ``monitoring_pass`` durable job (``monitoring.pass_job``,
+in this package) calls it for every company on an active team list. This module itself
+still imports and calls no scheduler (a test checks that on the AST), and nothing outside
+the ``monitoring`` package calls it. It ships behind ``V3_MONITORING_ENABLED`` (default off
+in code, on in staging).
 
 WHAT A DETECTOR MAY SAY
 =======================
@@ -63,6 +64,10 @@ KIND_PASSIVE_OWNERSHIP_CHANGE = "passive_ownership_change"
 KIND_RELATIONSHIP_CHANGE = "relationship_change"
 KIND_COMPETITOR_CAPACITY = "competitor_capacity_announcement"
 KIND_CHANGE_EVENT = "change_event"
+# V3.21.2 — derived from the LATEST research record by the monitoring pass
+# (``monitoring.pass_job``): a blocking gap still unresolved, a dated item within 30 days.
+KIND_MISSING_INFORMATION = "missing_information"
+KIND_CATALYST_WINDOW = "catalyst_window"
 
 SIGNAL_KINDS: frozenset[str] = frozenset(
     {
@@ -78,6 +83,8 @@ SIGNAL_KINDS: frozenset[str] = frozenset(
         KIND_RELATIONSHIP_CHANGE,
         KIND_COMPETITOR_CAPACITY,
         KIND_CHANGE_EVENT,
+        KIND_MISSING_INFORMATION,
+        KIND_CATALYST_WINDOW,
     }
 )
 
@@ -438,11 +445,13 @@ async def watchlist_company_ids(
 
 
 __all__ = [
+    "KIND_CATALYST_WINDOW",
     "KIND_CHANGE_EVENT",
     "KIND_COMPETITOR_CAPACITY",
     "KIND_CONSENSUS_REVISION",
     "KIND_EARNINGS_RELEASED",
     "KIND_MACRO_REVISION",
+    "KIND_MISSING_INFORMATION",
     "KIND_PASSIVE_OWNERSHIP_CHANGE",
     "KIND_RELATIONSHIP_CHANGE",
     "KIND_NEW_DOCUMENT",

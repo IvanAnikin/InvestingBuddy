@@ -9,14 +9,14 @@ An alert that says "Pandora filed something" is a feed. An alert that says "Pand
 something, and it bears on the cash-runway question your last analysis left open" is
 research. The second needs V3.8, which is why this phase is ninth rather than second.
 
-NOTHING SCHEDULES THIS
-======================
-[OPEN DECISION #15](../../../docs/v3/OPEN_DECISIONS.md#15-monitoring-cadence) — how often to
-check — is **user-owned and unresolved**. So the mechanism ships behind
-``V3_MONITORING_ENABLED`` (default off) with **no timer, no cron and no worker job**, and a
-test asserts that nothing in the codebase schedules it. Choosing a cadence is configuration
-once somebody decides; guessing one would answer a question asked of somebody else, and it
-would start spending money on a path nobody approved.
+WHAT SCHEDULES THIS (V3.21.2, ADR-109)
+======================================
+[OPEN DECISION #15](../../../docs/v3/OPEN_DECISIONS.md#15-monitoring-cadence) was resolved
+for monitoring by the owner's V3.21 request: a **daily** ``monitoring_pass`` on the durable
+worker's periodic-task registry, over the two team lists (``Shortlist``, ``Watchlist``).
+The mechanism is still behind ``V3_MONITORING_ENABLED`` (default off in code, on in
+staging), the pass reads only what the platform holds, and it never starts research by
+itself. A test asserts that nothing outside the ``monitoring`` package calls the detector.
 
 A SIGNAL IS AN OBSERVATION, NOT A CONCLUSION
 ============================================
@@ -68,6 +68,11 @@ class Watchlist(Base):
 
     __table_args__ = (
         sa.Index("ix_watchlists_owner_name", "owner", "name", unique=True),
+        # V3.21.2 (migration 063): one TEAM list (owner NULL) per name — the index above
+        # does not hold for NULL owners on PostgreSQL, where NULLs are distinct.
+        sa.Index("ux_watchlists_team_name", "name", unique=True,
+                 postgresql_where=sa.text("owner IS NULL"),
+                 sqlite_where=sa.text("owner IS NULL")),
     )
 
 
@@ -113,8 +118,19 @@ class WatchlistEntry(Base):
     added_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, default=_utcnow
     )
+    #: V3.21.2 (migration 063) — who added it: SHA-256 of the proxied admin e-mail, the
+    #: same hash portfolios use. Never the address. NULL for rows from before 063.
+    added_by_hash: Mapped[str | None] = mapped_column(sa.Text)
+    #: Where it was added from: ``manual`` | ``discovery_candidate`` | ``report`` |
+    #: ``auto_report``. NULL for rows from before 063.
+    source: Mapped[str | None] = mapped_column(sa.Text)
 
     __table_args__ = (
+        sa.CheckConstraint(
+            "source IS NULL OR source IN "
+            "('manual', 'discovery_candidate', 'report', 'auto_report')",
+            name="ck_watchlist_entries_source",
+        ),
         sa.Index(
             "ix_watchlist_entries_list_company",
             "watchlist_id",
@@ -145,7 +161,8 @@ class MonitoringSignal(Base):
     #: ``new_document`` | ``new_ir_event`` | ``transcript_published`` |
     #: ``research_delta`` | ``open_gap_closable`` | ``macro_revision``; V3.20 slice 9.4:
     #: ``earnings_released`` | ``consensus_revision`` | ``passive_ownership_change`` |
-    #: ``relationship_change`` | ``competitor_capacity_announcement`` | ``change_event``.
+    #: ``relationship_change`` | ``competitor_capacity_announcement`` | ``change_event``;
+    #: V3.21.2: ``missing_information`` | ``catalyst_window``.
     kind: Mapped[str] = mapped_column(sa.String(40), nullable=False)
     #: Derived from WHAT was observed, so re-running the monitor cannot raise the same
     #: signal twice. A monitor that re-raises is a monitor everybody turns off.
@@ -203,7 +220,9 @@ class MonitoringSignal(Base):
             "'research_delta', 'open_gap_closable', 'macro_revision', "
             # V3.20 slice 9.4 (migration 054).
             "'earnings_released', 'consensus_revision', 'passive_ownership_change', "
-            "'relationship_change', 'competitor_capacity_announcement', 'change_event')",
+            "'relationship_change', 'competitor_capacity_announcement', 'change_event', "
+            # V3.21.2 (migration 063).
+            "'missing_information', 'catalyst_window')",
             name="ck_monitoring_signals_kind",
         ),
         sa.CheckConstraint(

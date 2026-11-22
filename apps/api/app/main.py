@@ -23,6 +23,8 @@ from app.api.v1.reports import router as reports_router
 from app.api.v1.research_decisions import router as research_decisions_router
 from app.api.v1.scoring import router as scoring_router
 from app.api.v1.sources import router as sources_router
+from app.api.v1.watchlists import monitoring_router
+from app.api.v1.watchlists import router as watchlists_router
 from app.api.v1.web_research_admin import router as web_research_admin_router
 from app.api.v1.workflows import router as workflows_router
 from app.core.config import settings
@@ -235,6 +237,10 @@ app.include_router(research_decisions_router, prefix="/api/v1")
 app.include_router(portfolios_router, prefix="/api/v1")
 # V3.20 slice 8.3 — precedent transactions review queue (admin only).
 app.include_router(precedents_admin_router, prefix="/api/v1")
+# V3.21.2 — team Shortlist / Watchlist and monitoring signals (admin only: backend Basic
+# Auth + the admin-allowlisted Next.js proxy + the proxied admin identity; ADR-109).
+app.include_router(watchlists_router, prefix="/api/v1")
+app.include_router(monitoring_router, prefix="/api/v1")
 # Open-web W1 — search provenance audit. Admin only: same guard as research_decisions
 # (backend Basic Auth + the admin-allowlisted Next.js proxy).
 app.include_router(web_research_admin_router, prefix="/api/v1")
