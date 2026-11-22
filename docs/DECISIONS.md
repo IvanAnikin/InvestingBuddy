@@ -10955,3 +10955,26 @@ A grid company's report had no quantified view of its market. The registry's `ei
 - `get_industry_series` (commodities) is unchanged. Exposing these electricity series to agents through the tool is a follow-up.
 - No migration. The cost is about 17 MB and at most 9 requests a week.
 
+## ADR-114: A Research Coverage Index (Edison Sitemap, Search-Only Providers) and an Obscurity Component
+
+**Date:** 2026-11-22 · **Status:** Accepted (V3.21 slice 21.7, spec §8)
+**Trigger:** requirements audit finding F9. Whether a company is covered by sponsored or independent research (Edison, Redeye, Research Tree, mwb research) was not known to a report, and the obscurity score could not tell a covered small cap from an uncovered one.
+
+### Findings (checked live 2026-11-22)
+- **Edison Group:** `robots.txt` disallows only `/wp-admin/` and lists `https://www.edisongroup.com/sitemap.xml` (1.09 MB, `text/xml`): ~668 `/equity/<company-slug>/[BMC-<id>/]` company pages (313 legacy pages carry no id) and ~3,748 `/research/<headline-slug>/<id>/` notes.
+- **Redeye:** `robots.txt` disallows GPTBot, ClaudeBot and Google-Extended; its sitemap answers 403 to us. **Research Tree:** no sitemap (404). **mwb research (research-hub.de):** no usable sitemap.
+
+### Decision
+1. **Table** `research_coverage_pages` (migration 064): provider, URL (unique), page kind (`equity` | `note`), company slug, normalised name key, title, lastmod, first / last seen, `discovered_via` (`sitemap` | `search`). URLs and titles only — never a body, never a claim.
+2. **Edison, by sitemap, weekly.** Periodic task `research_coverage_refresh` (ADR-109, WEEKLY) and `scripts/refresh_research_coverage.py [--dry-run]`. robots.txt is read first through `safe_fetch_document` and decided with the RFC 9309 parser; disallowed or unreachable fails closed. The sitemap is one GET, host pinned to the Edison hosts, resolved IPs checked, capped at 8 MB (a cut body is refused). The XML is refused if it has a DOCTYPE/ENTITY; only https URLs on the Edison hosts are read. A file with no `/equity/` page is drift and changes nothing. Upsert by URL, never delete.
+3. **Redeye, Research Tree, mwb research: search only.** Never fetched in bulk. With `V3_WEB_SEARCH_ENABLED`, one `include_domains` search per company per 30 days (throttle in `source_poll_state`, key `research_coverage_search.<company id>`; a failed attempt waits a day). A hit is kept only when it is on a provider host AND its title or URL names the company (all name tokens, contiguously). With search off or out of quota the block says so; nothing fails.
+4. **Matching is equality of one key.** Accent-folded, lower-cased, `&` → `and`, dots dropped, leading `the` and trailing legal-form words (plc, ltd, holdings, group, AG, ASA, SAOG …) dropped on both sides, trailing `-2` dropped from a slug, tokens joined (`metlenenergyandmetals` = "Metlen Energy & Metals S.A."). No prefix, substring or fuzzy match; a single generic word (power, energy …) or a key under four characters matches nothing. A missed match is preferred to a false one.
+5. **Report block** `evidence_quality_and_gaps.independent_research`: providers with URL and date, the note "Sponsored research is paid for by the issuer", and absence phrased as what was looked at: "None found in the indexed providers (Edison sitemap; search-only providers not searched, web search is off)." Never "no coverage exists". Until the index has been refreshed once the state is `index_not_built`.
+6. **Optional ingest.** With `V3_WEB_FETCH_ENABLED`, at most one Edison company page per run through `open_web_fetch` (robots, TDM, denylist) and `ingest_web_document`. The research hosts are curated as `research_consultancy` (T5); a page's claims are never company facts without a primary source.
+7. **Obscurity component** `independent_research_coverage`: 0 providers → 1.0, 1 → 0.5, 2+ → 0.1 points. Unknown (left out of the mean) until the index has been refreshed — a state, not zero. `SCORE_VERSION` → `2026-11-22.1`; a block built without the component (flag off) keeps `2026-11-16.1` and is byte-identical.
+8. **Flag** `V3_RESEARCH_COVERAGE_ENABLED`, default on. Registry row `research_coverage_index` (T5).
+
+### Consequences
+- A covered company scores lower on obscurity, and the reader sees who covers it and that the research is issuer-paid.
+- The Edison note pages are indexed but not matched (their slug is a headline); linking notes to companies would need the page, which is out of scope.
+- Migration 064 is additive and reversible; downgrade loses only a rebuildable index.

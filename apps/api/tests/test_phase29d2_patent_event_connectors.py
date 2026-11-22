@@ -318,11 +318,11 @@ def test_registry_summary_counts_after_patent_layer():
     # 11 regulator-layer + 15 macro/commodity/policy (29C) + 2 procurement /
     # tender (29D.1) + 3 patent office / index (29D.2) + 3 permit /
     # regulatory-event (29D.3) = 34 enabled.
-    assert summary["enabled"] == 46  # +3: Ember, IRENA, EIA industry data (V3.21.4, ADR-111); +1: OCCTO supply plan (11.5; CEA is disabled); +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E)
+    assert summary["enabled"] == 47  # +3: Ember, IRENA, EIA industry data (V3.21.4, ADR-111); +1: OCCTO supply plan (11.5; CEA is disabled); +1: NESO TEC (7.4); +2: AEMO TAI + LBL Queued Up (7.2); +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5) +1: local-language business press (Phase 30B)  # +1: Italian regulated disclosures (readiness PR-E) +1: research coverage index (V3.21.7)
     assert summary["scaffolded"] == 2
     # Only OpenBB remains planned (Phase 30B promoted the local-language press).
     assert summary["planned"] == 1
-    assert summary["total"] == 51  # +3: Ember, IRENA, EIA industry data (V3.21.4); +2: OCCTO + CEA (11.5, CEA disabled); +1: NESO TEC (7.4), +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default), +2: AEMO TAI + LBL Queued Up (7.2)
+    assert summary["total"] == 52  # +3: Ember, IRENA, EIA industry data (V3.21.4); +2: OCCTO + CEA (11.5, CEA disabled); +1: NESO TEC (7.4), +1: Alpha Vantage (4.2), +2: SPDR + iShares holdings files (3.5), +1: ENTSO-E TYNDP (7.1, disabled by default), +2: AEMO TAI + LBL Queued Up (7.2) +1: research coverage index (V3.21.7)
     assert summary["total"] == len(reg.all_sources())
     # Health covers every patent connector, network-free.
     keys = {h.connector_key for h in reg.health()}

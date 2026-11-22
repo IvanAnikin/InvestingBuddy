@@ -1537,6 +1537,14 @@ class Settings(BaseSettings):
     # refreshes the STL members page at most monthly (one GET, stl-liaison.org); with
     # V3_WEB_SEARCH_ENABLED, at most 5 body-host searches per run. Off -> report unchanged.
     v3_certification_bodies_enabled: bool = True
+    # V3.21 slice 21.7 (ADR-114): the research coverage index (migration 064). Weekly
+    # periodic task ``research_coverage_refresh`` reads Edison Group's public sitemap
+    # (robots checked, host pinned, one GET); the report gains
+    # evidence_quality_and_gaps.independent_research and the obscurity score gains
+    # ``independent_research_coverage``. With V3_WEB_SEARCH_ENABLED, at most one
+    # host-restricted search per company per 30 days (Redeye, Research Tree, mwb
+    # research). Off -> no task, report and obscurity block unchanged.
+    v3_research_coverage_enabled: bool = True
     # V3.20 slice 6.3: the obscurity score block (valuation_context section) from held
     # data — analyst count, N-PORT passive %, theme-fund holders, sector mis-tag, filing
     # language. No external call unless the news-volume component is switched on.

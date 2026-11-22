@@ -64,7 +64,8 @@ from app.services.sources.taxonomy import (
 from app.services.web_research.source_policy import use_constraint_for
 from app.services.web_research.text_safety import has_tag_characters, invisible_char_count
 
-CURATED_LISTS_VERSION = "2026-10-07.1"
+#: 2026-11-22.1: the sponsored equity research providers (V3.21 slice 21.7).
+CURATED_LISTS_VERSION = "2026-11-22.1"
 
 # ── Source classes (spec §13.1) ─────────────────────────────────────────── #
 
@@ -168,6 +169,10 @@ _RESEARCH_CONSULTANCIES: tuple[str, ...] = (
     "mckinsey.com", "bcg.com", "bain.com", "deloitte.com", "pwc.com", "ey.com",
     "kpmg.com", "woodmac.com", "rystadenergy.com", "bnef.com", "gartner.com",
     "idc.com", "iea-pvps.org",
+    # V3.21 slice 21.7 (ADR-114): issuer-sponsored equity research providers. Their pages
+    # are T5 research: never a company fact without a primary source.
+    "edisongroup.com", "redeye.se", "researchtree.co.uk", "research-hub.de",
+    "mwb-research.com",
 )
 _AGGREGATORS: tuple[str, ...] = (
     "finance.yahoo.com", "yahoo.com", "marketscreener.com", "seekingalpha.com",

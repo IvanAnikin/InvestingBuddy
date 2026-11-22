@@ -92,8 +92,13 @@ async def obscurity_section(
     passive_block: Mapping[str, Any] | None,
     layers_block: Mapping[str, Any] | None,
     fetch: GdeltFetch | None = None,
+    coverage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """The report's "Obscurity" block, or ``None`` when off or on failure."""
+    """The report's "Obscurity" block, or ``None`` when off or on failure.
+
+    ``coverage`` (V3.21 slice 21.7) is the research-coverage step's obscurity input; it is
+    ``None`` when ``V3_RESEARCH_COVERAGE_ENABLED`` is off, and the block is then unchanged.
+    """
     if not getattr(cfg, "v3_obscurity_score_enabled", False):
         return None
     try:
@@ -111,6 +116,7 @@ async def obscurity_section(
             layers_block=layers_block, sector=getattr(company, "sector", None),
             industry=getattr(company, "industry", None),
             listing_country=country_for_exchange(getattr(company, "exchange", None)),
+            coverage=coverage,
         )
     except Exception:  # noqa: BLE001 - an additive block never costs the report
         logger.warning("obscurity score failed")

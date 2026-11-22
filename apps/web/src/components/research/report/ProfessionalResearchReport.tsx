@@ -15,6 +15,7 @@ import { PrecedentTransactionsSection } from "@/components/research/report/Prece
 import { MarketImpliedSection } from "@/components/research/report/MarketImpliedSection";
 import { FinancialDepthSection } from "@/components/research/report/FinancialDepthSection";
 import { ObscuritySection } from "@/components/research/report/ObscuritySection";
+import { IndependentResearchSection } from "@/components/research/report/IndependentResearchSection";
 import { RealAssetSection } from "@/components/research/report/RealAssetSection";
 import { QualificationEvidenceSection } from "@/components/research/report/QualificationEvidenceSection";
 import { ResearchVerdictSection } from "@/components/research/report/ResearchVerdictSection";
@@ -1101,6 +1102,8 @@ function EvidenceBody({
       </div>
 
       <WebResearchSummary web={section.webResearch} />
+
+      <IndependentResearchSection block={section.independentResearch} />
 
       {section.explanation && (
         <p className="ib-breakable mt-4 max-w-3xl text-xs leading-relaxed text-[color:var(--ib-ink-3)]">

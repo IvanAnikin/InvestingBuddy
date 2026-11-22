@@ -100,6 +100,28 @@ def _no_live_stl_members(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_research_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V3.21 slice 21.7 — the coverage step's search-only providers, its optional page
+    ingest and the Edison sitemap refresh never reach the network: the default seams
+    answer "not executed" / "not ingested" / "failed". Tests of the coverage index pass
+    their own searcher, ingester and fetcher."""
+    from app.services.research_coverage import coverage, sitemap
+
+    async def _no_search(*_a: object, **_k: object) -> coverage.SearchAnswer:
+        return coverage.SearchAnswer(executed=False, state="test_no_network")
+
+    async def _no_ingest(*_a: object, **_k: object) -> dict[str, object]:
+        return {"state": "not_ingested", "reason": "test_no_network"}
+
+    async def _no_fetch(*_a: object, **_k: object) -> sitemap.RawAnswer:
+        return sitemap.RawAnswer(None, failed=True)
+
+    monkeypatch.setattr(coverage, "default_searcher", _no_search)
+    monkeypatch.setattr(coverage, "default_ingester", _no_ingest)
+    monkeypatch.setattr(sitemap, "default_fetcher", _no_fetch)
+
+
+@pytest.fixture(autouse=True)
 def _no_live_fiscal_anchor(monkeypatch: pytest.MonkeyPatch) -> None:
     """ADR-088 — the investigator's fiscal-calendar read (SEC company facts) answers
     "unknown" for every test, so fiscal periods are judged leniently exactly as without

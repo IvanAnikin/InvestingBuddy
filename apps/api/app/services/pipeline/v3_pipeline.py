@@ -1430,9 +1430,11 @@ async def _run(
         layer_peers = await _layer_peers_section(
             session, company, cfg=cfg, layers_block=electricity_layers,
             ev_block=enterprise_value, size_fit=thesis_size)
+        independent_research, coverage_input = await _research_coverage_section(
+            session, company, cfg=cfg)
         obscurity = await _obscurity_section(
             session, company, cfg=cfg, passive_block=passive_ownership,
-            layers_block=electricity_layers)
+            layers_block=electricity_layers, coverage=coverage_input)
         precedent_transactions = await _precedent_transactions_section(
             session, cfg=cfg, layers_block=electricity_layers)
         market_implied = await _market_implied_section(
@@ -1474,6 +1476,7 @@ async def _run(
             precedent_transactions=precedent_transactions,
             market_implied=market_implied,
             obscurity=obscurity,
+            independent_research=independent_research,
             change_events=change_events,
             verdict_enabled=bool(getattr(cfg, "v3_research_verdict_enabled", False)),
             valuation=await _valuation_section(
@@ -1709,12 +1712,26 @@ async def _industry_context_section(
 async def _obscurity_section(
     session: Any, company: Any, *, cfg: Any,
     passive_block: dict[str, Any] | None, layers_block: dict[str, Any] | None,
+    coverage: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """V3.20 slice 6.3 — the obscurity score block; None when off (report unchanged)."""
     from app.services.pipeline.obscurity_step import obscurity_section
 
     return await obscurity_section(session, company, cfg=cfg, passive_block=passive_block,
-                                   layers_block=layers_block)
+                                   layers_block=layers_block, coverage=coverage)
+
+
+async def _research_coverage_section(
+    session: Any, company: Any, *, cfg: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """V3.21 slice 21.7 — the evidence_quality_and_gaps "Independent research" block and
+    the obscurity score's coverage input. ``(None, None)`` when off: the report and the
+    obscurity block are unchanged. Never raises."""
+    if not getattr(cfg, "v3_research_coverage_enabled", False):
+        return None, None
+    from app.services.research_coverage.coverage import research_coverage_step
+
+    return await research_coverage_step(session, company, cfg=cfg)
 
 
 async def _enterprise_value_section(
@@ -1980,6 +1997,7 @@ async def _professional_report(
     real_asset: dict[str, Any] | None = None,
     qualification_evidence: dict[str, Any] | None = None,
     obscurity: dict[str, Any] | None = None,
+    independent_research: dict[str, Any] | None = None,
     change_events: dict[str, Any] | None = None,
     enterprise_value: dict[str, Any] | None = None,
     layer_peers: dict[str, Any] | None = None,
@@ -2190,6 +2208,7 @@ async def _professional_report(
         real_asset=real_asset,
         qualification_evidence=qualification_evidence,
         obscurity=obscurity,
+        independent_research=independent_research,
         change_events=change_events,
         enterprise_value=enterprise_value,
         layer_peers=layer_peers,

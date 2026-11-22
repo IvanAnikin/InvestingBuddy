@@ -16,6 +16,7 @@ const LABELS: Record<string, string> = {
   english_news_volume: "English news, last 3 months",
   sector_mis_tag: "Sector label misses the business",
   primary_disclosure_language: "Filing language",
+  independent_research_coverage: "Research providers covering it",
 };
 
 export function ObscuritySection({ block }: { block: ObscurityBlock | null }) {
