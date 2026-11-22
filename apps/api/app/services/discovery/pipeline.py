@@ -389,6 +389,12 @@ async def growth_from_held_facts(session: Any, company_id: Any) -> list[cons.Gro
     return [observation] if observation is not None else []
 
 
+def _shares_x_price_enabled(cfg: Any) -> bool:
+    if cfg is None:
+        from app.core.config import settings as cfg  # noqa: PLW0127
+    return bool(getattr(cfg, "v3_discovery_shares_x_price_enabled", False))
+
+
 async def _official_cap(identity: IdentityOutcome, *, cfg: Any, fetcher: Any):
     """The exchange's own market capitalisation for this listing, when it publishes one."""
     row = identity.directory_listing
@@ -403,8 +409,19 @@ async def _official_cap(identity: IdentityOutcome, *, cfg: Any, fetcher: Any):
     except Exception:  # noqa: BLE001 - an official figure that cannot be read is absent
         return None
     if (not amount or not currency) and listing.directory == "sec":
-        from app.services.discovery.directories import sec_public_float
+        from app.services.discovery.directories import sec_public_float, sec_shares_x_price
 
+        if _shares_x_price_enabled(cfg):
+            # An actual figure first: the float floor can prove only "above a band".
+            figure, _basis = await sec_shares_x_price(listing.cik, listing.ticker, cfg=cfg,
+                                                      fetcher=fetcher)
+            if figure is not None:
+                return cons.MarketCapObservation(
+                    amount=figure.amount, currency="USD", as_of=figure.price_date,
+                    as_of_basis="stated", source_url=figure.shares_url,
+                    source_tier=listing.tier, verified=True,
+                    method=cons.SHARES_X_PRICE_METHOD, components=figure.components(),
+                )
         floor = await sec_public_float(listing.cik, cfg=cfg, fetcher=fetcher)
         if floor is None:
             return None

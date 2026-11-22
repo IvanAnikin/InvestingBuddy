@@ -708,6 +708,13 @@ lose them. A retry resumes from the last committed ticker.
   ids in `v3_web.sightings` resolve in `web_search_queries` / `web_search_results` /
   `web_fetch_attempts` (all carry the run id).
 
+### US market cap from shares × price (V3.20 slice 1.5, ADR-106)
+
+`V3_DISCOVERY_SHARES_X_PRICE_ENABLED` (default `true`) computes a US domestic filer's market cap for the size mandate as its
+cover-page share count (latest 10-Q / 10-K, `data.sec.gov`) × the latest EODHD close. It needs `EODHD_API_KEY`, which is
+already set on staging; without a key nothing changes. No migration. Each discovery candidate costs one more SEC read and
+one EODHD `/eod` call. Rollback: set the flag to `false`, and the float floor is used alone, as before.
+
 ### Entity master backfill (operator; prerequisite for every entity-based V3.20 step)
 
 `V3_ENTITY_MASTER_ENABLED` alone links nothing. `backfill_entities_from_companies` (V3.2

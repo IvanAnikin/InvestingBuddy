@@ -1421,6 +1421,13 @@ class Settings(BaseSettings):
     # discovery snapshot is used, dated and flagged when older than 30 days.
     v3_size_recheck_enabled: bool = True
 
+    # V3.20 slice 1.5 (live finding 2026-11-22): a US domestic filer's market cap from its
+    # own cover-page share count × a dated EODHD close, preferred to the 10-K public float
+    # (a lower bound that can never place a company UNDER the size ceiling). Without it,
+    # every US small cap ended "size unverified" unless a web page stated its cap. Off =
+    # the float floor only, as before. Needs EODHD_API_KEY; without one nothing changes.
+    v3_discovery_shares_x_price_enabled: bool = True
+
     # V3.20 slice 2.2: GLEIF Level 2 (direct / ultimate parent, reporting exceptions) is
     # looked up for the company's verified LEI during research and written to the
     # relationship graph. CC0, free, no key; ~4 requests per company. Needs the entity

@@ -98,11 +98,18 @@ class MarketCapObservation:
     source_tier: str | None
     verified: bool
     #: "stated_market_cap" | "shares_x_price" | "exchange_directory" |
-    #: "admitted_shares_x_price" | "public_float_floor" (a LOWER BOUND, see verify_size)
+    #: "admitted_shares_x_price" | "public_float_floor" (a LOWER BOUND, see verify_size) |
+    #: "sec_shares_x_price" (cover-page shares × a dated close; V3.20 slice 1.5)
     method: str = "stated_market_cap"
+    #: The figures a computed market cap is the product of, each with its own source and
+    #: date (``sec_shares_x_price`` only). Left out of ``to_dict`` when absent.
+    components: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        if out.get("components") is None:
+            out.pop("components", None)
+        return out
 
 
 # ── Growth ─────────────────────────────────────────────────────────────────── #
@@ -287,6 +294,17 @@ def verify_size(
         "fx": rate.to_dict(),
     }
     sources = [_source(observation.source_url, observation.source_tier, as_of=observation.as_of)]
+    computed = ""
+    parts = observation.components
+    if parts:
+        value["components"] = dict(parts)
+        if parts.get("price_source_url"):
+            sources.append(_source(parts.get("price_source_url"), parts.get("price_source_tier"),
+                                   as_of=parts.get("price_date")))
+        if observation.method == SHARES_X_PRICE_METHOD:
+            computed = (f" (cover-page shares {float(parts.get('shares') or 0):,.0f} at "
+                        f"{parts.get('shares_as_of')} × close {parts.get('price')} USD on "
+                        f"{parts.get('price_date')})")
     if rate.series:
         sources.append(_source(rate.source_url, rate.tier, as_of=rate.rate_date))
     if constraint is None:
@@ -314,7 +332,7 @@ def verify_size(
         value=value,
         basis=(
             f"market cap {observation.amount:,.0f} {observation.currency} ≈ "
-            f"${usd / 1e9:,.2f}bn → {bucket.replace('_', '-')}" + why_not
+            f"${usd / 1e9:,.2f}bn → {bucket.replace('_', '-')}" + computed + why_not
         ),
         sources=sources,
         borderline=_borderline(usd, (low, high)),
@@ -327,6 +345,9 @@ def verify_size(
 #: margin, so a fall in the share price since the float date cannot flip the answer.
 FLOAT_FLOOR_METHOD = "public_float_floor"
 FLOAT_FLOOR_MARGIN = 2.0
+#: V3.20 slice 1.5: an actual (not a bound) market cap of a US domestic filer, computed
+#: from its own cover-page share count × a dated close. It is preferred to the float floor.
+SHARES_X_PRICE_METHOD = "sec_shares_x_price"
 
 
 def _verify_size_floor(
@@ -692,6 +713,7 @@ def bucket_from_words(text: str) -> str | None:
 
 __all__ = [
     "FLOAT_FLOOR_METHOD",
+    "SHARES_X_PRICE_METHOD",
     "ConstraintResult",
     "ELIGIBLE",
     "ELIGIBLE_UNVERIFIED",

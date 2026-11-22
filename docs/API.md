@@ -2614,6 +2614,8 @@ The ceiling is a **hard** constraint, and it is checked on the verified market c
 
 A US public float (a lower bound) can only *fail* a ceiling, never pass it.
 
+**US market cap from shares × price (V3.20 slice 1.5, ADR-106).** For a US domestic filer the size check first computes its market cap as the cover-page `dei:EntityCommonStockSharesOutstanding` of its latest 10-Q / 10-K × the latest EODHD close of its US line (`method: sec_shares_x_price`). The size result's `value.components` names both figures with their own date and source (`shares`, `shares_as_of`, `shares_form`, `shares_source_url`, `price`, `price_date`, `price_source_url`, `price_source_tier: T5_api_aggregator`), and `sources[]` lists the SEC concept and the price. It is refused, and the float floor answers as before, for a 20-F / 40-F cover (ADS ratio), more than one share class, a share count older than 200 days, a close older than 7 days, or no EODHD key. Flag `V3_DISCOVERY_SHARES_X_PRICE_ENABLED` (default on). It also feeds the analysis-time `size_fit` (slice 1.3), which reads the same official figure.
+
 **FX for the size check (V3.20 slice 1.2).** A non-USD market cap is converted with an official rate, and the rate (`publisher`, `series`, `rate_date`, `source_url`) travels with the size result:
 - FRED H.10 first, for the 19 currencies it quotes;
 - the ECB euro reference rates (`data-api.ecb.europa.eu`, cross `USD/EUR ÷ CCY/EUR` on one shared date) for currencies H.10 lacks (PLN, CZK, HUF, RON, ISK, TRY, ILS, IDR, PHP, MYR, THB, BGN) and when H.10 is unreachable or stale.
