@@ -637,6 +637,36 @@ _SEGMENT_SIZE_STYLE_WORDS = frozenset(
     attractive interesting new established mature young early stage late
     """.split()
 )
+#: V3.21.1b (ADR-115) — descriptor words of a qualifier ("growing recurring revenue",
+#: "under-followed by analysts", "long backlogs"): they say something ABOUT the companies,
+#: never what the companies do. Not "pipeline" ("gas pipeline" is a segment) and not
+#: "government" ("government IT services" is one): those rely on the clause cut below.
+_SEGMENT_DESCRIPTOR_WORDS = frozenset(
+    """
+    recurring followed following underfollowed analyst analysts coverage covered uncovered
+    undercovered researched underresearched overlooked neglected ignored obscure lesser
+    known unknown mispriced radar tailwind tailwinds headwind headwinds spending demand
+    backlog backlogs
+    """.split()
+)
+#: Every word that can never anchor a segment by itself: stop-words, size/style words,
+#: descriptors and generic category nouns. Used by the synonym filter (ADR-115).
+SEGMENT_NON_ANCHOR_WORDS = frozenset(
+    _SEGMENT_STOP_WORDS | _SEGMENT_SIZE_STYLE_WORDS | _SEGMENT_DESCRIPTOR_WORDS
+    | _SEGMENT_GENERIC_NOUNS
+)
+#: V3.21.1b (ADR-115) — connectives that open a QUALIFIER clause ("… with growing recurring
+#: revenue", "… that benefit from …", "… under-followed by analysts"). The text is cut at
+#: the first one once a specific content word precedes it, so the segment is what comes
+#: before. "in", "on", "for" and "focused on" never cut ("OT security for utilities").
+_QUALIFIER_CUT_RE = re.compile(
+    r"\b(?:with|having|that|which|who|whose|where|showing|benefit(?:t)?ing|driven\s+by"
+    r"|thanks\s+to|due\s+to|exposed\s+to)\b"
+    r"|\b(?:under|well|less|lesser|poorly|thinly|barely)-(?:followed|researched|covered"
+    r"|known|analy[sz]ed)\b"
+    r"|\bunder-the-radar\b",
+    re.IGNORECASE,
+)
 #: Geography words beyond the parser's own region/country tables.
 _SEGMENT_GEO_WORDS = frozenset(
     """
@@ -707,6 +737,18 @@ def _segment_runs(original: str, skip: set[str]) -> list[list[str]]:
     return runs
 
 
+def _cut_at_qualifier(text: str, skip: set[str]) -> str:
+    """The text before its first qualifier clause, once a specific content word precedes
+    it (ADR-115). With no specific word before a connective ("companies with exposure to
+    cybersecurity") the connective is not a cut and the next one is tried."""
+    for match in _QUALIFIER_CUT_RE.finditer(text or ""):
+        prefix = text[: match.start()]
+        if any(t not in _SEGMENT_GENERIC_NOUNS for run in _segment_runs(prefix, skip)
+               for t in run):
+            return prefix
+    return text
+
+
 def extract_segment_terms(
     thesis_text: str,
     *,
@@ -721,8 +763,16 @@ def extract_segment_terms(
     category nouns ("software", "suppliers") are dropped beside a more specific word.
     A run longer than three words is split into pairs. Explicit ``industry_keywords``
     come first. An empty list means the text names no segment.
+
+    V3.21.1b (ADR-115): the text is first cut at its first qualifier clause ("with …",
+    "that …", "under-followed …") once a specific word precedes it, and descriptor words
+    ("recurring", "analysts", "backlogs") are dropped, so a qualifier never becomes a
+    hard industry term.
     """
-    skip: set[str] = set(_SEGMENT_STOP_WORDS | _SEGMENT_SIZE_STYLE_WORDS | _geography_tokens())
+    skip: set[str] = set(
+        _SEGMENT_STOP_WORDS | _SEGMENT_SIZE_STYLE_WORDS | _SEGMENT_DESCRIPTOR_WORDS
+        | _geography_tokens()
+    )
     skip.update(matched_tokens or ())
     for phrase in exclusion_keywords or []:
         skip.update(t for t in _WORD_SPLIT_RE.split(phrase.lower()) if t)
@@ -738,6 +788,7 @@ def extract_segment_terms(
             " , ", excluded_text, flags=re.IGNORECASE,
         )
     excluded_text = re.sub(r"\bnon-[A-Za-z0-9]+", " , ", excluded_text, flags=re.IGNORECASE)
+    excluded_text = _cut_at_qualifier(excluded_text, skip)
 
     terms: list[str] = []
     for keyword in industry_keywords or []:

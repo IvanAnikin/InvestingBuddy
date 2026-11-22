@@ -8,9 +8,11 @@ model proposes them; nothing it says is trusted:
 * only the sanitised segment TERMS are sent, never the thesis text;
 * every proposal passes the same sanitiser as the terms (letters, digits, spaces and
   hyphens; 3–40 characters);
-* a proposal is kept only when it shares a word with the terms or the thesis text (equal,
+* a proposal is kept only when it shares a SPECIFIC word with the segment terms (equal,
   or one containing the other at four letters or more: "cyber security" and
-  "cybersecurity"), so the model cannot move the run to another segment;
+  "cybersecurity"), so the model cannot move the run to another segment. Since V3.21.1b
+  (ADR-115) the raw thesis text is no anchor, and generic nouns ("software") and
+  descriptor words never count;
 * at most 8 synonyms and 3 adjacent industry names are kept;
 * the call is recorded with its prompt version and model; a failed call means terms only,
   never a failed run.
@@ -26,7 +28,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from app.services.discovery.intent import DiscoveryIntent
-from app.services.market_thesis_parser import sanitise_segment_term
+from app.services.market_thesis_parser import SEGMENT_NON_ANCHOR_WORDS, sanitise_segment_term
 
 PROMPT_VERSION = "segment_expansion/1"
 MAX_SYNONYMS = 8
@@ -77,6 +79,12 @@ def _tokens(text: str) -> set[str]:
     }
 
 
+def _anchor_tokens(text: str) -> set[str]:
+    """V3.21.1b (ADR-115) — the words that can tie a proposal to a segment: never a
+    generic category noun ("software"), a descriptor ("recurring") or a stop-word."""
+    return {t for t in _tokens(text) if t not in SEGMENT_NON_ANCHOR_WORDS}
+
+
 def _shares_a_word(words: set[str], anchor: set[str]) -> bool:
     """A shared word: equal, or one contains the other when the shorter has at least four
     letters — "cyber security" shares "cyber" with "cybersecurity"."""
@@ -93,11 +101,20 @@ def _shares_a_word(words: set[str], anchor: set[str]) -> bool:
 def sanitise_proposals(
     raw: Any, *, terms: list[str] | tuple[str, ...], text: str, limit: int
 ) -> tuple[list[str], int]:
-    """Sanitised proposals that share a word with the terms or the text, and the count
-    dropped. Untrusted input; never raises."""
+    """Sanitised proposals that share a SPECIFIC word with the segment terms, and the
+    count dropped. Untrusted input; never raises.
+
+    V3.21.1b (ADR-115): the anchor is the terms only, never the raw thesis text, and a
+    generic noun or descriptor never counts on either side — "enterprise software" shares
+    only "software" with "cybersecurity software companies" and is dropped. ``text`` is
+    kept in the signature for callers; it no longer widens the anchor. A term made only
+    of generic words ("software") anchors on those words, as nothing else is there.
+    """
     if not isinstance(raw, list):
         return [], 0
-    anchor = _tokens(" ".join(terms)) | _tokens(text)
+    del text  # the raw text is never an anchor (ADR-115)
+    joined = " ".join(terms)
+    anchor = _anchor_tokens(joined) or _tokens(joined)
     term_set = set(terms)
     kept: list[str] = []
     dropped = 0
@@ -106,7 +123,8 @@ def sanitise_proposals(
         if not clean or clean in term_set or clean in kept:
             dropped += 1
             continue
-        if not _shares_a_word(_tokens(clean), anchor):
+        words = _anchor_tokens(clean) if _anchor_tokens(joined) else _tokens(clean)
+        if not _shares_a_word(words, anchor):
             dropped += 1
             continue
         # A fragment of a term is a BROADER word, not a synonym: "security" for
