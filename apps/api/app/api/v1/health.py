@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.core.build_info import BUILD_INFO
+from app.core.build_info import BUILD_INFO, migration_status
 from app.core.config import settings
 
 router = APIRouter(tags=["health"])
@@ -21,6 +21,10 @@ class HealthResponse(BaseModel):
     # timestamp. Both are public build identifiers — never secrets.
     app: str
     build_time: str
+    # 2026-11-22: what startup.sh's ``alembic upgrade head`` did in this container
+    # ({state: ok|failed|skipped|unknown, revision, at}); the deploy check requires
+    # state=ok at the repository head. Revision ids and a timestamp only.
+    migrations: dict[str, str | None]
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -33,4 +37,5 @@ async def health_check() -> HealthResponse:
         build_id=BUILD_INFO["build_id"],
         app=settings.app_name,
         build_time=BUILD_INFO["build_time"],
+        migrations=migration_status(),
     )

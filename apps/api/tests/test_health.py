@@ -24,6 +24,7 @@ async def test_health_response_schema(client: AsyncClient) -> None:
         "build_id",
         "app",
         "build_time",
+        "migrations",
     }
 
 
@@ -45,3 +46,21 @@ async def test_health_backward_compatible_fields(client: AsyncClient) -> None:
     assert data["status"] == "ok"
     assert "environment" in data
     assert "version" in data
+
+
+async def test_health_reports_the_startup_migration(client: AsyncClient, tmp_path, monkeypatch) -> None:
+    """startup.sh's outcome is shown; without the file the state is unknown."""
+    from app.core import build_info
+
+    monkeypatch.setattr(build_info, "MIGRATION_STATUS_FILE", str(tmp_path / "none.json"))
+    data = (await client.get("/health")).json()
+    assert data["migrations"] == {"state": "unknown", "revision": None, "at": None}
+
+    status = tmp_path / "status.json"
+    status.write_text('{"state":"ok","revision":"064","at":"2026-11-23T08:00:00Z"}')
+    monkeypatch.setattr(build_info, "MIGRATION_STATUS_FILE", str(status))
+    data = (await client.get("/health")).json()
+    assert data["migrations"] == {"state": "ok", "revision": "064", "at": "2026-11-23T08:00:00Z"}
+
+    status.write_text('{"state":"rm -rf","revision":"x"}')
+    assert (await client.get("/health")).json()["migrations"]["state"] == "unknown"

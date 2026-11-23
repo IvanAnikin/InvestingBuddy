@@ -75,7 +75,7 @@ resource apiApp 'Microsoft.Web/sites@2023-12-01' = {
       // run dies. Kept in step with DEPLOYED_GUNICORN_WORKER_TIMEOUT_SECONDS in
       // app/core/config.py, which tests/test_worker_timeout_invariant.py checks
       // against the document-ingestion budget.
-      appCommandLine: 'gunicorn -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers 1 --timeout 300 app.main:app'
+      appCommandLine: 'bash startup.sh'  // migrations, then gunicorn (apps/api/startup.sh)
       appSettings: [
         { name: 'APP_ENV', value: 'staging' }
         { name: 'LLM_PROVIDER', value: 'mock' }

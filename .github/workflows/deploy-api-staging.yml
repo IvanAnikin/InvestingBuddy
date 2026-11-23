@@ -5,8 +5,10 @@ name: Deploy API — Staging
 # Uses App Service publish profile — downloaded from Azure Portal, stored as GitHub secret.
 # OIDC (App Registration) will replace this once Entra permissions are granted.
 #
-# NOTE: Database migrations are NOT run automatically.
-# Run manually after first deploy: see docs/DEPLOYMENT.md#running-migrations-on-staging
+# Database migrations (2026-11-22): the App Service startup command is
+# `bash startup.sh`, which runs `alembic upgrade head` before gunicorn and records the
+# outcome on /health ("migrations"). The last step below requires the database to be at
+# this commit's Alembic head. See docs/DEPLOYMENT.md#running-migrations-on-staging.
 #
 # Phase 19.2.1 — deploy health hardening:
 #   The smoke check now confirms the NEW container is serving by comparing the
@@ -163,4 +165,34 @@ jobs:
           echo "  2. Transient Oryx venv/uvicorn build failure at container start."
           echo "  3. App crashed after deploy (check App Service Log stream / _success.log)."
           echo "Common fix: re-run this workflow to redeploy — the transient Oryx failure clears."
+          exit 1
+
+      # 2026-11-22: the new container ran `alembic upgrade head` (startup.sh). Require the
+      # database to be at this commit's head. "unknown" means the container was not started
+      # by startup.sh (startup command not switched) -> warning, not failure.
+      - name: Verify database migrations reached the head
+        working-directory: apps/api
+        run: |
+          HEAD=$(python -m alembic heads 2>/dev/null | grep -oE '^[0-9A-Za-z_]+' | head -1)
+          echo "Repository Alembic head: ${HEAD:-<none>}"
+          for i in $(seq 1 6); do
+            BODY=$(curl -s --max-time 20 https://ib-stg-api.azurewebsites.net/health || true)
+            STATE=$(printf '%s' "$BODY" | python3 -c "import sys,json; print((json.load(sys.stdin).get('migrations') or {}).get('state',''))" 2>/dev/null || echo "")
+            REV=$(printf '%s' "$BODY" | python3 -c "import sys,json; print((json.load(sys.stdin).get('migrations') or {}).get('revision') or '')" 2>/dev/null || echo "")
+            echo "Attempt $i — migrations state=${STATE:-<none>} revision=${REV:-<none>}"
+            if [ "$STATE" = "ok" ] && [ "$REV" = "$HEAD" ]; then
+              echo "Database is at head $HEAD."
+              exit 0
+            fi
+            if [ "$STATE" = "failed" ]; then
+              echo "::error::alembic upgrade head failed at container start. See the App Service log stream ([startup] lines)."
+              exit 1
+            fi
+            if [ "$STATE" = "unknown" ] || [ "$STATE" = "skipped" ]; then
+              echo "::warning::Migrations were not run by startup.sh (state=$STATE). Set the startup command to 'bash startup.sh' (docs/DEPLOYMENT.md)."
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::Database revision ${REV:-<none>} is not the repository head $HEAD."
           exit 1

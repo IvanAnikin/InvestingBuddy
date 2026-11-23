@@ -326,8 +326,32 @@ az keyvault secret set \
 
 ## Running Migrations on Staging
 
-Alembic migrations are **not run automatically** by the deployment workflow.
-Run manually after first provisioning or when new migrations are added.
+**Since 2026-11-22 migrations run at container start.** The `ib-stg-api` startup command
+is `bash startup.sh` (`apps/api/startup.sh`). It runs `alembic upgrade head` with a 180 s
+timeout, then starts gunicorn.
+
+- **Where the outcome shows:** `/health` → `migrations` (`state`: `ok`, `failed`, `skipped`
+  or `unknown`, plus `revision` and `at`).
+- **Deploy check:** the deploy workflow's last step requires `state=ok` at the
+  repository's Alembic head.
+  - `failed` fails the deploy.
+  - `unknown` (the container was not started by `startup.sh`) only warns.
+- **If a migration fails, the API still starts** on the old schema. Read the
+  `[startup]` lines in the log stream, fix the migration, and redeploy.
+- **Settings:**
+  - `RUN_MIGRATIONS_ON_START=false` skips the step.
+  - `MIGRATION_TIMEOUT_SECONDS` changes the 180 s timeout.
+- **Why:** a release with a new column (V3.21, migration 063) served 500s until the
+  migration was run by hand.
+
+To switch an App Service to it:
+
+```bash
+az webapp config set -g ib-stg-rg -n ib-stg-api --startup-file "bash startup.sh"
+```
+
+The manual recipes below remain for first provisioning, for a downgrade, and for when
+`RUN_MIGRATIONS_ON_START=false`.
 
 > **Both recipes below were wrong until 2026-09-19, and a V3.17 activation failed on
 > them.** Option 1 activated a virtualenv this deployment does not create; Option 2 named
