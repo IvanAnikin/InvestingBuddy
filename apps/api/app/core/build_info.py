@@ -50,3 +50,27 @@ def _load_build_info() -> dict[str, str]:
 
 
 BUILD_INFO: dict[str, str] = _load_build_info()
+
+
+#: Where ``startup.sh`` records the outcome of ``alembic upgrade head`` at container start.
+MIGRATION_STATUS_FILE = os.getenv("MIGRATION_STATUS_FILE", "/tmp/ib_migration_status.json")
+
+
+def migration_status() -> dict[str, str | None]:
+    """What the container's startup migration did: ``state`` ok | failed | skipped | unknown.
+
+    Read on each call (the file is written before the API starts). ``unknown`` when the
+    app was started without ``startup.sh`` (local development, tests). Never raises and
+    never contains anything but a state, a revision id and a timestamp.
+    """
+    try:
+        data = json.loads(pathlib.Path(MIGRATION_STATUS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"state": _UNKNOWN, "revision": None, "at": None}
+    state = str(data.get("state") or _UNKNOWN)
+    if state not in ("ok", "failed", "skipped"):
+        state = _UNKNOWN
+    revision = data.get("revision")
+    return {"state": state,
+            "revision": str(revision)[:64] if revision else None,
+            "at": str(data.get("at"))[:32] if data.get("at") else None}
