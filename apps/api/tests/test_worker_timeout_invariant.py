@@ -29,6 +29,23 @@ from app.core.config import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _BICEP = _REPO_ROOT / "infra" / "azure" / "modules" / "appservice.bicep"
+_STARTUP = _REPO_ROOT / "apps" / "api" / "startup.sh"
+
+
+def _startup_command() -> str:
+    """The gunicorn command the bicep startup command runs.
+
+    Since 2026-11-22 the startup command is ``bash startup.sh`` (migrations, then
+    gunicorn), so the gunicorn flags live in startup.sh's ``exec gunicorn`` line.
+    """
+    match = re.search(r"appCommandLine: '([^']+)'", _BICEP.read_text())
+    assert match, "no appCommandLine found in appservice.bicep"
+    cmd = match.group(1)
+    if "startup.sh" in cmd:
+        line = re.search(r"^exec (gunicorn .+)$", _STARTUP.read_text(), re.MULTILINE)
+        assert line, "startup.sh has no 'exec gunicorn ...' line"
+        return line.group(1)
+    return cmd
 
 
 def test_ingestion_budget_stays_under_the_worker_timeout():
@@ -57,10 +74,7 @@ def test_single_document_total_timeout_stays_under_the_worker_timeout():
 
 def test_bicep_startup_command_matches_the_declared_timeout():
     """Infra-as-code must not drift from the constant the budgets are checked against."""
-    text = _BICEP.read_text()
-    match = re.search(r"appCommandLine: '([^']+)'", text)
-    assert match, "no appCommandLine found in appservice.bicep"
-    cmd = match.group(1)
+    cmd = _startup_command()
 
     timeout = re.search(r"--timeout (\d+)", cmd)
     assert timeout, f"no --timeout in the bicep startup command: {cmd!r}"
@@ -80,10 +94,7 @@ def test_bicep_pins_a_single_worker_on_b1():
     worker roughly doubles resident memory on a 1.75 GB plan that was already
     observed at 93-95%.
     """
-    text = _BICEP.read_text()
-    match = re.search(r"appCommandLine: '([^']+)'", text)
-    assert match
-    workers = re.search(r"--workers (\d+)", match.group(1))
+    workers = re.search(r"--workers (\d+)", _startup_command())
     assert workers, "no --workers in the bicep startup command"
     assert int(workers.group(1)) == DEPLOYED_GUNICORN_WORKERS, (
         f"bicep pins --workers {workers.group(1)} but "
