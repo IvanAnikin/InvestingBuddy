@@ -669,6 +669,8 @@ export interface UniverseItem {
   relevance_score_pre_scan: number;
   metadata_not_sourced: boolean;
   warnings: string[];
+  /** V3.19.4 — the candidate record of a dynamic-discovery item (absent on curated runs). */
+  v319?: DiscoveryCandidateRecord | null;
 }
 
 export interface GeneratedUniverse {
@@ -2049,4 +2051,49 @@ export interface WebResearchAudit {
   queries_truncated: boolean;
   fetch_attempts_truncated: boolean;
   notice: string;
+}
+
+// V3.21 PDF export — GET /api/v1/reports/{id}/market-data: chart data for the investor
+// PDF. Prices are end-of-day from an aggregator; financials as filed in 10-Ks. A block
+// that could not be read is `unavailable` with a reason, never zero-filled.
+export interface ReportMarketDataPrice {
+  state: "ok" | "unavailable" | string;
+  reason?: string | null;
+  currency?: string | null;
+  source?: string | null;
+  source_url?: string | null;
+  source_tier?: string | null;
+  points: { d: string; c: number }[];
+  first_date?: string | null;
+  last_date?: string | null;
+  last_close?: number | null;
+  change_pct?: number | null;
+  /** True when the series is split- and dividend-adjusted; last_close is the traded close. */
+  adjusted?: boolean;
+}
+
+export interface ReportMarketDataFinancialRow {
+  fiscal_year_end: string;
+  revenue: number | null;
+  net_income: number | null;
+  operating_income: number | null;
+  form?: string | null;
+  filed?: string | null;
+  source_urls?: string[];
+}
+
+export interface ReportMarketData {
+  report_id: string;
+  subject: { name?: string | null; ticker?: string | null; exchange?: string | null; cik?: string | null };
+  retrieved_at: string;
+  price: ReportMarketDataPrice;
+  financials: {
+    state: "ok" | "unavailable" | string;
+    reason?: string | null;
+    currency?: string | null;
+    source?: string | null;
+    source_tier?: string | null;
+    rows: ReportMarketDataFinancialRow[];
+  };
+  disclaimer?: string | null;
 }

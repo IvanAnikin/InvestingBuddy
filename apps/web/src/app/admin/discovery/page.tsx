@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import AutoReportPanel from "@/components/research/discovery/AutoReportPanel";
+import { DiscoveryPdfButton } from "@/components/pdf/PdfDownloadButtons";
 import {
   createDiscoveryRun,
   createThesisDiscoveryRun,
@@ -3238,6 +3239,9 @@ export default function DiscoveryPage() {
               </Link>
             </div>
             <div className="flex items-center gap-2">
+              {selectedRun.completed_at && (
+                <DiscoveryPdfButton run={selectedRun} candidates={candidates} />
+              )}
               <StatusPill label="Internal only" color="red" />
               <select
                 className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-200"

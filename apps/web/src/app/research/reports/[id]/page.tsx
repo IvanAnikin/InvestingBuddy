@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ReportPdfButton } from "@/components/pdf/PdfDownloadButtons";
 import { notFound } from "next/navigation";
 import Surface from "@/components/product/Surface";
 import MarkdownReportPreview from "@/components/reports/MarkdownReportPreview";
@@ -305,18 +306,13 @@ export default async function ResearchReportPage({
       )}
 
       {professional && (
-        <div className="flex flex-wrap gap-4 text-sm" data-testid="report-print-links">
+        <div className="flex flex-wrap items-start gap-3 text-sm" data-testid="report-print-links">
+          <ReportPdfButton reportId={id} />
           <Link
             href={`/research/reports/${encodeURIComponent(id)}/print`}
-            className="text-[color:var(--ib-accent)] underline underline-offset-4"
+            className="inline-flex items-center gap-2 rounded-lg border border-[color:var(--ib-line-strong)] px-3.5 py-2 text-sm text-[color:var(--ib-ink)] transition hover:bg-[color:var(--ib-surface-raised)]"
           >
-            Print / save as PDF
-          </Link>
-          <Link
-            href={`/research/reports/${encodeURIComponent(id)}/print?format=memo`}
-            className="text-[color:var(--ib-accent)] underline underline-offset-4"
-          >
-            One-page memo
+            Print full report
           </Link>
         </div>
       )}

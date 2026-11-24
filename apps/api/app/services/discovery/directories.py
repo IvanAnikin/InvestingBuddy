@@ -718,12 +718,14 @@ _REVENUE_CONCEPTS = (
 _ANNUAL_DAYS = (350, 380)
 
 
-def annual_revenue_pair(payload: dict[str, Any]) -> tuple[dict, dict] | None:
-    """The newest two consecutive fiscal-year USD revenues from one companyconcept payload.
+def annual_usd_facts_by_end(
+    payload: dict[str, Any], *, positive_only: bool = True
+) -> dict[str, dict]:
+    """Every fiscal-year USD fact of one companyconcept payload, keyed by period end (ISO).
 
     Only 10-K (or 10-K/A) facts with a one-year duration count. For a period filed more
-    than once, the latest filing wins. The pair must be consecutive: the prior year ends
-    within 380 days before the newer one.
+    than once, the latest filing wins. Each value carries ``_end`` (date) and ``_val``
+    (float). ``positive_only=False`` keeps zero and negative values (a net loss).
     """
     facts = (payload.get("units") or {}).get("USD") or []
     by_end: dict[str, dict] = {}
@@ -736,11 +738,24 @@ def annual_revenue_pair(payload: dict[str, Any]) -> tuple[dict, dict] | None:
             value = float(fact["val"])
         except (KeyError, TypeError, ValueError):
             continue
-        if not (_ANNUAL_DAYS[0] <= (end - start).days <= _ANNUAL_DAYS[1]) or value <= 0:
+        if not (_ANNUAL_DAYS[0] <= (end - start).days <= _ANNUAL_DAYS[1]):
+            continue
+        if positive_only and value <= 0:
             continue
         key = end.isoformat()
         if key not in by_end or str(fact.get("filed") or "") > str(by_end[key].get("filed") or ""):
             by_end[key] = {**fact, "_end": end, "_val": value}
+    return by_end
+
+
+def annual_revenue_pair(payload: dict[str, Any]) -> tuple[dict, dict] | None:
+    """The newest two consecutive fiscal-year USD revenues from one companyconcept payload.
+
+    Only 10-K (or 10-K/A) facts with a one-year duration count. For a period filed more
+    than once, the latest filing wins. The pair must be consecutive: the prior year ends
+    within 380 days before the newer one.
+    """
+    by_end = annual_usd_facts_by_end(payload)
     ends = sorted(by_end, reverse=True)
     if len(ends) < 2:
         return None

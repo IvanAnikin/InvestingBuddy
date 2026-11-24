@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Surface from "@/components/product/Surface";
 import AutoReportPanel from "@/components/research/discovery/AutoReportPanel";
+import { DiscoveryPdfButton } from "@/components/pdf/PdfDownloadButtons";
 import CandidateCard from "@/components/research/discovery/CandidateCard";
 import CandidateComparison from "@/components/research/discovery/CandidateComparison";
 import DiscoveryCouncilPanel from "@/components/research/discovery/DiscoveryCouncilPanel";
@@ -399,6 +400,9 @@ export default function DiscoveryRunView({
                 </p>
               )}
             </div>
+            {TERMINAL_RUN_STATUSES.has(run.status) && (
+              <DiscoveryPdfButton run={run} candidates={candidates} />
+            )}
             <Link
               href="/admin/discovery"
               className="shrink-0 text-xs text-[color:var(--ib-ink-3)] underline underline-offset-4 hover:text-[color:var(--ib-ink-2)]"
