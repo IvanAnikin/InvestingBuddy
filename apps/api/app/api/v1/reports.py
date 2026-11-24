@@ -12,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.schemas.primary_document import ReportPrimaryDocumentsResponse
 from app.schemas.report import ReportList, ReportRead
-from app.services import primary_document_view_service, report_service
+from app.schemas.report_market_data import ReportMarketDataResponse
+from app.services import (
+    company_service,
+    primary_document_view_service,
+    report_market_data_service,
+    report_service,
+)
 
 router = APIRouter(tags=["reports"])
 
@@ -81,4 +87,37 @@ async def get_report_primary_documents(
         report_company_id=report.company_id,
         report_agent_run_id=report.created_by_agent_run_id,
         report_id=report_id,
+    )
+
+
+@router.get(
+    "/reports/{report_id}/market-data",
+    response_model=ReportMarketDataResponse,
+)
+async def get_report_market_data(
+    report_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> ReportMarketDataResponse:
+    """Chart data for the report's company: end-of-day closes and annual filed financials.
+
+    V3.21 investor PDF export (admin/dev only, like every route here). Read-only;
+    cached in-process 12 h per (ticker, exchange). A block that cannot be sourced is
+    ``unavailable`` with a reason, never estimated. A report with no ticker is 200
+    with both blocks unavailable.
+    """
+    report = await report_service.get_report(db, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    subject = report_market_data_service.resolve_subject(report)
+    if not (subject.ticker and subject.exchange and subject.name) and report.company_id:
+        company = await company_service.get_company(db, report.company_id)
+        subject = report_market_data_service.resolve_subject(report, company)
+    data = await report_market_data_service.market_data_for(subject.ticker, subject.exchange)
+    subject.cik = data["cik"]
+    return ReportMarketDataResponse(
+        report_id=report_id,
+        subject=subject,
+        retrieved_at=data["retrieved_at"],
+        price=data["price"],
+        financials=data["financials"],
     )

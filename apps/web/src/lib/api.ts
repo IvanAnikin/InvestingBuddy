@@ -23,6 +23,7 @@ import type {
   CompanyResearchJobCreate,
   HealthResponse,
   Report,
+  ReportMarketData,
   ReportList,
   ReportPrimaryDocumentsResponse,
   ReviewActionRequest,
@@ -202,6 +203,11 @@ export async function fetchReports(
 
 export async function fetchReport(id: string): Promise<Report> {
   return apiFetch<Report>(`/api/v1/reports/${id}`);
+}
+
+/** V3.21 PDF export — chart data (price series, annual filed figures) for one report. */
+export async function fetchReportMarketData(id: string): Promise<ReportMarketData> {
+  return apiFetch<ReportMarketData>(`/api/v1/reports/${encodeURIComponent(id)}/market-data`);
 }
 
 // Phase 32A Slice 5B.3 — primary-document/OCR ingestion provenance for one

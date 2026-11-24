@@ -1258,6 +1258,7 @@ These endpoints are for **internal admin and development use only**. They expose
 | GET | `/api/v1/reports` | ✅ Live | List draft reports (admin only); optional `company_id` scope filter |
 | GET | `/api/v1/reports/{report_id}` | ✅ Live | Get a single draft report by ID (admin only) |
 | GET | `/api/v1/reports/{report_id}/primary-documents` | ✅ Live | Primary-document ingestion provenance for a report's generating run (admin/dev only) — Phase 32A Slice 5B.3 |
+| GET | `/api/v1/reports/{report_id}/market-data` | ✅ Live | Chart data for the report's company: EODHD end-of-day closes + SEC XBRL annual financials, cached 12 h (admin/dev only) — V3.21 PDF export |
 | POST | `/api/v1/admin/reports/{report_id}/mark-under-review` | ✅ Live | Move report to under_review (admin only) |
 | POST | `/api/v1/admin/reports/{report_id}/approve` | ✅ Live | Approve report internally (approved_internal; not public) |
 | POST | `/api/v1/admin/reports/{report_id}/reject` | ✅ Live | Reject report (rejected_internal; requires note) |
@@ -1382,6 +1383,70 @@ Response `200 OK`:
 Error `404 Not Found`: report does not exist. Unauthenticated access follows
 the same perimeter-auth convention as every other admin route (`401`,
 identical shape to `GET /api/v1/reports/{report_id}`).
+
+**GET /api/v1/reports/{report_id}/market-data** — Chart data for the report's company (V3.21 investor PDF export)
+
+Admin/dev-only, read-only. Gives the web app the series it charts in the investor PDF.
+Subject: `source_summary_json.v3_research.professional_research.subject`
+(`name`, `ticker`, `exchange`), with any missing field taken from the report's
+company row; `cik` is the one the financials lookup resolved (or `null`).
+
+Response `200 OK`:
+```json
+{
+  "report_id": "uuid",
+  "subject": {"name": "Rapid7, Inc.", "ticker": "RPD", "exchange": "US", "cik": "1560327"},
+  "retrieved_at": "2026-11-24T10:00:00Z",
+  "price": {
+    "state": "ok", "reason": null,
+    "currency": "USD", "source": "EODHD end-of-day prices",
+    "source_url": "https://eodhd.com/api/eod/RPD.US", "source_tier": "T5_api_aggregator",
+    "points": [{"d": "2025-11-24", "c": 25.28}, {"d": "2026-11-24", "c": 15.6}],
+    "first_date": "2025-11-24", "last_date": "2026-11-24", "last_close": 15.6, "change_pct": -38.29,
+    "adjusted": true
+  },
+  "financials": {
+    "state": "ok", "reason": null,
+    "currency": "USD", "source": "SEC XBRL (issuer 10-K filings)", "source_tier": "T1_primary_filing",
+    "rows": [{"fiscal_year_end": "2025-12-31", "revenue": 859794000.0, "net_income": -12000000.0,
+              "operating_income": null, "form": "10-K", "filed": "2026-02-19",
+              "source_urls": ["https://data.sec.gov/api/xbrl/companyconcept/CIK0001560327/us-gaap/Revenues.json"]}]
+  },
+  "disclaimer": "Market data for charting only; prices are end-of-day from an aggregator, financials as filed. Not investment advice."
+}
+```
+
+- **price** — `EodhdPriceOnlyProvider.get_price_history` over the last 5 years (the free
+  plan may return about one year; whatever comes back is used). The series and
+  `change_pct` use EODHD's split- and dividend-adjusted close (`adjusted: true`) when every
+  point has one, otherwise the raw close (`adjusted: false`); an unadjusted series shows a
+  stock split as a crash (POWL, March 2026). `last_close` is always the traded close. Closes ≤ 0 are dropped,
+  points are sorted by date and evenly downsampled to at most 260 (first and last kept
+  exactly). `change_pct` = last vs first close of the returned window, 2 dp. `currency`
+  is the venue's quote currency. `source_url` is built without the key and stripped of
+  any credential parameter — the EODHD key never appears in the response or the logs.
+  `reason` when unavailable: `no_api_key` (no `EODHD_API_KEY`; no call is made),
+  `unknown_symbol` (EODHD 404), `fetch_failed`, `no_prices` (no positive close
+  returned), `no_ticker`.
+- **financials** — US filers only. CIK via `SecEdgarFundamentalsProvider.resolve_cik`
+  (non-US venues refused before any network call); SEC `companyconcept` JSON from
+  `data.sec.gov` through `safe_fetch_document` (allowlisted host, IP-checked). Revenue
+  is the first of `RevenueFromContractWithCustomerExcludingAssessedTax`, `Revenues`,
+  `SalesRevenueNet` with annual facts; `NetIncomeLoss` and `OperatingIncomeLoss` are
+  joined on the revenue fiscal-year ends. Annual = 10-K / 10-K/A with a 350–380-day
+  duration; a period filed more than once keeps the latest `filed`. Newest up to 5
+  fiscal years, oldest first, in USD units (not thousands). Revenue must be > 0; net and
+  operating income keep negative values; a missing line item is `null`. `reason` when
+  unavailable: `no_cik`, `not_a_us_filer`, `fetch_failed`, `no_annual_facts`, `no_ticker`.
+- **Cache / bounds** — the price + financials payload is cached in-process for 12 h per
+  `(ticker, normalized exchange)` (not per report; at most 256 entries), so repeated
+  downloads do not re-hit EODHD or SEC. A `fetch_failed` result is not cached. Price and
+  financials run concurrently; each outbound call has its own timeout (EODHD 35 s, CIK
+  lookup 20 s, each SEC read 20 s, financials overall 75 s), far below the 300 s worker
+  timeout. One info log line per request: ticker, block states, cached, elapsed.
+
+Error `404 Not Found`: report does not exist. A report with no ticker is `200` with both
+blocks `unavailable` / `no_ticker`.
 
 > **Phase 10 note:** Report endpoints are admin/dev only. Content is an AI-generated draft.
 > It is not investment advice. It is not a public recommendation.

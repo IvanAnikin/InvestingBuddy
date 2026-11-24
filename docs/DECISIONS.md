@@ -11107,3 +11107,36 @@ On the real payloads:
 - growth is −1.47% (9M 2026 vs 9M 2025), so a "growing" thesis no longer admits it.
 
 No migration. Rollback: the two new flags; reverting the growth change restores the annual-only pair.
+
+## ADR-119: Investor and Discovery PDFs Are Built in the Browser
+
+**Date:** 2026-11-24 · **Status:** Accepted (V3.21.9)
+**Trigger:** Owner request: a short, modern PDF per company and per discovery run, in the product's dark theme, with charts such as the share price, downloaded with a button. The existing print view (V3.20 slice 9.3) needs the browser's print dialog, prints white, and has no charts.
+
+### Decision
+1. **Client-side generation.** `@react-pdf/renderer` builds the PDF in the browser on the button click. It is loaded only on the first click, so no page pays for it up front. Charts are vector SVG drawn from the data. The typeface is Inter (OFL-1.1), a Latin + Latin Extended subset served from `/fonts/inter`. Nothing runs on the server: no headless browser on App Service and no new server dependency.
+2. **Two documents.**
+   - **Investor brief** (`/research/reports/[id]`):
+     - key-figure tiles: market cap with its date and method, last close, price change, FY revenue with YoY, FY net income with margin, and the verdict or valuation range when computed;
+     - share-price chart and filed annual revenue / net income chart;
+     - the report's own synthesis, supportive findings, catalysts, risks (the self-critique's bear case), open questions and confidence;
+     - chart sources and the disclaimer.
+   - **Discovery-run PDF** (`/research/discover/[run_id]` and `/admin/discovery`):
+     - the brief and its parsed constraints;
+     - funnel tiles;
+     - market cap of every checked company against the size mandate;
+     - a table of companies with verified size, growth, exposure and status;
+     - the auto-report state and the lead sources.
+3. **Market data endpoint.** `GET /api/v1/reports/{id}/market-data` returns:
+   - EODHD end-of-day closes, adjusted for splits and dividends;
+   - SEC XBRL 10-K annual revenue, net income and operating income, up to 5 years;
+   - every block with its source URL, tier and retrieval time; a block that cannot be read is `unavailable` with a reason.
+
+   Results are cached in-process for 12 h by listing. No migration.
+4. **No new wording.** The PDFs restate the stored report and run. Sentences keep their finding labels, figures keep their dates and sources, and a missing figure prints as a dash, never as zero.
+
+### Consequences
+- The print view stays for the full white report and the one-page memo.
+- The free EODHD plan gives about one year of prices, so the chart shows that window and says so.
+- Non-US listings get a price chart but no filed-results chart (`not_a_us_filer`).
+
