@@ -631,6 +631,22 @@ async def _run(
             sec_relationships_step,
         )
 
+        # ADR-118 — a company created by discovery after the last operator backfill has
+        # no legal entity, and every step below then answered "not linked" (no CIK, no
+        # earnings actuals, no relationships). Link THIS company first, by the same
+        # rules as the backfill; an ambiguous name is left unlinked, never merged.
+        if (getattr(company, "legal_entity_id", None) is None
+                and getattr(cfg, "v3_research_entity_link_enabled", False)):
+            from app.services.entities.backfill import link_company_to_entity
+
+            try:
+                async with session.begin_nested():
+                    link = await link_company_to_entity(session, company, cfg=cfg)
+                outcome.relationships["entity_link"] = {"state": link.outcome}
+            except Exception as exc:  # noqa: BLE001 - a failed link costs these steps only
+                outcome.relationships["entity_link"] = {
+                    "state": "error", "error": type(exc).__name__}
+
         # V3.20 live wave A — the SEC CIK onto the entity (and the SEC's name in place of
         # a ticker-only one) BEFORE the GLEIF lookup, which matches on the legal name.
         identity = await sec_identity_step(session, company, cfg=cfg)

@@ -6,11 +6,14 @@ Gives every existing ``companies`` row a ``LegalEntity`` + ``Security`` +
 
 CALLED BY NOTHING
 =================
-Deliberately. A backfill that starts itself on the first request after a deploy is
-how a migration becomes an outage, and this repository already follows the rule for
-``corpus.documents.backfill_from_extracted_documents``. A test asserts no other
-module calls it. It is resumable (only unlinked rows are selected), idempotent
-(running it twice does nothing the second time) and bounded (an explicit ``limit``).
+The table-wide backfill, deliberately. (ADR-118: ``link_company_to_entity`` — the same
+rules for ONE row — is called by the research pipeline for the company it is about to
+research. It never selects other rows.) A backfill that starts itself on the first
+request after a deploy is how a migration becomes an outage, and this repository
+already follows the rule for ``corpus.documents.backfill_from_extracted_documents``.
+A test asserts no other module calls it. It is resumable (only unlinked rows are
+selected), idempotent (running it twice does nothing the second time) and bounded (an
+explicit ``limit``).
 
 WHAT IT DELIBERATELY DOES NOT CLAIM
 ===================================
@@ -126,6 +129,130 @@ class BackfillResult:
         return self.limit > 0 and self.examined >= self.limit
 
 
+LINK_LINKED = "linked"
+LINK_REUSED = "reused"
+LINK_AMBIGUOUS = "ambiguous"
+LINK_SKIPPED = "skipped"
+LINK_ALREADY = "already_linked"
+LINK_DISABLED = "disabled"
+
+
+@dataclass(frozen=True)
+class CompanyLink:
+    """What linking ONE ``companies`` row did."""
+
+    outcome: str
+    legal_entity_id: uuid.UUID | None = None
+    ambiguous_row: tuple[str, str, str, str] | None = None
+
+
+async def link_company_to_entity(
+    session: Any, company: Company, *, cfg: "Settings"
+) -> CompanyLink:
+    """Link one ``companies`` row to the entity master, exactly as the backfill does.
+
+    ADR-118: the research pipeline calls this for the ONE company it is about to
+    research, so a company created by discovery after the last operator backfill is
+    not researched as "not linked to a legal entity" (no CIK, no earnings actuals, no
+    relationships). Bounded to that row and idempotent; the table-wide backfill below
+    stays operator-invoked. Flush-only.
+    """
+    if not getattr(cfg, "v3_entity_master_enabled", False):
+        return CompanyLink(LINK_DISABLED)
+    if company.legal_entity_id is not None:
+        return CompanyLink(LINK_ALREADY, company.legal_entity_id)
+    ticker = (company.ticker or "").strip().upper()
+    if not ticker:
+        # A company with no ticker gives no key at all. Leaving it unlinked is
+        # the honest outcome; inventing one would create an entity nothing can
+        # ever be matched back to.
+        return CompanyLink(LINK_SKIPPED)
+
+    venue = venue_key_for(company.exchange)
+    key = entity_key_for(venue_key=venue, ticker=ticker)
+    name = (company.name or ticker).strip()
+
+    # The OPEN LISTING first — it is the real identity of a live symbol, and the
+    # entity holding it may carry a much stronger key than the one derived here.
+    existing = await resolve_entity_by_listing(
+        session, ticker=ticker, exchange=company.exchange, cfg=cfg
+    )
+    # Then the derived key, which finds an entity a previous pass created whose
+    # listing has since been closed.
+    if existing is None:
+        existing = (
+            await session.execute(
+                select(LegalEntity).where(LegalEntity.entity_key == key)
+            )
+        ).scalar_one_or_none()
+
+    if existing is not None:
+        if normalize_entity_name(existing.legal_name) != normalize_entity_name(
+            name
+        ):
+            # Two names on one venue and ticker. Which is right is an evidence
+            # question and this backfill has none — so the row stays unlinked
+            # and is reported, rather than being attributed to the other
+            # company's entity.
+            return CompanyLink(
+                LINK_AMBIGUOUS,
+                ambiguous_row=(ticker, company.exchange or "", key, existing.legal_name),
+            )
+        # Link only. The entity already has whatever securities and listings it
+        # should have, and writing more would either demote a primary a
+        # better-informed slice promoted or re-open a window somebody
+        # deliberately closed.
+        company.legal_entity_id = existing.id
+        await session.flush()
+        return CompanyLink(LINK_REUSED, existing.id)
+
+    entity = await upsert_legal_entity(
+        session,
+        EntityInput(
+            entity_key=key,
+            legal_name=name,
+            # jurisdiction, legal_form and entity_status are deliberately not
+            # supplied — see the module docstring.
+            source=BACKFILL_SOURCE,
+        ),
+        cfg=cfg,
+    )
+    if entity is None:  # pragma: no cover - the flag was checked above
+        return CompanyLink(LINK_SKIPPED)
+
+    security = await upsert_security(
+        session,
+        legal_entity_id=entity.id,
+        security_key=PRIMARY_SECURITY_KEY,
+        cfg=cfg,
+        # Not asserted: a `companies` row is no evidence of instrument type, and
+        # asserting `ordinary_share` here would let a re-run undo a later
+        # correction to `adr`.
+        security_type=None,
+        is_primary=True,
+        source=BACKFILL_SOURCE,
+    )
+    if security is None:  # pragma: no cover - the flag was checked above
+        return CompanyLink(LINK_SKIPPED)
+
+    await upsert_listing(
+        session,
+        security_id=security.id,
+        ticker=ticker,
+        exchange=company.exchange,
+        cfg=cfg,
+        # quote_currency is left to the venue resolver on purpose — see the
+        # module docstring. `company.currency` cannot say whether it means a
+        # reporting currency or a quote unit.
+        is_primary=True,
+        source=BACKFILL_SOURCE,
+    )
+
+    company.legal_entity_id = entity.id
+    await session.flush()
+    return CompanyLink(LINK_LINKED, entity.id)
+
+
 async def backfill_entities_from_companies(
     session: Any,
     *,
@@ -156,107 +283,31 @@ async def backfill_entities_from_companies(
     rows = (await session.execute(stmt)).scalars().all()
     for company in rows:
         result.examined += 1
-        ticker = (company.ticker or "").strip().upper()
-        if not ticker:
-            # A company with no ticker gives no key at all. Leaving it unlinked is
-            # the honest outcome; inventing one would create an entity nothing can
-            # ever be matched back to.
-            result.skipped += 1
-            continue
-
-        venue = venue_key_for(company.exchange)
-        key = entity_key_for(venue_key=venue, ticker=ticker)
-        name = (company.name or ticker).strip()
-
-        # The OPEN LISTING first — it is the real identity of a live symbol, and the
-        # entity holding it may carry a much stronger key than the one derived here.
-        existing = await resolve_entity_by_listing(
-            session, ticker=ticker, exchange=company.exchange, cfg=cfg
-        )
-        # Then the derived key, which finds an entity a previous pass created whose
-        # listing has since been closed.
-        if existing is None:
-            existing = (
-                await session.execute(
-                    select(LegalEntity).where(LegalEntity.entity_key == key)
-                )
-            ).scalar_one_or_none()
-
-        if existing is not None:
-            if normalize_entity_name(existing.legal_name) != normalize_entity_name(
-                name
-            ):
-                # Two names on one venue and ticker. Which is right is an evidence
-                # question and this backfill has none — so the row stays unlinked
-                # and is reported, rather than being attributed to the other
-                # company's entity.
-                result.ambiguous += 1
-                result.ambiguous_rows.append(
-                    (ticker, company.exchange or "", key, existing.legal_name)
-                )
-                continue
-            # Link only. The entity already has whatever securities and listings it
-            # should have, and writing more would either demote a primary a
-            # better-informed slice promoted or re-open a window somebody
-            # deliberately closed.
-            company.legal_entity_id = existing.id
+        link = await link_company_to_entity(session, company, cfg=cfg)
+        if link.outcome == LINK_LINKED:
+            result.linked += 1
+        elif link.outcome == LINK_REUSED:
             result.reused += 1
-            await session.flush()
-            continue
-
-        entity = await upsert_legal_entity(
-            session,
-            EntityInput(
-                entity_key=key,
-                legal_name=name,
-                # jurisdiction, legal_form and entity_status are deliberately not
-                # supplied — see the module docstring.
-                source=BACKFILL_SOURCE,
-            ),
-            cfg=cfg,
-        )
-        if entity is None:  # pragma: no cover - the flag was checked above
+        elif link.outcome == LINK_AMBIGUOUS:
+            result.ambiguous += 1
+            if link.ambiguous_row is not None:
+                result.ambiguous_rows.append(link.ambiguous_row)
+        else:
             result.skipped += 1
-            continue
-
-        security = await upsert_security(
-            session,
-            legal_entity_id=entity.id,
-            security_key=PRIMARY_SECURITY_KEY,
-            cfg=cfg,
-            # Not asserted: a `companies` row is no evidence of instrument type, and
-            # asserting `ordinary_share` here would let a re-run undo a later
-            # correction to `adr`.
-            security_type=None,
-            is_primary=True,
-            source=BACKFILL_SOURCE,
-        )
-        if security is None:  # pragma: no cover - the flag was checked above
-            result.skipped += 1
-            continue
-
-        await upsert_listing(
-            session,
-            security_id=security.id,
-            ticker=ticker,
-            exchange=company.exchange,
-            cfg=cfg,
-            # quote_currency is left to the venue resolver on purpose — see the
-            # module docstring. `company.currency` cannot say whether it means a
-            # reporting currency or a quote unit.
-            is_primary=True,
-            source=BACKFILL_SOURCE,
-        )
-
-        company.legal_entity_id = entity.id
-        result.linked += 1
-        await session.flush()
 
     return result
 
 
 __all__ = [
     "BACKFILL_SOURCE",
+    "CompanyLink",
+    "LINK_ALREADY",
+    "LINK_AMBIGUOUS",
+    "LINK_DISABLED",
+    "LINK_LINKED",
+    "LINK_REUSED",
+    "LINK_SKIPPED",
+    "link_company_to_entity",
     "PRIMARY_SECURITY_KEY",
     "BackfillResult",
     "backfill_entities_from_companies",

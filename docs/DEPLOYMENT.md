@@ -762,6 +762,14 @@ Rollback: set the flag to `false`; reports and the obscurity block are as before
 listing's annual revenue pair is read from `data.sec.gov` companyconcept (at most three small reads per candidate, no key).
 Rollback: set it to `false`, and growth stays `unknown` as before.
 
+### Debt, entity link and newest-period growth (V3.21.9, ADR-118)
+
+- `V3_ENTERPRISE_VALUE_SEC_DEBT_ENABLED` (default `true`): with no filed "total debt" fact, the EV block reads net-debt inputs from the SEC normaliser. Convertible notes count as debt when they are the only long-term debt tagged. It makes one companyfacts read per report, shared with the statements tool's one-hour cache.
+- `V3_RESEARCH_ENTITY_LINK_ENABLED` (default `true`): links the researched company to the entity master (same rules as the operator backfill, this row only), before the SEC identity step.
+- The growth check now prefers the newest 10-Q year-to-date pair over the annual pair. This needs no flag; `V3_DISCOVERY_SEC_REVENUE_GROWTH_ENABLED` still switches the whole check.
+
+Rollback: set the two flags to `false`. No migration.
+
 ### Certification bodies (V3.21 slice 21.5, ADR-112)
 
 `V3_CERTIFICATION_BODIES_ENABLED` (default `true`) gives every certificate in the real-asset block a verification state and

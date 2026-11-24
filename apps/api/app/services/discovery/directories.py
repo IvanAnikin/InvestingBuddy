@@ -750,6 +750,74 @@ def annual_revenue_pair(payload: dict[str, Any]) -> tuple[dict, dict] | None:
     return newer, older
 
 
+#: Year-to-date interim durations a 10-Q reports (one quarter up to nine months).
+_INTERIM_DAYS = (80, 285)
+#: A comparative period ends one year earlier, give or take a 52/53-week calendar.
+_YEAR_APART_DAYS = (355, 375)
+#: Two interim durations this close are the same length of period.
+_SAME_LENGTH_DAYS = 10
+
+
+def interim_revenue_pair(payload: dict[str, Any]) -> tuple[dict, dict] | None:
+    """The newest year-to-date 10-Q revenue and the same period one year earlier.
+
+    ADR-118 (validation 2026-11-24): the annual pair said Rapid7 grew +1.9% (FY2025 vs
+    FY2024) while its 2026 10-Qs showed nine-month revenue down 1.5% — and discovery
+    passed it as "growing". The newest 10-Q states its own comparative period; the
+    longest year-to-date duration at the newest end is used (nine months, not the
+    quarter), and its comparative must have the same length and end a year earlier.
+    """
+    facts = (payload.get("units") or {}).get("USD") or []
+    rows: list[dict] = []
+    for fact in facts:
+        if not isinstance(fact, dict) or not str(fact.get("form", "")).startswith("10-Q"):
+            continue
+        try:
+            start = date.fromisoformat(str(fact["start"])[:10])
+            end = date.fromisoformat(str(fact["end"])[:10])
+            value = float(fact["val"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        days = (end - start).days
+        if not (_INTERIM_DAYS[0] <= days <= _INTERIM_DAYS[1]) or value <= 0:
+            continue
+        rows.append({**fact, "_start": start, "_end": end, "_val": value, "_days": days})
+    if not rows:
+        return None
+    newest_end = max(r["_end"] for r in rows)
+    at_newest = [r for r in rows if r["_end"] == newest_end]
+    longest = max(r["_days"] for r in at_newest)
+    newer = max((r for r in at_newest if r["_days"] == longest),
+                key=lambda r: str(r.get("filed") or ""))
+    comparatives = [
+        r for r in rows
+        if _YEAR_APART_DAYS[0] <= (newest_end - r["_end"]).days <= _YEAR_APART_DAYS[1]
+        and abs(r["_days"] - newer["_days"]) <= _SAME_LENGTH_DAYS
+    ]
+    if not comparatives:
+        return None
+    older = max(comparatives, key=lambda r: str(r.get("filed") or ""))
+    return newer, older
+
+
+def latest_revenue_pair(payload: dict[str, Any]) -> tuple[dict, dict, str] | None:
+    """``(newer, older, kind)``: the interim pair when it is newer than the annual one."""
+    annual = annual_revenue_pair(payload)
+    interim = interim_revenue_pair(payload)
+    if interim is not None and (annual is None or interim[0]["_end"] > annual[0]["_end"]):
+        return interim[0], interim[1], "interim_ytd"
+    if annual is not None:
+        return annual[0], annual[1], "annual"
+    return None
+
+
+def _period_label(fact: dict, kind: str) -> str:
+    if kind == "annual":
+        return f"FY ending {fact['_end'].isoformat()}"
+    months = max(1, round(fact["_days"] / 30.44))
+    return f"{months}M ending {fact['_end'].isoformat()}"
+
+
 async def sec_revenue_growth(
     cik: str | None, *, cfg: Any = None, fetcher: Any = None, today: date | None = None,
 ) -> Any:
@@ -773,17 +841,17 @@ async def sec_revenue_growth(
                 extra_text_content_types=("application/json",),
             )
             content = getattr(result, "content", None) if getattr(result, "ok", False) else None
-            pair = annual_revenue_pair(json.loads(content)) if content else None
+            pair = latest_revenue_pair(json.loads(content)) if content else None
         except Exception:  # noqa: BLE001 - an unreadable concept is an absent figure
             pair = None
         if pair is None:
             continue
-        newer, older = pair
+        newer, older, kind = pair
         if (now - newer["_end"]).days > 550:
             return None
         return cons.growth_from_revenue_pair(
-            newer["_val"], older["_val"], period=f"FY ending {newer['_end'].isoformat()}",
-            base_period=f"FY ending {older['_end'].isoformat()}", source_url=url,
+            newer["_val"], older["_val"], period=_period_label(newer, kind),
+            base_period=_period_label(older, kind), source_url=url,
             source_tier="T1_primary_filing", verified=True,
         )
     return None

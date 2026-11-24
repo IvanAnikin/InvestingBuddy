@@ -93,6 +93,24 @@ DUE_WITHIN_TWELVE_MONTHS: tuple[str, ...] = (
     "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths",
     "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextRollingTwelveMonths",
 )
+#: Convertible notes, read ONLY when the filer tags no straight long-term debt concept
+#: for the period (ADR-118). Validation 2026-11-24: Rapid7 carries 895m of convertible
+#: notes — 599m of them due within a year — tagged ``ConvertibleDebtNoncurrent`` /
+#: ``ConvertibleDebtCurrent`` and nothing else; the report said "total debt not
+#: acquired" and called the balance sheet liquid. A filer that also tags straight debt
+#: may present its convertibles inside that line, so they are never added to it.
+CONVERTIBLE_INCLUDING_CURRENT: tuple[str, ...] = ("ConvertibleNotesPayable",)
+CONVERTIBLE_NONCURRENT: tuple[str, ...] = (
+    "ConvertibleDebtNoncurrent",
+    "ConvertibleLongTermNotesPayable",
+)
+CONVERTIBLE_CURRENT: tuple[str, ...] = (
+    "ConvertibleDebtCurrent",
+    "ConvertibleNotesPayableCurrent",
+)
+ALL_CONVERTIBLE: tuple[str, ...] = (
+    CONVERTIBLE_INCLUDING_CURRENT + CONVERTIBLE_NONCURRENT + CONVERTIBLE_CURRENT
+)
 #: The filer's own total-debt concepts, used only as a cross-check — never as the total.
 FILER_TOTALS: tuple[str, ...] = (
     "DebtAndCapitalLeaseObligations",
@@ -364,6 +382,25 @@ def derive_total_debt(
             stb, stb_unresolved = _resolve_short_term_parts(nonzero, at, debt_cur, cur)
     due_12m = at(DUE_WITHIN_TWELVE_MONTHS, "maturity_schedule")
     notes: list[str] = []
+
+    if incl is None and noncur is None:
+        # ADR-118: convertible notes stand in for long-term debt only when no straight
+        # long-term concept is tagged for the period. Their current portion is read
+        # with them unless a straight current-maturities concept already is.
+        incl = at(CONVERTIBLE_INCLUDING_CURRENT, "long_term_debt_including_current")
+        noncur = at(CONVERTIBLE_NONCURRENT, "long_term_debt_noncurrent")
+        if cur is None and (incl is not None or noncur is not None):
+            cur = at(CONVERTIBLE_CURRENT, "long_term_debt_current")
+        if incl is not None or noncur is not None:
+            notes.append(
+                "long-term debt read from the filer's convertible-notes concepts: no "
+                "straight long-term debt concept is tagged for the period"
+            )
+    elif any(at((c,), "convertible") is not None for c in ALL_CONVERTIBLE):
+        notes.append(
+            "convertible notes are also tagged for the period; they are not added to the "
+            "long-term debt line, which may already present them"
+        )
 
     if incl is None and noncur is None:
         return TotalDebt(
