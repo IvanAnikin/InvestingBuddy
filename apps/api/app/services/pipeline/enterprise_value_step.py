@@ -110,6 +110,69 @@ def pick_inputs(rows: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any] | Non
     return balance, ebit
 
 
+_MILLION = 1_000_000
+
+
+def balance_from_normalized(n: Any) -> dict[str, Any] | None:
+    """Net-debt inputs from the SEC normaliser's annual record (ADR-118), or None.
+
+    The issuer's inline XBRL never yields a ``total_debt`` fact (no single US-GAAP tag
+    is total debt, ADR-067), so a US filer without a "total debt" text line had no net
+    debt at all. The normaliser's total is built from one compatible combination of
+    concepts at the reporting period; it is used only when that rule published it, and
+    only beside the same record's cash for the same period.
+    """
+    from app.services.agent_tools.peers import total_debt_is_usable
+
+    if n is None or getattr(n, "period_basis", None) != "annual":
+        return None
+    if (getattr(n, "reporting_currency", "USD") or "USD").upper() != "USD":
+        return None
+    cash = getattr(n, "cash_and_equivalents", None)
+    if cash is None or "cash_and_equivalents" in (n.withheld_fields or {}):
+        return None
+    if not total_debt_is_usable(n):
+        return None
+    source = getattr(n, "source_url", None)
+    basis = getattr(n, "debt_basis", None) or {}
+    return {
+        "period": f"FY{n.fiscal_year}" if n.fiscal_year else n.reporting_period_end,
+        "currency": "USD",
+        "total_debt": absolute(n.total_debt * _MILLION, None),
+        "cash": absolute(cash * _MILLION, None),
+        "filed": getattr(n, "filed_date", None),
+        "sources": [
+            {"label": "total_debt", "source_url": source, "fact_id": None,
+             "formula": basis.get("formula")},
+            {"label": "cash_and_equivalents", "source_url": source, "fact_id": None},
+        ],
+        "origin": "sec_xbrl_normalized",
+    }
+
+
+async def sec_balance(company: Any) -> dict[str, Any] | None:
+    """``balance_from_normalized`` over the company's SEC companyfacts. Never raises."""
+    import asyncio
+
+    from app.integrations.providers.sec_edgar_fundamentals import SecEdgarFundamentalsProvider
+    from app.integrations.sec_fundamentals_normalizer import normalize_company_facts
+    from app.services.agent_tools.peers import _facts_for
+
+    ticker = getattr(company, "ticker", None)
+    if not ticker:
+        return None
+    try:
+        facts, _reason = await _facts_for(ticker, getattr(company, "exchange", None),
+                                          SecEdgarFundamentalsProvider())
+        if facts is None:
+            return None
+        n = await asyncio.to_thread(normalize_company_facts, facts, ticker)
+        return balance_from_normalized(n)
+    except Exception:  # noqa: BLE001 - an additive input never costs the report
+        logger.warning("SEC balance for enterprise value failed")
+        return None
+
+
 def market_cap_from(observation: Any) -> dict[str, Any] | None:
     """The observation in its native currency (USD when it was a USD figure)."""
     if observation is None:
@@ -142,6 +205,8 @@ async def enterprise_value_section(
                 venue=getattr(company, "exchange", None), isin=getattr(company, "isin", None),
                 cfg=cfg)
         balance, ebit = pick_inputs(await load_fact_rows(session, company))
+        if balance is None and getattr(cfg, "v3_enterprise_value_sec_debt_enabled", False):
+            balance = await sec_balance(company)
         capacity = list(((real_asset or {}).get("capacity") or {}).get("readings") or [])
         market_cap = market_cap_from(observation)
         if market_cap is None and balance is None:

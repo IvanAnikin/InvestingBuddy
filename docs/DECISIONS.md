@@ -11074,3 +11074,36 @@ On the real POWL rows the reader selects chunks 14–33 and the layer classifier
 
 ### Consequences
 A "growing" thesis now uses the company's own reported revenue. A flat year counts against growth: on the real OneSpan payload, FY2025 against FY2024 is about 0%. No migration.
+
+## ADR-118: Convertible Notes as Debt, the Researched Company Linked to Its Entity, Growth From the Newest 10-Q
+
+**Date:** 2026-11-24 · **Status:** Accepted (V3.21.9, report-quality corrective)
+**Trigger:** Validation of auto-report `4519d02a` (Rapid7, discovery run `036a518d`) against SEC XBRL ([docs/validation/2026-11-24-rpd-cybersecurity-report-review.md](validation/2026-11-24-rpd-cybersecurity-report-review.md)). Every figure matched, but three defects led the analysis astray:
+- Rapid7's 895m of convertible notes (599m due within a year) were invisible;
+- the company had no legal entity, so the report said "No SEC CIK";
+- "growing" passed on FY2025 vs FY2024 (+1.9%) while 2026 nine-month revenue was down 1.5%.
+
+### Decision
+1. **Convertible notes count as long-term debt** when the filer tags no straight long-term debt concept for the period:
+   - concepts: `ConvertibleNotesPayable` (including the current portion), `ConvertibleDebtNoncurrent` / `ConvertibleLongTermNotesPayable`, and `ConvertibleDebtCurrent` / `ConvertibleNotesPayableCurrent`;
+   - the ADR-067 combinations and cross-checks are unchanged;
+   - when straight debt is also tagged, convertibles are never added to it (the line may already present them), and a note says so.
+2. **Net debt for EV from the SEC normaliser.** With no filed `total_debt` fact (inline XBRL never yields one), the EV block takes total debt and cash from the normaliser's annual USD record. It does so only when that record's total passes `total_debt_is_usable`.
+   - Flag: `V3_ENTERPRISE_VALUE_SEC_DEBT_ENABLED`, default `true`.
+3. **The researched company is linked to the entity master** before the SEC identity step. `link_company_to_entity` applies the backfill's rules to this one row:
+   - listing first, then the derived key;
+   - a different name on the same listing stays unlinked;
+   - the table-wide backfill stays operator-invoked.
+   - Flag: `V3_RESEARCH_ENTITY_LINK_ENABLED`, default `true`.
+4. **Growth uses the newest comparable periods.** When the newest 10-Q is later than the newest 10-K year, the growth observation compares:
+   - the longest year-to-date duration at the newest end (e.g. nine months);
+   - against the same-length period ending a year earlier.
+   The period is labelled `9M ending …`. Otherwise the annual pair (ADR-117) is used.
+
+### Consequences
+On the real payloads:
+- Rapid7's FY2025 total debt is 892.28m;
+- net debt is 645.6m and EV is about 1.63bn;
+- growth is −1.47% (9M 2026 vs 9M 2025), so a "growing" thesis no longer admits it.
+
+No migration. Rollback: the two new flags; reverting the growth change restores the annual-only pair.

@@ -1600,6 +1600,12 @@ class Settings(BaseSettings):
     # V3.20 slice 8.1: without a thesis observation, re-read the exchange's market cap for
     # the EV block (one exchange-directory read). Off by default.
     v3_enterprise_value_recheck_enabled: bool = False
+    # V3.21.9 (ADR-118): with no filed "total debt" fact, take net-debt inputs from the
+    # SEC normaliser's annual record (total debt incl. convertible notes, and cash).
+    v3_enterprise_value_sec_debt_enabled: bool = True
+    # V3.21.9 (ADR-118): link the researched company to the entity master (same rules as
+    # the operator backfill, this one row only) before the SEC identity step.
+    v3_research_entity_link_enabled: bool = True
     # V3.20 slice 9.1: write one comparable-set record per completed research run
     # (``company_research_records``, migration 053), read from the report's own blocks.
     v3_research_records_enabled: bool = True
