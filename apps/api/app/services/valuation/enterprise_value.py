@@ -101,6 +101,9 @@ def enterprise_value_block(
                     "cash_and_equivalents": _money(Decimal(str(balance["cash"]))),
                     "sources": list(balance.get("sources") or []),
                     "formula": "total_debt - cash_and_equivalents"}
+        if balance.get("current_debt") is not None:
+            # ADR-120 — the part of total debt due within twelve months, as filed.
+            nd_state["debt_due_within_one_year"] = _money(Decimal(str(balance["current_debt"])))
 
     ev: Decimal | None = None
     if mc_amount is None:

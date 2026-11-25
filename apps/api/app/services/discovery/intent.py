@@ -68,6 +68,13 @@ _GROWTH = (
     r"|\bexpanding\s+(?:revenues?|sales)"
 )
 _PROFITABLE = r"\bprofitable\b|\bcash[\s-]generative\b"
+#: ADR-120 — "under-followed by analysts", "under the radar", "low analyst coverage".
+_UNDER_FOLLOWED = (
+    r"\bunder[\s-]?(?:followed|covered|researched|owned|appreciated)\b"
+    r"(?:\s+by\s+(?:the\s+)?(?:sell[\s-]side\s+)?analysts?)?"
+    r"|\bunder\s+the\s+radar\b|\b(?:low|little|limited|thin|no)\s+analyst\s+coverage\b"
+    r"|\b(?:overlooked|neglected)\s+by\s+(?:the\s+)?(?:market|analysts?|investors?)\b"
+)
 
 # ── Hardness cues ──────────────────────────────────────────────────────────── #
 
@@ -238,6 +245,8 @@ class DiscoveryIntent:
     size: Constraint | None = None
     growth: Constraint | None = None
     profitability: Constraint | None = None
+    #: ADR-120 — "under-followed by analysts": always a preference (SOFT), never a filter.
+    coverage: Constraint | None = None
     geography: Constraint | None = None
     industry: Constraint | None = None
     exclusions: tuple[str, ...] = ()
@@ -267,7 +276,7 @@ class DiscoveryIntent:
         return [
             c
             for c in (self.listing, self.geography, self.industry, self.size, self.growth,
-                      self.profitability)
+                      self.profitability, self.coverage)
             if c is not None
         ]
 
@@ -475,6 +484,23 @@ def _growth_constraint(text: str) -> tuple[Constraint | None, list[str]]:
         ]
     hardness, basis = hardness_for(text, match.start())
     return Constraint("growth", (requested,), hardness, basis, match.group(0).strip()), []
+
+
+def _coverage_constraint(text: str) -> Constraint | None:
+    """"Under-followed by analysts" as a SOFT preference (ADR-120).
+
+    It ranks, it never excludes: the platform holds no analyst count for most small caps
+    (no consensus source is configured), so a hard filter would remove every candidate
+    for a fact nobody checked.
+    """
+    match = re.search(_UNDER_FOLLOWED, text)
+    if match is None or polarity(text, match.start()) != POSITIVE:
+        return None
+    return Constraint(
+        "coverage", ("under_followed",), SOFT,
+        "a preference: analyst coverage ranks candidates and never excludes one",
+        match.group(0).strip(), verification_required=False,
+    )
 
 
 def _profitability_constraint(text: str) -> tuple[Constraint | None, list[str]]:
@@ -774,6 +800,7 @@ def build_intent(
     warnings.extend(ceiling_notes)
     growth, growth_notes = _growth_constraint(text)
     profitability, profit_notes = _profitability_constraint(text)
+    coverage = _coverage_constraint(text)
     warnings.extend([*growth_notes, *profit_notes])
 
     geography = None
@@ -818,9 +845,15 @@ def build_intent(
     consumed = set()
     for phrase in [*themes, *materials, *regions, *countries, *catalysts, *end_markets]:
         consumed.update(re.findall(r"[a-z0-9]+", phrase.lower().replace("_", " ")))
-    for constraint in (size, growth, profitability):
+    for constraint in (size, growth, profitability, coverage):
         if constraint is not None:
             consumed.update(re.findall(r"[a-z0-9]+", constraint.phrase.lower()))
+    # ADR-120 — words the thesis was understood by are not "not understood": the segment
+    # terms the industry filter is built from, and the measure a growth request names.
+    for term in segment_terms:
+        consumed.update(re.findall(r"[a-z0-9]+", term.lower()))
+    if growth is not None:
+        consumed.update({"revenue", "revenues", "sales", "recurring", "arr", "top", "line"})
     for commodity in COMMODITIES:
         if commodity.slug in materials:
             consumed.update(re.findall(r"[a-z]+", " ".join(commodity.patterns)))
@@ -852,6 +885,7 @@ def build_intent(
         size=size,
         growth=growth,
         profitability=profitability,
+        coverage=coverage,
         geography=geography,
         industry=industry_constraint,
         exclusions=tuple(parsed.exclusion_keywords),
@@ -1000,6 +1034,7 @@ def intent_from_dict(data: dict[str, Any] | None) -> DiscoveryIntent | None:
             hardness=str(c.get("hardness") or HARD),
             hardness_basis=str(c.get("hardness_basis") or ""),
             phrase=str(c.get("phrase") or ""),
+            verification_required=bool(c.get("verification_required", True)),
             excluded=tuple(c.get("excluded") or ()),
             max_usd=_float_or_none(c.get("max_usd")),
             min_usd=_float_or_none(c.get("min_usd")),
@@ -1024,6 +1059,7 @@ def intent_from_dict(data: dict[str, Any] | None) -> DiscoveryIntent | None:
         size=by_key.get("size"),
         growth=by_key.get("growth"),
         profitability=by_key.get("profitability"),
+        coverage=by_key.get("coverage"),
         geography=by_key.get("geography"),
         industry=by_key.get("industry"),
         exclusions=tuple(data.get("exclusions") or ()),

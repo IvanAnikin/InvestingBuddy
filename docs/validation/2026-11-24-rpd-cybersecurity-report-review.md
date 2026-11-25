@@ -139,7 +139,12 @@ Council opakovaně píše „margin compression“. Q3 provozní marže ale mezi
   - celkový dluh FY2025 je 892,28 M;
   - čistý dluh je 645,6 M a EV zhruba 1,63 mld.;
   - růst je −1,47 % (9M 2026 proti 9M 2025).
-- Ostatní body zůstávají otevřené.
+- Ve V3.21.10 (ADR-120) jsou opravené:
+  - **B3** — auto-report nese discovery lineage;
+  - **B4** — data o elektřině se ukazují jen firmám z elektroenergetiky;
+  - **B6** — „under-followed“ se čte jako měkká preference, ověřená zatím není;
+  - čistý dluh z nejnovějšího 10-Q. U Rapid7 ke 30. 9. 2026: 559,5 M; z dluhu 895,2 M je 598,9 M splatných do roka.
+- Otevřené zůstávají B7–B11.
 
 ## 8. Co funguje dobře
 
