@@ -534,6 +534,16 @@ async def evaluate(
                 basis="profitability is not verified by the screening pass",
             )
         )
+    if intent.coverage is not None:
+        # ADR-120 — a preference only; the obscurity block in the report shows what is known.
+        results.append(
+            cons.ConstraintResult(
+                "coverage", list(intent.coverage.requested), intent.coverage.hardness,
+                cons.UNKNOWN,
+                basis="analyst coverage is not verified here (no analyst-count source); "
+                "it ranks candidates and never excludes one",
+            )
+        )
     return results, cons.decide_eligibility(results)
 
 

@@ -150,6 +150,65 @@ def balance_from_normalized(n: Any) -> dict[str, Any] | None:
     }
 
 
+_CASH_CONCEPT = "CashAndCashEquivalentsAtCarryingValue"
+
+
+def quarterly_balance_from_facts(facts: dict[str, Any]) -> dict[str, Any] | None:
+    """Net-debt inputs at the newest 10-Q balance sheet, or None (ADR-120).
+
+    The annual record is up to a year old: Rapid7's FY2025 balance showed 892m of
+    convertibles due after a year, while its Q3 2026 10-Q had 599m of them due within
+    twelve months. Same ADR-067/118 rules (``derive_total_debt``) at the 10-Q's own
+    balance-sheet date and accession; cash is the same filing's tagged figure.
+    """
+    from app.integrations.sec_total_debt import derive_total_debt
+
+    us_gaap = ((facts or {}).get("facts") or {}).get("us-gaap") or {}
+    rows = [r for r in ((us_gaap.get(_CASH_CONCEPT) or {}).get("units") or {}).get("USD") or []
+            if r.get("form") == "10-Q" and not r.get("start") and r.get("val") is not None]
+    if not rows:
+        return None
+    newest = max(rows, key=lambda r: (str(r.get("end") or ""), str(r.get("filed") or "")))
+    same_filing = [r for r in rows if r.get("end") == newest.get("end")
+                   and r.get("accn") == newest.get("accn")]
+    cash = same_filing[0] if same_filing else newest
+    debt = derive_total_debt(us_gaap, period_end=str(newest["end"]), forms=("10-Q",),
+                             prefer_accn=newest.get("accn"), tolerance_days=10)
+    if debt.total is None or debt.withheld_reason is not None or debt.long_term_missing:
+        return None
+    cik = str((facts or {}).get("cik") or "").strip()
+    source = (f"https://data.sec.gov/api/xbrl/companyfacts/CIK{int(cik):010d}.json"
+              if cik.isdigit() else None)
+    return {
+        "period": f"{newest['end']} (10-Q)",
+        "period_end": str(newest["end"]),
+        "currency": "USD",
+        "total_debt": absolute(debt.total * _MILLION, None),
+        "cash": absolute(float(cash["val"]), None),
+        "filed": cash.get("filed"),
+        "sources": [
+            {"label": "total_debt", "source_url": source, "fact_id": None,
+             "formula": debt.formula, "accn": newest.get("accn")},
+            {"label": "cash_and_equivalents", "source_url": source, "fact_id": None,
+             "accn": cash.get("accn")},
+        ],
+        "current_debt": None if debt.current is None else absolute(
+            debt.current * _MILLION, None),
+        "origin": "sec_xbrl_10q",
+    }
+
+
+def newest_balance(annual: dict[str, Any] | None,
+                   quarterly: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The more recent of the two (the 10-Q when it was filed after the 10-K)."""
+    if quarterly is None:
+        return annual
+    if annual is None:
+        return quarterly
+    return quarterly if str(quarterly.get("filed") or "") > str(annual.get("filed") or "") \
+        else annual
+
+
 async def sec_balance(company: Any) -> dict[str, Any] | None:
     """``balance_from_normalized`` over the company's SEC companyfacts. Never raises."""
     import asyncio
@@ -167,7 +226,7 @@ async def sec_balance(company: Any) -> dict[str, Any] | None:
         if facts is None:
             return None
         n = await asyncio.to_thread(normalize_company_facts, facts, ticker)
-        return balance_from_normalized(n)
+        return newest_balance(balance_from_normalized(n), quarterly_balance_from_facts(facts))
     except Exception:  # noqa: BLE001 - an additive input never costs the report
         logger.warning("SEC balance for enterprise value failed")
         return None

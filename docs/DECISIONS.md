@@ -11140,3 +11140,42 @@ No migration. Rollback: the two new flags; reverting the growth change restores 
 - The free EODHD plan gives about one year of prices, so the chart shows that window and says so.
 - Non-US listings get a price chart but no filed-results chart (`not_a_us_filer`).
 
+## ADR-120: LSE Instrument List, a Coverage Preference, and the Remaining Report Defects
+
+**Date:** 2026-11-25 · **Status:** Accepted (V3.21.10)
+**Trigger:** two findings.
+- The European run `cf72de91` ("European small-cap cybersecurity software companies with growing recurring revenue, under-followed by analysts") returned 0 candidates:
+  - every LSE lead failed its listing or size check;
+  - several leads were Helsinki companies, and no directory covers Helsinki;
+  - "cybersecurity", "recurring", "revenue", "under", "followed", "analysts" were shown as not understood.
+- Open items from the report review of 2026-11-24 ([docs/validation/2026-11-24-rpd-cybersecurity-report-review.md](validation/2026-11-24-rpd-cybersecurity-report-review.md)).
+
+### Findings
+- `api.londonstockexchange.com` (per-ticker instrument record with market cap) no longer resolves: its CNAME points at a CloudFront distribution with no address. Every LSE listing and size check gave "no verdict".
+- The LSE publishes a monthly **Instrument list** (`docs.londonstockexchange.com`): TIDM, issuer, ISIN, MiFIR code, market. It has no market capitalisation; no machine-readable LSE source we may use has one.
+- Nasdaq Nordic's screener publishes shares and market cap, but drops requests that do not present a browser user agent. Disguising the client would evade bot protection, so it is not used. Helsinki, Stockholm and Copenhagen stay uncovered by a directory.
+- Three of the eight model suggestions are no longer listed (Osirium, Nixu, and, by the Helsinki list, WithSecure). They were correctly refused.
+
+### Decision
+1. **LSE directory = the instrument list.**
+   - Parsed from the xlsx with the standard library (no new dependency), once per process per day.
+   - Shares and depositary receipts only (`SHRS`, `DPRS`); TIDM plus name agreement as on every directory.
+   - No market cap: an LSE size still needs a page that web search fetched.
+2. **"Under-followed" is a SOFT `coverage` constraint.**
+   - It ranks and never excludes; its status is `unknown` until an analyst-count source is configured.
+   - Recognised phrasings: "under-followed / under-covered by analysts", "under the radar", "low analyst coverage", "overlooked by the market".
+3. **Not understood** no longer lists the segment terms, nor the revenue words of a growth request.
+4. **Auto-report lineage.** A job started from a discovery candidate builds the same lineage as the candidate CTA (`discovery_lineage_for`).
+5. **Electricity market context only for the electricity stack.** No `industry_context` block when the classifier says `not_electricity`.
+6. **Net debt from the newest 10-Q.**
+   - When the newest 10-Q was filed after the 10-K, net debt is read at that balance-sheet date, using the ADR-067/118 combinations and the same filing's cash.
+   - The block shows `debt_due_within_one_year`.
+   - Zero debt is never assumed from an absent tag: a filer tagging no debt concept still gets no net debt.
+
+### Consequences
+- Rapid7's EV block now reads at 2026-09-30:
+  - total debt 895.2m, of which 598.9m is due within a year;
+  - cash 335.7m;
+  - net debt 559.5m.
+- LSE candidates pass the listing check again but remain `size_unverified` until web search returns, so a UK-only run can still return none.
+- No migration, no flag.

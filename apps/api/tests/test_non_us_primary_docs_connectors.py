@@ -29,6 +29,7 @@ from app.db.base import Base
 from app.models.company import Company
 from app.services.sources.disclosures import acquisition as acq
 from app.services.sources.document_fetcher import DocumentFetchResult
+from tests.helpers.xlsx import lse_instrument_list
 
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
 PENSANA_LEI = "213800H4QP6T9499RU64"
@@ -131,10 +132,10 @@ class FakeWeb:
         pdf_annual = "https://announcements.asx.com.au/asxpdf/20260925/pdf/074hv8s0yw9t50.pdf"
         pdf_update = "https://announcements.asx.com.au/asxpdf/20260924/pdf/0743aaaaaaaaaa.pdf"
         self.get_map: dict[str, tuple[str, bytes]] = {
-            "https://api.londonstockexchange.com/api/gw/lse/instruments/alldata/PRE":
-                ("application/json", json.dumps({
-                    "tidm": "PRE", "issuername": "PENSANA PLC", "isin": PENSANA_ISIN,
-                    "country": "GB", "marketcapitalization": 212816166}).encode()),
+            # ADR-120 — the LSE's own instrument list (the old per-ticker API is gone).
+            "https://docs.londonstockexchange.com/reports/instruments/Instrument%20list.xlsx":
+                ("binary/octet-stream", lse_instrument_list(
+                    ("PRE", "PENSANA PLC", PENSANA_ISIN, "SHRS"))),
             f"https://api.gleif.org/api/v1/lei-records?filter%5Bisin%5D={PENSANA_ISIN}":
                 ("application/vnd.api+json", json.dumps({"data": [{
                     "id": PENSANA_LEI, "attributes": {"entity": {

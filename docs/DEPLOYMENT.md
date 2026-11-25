@@ -762,6 +762,18 @@ Rollback: set the flag to `false`; reports and the obscurity block are as before
 listing's annual revenue pair is read from `data.sec.gov` companyconcept (at most three small reads per candidate, no key).
 Rollback: set it to `false`, and growth stays `unknown` as before.
 
+### LSE instrument list, coverage preference, report fixes (V3.21.10, ADR-120)
+
+- **LSE listing checks** read the exchange's monthly instrument list, `https://docs.londonstockexchange.com/reports/instruments/Instrument%20list.xlsx` (about 9 MB, once per process per day, parsed with the standard library). The old per-ticker `api.londonstockexchange.com` no longer resolves.
+  - The list has no market cap, so an LSE size is verified only on a page web search fetched.
+- **Net debt for EV** now uses the newest 10-Q balance sheet when it was filed after the 10-K, and shows the debt due within a year. This uses the same companyfacts read as before.
+- **Not in a report any more:**
+  - market context about electricity, for a company the classifier reads as outside the electricity stack;
+  - the "no lineage" note on an auto-report (it now carries its discovery lineage).
+- **"Under-followed by analysts"** is read as a soft preference (`coverage`). It never excludes a candidate.
+
+No new flag, no migration.
+
 ### Debt, entity link and newest-period growth (V3.21.9, ADR-118)
 
 - `V3_ENTERPRISE_VALUE_SEC_DEBT_ENABLED` (default `true`): with no filed "total debt" fact, the EV block reads net-debt inputs from the SEC normaliser. Convertible notes count as debt when they are the only long-term debt tagged. It makes one companyfacts read per report, shared with the statements tool's one-hour cache.
@@ -974,7 +986,8 @@ were already on.
   primary-document budget, and above the unread `primary_document_total_timeout_seconds`
   note in `config.py`).
 - No migration. Hosts contacted: `api.data.fca.org.uk`, `data.fca.org.uk`, `api.gleif.org`,
-  `api.londonstockexchange.com`, `asx.api.markitdigital.com`, `www.asx.com.au`,
+  `docs.londonstockexchange.com` (since ADR-120; was `api.londonstockexchange.com`),
+  `asx.api.markitdigital.com`, `www.asx.com.au`,
   `announcements.asx.com.au` — each through the guarded fetcher.
 
 #### Extraction pipeline version 25 — note pages of long PDFs (Research Integrity Closure H4, ADR-094)

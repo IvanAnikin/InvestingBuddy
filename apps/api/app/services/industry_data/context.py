@@ -263,6 +263,11 @@ async def industry_context_block(
     on = sources_on(cfg)
     if not any(on.values()):
         return None
+    if (layers_block or {}).get("status") == "not_electricity":
+        # ADR-120 (validation 2026-11-24): a cybersecurity company's report showed US
+        # electricity demand. This market context is for the electricity stack only; a
+        # company the classifier read as outside it gets no block at all.
+        return None
     try:
         # A savepoint: a failed read must not poison the report's own transaction.
         async with session.begin_nested():

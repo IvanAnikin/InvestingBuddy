@@ -127,7 +127,16 @@ TWSE_PRICES = _Directory(
     TIER_EXCHANGE, "TWSE daily closing prices (open data)", flag="v3_directory_twse_enabled",
 )
 TWSE_ATTRIBUTION = "Source: Taiwan Stock Exchange open data (Open Government Data License v1.0)"
-DIRECTORIES: tuple[_Directory, ...] = (EURONEXT, ASX, TSX, TSXV, SIX, SEC, TWSE)
+#: ADR-120 — the London Stock Exchange's own monthly "Instrument list" (every equity
+#: instrument: TIDM, issuer, ISIN, market). It replaced ``api.londonstockexchange.com``,
+#: whose host stopped resolving in 2026-11 and took every LSE listing check with it. It
+#: carries no market capitalisation: an LSE size is verified on a fetched page only.
+LSE = _Directory(
+    "lse", "docs.londonstockexchange.com",
+    "https://docs.londonstockexchange.com/reports/instruments/Instrument%20list.xlsx",
+    TIER_EXCHANGE, "London Stock Exchange official instrument list",
+)
+DIRECTORIES: tuple[_Directory, ...] = (EURONEXT, ASX, TSX, TSXV, SIX, SEC, TWSE, LSE)
 
 #: Euronext market name → (registry venue code, MIC for the instrument factsheet).
 EURONEXT_MARKETS: dict[str, tuple[str, str]] = {
@@ -143,7 +152,7 @@ EURONEXT_MARKETS: dict[str, tuple[str, str]] = {
 DIRECTORY_FOR_VENUE: dict[str, _Directory] = {
     "PA": EURONEXT, "MI": EURONEXT, "AS": EURONEXT, "BR": EURONEXT, "LS": EURONEXT,
     "IR": EURONEXT, "OL": EURONEXT, "AU": ASX, "TO": TSX, "V": TSXV, "SW": SIX, "US": SEC,
-    "TW": TWSE,
+    "TW": TWSE, "LSE": LSE,
 }
 
 
@@ -395,17 +404,24 @@ async def _download(
 ) -> list[DirectoryListing]:
     from app.services.sources.document_fetcher import safe_fetch_document
 
+    binary = _BINARY_PARSERS.get(directory.key)
     try:
         result = await (fetcher or safe_fetch_document)(
             directory.url, allowed_domains=(directory.host,), cfg=cfg, resolve_ip=True,
-            extra_text_content_types=("text/csv", "application/csv", "application/json",
-                                      "text/plain", "application/octet-stream"),
+            extra_text_content_types=(_BINARY_CONTENT_TYPES if binary else (
+                "text/csv", "application/csv", "application/json", "text/plain",
+                "application/octet-stream")),
         )
     except Exception:  # noqa: BLE001 - an unreadable directory is a missing source
         return []
     content = getattr(result, "content", None) if getattr(result, "ok", False) else None
     if not content:
         return []
+    if binary is not None:
+        try:
+            return list(binary(content, directory))
+        except Exception:  # noqa: BLE001 - a changed file shape is an unreadable directory
+            return []
     # Not every exchange publishes UTF-8 (SIX's list is Latin-1: "Financière" → "Financi\ufffdre").
     try:
         text = content.decode("utf-8-sig")
@@ -416,6 +432,100 @@ async def _download(
         return list(parser(text, directory))
     except Exception:  # noqa: BLE001 - a changed file shape is an unreadable directory
         return []
+
+
+_XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+#: The instrument list's columns this parser reads (header row text → field).
+_LSE_COLUMNS = {"tidm": "tidm", "issuer name": "issuer", "isin": "isin",
+                "mifir identifier code": "mifir", "country of incorporation": "country",
+                "trading currency": "currency", "lse market": "market"}
+#: Equity instruments that are a company's shares: ordinary shares and depositary
+#: receipts. Funds' units and other equity-like instruments are not a company listing.
+_LSE_EQUITY_CODES = frozenset({"SHRS", "DPRS"})
+_XLSX_CELL_RE = re.compile(r"^([A-Z]+)")
+
+
+def _xlsx_rows(content: bytes, sheet: str = "xl/worksheets/sheet1.xml") -> list[list[str]]:
+    """Every row of one worksheet as text cells, read with the standard library only.
+
+    Shared strings are resolved; inline strings and numbers are read as text. Cells are
+    placed by their column letter, so an empty cell never shifts the next one left.
+    """
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(content)) as book:
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in book.namelist():
+            for item in ET.fromstring(book.read("xl/sharedStrings.xml")).iter(_XLSX_NS + "si"):
+                shared.append("".join(t.text or "" for t in item.iter(_XLSX_NS + "t")))
+        rows: list[list[str]] = []
+        with book.open(sheet) as handle:
+            for _event, elem in ET.iterparse(handle):
+                if elem.tag != _XLSX_NS + "row":
+                    continue
+                cells: dict[int, str] = {}
+                for cell in elem.iter(_XLSX_NS + "c"):
+                    ref = _XLSX_CELL_RE.match(cell.get("r") or "")
+                    col = 0
+                    for ch in (ref.group(1) if ref else ""):
+                        col = col * 26 + (ord(ch) - 64)
+                    value = cell.find(_XLSX_NS + "v")
+                    if value is not None and value.text is not None:
+                        text = (shared[int(value.text)] if cell.get("t") == "s"
+                                else value.text)
+                    else:
+                        inline = cell.find(f"{_XLSX_NS}is/{_XLSX_NS}t")
+                        text = inline.text if inline is not None and inline.text else ""
+                    cells[max(col, len(cells) + 1)] = str(text).strip()
+                if cells:
+                    rows.append([cells.get(i, "") for i in range(1, max(cells) + 1)])
+                elem.clear()
+    return rows
+
+
+def parse_lse_instruments(content: bytes, source: _Directory = LSE) -> list[DirectoryListing]:
+    """The LSE instrument list's equity shares as listings (venue ``LSE``, MIC XLON)."""
+    rows = _xlsx_rows(content)
+    header_at = next((i for i, row in enumerate(rows)
+                      if {"tidm", "isin"} <= {c.lower() for c in row}), None)
+    if header_at is None:
+        return []
+    index = {_LSE_COLUMNS[c.lower()]: i for i, c in enumerate(rows[header_at])
+             if c.lower() in _LSE_COLUMNS}
+    if not {"tidm", "issuer", "isin"} <= set(index):
+        return []
+    out: list[DirectoryListing] = []
+    seen: set[str] = set()
+
+    def cell(row: list[str], key: str) -> str:
+        i = index.get(key)
+        return row[i].strip() if i is not None and i < len(row) else ""
+
+    for row in rows[header_at + 1:]:
+        tidm, issuer = cell(row, "tidm").upper(), cell(row, "issuer")
+        mifir = cell(row, "mifir").upper()
+        if not tidm or not issuer or tidm in seen or (mifir and mifir not in _LSE_EQUITY_CODES):
+            continue
+        seen.add(tidm)
+        currency = cell(row, "currency").upper() or None
+        out.append(DirectoryListing(
+            name=issuer, ticker=tidm, exchange="LSE", isin=cell(row, "isin") or None,
+            country=cell(row, "country") or None, market_cap=None,
+            currency="GBP" if currency == "GBX" else currency, price=None,
+            industry=None, mic="XLON", directory=source.key,
+            source_url=source.url, tier=source.tier, as_of=_today(),
+        ))
+    return out
+
+
+#: Directories published as a binary file, parsed from bytes rather than text.
+_BINARY_PARSERS = {"lse": parse_lse_instruments}
+#: Their content types, admitted for these downloads only.
+_BINARY_CONTENT_TYPES = (
+    "binary/octet-stream", "application/octet-stream",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 
 #: Venue suffixes a quoted ticker may carry ("KER.PA"). Anything else is PART of the
@@ -442,9 +552,6 @@ async def find_listing(
     ``(None, reason)``. ``reason`` is None when no directory covers the venue at all —
     which is "cannot check here", never "not listed".
     """
-    if venue == "LSE" and ticker:
-        return await _lse_listing(name=name, ticker=_strip_suffix(ticker), cfg=cfg,
-                                  fetcher=fetcher)
     directory = directory_for_venue(venue, cfg)
     if directory is None:
         return None, None
@@ -500,53 +607,15 @@ def _expand(name: str) -> str:
     return " ".join(_ABBREVIATIONS.get(w, w) for w in name.split())
 
 
-LSE_HOST = "api.londonstockexchange.com"
-
-
 async def _lse_listing(
     *, name: str | None, ticker: str, cfg: Any = None, fetcher: Any = None
 ) -> tuple[DirectoryListing | None, str | None]:
-    """The London Stock Exchange's own instrument record for a TIDM, with its published
-    market capitalisation (GBP). One request per ticker, cached per day."""
-    from app.services.sources.document_fetcher import safe_fetch_document
-
+    """The LSE instrument list's row for a TIDM (ADR-120). ``(None, None)`` when the list
+    cannot be read or the ticker is not a plausible TIDM: no verdict either way."""
     if not _SAFE_TICKER_RE.match(ticker or ""):
-        return None, None  # never interpolate an unexpected string into a request path
-    url = f"https://{LSE_HOST}/api/gw/lse/instruments/alldata/{ticker}"
-    key = ("lse:" + ticker, _today())
-    if key in _CACHE:
-        rows = _CACHE[key]
-    else:
-        try:
-            result = await (fetcher or safe_fetch_document)(
-                url, allowed_domains=(LSE_HOST,), cfg=cfg, resolve_ip=True,
-                extra_text_content_types=("application/json",),
-            )
-            content = getattr(result, "content", None) if getattr(result, "ok", False) else None
-            data = json.loads(content.decode("utf-8", "replace")) if content else None
-        except Exception:  # noqa: BLE001 - an unreadable record is no verdict
-            return None, None
-        if not isinstance(data, dict):
-            return None, None
-        if not data.get("tidm"):
-            # An error or rate-limit body is not "not listed": no verdict, not cached.
-            return None, None
-        rows = [DirectoryListing(
-            name=str(data.get("issuername") or data.get("description") or ""),
-            ticker=str(data["tidm"]).upper(), exchange="LSE", isin=data.get("isin"),
-            country=data.get("country"), market_cap=_num(data.get("marketcapitalization")),
-            currency="GBP", price=_num(data.get("lastclose") or data.get("lastprice")),
-            industry=None, mic="XLON", directory="lse", source_url=url, tier=TIER_EXCHANGE,
-            as_of=_today(),
-        )]
-        _store(key, rows)
-    if not rows:
-        return None, f"the London Stock Exchange lists no instrument {ticker}"
-    row = rows[0]
-    if name and not _names_agree(normalised_name(name), normalised_name(row.name),
-                                 ticker_matched=True):
-        return None, f"the London Stock Exchange lists {ticker} as {row.name!r}, not {name!r}"
-    return row, None
+        return None, None
+    return await find_listing(name=name, ticker=ticker, venue="LSE", cfg=cfg,
+                              fetcher=fetcher)
 
 
 #: Words a full legal name may END with after its acronym ("TSMC" for "Taiwan

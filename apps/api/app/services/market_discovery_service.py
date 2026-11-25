@@ -1514,6 +1514,37 @@ async def list_runs(
     return items, len(items)
 
 
+async def discovery_lineage_for(db: AsyncSession, candidate: Any) -> dict[str, Any] | None:
+    """The report's discovery lineage for one ``DiscoveryCandidate``, or None.
+
+    Only fields that already exist on the candidate and its run; never inferred. Used by
+    the candidate CTA and, since ADR-120, by the auto-report job, whose reports carried no
+    lineage at all ("No discovery-run candidate lineage linked to this report").
+    """
+    try:
+        discovery_run = await get_run(db, candidate.discovery_run_id)
+        return {
+            "discovery_run_id": str(candidate.discovery_run_id),
+            "discovery_candidate_id": str(candidate.id),
+            "ticker": candidate.ticker,
+            "exchange": candidate.exchange,
+            "rank": candidate.rank,
+            "candidate_score": candidate.candidate_score,
+            "candidate_score_grade": candidate.candidate_score_grade,
+            "score_explanation": candidate.score_explanation,
+            "thesis_relevance_score": candidate.thesis_relevance_score,
+            "thesis_match_json": candidate.thesis_match_json,
+            "thesis_text": discovery_run.thesis_text if discovery_run else None,
+        }
+    except Exception as exc:  # noqa: BLE001 - lineage is best-effort, never fatal
+        logger.warning(
+            "discovery_lineage_build_failed candidate=%s error=%s",
+            str(getattr(candidate, "id", None)),
+            type(exc).__name__,
+        )
+        return None
+
+
 async def get_run(db: AsyncSession, run_id: uuid.UUID) -> DiscoveryRun | None:
     result = await db.execute(select(DiscoveryRun).where(DiscoveryRun.id == run_id))
     return result.scalar_one_or_none()
@@ -1778,29 +1809,7 @@ async def run_candidate_analysis(
     # DiscoveryRun, so "No screening candidate is linked" no longer hides a real
     # discovery-run origin. Never inferred/fabricated — only fields that already
     # exist on the candidate/run.
-    discovery_lineage: dict[str, Any] | None = None
-    try:
-        discovery_run = await get_run(db, candidate.discovery_run_id)
-        discovery_lineage = {
-            "discovery_run_id": str(candidate.discovery_run_id),
-            "discovery_candidate_id": str(candidate.id),
-            "ticker": candidate.ticker,
-            "exchange": candidate.exchange,
-            "rank": candidate.rank,
-            "candidate_score": candidate.candidate_score,
-            "candidate_score_grade": candidate.candidate_score_grade,
-            "score_explanation": candidate.score_explanation,
-            "thesis_relevance_score": candidate.thesis_relevance_score,
-            "thesis_match_json": candidate.thesis_match_json,
-            "thesis_text": discovery_run.thesis_text if discovery_run else None,
-        }
-    except Exception as exc:  # noqa: BLE001 - lineage is best-effort, never fatal
-        logger.warning(
-            "discovery_lineage_build_failed candidate=%s error=%s",
-            str(candidate_id),
-            type(exc).__name__,
-        )
-        discovery_lineage = None
+    discovery_lineage = await discovery_lineage_for(db, candidate)
 
     result = await execute_company_research(
         db,

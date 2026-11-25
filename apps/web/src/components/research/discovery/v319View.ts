@@ -132,6 +132,16 @@ export function intentChips(intent: DiscoveryIntent | null | undefined): IntentC
   if (profit) {
     chips.push({ label: "Profitability", value: "Profitable", hardness: profit.hardness });
   }
+  const coverage = constraintOf(intent, "coverage");
+  if (coverage) {
+    // ADR-120 — a preference only: no analyst-count source verifies it.
+    chips.push({
+      label: "Coverage",
+      value: "Under-followed by analysts",
+      hardness: coverage.hardness,
+      note: "ranks candidates, never excludes one; analyst coverage is not verified",
+    });
+  }
   if (intent.end_markets.length) {
     chips.push({ label: "End markets", value: intent.end_markets.map(humanise).join(", ") });
   }

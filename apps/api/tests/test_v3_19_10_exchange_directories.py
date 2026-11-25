@@ -375,30 +375,63 @@ def test_venue_suffix_is_stripped_but_a_share_class_is_kept():
     assert _strip_suffix("RDSB.L") == "RDSB"
 
 
-async def test_lse_record_market_cap_is_in_pounds_and_an_error_body_is_no_verdict():
-    import json as _json
+async def test_the_lse_instrument_list_verifies_a_listing_but_no_market_cap():
+    """ADR-120: ``api.londonstockexchange.com`` stopped resolving; the LSE's own monthly
+    instrument list replaces it. It lists the TIDM, issuer and ISIN, and no market cap."""
+    from app.services.discovery import directories as d
+    from app.services.sources.document_fetcher import DocumentFetchResult
+    from tests.helpers.xlsx import lse_instrument_list
 
+    d.reset_cache()
+    body = lse_instrument_list(
+        ("BRBY", "BURBERRY GROUP PLC", "GB0031743007", "SHRS"),
+        ("CNS", "CORERO NETWORK SECURITY PLC", "GB00B54X0432", "SHRS"),
+        ("FUND", "SOME INVESTMENT TRUST", "GB0000000001", "OTHR"),
+    )
+    seen: list[str] = []
+
+    async def _fetch(url, **kw):  # noqa: ANN001, ANN202
+        seen.append(url)
+        assert kw["allowed_domains"] == ("docs.londonstockexchange.com",)
+        assert "binary/octet-stream" in kw["extra_text_content_types"]
+        return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
+                                   content_type="binary/octet-stream", document_type="text",
+                                   content=body)
+
+    row, reason = await d._lse_listing(name="Burberry Group plc", ticker="BRBY",
+                                       fetcher=_fetch)
+    assert reason is None and row.isin == "GB0031743007" and row.market_cap is None
+    assert row.exchange == "LSE" and row.mic == "XLON" and row.currency == "GBP"
+    row, _ = await d.find_listing(name="Corero Network Security plc", ticker="CNS.L",
+                                  venue="LSE", fetcher=_fetch)
+    assert row is not None and row.ticker == "CNS"
+    missing, why = await d.find_listing(name="Osirium Technologies plc", ticker="OSI",
+                                        venue="LSE", fetcher=_fetch)
+    assert missing is None and "not found" in why
+    assert (await d.find_listing(name="x", ticker="FUND", venue="LSE", fetcher=_fetch))[0] \
+        is None  # a fund's units are not a company listing
+    other, why = await d.find_listing(name="Wrong Name plc", ticker="BRBY", venue="LSE",
+                                      fetcher=_fetch)
+    assert other is None and "BURBERRY GROUP PLC" in why
+    assert len(seen) == 1  # one download, cached for the day
+    amount, *_ = await d.official_market_cap(row)
+    assert amount is None
+    d.reset_cache()
+
+
+async def test_an_unreadable_lse_list_is_no_verdict():
     from app.services.discovery import directories as d
     from app.services.sources.document_fetcher import DocumentFetchResult
 
     d.reset_cache()
-    bodies = {
-        "BRBY": {"tidm": "BRBY", "issuername": "Burberry Group PLC", "isin": "GB0031743007",
-                 "marketcapitalization": 3727670338, "lastclose": 1034.5},
-        "NOPE": {"status": 429, "message": "Too many requests"},
-    }
 
-    async def _fetch(url, **_kw):  # noqa: ANN001, ANN202
-        body = bodies[url.rsplit("/", 1)[-1]]
+    async def _junk(url, **_kw):  # noqa: ANN001, ANN202
         return DocumentFetchResult(requested_url=url, final_url=url, status_code=200,
-                                   content_type="application/json", document_type="html",
-                                   content=_json.dumps(body).encode())
+                                   content_type="binary/octet-stream", document_type="text",
+                                   content=b"not a zip")
 
-    row, reason = await d._lse_listing(name="Burberry Group plc", ticker="BRBY",
-                                       fetcher=_fetch)
-    assert reason is None and row.market_cap == 3727670338 and row.currency == "GBP"
-    assert await d._lse_listing(name="x", ticker="NOPE", fetcher=_fetch) == (None, None)
-    assert not any(k[0] == "lse:NOPE" for k in d._CACHE)
+    assert await d.find_listing(name="x", ticker="BRBY", venue="LSE", fetcher=_junk) == \
+        (None, None)
     d.reset_cache()
 
 

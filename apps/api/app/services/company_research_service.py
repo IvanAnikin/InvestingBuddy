@@ -622,6 +622,23 @@ def _report_summary_dict(final_report_response: Any) -> dict[str, Any] | None:
         return None
 
 
+async def _lineage_for_request(
+    session: AsyncSession, candidate_id: str | uuid.UUID | None
+) -> dict[str, Any] | None:
+    """The discovery lineage of the candidate a job names, or None. Never raises."""
+    if not candidate_id:
+        return None
+    try:
+        from app.models.discovery import DiscoveryCandidate
+        from app.services.market_discovery_service import discovery_lineage_for
+
+        candidate = await session.get(DiscoveryCandidate, uuid.UUID(str(candidate_id)))
+        return await discovery_lineage_for(session, candidate) if candidate else None
+    except Exception as exc:  # noqa: BLE001 - lineage is best-effort, never fatal
+        logger.warning("job_discovery_lineage_failed error=%s", type(exc).__name__)
+        return None
+
+
 async def process_company_research_by_id(
     job_id: uuid.UUID,
     *,
@@ -758,6 +775,10 @@ async def process_company_research_by_id(
                 if stage is not None:
                     await advance(stage)
 
+            # ADR-120 — a job started FROM a discovery candidate (the auto-report)
+            # carries its lineage into the report, exactly as the candidate CTA does.
+            discovery_lineage = await _lineage_for_request(
+                session, request.get("discovery_candidate_id"))
             try:
                 result = await execute_company_research(
                     session,
@@ -769,6 +790,7 @@ async def process_company_research_by_id(
                     use_llm=bool(request.get("use_llm")),
                     llm_provider=request.get("llm_provider"),
                     require_schema_valid=bool(request.get("require_schema_valid")),
+                    discovery_lineage=discovery_lineage,
                     on_node=on_node,
                     on_stage=advance,
                     run_analysis=run_analysis,
